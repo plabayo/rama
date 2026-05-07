@@ -1197,22 +1197,15 @@ private final class UdpFlowContext {
     weak var session: RamaUdpSessionHandle?
     /// See `TcpFlowContext.connection`.
     var connection: NWConnection?
-    /// Per-flow Swift pumps + cleanup closure. Stored on the
-    /// context (strong) so closures wired into `engine.newUdpSession`,
-    /// `connection.stateUpdateHandler`, and the writer pump's
-    /// `onTerminalError` can reach them via `[weak ctx]` capture
-    /// instead of strong-capturing `var writer` / `var requestRead` /
-    /// `let terminate` directly. Capturing those locals strongly
-    /// formed a writer ↔ terminate ↔ requestRead retain cycle that
-    /// `leaks` reproduced as `ROOT CYCLE: <UdpClientWritePump>` under
-    /// stress (see `stress_test_root_cause_v2.md` §4): for any flow
-    /// whose `terminate` never ran (idle background UDP, the
-    /// .failed early-exit, missing-remote-endpoint guard) the cycle
-    /// outlived the rest of the per-flow graph and accumulated.
-    /// Routing every reference through `[weak ctx]` makes the cycle
-    /// structurally impossible — the context is the single strong
-    /// owner of the per-flow Swift state, and dies when the
-    /// connection's `.cancelled` handler clears `stateUpdateHandler`.
+    /// Per-flow Swift pumps + cleanup closure. Held strong by the
+    /// context so every dispatcher closure (`engine.newUdpSession`
+    /// callbacks, `connection.stateUpdateHandler`, the writer pump's
+    /// `onTerminalError`) can reach them via `[weak ctx]` instead of
+    /// strong-capturing local `var`s. Capturing the locals strongly
+    /// would form writer ↔ terminate ↔ requestRead cycles that
+    /// only break on a terminate-time nil-out — and never run for
+    /// flows that don't fire terminate (idle UDP, the `.failed`
+    /// early-exit, missing-remote-endpoint guard).
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
     var terminate: ((Error?) -> Void)?
@@ -1575,19 +1568,15 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                     // form (see writer.onTerminalError
                                     // for the full chain).
                                     if let err = readError {
-                                        // Hard error path. Tear
-                                        // everything down now; pump
-                                        // pending bytes are dropped on
-                                        // BridgeCloseReason::Shutdown.
-                                        // The engine's
-                                        // `guarded_closed_sink` no
-                                        // longer suppresses
-                                        // `on_server_closed` after
-                                        // cancel(), so even on this
-                                        // path the writer pump's
-                                        // `closeWhenDrained` still
-                                        // fires for any defensive
-                                        // late-arrival drain.
+                                        // Hard error: tear everything
+                                        // down now. Pump-pending
+                                        // bytes are abandoned, but
+                                        // `on_server_closed` still
+                                        // fires from the engine, so
+                                        // the writer pump's
+                                        // `closeWhenDrained` runs as
+                                        // a defensive late-arrival
+                                        // drain.
                                         flow.closeReadWithError(err)
                                         flow.closeWriteWithError(err)
                                         ctx?.connection?.cancel()
@@ -1597,37 +1586,34 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                         ctx?.egressReadPump = nil
                                         self?.removeTcpFlow(flowId)
                                     } else {
-                                        // Natural EOF (curl-style:
-                                        // client read its response and
-                                        // closed). Tell Rust the
-                                        // client side EOFed; the
-                                        // bridge drains the response
-                                        // direction naturally and
-                                        // reaches `peer_eof_left`,
-                                        // which fires
-                                        // `on_server_closed` →
-                                        // `writer.closeWhenDrained` so
-                                        // every queued response byte
-                                        // reaches the kernel before
-                                        // the write side is closed.
+                                        // Natural EOF: client closed
+                                        // its read side cleanly. Tell
+                                        // Rust about the EOF and let
+                                        // the bridge drain the
+                                        // response direction
+                                        // naturally — `on_server_closed`
+                                        // fires when that completes
+                                        // and runs `closeWhenDrained`,
+                                        // which closes the write side
+                                        // only after every queued
+                                        // byte has reached the
+                                        // kernel.
                                         //
                                         // Calling `session.cancel()`
-                                        // here truncates up to ~4 MiB
-                                        // of pump-pending bytes plus
-                                        // whatever sits in the
-                                        // NEAppProxyFlow kernel
-                                        // buffer; the
-                                        // closeWhenDrained completion
-                                        // owns the rest of teardown
-                                        // (closing the write side,
-                                        // cancelling the egress
-                                        // connection, removing the
-                                        // flow from the session map),
-                                        // so we deliberately do NOT
-                                        // touch the write side, the
-                                        // egress NWConnection, the
-                                        // pump references, or the
-                                        // session map here.
+                                        // / `closeWriteWithError`
+                                        // here would force an early
+                                        // close that drops pump
+                                        // pending bytes plus whatever
+                                        // sits in the NEAppProxyFlow
+                                        // kernel buffer. The rest of
+                                        // teardown (write-side close,
+                                        // egress cancel, session map
+                                        // removal) is owned by the
+                                        // `closeWhenDrained`
+                                        // completion.
+                                        self?.logTrace(
+                                            "tcp natural EOF: deferring teardown to closeWhenDrained"
+                                        )
                                         flow.closeReadWithError(nil)
                                         readPump?.cancel()
                                         session?.onClientEof()
@@ -1679,29 +1665,21 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         // ── Cycle layout ──────────────────────────────────────────────
         //
-        // Every per-flow Swift object reaches the others via `[weak ctx]`,
-        // so nothing keeps `ctx` alive on its own. The single strong
-        // owner of `ctx` is the egress `NWConnection` (via its
-        // `stateUpdateHandler` capture below), and `ctx` strong-holds
-        // the connection back via `ctx.connection`. That cycle breaks
-        // when the connection reaches `.cancelled` and we clear
-        // `connection.stateUpdateHandler = nil`. Calling cancel() is
-        // therefore the only "release" path — but because every
-        // closure routes through `[weak ctx]`, a missed cancel leaves
-        // a single per-flow context floating, not the writer/terminate/
-        // requestRead retain cycle of the previous design.
-        //
-        // The previous design captured `var writer` / `var requestRead`
-        // / `let terminate` directly, forming a writer ↔ terminate ↔
-        // requestRead retain cycle whenever `terminate` did not run
-        // (idle background UDP, .failed early-exit, missing-remote
-        // guard). `leaks` reproduced this as
-        // `ROOT CYCLE: <UdpClientWritePump>` under the stress harness
-        // (see `stress_test_root_cause_v2.md` §4).
+        // Every per-flow Swift object reaches the others via
+        // `[weak ctx]`, so nothing keeps `ctx` alive on its own. The
+        // single strong owner of `ctx` is the egress `NWConnection`
+        // (via its `stateUpdateHandler`), and `ctx` strong-holds the
+        // connection back via `ctx.connection`. That cycle breaks
+        // when the connection reaches `.cancelled` and the
+        // stateUpdateHandler is cleared. Cancellation is therefore
+        // the only "release" path — but a missed cancel leaves only
+        // a single floating context, not the
+        // writer ↔ terminate ↔ requestRead cycle the previous
+        // capture-list design produced.
 
         ctx.terminate = { [weak self, weak ctx] error in
-            // Re-weak `ctx` for the dispatched body so the nested
-            // closure does not inherit a strong unwrap.
+            // Re-`[weak ctx]` at the nested closure boundary; see
+            // `requestRead` for why.
             flowQueue.async { [weak self, weak ctx] in
                 guard let ctx, !ctx.closed else { return }
                 ctx.closed = true
@@ -1711,14 +1689,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 ctx.connection?.cancel()
                 ctx.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
-                // Do NOT nil ctx.writer / ctx.requestRead / ctx.terminate
-                // here. With every closure capturing `[weak ctx]`, the
-                // graph deallocates naturally once `ctx`'s last strong
-                // holder (the egress connection's stateUpdateHandler)
-                // is released. Clearing them inside `terminate` is
-                // unnecessary and would re-introduce the "must run"
-                // requirement that the structural fix is designed to
-                // remove.
+                // Don't nil ctx.writer / requestRead / terminate
+                // here: every closure captures `[weak ctx]`, so the
+                // graph deallocates naturally once the connection's
+                // stateUpdateHandler releases ctx. Nil-ing them
+                // inside terminate would re-create the "must-run"
+                // requirement this structural design avoids.
             }
         }
 
@@ -1729,14 +1705,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 self?.logFlowMessage(message)
             },
             onTerminalError: { [weak ctx] error in
-                // [weak ctx] forwarder. Capturing the outer
-                // `terminate` strongly here is what created the
-                // writer ↔ terminate retain cycle — the closure we
-                // store on `writer` is a property of `writer`, and
-                // `terminate` reaches `writer` via `ctx.writer`, so
-                // a strong link in either direction closes the
-                // cycle through `ctx`. Routing through
-                // `ctx?.terminate?` keeps both halves weak.
+                // Route through `[weak ctx]` so this closure (held
+                // by the writer) does not strong-capture `terminate`
+                // — terminate transitively reaches the writer via
+                // `ctx.writer`, so a strong link in either direction
+                // would close a writer ↔ terminate cycle.
                 ctx?.terminate?(error)
             }
         )
@@ -1748,11 +1721,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         )
 
         ctx.requestRead = { [weak self, weak ctx] in
-            // Each closure-boundary re-weaks `ctx`. Locally
-            // unwrapping with `guard let ctx` would make the
-            // strong-`ctx` available to nested closures and
-            // re-introduce a strong capture path back through this
-            // chain, defeating the structural break.
+            // Re-`[weak ctx]` at every nested-closure boundary.
+            // A `guard let ctx` here would make `ctx` strong for
+            // every closure further down, re-introducing a strong
+            // capture path back through this chain.
             flowQueue.async { [weak ctx] in
                 guard let ctx, !ctx.closed else { return }
                 ctx.demandPending = true
@@ -1816,14 +1788,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let decision = engine?.newUdpSession(
             meta: bootMeta,
-            // Every Rust-held closure routes through `[weak ctx]`:
-            // pinning the writer / requestRead / terminate strongly
-            // here would resurrect the writer ↔ terminate retain
-            // cycle that motivated putting the per-flow state on
-            // `UdpFlowContext`. The Rust callback box is dropped on
-            // `_session_free`, so once `removeUdpFlow` releases the
-            // session-handle these closures stop firing — no
-            // late-arrival hazard from the weak chain.
+            // Rust-held closures route through `[weak ctx]` so the
+            // callback box (Rust) does not strong-pin the per-flow
+            // pumps. The box is dropped on `_session_free`, so once
+            // `removeUdpFlow` releases the session-handle these
+            // closures stop firing — no late-arrival hazard.
             onServerDatagram: { [weak ctx] data in ctx?.writer?.enqueue(data) },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
@@ -1906,10 +1875,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         connection: connection,
                         session: session,
                         queue: flowQueue,
-                        // [weak ctx] forwarder so the read pump's
-                        // terminal callback doesn't strong-pin
-                        // `terminate` — same anti-cycle pattern as
-                        // the writer's `onTerminalError`.
+                        // Same anti-cycle pattern as the writer's
+                        // `onTerminalError`: weak forwarder so the
+                        // read pump doesn't strong-pin `terminate`.
                         onTerminate: { [weak ctx] error in ctx?.terminate?(error) }
                     )
 

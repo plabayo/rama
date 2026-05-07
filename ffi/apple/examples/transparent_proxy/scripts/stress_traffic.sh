@@ -158,8 +158,8 @@ say "workers up:  $(echo "$WORKER_PIDS" | wc -w | tr -d ' ')"
 # Live progress while we wait. `START_TS` is an epoch-second
 # timestamp; subtract a fresh epoch read to get elapsed seconds.
 # Using bash's built-in `$SECONDS` (which counts from shell start,
-# not from epoch) here underflows into a wildly negative "elapsed"
-# display — that was the broken counter in the v2 stress audit.
+# not from epoch) here underflows the diff into a large negative
+# number.
 while kill -0 $(echo "$WORKER_PIDS" | head -1) 2>/dev/null; do
   ELAPSED=$(( $(date -u +%s) - START_TS ))
   if (( ELAPSED > DURATION )); then break; fi

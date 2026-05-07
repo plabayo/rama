@@ -61,12 +61,12 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
-/// Regression for `stress_test_root_cause_v2.md` §1: same shape as
-/// the TCP version (`tcp_cancel_during_inflight_response_still_fires_on_server_closed`).
-/// `on_client_close` must always fire `on_server_closed` so a Swift
-/// dispatcher can run its terminal cleanup. UDP doesn't have an
-/// in-flight pump to drain, but the close-callback contract is the
-/// same.
+/// `on_client_close` must always fire `on_server_closed` so the
+/// Swift dispatcher can run its terminal cleanup. UDP doesn't have
+/// an in-flight pump to drain like TCP does, but the close-callback
+/// contract is the same — pinned here so a future `callback_active`
+/// gate on the closed-sink can't silently regress it. Mirrors
+/// `tcp_cancel_during_inflight_response_still_fires_on_server_closed`.
 #[test]
 fn udp_on_client_close_still_fires_on_server_closed() {
     let closed_count = Arc::new(AtomicUsize::new(0));
@@ -114,7 +114,7 @@ fn udp_on_client_close_still_fires_on_server_closed() {
     assert_eq!(
         closed_count.load(Ordering::Relaxed),
         1,
-        "on_client_close must still fire on_server_closed exactly once (regression for stress_test_root_cause_v2.md §1)",
+        "on_client_close must still fire on_server_closed exactly once",
     );
 
     engine.stop(0);

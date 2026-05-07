@@ -108,12 +108,10 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
 
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(bytes_count.load(Ordering::Relaxed), 0);
-    // None of these sessions were activated, so no ingress bridge task
-    // ever started — the close-callback path is wired by
-    // `run_tcp_bridge`, which only runs after `activate()`. The pre-
-    // activate cancel just aborts the never-started service task and
-    // returns 0 closes. Activated sessions still fire close exactly
-    // once after cancel — pinned by
+    // None of these sessions were activated, so no ingress bridge
+    // task ever started — `on_server_closed` is wired from
+    // `run_tcp_bridge`, which only runs after `activate()`. The
+    // activated-session contract is pinned by
     // `tcp_cancel_during_inflight_response_still_fires_on_server_closed`.
     assert_eq!(closed_count.load(Ordering::Relaxed), 0);
 
@@ -122,21 +120,15 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     assert!(start.elapsed() < Duration::from_secs(1));
 }
 
-/// Regression for `stress_test_root_cause_v2.md` §1: a `cancel()` that
-/// races against in-flight response bytes must still fire
-/// `on_server_closed`. The dispatcher's writer pump uses that signal
-/// to drain pending bytes via `closeWhenDrained` before closing the
-/// flow's write side; without it, up to ~4 MiB of queued response
-/// bytes plus the NEAppProxyFlow kernel buffer were silently dropped
-/// — which surfaced under stress as truncated downloads (curl
-/// reporting `received 26 MB / 50 MB`) and 30s `--max-time` timeouts.
+/// `cancel()` while a response is still arriving must still fire
+/// `on_server_closed` exactly once — the dispatcher's writer pump
+/// uses that signal to drain pending bytes before closing the
+/// write side, and suppressing it drops queued response bytes plus
+/// the NEAppProxyFlow kernel buffer.
 ///
-/// We model the scenario without Apple by writing a chunked response
-/// from the service, reading the first chunk on the bridge ingress
-/// side, then calling `cancel()` while more chunks are still queued.
-/// Pre-fix this never produced a close callback (the
-/// `guarded_closed_sink` short-circuited on `callback_active = false`);
-/// post-fix it always does.
+/// Modelled without Apple by writing a chunked response from the
+/// service, observing the first chunk on the bridge, then calling
+/// `cancel()` while later chunks are in flight.
 #[test]
 fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
     let closed_count = Arc::new(AtomicUsize::new(0));
@@ -206,7 +198,7 @@ fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
     assert_eq!(
         closed_count.load(Ordering::Relaxed),
         1,
-        "cancel() must still fire on_server_closed exactly once so the Swift writer pump can drain pending bytes (regression for stress_test_root_cause_v2.md §1)",
+        "cancel() must still fire on_server_closed exactly once so the Swift writer pump can drain queued bytes",
     );
 
     engine.stop(0);

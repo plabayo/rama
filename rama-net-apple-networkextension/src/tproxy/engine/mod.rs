@@ -830,9 +830,38 @@ where
     // feature on the inner `tokio::spawn` is replaced by
     // `dial9_tokio_telemetry::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
+    let meta_for_synthetic_close = meta.clone();
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
-            return; // cancelled before activate
+            // Cancelled before `activate`. Emit a synthetic close so
+            // every `record_flow_opened` has a matching close in the
+            // logs / dial9 trace. Mirrors the UDP path.
+            let age_ms =
+                u64::try_from(meta_for_synthetic_close.age().as_millis()).unwrap_or(u64::MAX);
+            tracing::info!(
+                target: "rama_apple_ne::tproxy",
+                flow_id = meta_for_synthetic_close.flow_id,
+                protocol = %meta_for_synthetic_close.protocol,
+                reason = %BridgeCloseReason::Shutdown,
+                age_ms,
+                bytes_received = 0_u64,
+                bytes_sent = 0_u64,
+                pid = meta_for_synthetic_close.source_app_pid,
+                bundle_id = meta_for_synthetic_close.source_app_bundle_identifier.as_deref(),
+                signing_id = meta_for_synthetic_close.source_app_signing_identifier.as_deref(),
+                decision = meta_for_synthetic_close
+                    .intercept_decision
+                    .map(|d| d.to_string()),
+                "transparent proxy tcp flow closed before activate",
+            );
+            #[cfg(feature = "dial9")]
+            crate::tproxy::dial9::record_flow_closed(
+                meta_for_synthetic_close.flow_id,
+                age_ms,
+                0,
+                0,
+            );
+            return;
         };
         // `serve` is `Result<(), Infallible>`; the `let Ok(())` form
         // depends on the `irrefutable_let_patterns` lint rather than
@@ -1396,12 +1425,8 @@ impl<H> TransparentProxyEngine<H> {
 // reintroduces the UAF window.
 //
 // `guarded_closed_sink` is the lone exception: it is a one-shot
-// terminal signal that consumers need to receive even after a hard
-// cancel (Swift's writer pump uses it to drain in-flight bytes via
-// `closeWhenDrained`), and the Swift closure registered for it only
-// touches `[weak …]` captures so a late-arrival call is a no-op
-// rather than a UAF. See the function's own doc for the failure
-// mode that motivated removing the gate (`stress_test_root_cause_v2.md`).
+// terminal signal that consumers need on every close, even after a
+// hard cancel — see its own doc for the rationale.
 
 fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -1420,34 +1445,18 @@ fn guarded_closed_sink(
     _callback_active: Arc<parking_lot::Mutex<bool>>,
     user_closed_sink: ClosedSink,
 ) -> ClosedSink {
-    // One-shot terminal signal: even when `cancel()` flips
-    // `callback_active = false`, the bridge close epilogue MUST still
-    // fire `on_server_closed` so the Swift writer pump's
-    // `closeWhenDrained` runs and drains in-flight bytes before the
-    // write side is closed.
+    // One-shot terminal signal: must fire on every flow close,
+    // including after `cancel()`. Swift's writer pump uses it to
+    // drain queued response bytes before closing the write side;
+    // suppressing it here drops anything still buffered at cancel
+    // time.
     //
-    // Gating this on `callback_active` was the engine-side half of
-    // the truncated-response failure mode (`stress_test_root_cause_v2.md`):
-    // for a curl-style natural-close flow the dispatcher used to call
-    // `session.cancel()`, which flipped the flag; the bridge then
-    // saw `flow_guard.cancelled()` and exited with
-    // `BridgeCloseReason::Shutdown`; the close epilogue's
-    // `on_server_closed` was suppressed here, so up to ~4 MiB of
-    // pump-pending response bytes plus whatever sat in the
-    // NEAppProxyFlow kernel buffer never reached the originating app.
-    // The dispatcher fix (use `on_client_eof()` on natural EOF) is
-    // the primary remediation; dropping this gate makes the engine
-    // self-healing for any future dispatcher that takes the same
-    // shortcut.
-    //
-    // Idempotency / lifetime invariants: `on_server_closed` fires
-    // exactly once per flow at the bridge teardown site, and the
-    // Swift closure only touches `[weak …]` captures (writer / ctx /
-    // self) — so a late-arrival call after `_session_free` is at
-    // worst a no-op, never a UAF. The other guarded sinks
-    // (`guarded_bytes_status_sink`, `guarded_demand_sink`,
-    // `guarded_bytes_sink`) keep the gate; their callers do touch
-    // FFI box state and are the actual UAF risk.
+    // No UAF risk specific to this sink: the registered Swift
+    // closure only touches `[weak …]` captures, so a late-arrival
+    // call after `_session_free` is a no-op rather than a
+    // dereference. The other guarded sinks keep the
+    // `callback_active` gate — their callers do touch FFI box
+    // state.
     user_closed_sink
 }
 
