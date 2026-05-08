@@ -112,7 +112,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     // task ever started — `on_server_closed` is wired from
     // `run_tcp_bridge`, which only runs after `activate()`. The
     // activated-session contract is pinned by
-    // `tcp_cancel_during_inflight_response_still_fires_on_server_closed`.
+    // `tcp_cancel_after_activate_suppresses_close_callback_to_prevent_uaf`.
     assert_eq!(closed_count.load(Ordering::Relaxed), 0);
 
     let start = Instant::now();
@@ -120,20 +120,19 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     assert!(start.elapsed() < Duration::from_secs(1));
 }
 
-/// `cancel()` while a response is still arriving must still fire
-/// `on_server_closed` exactly once — the dispatcher's writer pump
-/// uses that signal to drain pending bytes before closing the
-/// write side, and suppressing it drops queued response bytes plus
-/// the NEAppProxyFlow kernel buffer.
-///
-/// Modelled without Apple by writing a chunked response from the
-/// service, observing the first chunk on the bridge, then calling
-/// `cancel()` while later chunks are in flight.
+/// `cancel()` on an activated session must NOT fire `on_server_closed`.
+/// The mutex-gated `guarded_closed_sink` is the load-bearing piece
+/// that keeps the bridge from dispatching into a Swift FFI thunk
+/// after `_session_free` released the Swift `CallbackBox` — the
+/// thunk reconstructs the box from the raw pointer with
+/// `Unmanaged.fromOpaque(...).takeUnretainedValue()` BEFORE the
+/// closure body runs, so any `[weak …]` self-protection in the
+/// closure body is too late. Routing the close signal around the
+/// gate is a UAF.
 #[test]
-fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
+fn tcp_cancel_after_activate_suppresses_close_callback_to_prevent_uaf() {
     let closed_count = Arc::new(AtomicUsize::new(0));
-    let (saw_first_chunk_tx, saw_first_chunk_rx) = std::sync::mpsc::channel::<()>();
-    let saw_first_chunk_tx = Arc::new(Mutex::new(Some(saw_first_chunk_tx)));
+    let bytes_count = Arc::new(AtomicUsize::new(0));
 
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
@@ -142,17 +141,11 @@ fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
             service: service_fn(
                 |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
                     let BridgeIo(mut ingress, _egress) = bridge;
-                    // Write three response chunks with a small gap so
-                    // the test can guarantee at least one chunk has
-                    // reached the bridge before cancel fires. The
-                    // remaining chunks model the in-flight pump bytes
-                    // that the production bug discarded.
-                    for _ in 0..3 {
-                        if ingress.write_all(b"chunk").await.is_err() {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
+                    // Write enough to put the bridge into a steady
+                    // state then yield indefinitely so cancel races
+                    // against an actively-pumping bridge.
+                    _ = ingress.write_all(b"first-chunk").await;
+                    std::future::pending::<()>().await;
                     Ok(())
                 },
             )
@@ -163,16 +156,12 @@ fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
     let engine = build_engine(handler);
 
     let closed_count_cb = closed_count.clone();
+    let bytes_count_cb = bytes_count.clone();
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
         move |_bytes| {
-            // Notify on the first chunk only; subsequent chunks are
-            // the "in-flight pump bytes" we want to race against
-            // cancel.
-            if let Some(tx) = saw_first_chunk_tx.lock().take() {
-                _ = tx.send(());
-            }
+            bytes_count_cb.fetch_add(1, Ordering::Relaxed);
             TcpDeliverStatus::Accepted
         },
         || {},
@@ -184,12 +173,103 @@ fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
     };
     session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
 
-    saw_first_chunk_rx
-        .recv_timeout(Duration::from_secs(1))
-        .expect("first chunk must reach the bridge before cancel");
+    // Wait until at least one chunk has been delivered, so the
+    // bridge is provably mid-flight when cancel fires.
+    let started = Instant::now();
+    while bytes_count.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(1) {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        bytes_count.load(Ordering::Relaxed) > 0,
+        "service must have written at least one chunk through the bridge before cancel",
+    );
 
     session.cancel();
     drop(session);
+
+    // Give the bridge ample time to attempt firing on_server_closed.
+    // The gate must suppress every call.
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        closed_count.load(Ordering::Relaxed),
+        0,
+        "cancel() must suppress on_server_closed on the FFI lifetime gate; firing it after cancel re-opens the Swift CallbackBox UAF",
+    );
+
+    engine.stop(0);
+}
+
+/// Natural-EOF flow (Swift dispatcher's `on_client_eof()` path)
+/// must fire `on_server_closed` exactly once after the bridge
+/// drains the response direction. This is the contract the
+/// dispatcher relies on to run `closeWhenDrained` on its writer
+/// pump and deliver every queued response byte to the originating
+/// app before closing the write side.
+///
+/// Modelled by activating a session, having the service write a
+/// response and end naturally, signalling client EOF through
+/// `on_client_eof`, then asserting the close callback fires.
+#[test]
+fn tcp_on_client_eof_drains_response_and_fires_close() {
+    let closed_count = Arc::new(AtomicUsize::new(0));
+    let bytes = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+    let bytes_for_handler = bytes.clone();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let _ = bytes_for_handler;
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                        let BridgeIo(mut ingress, _egress) = bridge;
+                        // Drain the client-side EOF, then write the
+                        // response and close. Mirrors a real
+                        // request/response cycle: client sends a
+                        // request, then half-closes; service echoes
+                        // a fixed response.
+                        let mut sink = vec![0_u8; 1024];
+                        while let Ok(n) = ingress.read(&mut sink).await {
+                            if n == 0 {
+                                break;
+                            }
+                        }
+                        _ = ingress.write_all(b"response-body-bytes").await;
+                        Ok(())
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    let closed_count_cb = closed_count.clone();
+    let bytes_cb = bytes.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        move |chunk| {
+            bytes_cb.lock().extend_from_slice(&chunk);
+            TcpDeliverStatus::Accepted
+        },
+        || {},
+        move || {
+            closed_count_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    // Send a request byte so `on_client_eof` takes the
+    // saw-client-bytes branch (drops `client_tx`); without prior
+    // bytes it falls through to `cancel()` and the close becomes
+    // suppressed by the FFI-lifetime gate.
+    _ = session.on_client_bytes(b"request");
+    session.on_client_eof();
 
     let started = Instant::now();
     while closed_count.load(Ordering::Relaxed) == 0 && started.elapsed() < Duration::from_secs(2) {
@@ -198,7 +278,12 @@ fn tcp_cancel_during_inflight_response_still_fires_on_server_closed() {
     assert_eq!(
         closed_count.load(Ordering::Relaxed),
         1,
-        "cancel() must still fire on_server_closed exactly once so the Swift writer pump can drain queued bytes",
+        "natural EOF must fire on_server_closed so the dispatcher can drain its writer pump",
+    );
+    assert_eq!(
+        bytes.lock().as_slice(),
+        b"response-body-bytes",
+        "response bytes must reach the on_server_bytes sink before close fires",
     );
 
     engine.stop(0);

@@ -83,7 +83,7 @@ final class SessionHandleTests: XCTestCase {
             onServerClosed: {}
         )
         guard case .intercept(let session) = decision else {
-            XCTFail("demo handler unexpectedly returned non-intercept; tests assume udp 53 → intercept")
+            XCTFail("demo handler unexpectedly returned non-intercept; tests assume udp 5000 → intercept")
             preconditionFailure()
         }
         return session

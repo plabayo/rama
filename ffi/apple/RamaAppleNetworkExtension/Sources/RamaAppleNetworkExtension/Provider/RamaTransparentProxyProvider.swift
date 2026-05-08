@@ -617,11 +617,14 @@ private final class UdpClientWritePump {
     /// Each pending entry pairs a reply datagram with the
     /// `sentBy` endpoint to use for `flow.writeDatagrams`. Capturing
     /// the endpoint AT ENQUEUE TIME (instead of reading the latest
-    /// `sentByEndpoint` at flush time) means a queued reply uses the
-    /// peer that was current when the reply arrived, not whatever
-    /// peer the app last spoke to. Matters when the queue + a peer
-    /// change race or when readDatagrams returns a multi-endpoint
-    /// batch.
+    /// `sentByEndpoint` at flush time) means a queued reply still
+    /// uses the peer that was current when the reply was produced
+    /// even if a later `setSentByEndpoint` call has shifted the
+    /// active peer in the meantime — fixes a queue-vs-peer-change
+    /// race, but does NOT change the single-peer assumption (see
+    /// `sentByEndpoint`): a multi-peer read batch is still collapsed
+    /// to its first endpoint at the read site, so queued replies
+    /// produced from that batch carry only that single endpoint.
     private var pending: [(Data, NWEndpoint?)] = []
     private var writing = false
     private var closed = false

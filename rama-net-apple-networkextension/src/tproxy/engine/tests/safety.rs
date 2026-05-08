@@ -248,8 +248,19 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
             // on the first burst. We rely on `on_client_datagram` to
             // keep pumping demand so Swift eventually issues another
             // `readDatagrams` once the consumer drains.
+            //
+            // The bridge MUST be moved into the future and held — an
+            // `async move` only captures names referenced in its
+            // body, so a `|_bridge| async move { pending().await }`
+            // shape would drop `_bridge` (and therefore the
+            // ingress mpsc receiver) at the end of the closure call,
+            // closing the client channel underneath us in a
+            // worker-vs-test-thread race. Real services keep bridge
+            // alive by actually using it; the test mimics that with
+            // an explicit hold.
             service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                    let _hold = bridge;
                     std::future::pending::<Result<(), Infallible>>().await
                 },
             )
@@ -340,13 +351,14 @@ fn udp_on_client_close_runs_service_close_epilogue() {
     // synthetic-close branch instead.
     std::thread::sleep(Duration::from_millis(20));
 
-    // Observe the service task ran to completion (close epilogue
-    // emitted the dial9 / tracing event and fired closed_sink) by
-    // waiting for `engine.stop()` to drain — if the task were
-    // detached without shutdown observation, stop() would block on
-    // its flow_guard. The closed_sink itself runs unconditionally
-    // (it's intentionally not gated by `callback_active` — see
-    // `guarded_closed_sink`).
+    // The closed_sink is the user-supplied callback, but it's
+    // routed through `guarded_closed_sink(callback_active, ...)`.
+    // `on_client_close` flips `callback_active` *before* signalling
+    // shutdown, so the user closure won't run. We instead observe
+    // that the service task ran to completion (close epilogue
+    // emitted the dial9 / tracing event) by waiting for
+    // `engine.stop()` to drain — if the task were detached without
+    // shutdown observation, stop() would block on its flow_guard.
     session.on_client_close();
     drop(session);
 

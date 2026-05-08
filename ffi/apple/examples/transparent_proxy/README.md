@@ -351,7 +351,7 @@ STRESS_LARGE_BYTES=$((64 * 1024 * 1024)) just stress-traffic   # 64 MiB GET
 ```
 
 To couple the run with periodic resource sampling of the extension
-process, hand the script the sysext PID via `MONITOR_PID`:
+process, hand the script the sysext PID via `STRESS_MONITOR_PID`:
 
 ```sh
 STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \

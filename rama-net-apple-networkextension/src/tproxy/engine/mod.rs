@@ -690,7 +690,21 @@ impl TransparentProxyTcpSession {
         });
 
         // deliver BridgeIo to the waiting service task
-        _ = bridge_tx.send(BridgeIo(ingress_stream, egress_stream));
+        if bridge_tx
+            .send(BridgeIo(ingress_stream, egress_stream))
+            .is_err()
+        {
+            // Same situation as the UDP path: service task ended
+            // before activate (parent_guard cancelled, panic). The
+            // BridgeIo we built is dropped on send failure, which
+            // closes the per-flow ingress / egress channels —
+            // subsequent `on_client_bytes` etc. will report
+            // `Closed`.
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                "tcp activate: bridge_tx.send dropped — service task ended before activate",
+            );
+        }
     }
 
     pub fn cancel(&mut self) {
@@ -709,8 +723,19 @@ impl TransparentProxyTcpSession {
         //      epilogue for dial9 / tracing); abort the service task
         //      as a fallback for user code wedged outside bridge IO.
         *self.callback_active.lock() = false;
-        if let Some(tx) = self.flow_stop_tx.take() {
-            _ = tx.send(());
+        // The receiver lives inside `flow_shutdown`'s inner future
+        // and is dropped only when that future ends — which itself
+        // only ends when this `send(())` or the parent guard
+        // fires. Send-then-Err therefore means "engine-level
+        // shutdown raced ahead of this cancel"; trace-log so a
+        // future "cancel did nothing" mystery has a breadcrumb.
+        if let Some(tx) = self.flow_stop_tx.take()
+            && tx.send(()).is_err()
+        {
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                "tcp cancel: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
+            );
         }
         self.server_write_notify.notify_one();
         if let Some(notify) = &self.egress_write_notify {
@@ -1005,8 +1030,13 @@ impl TransparentProxyUdpSession {
         // `record_flow_closed`, `closed_sink()`) before returning.
         // Dropping `flow_stop_tx` triggers `flow_shutdown`'s inner
         // future to complete via the `flow_stop_rx` arm.
-        if let Some(tx) = self.flow_stop_tx.take() {
-            _ = tx.send(());
+        if let Some(tx) = self.flow_stop_tx.take()
+            && tx.send(()).is_err()
+        {
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                "udp on_client_close: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
+            );
         }
         // Drop senders so the bridge IO sees EOF.
         self.client_tx = None;
@@ -1047,7 +1077,18 @@ impl TransparentProxyUdpSession {
             return;
         }
         if let Some(tx) = self.egress_tx.as_mut() {
-            _ = tx.try_send(Bytes::copy_from_slice(bytes));
+            // `Full` is expected and silent: drop-on-full is the
+            // documented UDP semantics. `Closed` is unexpected and
+            // worth a breadcrumb — it means the bridge's egress
+            // receiver was already gone when this datagram landed
+            // (service teardown raced ahead of egress reads, or the
+            // service dropped its bridge half).
+            if let Err(TrySendError::Closed(_)) = tx.try_send(Bytes::copy_from_slice(bytes)) {
+                tracing::debug!(
+                    target: "rama_apple_ne::tproxy",
+                    "udp on_egress_datagram: egress channel closed; dropping datagram",
+                );
+            }
         }
     }
 
@@ -1111,7 +1152,25 @@ impl TransparentProxyUdpSession {
 
         tracing::debug!(protocol = ?protocol, "udp session activated");
 
-        _ = bridge_tx.send(BridgeIo(ingress_flow, egress_socket));
+        if bridge_tx
+            .send(BridgeIo(ingress_flow, egress_socket))
+            .is_err()
+        {
+            // The service task receives via `bridge_rx` exactly once.
+            // If we get here it means the task ended before activate
+            // ran — `parent_guard` cancelled (engine shutting down)
+            // or the task panicked. Either way the BridgeIo we just
+            // built (with the ingress flow's mpsc receiver inside)
+            // is dropped on send failure, which closes the
+            // client-ingress channel from the receiver side. Log so
+            // a future "everything in this flow returns Closed"
+            // mystery has a breadcrumb.
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                protocol = ?protocol,
+                "udp activate: bridge_tx.send dropped — service task ended before activate; per-flow ingress channel will report Closed",
+            );
+        }
     }
 }
 
@@ -1424,9 +1483,18 @@ impl<H> TransparentProxyEngine<H> {
 // the whole closure body — `let _ = lock()` drops immediately and
 // reintroduces the UAF window.
 //
-// `guarded_closed_sink` is the lone exception: it is a one-shot
-// terminal signal that consumers need on every close, even after a
-// hard cancel — see its own doc for the rationale.
+// Why a `Mutex<bool>` rather than an `AtomicBool`. We need TWO
+// invariants: (1) reads of the flag observe the latest write, and
+// (2) `cancel()` only proceeds once any in-flight closure dispatch
+// has finished. (1) alone is what an `AtomicBool` gives you; (2) is
+// what makes the FFI-box release race-free, and it requires the
+// closure body to run inside a critical section that excludes the
+// flag flip. `AtomicBool` plus an "after the load, dispatch the
+// closure" pattern leaks: the load can return `true`, `cancel()`
+// can run + release the box, the closure then dereferences a freed
+// pointer. The mutex makes "in-flight closure" and "flag flipped"
+// mutually exclusive, which is the property we actually need.
+//
 
 fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -1442,22 +1510,37 @@ fn guarded_bytes_status_sink(
 }
 
 fn guarded_closed_sink(
-    _callback_active: Arc<parking_lot::Mutex<bool>>,
+    callback_active: Arc<parking_lot::Mutex<bool>>,
     user_closed_sink: ClosedSink,
 ) -> ClosedSink {
-    // One-shot terminal signal: must fire on every flow close,
-    // including after `cancel()`. Swift's writer pump uses it to
-    // drain queued response bytes before closing the write side;
-    // suppressing it here drops anything still buffered at cancel
-    // time.
+    // The mutex gate is load-bearing for FFI box lifetime: the
+    // user closure's first act is to dispatch through the C
+    // function pointer registered by Swift, which reconstructs the
+    // Swift `CallbackBox` from the raw `*mut c_void` we hold via
+    // `Unmanaged.fromOpaque(ptr).takeUnretainedValue()`. If
+    // `_session_free` ran and Swift's `callbackBox.release()`
+    // dropped the box's last retain, that reconstruction is a
+    // use-after-free regardless of what the closure body does
+    // afterwards (so the "closure only touches `[weak …]`
+    // captures" property of the dispatcher's Swift side is
+    // necessary but not sufficient).
     //
-    // No UAF risk specific to this sink: the registered Swift
-    // closure only touches `[weak …]` captures, so a late-arrival
-    // call after `_session_free` is a no-op rather than a
-    // dereference. The other guarded sinks keep the
-    // `callback_active` gate — their callers do touch FFI box
-    // state.
-    user_closed_sink
+    // Serialisation contract: `cancel()` locks this same mutex to
+    // flip the flag to false, so an in-flight closure either
+    // finishes before cancel observes the lock (box still alive)
+    // or short-circuits on the flag check (box pointer never
+    // touched). The truncated-response failure mode that motivated
+    // looking at this gate is fixed on the dispatcher side
+    // (natural EOF goes through `on_client_eof` rather than
+    // `cancel`); routing the close signal around the gate would
+    // re-open the UAF.
+    Arc::new(move || {
+        let active = callback_active.lock();
+        if !*active {
+            return;
+        }
+        user_closed_sink();
+    })
 }
 
 fn guarded_demand_sink(

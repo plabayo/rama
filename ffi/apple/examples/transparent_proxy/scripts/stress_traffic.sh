@@ -60,17 +60,45 @@ trap 'kill $(jobs -p) 2>/dev/null || true' EXIT INT TERM
 
 # ── Worker primitives ─────────────────────────────────────────────────
 
-# Run `curl_args …` against `target` until DURATION elapses.
-# stdout: one numeric http_code (or `--`) per request.
+# `curl` exits 0 on HTTP 4xx/5xx by default and on a `000` connect
+# failure when you set `--write-out` without `--fail`. The harness
+# is a stress sentinel — every non-2xx outcome is a real signal,
+# not a "soft" success. Pass `--fail-with-body` everywhere so curl
+# exits non-zero on >= 400, and check the captured status code
+# explicitly so we count `000` (connection refused / TLS failure /
+# upstream timeout — all of which `--fail-with-body` does NOT
+# catch) as fail too.
+http_status_is_ok() {
+  # Empty / `000` / 4xx / 5xx → fail. Otherwise → ok.
+  local code="$1"
+  case "$code" in
+    "" | 000 | 4?? | 5??) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Run a single curl + classify. Echos the `%{http_code}` to the
+# log and returns 0 only when the response was a 2xx/3xx.
+do_one_curl() {
+  local label="$1" target="$2"; shift 2
+  # `--max-time` covers transport hangs; `--fail-with-body` makes
+  # curl exit non-zero on 4xx/5xx (and still capture the body).
+  local code
+  code=$(curl --silent --show-error --output /dev/null \
+      --max-time 30 \
+      --fail-with-body \
+      --write-out '%{http_code}' \
+      "$@" "$target" 2>>"$LOG_DIR/${label}.log") || true
+  printf '%s\n' "$code" >>"$LOG_DIR/${label}.log"
+  http_status_is_ok "$code"
+}
+
+# Run sequential curls until DURATION elapses.
 loop_http() {
   local label="$1" target="$2"; shift 2
   local end=$((SECONDS + DURATION)) iter=0 ok=0 fail=0
   while (( SECONDS < end )); do
-    if curl --silent --show-error --output /dev/null \
-        --max-time 30 \
-        --write-out '%{http_code}\n' \
-        "$@" "$target" >>"$LOG_DIR/${label}.log" 2>&1
-    then
+    if do_one_curl "$label" "$target" "$@"; then
       ok=$((ok+1))
     else
       fail=$((fail+1))
@@ -81,21 +109,35 @@ loop_http() {
     >"$LOG_DIR/${label}.summary"
 }
 
-# Many curls in parallel via xargs. Each sub-curl logs its result line.
+# Many curls in parallel via xargs. Each sub-curl logs its result
+# line and exits non-zero on failure. We count fails by grepping
+# the per-worker log for failure markers at summary time, so the
+# pool worker matches `loop_http`'s ok/fail accounting.
 loop_pool() {
   local label="$1" target="$2"; shift 2
   local end=$((SECONDS + DURATION)) iter=0
+  # Per-request lines look like: `<http_code> <time>s`. Failures
+  # have code `000` / 4xx / 5xx, or curl prints `curl: (NN)` to
+  # stderr (which `2>&1` redirects into the same log).
   while (( SECONDS < end )); do
     seq 1 "$CONCURRENCY" \
       | xargs -P "$CONCURRENCY" -I{} \
         curl --silent --show-error --output /dev/null \
           --max-time 30 \
+          --fail-with-body \
           --write-out '%{http_code} %{time_total}s\n' \
           "$@" "$target" \
-          >>"$LOG_DIR/${label}.log" 2>&1
+          >>"$LOG_DIR/${label}.log" 2>&1 || true
     iter=$((iter + CONCURRENCY))
   done
-  printf '%s done: total_requests=%d\n' "$label" "$iter" \
+  # Count any line whose first token is empty / 000 / 4xx / 5xx,
+  # plus any `curl: (NN)` stderr line. Same predicate as the
+  # final-summary scan below.
+  local fail
+  fail=$(grep -cE '^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) ' \
+    "$LOG_DIR/${label}.log" 2>/dev/null || echo 0)
+  local ok=$((iter - fail))
+  printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
 }
 
@@ -180,12 +222,17 @@ done
 
 if compgen -G "$LOG_DIR/*.log" >/dev/null; then
   hdr "errors per worker (top 5)"
+  # Match: `000` (transport failure, no HTTP layer reached), any
+  # 4xx/5xx, or a `curl: (NN)` stderr line. The previous regex
+  # `0$` matched a literal "0" only and silently dropped `000`
+  # codes from the count.
+  err_re='^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) '
   for f in "$LOG_DIR"/*.log; do
     name=$(basename "$f" .log)
-    err_count=$(grep -cE '^(curl: |[045][0-9]{2}|0$)' "$f" 2>/dev/null || echo 0)
+    err_count=$(grep -cE "$err_re" "$f" 2>/dev/null || echo 0)
     if (( err_count > 0 )); then
       printf '%s: %d non-2xx / curl errors\n' "$name" "$err_count"
-      grep -E '^(curl: |[045][0-9]{2}|0$)' "$f" | head -5 | sed 's/^/  /'
+      grep -E "$err_re" "$f" | head -5 | sed 's/^/  /'
     fi
   done
 fi
