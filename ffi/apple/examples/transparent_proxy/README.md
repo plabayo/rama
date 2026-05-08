@@ -360,11 +360,9 @@ STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   just stress-traffic
 ```
 
-For a maximally diagnostic run, capture the system log alongside
-and pass it via `STRESS_NDJSON` so the post-run summary prints a
-close-reason histogram (the smoking-gun signal from
-`stress_test_root_cause_v2.md` — pre-fix curl flows showed ~89%
-`reason=shutdown`; post-fix should be dominantly `peer_eof_*`):
+For a more diagnostic run, capture the system log alongside the
+stress run and pass it via `STRESS_NDJSON` so the summary prints a
+close-reason histogram:
 
 ```sh
 # Cache a sudo timestamp first so the script can capture
@@ -378,15 +376,11 @@ STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
 
 # After the run, capture the system log for the same window:
 sudo log show \
-  --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
-                      (subsystem == "com.apple.networkextension") || \
-                      (subsystem == "com.apple.network")' \
+  --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR subsystem == "com.apple.network"' \
   --info --debug \
   --start "$START" --style ndjson > /tmp/system.ndjson
 
-# Re-run the script with STRESS_NDJSON to print the histogram
-# without re-running the workers (set STRESS_DURATION=0 if you
-# only want the analysis pass):
+# Re-run the script in analysis-only mode:
 STRESS_NDJSON=/tmp/system.ndjson STRESS_DURATION=0 just stress-traffic
 sudo leaks $(pgrep -f org.ramaproxy.example.tproxy.dev.provider) | head -50
 ```
@@ -397,8 +391,6 @@ on exit:
 - per-worker `iters / ok / fail` summary
 - top-5 errors per worker (4xx/5xx, `000` transport failures, curl errors)
 - truncation scan: `curl: ... N out of M bytes received` lines
-  (the customer-visible symptom of the close-sink truncation bug —
-  zero hits is the success signal)
 - pre/post `vmmap`+`heap` snapshot if `STRESS_MONITOR_PID` was set
 - close-reason histogram if `STRESS_NDJSON` points at a captured
   system log
