@@ -439,6 +439,21 @@ protocol TcpFlowWritable: AnyObject {
 }
 extension NEAppProxyTCPFlow: TcpFlowWritable {}
 
+/// Cross-thread state of `TcpClientWritePump`. Reachable only via
+/// `Locked.withLock` so the closed-flag / byte-budget / drain-signal
+/// triple is always read and updated as one consistent snapshot.
+struct TcpWriterState {
+    var closed: Bool = false
+    /// Sum of bytes currently queued OR in-flight on the writer.
+    /// Source of truth for backpressure decisions.
+    var pendingBytes: Int = 0
+    /// Set when an `enqueue` returned `.paused`. We fire `onDrained`
+    /// on the first removal that drops `pendingBytes` below the cap,
+    /// then clear — edge-triggered so we never spam Rust with
+    /// redundant drain signals while the queue churns at-cap.
+    var pausedSignaled: Bool = false
+}
+
 final class TcpClientWritePump {
     private let flow: TcpFlowWritable
     private let logger: (FlowLogMessage) -> Void
@@ -450,23 +465,14 @@ final class TcpClientWritePump {
     private let onDrained: () -> Void
     private let queue: DispatchQueue
 
-    /// Cross-thread state. `enqueue` is called from a Tokio worker; the
-    /// rest of the pump runs on `queue`. The lock keeps the
-    /// "is the pump still alive + has it reached its byte budget"
-    /// answer cheap and consistent for the FFI fast path so it can
-    /// return synchronously without dispatching onto the serial queue
-    /// (a sync hop from an async runtime worker is a foot-gun: any
-    /// stall on the queue stalls a worker thread).
-    private let stateLock = NSLock()
-    private var lockedClosed = false
-    /// Sum of bytes currently queued OR in-flight on the writer.
-    /// Source of truth for backpressure decisions.
-    private var lockedPendingBytes: Int = 0
-    /// Set when an `enqueue` returned `.paused`. We fire `onDrained` on
-    /// the first removal that drops `pendingBytes` below the cap, then
-    /// clear — edge-triggered so we never spam Rust with redundant
-    /// drain signals while the queue churns at-cap.
-    private var lockedPausedSignaled = false
+    /// Cross-thread state. `enqueue` is called from a Tokio worker;
+    /// the rest of the pump runs on `queue`. Wrapping in `Locked`
+    /// keeps the "is the pump still alive + has it reached its byte
+    /// budget" answer cheap and consistent for the FFI fast path so
+    /// it can return synchronously without dispatching onto the
+    /// serial queue (a sync hop from an async runtime worker is a
+    /// foot-gun: any stall on the queue stalls a worker thread).
+    private let state = Locked(TcpWriterState())
 
     // Queue-only state — only read/written on `queue`.
     private var pending: [Data] = []
@@ -499,7 +505,7 @@ final class TcpClientWritePump {
     func markOpened() {
         queue.async { [weak self] in
             guard let self else { return }
-            if self.isClosedLocked() { return }
+            if self.isClosed() { return }
             self.opened = true
             self.flushLocked()
         }
@@ -529,34 +535,34 @@ final class TcpClientWritePump {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
-        stateLock.lock()
-        if lockedClosed {
-            stateLock.unlock()
-            return .closed
+        let decision: RamaTcpDeliverStatusBridge = state.withLock { s in
+            if s.closed { return .closed }
+            // First chunk through unconditionally — an oversized
+            // single chunk (larger than the cap) must not deadlock
+            // the bridge.
+            if s.pendingBytes > 0
+                && s.pendingBytes + data.count > writePumpMaxPendingBytes
+            {
+                s.pausedSignaled = true
+                return .paused
+            }
+            s.pendingBytes += data.count
+            return .accepted
         }
-        // First chunk through unconditionally — an oversized single
-        // chunk (larger than the cap) must not deadlock the bridge.
-        if lockedPendingBytes > 0
-            && lockedPendingBytes + data.count > writePumpMaxPendingBytes
-        {
-            lockedPausedSignaled = true
-            stateLock.unlock()
-            return .paused
-        }
-        lockedPendingBytes += data.count
-        stateLock.unlock()
+        guard decision == .accepted else { return decision }
 
         queue.async { [weak self] in
             guard let self else { return }
             // Re-check under lock; cancel() can have flipped the flag
             // between the FFI fast-path return and this dispatch.
-            self.stateLock.lock()
-            let closed = self.lockedClosed
-            if closed {
-                self.lockedPendingBytes -= data.count
+            let stillOpen: Bool = self.state.withLock { s in
+                if s.closed {
+                    s.pendingBytes -= data.count
+                    return false
+                }
+                return true
             }
-            self.stateLock.unlock()
-            if closed { return }
+            guard stillOpen else { return }
             self.pending.append(data)
             self.flushLocked()
         }
@@ -566,7 +572,7 @@ final class TcpClientWritePump {
     func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
-            if self.isClosedLocked() {
+            if self.isClosed() {
                 onDrainedClose(self.opened)
                 return
             }
@@ -581,28 +587,33 @@ final class TcpClientWritePump {
     /// then schedules queue-side cleanup. Required because the Rust
     /// bridge may have already torn down while the writer is still
     /// looping on transient errors against a dying flow.
+    ///
+    /// If a `closeWhenDrained` completion was registered, it fires
+    /// with `wasOpened = false` so the dispatcher's teardown chain
+    /// always resolves. Without this, a `cancel()` after
+    /// `closeWhenDrained` would leave the completion pending forever.
     func cancel() {
-        stateLock.lock()
-        lockedClosed = true
-        lockedPendingBytes = 0
-        stateLock.unlock()
+        state.withLock { s in
+            s.closed = true
+            s.pendingBytes = 0
+        }
         queue.async { [weak self] in
             guard let self else { return }
             self.pending.removeAll(keepingCapacity: false)
-            self.onDrainedClose = nil
             self.retryDeadlineAt = nil
+            let onDrainedClose = self.onDrainedClose
+            let wasOpened = self.opened
+            self.onDrainedClose = nil
+            onDrainedClose?(wasOpened)
         }
     }
 
-    private func isClosedLocked() -> Bool {
-        stateLock.lock()
-        let c = lockedClosed
-        stateLock.unlock()
-        return c
+    private func isClosed() -> Bool {
+        state.withLock { $0.closed }
     }
 
     private func flushLocked() {
-        if isClosedLocked() {
+        if isClosed() {
             return
         }
         if writing || pending.isEmpty || !opened {
@@ -613,14 +624,14 @@ final class TcpClientWritePump {
         writing = true
         let chunk = pending.removeFirst()
 
-        var fireDrain = false
-        stateLock.lock()
-        lockedPendingBytes -= chunk.count
-        if lockedPausedSignaled && lockedPendingBytes < writePumpMaxPendingBytes {
-            lockedPausedSignaled = false
-            fireDrain = true
+        let fireDrain: Bool = state.withLock { s in
+            s.pendingBytes -= chunk.count
+            if s.pausedSignaled && s.pendingBytes < writePumpMaxPendingBytes {
+                s.pausedSignaled = false
+                return true
+            }
+            return false
         }
-        stateLock.unlock()
         if fireDrain {
             // Edge-triggered drain signal — wakes Rust before the
             // current write completes so it can start producing in
@@ -660,9 +671,7 @@ final class TcpClientWritePump {
                             return
                         }
                         self.pending.insert(chunk, at: 0)
-                        self.stateLock.lock()
-                        self.lockedPendingBytes += chunk.count
-                        self.stateLock.unlock()
+                        self.state.withLock { $0.pendingBytes += chunk.count }
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
                         self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
@@ -674,7 +683,7 @@ final class TcpClientWritePump {
                         classifyFlowCallbackError(
                             error,
                             operation: "tcp flow.write",
-                            isClosing: self.isClosedLocked()
+                            isClosing: self.isClosed()
                         )
                     )
                     self.terminateLocked(with: error)
@@ -691,11 +700,12 @@ final class TcpClientWritePump {
     /// the lock so any concurrent FFI `enqueue` on another thread sees
     /// the shutdown and returns `.closed` without touching the queue.
     private func terminateLocked(with error: Error) {
-        stateLock.lock()
-        let alreadyClosed = lockedClosed
-        lockedClosed = true
-        lockedPendingBytes = 0
-        stateLock.unlock()
+        let alreadyClosed: Bool = state.withLock { s in
+            let wasClosed = s.closed
+            s.closed = true
+            s.pendingBytes = 0
+            return wasClosed
+        }
         if alreadyClosed { return }
         closeRequested = true
         pending.removeAll(keepingCapacity: false)
@@ -710,10 +720,11 @@ final class TcpClientWritePump {
 
     private func finishCloseIfDrainedLocked() {
         guard closeRequested, !writing, pending.isEmpty else { return }
-        stateLock.lock()
-        let alreadyClosed = lockedClosed
-        if !alreadyClosed { lockedClosed = true }
-        stateLock.unlock()
+        let alreadyClosed: Bool = state.withLock { s in
+            let wasClosed = s.closed
+            if !wasClosed { s.closed = true }
+            return wasClosed
+        }
         if alreadyClosed { return }
         let onDrainedClose = self.onDrainedClose
         let wasOpened = self.opened
@@ -1126,13 +1137,9 @@ private final class NwTcpConnectionWritePump {
     private let onDrained: () -> Void
     private let queue: DispatchQueue
 
-    /// See `TcpClientWritePump.stateLock` for why these fields live
-    /// behind a lock instead of on the queue: the FFI bound check
-    /// must complete without dispatching onto the serial queue.
-    private let stateLock = NSLock()
-    private var lockedClosed = false
-    private var lockedPendingBytes: Int = 0
-    private var lockedPausedSignaled = false
+    /// See `TcpClientWritePump.state` for why this is a `Locked<…>`
+    /// rather than a free-standing lock + ivars.
+    private let state = Locked(TcpWriterState())
 
     private var pending: [Data] = []
     private var writing = false
@@ -1153,30 +1160,29 @@ private final class NwTcpConnectionWritePump {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
-        stateLock.lock()
-        if lockedClosed {
-            stateLock.unlock()
-            return .closed
+        let decision: RamaTcpDeliverStatusBridge = state.withLock { s in
+            if s.closed { return .closed }
+            if s.pendingBytes > 0
+                && s.pendingBytes + data.count > writePumpMaxPendingBytes
+            {
+                s.pausedSignaled = true
+                return .paused
+            }
+            s.pendingBytes += data.count
+            return .accepted
         }
-        if lockedPendingBytes > 0
-            && lockedPendingBytes + data.count > writePumpMaxPendingBytes
-        {
-            lockedPausedSignaled = true
-            stateLock.unlock()
-            return .paused
-        }
-        lockedPendingBytes += data.count
-        stateLock.unlock()
+        guard decision == .accepted else { return decision }
 
         queue.async { [weak self] in
             guard let self else { return }
-            self.stateLock.lock()
-            let closed = self.lockedClosed
-            if closed {
-                self.lockedPendingBytes -= data.count
+            let stillOpen: Bool = self.state.withLock { s in
+                if s.closed {
+                    s.pendingBytes -= data.count
+                    return false
+                }
+                return true
             }
-            self.stateLock.unlock()
-            if closed { return }
+            guard stillOpen else { return }
             self.pending.append(data)
             self.flush()
         }
@@ -1186,17 +1192,17 @@ private final class NwTcpConnectionWritePump {
     func closeWhenDrained() {
         queue.async { [weak self] in
             guard let self else { return }
-            if self.isClosedLocked() { return }
+            if self.isClosed() { return }
             self.closeRequested = true
             self.finishCloseIfDrained()
         }
     }
 
     func cancel() {
-        stateLock.lock()
-        lockedClosed = true
-        lockedPendingBytes = 0
-        stateLock.unlock()
+        state.withLock { s in
+            s.closed = true
+            s.pendingBytes = 0
+        }
         queue.async { [weak self] in
             guard let self else { return }
             self.pending.removeAll(keepingCapacity: false)
@@ -1204,27 +1210,24 @@ private final class NwTcpConnectionWritePump {
         }
     }
 
-    private func isClosedLocked() -> Bool {
-        stateLock.lock()
-        let c = lockedClosed
-        stateLock.unlock()
-        return c
+    private func isClosed() -> Bool {
+        state.withLock { $0.closed }
     }
 
     private func flush() {
-        if isClosedLocked() { return }
+        if isClosed() { return }
         guard !writing, !pending.isEmpty else { return }
         writing = true
         let chunk = pending.removeFirst()
 
-        var fireDrain = false
-        stateLock.lock()
-        lockedPendingBytes -= chunk.count
-        if lockedPausedSignaled && lockedPendingBytes < writePumpMaxPendingBytes {
-            lockedPausedSignaled = false
-            fireDrain = true
+        let fireDrain: Bool = state.withLock { s in
+            s.pendingBytes -= chunk.count
+            if s.pausedSignaled && s.pendingBytes < writePumpMaxPendingBytes {
+                s.pausedSignaled = false
+                return true
+            }
+            return false
         }
-        stateLock.unlock()
         if fireDrain { onDrained() }
 
         connection.send(content: chunk, completion: .contentProcessed({ [weak self] error in
@@ -1242,9 +1245,7 @@ private final class NwTcpConnectionWritePump {
                             return
                         }
                         self.pending.insert(chunk, at: 0)
-                        self.stateLock.lock()
-                        self.lockedPendingBytes += chunk.count
-                        self.stateLock.unlock()
+                        self.state.withLock { $0.pendingBytes += chunk.count }
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
                         self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
@@ -1264,11 +1265,12 @@ private final class NwTcpConnectionWritePump {
     }
 
     private func terminateLocked() {
-        stateLock.lock()
-        let alreadyClosed = lockedClosed
-        lockedClosed = true
-        lockedPendingBytes = 0
-        stateLock.unlock()
+        let alreadyClosed: Bool = state.withLock { s in
+            let wasClosed = s.closed
+            s.closed = true
+            s.pendingBytes = 0
+            return wasClosed
+        }
         if alreadyClosed { return }
         closeRequested = true
         pending.removeAll(keepingCapacity: false)
@@ -1277,10 +1279,11 @@ private final class NwTcpConnectionWritePump {
 
     private func finishCloseIfDrained() {
         guard closeRequested, !writing, pending.isEmpty else { return }
-        stateLock.lock()
-        let alreadyClosed = lockedClosed
-        if !alreadyClosed { lockedClosed = true }
-        stateLock.unlock()
+        let alreadyClosed: Bool = state.withLock { s in
+            let wasClosed = s.closed
+            if !wasClosed { s.closed = true }
+            return wasClosed
+        }
         if alreadyClosed { return }
         connection.send(
             content: nil, isComplete: true,

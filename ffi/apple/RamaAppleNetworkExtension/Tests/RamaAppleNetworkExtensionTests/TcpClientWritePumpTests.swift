@@ -50,6 +50,19 @@ private func nonTransientError() -> Error {
     NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))
 }
 
+private final class NSLock_Counter {
+    private let lock = NSLock()
+    private var _value = 0
+    func increment() {
+        lock.lock(); defer { lock.unlock() }
+        _value += 1
+    }
+    var value: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _value
+    }
+}
+
 final class TcpClientWritePumpTests: XCTestCase {
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "rama.tproxy.test.writer", qos: .utility)
@@ -197,6 +210,74 @@ final class TcpClientWritePumpTests: XCTestCase {
         // After the oversize chunk is queued we should pause additions.
         let secondary = Data(repeating: 0xBB, count: 64)
         XCTAssertEqual(pump.enqueue(secondary), .paused)
+    }
+
+    /// `cancel()` racing with an in-progress `closeWhenDrained` must
+    /// still resolve cleanly: the drain completion fires exactly
+    /// once, and the cancel side observes the same closed state. A
+    /// reordering bug here would either double-fire the completion
+    /// (free-after-fire on the dispatcher side) or leave it pending
+    /// forever (dispatcher's teardown chain never runs).
+    func testCancelRacingCloseWhenDrainedResolvesOnce() {
+        let flow = MockTcpFlow()
+        // Stage one transient retry, then succeed — gives `cancel`
+        // and `closeWhenDrained` a real timing window to interleave.
+        flow.handler = { idx, _ in idx < 2 ? transientENOBUFS() : nil }
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: makeQueue(),
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {}
+        )
+        pump.markOpened()
+        XCTAssertEqual(pump.enqueue(Data([0x01])), .accepted)
+
+        let drained = expectation(description: "closeWhenDrained completion fires once")
+        let drainFireCount = NSLock_Counter()
+        pump.closeWhenDrained { _ in
+            drainFireCount.increment()
+            drained.fulfill()
+        }
+        // Race: cancel() shortly after closeWhenDrained, while the
+        // first retry attempt is still mid-backoff.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(2)) {
+            pump.cancel()
+        }
+        wait(for: [drained], timeout: 2.0)
+        // Give any rogue late-fire 100ms to expose itself.
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(
+            drainFireCount.value, 1,
+            "closeWhenDrained completion fired \(drainFireCount.value) times — should be exactly once"
+        )
+    }
+
+    /// `markOpened` after `cancel` must be a no-op. Without the
+    /// closed-flag check, a late `markOpened` would re-open the
+    /// pump and start writing pending bytes against a flow the
+    /// dispatcher already considers dead.
+    func testMarkOpenedAfterCancelIsNoop() {
+        let flow = MockTcpFlow()
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: makeQueue(),
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {}
+        )
+        // Enqueue BEFORE markOpened — chunk sits in pending.
+        XCTAssertEqual(pump.enqueue(Data([0x01, 0x02, 0x03])), .accepted)
+        pump.cancel()
+        // Subsequent enqueue must report .closed.
+        XCTAssertEqual(pump.enqueue(Data([0x04])), .closed)
+
+        pump.markOpened()  // would have triggered flush before fix
+        Thread.sleep(forTimeInterval: 0.1)
+        XCTAssertEqual(
+            flow.writeCount, 0,
+            "no flow.write may fire after cancel even if markOpened is called late"
+        )
     }
 
     /// `closeWhenDrained` must fire its completion exactly once after
