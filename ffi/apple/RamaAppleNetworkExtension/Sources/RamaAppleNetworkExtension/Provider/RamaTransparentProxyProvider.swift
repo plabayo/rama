@@ -229,8 +229,51 @@ private func tcpUpstreamUnavailableError() -> NSError {
     )
 }
 
-private final class TcpClientReadPump {
-    private let flow: NEAppProxyTCPFlow
+/// Minimal read surface the client read pump needs. Abstracts
+/// `NEAppProxyTCPFlow` so the pump can be driven by a mock flow in
+/// unit tests — without it, the pump is only reachable through a
+/// real Apple-internal flow object that can't be subclassed.
+/// `@Sendable` on the completion handler matches Apple's declared
+/// signature so Swift 6 strict-concurrency mode accepts the
+/// conformance.
+protocol TcpFlowReadable: AnyObject {
+    func readData(completionHandler: @escaping @Sendable (Data?, Error?) -> Void)
+}
+extension NEAppProxyTCPFlow: TcpFlowReadable {}
+
+/// Routing decision when the client read pump terminates. Splitting
+/// the natural-EOF path from the hard-error path is the dispatcher's
+/// load-bearing distinction: natural EOF must defer write-side
+/// teardown to the writer pump's drain so queued response bytes
+/// reach the originating app, while a hard error tears the whole
+/// flow down immediately.
+///
+/// Pulled out of the dispatcher's closure graph so the routing
+/// decision is a single, testable surface — the alternative is an
+/// inline `if let` deep inside `handleTcpFlow`, where a future edit
+/// can silently swap branches and only surface in production
+/// stress as the close-reason histogram regressing.
+struct TcpReadTerminal {
+    let onNaturalEof: () -> Void
+    let onHardError: (Error) -> Void
+
+    func dispatch(_ readError: Error?) {
+        if let err = readError {
+            onHardError(err)
+        } else {
+            onNaturalEof()
+        }
+    }
+}
+
+/// Cross-thread access pattern: `state`-protected fields are
+/// accessed under the lock from any thread; everything else is
+/// confined to `queue`. Apple's `flow.readData` completion handler
+/// is `@Sendable`, which requires the captured `self` to be
+/// `Sendable` too — `@unchecked` because Swift can't see the
+/// runtime confinement (lock + serial queue) statically.
+final class TcpClientReadPump: @unchecked Sendable {
+    private let flow: any TcpFlowReadable
     /// `weak` so the pump doesn't pin the session alive (the session map is
     /// the single strong owner). Equally important: stops the strong-ref
     /// cycle ctx → pump → session → callback closures → ctx.
@@ -254,7 +297,7 @@ private final class TcpClientReadPump {
     private var pendingData: Data?
 
     init(
-        flow: NEAppProxyTCPFlow,
+        flow: any TcpFlowReadable,
         session: RamaTcpSessionHandle,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
@@ -433,9 +476,11 @@ private func classifyFlowCallbackError(
 /// Async-write surface the writer pump needs. `NEAppProxyTCPFlow`
 /// already conforms structurally; abstracting via a protocol lets
 /// unit tests drive the pump with a stub that simulates kernel-buffer
-/// stalls without an actual NE flow.
+/// stalls without an actual NE flow. The completion handler is
+/// `@Sendable` to match Apple's declared signature so Swift 6
+/// strict-concurrency mode accepts the conformance.
 protocol TcpFlowWritable: AnyObject {
-    func write(_ data: Data, withCompletionHandler: @escaping (Error?) -> Void)
+    func write(_ data: Data, withCompletionHandler: @escaping @Sendable (Error?) -> Void)
 }
 extension NEAppProxyTCPFlow: TcpFlowWritable {}
 
@@ -454,7 +499,9 @@ struct TcpWriterState {
     var pausedSignaled: Bool = false
 }
 
-final class TcpClientWritePump {
+/// See `TcpClientReadPump` for the `@unchecked Sendable`
+/// rationale — same lock + queue confinement applies here.
+final class TcpClientWritePump: @unchecked Sendable {
     private let flow: TcpFlowWritable
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
@@ -1130,7 +1177,9 @@ private final class NwTcpConnectionReadPump {
 /// When `closeWhenDrained()` is called Rust signals it is done writing;
 /// the pump drains its queue and then sends an empty final `send` to
 /// signal half-close to the remote.
-private final class NwTcpConnectionWritePump {
+/// See `TcpClientReadPump` for the `@unchecked Sendable`
+/// rationale — same lock + queue confinement applies here.
+private final class NwTcpConnectionWritePump: @unchecked Sendable {
     private let connection: NWConnection
     /// See `TcpClientWritePump.onDrained`. Wired to
     /// `RamaTcpSessionHandle.signalEgressDrain`.
@@ -1749,74 +1798,49 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             writer.markOpened()
                             readPump.start()
 
+                            // Natural-EOF and hard-error paths
+                            // intentionally diverge — see
+                            // `TcpReadTerminal`. The natural-EOF
+                            // path defers write-side teardown to
+                            // the writer pump's drain so queued
+                            // response bytes reach the originating
+                            // app; closing the write side or
+                            // calling `session.cancel()` here
+                            // would truncate them. Weak captures
+                            // keep this closure graph from pinning
+                            // the per-flow context alive.
+                            let terminal = TcpReadTerminal(
+                                onNaturalEof: {
+                                    [weak self, weak readPump, weak session] in
+                                    self?.logTrace(
+                                        "tcp natural EOF: deferring teardown to closeWhenDrained"
+                                    )
+                                    flow.closeReadWithError(nil)
+                                    readPump?.cancel()
+                                    session?.onClientEof()
+                                },
+                                onHardError: {
+                                    [weak self, weak ctx, weak readPump, weak session] err in
+                                    flow.closeReadWithError(err)
+                                    flow.closeWriteWithError(err)
+                                    ctx?.connection?.cancel()
+                                    readPump?.cancel()
+                                    ctx?.clientWritePump?.cancel()
+                                    ctx?.egressWritePump?.cancel()
+                                    session?.cancel()
+                                    ctx?.clientReadPump = nil
+                                    ctx?.egressReadPump = nil
+                                    ctx?.clientWritePump = nil
+                                    ctx?.egressWritePump = nil
+                                    self?.removeTcpFlow(flowId)
+                                }
+                            )
                             let flowReadPump = TcpClientReadPump(
                                 flow: flow,
                                 session: session,
                                 queue: flowQueue,
                                 logger: { [weak self] message in self?.logFlowMessage(message) },
-                                onTerminal: {
-                                    [weak self, weak ctx, weak readPump, weak session] readError in
-                                    // Weak captures break the
-                                    // ctx → clientReadPump → session
-                                    // cycle that the dispatcher's
-                                    // closure graph would otherwise
-                                    // form (see writer.onTerminalError
-                                    // for the full chain).
-                                    if let err = readError {
-                                        // Hard error: tear everything
-                                        // down now. Cancel the
-                                        // writer pumps actively so
-                                        // any in-flight transient-
-                                        // retry loop short-circuits
-                                        // instead of keeping itself
-                                        // alive against a dying
-                                        // flow.
-                                        flow.closeReadWithError(err)
-                                        flow.closeWriteWithError(err)
-                                        ctx?.connection?.cancel()
-                                        readPump?.cancel()
-                                        ctx?.clientWritePump?.cancel()
-                                        ctx?.egressWritePump?.cancel()
-                                        session?.cancel()
-                                        ctx?.clientReadPump = nil
-                                        ctx?.egressReadPump = nil
-                                        ctx?.clientWritePump = nil
-                                        ctx?.egressWritePump = nil
-                                        self?.removeTcpFlow(flowId)
-                                    } else {
-                                        // Natural EOF: client closed
-                                        // its read side cleanly. Tell
-                                        // Rust about the EOF and let
-                                        // the bridge drain the
-                                        // response direction
-                                        // naturally — `on_server_closed`
-                                        // fires when that completes
-                                        // and runs `closeWhenDrained`,
-                                        // which closes the write side
-                                        // only after every queued
-                                        // byte has reached the
-                                        // kernel.
-                                        //
-                                        // Calling `session.cancel()`
-                                        // / `closeWriteWithError`
-                                        // here would force an early
-                                        // close that drops pump
-                                        // pending bytes plus whatever
-                                        // sits in the NEAppProxyFlow
-                                        // kernel buffer. The rest of
-                                        // teardown (write-side close,
-                                        // egress cancel, session map
-                                        // removal) is owned by the
-                                        // `closeWhenDrained`
-                                        // completion.
-                                        self?.logTrace(
-                                            "tcp natural EOF: deferring teardown to closeWhenDrained"
-                                        )
-                                        flow.closeReadWithError(nil)
-                                        readPump?.cancel()
-                                        session?.onClientEof()
-                                    }
-                                }
+                                onTerminal: terminal.dispatch
                             )
                             ctx.clientReadPump = flowReadPump
                             flowReadPump.requestRead()

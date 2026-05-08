@@ -3,18 +3,27 @@ import XCTest
 
 @testable import RamaAppleNetworkExtension
 
-/// Mock flow whose `write` runs through a configurable handler so a
-/// test can stage any sequence of (success, transient ENOBUFS,
-/// non-transient error) responses and observe how the writer pump
-/// reacts. Captures every chunk it sees so order/loss assertions are
-/// possible.
-final class MockTcpFlow: TcpFlowWritable {
+/// Mock flow whose `write` and `readData` run through configurable
+/// handlers so tests can stage any sequence of responses and
+/// observe how the pumps react. Conforms to both write and read
+/// surfaces so the same fixture drives both pump tests.
+final class MockTcpFlow: TcpFlowWritable, TcpFlowReadable {
     private let lock = NSLock()
     private var _writes: [Data] = []
     private var _writeCount = 0
-    /// Optional handler. Default: succeed (nil error). Tests override
-    /// to stage transient/non-transient errors.
+    /// Optional write handler. Default: succeed (nil error). Tests
+    /// override to stage transient/non-transient errors.
     var handler: (_ writeIndex: Int, _ data: Data) -> Error? = { _, _ in nil }
+
+    /// Pending readData completions. Tests call `completeRead(...)`
+    /// to deliver data, an EOF, or an error to the next read.
+    /// Callbacks queue up so a flurry of `requestRead` calls can be
+    /// answered in order.
+    var pendingReadCompletions: [@Sendable (Data?, Error?) -> Void] {
+        lock.lock(); defer { lock.unlock() }
+        return _pendingReads
+    }
+    private var _pendingReads: [@Sendable (Data?, Error?) -> Void] = []
 
     var writes: [Data] {
         lock.lock(); defer { lock.unlock() }
@@ -25,7 +34,7 @@ final class MockTcpFlow: TcpFlowWritable {
         return _writeCount
     }
 
-    func write(_ data: Data, withCompletionHandler: @escaping (Error?) -> Void) {
+    func write(_ data: Data, withCompletionHandler: @escaping @Sendable (Error?) -> Void) {
         lock.lock()
         let idx = _writeCount
         _writes.append(data)
@@ -38,6 +47,28 @@ final class MockTcpFlow: TcpFlowWritable {
         // in production.
         DispatchQueue.global().async {
             withCompletionHandler(error)
+        }
+    }
+
+    func readData(completionHandler: @escaping @Sendable (Data?, Error?) -> Void) {
+        lock.lock()
+        _pendingReads.append(completionHandler)
+        lock.unlock()
+    }
+
+    /// Deliver a result to the oldest pending readData callback.
+    /// Tests call this from their own thread to simulate a kernel
+    /// callback firing.
+    func completeRead(data: Data?, error: Error?) {
+        lock.lock()
+        guard !_pendingReads.isEmpty else {
+            lock.unlock()
+            return
+        }
+        let cb = _pendingReads.removeFirst()
+        lock.unlock()
+        DispatchQueue.global().async {
+            cb(data, error)
         }
     }
 }
