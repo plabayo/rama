@@ -205,6 +205,76 @@ let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
 /// known) without blowing up under a misbehaving producer.
 private let udpWritePumpMaxPending: Int = 256
 
+// ── High-water telemetry thresholds ──────────────────────────────────────────
+
+/// `pendingBytes` level at which a TCP write pump emits its first
+/// high-water trace log. Set at 50 % of the cap so a memory spike is
+/// visible in logs before backpressure kicks in, making it possible to
+/// tie a spike to an exact flow from the log timestamp rather than
+/// inferring it from a vmmap snapshot after the fact.
+private let writePumpHwmLogThresholdBytes: Int = writePumpMaxPendingBytes / 2
+
+/// Queue-depth at which the UDP write pump emits a high-water trace
+/// log — same 50 % heuristic as the TCP byte threshold.
+private let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
+
+// ── Per-pump lifecycle / state enums ─────────────────────────────────────────
+
+/// Queue-confined phase for read pumps.  Three `Bool` fields
+/// (`readPending`/`receiving`, `paused`, `closed`) encoded the same
+/// information; the compiler now enforces that only one branch is live
+/// at a time.
+private enum ReadPumpPhase {
+    /// Idle — ready to schedule the next read when asked.
+    case open
+    /// A `readData` or `connection.receive` call is in flight.
+    case reading
+    /// Rust signalled backpressure; waiting for `resume()`.
+    case paused
+    /// Terminal — no further transitions.
+    case closed
+}
+
+/// Queue-confined lifecycle for TCP write pumps.  Replaces the pair of
+/// `opened: Bool` + `closeRequested: Bool` flags so the compiler can
+/// reason about valid transitions instead of scattered boolean checks.
+private enum WritePumpLifecycle {
+    /// `markOpened()` has not yet been called; chunks are queued but
+    /// `flushLocked` will not start a write until we transition.
+    case pending
+    /// Opened and accepting new chunks.
+    case open
+    /// `closeWhenDrained()` called; pump drains the queue then signals
+    /// the FIN / `onDrainedClose` completion.
+    case draining
+}
+
+/// Exponential-backoff retry state for write pumps.  `nil` means no
+/// retry sequence is active; the two scalar fields `retryDelayMs` /
+/// `retryDeadlineAt` live here so "am I retrying?" is a single
+/// nil-check rather than a dual-field read.
+private struct WriteRetry {
+    /// Delay to use for the *next* scheduled retry (ms); doubles each
+    /// round up to `writeRetryMaxDelayMs`.
+    var delayMs: Int
+    /// Hard wall-clock deadline for the whole retry sequence.
+    var deadline: DispatchTime
+}
+
+/// Queue-confined state for a UDP flow's read side.  Replaces
+/// `closed: Bool`, `readPending: Bool`, and `demandPending: Bool`.
+private enum UdpFlowReadState {
+    /// No read in flight, no pending demand.
+    case idle
+    /// A `readDatagrams` call is in flight.
+    case reading
+    /// A `readDatagrams` call is in flight AND a second demand arrived
+    /// while it was pending — re-trigger `requestRead` on completion.
+    case readingWithDemand
+    /// Terminal — no further reads will be issued.
+    case closed
+}
+
 private func blockedFlowError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
@@ -281,14 +351,10 @@ final class TcpClientReadPump: @unchecked Sendable {
     private let logger: (FlowLogMessage) -> Void
     private let onTerminal: (Error?) -> Void
     private let queue: DispatchQueue
-    private var readPending = false
-    private var closed = false
-    /// Set when the Rust ingress channel signaled "full". While paused we
-    /// stop calling `flow.readData` so kernel buffer pressure is propagated
-    /// upstream to the originating app instead of accumulating on our side.
-    /// Cleared by `resume()`, which is wired to the Rust → Swift
-    /// `onClientReadDemand` callback.
-    private var paused = false
+    /// Lifecycle phase — replaces the former `readPending`, `paused`, and
+    /// `closed` boolean triple.  The compiler now enforces that only one
+    /// branch is active at a time instead of relying on scattered guards.
+    private var phase: ReadPumpPhase = .open
     /// Bytes Rust rejected with `.paused` on a previous `onClientBytes`. We
     /// MUST replay them before issuing the next `flow.readData` — Rust does
     /// not take ownership on a `.paused` return, so dropping `data` here
@@ -315,17 +381,17 @@ final class TcpClientReadPump: @unchecked Sendable {
     }
 
     /// Resume reading after the Rust side has freed capacity in the per-flow
-    /// ingress channel. Idempotent — calling while not paused is a no-op.
+    /// ingress channel. No-op unless the pump is currently paused.
     func resume() {
         queue.async {
-            guard !self.closed else { return }
-            self.paused = false
+            guard self.phase == .paused else { return }
+            self.phase = .open
             self.requestReadLocked()
         }
     }
 
     private func requestReadLocked() {
-        guard !self.closed, !self.readPending, !self.paused else { return }
+        guard phase == .open else { return }
 
         // Replay any chunk Rust rejected with `.paused` last time before we
         // ask the kernel for new bytes. If this still gets `.paused` we hold
@@ -341,7 +407,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                 self.pendingData = nil
                 // fall through to issue a fresh readData
             case .paused:
-                self.paused = true
+                self.phase = .paused
                 return
             case .closed:
                 self.pendingData = nil
@@ -350,11 +416,11 @@ final class TcpClientReadPump: @unchecked Sendable {
             }
         }
 
-        self.readPending = true
+        phase = .reading
         self.flow.readData { data, error in
             self.queue.async {
-                guard !self.closed else { return }
-                self.readPending = false
+                guard self.phase != .closed else { return }
+                self.phase = .open
 
                 if let error {
                     self.logger(
@@ -387,8 +453,14 @@ final class TcpClientReadPump: @unchecked Sendable {
                 case .paused:
                     // Rust did NOT take these bytes. Save them for replay on
                     // the next `resume()` and stop reading.
+                    if self.pendingData == nil {
+                        self.logger(FlowLogMessage(
+                            level: .trace,
+                            text: "tcp client read pump: replay buffer occupied (\(data.count) B); ingress channel full"
+                        ))
+                    }
                     self.pendingData = data
-                    self.paused = true
+                    self.phase = .paused
                 case .closed:
                     // Rust signaled the session is gone (teardown or
                     // bridge-side write failure). No demand callback will
@@ -401,8 +473,8 @@ final class TcpClientReadPump: @unchecked Sendable {
     }
 
     private func terminate(with error: Error?) {
-        guard !closed else { return }
-        closed = true
+        guard phase != .closed else { return }
+        phase = .closed
         onTerminal(error)
     }
 }
@@ -497,6 +569,10 @@ struct TcpWriterState {
     /// then clear — edge-triggered so we never spam Rust with
     /// redundant drain signals while the queue churns at-cap.
     var pausedSignaled: Bool = false
+    /// All-time peak of `pendingBytes` for this pump instance.  Updated
+    /// atomically under the lock so the high-water telemetry log fires
+    /// exactly once per new peak above `writePumpHwmLogThresholdBytes`.
+    var pendingBytesHwm: Int = 0
 }
 
 /// See `TcpClientReadPump` for the `@unchecked Sendable`
@@ -524,16 +600,20 @@ final class TcpClientWritePump: @unchecked Sendable {
     // Queue-only state — only read/written on `queue`.
     private var pending: [Data] = []
     private var writing = false
-    private var closeRequested = false
-    private var opened = false
+    /// Lifecycle phase — replaces the former `opened: Bool` +
+    /// `closeRequested: Bool` pair.
+    private var lifecycle: WritePumpLifecycle = .pending
+    /// True once `markOpened()` has been called, even if the pump has
+    /// since transitioned to `.draining`.  Used to distinguish "failed
+    /// before the flow was ever opened" from "closed after successful
+    /// data exchange" when reporting to the session's drain completion.
+    private var wasEverOpened = false
     private var onDrainedClose: ((Bool) -> Void)?
-    /// Current exponential backoff for transient write errors (ms). Reset to
-    /// `writeRetryInitialDelayMs` on every successful write.
-    private var retryDelayMs: Int = writeRetryInitialDelayMs
-    /// Wall-clock deadline for the in-progress retry sequence. Bounds the
-    /// total time we spin on transient errors regardless of how many
-    /// individual retries fit. Cleared on every successful write.
-    private var retryDeadlineAt: DispatchTime?
+    /// Active retry sequence, or `nil` when no transient error is being
+    /// ridden out.  Replaces the former `retryDelayMs: Int` +
+    /// `retryDeadlineAt: DispatchTime?` pair — the "am I retrying?"
+    /// test is a single nil-check rather than a dual-field read.
+    private var retrying: WriteRetry?
 
     init(
         flow: TcpFlowWritable,
@@ -553,7 +633,8 @@ final class TcpClientWritePump: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             if self.isClosed() { return }
-            self.opened = true
+            self.wasEverOpened = true
+            self.lifecycle = .open
             self.flushLocked()
         }
     }
@@ -582,8 +663,8 @@ final class TcpClientWritePump: @unchecked Sendable {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
-        let decision: RamaTcpDeliverStatusBridge = state.withLock { s in
-            if s.closed { return .closed }
+        let (decision, hwm): (RamaTcpDeliverStatusBridge, Int?) = state.withLock { s in
+            if s.closed { return (.closed, nil) }
             // First chunk through unconditionally — an oversized
             // single chunk (larger than the cap) must not deadlock
             // the bridge.
@@ -591,10 +672,23 @@ final class TcpClientWritePump: @unchecked Sendable {
                 && s.pendingBytes + data.count > writePumpMaxPendingBytes
             {
                 s.pausedSignaled = true
-                return .paused
+                return (.paused, nil)
             }
             s.pendingBytes += data.count
-            return .accepted
+            var newHwm: Int? = nil
+            if s.pendingBytes > s.pendingBytesHwm {
+                s.pendingBytesHwm = s.pendingBytes
+                if s.pendingBytes >= writePumpHwmLogThresholdBytes {
+                    newHwm = s.pendingBytes
+                }
+            }
+            return (.accepted, newHwm)
+        }
+        if let hwm {
+            logger(FlowLogMessage(
+                level: .trace,
+                text: "tcp client write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
+            ))
         }
         guard decision == .accepted else { return decision }
 
@@ -620,10 +714,10 @@ final class TcpClientWritePump: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             if self.isClosed() {
-                onDrainedClose(self.opened)
+                onDrainedClose(self.wasEverOpened)
                 return
             }
-            self.closeRequested = true
+            self.lifecycle = .draining
             self.onDrainedClose = onDrainedClose
             self.finishCloseIfDrainedLocked()
         }
@@ -647,9 +741,9 @@ final class TcpClientWritePump: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             self.pending.removeAll(keepingCapacity: false)
-            self.retryDeadlineAt = nil
+            self.retrying = nil
             let onDrainedClose = self.onDrainedClose
-            let wasOpened = self.opened
+            let wasOpened = self.wasEverOpened
             self.onDrainedClose = nil
             onDrainedClose?(wasOpened)
         }
@@ -663,7 +757,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         if isClosed() {
             return
         }
-        if writing || pending.isEmpty || !opened {
+        if writing || pending.isEmpty || lifecycle == .pending {
             finishCloseIfDrainedLocked()
             return
         }
@@ -704,24 +798,34 @@ final class TcpClientWritePump: @unchecked Sendable {
                         // ENOBUFS can't pin the pump (and the queue's
                         // captured `self`) alive indefinitely.
                         let now = DispatchTime.now()
-                        if self.retryDeadlineAt == nil {
-                            self.retryDeadlineAt = now + .milliseconds(writeRetryHardDeadlineMs)
-                        }
-                        if let deadline = self.retryDeadlineAt, now >= deadline {
-                            self.logger(
-                                FlowLogMessage(
-                                    level: .debug,
-                                    text: "tcp flow.write transient-retry deadline (\(writeRetryHardDeadlineMs)ms) exceeded; tearing flow down",
+                        let currentDelayMs: Int
+                        let deadline: DispatchTime
+                        if let existing = self.retrying {
+                            if now >= existing.deadline {
+                                self.logger(
+                                    FlowLogMessage(
+                                        level: .debug,
+                                        text: "tcp flow.write transient-retry deadline (\(writeRetryHardDeadlineMs)ms) exceeded; tearing flow down",
+                                    )
                                 )
-                            )
-                            self.terminateLocked(with: error)
-                            return
+                                self.terminateLocked(with: error)
+                                return
+                            }
+                            currentDelayMs = existing.delayMs
+                            deadline = existing.deadline
+                        } else {
+                            currentDelayMs = writeRetryInitialDelayMs
+                            deadline = now + .milliseconds(writeRetryHardDeadlineMs)
                         }
                         self.pending.insert(chunk, at: 0)
                         self.state.withLock { $0.pendingBytes += chunk.count }
-                        let delay = self.retryDelayMs
-                        self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
-                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                        self.retrying = WriteRetry(
+                            delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
+                            deadline: deadline
+                        )
+                        self.queue.asyncAfter(
+                            deadline: .now() + .milliseconds(currentDelayMs)
+                        ) { [weak self] in
                             self?.flushLocked()
                         }
                         return
@@ -736,8 +840,7 @@ final class TcpClientWritePump: @unchecked Sendable {
                     self.terminateLocked(with: error)
                     return
                 }
-                self.retryDeadlineAt = nil
-                self.retryDelayMs = writeRetryInitialDelayMs
+                self.retrying = nil
                 self.flushLocked()
             }
         }
@@ -754,19 +857,19 @@ final class TcpClientWritePump: @unchecked Sendable {
             return wasClosed
         }
         if alreadyClosed { return }
-        closeRequested = true
+        lifecycle = .draining
         pending.removeAll(keepingCapacity: false)
-        retryDeadlineAt = nil
+        retrying = nil
         let onDrainedClose = self.onDrainedClose
         self.onDrainedClose = nil
         onTerminalError(error)
         // If the close-when-drained path was waiting for us, signal
         // it so the dispatcher's drain completion still runs.
-        onDrainedClose?(opened)
+        onDrainedClose?(wasEverOpened)
     }
 
     private func finishCloseIfDrainedLocked() {
-        guard closeRequested, !writing, pending.isEmpty else { return }
+        guard lifecycle == .draining, !writing, pending.isEmpty else { return }
         let alreadyClosed: Bool = state.withLock { s in
             let wasClosed = s.closed
             if !wasClosed { s.closed = true }
@@ -774,10 +877,22 @@ final class TcpClientWritePump: @unchecked Sendable {
         }
         if alreadyClosed { return }
         let onDrainedClose = self.onDrainedClose
-        let wasOpened = self.opened
         self.onDrainedClose = nil
-        onDrainedClose?(wasOpened)
+        onDrainedClose?(wasEverOpened)
     }
+}
+
+/// Queue-confined phase for `UdpClientWritePump`.  Replaces the former
+/// `writing: Bool`, `closed: Bool`, and `opened: Bool` triple.
+private enum UdpWritePumpPhase {
+    /// `markOpened()` has not yet been called.
+    case pending
+    /// Opened and no write in flight.
+    case idle
+    /// A `writeDatagrams` call is in flight.
+    case writing
+    /// Terminal — pump has torn down.
+    case closed
 }
 
 private final class UdpClientWritePump {
@@ -797,9 +912,13 @@ private final class UdpClientWritePump {
     /// to its first endpoint at the read site, so queued replies
     /// produced from that batch carry only that single endpoint.
     private var pending: [(Data, NWEndpoint?)] = []
-    private var writing = false
-    private var closed = false
-    private var opened = false
+    /// Lifecycle phase — replaces the former `writing`, `closed`, and
+    /// `opened` boolean triple.
+    private var phase: UdpWritePumpPhase = .pending
+    /// All-time peak of `pending.count`; used to gate high-water logs
+    /// so each new peak above `udpWritePumpHwmLogThreshold` is emitted
+    /// exactly once per pump lifetime.
+    private var pendingCountHwm: Int = 0
     /// Most-recently-seen source endpoint from `readDatagrams`.
     /// Used as the `sentBy` endpoint when writing datagrams back.
     ///
@@ -830,16 +949,16 @@ private final class UdpClientWritePump {
 
     func markOpened() {
         queue.async {
-            guard !self.closed else { return }
-            self.opened = true
+            guard self.phase != .closed else { return }
+            self.phase = .idle
             self.flushLocked()
         }
     }
 
     func failOpen(_ error: Error) {
         queue.async {
-            guard !self.closed else { return }
-            self.closed = true
+            guard self.phase != .closed else { return }
+            self.phase = .closed
             self.pending.removeAll(keepingCapacity: false)
             self.onTerminalError(error)
         }
@@ -867,7 +986,7 @@ private final class UdpClientWritePump {
     func enqueue(_ data: Data) {
         guard !data.isEmpty else { return }
         queue.async {
-            if self.closed { return }
+            if self.phase == .closed { return }
             // Drop-on-full: UDP is lossy. Indefinite buffering would
             // deliver datagrams long after the kernel would have dropped
             // them on the wire. Bias toward dropping the newest entry so
@@ -885,21 +1004,30 @@ private final class UdpClientWritePump {
             // Pre-first-read replies have nil here and resolve at
             // flush time once `sentByEndpoint` is known.
             self.pending.append((data, self.sentByEndpoint))
+            let depth = self.pending.count
+            if depth > self.pendingCountHwm {
+                self.pendingCountHwm = depth
+                if depth > udpWritePumpHwmLogThreshold {
+                    RamaTransparentProxyEngineHandle.log(
+                        level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
+                        message:
+                            "udp client write pump queue depth hwm=\(depth) cap=\(udpWritePumpMaxPending)"
+                    )
+                }
+            }
             self.flushLocked()
         }
     }
 
     func close() {
         queue.async {
-            self.closed = true
+            self.phase = .closed
             self.pending.removeAll(keepingCapacity: false)
         }
     }
 
     private func flushLocked() {
-        if writing || pending.isEmpty || closed || !opened {
-            return
-        }
+        guard phase == .idle, !pending.isEmpty else { return }
 
         // Resolve the endpoint: prefer the one captured at enqueue
         // time; fall back to the latest known peer for entries that
@@ -908,25 +1036,25 @@ private final class UdpClientWritePump {
             return
         }
 
-        writing = true
+        phase = .writing
         let chunk = pending.removeFirst().0
         self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
             self.queue.async {
-                self.writing = false
                 if let error {
                     self.logger(
                         classifyFlowCallbackError(
                             error,
                             operation: "udp flow.write",
-                            isClosing: self.closed
+                            isClosing: self.phase == .closed
                         )
                     )
-                    self.closed = true
+                    self.phase = .closed
                     self.pending.removeAll(keepingCapacity: false)
                     self.onTerminalError(error)
                     return
                 }
 
+                self.phase = .idle
                 self.flushLocked()
             }
         }
@@ -1067,12 +1195,11 @@ private final class NwTcpConnectionReadPump {
     /// [`TcpClientReadPump.session`].
     private weak var session: RamaTcpSessionHandle?
     private let queue: DispatchQueue
-    private var closed = false
-    private var paused = false
-    /// Tracks whether a `connection.receive(...)` call is in flight. Prevents
-    /// `resume()` (or repeated `start()`s) from issuing a second concurrent
-    /// receive, which `Network.framework` does not support.
-    private var receiving = false
+    /// Lifecycle phase — replaces the former `closed`, `paused`, and
+    /// `receiving` boolean triple.  The `receiving` → `.reading` mapping
+    /// also prevents `Network.framework`'s unsupported concurrent-receive
+    /// invariant from being broken.
+    private var phase: ReadPumpPhase = .open
     /// See [`TcpClientReadPump.pendingData`] — same contract for the egress
     /// (NWConnection-receive) direction. Dropping rejected bytes here is what
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
@@ -1089,24 +1216,24 @@ private final class NwTcpConnectionReadPump {
     }
 
     /// Resume scheduling receives after the Rust side has freed egress
-    /// capacity. Idempotent.
+    /// capacity. No-op unless the pump is currently paused.
     func resume() {
         queue.async {
-            guard !self.closed else { return }
-            self.paused = false
+            guard self.phase == .paused else { return }
+            self.phase = .open
             self.scheduleReadLocked()
         }
     }
 
     private func scheduleReadLocked() {
-        guard !self.closed, !self.paused, !self.receiving else { return }
+        guard phase == .open else { return }
 
         // Replay any chunk Rust rejected with `.paused` last time before
         // issuing a new receive.
         if let pending = self.pendingData {
             guard let session = self.session else {
                 self.pendingData = nil
-                self.closed = true
+                self.phase = .closed
                 return
             }
             switch session.onEgressBytes(pending) {
@@ -1114,22 +1241,22 @@ private final class NwTcpConnectionReadPump {
                 self.pendingData = nil
                 // fall through to schedule the next receive
             case .paused:
-                self.paused = true
+                self.phase = .paused
                 return
             case .closed:
                 self.pendingData = nil
-                self.closed = true
+                self.phase = .closed
                 return
             }
         }
 
-        self.receiving = true
+        phase = .reading
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             self.queue.async {
-                self.receiving = false
-                guard !self.closed else { return }
+                guard self.phase != .closed else { return }
+                self.phase = .open
 
                 if let data, !data.isEmpty {
                     guard let session = self.session else {
@@ -1138,7 +1265,7 @@ private final class NwTcpConnectionReadPump {
                         // another `connection.receive` here would keep the
                         // NWConnection's read side draining bytes that have
                         // nowhere to go.
-                        self.closed = true
+                        self.phase = .closed
                         return
                     }
                     switch session.onEgressBytes(data) {
@@ -1148,17 +1275,23 @@ private final class NwTcpConnectionReadPump {
                         // Rust did NOT take these bytes. Save them for
                         // replay; do NOT issue another receive until
                         // `resume()`.
+                        if self.pendingData == nil {
+                            RamaTransparentProxyEngineHandle.log(
+                                level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
+                                message: "tcp egress read pump: replay buffer occupied (\(data.count) B); egress channel full"
+                            )
+                        }
                         self.pendingData = data
-                        self.paused = true
+                        self.phase = .paused
                         return
                     case .closed:
                         // No demand will follow; tear the pump down now.
-                        self.closed = true
+                        self.phase = .closed
                         return
                     }
                 }
                 if isComplete || error != nil {
-                    self.closed = true
+                    self.phase = .closed
                     self.session?.onEgressEof()
                     return
                 }
@@ -1168,7 +1301,7 @@ private final class NwTcpConnectionReadPump {
     }
 
     func cancel() {
-        queue.async { self.closed = true }
+        queue.async { self.phase = .closed }
     }
 }
 
@@ -1192,11 +1325,13 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
 
     private var pending: [Data] = []
     private var writing = false
-    private var closeRequested = false
-    private var retryDelayMs: Int = writeRetryInitialDelayMs
-    /// See `TcpClientWritePump.retryDeadlineAt`. Same wall-clock cap
-    /// on the transient-retry loop.
-    private var retryDeadlineAt: DispatchTime?
+    /// Lifecycle phase — replaces the former `closeRequested: Bool`.
+    /// Initialised to `.open` (no `markOpened` concept here; the pump
+    /// is ready as soon as the `NWConnection` reaches `.ready`).
+    private var lifecycle: WritePumpLifecycle = .open
+    /// See `TcpClientWritePump.retrying`.  Same nil-means-no-retry
+    /// contract; `retryDelayMs` and `retryDeadlineAt` live here.
+    private var retrying: WriteRetry?
 
     init(connection: NWConnection, queue: DispatchQueue, onDrained: @escaping () -> Void) {
         self.connection = connection
@@ -1209,16 +1344,29 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
-        let decision: RamaTcpDeliverStatusBridge = state.withLock { s in
-            if s.closed { return .closed }
+        let (decision, hwm): (RamaTcpDeliverStatusBridge, Int?) = state.withLock { s in
+            if s.closed { return (.closed, nil) }
             if s.pendingBytes > 0
                 && s.pendingBytes + data.count > writePumpMaxPendingBytes
             {
                 s.pausedSignaled = true
-                return .paused
+                return (.paused, nil)
             }
             s.pendingBytes += data.count
-            return .accepted
+            var newHwm: Int? = nil
+            if s.pendingBytes > s.pendingBytesHwm {
+                s.pendingBytesHwm = s.pendingBytes
+                if s.pendingBytes >= writePumpHwmLogThresholdBytes {
+                    newHwm = s.pendingBytes
+                }
+            }
+            return (.accepted, newHwm)
+        }
+        if let hwm {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
+                message: "tcp egress write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
+            )
         }
         guard decision == .accepted else { return decision }
 
@@ -1242,7 +1390,7 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             if self.isClosed() { return }
-            self.closeRequested = true
+            self.lifecycle = .draining
             self.finishCloseIfDrained()
         }
     }
@@ -1255,7 +1403,7 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             self.pending.removeAll(keepingCapacity: false)
-            self.retryDeadlineAt = nil
+            self.retrying = nil
         }
     }
 
@@ -1286,18 +1434,28 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
                 if let error {
                     if isTransientWriteBackpressure(error) {
                         let now = DispatchTime.now()
-                        if self.retryDeadlineAt == nil {
-                            self.retryDeadlineAt = now + .milliseconds(writeRetryHardDeadlineMs)
-                        }
-                        if let deadline = self.retryDeadlineAt, now >= deadline {
-                            self.terminateLocked()
-                            return
+                        let currentDelayMs: Int
+                        let deadline: DispatchTime
+                        if let existing = self.retrying {
+                            if now >= existing.deadline {
+                                self.terminateLocked()
+                                return
+                            }
+                            currentDelayMs = existing.delayMs
+                            deadline = existing.deadline
+                        } else {
+                            currentDelayMs = writeRetryInitialDelayMs
+                            deadline = now + .milliseconds(writeRetryHardDeadlineMs)
                         }
                         self.pending.insert(chunk, at: 0)
                         self.state.withLock { $0.pendingBytes += chunk.count }
-                        let delay = self.retryDelayMs
-                        self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
-                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                        self.retrying = WriteRetry(
+                            delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
+                            deadline: deadline
+                        )
+                        self.queue.asyncAfter(
+                            deadline: .now() + .milliseconds(currentDelayMs)
+                        ) { [weak self] in
                             self?.flush()
                         }
                         return
@@ -1305,8 +1463,7 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
                     self.terminateLocked()
                     return
                 }
-                self.retryDeadlineAt = nil
-                self.retryDelayMs = writeRetryInitialDelayMs
+                self.retrying = nil
                 self.flush()
                 self.finishCloseIfDrained()
             }
@@ -1321,13 +1478,13 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
             return wasClosed
         }
         if alreadyClosed { return }
-        closeRequested = true
+        lifecycle = .draining
         pending.removeAll(keepingCapacity: false)
-        retryDeadlineAt = nil
+        retrying = nil
     }
 
     private func finishCloseIfDrained() {
-        guard closeRequested, !writing, pending.isEmpty else { return }
+        guard lifecycle == .draining, !writing, pending.isEmpty else { return }
         let alreadyClosed: Bool = state.withLock { s in
             let wasClosed = s.closed
             if !wasClosed { s.closed = true }
@@ -1427,9 +1584,9 @@ private final class UdpFlowContext {
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
     var terminate: ((Error?) -> Void)?
-    var closed: Bool = false
-    var readPending: Bool = false
-    var demandPending: Bool = false
+    /// Read-side lifecycle — replaces the former `closed: Bool`,
+    /// `readPending: Bool`, and `demandPending: Bool` triple.
+    var readState: UdpFlowReadState = .idle
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
@@ -1877,8 +2034,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             // Re-`[weak ctx]` at the nested closure boundary; see
             // `requestRead` for why.
             flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, !ctx.closed else { return }
-                ctx.closed = true
+                guard let ctx, ctx.readState != .closed else { return }
+                ctx.readState = .closed
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -1916,15 +2073,20 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             // every closure further down, re-introducing a strong
             // capture path back through this chain.
             flowQueue.async { [weak ctx] in
-                guard let ctx, !ctx.closed else { return }
-                ctx.demandPending = true
-                guard !ctx.readPending else { return }
-                ctx.readPending = true
-                ctx.demandPending = false
+                guard let ctx, ctx.readState != .closed else { return }
+                // If a read is already in flight, record the demand so
+                // we re-trigger on completion instead of issuing a
+                // concurrent second readDatagrams call.
+                if ctx.readState == .reading {
+                    ctx.readState = .readingWithDemand
+                    return
+                }
+                ctx.readState = .reading
                 flow.readDatagrams { [weak self, weak ctx] datagrams, endpoints, error in
                     flowQueue.async { [weak ctx] in
-                        guard let ctx, !ctx.closed else { return }
-                        ctx.readPending = false
+                        guard let ctx, ctx.readState != .closed else { return }
+                        let hadPendingDemand = ctx.readState == .readingWithDemand
+                        ctx.readState = .idle
                         if let error {
                             self?.logFlowMessage(
                                 classifyFlowCallbackError(error, operation: "udp flow.read")
@@ -1968,7 +2130,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             session.onClientDatagram(datagram)
                         }
 
-                        if ctx.demandPending {
+                        if hadPendingDemand {
                             ctx.requestRead?()
                         }
                     }

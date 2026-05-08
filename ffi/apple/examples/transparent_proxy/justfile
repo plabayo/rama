@@ -55,11 +55,14 @@ build-tproxy: build-tproxy-dev build-tproxy-dist
 
 notarize-tproxy-dist: build-tproxy-rs notarize-tproxy-app-dist
 
-install-tproxy-dev: build-tproxy-rs install-tproxy-app-dev
+clear-tproxy-files:
+    sudo rm -rf /var/root/Library/Application Support/rama/tproxy/dial9-traces
+
+install-tproxy-dev: build-tproxy-rs clear-tproxy-files install-tproxy-app-dev
 
 install-tproxy-dev-reset-profile: build-tproxy-rs install-tproxy-app-dev-reset-profile
 
-install-tproxy-dist: build-tproxy-rs install-tproxy-app-dist
+install-tproxy-dist: build-tproxy-rs clear-tproxy-files install-tproxy-app-dist
 
 install-tproxy-dist-reset-profile: build-tproxy-rs install-tproxy-app-dist-reset-profile
 
