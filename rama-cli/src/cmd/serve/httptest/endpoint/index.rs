@@ -129,7 +129,7 @@ pub(in crate::cmd::serve::httptest) fn service()
                     <li>
                         <code>POST /sink</code>:
                         accepts an arbitrarily large upload, reads and discards the body, then
-                        returns <code>{"{"}"bytes": &lt;n&gt;{"}"}</code> with the total number of
+                        returns <code>{"bytes": &lt;n&gt;}</code> with the total number of
                         bytes received. Useful for stressing ingress upload paths without echoing
                         the body back.
                     </li>
