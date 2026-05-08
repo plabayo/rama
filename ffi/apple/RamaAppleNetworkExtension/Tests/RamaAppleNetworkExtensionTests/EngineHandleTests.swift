@@ -1,5 +1,5 @@
 // Swift FFI engine-handle integration tests. Drive these via
-// `just test-swift-ffi` (or the asan/tsan variants). The Rust
+// `just test-e2e-ffi-swift` (or the asan/tsan variants). The Rust
 // counterpart is the `tproxy_rs` demo staticlib — same build pipeline
 // the cargo `tproxy_ffi_e2e` tests use.
 

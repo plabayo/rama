@@ -197,7 +197,7 @@ jobs:
       - name: Install just
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
-        run: just test-swift-ffi
+        run: just test-e2e-ffi-swift
 
   test-rama-apple-xpc:
     runs-on: macos-latest

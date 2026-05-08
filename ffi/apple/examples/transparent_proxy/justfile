@@ -115,11 +115,22 @@ cleanup-tproxy-ffi-e2e:
 run-tproxy-ffi-e2e:
     cargo test --test e2e -- --test-threads=1 --nocapture
 
+[working-directory: '.']
+run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
+    swift test \
+        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
+        -Xlinker -lrama_tproxy_example \
+        -Xlinker -lz \
+        -Xlinker -framework -Xlinker NetworkExtension \
+        -Xlinker -framework -Xlinker SystemConfiguration
+
 qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
 qa: qa-rust build-tproxy-dev
 
-test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e
+test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
+
+test-full: qa test-e2e
 
 # Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.
 #
