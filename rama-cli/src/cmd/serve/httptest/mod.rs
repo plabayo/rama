@@ -101,7 +101,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         .with_get("/sse", endpoint::sse::service())
         .with_get("/multipart", endpoint::multipart::get_form)
         .with_post("/multipart", endpoint::multipart::post_service())
-        .with_post("/octet-stream", endpoint::octet_stream::service());
+        .with_post("/octet-stream", endpoint::octet_stream::service())
+        .with_post("/sink", endpoint::sink::service());
 
     let http_service = Arc::new(middlewares.into_layer(router));
 

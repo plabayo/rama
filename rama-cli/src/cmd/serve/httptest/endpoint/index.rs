@@ -117,9 +117,21 @@ pub(in crate::cmd::serve::httptest) fn service()
                 <div id="content">
                 <ul>
                     <li>
-                        <a href="/bytes?size=1048576">GET /bytes?size=&lt;n&gt;</a>:
-                        streams exactly <code>n</code> zero bytes as
-                        <code>application/octet-stream</code> (up to 32 MiB).
+                        <a href="/bytes?size=1048576&amp;chunk=16384&amp;delay_ms=0">GET /bytes</a>
+                        — query params: <code>size</code> (default 1 KiB, max 32 MiB),
+                        <code>chunk</code> (bytes per chunk, default 16 KiB, max 4 MiB),
+                        <code>delay_ms</code> (sleep between chunks, default 0, max 60 000 ms).
+                        Streams exactly <code>size</code> zero bytes as
+                        <code>application/octet-stream</code> in chunks of <code>chunk</code> bytes
+                        with an optional inter-chunk delay. Useful for exercising backpressure,
+                        timeout, and h1/h2 stream-framing behaviour deterministically.
+                    </li>
+                    <li>
+                        <code>POST /sink</code>:
+                        accepts an arbitrarily large upload, reads and discards the body, then
+                        returns <code>{"{"}"bytes": &lt;n&gt;{"}"}</code> with the total number of
+                        bytes received. Useful for stressing ingress upload paths without echoing
+                        the body back.
                     </li>
                     <li>
                         <a href="/method">HTTP Method</a>:

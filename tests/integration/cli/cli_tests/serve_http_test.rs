@@ -62,6 +62,8 @@ async fn run_http_tests(base_uri: &'static str) {
         run_http_test_endpoint_sse(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_octet_stream(client.clone(), base_uri, http_version).await;
         run_http_test_endpoint_multipart(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_bytes(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_sink(client.clone(), base_uri, http_version).await;
     }
 }
 
@@ -371,4 +373,113 @@ async fn run_http_test_endpoint_multipart(
             );
         }
     }
+}
+
+async fn run_http_test_endpoint_bytes(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    // default size (1 KiB)
+    let resp = client
+        .get(format!("{base_uri}/bytes"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(1024, body.len());
+    assert!(body.iter().all(|&b| b == 0));
+
+    // explicit size, default chunk
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=4096"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(4096, body.len());
+
+    // small chunk so we exercise multi-chunk streaming without delay
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=4096&chunk=512"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(4096, body.len());
+
+    // size=0 is valid (empty body)
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=0"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(0, body.len());
+
+    // invalid parameters → 400
+    for bad_url in [
+        format!("{base_uri}/bytes?size=abc"),
+        format!("{base_uri}/bytes?chunk=0"),
+        format!("{base_uri}/bytes?delay_ms=99999999"),
+    ] {
+        let resp = client
+            .get(bad_url)
+            .version(http_version)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::BAD_REQUEST, resp.status());
+    }
+}
+
+async fn run_http_test_endpoint_sink(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    // empty body
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(0));
+
+    // small body
+    let payload = b"hello rama sink";
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .octet_stream(payload.as_slice())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(payload.len() as u64));
+
+    // larger body (1 MiB) — exercises multi-frame draining
+    let big = vec![0u8; 1024 * 1024];
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .octet_stream(big.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(big.len() as u64));
 }
