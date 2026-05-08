@@ -439,3 +439,86 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
 
     engine.stop(0);
 }
+
+/// Each `on_server_bytes` invocation blocks the bridge task that
+/// called it until the user closure returns. If the dispatcher
+/// embeds a synchronous wait on a Swift dispatch queue inside that
+/// closure (the historical shape) and several flows end up with
+/// stalled queues at the same time, every Tokio worker can land on
+/// a blocked closure and the runtime stops scheduling. The engine's
+/// shutdown path then wedges because the bridge tasks holding
+/// flow-guard clones never unblock.
+///
+/// Pin the property: even with N concurrent sessions whose
+/// `on_server_bytes` blocks longer than any single Tokio worker, the
+/// engine must still complete `stop()` within bounded time. The
+/// underlying invariant — bridge tasks must not be held hostage to
+/// arbitrary user-closure stalls — is what the dispatcher's
+/// `queue.async`-with-atomics shape preserves on the Swift side.
+#[test]
+fn tcp_engine_stop_completes_when_on_server_bytes_callbacks_block() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    let BridgeIo(mut ingress, _egress) = bridge;
+                    // Continuously produce bytes so the bridge keeps
+                    // calling on_server_bytes until cancel.
+                    loop {
+                        if ingress.write_all(b"X").await.is_err() {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+    };
+    let engine = build_engine(handler);
+
+    const SESSIONS: usize = 8;
+    let mut sessions = Vec::with_capacity(SESSIONS);
+    for _ in 0..SESSIONS {
+        let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+            // on_server_bytes intentionally blocks the calling
+            // bridge task on a sync sleep — this is the shape of a
+            // Swift-side `queue.sync` against a stalled flow queue.
+            |_bytes| {
+                std::thread::sleep(Duration::from_millis(80));
+                TcpDeliverStatus::Accepted
+            },
+            || {},
+            || {},
+        ) else {
+            panic!("expected intercept session");
+        };
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+        sessions.push(session);
+    }
+
+    // Let bridge work pile up so several workers land in the
+    // blocking callback before we stop.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let started = Instant::now();
+    drop(sessions);
+    engine.stop(0);
+    let elapsed = started.elapsed();
+
+    // Bridge tasks must observe their flow-guard cancellation and
+    // exit the user closure within bounded time. Allow 3 s slack
+    // for the slowest closure to return on a busy CI machine; a
+    // wedged runtime would never finish (the historical bug needed
+    // a force-kill).
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "engine.stop() took {elapsed:?} with blocking on_server_bytes; runtime is wedged",
+    );
+}

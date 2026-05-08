@@ -3,13 +3,13 @@ import Foundation
 import NetworkExtension
 import RamaAppleNEFFI
 
-private enum FlowLogLevel {
+enum FlowLogLevel {
     case trace
     case debug
     case error
 }
 
-private struct FlowLogMessage {
+struct FlowLogMessage {
     let level: FlowLogLevel
     let text: String
 }
@@ -170,8 +170,19 @@ private func isTransientWriteBackpressure(_ error: Error) -> Bool {
 /// Initial / capped backoff delays (ms) for transient-error retry. Capped so
 /// we keep retrying but at a bounded rate; the caller's natural drain cycle
 /// is sub-second on a working flow, so 200 ms is plenty.
-private let writeRetryInitialDelayMs: Int = 5
-private let writeRetryMaxDelayMs: Int = 200
+let writeRetryInitialDelayMs: Int = 5
+let writeRetryMaxDelayMs: Int = 200
+
+/// Wall-clock cap on the transient-error retry loop. After this many
+/// milliseconds without a successful write the pump tears down,
+/// regardless of how short each individual retry was. Without a hard
+/// deadline, sustained kernel-buffer pressure on a flow whose calling
+/// app has effectively died keeps the retry loop spinning indefinitely
+/// — the loop's `asyncAfter` strongly captures the pump, so it pins
+/// itself alive until the kernel finally returns a non-transient
+/// error. 5 s is enough to ride out a real h2 stall while bounding
+/// the worst-case wedge.
+let writeRetryHardDeadlineMs: Int = 5_000
 
 /// Memory budget (in bytes) each writer pump (TCP response and TCP egress)
 /// keeps queued before it tells the Rust bridge to pause.
@@ -185,7 +196,7 @@ private let writeRetryMaxDelayMs: Int = 200
 /// 4 MiB sits comfortably above a typical h2 stream window (1–2 MiB) so
 /// the writer can absorb a full window's worth of frames without pausing
 /// per-stream-worth of bytes, while keeping per-flow memory bounded.
-private let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
+let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
 
 /// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
 /// definition, so the pump prefers dropping the newest datagram on
@@ -419,8 +430,17 @@ private func classifyFlowCallbackError(
     )
 }
 
-private final class TcpClientWritePump {
-    private let flow: NEAppProxyTCPFlow
+/// Async-write surface the writer pump needs. `NEAppProxyTCPFlow`
+/// already conforms structurally; abstracting via a protocol lets
+/// unit tests drive the pump with a stub that simulates kernel-buffer
+/// stalls without an actual NE flow.
+protocol TcpFlowWritable: AnyObject {
+    func write(_ data: Data, withCompletionHandler: @escaping (Error?) -> Void)
+}
+extension NEAppProxyTCPFlow: TcpFlowWritable {}
+
+final class TcpClientWritePump {
+    private let flow: TcpFlowWritable
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
     /// Fired when `pending` drops back below `writePumpMaxPending` after a
@@ -429,26 +449,41 @@ private final class TcpClientWritePump {
     /// pulling response bytes through the duplex.
     private let onDrained: () -> Void
     private let queue: DispatchQueue
+
+    /// Cross-thread state. `enqueue` is called from a Tokio worker; the
+    /// rest of the pump runs on `queue`. The lock keeps the
+    /// "is the pump still alive + has it reached its byte budget"
+    /// answer cheap and consistent for the FFI fast path so it can
+    /// return synchronously without dispatching onto the serial queue
+    /// (a sync hop from an async runtime worker is a foot-gun: any
+    /// stall on the queue stalls a worker thread).
+    private let stateLock = NSLock()
+    private var lockedClosed = false
+    /// Sum of bytes currently queued OR in-flight on the writer.
+    /// Source of truth for backpressure decisions.
+    private var lockedPendingBytes: Int = 0
+    /// Set when an `enqueue` returned `.paused`. We fire `onDrained` on
+    /// the first removal that drops `pendingBytes` below the cap, then
+    /// clear — edge-triggered so we never spam Rust with redundant
+    /// drain signals while the queue churns at-cap.
+    private var lockedPausedSignaled = false
+
+    // Queue-only state — only read/written on `queue`.
     private var pending: [Data] = []
-    /// Sum of `pending[i].count` — the byte budget we use for backpressure.
-    /// Tracked separately so the FFI bound check stays O(1).
-    private var pendingBytes: Int = 0
     private var writing = false
     private var closeRequested = false
-    private var closed = false
     private var opened = false
     private var onDrainedClose: ((Bool) -> Void)?
-    /// Set when an `enqueue` was rejected with `.paused`. We fire `onDrained`
-    /// on the first removal that drops `pendingBytes` below the cap, then
-    /// clear this flag — edge-triggered so we never spam Rust with redundant
-    /// drain signals while the queue churns at-cap.
-    private var pausedSignaled: Bool = false
     /// Current exponential backoff for transient write errors (ms). Reset to
     /// `writeRetryInitialDelayMs` on every successful write.
     private var retryDelayMs: Int = writeRetryInitialDelayMs
+    /// Wall-clock deadline for the in-progress retry sequence. Bounds the
+    /// total time we spin on transient errors regardless of how many
+    /// individual retries fit. Cleared on every successful write.
+    private var retryDeadlineAt: DispatchTime?
 
     init(
-        flow: NEAppProxyTCPFlow,
+        flow: TcpFlowWritable,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void,
@@ -462,99 +497,139 @@ private final class TcpClientWritePump {
     }
 
     func markOpened() {
-        queue.async {
-            guard !self.closed else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.isClosedLocked() { return }
             self.opened = true
             self.flushLocked()
         }
     }
 
     func failOpen(_ error: Error) {
-        queue.async {
-            guard !self.closed else { return }
-            self.closed = true
-            self.closeRequested = true
-            self.pending.removeAll(keepingCapacity: false)
-            self.pendingBytes = 0
-            self.onDrainedClose = nil
-            self.onTerminalError(error)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.terminateLocked(with: error)
         }
     }
 
-    /// Enqueue a chunk for delivery via `flow.writeData`.
+    /// Enqueue a chunk for delivery via the underlying flow's write.
     ///
-    /// Synchronous so the caller (the Rust bridge, via the FFI thunk) gets a
-    /// `RamaTcpDeliverStatusBridge` back in the same call:
+    /// Returns synchronously to the caller (the Rust bridge, via the FFI
+    /// thunk) with one of:
     ///   - `.accepted` — chunk queued; Rust may keep producing.
     ///   - `.paused` — `pendingBytes` reached `writePumpMaxPendingBytes`.
-    ///     Rust must wait for `signalServerDrain` (wired to `onDrained`
-    ///     below) before producing more.
+    ///     Rust must wait for `signalServerDrain` (wired to `onDrained`)
+    ///     before producing more.
     ///   - `.closed` — pump is being torn down; no further drain will fire.
+    ///
+    /// The cross-thread state check is lock-protected; the actual
+    /// append + flush dispatches asynchronously onto the pump's queue
+    /// so the FFI thread never blocks on the dispatch queue.
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
-        var status: RamaTcpDeliverStatusBridge = .accepted
-        // queue.sync runs the closure on `flowQueue` and blocks the FFI
-        // thread (a Tokio worker) until it completes. Each per-flow queue is
-        // serial and the items it processes never await, so the wait is
-        // bounded; using `.async` here would force us to maintain a parallel
-        // atomic counter to give the FFI a synchronous bound check, which is
-        // what we used to (asymmetrically) avoid by leaving `pending`
-        // unbounded — exactly the bug we're fixing.
-        queue.sync {
-            if self.closed || self.closeRequested {
-                status = .closed
-                return
+
+        stateLock.lock()
+        if lockedClosed {
+            stateLock.unlock()
+            return .closed
+        }
+        // First chunk through unconditionally — an oversized single
+        // chunk (larger than the cap) must not deadlock the bridge.
+        if lockedPendingBytes > 0
+            && lockedPendingBytes + data.count > writePumpMaxPendingBytes
+        {
+            lockedPausedSignaled = true
+            stateLock.unlock()
+            return .paused
+        }
+        lockedPendingBytes += data.count
+        stateLock.unlock()
+
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Re-check under lock; cancel() can have flipped the flag
+            // between the FFI fast-path return and this dispatch.
+            self.stateLock.lock()
+            let closed = self.lockedClosed
+            if closed {
+                self.lockedPendingBytes -= data.count
             }
-            // Allow the first chunk through unconditionally so a single
-            // oversized chunk (larger than the cap) can never deadlock us;
-            // pause only when there's already queued bytes that need to be
-            // drained first.
-            if !self.pending.isEmpty
-                && self.pendingBytes + data.count > writePumpMaxPendingBytes
-            {
-                self.pausedSignaled = true
-                status = .paused
-                return
-            }
-            self.pendingBytes += data.count
+            self.stateLock.unlock()
+            if closed { return }
             self.pending.append(data)
             self.flushLocked()
         }
-        return status
+        return .accepted
     }
 
     func closeWhenDrained(_ onDrainedClose: @escaping (_ wasOpened: Bool) -> Void) {
-        queue.async {
-            if self.closed {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.isClosedLocked() {
                 onDrainedClose(self.opened)
                 return
             }
-
             self.closeRequested = true
             self.onDrainedClose = onDrainedClose
             self.finishCloseIfDrainedLocked()
         }
     }
 
+    /// External-cancel entry point. Sets the closed flag synchronously
+    /// so any pending retry's `flushLocked` short-circuits immediately,
+    /// then schedules queue-side cleanup. Required because the Rust
+    /// bridge may have already torn down while the writer is still
+    /// looping on transient errors against a dying flow.
+    func cancel() {
+        stateLock.lock()
+        lockedClosed = true
+        lockedPendingBytes = 0
+        stateLock.unlock()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pending.removeAll(keepingCapacity: false)
+            self.onDrainedClose = nil
+            self.retryDeadlineAt = nil
+        }
+    }
+
+    private func isClosedLocked() -> Bool {
+        stateLock.lock()
+        let c = lockedClosed
+        stateLock.unlock()
+        return c
+    }
+
     private func flushLocked() {
-        if writing || pending.isEmpty || closed || !opened {
+        if isClosedLocked() {
+            return
+        }
+        if writing || pending.isEmpty || !opened {
             finishCloseIfDrainedLocked()
             return
         }
 
         writing = true
         let chunk = pending.removeFirst()
-        pendingBytes -= chunk.count
-        // Edge-triggered drain signal: if Rust was paused and we just dropped
-        // `pendingBytes` below the cap, wake it once. Honouring this from
-        // the pre-write site (rather than the completion handler) lets Rust
-        // start producing the next chunk in parallel with the current write.
-        if pausedSignaled && pendingBytes < writePumpMaxPendingBytes {
-            pausedSignaled = false
+
+        var fireDrain = false
+        stateLock.lock()
+        lockedPendingBytes -= chunk.count
+        if lockedPausedSignaled && lockedPendingBytes < writePumpMaxPendingBytes {
+            lockedPausedSignaled = false
+            fireDrain = true
+        }
+        stateLock.unlock()
+        if fireDrain {
+            // Edge-triggered drain signal — wakes Rust before the
+            // current write completes so it can start producing in
+            // parallel with the in-flight write.
             onDrained()
         }
-        self.flow.write(chunk) { error in
+
+        self.flow.write(chunk) { [weak self] error in
+            guard let self else { return }
             self.queue.async {
                 self.writing = false
                 if let error {
@@ -563,14 +638,35 @@ private final class TcpClientWritePump {
                         // the chunk at the head of `pending` (preserves order)
                         // and back off briefly. Tearing the flow down here
                         // would surface as a "random" mid-stream connection
-                        // drop to the originating app — exactly what was
-                        // breaking large h2 downloads.
+                        // drop to the originating app for the large-h2 case
+                        // we deliberately ride out.
+                        //
+                        // Bound the loop with a wall-clock deadline so a
+                        // dying flow's kernel buffer that keeps returning
+                        // ENOBUFS can't pin the pump (and the queue's
+                        // captured `self`) alive indefinitely.
+                        let now = DispatchTime.now()
+                        if self.retryDeadlineAt == nil {
+                            self.retryDeadlineAt = now + .milliseconds(writeRetryHardDeadlineMs)
+                        }
+                        if let deadline = self.retryDeadlineAt, now >= deadline {
+                            self.logger(
+                                FlowLogMessage(
+                                    level: .debug,
+                                    text: "tcp flow.write transient-retry deadline (\(writeRetryHardDeadlineMs)ms) exceeded; tearing flow down",
+                                )
+                            )
+                            self.terminateLocked(with: error)
+                            return
+                        }
                         self.pending.insert(chunk, at: 0)
-                        self.pendingBytes += chunk.count
+                        self.stateLock.lock()
+                        self.lockedPendingBytes += chunk.count
+                        self.stateLock.unlock()
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
-                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
-                            self.flushLocked()
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                            self?.flushLocked()
                         }
                         return
                     }
@@ -578,30 +674,47 @@ private final class TcpClientWritePump {
                         classifyFlowCallbackError(
                             error,
                             operation: "tcp flow.write",
-                            isClosing: self.closed
+                            isClosing: self.isClosedLocked()
                         )
                     )
-                    self.closed = true
-                    self.closeRequested = true
-                    self.pending.removeAll(keepingCapacity: false)
-                    self.pendingBytes = 0
-                    self.onDrainedClose = nil
-                    self.onTerminalError(error)
+                    self.terminateLocked(with: error)
                     return
                 }
-
-                // Reset backoff after any clean write — keeps subsequent
-                // transient hiccups from inheriting an old long delay.
+                self.retryDeadlineAt = nil
                 self.retryDelayMs = writeRetryInitialDelayMs
                 self.flushLocked()
             }
         }
     }
 
-    private func finishCloseIfDrainedLocked() {
-        guard closeRequested, !closed, !writing, pending.isEmpty else { return }
+    /// Queue-side terminal cleanup. The closed flag is published under
+    /// the lock so any concurrent FFI `enqueue` on another thread sees
+    /// the shutdown and returns `.closed` without touching the queue.
+    private func terminateLocked(with error: Error) {
+        stateLock.lock()
+        let alreadyClosed = lockedClosed
+        lockedClosed = true
+        lockedPendingBytes = 0
+        stateLock.unlock()
+        if alreadyClosed { return }
+        closeRequested = true
+        pending.removeAll(keepingCapacity: false)
+        retryDeadlineAt = nil
+        let onDrainedClose = self.onDrainedClose
+        self.onDrainedClose = nil
+        onTerminalError(error)
+        // If the close-when-drained path was waiting for us, signal
+        // it so the dispatcher's drain completion still runs.
+        onDrainedClose?(opened)
+    }
 
-        closed = true
+    private func finishCloseIfDrainedLocked() {
+        guard closeRequested, !writing, pending.isEmpty else { return }
+        stateLock.lock()
+        let alreadyClosed = lockedClosed
+        if !alreadyClosed { lockedClosed = true }
+        stateLock.unlock()
+        if alreadyClosed { return }
         let onDrainedClose = self.onDrainedClose
         let wasOpened = self.opened
         self.onDrainedClose = nil
@@ -1012,14 +1125,22 @@ private final class NwTcpConnectionWritePump {
     /// `RamaTcpSessionHandle.signalEgressDrain`.
     private let onDrained: () -> Void
     private let queue: DispatchQueue
+
+    /// See `TcpClientWritePump.stateLock` for why these fields live
+    /// behind a lock instead of on the queue: the FFI bound check
+    /// must complete without dispatching onto the serial queue.
+    private let stateLock = NSLock()
+    private var lockedClosed = false
+    private var lockedPendingBytes: Int = 0
+    private var lockedPausedSignaled = false
+
     private var pending: [Data] = []
-    /// See [`TcpClientWritePump.pendingBytes`].
-    private var pendingBytes: Int = 0
     private var writing = false
     private var closeRequested = false
-    private var closed = false
-    private var pausedSignaled = false
     private var retryDelayMs: Int = writeRetryInitialDelayMs
+    /// See `TcpClientWritePump.retryDeadlineAt`. Same wall-clock cap
+    /// on the transient-retry loop.
+    private var retryDeadlineAt: DispatchTime?
 
     init(connection: NWConnection, queue: DispatchQueue, onDrained: @escaping () -> Void) {
         self.connection = connection
@@ -1031,67 +1152,110 @@ private final class NwTcpConnectionWritePump {
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
-        var status: RamaTcpDeliverStatusBridge = .accepted
-        queue.sync {
-            if self.closed || self.closeRequested {
-                status = .closed
-                return
+
+        stateLock.lock()
+        if lockedClosed {
+            stateLock.unlock()
+            return .closed
+        }
+        if lockedPendingBytes > 0
+            && lockedPendingBytes + data.count > writePumpMaxPendingBytes
+        {
+            lockedPausedSignaled = true
+            stateLock.unlock()
+            return .paused
+        }
+        lockedPendingBytes += data.count
+        stateLock.unlock()
+
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.stateLock.lock()
+            let closed = self.lockedClosed
+            if closed {
+                self.lockedPendingBytes -= data.count
             }
-            if !self.pending.isEmpty
-                && self.pendingBytes + data.count > writePumpMaxPendingBytes
-            {
-                self.pausedSignaled = true
-                status = .paused
-                return
-            }
-            self.pendingBytes += data.count
+            self.stateLock.unlock()
+            if closed { return }
             self.pending.append(data)
             self.flush()
         }
-        return status
+        return .accepted
     }
 
     func closeWhenDrained() {
-        queue.async {
-            guard !self.closed else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self.isClosedLocked() { return }
             self.closeRequested = true
             self.finishCloseIfDrained()
         }
     }
 
+    func cancel() {
+        stateLock.lock()
+        lockedClosed = true
+        lockedPendingBytes = 0
+        stateLock.unlock()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pending.removeAll(keepingCapacity: false)
+            self.retryDeadlineAt = nil
+        }
+    }
+
+    private func isClosedLocked() -> Bool {
+        stateLock.lock()
+        let c = lockedClosed
+        stateLock.unlock()
+        return c
+    }
+
     private func flush() {
-        guard !writing, !pending.isEmpty, !closed else { return }
+        if isClosedLocked() { return }
+        guard !writing, !pending.isEmpty else { return }
         writing = true
         let chunk = pending.removeFirst()
-        pendingBytes -= chunk.count
-        if pausedSignaled && pendingBytes < writePumpMaxPendingBytes {
-            pausedSignaled = false
-            onDrained()
+
+        var fireDrain = false
+        stateLock.lock()
+        lockedPendingBytes -= chunk.count
+        if lockedPausedSignaled && lockedPendingBytes < writePumpMaxPendingBytes {
+            lockedPausedSignaled = false
+            fireDrain = true
         }
+        stateLock.unlock()
+        if fireDrain { onDrained() }
+
         connection.send(content: chunk, completion: .contentProcessed({ [weak self] error in
             guard let self else { return }
             self.queue.async {
                 self.writing = false
                 if let error {
                     if isTransientWriteBackpressure(error) {
-                        // Same retry logic as `TcpClientWritePump`: kernel
-                        // socket buffer is temporarily full, back off rather
-                        // than tearing down the connection.
+                        let now = DispatchTime.now()
+                        if self.retryDeadlineAt == nil {
+                            self.retryDeadlineAt = now + .milliseconds(writeRetryHardDeadlineMs)
+                        }
+                        if let deadline = self.retryDeadlineAt, now >= deadline {
+                            self.terminateLocked()
+                            return
+                        }
                         self.pending.insert(chunk, at: 0)
-                        self.pendingBytes += chunk.count
+                        self.stateLock.lock()
+                        self.lockedPendingBytes += chunk.count
+                        self.stateLock.unlock()
                         let delay = self.retryDelayMs
                         self.retryDelayMs = min(self.retryDelayMs * 2, writeRetryMaxDelayMs)
-                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) {
-                            self.flush()
+                        self.queue.asyncAfter(deadline: .now() + .milliseconds(delay)) { [weak self] in
+                            self?.flush()
                         }
                         return
                     }
-                    self.closed = true
-                    self.closeRequested = true
-                    self.pending.removeAll(keepingCapacity: false)
-                    self.pendingBytes = 0
+                    self.terminateLocked()
                     return
                 }
+                self.retryDeadlineAt = nil
                 self.retryDelayMs = writeRetryInitialDelayMs
                 self.flush()
                 self.finishCloseIfDrained()
@@ -1099,10 +1263,25 @@ private final class NwTcpConnectionWritePump {
         }))
     }
 
+    private func terminateLocked() {
+        stateLock.lock()
+        let alreadyClosed = lockedClosed
+        lockedClosed = true
+        lockedPendingBytes = 0
+        stateLock.unlock()
+        if alreadyClosed { return }
+        closeRequested = true
+        pending.removeAll(keepingCapacity: false)
+        retryDeadlineAt = nil
+    }
+
     private func finishCloseIfDrained() {
-        guard closeRequested, !closed, !writing, pending.isEmpty else { return }
-        closed = true
-        // Send an empty isComplete=true message to signal FIN to the remote peer.
+        guard closeRequested, !writing, pending.isEmpty else { return }
+        stateLock.lock()
+        let alreadyClosed = lockedClosed
+        if !alreadyClosed { lockedClosed = true }
+        stateLock.unlock()
+        if alreadyClosed { return }
         connection.send(
             content: nil, isComplete: true,
             completion: .contentProcessed({ _ in }))
@@ -1194,6 +1373,14 @@ private final class TcpFlowContext {
     /// on terminal teardown so the pump deallocates with the rest of the flow.
     var clientReadPump: TcpClientReadPump?
     var egressReadPump: NwTcpConnectionReadPump?
+    /// Strong refs to the writer pumps so the dispatcher's terminal
+    /// paths can call `cancel()` and short-circuit any in-flight retry
+    /// loop. Without these the only way for the writer to learn the
+    /// flow is dead is its next `flow.write` returning a non-transient
+    /// error — which under sustained kernel-buffer pressure can be
+    /// many seconds away.
+    var clientWritePump: TcpClientWritePump?
+    var egressWritePump: NwTcpConnectionWritePump?
 }
 
 private final class UdpFlowContext {
@@ -1395,13 +1582,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 self?.logFlowMessage(message)
             },
             onTerminalError: { [weak self, weak ctx] error in
-                // [weak ctx] breaks the cycle:
-                //   session → callbackBox → onServerBytes → writer →
-                //   onTerminalError → ctx → clientReadPump.onTerminal →
-                //   session.
-                // Without it, removing the session from `tcpSessions`
-                // does not let any of the per-flow Swift objects
-                // deallocate.
+                // [weak ctx] keeps the writer's onTerminalError closure
+                // from pinning the per-flow context graph alive after
+                // the session is removed.
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 ctx?.connection?.cancel()
@@ -1412,16 +1595,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 ctx?.session?.signalServerDrain()
             }
         )
+        ctx.clientWritePump = writer
 
         let decision =
             engine?.newTcpSession(
                 meta: meta,
-                onServerBytes: { [weak writer] data in
-                    // Weak: `writer` is held by `ctx`; Rust holding the
-                    // closure must not pin the writer. If the writer is
-                    // gone, the dispatcher has already torn down — tell
-                    // Rust to stop pumping by reporting `.closed`.
-                    writer?.enqueue(data) ?? .closed
+                onServerBytes: { [weak ctx] data in
+                    // Reach the writer through ctx so the Rust callback
+                    // box can't keep the writer alive past dispatcher
+                    // teardown. `.closed` tells the Rust bridge to stop
+                    // producing.
+                    ctx?.clientWritePump?.enqueue(data) ?? .closed
                 },
                 onClientReadDemand: { [weak ctx] in
                     // Rust → Swift: the per-flow ingress channel has space
@@ -1432,8 +1616,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         ctx?.clientReadPump?.resume()
                     }
                 },
-                onServerClosed: { [weak self, weak writer, weak ctx] in
-                    writer?.closeWhenDrained { wasOpened in
+                onServerClosed: { [weak self, weak ctx] in
+                    ctx?.clientWritePump?.closeWhenDrained { wasOpened in
                         if wasOpened {
                             flow.closeReadWithError(nil)
                             flow.closeWriteWithError(nil)
@@ -1530,18 +1714,23 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             ctx?.session?.signalEgressDrain()
                         }
                     )
+                    ctx.egressWritePump = writePump
                     let readPump = NwTcpConnectionReadPump(
                         connection: connection, session: session, queue: flowQueue)
                     ctx.egressReadPump = readPump
 
                     session.activate(
-                        onWriteToEgress: { data in writePump.enqueue(data) },
+                        onWriteToEgress: { [weak ctx] data in
+                            ctx?.egressWritePump?.enqueue(data) ?? .closed
+                        },
                         onEgressReadDemand: { [weak ctx] in
                             flowQueue.async { [weak ctx] in
                                 ctx?.egressReadPump?.resume()
                             }
                         },
-                        onCloseEgress: { writePump.closeWhenDrained() }
+                        onCloseEgress: { [weak ctx] in
+                            ctx?.egressWritePump?.closeWhenDrained()
+                        }
                     )
 
                     flow.open(withLocalEndpoint: nil) { [weak self] error in
@@ -1572,21 +1761,24 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                     // for the full chain).
                                     if let err = readError {
                                         // Hard error: tear everything
-                                        // down now. Pump-pending
-                                        // bytes are abandoned, but
-                                        // `on_server_closed` still
-                                        // fires from the engine, so
-                                        // the writer pump's
-                                        // `closeWhenDrained` runs as
-                                        // a defensive late-arrival
-                                        // drain.
+                                        // down now. Cancel the
+                                        // writer pumps actively so
+                                        // any in-flight transient-
+                                        // retry loop short-circuits
+                                        // instead of keeping itself
+                                        // alive against a dying
+                                        // flow.
                                         flow.closeReadWithError(err)
                                         flow.closeWriteWithError(err)
                                         ctx?.connection?.cancel()
                                         readPump?.cancel()
+                                        ctx?.clientWritePump?.cancel()
+                                        ctx?.egressWritePump?.cancel()
                                         session?.cancel()
                                         ctx?.clientReadPump = nil
                                         ctx?.egressReadPump = nil
+                                        ctx?.clientWritePump = nil
+                                        ctx?.egressWritePump = nil
                                         self?.removeTcpFlow(flowId)
                                     } else {
                                         // Natural EOF: client closed
