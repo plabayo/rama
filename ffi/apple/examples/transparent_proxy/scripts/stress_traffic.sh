@@ -166,6 +166,14 @@ loop_pool() {
 # One-shot snapshot of a target pid: rss/vsz, vmmap summary, heap
 # totals. Lands in `$LOG_DIR/$label.txt` so before/after diffs can
 # be done with a single `diff` invocation post-run.
+#
+# `vmmap` and `heap` need `sudo` against a root-owned sysext —
+# we use `sudo -n` (non-interactive) so the snapshot doesn't
+# silently hang the script waiting for a password prompt
+# millennia later. If the user hasn't cached a sudo timestamp
+# we fall back to running unprivileged and the file records
+# the failure inline, which is still better than silent partial
+# capture.
 snapshot_pid() {
   local pid="$1" label="$2"
   local out="$LOG_DIR/${label}.txt"
@@ -174,12 +182,15 @@ snapshot_pid() {
     ps -o pid,rss,vsz,%cpu,state -p "$pid" 2>/dev/null \
       || { echo "pid $pid gone"; return 1; }
     printf '\n--- vmmap --summary ---\n'
-    vmmap --summary "$pid" 2>/dev/null \
-      || echo "vmmap unavailable (try sudo)"
+    sudo -n vmmap --summary "$pid" 2>/dev/null \
+      || vmmap --summary "$pid" 2>/dev/null \
+      || echo "vmmap unavailable (need sudo; cache with 'sudo -v' before the run)"
     printf '\n--- heap totals ---\n'
-    heap "$pid" 2>/dev/null \
+    sudo -n heap "$pid" 2>/dev/null \
       | grep -E 'All zones:|Total|Process [0-9]+:' \
-      || echo "heap unavailable (try sudo)"
+      || heap "$pid" 2>/dev/null \
+      | grep -E 'All zones:|Total|Process [0-9]+:' \
+      || echo "heap unavailable (need sudo; cache with 'sudo -v' before the run)"
     printf '\n'
   } >"$out"
 }
@@ -189,12 +200,16 @@ snapshot_pid() {
 # DURATION seconds of work — no point pounding upstream if the
 # sysext crashed or DNS is broken. Cheap, ~10s worst case.
 #
-# When MONITOR_PID is set we also kill -0 it so a stale PID
-# (sysext was unloaded between runs) fails fast with a specific
-# message instead of bottoming out at "all curls timing out".
+# When MONITOR_PID is set we also confirm the process exists so a
+# stale PID (sysext was unloaded between runs) fails fast with a
+# specific message instead of bottoming out at "all curls timing
+# out". Use `ps -p` rather than `kill -0`: the sysext runs as
+# root, and `kill -0` from a regular user returns EPERM
+# indistinguishable from ESRCH — would false-flag a healthy
+# sysext as gone.
 liveness_probe() {
   local pid="$1"
-  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+  if [[ -n "$pid" ]] && ! ps -p "$pid" >/dev/null 2>&1; then
     say "${RED}liveness: pid $pid not running — sysext is gone${RESET}"
     return 1
   fi

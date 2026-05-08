@@ -367,19 +367,28 @@ close-reason histogram (the smoking-gun signal from
 `reason=shutdown`; post-fix should be dominantly `peer_eof_*`):
 
 ```sh
+# Cache a sudo timestamp first so the script can capture
+# vmmap/heap snapshots non-interactively without hanging on a
+# password prompt (the sysext is root-owned).
+sudo -v
+
 START="$(date -u '+%Y-%m-%d %H:%M:%S')"
 STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   STRESS_DURATION=180 just stress-traffic
 
 # After the run, capture the system log for the same window:
 sudo log show \
-  --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
+  --predicate '(subsystem == "org.ramaproxy.example.tproxy") || \
+                      (subsystem == "com.apple.networkextension") || \
+                      (subsystem == "com.apple.network")' \
+  --info --debug \
   --start "$START" --style ndjson > /tmp/system.ndjson
 
 # Re-run the script with STRESS_NDJSON to print the histogram
 # without re-running the workers (set STRESS_DURATION=0 if you
 # only want the analysis pass):
 STRESS_NDJSON=/tmp/system.ndjson STRESS_DURATION=0 just stress-traffic
+sudo leaks $(pgrep -f org.ramaproxy.example.tproxy.dev.provider) | head -50
 ```
 
 The script writes per-worker logs to a tmp directory and prints,
