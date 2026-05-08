@@ -24,9 +24,28 @@
 #   STRESS_POST_TARGET    POST echo target. Default https://httpbin.org/post
 #   STRESS_LOG_DIR        where per-worker logs go. Default mktemp.
 #   STRESS_MONITOR_PID    if set, periodically `leaks` / `vmmap` the pid.
+#                         Also enables before/after `vmmap`+`heap`
+#                         snapshots (`preflight.txt`, `postflight.txt`)
+#                         in the log dir for self-contained diff.
+#   STRESS_NDJSON         path to a captured `log show … --style ndjson`
+#                         file. When set, the post-run summary parses
+#                         it to produce a close-reason histogram, the
+#                         single strongest signal that the truncation
+#                         fix is working (pre-fix: ~89% `shutdown`
+#                         for curl flows; post-fix: dominantly
+#                         `peer_eof_*`). Collect with:
+#                           sudo log show \
+#                             --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
+#                             --start "$(date -u -v-10M '+%Y-%m-%d %H:%M:%S')" \
+#                             --style ndjson > /tmp/system.ndjson
+#   STRESS_SKIP_LIVENESS  set to 1 to skip the pre-flight liveness
+#                         probe. Default off — without the probe we
+#                         can spend 180s pounding nothing if the
+#                         sysext crashed or is uninstalled.
 #
 # All workers run in parallel for STRESS_DURATION seconds. The script
-# prints a one-line per-worker summary at the end.
+# prints a one-line per-worker summary at the end, plus a truncation
+# scan and (with STRESS_NDJSON set) a close-reason histogram.
 
 set -uo pipefail
 
@@ -44,6 +63,8 @@ LOG_DIR="${STRESS_LOG_DIR:-$(mktemp -d /tmp/rama-stress.XXXXXX)}"
 mkdir -p "$LOG_DIR"
 
 MONITOR_PID="${STRESS_MONITOR_PID:-}"
+NDJSON_PATH="${STRESS_NDJSON:-}"
+SKIP_LIVENESS="${STRESS_SKIP_LIVENESS:-}"
 
 # Pretty terminal output without forcing color where the env doesn't
 # claim to support it.
@@ -135,10 +156,60 @@ loop_pool() {
   # final-summary scan below.
   local fail
   fail=$(grep -cE '^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) ' \
-    "$LOG_DIR/${label}.log" 2>/dev/null || echo 0)
+    "$LOG_DIR/${label}.log" 2>/dev/null)
+  fail=${fail:-0}
   local ok=$((iter - fail))
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
+}
+
+# One-shot snapshot of a target pid: rss/vsz, vmmap summary, heap
+# totals. Lands in `$LOG_DIR/$label.txt` so before/after diffs can
+# be done with a single `diff` invocation post-run.
+snapshot_pid() {
+  local pid="$1" label="$2"
+  local out="$LOG_DIR/${label}.txt"
+  {
+    printf '=== %s @ %s ===\n' "$label" "$(date -u +%FT%TZ)"
+    ps -o pid,rss,vsz,%cpu,state -p "$pid" 2>/dev/null \
+      || { echo "pid $pid gone"; return 1; }
+    printf '\n--- vmmap --summary ---\n'
+    vmmap --summary "$pid" 2>/dev/null \
+      || echo "vmmap unavailable (try sudo)"
+    printf '\n--- heap totals ---\n'
+    heap "$pid" 2>/dev/null \
+      | grep -E 'All zones:|Total|Process [0-9]+:' \
+      || echo "heap unavailable (try sudo)"
+    printf '\n'
+  } >"$out"
+}
+
+# Pre-flight liveness probe. Confirms basic transport works (a
+# 2xx round-trip against $HTTPS_TARGET) before we kick off
+# DURATION seconds of work — no point pounding upstream if the
+# sysext crashed or DNS is broken. Cheap, ~10s worst case.
+#
+# When MONITOR_PID is set we also kill -0 it so a stale PID
+# (sysext was unloaded between runs) fails fast with a specific
+# message instead of bottoming out at "all curls timing out".
+liveness_probe() {
+  local pid="$1"
+  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    say "${RED}liveness: pid $pid not running — sysext is gone${RESET}"
+    return 1
+  fi
+  local code
+  code=$(curl --silent --output /dev/null --max-time 10 \
+      --write-out '%{http_code}' \
+      "$HTTPS_TARGET" 2>/dev/null) || true
+  if [[ "$code" =~ ^2 ]]; then
+    say "${GREEN}liveness: probe got $code (proxy reachable, traffic flowing)${RESET}"
+    return 0
+  fi
+  say "${RED}liveness: probe got '$code' against $HTTPS_TARGET${RESET}"
+  say "  proxy may not be intercepting, sysext may be down, or upstream is rate-limiting"
+  say "  set STRESS_SKIP_LIVENESS=1 to run anyway"
+  return 1
 }
 
 # Optional sampling of a target pid: vmmap regions, leaks count,
@@ -177,6 +248,23 @@ POST_FILE="$LOG_DIR/post.body"
 dd if=/dev/zero of="$POST_FILE" bs=1024 \
    count=$((POST_BYTES / 1024)) 2>/dev/null
 say "post body:   $(du -h "$POST_FILE" | cut -f1)"
+
+# Pre-flight: confirm the sysext is intercepting BEFORE we waste
+# DURATION seconds on a dead proxy. Failing the probe here saves
+# hours of "why are all my flows timing out" head-scratching.
+if [[ -z "$SKIP_LIVENESS" ]]; then
+  if ! liveness_probe "$MONITOR_PID"; then
+    exit 1
+  fi
+fi
+
+# Pre-flight memory snapshot. Pairs with the post-flight snapshot
+# at run end so the diff is self-contained in $LOG_DIR.
+if [[ -n "$MONITOR_PID" ]]; then
+  if snapshot_pid "$MONITOR_PID" preflight; then
+    say "preflight:   $LOG_DIR/preflight.txt"
+  fi
+fi
 
 START_TS=$(date -u +%s)
 
@@ -229,7 +317,12 @@ if compgen -G "$LOG_DIR/*.log" >/dev/null; then
   err_re='^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) '
   for f in "$LOG_DIR"/*.log; do
     name=$(basename "$f" .log)
-    err_count=$(grep -cE "$err_re" "$f" 2>/dev/null || echo 0)
+    # `grep -c` prints "0" on no-match AND exits 1, so the
+    # naive `|| echo 0` form duplicates the count into the
+    # variable ("0\n0"). Capture stdout directly and default
+    # any error to 0.
+    err_count=$(grep -cE "$err_re" "$f" 2>/dev/null)
+    err_count=${err_count:-0}
     if (( err_count > 0 )); then
       printf '%s: %d non-2xx / curl errors\n' "$name" "$err_count"
       grep -E "$err_re" "$f" | head -5 | sed 's/^/  /'
@@ -237,6 +330,93 @@ if compgen -G "$LOG_DIR/*.log" >/dev/null; then
   done
 fi
 
+# Truncation detector. The customer-visible symptom from the
+# stress-test root cause was curl reporting `N out of M bytes
+# received` on `--max-time` aborts and connection drops mid-body.
+# A clean post-fix run should show zero of these for the
+# response-side workers (`large_get`, `parallel_pool`, `post_large`).
+# Any hit here points at the bridge dropping queued bytes — the
+# exact failure mode the close-sink + dispatcher fix was supposed
+# to close.
+if compgen -G "$LOG_DIR/*.log" >/dev/null; then
+  hdr "partial-body events (truncation symptom)"
+  trunc_re='[0-9]+ out of [0-9]+ bytes (received|sent)'
+  trunc_total=0
+  for f in "$LOG_DIR"/*.log; do
+    name=$(basename "$f" .log)
+    n=$(grep -cE "$trunc_re" "$f" 2>/dev/null)
+    n=${n:-0}
+    if (( n > 0 )); then
+      printf '%s: %d partial-body lines\n' "$name" "$n"
+      grep -oE "$trunc_re" "$f" | head -3 | sed 's/^/  /'
+      trunc_total=$((trunc_total + n))
+    fi
+  done
+  if (( trunc_total == 0 )); then
+    printf '%snone%s — no partial-body events recorded across all workers\n' "$GREEN" "$RESET"
+  else
+    printf '%stotal:%s %d partial-body events across all workers\n' "$RED" "$RESET" "$trunc_total"
+  fi
+fi
+
+# Post-flight memory snapshot. Pair with `preflight.txt` for a
+# self-contained delta — `diff $LOG_DIR/preflight.txt $LOG_DIR/postflight.txt`
+# shows physical-footprint and vmmap-region drift across the run.
+if [[ -n "$MONITOR_PID" ]]; then
+  if snapshot_pid "$MONITOR_PID" postflight; then
+    hdr "memory snapshot"
+    say "preflight  → $LOG_DIR/preflight.txt"
+    say "postflight → $LOG_DIR/postflight.txt"
+    say "diff       → diff $LOG_DIR/preflight.txt $LOG_DIR/postflight.txt"
+  fi
+fi
+
+# Close-reason histogram. The audit's smoking-gun signal was the
+# fraction of TCP flow closes that recorded `reason=shutdown`
+# vs `peer_eof_*`. Pre-fix: ~89% shutdown for curl flows because
+# the production dispatcher routed natural EOF through `cancel()`.
+# Post-fix: should be dominantly `peer_eof_left`. We parse
+# whatever ndjson the operator captured (see STRESS_NDJSON in the
+# header docs) and bucket by reason; the absolute numbers don't
+# matter, the proportion does.
+if [[ -n "$NDJSON_PATH" ]]; then
+  hdr "close-reason histogram (from $NDJSON_PATH)"
+  if [[ ! -r "$NDJSON_PATH" ]]; then
+    say "${RED}cannot read $NDJSON_PATH${RESET}"
+  else
+    # Each system.ndjson line is a JSON object; the close-event
+    # message is `transparent proxy tcp flow closed` with a
+    # `reason` field. We avoid jq dependency and use awk + a
+    # narrow regex: `reason":"…"`.
+    awk '
+      /transparent proxy (tcp|udp) flow closed/ {
+        if (match($0, /"reason"\s*:\s*"[^"]+"/)) {
+          r = substr($0, RSTART, RLENGTH)
+          sub(/.*"reason"\s*:\s*"/, "", r)
+          sub(/".*/, "", r)
+          counts[r]++
+          total++
+        }
+      }
+      END {
+        if (total == 0) {
+          print "  no close events found in capture"
+          exit
+        }
+        for (r in counts) {
+          printf "  %-20s %6d  %5.1f%%\n", r, counts[r], 100.0 * counts[r] / total
+        }
+        printf "  %-20s %6d  100.0%%\n", "TOTAL", total
+      }
+    ' "$NDJSON_PATH" | sort
+  fi
+else
+  hdr "close-reason histogram"
+  say "  set STRESS_NDJSON=<path> to enable. Capture with:"
+  say "    sudo log show --predicate 'subsystem == \"org.ramaproxy.example.tproxy\"' \\"
+  say "      --start \"\$(date -u -v-10M '+%Y-%m-%d %H:%M:%S')\" --style ndjson \\"
+  say "      > /tmp/system.ndjson"
+fi
+
 hdr "logs at $LOG_DIR"
-say "  hand to $LOG_DIR/system.ndjson alongside the offline-bundle script in the README"
 say "done"

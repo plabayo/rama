@@ -351,17 +351,51 @@ STRESS_LARGE_BYTES=$((64 * 1024 * 1024)) just stress-traffic   # 64 MiB GET
 ```
 
 To couple the run with periodic resource sampling of the extension
-process, hand the script the sysext PID via `STRESS_MONITOR_PID`:
+process — and to enable pre/post-run `vmmap`+`heap` snapshots so
+the diff sits in the same log dir — hand the script the sysext PID
+via `STRESS_MONITOR_PID`:
 
 ```sh
 STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   just stress-traffic
 ```
 
-The script writes per-worker logs to a tmp directory and prints a
-summary on exit (counts + the first few errors per worker). Pair
-with [Bundle everything for offline triage](#bundle-everything-for-offline-triage)
-below to capture dial9 + system logs from the same window.
+For a maximally diagnostic run, capture the system log alongside
+and pass it via `STRESS_NDJSON` so the post-run summary prints a
+close-reason histogram (the smoking-gun signal from
+`stress_test_root_cause_v2.md` — pre-fix curl flows showed ~89%
+`reason=shutdown`; post-fix should be dominantly `peer_eof_*`):
+
+```sh
+START="$(date -u '+%Y-%m-%d %H:%M:%S')"
+STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
+  STRESS_DURATION=180 just stress-traffic
+
+# After the run, capture the system log for the same window:
+sudo log show \
+  --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
+  --start "$START" --style ndjson > /tmp/system.ndjson
+
+# Re-run the script with STRESS_NDJSON to print the histogram
+# without re-running the workers (set STRESS_DURATION=0 if you
+# only want the analysis pass):
+STRESS_NDJSON=/tmp/system.ndjson STRESS_DURATION=0 just stress-traffic
+```
+
+The script writes per-worker logs to a tmp directory and prints,
+on exit:
+
+- per-worker `iters / ok / fail` summary
+- top-5 errors per worker (4xx/5xx, `000` transport failures, curl errors)
+- truncation scan: `curl: ... N out of M bytes received` lines
+  (the customer-visible symptom of the close-sink truncation bug —
+  zero hits is the success signal)
+- pre/post `vmmap`+`heap` snapshot if `STRESS_MONITOR_PID` was set
+- close-reason histogram if `STRESS_NDJSON` points at a captured
+  system log
+
+Pair with [Bundle everything for offline triage](#bundle-everything-for-offline-triage)
+below to also collect dial9 traces from the same window.
 
 ### Apple-native resource and leak inspection
 
