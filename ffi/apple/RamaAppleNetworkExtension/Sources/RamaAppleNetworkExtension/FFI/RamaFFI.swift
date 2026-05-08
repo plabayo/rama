@@ -24,6 +24,9 @@ struct RamaTransparentProxyRuleBridge {
 struct RamaTransparentProxyConfigBridge {
     var tunnelRemoteAddress: String
     var rules: [RamaTransparentProxyRuleBridge]
+    /// Per-flow TCP write-pump back-pressure cap in bytes.
+    /// `0` means the Rust side did not set a value; Swift falls back to its built-in default.
+    var tcpWritePumpMaxPendingBytes: Int
 }
 
 enum RamaTransparentProxyFlowActionBridge: UInt32 {
@@ -420,7 +423,8 @@ final class RamaTransparentProxyEngineHandle {
 
         return RamaTransparentProxyConfigBridge(
             tunnelRemoteAddress: tunnelRemoteAddress,
-            rules: rules
+            rules: rules,
+            tcpWritePumpMaxPendingBytes: Int(out.tcp_write_pump_max_pending_bytes)
         )
     }
 

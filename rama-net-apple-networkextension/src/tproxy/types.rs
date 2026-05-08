@@ -431,6 +431,15 @@ impl TransparentProxyNetworkRule {
 pub struct TransparentProxyConfig {
     tunnel_remote_address: ArcStr,
     rules: Vec<TransparentProxyNetworkRule>,
+    /// Per-flow TCP write-pump back-pressure cap in bytes. The Swift pump
+    /// enqueues bytes up to this limit; once exceeded it signals `.paused` to
+    /// the Rust bridge so the ingress side stops reading until the queue drains
+    /// below the cap. Defaults to 1 MiB (1,048,576 bytes).
+    ///
+    /// Lowering this value reduces peak per-flow memory at the cost of
+    /// slightly more frequent pause/resume cycles; raising it helps absorb
+    /// bursty producers (e.g. h2 window-sized bursts) without pausing.
+    tcp_write_pump_max_pending_bytes: usize,
 }
 
 impl TransparentProxyConfig {
@@ -440,6 +449,7 @@ impl TransparentProxyConfig {
         Self {
             tunnel_remote_address: ArcStr::from("127.0.0.1"),
             rules: vec![TransparentProxyNetworkRule::any()],
+            tcp_write_pump_max_pending_bytes: 1024 * 1024,
         }
     }
 
@@ -458,6 +468,16 @@ impl TransparentProxyConfig {
         &self.rules
     }
 
+    /// Per-flow TCP write-pump back-pressure cap in bytes.
+    ///
+    /// Returns `0` when the field was not explicitly set (Swift falls back to
+    /// its built-in default). See the field doc on
+    /// [`TransparentProxyConfig`] for the full contract.
+    #[must_use]
+    pub fn tcp_write_pump_max_pending_bytes(&self) -> usize {
+        self.tcp_write_pump_max_pending_bytes
+    }
+
     generate_set_and_with! {
         /// Set tunnel remote address placeholder.
         pub fn tunnel_remote_address(mut self, tunnel_remote_address: ArcStr) -> Self {
@@ -470,6 +490,16 @@ impl TransparentProxyConfig {
         /// Set interception rules.
         pub fn rules(mut self, rules: Vec<TransparentProxyNetworkRule>) -> Self {
             self.rules = rules;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the per-flow TCP write-pump back-pressure cap.
+        ///
+        /// See [`Self::tcp_write_pump_max_pending_bytes`] for the contract.
+        pub fn tcp_write_pump_max_pending_bytes(mut self, bytes: usize) -> Self {
+            self.tcp_write_pump_max_pending_bytes = bytes;
             self
         }
     }

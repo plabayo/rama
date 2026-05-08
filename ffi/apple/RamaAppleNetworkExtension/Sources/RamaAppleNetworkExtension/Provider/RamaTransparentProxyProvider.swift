@@ -193,10 +193,10 @@ let writeRetryHardDeadlineMs: Int = 5_000
 /// holding the full chunk-count budget). A byte budget is constant
 /// regardless of chunk size.
 ///
-/// 4 MiB sits comfortably above a typical h2 stream window (1–2 MiB) so
-/// the writer can absorb a full window's worth of frames without pausing
-/// per-stream-worth of bytes, while keeping per-flow memory bounded.
-let writePumpMaxPendingBytes: Int = 4 * 1024 * 1024
+/// Default 1 MiB. May be overridden once at engine startup from
+/// `RamaTransparentProxyConfig.tcp_write_pump_max_pending_bytes` before
+/// any pump is created, so the write here is not concurrent with reads.
+nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 1 * 1024 * 1024
 
 /// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
 /// definition, so the pump prefers dropping the newest datagram on
@@ -212,7 +212,7 @@ private let udpWritePumpMaxPending: Int = 256
 /// visible in logs before backpressure kicks in, making it possible to
 /// tie a spike to an exact flow from the log timestamp rather than
 /// inferring it from a vmmap snapshot after the fact.
-private let writePumpHwmLogThresholdBytes: Int = writePumpMaxPendingBytes / 2
+nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPendingBytes / 2
 
 /// Queue-depth at which the UDP write pump emits a high-water trace
 /// log — same 50 % heuristic as the TCP byte threshold.
@@ -1700,6 +1700,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
             completionHandler(error)
             return
+        }
+
+        if startup.tcpWritePumpMaxPendingBytes > 0 {
+            writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
+            writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
+            logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        } else {
+            logInfo("tcp write pump cap using built-in default \(writePumpMaxPendingBytes) bytes")
         }
 
         let settings = NETransparentProxyNetworkSettings(
