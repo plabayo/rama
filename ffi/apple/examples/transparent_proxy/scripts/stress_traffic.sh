@@ -18,10 +18,10 @@
 #   STRESS_CONCURRENCY    parallel curls in the pool worker. Default 16.
 #   STRESS_LARGE_BYTES    bytes for the large-GET worker. Default 16 MiB.
 #   STRESS_POST_BYTES     bytes for the POST-body worker. Default 8 MiB.
-#   STRESS_HTTP_TARGET    plain-HTTP target. Default http://httpbin.org/get
-#   STRESS_HTTPS_TARGET   HTTPS target. Default https://httpbin.org/get
-#   STRESS_LARGE_TARGET   large-download target. Default speed.cloudflare.com.
-#   STRESS_POST_TARGET    POST echo target. Default https://httpbin.org/post
+#   STRESS_HTTP_TARGET    plain-HTTP target. Default http-test /method
+#   STRESS_HTTPS_TARGET   HTTPS target. Default http-test /method
+#   STRESS_LARGE_TARGET   large-download target. Default http-test /bytes
+#   STRESS_POST_TARGET    POST echo target. Default http-test /octet-stream
 #   STRESS_LOG_DIR        where per-worker logs go. Default mktemp.
 #   STRESS_MONITOR_PID    if set, periodically `leaks` / `vmmap` the pid.
 #                         Also enables before/after `vmmap`+`heap`
@@ -50,10 +50,10 @@ CONCURRENCY="${STRESS_CONCURRENCY:-16}"
 LARGE_BYTES="${STRESS_LARGE_BYTES:-16777216}"   # 16 MiB
 POST_BYTES="${STRESS_POST_BYTES:-8388608}"      # 8 MiB
 
-HTTP_TARGET="${STRESS_HTTP_TARGET:-http://httpbin.org/get}"
-HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://httpbin.org/get}"
-POST_TARGET="${STRESS_POST_TARGET:-https://httpbin.org/post}"
-LARGE_TARGET="${STRESS_LARGE_TARGET:-https://speed.cloudflare.com/__down?bytes=${LARGE_BYTES}}"
+HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
+HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
+POST_TARGET="${STRESS_POST_TARGET:-https://http-test.ramaproxy.org/octet-stream}"
+LARGE_TARGET="${STRESS_LARGE_TARGET:-https://http-test.ramaproxy.org/bytes?size=${LARGE_BYTES}}"
 
 LOG_DIR="${STRESS_LOG_DIR:-$(mktemp -d /tmp/rama-stress.XXXXXX)}"
 mkdir -p "$LOG_DIR"
@@ -333,17 +333,16 @@ if [[ -n "$NDJSON_PATH" ]]; then
   if [[ ! -r "$NDJSON_PATH" ]]; then
     say "${RED}cannot read $NDJSON_PATH${RESET}"
   else
-    awk '
+    awk -v pid="${MONITOR_PID:-}" '
       /transparent proxy (tcp|udp) flow closed/ {
-        for (i = 1; i <= NF; i++) {
-          if ($i ~ /^reason=/) {
-            r = $i
-            sub(/^reason=/, "", r)
-            gsub(/"/, "", r)
-            counts[r]++
-            total++
-            break
-          }
+        if (pid != "" && index($0, "\"processID\":" pid) == 0) {
+          next
+        }
+        if (match($0, /reason=[^" ,}]+/)) {
+          r = substr($0, RSTART, RLENGTH)
+          sub(/^reason=/, "", r)
+          counts[r]++
+          total++
         }
       }
       END {

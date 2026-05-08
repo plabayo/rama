@@ -513,7 +513,7 @@ of relevant `log show` output, and any recent provider crash reports:
 DEST=$(mktemp -d /tmp/rama-tproxy-bundle.XXXXXX) && \
 sudo cp -R "/var/root/Library/Application Support/rama/tproxy/dial9-traces" "$DEST/" 2>/dev/null || true
 
-log show --last 1h --style ndjson --info --debug \
+log show --last 15m --style ndjson --info --debug \
   --predicate 'subsystem == "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR process == "org.ramaproxy.example.tproxy.dev.provider"' \
   > "$DEST/system.ndjson"
 

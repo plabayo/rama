@@ -30,7 +30,6 @@
 #![expect(
     clippy::panic,
     clippy::unreachable,
-    clippy::allow_attributes,
     reason = "vendored from upstream `hyper`/`h2`: matches upstream invariant-violation panicking style and macro-internal `#[allow]` attrs"
 )]
 

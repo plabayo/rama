@@ -117,6 +117,11 @@ pub(in crate::cmd::serve::httptest) fn service()
                 <div id="content">
                 <ul>
                     <li>
+                        <a href="/bytes?size=1048576">GET /bytes?size=&lt;n&gt;</a>:
+                        streams exactly <code>n</code> zero bytes as
+                        <code>application/octet-stream</code> (up to 32 MiB).
+                    </li>
+                    <li>
                         <a href="/method">HTTP Method</a>:
                         any HTTP method used will be echod back your way as <code>text/plain</code>.
                     </li>
