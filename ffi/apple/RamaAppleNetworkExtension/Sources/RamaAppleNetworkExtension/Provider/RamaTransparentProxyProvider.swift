@@ -1390,9 +1390,22 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     }
 }
 
+/// Minimal receive surface the UDP read pump needs. Abstracts
+/// `NWConnection` so tests can drive the pump without a real
+/// network socket.
+protocol UdpConnectionReadable: AnyObject {
+    func receive(
+        minimumIncompleteLength: Int,
+        maximumLength: Int,
+        completion: @escaping @Sendable (Data?, NWConnection.ContentContext?, Bool, NWError?) -> Void
+    )
+}
+
+extension NWConnection: UdpConnectionReadable {}
+
 /// Reads datagrams from a `NWConnection` in a loop and delivers them to a Rust UDP session.
-private final class NwUdpConnectionReadPump {
-    private let connection: NWConnection
+final class NwUdpConnectionReadPump: @unchecked Sendable {
+    private let connection: any UdpConnectionReadable
     private let session: RamaUdpSessionHandle
     private let queue: DispatchQueue
     private var closed = false
@@ -1401,7 +1414,7 @@ private final class NwUdpConnectionReadPump {
     private let onTerminate: (Error?) -> Void
 
     init(
-        connection: NWConnection,
+        connection: any UdpConnectionReadable,
         session: RamaUdpSessionHandle,
         queue: DispatchQueue,
         onTerminate: @escaping (Error?) -> Void
@@ -2187,7 +2200,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     )
                     // See TCP path: explicit cancel() returns the kernel flow slot.
                     connection.cancel()
-                    ctx?.connection = nil
+                    ctx.connection = nil
                     session.onClientClose()
                     self?.removeUdpFlow(flowId)
 
