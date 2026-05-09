@@ -1696,7 +1696,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         -> Bool
     {
         let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(label: "rama.tproxy.tcp.flow", qos: .utility)
+        let flowQueue = DispatchQueue(
+            label: "rama.tproxy.tcp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
+            qos: .utility)
         let ctx = TcpFlowContext()
 
         let writer = TcpClientWritePump(
@@ -1856,17 +1858,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         }
                     )
 
-                    flow.open(withLocalEndpoint: nil) { [weak self] error in
+                    flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
                         flowQueue.async {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
                                 connection.cancel()
-                                ctx.connection = nil
+                                ctx?.connection = nil
                                 readPump.cancel()
-                                ctx.egressReadPump = nil
-                                ctx.egressWritePump?.cancel()
-                                ctx.egressWritePump = nil
-                                ctx.clientWritePump?.cancel()
+                                ctx?.egressReadPump = nil
+                                ctx?.egressWritePump?.cancel()
+                                ctx?.egressWritePump = nil
+                                ctx?.clientWritePump?.cancel()
+                                ctx?.clientWritePump = nil
                                 session.cancel()
                                 self?.removeTcpFlow(flowId)
                                 return
@@ -1920,7 +1923,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 logger: { [weak self] message in self?.logFlowMessage(message) },
                                 onTerminal: terminal.dispatch
                             )
-                            ctx.clientReadPump = flowReadPump
+                            ctx?.clientReadPump = flowReadPump
                             flowReadPump.requestRead()
                         }
                     }
@@ -1948,7 +1951,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
     private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(label: "rama.tproxy.udp.flow", qos: .utility)
+        let flowQueue = DispatchQueue(
+            label: "rama.tproxy.udp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
+            qos: .utility)
         let ctx = UdpFlowContext()
 
         ctx.terminate = { [weak self, weak ctx] error in
