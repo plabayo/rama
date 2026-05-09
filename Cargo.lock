@@ -966,12 +966,13 @@ dependencies = [
 
 [[package]]
 name = "dial9-tokio-telemetry"
-version = "0.3.7"
+version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a0780962019500d5ebabf6d75d0becd3494833a3a6c44d5c68697d80401b1d7"
+checksum = "4186df8377ec0b72938f205610b7dc11ecb39901a4cfdf6aeb23517e796e74e3"
 dependencies = [
  "arc-swap",
  "bon",
+ "bytes",
  "crossbeam-queue",
  "dial9-macro",
  "dial9-trace-format",
@@ -993,9 +994,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-trace-format"
-version = "0.3.6"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f47f47cc9b5b010283f6d040b003cdd544cd7de65a919e0895853c4ab6e72434"
+checksum = "7a60dd9af8e5870e8114cc4fe60dd9191fbb7e83d935f8430d7799f34dc64f05"
 dependencies = [
  "dial9-trace-format-derive",
  "serde",
@@ -1003,9 +1004,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-trace-format-derive"
-version = "0.3.5"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4593cd0dcf9c490a0d460821f1d68ab3805190f1e7f2258824c44dfaed523336"
+checksum = "84e3c490d25dbf14ab5397fbbb3a467dcf763ac3733722c3f3cc86cc0d6753b0"
 dependencies = [
  "proc-macro2",
  "quote",
