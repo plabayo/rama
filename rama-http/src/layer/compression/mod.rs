@@ -658,7 +658,7 @@ mod tests {
         );
     }
 
-    // RFC 9110 §15.3.3: 1xx Informational responses have no body.
+    // RFC 9110 §15.2: 1xx Informational responses have no body.
     #[tokio::test]
     async fn does_not_compress_1xx_response() {
         let svc = Compression::new(service_fn(async |_| {
@@ -673,6 +673,24 @@ mod tests {
         assert!(
             !res.headers().contains_key(CONTENT_ENCODING),
             "1xx response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.3.6: 205 Reset Content responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_205_response() {
+        let svc = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::builder().status(205).body(Body::empty()).unwrap())
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "205 response must not carry Content-Encoding"
         );
     }
 }

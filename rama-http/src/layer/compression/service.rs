@@ -178,11 +178,11 @@ where
             // RFC 9110 §9.3.2 (HEAD) and §9.3.6 (CONNECT): server MUST NOT send
             // a body for HEAD or CONNECT responses, so there is nothing to compress.
             !matches!(req_method, Method::HEAD | Method::CONNECT) &&
-            // RFC 9110 §15.3.3 / §15.3.5 / §15.4.5 / §15.4.205: status codes
-            // 100-199 (informational), 204 (No Content), and 304 (Not Modified)
-            // prohibit a message body, so compression would produce an empty
-            // Content-Encoding wrapper with no benefit.
-            !matches!(res.status().as_u16(), 100..=199 | 204 | 304) &&
+            // RFC 9110 §15.2 (1xx Informational), §15.3.5 (204 No Content),
+            // §15.3.6 (205 Reset Content), §15.4.5 (304 Not Modified): these
+            // status codes prohibit a message body, so compression would
+            // produce an empty Content-Encoding wrapper with no benefit.
+            !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304) &&
             //never compress responses that are ranges
             !res.headers().contains_key(header::CONTENT_RANGE) &&
             self.predicate.should_compress(&mut res) &&
