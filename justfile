@@ -21,7 +21,7 @@ fmt-check-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} --check {{ARGS}}
 
 sort:
-    @cargo install cargo-sort
+    @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
     cargo sort --workspace --grouped
 
 lint: fmt sort
@@ -85,14 +85,14 @@ hack:
     cargo hack check --each-feature --no-dev-deps --workspace
 
 test *ARGS:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
 
 test-doc *ARGS:
     cargo test --doc --all-features --workspace {{ARGS}}
 
 test-crate CRATE *ARGS:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-doc-crate CRATE *ARGS:
@@ -104,15 +104,15 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace --run-ignored=only
 
 test-ignored-release:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --release --workspace --run-ignored=only
 
 test-loom:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
 qq: fmt-check check clippy doc extra-checks
@@ -128,7 +128,7 @@ qa: qq test test-doc deny
 # focused — but is part of `qa-full` so anyone running the full suite
 # covers it. CI runs it as its own job.
 qa-dial9:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo check -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
@@ -142,7 +142,7 @@ qa-crate CRATE:
     just test-doc-crate {{CRATE}}
 
 qa-ffi-apple:
-    just ./ffi/apple/examples/transparent_proxy/qa
+    RAMA_TPROXY_SKIP_CODESIGNING=1 RAMA_TPROXY_ISOLATED_CACHE=1 just ./ffi/apple/examples/transparent_proxy/qa
 
 qa-xpc-apple:
     cargo check -p rama-net-apple-xpc

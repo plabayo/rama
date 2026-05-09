@@ -52,7 +52,12 @@ let package = Package(
         // so the rama staticlib path stays in one place. CI uses the same recipes.
         .testTarget(
             name: "RamaAppleNetworkExtensionTests",
-            dependencies: ["RamaAppleNetworkExtension", "RamaAppleSecureEnclave"],
+            dependencies: [
+                "RamaAppleNetworkExtension",
+                "RamaAppleSecureEnclave",
+                "RamaAppleNEFFI",
+                "RamaAppleSEFFI",
+            ],
             path: "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests"
         ),
     ]

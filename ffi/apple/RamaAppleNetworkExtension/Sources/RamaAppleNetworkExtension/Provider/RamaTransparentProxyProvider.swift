@@ -886,7 +886,7 @@ final class TcpClientWritePump: @unchecked Sendable {
 }
 
 extension TcpClientWritePump: TcpWritePumpCoreDelegate {
-    func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
+    fileprivate func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
         logger(classifyFlowCallbackError(error, operation: "tcp flow.write", isClosing: true))
         onTerminalError(error)
         let completion = onDrainedClose
@@ -894,7 +894,7 @@ extension TcpClientWritePump: TcpWritePumpCoreDelegate {
         completion?(wasEverOpened)
     }
 
-    func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
+    fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
         let completion = onDrainedClose
         onDrainedClose = nil
         completion?(wasEverOpened)
@@ -1373,12 +1373,12 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
 }
 
 extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
-    func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
+    fileprivate func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
         // NWConnection write errors are surfaced via the connection state
         // handler; the write pump terminates silently.
     }
 
-    func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
+    fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
         connection.send(content: nil, isComplete: true, completion: .contentProcessed({ _ in }))
     }
 }
