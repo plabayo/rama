@@ -247,7 +247,7 @@ where
         let span = tracing::trace_span!("FramedWrite::buffer", frame = ?item);
         let _e = span.enter();
 
-        tracing::debug!("send: frame = {item:?}");
+        tracing::trace!("send: frame = {item:?}");
 
         match item {
             Frame::Data(mut v) => {
