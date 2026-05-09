@@ -1950,6 +1950,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 ctx.connection?.cancel()
+                ctx.connection = nil
                 ctx.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
             }
@@ -2117,6 +2118,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 "egress NWConnection timed out for udp flow remote=\(remoteHost):\(bootMeta.remotePort)"
             )
             ctx?.connection?.cancel()
+            ctx?.connection = nil
             ctx?.session?.onClientClose()
             self?.removeUdpFlow(flowId)
         }
@@ -2165,6 +2167,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 connection.cancel()
                                 readPump.cancel()
                                 ctx?.egressReadPump = nil
+                                ctx?.connection = nil
                                 session.onClientClose()
                                 self?.removeUdpFlow(flowId)
                                 return
@@ -2184,6 +2187,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     )
                     // See TCP path: explicit cancel() returns the kernel flow slot.
                     connection.cancel()
+                    ctx?.connection = nil
                     session.onClientClose()
                     self?.removeUdpFlow(flowId)
 
