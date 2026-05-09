@@ -137,6 +137,7 @@ jobs:
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
+    timeout-minutes: 30
     needs:
       - precheck-rust
       - precheck-docs
@@ -164,6 +165,7 @@ jobs:
 
   test-ffi-apple-example-transparent-proxy-e2e-asan:
     runs-on: macos-latest
+    timeout-minutes: 30
     needs:
       - precheck-rust
       - precheck-docs

@@ -1474,6 +1474,7 @@ private final class UdpFlowContext {
     var connection: NWConnection?
     /// Per-flow pumps + closures, owned by the provider's state map
     /// until the flow is removed.
+    var egressReadPump: NwUdpConnectionReadPump?
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
     var terminate: ((Error?) -> Void)?
@@ -1768,8 +1769,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
 
         let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts?.has_connect_timeout_ms == true
-            ? egressOpts!.connect_timeout_ms : 30_000
+        let connectTimeoutMs = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
         let nwParams = makeTcpNwParameters(egressOpts)
 
         // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
@@ -1848,6 +1848,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
                                 connection.cancel()
+                                readPump.cancel()
+                                ctx.egressWritePump?.cancel()
+                                ctx.clientWritePump?.cancel()
                                 session.cancel()
                                 self?.removeTcpFlow(flowId)
                                 return
@@ -1937,6 +1940,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             flowQueue.async { [weak self, weak ctx] in
                 guard let ctx, ctx.readState != .closed else { return }
                 ctx.readState = .closed
+                ctx.egressReadPump?.cancel()
+                ctx.egressReadPump = nil
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -2078,8 +2083,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let egressOpts = session.getEgressConnectOptions()
         let nwParams = makeUdpNwParameters(egressOpts)
-        let connectTimeoutMs: UInt32 = egressOpts?.has_connect_timeout_ms == true
-            ? egressOpts!.connect_timeout_ms : 30_000
+        let connectTimeoutMs: UInt32 = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
 
         // See TCP path for rationale; same metadata-propagation behavior.
         if egressOpts?.parameters.preserve_original_meta_data ?? true {
@@ -2133,6 +2137,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         // read pump doesn't strong-pin `terminate`.
                         onTerminate: { [weak ctx] error in ctx?.terminate?(error) }
                     )
+                    ctx.egressReadPump = readPump
 
                     session.activate(onSendToEgress: { [weak ctx] data in
                         // Surface send failures: the completion
@@ -2155,6 +2160,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 self?.logDebug("udp flow.open error after egress ready: \(error)")
                                 connection.cancel()
                                 readPump.cancel()
+                                ctx?.egressReadPump = nil
                                 session.onClientClose()
                                 self?.removeUdpFlow(flowId)
                                 return
