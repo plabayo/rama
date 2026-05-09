@@ -577,6 +577,13 @@ struct TcpWriterState {
 
 /// Delegates lifecycle callbacks from `TcpWritePumpCore` to its owner.
 /// All calls are made on `core.queue`, never on a Tokio or FFI thread.
+///
+/// **Re-entrancy constraint:** implementations MUST NOT call back into
+/// `core` or acquire `core.state` from within either method.
+/// `Locked<T>` wraps a non-reentrant `NSLock`; a nested `withLock` on
+/// the same instance deadlocks deterministically.  Both methods are
+/// invoked after the lock has been released, so there is no active lock
+/// to re-enter — but future implementors should not assume otherwise.
 private protocol TcpWritePumpCoreDelegate: AnyObject {
     /// The core has encountered a terminal write error and has closed its
     /// internal state.  The delegate performs its own teardown here.
@@ -635,8 +642,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
             s.closed = true
             s.pendingBytes = 0
         }
-        return { [weak self] in
-            guard let self else { return }
+        return { [self] in
             self.pending.removeAll(keepingCapacity: false)
             self.retrying = nil
         }
@@ -1320,7 +1326,7 @@ private final class NwTcpConnectionReadPump {
     }
 
     func cancel() {
-        queue.async { self.phase = .closed }
+        queue.async { [self] in phase = .closed }
     }
 }
 
@@ -1379,6 +1385,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     }
 
     fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
+        guard connection.state == .ready else { return }
         connection.send(content: nil, isComplete: true, completion: .contentProcessed({ _ in }))
     }
 }
@@ -1429,7 +1436,7 @@ private final class NwUdpConnectionReadPump {
     }
 
     func cancel() {
-        queue.async { self.closed = true }
+        queue.async { [self] in closed = true }
     }
 }
 

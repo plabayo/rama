@@ -355,4 +355,31 @@ mod tests {
             "205 response must not carry Content-Encoding"
         );
     }
+
+    // RFC 9110 §14.2: partial-content responses carry Content-Range; compressing
+    // them would corrupt the byte-range offsets the client uses to reassemble the
+    // resource, so the service must pass them through unchanged.
+    #[tokio::test]
+    async fn does_not_compress_range_response() {
+        use crate::header::{CONTENT_ENCODING, CONTENT_RANGE};
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(206)
+                        .header(CONTENT_RANGE, "bytes 0-4/10")
+                        .body(Body::from("hello"))
+                        .unwrap(),
+                )
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "range response must not carry Content-Encoding"
+        );
+    }
 }
