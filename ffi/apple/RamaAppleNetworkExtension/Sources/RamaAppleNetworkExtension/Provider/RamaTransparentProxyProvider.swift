@@ -605,7 +605,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
     let state = Locked(TcpWriterState())
     let queue: DispatchQueue
     private let onDrained: () -> Void
-    private let doWrite: (Data, @escaping (Error?) -> Void) -> Void
+    private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
     private let logHwm: (Int) -> Void
     weak var delegate: TcpWritePumpCoreDelegate?
 
@@ -620,7 +620,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         queue: DispatchQueue,
         initialLifecycle: WritePumpLifecycle = .open,
         onDrained: @escaping () -> Void,
-        doWrite: @escaping (Data, @escaping (Error?) -> Void) -> Void,
+        doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
         logHwm: @escaping (Int) -> Void
     ) {
         self.queue = queue
