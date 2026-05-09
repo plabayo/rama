@@ -1848,8 +1848,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
                                 connection.cancel()
+                                ctx.connection = nil
                                 readPump.cancel()
+                                ctx.egressReadPump = nil
                                 ctx.egressWritePump?.cancel()
+                                ctx.egressWritePump = nil
                                 ctx.clientWritePump?.cancel()
                                 session.cancel()
                                 self?.removeTcpFlow(flowId)
@@ -1885,6 +1888,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                     flow.closeReadWithError(err)
                                     flow.closeWriteWithError(err)
                                     ctx?.connection?.cancel()
+                                    ctx?.connection = nil
                                     readPump?.cancel()
                                     ctx?.clientWritePump?.cancel()
                                     ctx?.egressWritePump?.cancel()

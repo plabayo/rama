@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::OnceLock};
 use rama::{
     error::{BoxError, ErrorContext as _},
     telemetry::tracing::subscriber::{
-        self, filter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
+        self, EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _,
     },
 };
 use tracing_oslog::OsLogger;
@@ -36,6 +36,12 @@ pub(super) fn storage_dir() -> Option<&'static PathBuf> {
 struct TraceContext;
 
 fn setup_tracing() -> Result<TraceContext, BoxError> {
+    // Default: DEBUG for all crates except the H2 codec, which emits one
+    // `debug!` log per frame and generates >600 messages/second under load,
+    // triggering system-log quarantine.  Override at runtime via RUST_LOG.
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("debug,rama_http_core::h2::codec=warn"));
+
     let stderr_layer = subscriber::fmt::layer()
         .json()
         .with_target(true)
@@ -46,11 +52,11 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
     let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "extension-rust");
 
     subscriber::registry()
-        .with(filter::LevelFilter::DEBUG) // TODO: make customisable log level
+        .with(env_filter)
         .with(stderr_layer)
         .with(oslog_layer)
         .try_init()
-        .context("init tracing subsriber")?;
+        .context("init tracing subscriber")?;
 
     Ok(TraceContext)
 }
