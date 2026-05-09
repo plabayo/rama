@@ -40,8 +40,6 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
-rama-tcp = { workspace = true }
-rama-udp = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
@@ -49,7 +47,7 @@ zeroize = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
-cc = "1"
+cc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

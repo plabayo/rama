@@ -1960,8 +1960,6 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
- "rama-tcp",
- "rama-udp",
  "rama-utils",
  "tokio",
  "tracing",
