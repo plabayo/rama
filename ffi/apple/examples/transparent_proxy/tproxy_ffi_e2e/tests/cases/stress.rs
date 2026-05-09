@@ -221,6 +221,42 @@ async fn ffi_stress_mixed_concurrent_load_with_large_body() {
     ingress.shutdown().await;
 }
 
+/// 4 × 4 concurrent UDP roundtrips — regression for the `egressReadPump`
+/// ARC lifetime bug. Before `ctx.egressReadPump` was stored on
+/// `UdpFlowContext`, the `NwUdpConnectionReadPump` was deallocated
+/// immediately after the `.ready` handler completed, silently dropping
+/// every egress receive callback. Concurrent churn maximises the
+/// probability of one flow's pump being freed while another's
+/// `on_server_datagram` is in flight.
+#[tokio::test]
+#[serial]
+async fn ffi_stress_udp_concurrent_churn() {
+    let env = setup_env().await;
+
+    const TASKS: usize = 4;
+    const PER_TASK: usize = 4;
+    let mut handles = Vec::with_capacity(TASKS);
+    for task_idx in 0..TASKS {
+        let engine = env.engine.clone();
+        let remote = localhost(env.ports.udp);
+        handles.push(tokio::spawn(async move {
+            for i in 0..PER_TASK {
+                let payload = format!("concurrent ffi udp task={task_idx} iter={i}");
+                let response = udp_roundtrip(engine.clone(), remote, payload.as_bytes()).await;
+                let expected = payload.to_ascii_uppercase();
+                assert_eq!(
+                    response.as_slice(),
+                    expected.as_bytes(),
+                    "udp task={task_idx} iter={i} payload mismatch",
+                );
+            }
+        }));
+    }
+    for h in handles {
+        h.await.expect("udp concurrent stress task join");
+    }
+}
+
 /// Leave flows in-flight at test scope end; the engine + ingress
 /// `Drop` paths must tolerate a half-finished batch without wedging.
 #[tokio::test]

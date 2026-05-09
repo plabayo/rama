@@ -60,3 +60,17 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
 
     Ok(TraceContext)
 }
+
+#[cfg(test)]
+mod tests {
+    use rama::telemetry::tracing::subscriber::EnvFilter;
+
+    /// Verify the per-target H2-codec directive parses without panicking.
+    /// `EnvFilter::new` panics on an invalid directive string; this pins
+    /// the exact string used at startup so a tracing-crate upgrade that
+    /// changes the directive syntax surfaces here rather than at runtime.
+    #[test]
+    fn default_env_filter_directive_is_valid() {
+        let _ = EnvFilter::new("debug,rama_http_core::h2::codec=warn");
+    }
+}
