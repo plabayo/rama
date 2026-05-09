@@ -151,8 +151,12 @@ jobs:
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy-e2e
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install just
         run: brew install just
+      - name: Install xcodegen
+        run: brew install xcodegen
       - name: Run transparent proxy Apple QA
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
