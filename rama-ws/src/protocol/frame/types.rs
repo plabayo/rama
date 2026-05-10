@@ -142,8 +142,10 @@ impl FrameHeader {
     fn parse_internal(cursor: &mut impl Read) -> Result<Option<(Self, u64)>, ProtocolError> {
         let (first, second) = {
             let mut head = [0u8; 2];
-            if cursor.read(&mut head)? != 2 {
-                return Ok(None);
+            match cursor.read_exact(&mut head) {
+                Err(ref err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+                Err(err) => return Err(err.into()),
+                Ok(()) => (),
             }
             trace!("Parsed headers {:?}", head);
             (head[0], head[1])
@@ -184,10 +186,10 @@ impl FrameHeader {
 
         let mask = if masked {
             let mut mask_bytes = [0u8; 4];
-            if cursor.read(&mut mask_bytes)? != 4 {
-                return Ok(None);
-            } else {
-                Some(mask_bytes)
+            match cursor.read_exact(&mut mask_bytes) {
+                Err(ref err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+                Err(err) => return Err(err.into()),
+                Ok(()) => Some(mask_bytes),
             }
         } else {
             None
