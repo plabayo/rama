@@ -141,7 +141,7 @@ impl UdpHeader {
     }
 
     pub(crate) fn serialized_len(&self) -> usize {
-        5 + authority_length(&self.destination)
+        4 + authority_length(&self.destination)
     }
 }
 
@@ -155,7 +155,7 @@ mod tests {
     use crate::proto::{test_write_read_eq, test_write_read_sync_eq};
 
     impl UdpHeader {
-        // to expensive in production, so only enable in tests
+        // too expensive in production, so only enable in tests
         pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
         where
             W: AsyncWrite + Unpin,
@@ -165,7 +165,7 @@ mod tests {
             w.write_all(&buf).await
         }
 
-        // to expensive in production, so only enable in tests
+        // too expensive in production, so only enable in tests
         pub fn write_to_sync<W>(&self, w: &mut W) -> Result<(), std::io::Error>
         where
             W: Write,
@@ -196,5 +196,37 @@ mod tests {
             },
             UdpHeader
         );
+    }
+
+    // Regression test for Bug 4: serialized_len() was off by +1 (returned 5+auth
+    // instead of the correct 4+auth, where 4 = RSV(2)+FRAG(1)+ATYP(1)).
+    #[test]
+    fn test_serialized_len_matches_write_to_buf() {
+        use rama_net::address::Host;
+
+        let cases: &[UdpHeader] = &[
+            UdpHeader {
+                fragment_number: 0,
+                destination: HostWithPort::local_ipv4(80),
+            },
+            UdpHeader {
+                fragment_number: 7,
+                destination: HostWithPort::local_ipv6(443),
+            },
+            UdpHeader {
+                fragment_number: 0,
+                destination: HostWithPort::new(Host::EXAMPLE_NAME, 8080),
+            },
+        ];
+
+        for h in cases {
+            let mut buf = BytesMut::new();
+            h.write_to_buf(&mut buf);
+            assert_eq!(
+                buf.len(),
+                h.serialized_len(),
+                "serialized_len() must equal actual bytes written by write_to_buf() for {h:?}",
+            );
+        }
     }
 }

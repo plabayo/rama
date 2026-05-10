@@ -129,18 +129,18 @@ impl fmt::Display for HandshakeError {
         let context = self.context.unwrap_or("no context");
         match &self.kind {
             HandshakeErrorKind::IO(error) => {
-                write!(f, "client: handshake eror: I/O: {error} ({context})")
+                write!(f, "client: handshake error: I/O: {error} ({context})")
             }
             HandshakeErrorKind::Protocol(error) => {
                 write!(
                     f,
-                    "client: handshake eror: protocol error: {error} ({context})"
+                    "client: handshake error: protocol error: {error} ({context})"
                 )
             }
             HandshakeErrorKind::MethodMismatch(method) => {
                 write!(
                     f,
-                    "client: handshake error: method mistmatch: {method:?} ({context})"
+                    "client: handshake error: method mismatch: {method:?} ({context})"
                 )
             }
             HandshakeErrorKind::Reply(reply) => {
@@ -156,7 +156,7 @@ impl fmt::Display for HandshakeError {
                 )
             }
             HandshakeErrorKind::Other(error) => {
-                write!(f, "client: handshake eror: other: {error} ({context})")
+                write!(f, "client: handshake error: other: {error} ({context})")
             }
         }
     }

@@ -314,16 +314,16 @@ impl fmt::Display for Error {
         let context = &self.context;
         match &self.kind {
             ErrorKind::IO => {
-                write!(f, "server: handshake eror: I/O ({context})")
+                write!(f, "server: handshake error: I/O ({context})")
             }
             ErrorKind::Protocol => {
-                write!(f, "server: handshake eror: protocol error ({context})")
+                write!(f, "server: handshake error: protocol error ({context})")
             }
             ErrorKind::Aborted(reason) => {
-                write!(f, "server: handshake eror: aborted: {reason} ({context})")
+                write!(f, "server: handshake error: aborted: {reason} ({context})")
             }
             ErrorKind::Service => {
-                write!(f, "server: service eror ({context})")
+                write!(f, "server: service error ({context})")
             }
         }
     }

@@ -129,8 +129,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             dns_resolver: None,
             bind_north_address: SocketAddress::default_ipv4(0),
             bind_south_address: SocketAddress::default_ipv4(0),
-            north_buffer_size: 2048,
-            south_buffer_size: 2048,
+            north_buffer_size: 4096,
+            south_buffer_size: 4096,
             relay_timeout: None,
         }
     }
@@ -167,7 +167,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
 }
 
 impl<B, I> UdpRelay<B, I> {
-    /// Overwrite the [`UdpRelay`]'s bind [`SocketService],
+    /// Overwrite the [`UdpRelay`]'s bind [`SocketService`],
     /// used to open a socket, return the address and
     /// wait for an incoming connection which it will return.
     pub fn with_binder<T>(self, binder: T) -> UdpRelay<T, I> {
@@ -280,6 +280,7 @@ impl Default for DefaultUdpRelay {
             Duration::from_secs(30),
         ))
         .with_default_dns_resolver()
+        .with_relay_timeout(Duration::from_secs(300))
     }
 }
 
