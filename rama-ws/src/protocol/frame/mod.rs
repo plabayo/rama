@@ -291,20 +291,30 @@ impl FrameCodec {
     where
         Stream: Write,
     {
-        while !self.out_buffer.is_empty() {
-            let len = stream.write(&self.out_buffer)?;
-            if len == 0 {
-                // This is the same as "Connection reset by peer"
-                return Err(IoError::new(
-                    IoErrorKind::ConnectionReset,
-                    "Connection reset while sending",
-                )
-                .into());
+        let mut pos = 0;
+        loop {
+            if pos == self.out_buffer.len() {
+                self.out_buffer.clear();
+                return Ok(());
             }
-            self.out_buffer.drain(0..len);
+            match stream.write(&self.out_buffer[pos..]) {
+                Ok(0) => {
+                    // Drain already-written bytes before returning so that
+                    // a retry starts from the correct position.
+                    self.out_buffer.drain(0..pos);
+                    return Err(IoError::new(
+                        IoErrorKind::ConnectionReset,
+                        "Connection reset while sending",
+                    )
+                    .into());
+                }
+                Ok(n) => pos += n,
+                Err(err) => {
+                    self.out_buffer.drain(0..pos);
+                    return Err(err.into());
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
