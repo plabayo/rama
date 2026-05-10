@@ -467,9 +467,10 @@ impl Stream {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set the stream's state to `Closed` with the given reason and initiator.
-        /// Notify the send and receive tasks, if they exist.
+        /// Notify the send, receive, and push tasks, if they exist.
         pub(super) fn reset(mut self, reason: Reason, initiator: Initiator) -> Self {
             self.state.set_reset(self.id, reason, initiator);
+            self.notify_send();
             self.notify_push();
             self.notify_recv();
             self
