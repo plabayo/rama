@@ -184,7 +184,7 @@ where
                             .map_err(Error::service)?,
                         None => {
                             tracing::trace!(
-                                "block request: north -> south @ {server_address}: inspecter blocked"
+                                "block request: north -> south @ {server_address}: inspector blocked"
                             );
                         }
                     }
@@ -220,12 +220,12 @@ where
 
                     match maybe_payload {
                         Some(payload) => relay
-                            .send_to_south(Some(payload), server_address)
+                            .send_to_north(Some(payload), server_address)
                             .await
                             .map_err(Error::service)?,
                         None => {
                             tracing::trace!(
-                                "block request: north -> south @ {server_address}: inspecter blocked"
+                                "block request: south @ {server_address} -> north: inspector blocked"
                             );
                         }
                     }
@@ -350,7 +350,7 @@ where
                         }
                         UdpInspectAction::Block => {
                             tracing::trace!(
-                                "block request: north -> south @ {server_address}: inspecter blocked"
+                                "block request: north -> south @ {server_address}: inspector blocked"
                             );
                         }
                         UdpInspectAction::Modify(bytes) => {
@@ -395,7 +395,7 @@ where
                         }
                         UdpInspectAction::Block => {
                             tracing::trace!(
-                                "block request: south @ {server_address} -> north: inspecter blocked"
+                                "block request: south @ {server_address} -> north: inspector blocked"
                             );
                         }
                         UdpInspectAction::Modify(bytes) => {
@@ -413,6 +413,79 @@ where
                 None => {
                     tracing::trace!("ignore dropped packet: nothing to inspect or relay");
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
+
+    // Regression for Bug 1: AsyncUdpInspector's south→north arm was calling
+    // relay.send_to_south() instead of relay.send_to_north(), so server→client
+    // traffic was routed back to the server rather than forwarded to the client.
+    #[tokio::test]
+    async fn test_async_inspector_south_to_north_routes_to_client() {
+        // Layout:
+        //   server → south_socket → [relay] → north_socket → client_socket
+        //
+        // We send from server→south and verify client_socket receives the packet.
+        // Before the fix, the packet was sent back to server (south direction), so
+        // client_socket would time out.
+
+        let client_socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_addr: std::net::SocketAddr = client_socket.local_addr().unwrap();
+        let client_socket_addr: SocketAddress = client_addr.into();
+
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south_addr = south.local_addr().unwrap();
+
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        // Pass-through inspector: always forwards the payload unchanged
+        let inspector = AsyncUdpInspector(service_fn(async move |req: RelayRequest| {
+            Ok::<_, BoxError>(RelayResponse {
+                maybe_payload: Some(req.payload),
+                extensions: req.extensions,
+            })
+        }));
+
+        let payload = b"south_to_north_regression";
+        server.send_to(payload, south_addr).await.unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let inspect_fut = inspector.proxy_udp_packets(
+            Extensions::new(),
+            client_socket_addr,
+            north,
+            4096,
+            south,
+            4096,
+            None,
+        );
+
+        // Run the inspector concurrently with the client recv; the first select arm
+        // to complete wins — we expect client_socket to receive the relayed packet.
+        tokio::select! {
+            _ = inspect_fut => {
+                panic!("inspector exited unexpectedly before packet arrived");
+            }
+            result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                client_socket.recv_from(&mut buf),
+            ) => {
+                let (n, _) = result
+                    .expect("timed out: south→north packet did not arrive at client (north side)")
+                    .unwrap();
+                let received = &buf[..n];
+                assert!(
+                    received.ends_with(payload),
+                    "south→north: payload must arrive at client (north side)"
+                );
             }
         }
     }

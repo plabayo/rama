@@ -31,13 +31,21 @@ enum_builder! {
         ///
         /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1928)
         NoAuthenticationRequired => 0x00,
-        /// Generic Security Services Application Program Interface
+        /// Generic Security Services Application Program Interface.
         ///
-        /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1928)
+        /// The method code is assigned in [RFC 1928]; the subnegotiation
+        /// protocol is defined in [RFC 1961].
+        ///
+        /// **Not implemented**: rama does not implement GSSAPI authentication.
+        /// Servers will reply with [`NoAcceptableMethods`] when a client
+        /// proposes only this method.
+        ///
+        /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+        /// [RFC 1961]: https://datatracker.ietf.org/doc/html/rfc1961
         GSSAPI => 0x01,
         /// Username/Password Authentication for SOCKS V5
         ///
-        /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1929)
+        /// Reference: [RFC 1929](https://datatracker.ietf.org/doc/html/rfc1929)
         UsernamePassword => 0x02,
         /// Challenge-Handshake Authentication Protocol
         ///
@@ -95,7 +103,7 @@ enum_builder! {
         /// Used to establish an association within
         /// the UDP relay process to handle UDP datagrams.
         ///
-        /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1929)
+        /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1928)
         UdpAssociate => 0x03,
     }
 }

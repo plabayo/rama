@@ -69,7 +69,7 @@ impl Header {
     where
         W: AsyncWrite + Unpin,
     {
-        tracing::trace!("write socks5 server headerr: on stack (w=2)");
+        tracing::trace!("write socks5 server header: on stack (w=2)");
         let mut buf = [0u8; 2];
         self.write_to_buf(&mut buf.as_mut_slice());
         w.write_all(&buf[..]).await
@@ -308,9 +308,9 @@ impl UsernamePasswordResponse {
 }
 
 impl UsernamePasswordResponse {
-    /// Read the server [`UsernamePasswordResponse`], decoded from binary format as specified by [RFC 1928] from the reader.
+    /// Read the server [`UsernamePasswordResponse`], decoded from binary format as specified by [RFC 1929] from the reader.
     ///
-    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
     pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
     where
         R: AsyncRead + Unpin,
@@ -328,22 +328,22 @@ impl UsernamePasswordResponse {
         Ok(Self { version, status })
     }
 
-    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the writer.
+    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1929] into the writer.
     ///
-    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
     pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
     where
         W: AsyncWrite + Unpin,
     {
-        tracing::trace!("write socks5 server headerr: on stack (w=2)");
+        tracing::trace!("write socks5 server header: on stack (w=2)");
         let mut buf = [0u8; 2];
         self.write_to_buf(&mut buf.as_mut_slice());
         w.write_all(&buf[..]).await
     }
 
-    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the buffer.
+    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1929] into the buffer.
     ///
-    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(self.version.into());
         buf.put_u8(self.status);
