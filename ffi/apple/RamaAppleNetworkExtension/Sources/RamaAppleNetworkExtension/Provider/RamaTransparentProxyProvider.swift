@@ -2003,10 +2003,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             // capture path back through this chain.
             flowQueue.async { [weak ctx] in
                 guard let ctx, ctx.readState != .closed else { return }
-                // If a read is already in flight, record the demand so
-                // we re-trigger on completion instead of issuing a
-                // concurrent second readDatagrams call.
-                if ctx.readState == .reading {
+                // If a read is already in flight (or demand is already
+                // queued), record / keep the demand flag and return —
+                // the completion handler will re-trigger.  The check
+                // covers both .reading and .readingWithDemand so that
+                // a third rapid demand does not issue a concurrent
+                // second readDatagrams call while the first is still
+                // in flight.
+                if ctx.readState == .reading || ctx.readState == .readingWithDemand {
                     ctx.readState = .readingWithDemand
                     return
                 }
