@@ -261,13 +261,13 @@ impl<F> ServeDir<F> {
         FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
-            if self.call_fallback_on_method_not_allowed {
-                if let Some(fallback) = self.fallback.as_ref() {
-                    return future::serve_fallback(fallback, req).await;
-                }
-            } else {
-                return Ok(future::method_not_allowed());
+            if self.call_fallback_on_method_not_allowed
+                && let Some(fallback) = self.fallback.as_ref()
+            {
+                return future::serve_fallback(fallback, req).await;
             }
+
+            return Ok(future::method_not_allowed());
         }
 
         // `ServeDir` doesn't care about the request body but the fallback might. So move out the

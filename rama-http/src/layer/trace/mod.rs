@@ -467,7 +467,9 @@ mod tests {
     use super::*;
 
     use crate::body::util::BodyExt as _;
-    use crate::layer::classify::ServerErrorsFailureClass;
+    use crate::layer::classify::{
+        ClassifiedResponse, ClassifyEos, ClassifyResponse, MakeClassifier, ServerErrorsFailureClass,
+    };
     use crate::{Body, HeaderMap, Request, Response};
     use rama_core::bytes::Bytes;
     use rama_core::error::BoxError;
@@ -606,6 +608,75 @@ mod tests {
         assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
     }
 
+    #[tokio::test]
+    async fn classify_eos_on_trailers_success() {
+        lazy_atomic_u32!(ON_EOS, ON_FAILURE);
+
+        let trace_layer = TraceLayer::new(TestClassify::new(false))
+            .on_eos(
+                |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .on_failure(|_class: &'static str, _latency: Duration, _span: &Span| {
+                ON_FAILURE().fetch_add(1, Ordering::SeqCst);
+            });
+
+        let svc = trace_layer.into_layer(service_fn(body_with_trailers));
+
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+    }
+
+    #[tokio::test]
+    async fn classify_eos_on_trailers_failure() {
+        lazy_atomic_u32!(ON_EOS, ON_FAILURE);
+
+        let trace_layer = TraceLayer::new(TestClassify::new(true))
+            .on_eos(
+                |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .on_failure(|_class: &'static str, _latency: Duration, _span: &Span| {
+                ON_FAILURE().fetch_add(1, Ordering::SeqCst);
+            });
+
+        let svc = trace_layer.into_layer(service_fn(body_with_trailers));
+
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+        assert_eq!(1, ON_FAILURE().load(Ordering::SeqCst), "failure");
+    }
+
+    #[tokio::test]
+    async fn classify_eos_on_empty_stream() {
+        lazy_atomic_u32!(ON_EOS, ON_FAILURE);
+
+        let trace_layer = TraceLayer::new(TestClassify::new(true))
+            .on_eos(
+                |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                },
+            )
+            .on_failure(|_class: &'static str, _latency: Duration, _span: &Span| {
+                ON_FAILURE().fetch_add(1, Ordering::SeqCst);
+            });
+
+        let svc = trace_layer.into_layer(service_fn(streaming_body));
+
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+    }
+
     async fn echo(req: Request) -> Result<Response, BoxError> {
         Ok(Response::new(req.into_body()))
     }
@@ -622,5 +693,85 @@ mod tests {
         let body = Body::from_stream(stream);
 
         Ok(Response::new(body))
+    }
+
+    async fn body_with_trailers(_req: Request<Body>) -> Result<Response<Body>, BoxError> {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-test-trailer", "value".parse().unwrap());
+        let body = Body::from(Bytes::from("data")).with_trailer_headers(trailers);
+        Ok(Response::new(body))
+    }
+
+    #[derive(Clone)]
+    struct TestClassify {
+        reject: bool,
+    }
+
+    impl TestClassify {
+        fn new(reject: bool) -> Self {
+            Self { reject }
+        }
+    }
+
+    impl MakeClassifier for TestClassify {
+        type FailureClass = &'static str;
+        type ClassifyEos = TestClassifyEos;
+        type Classifier = TestClassifyResponse;
+
+        fn make_classifier<B>(&self, _req: &Request<B>) -> Self::Classifier {
+            TestClassifyResponse {
+                reject: self.reject,
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestClassifyResponse {
+        reject: bool,
+    }
+
+    impl ClassifyResponse for TestClassifyResponse {
+        type FailureClass = &'static str;
+        type ClassifyEos = TestClassifyEos;
+
+        fn classify_response<B>(
+            self,
+            _res: &Response<B>,
+        ) -> ClassifiedResponse<Self::FailureClass, Self::ClassifyEos> {
+            ClassifiedResponse::RequiresEos(TestClassifyEos {
+                reject: self.reject,
+            })
+        }
+
+        fn classify_error<E>(self, _error: &E) -> Self::FailureClass
+        where
+            E: std::fmt::Display,
+        {
+            "error"
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestClassifyEos {
+        reject: bool,
+    }
+
+    impl ClassifyEos for TestClassifyEos {
+        type FailureClass = &'static str;
+
+        fn classify_eos(self, _trailers: Option<&HeaderMap>) -> Result<(), Self::FailureClass> {
+            if self.reject {
+                Err("classified as failure")
+            } else {
+                Ok(())
+            }
+        }
+
+        fn classify_error<E>(self, _error: &E) -> Self::FailureClass
+        where
+            E: std::fmt::Display,
+        {
+            "error"
+        }
     }
 }

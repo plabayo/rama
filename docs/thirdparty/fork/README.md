@@ -14,9 +14,9 @@ as a distant relative.
     - Original: <https://github.com/hyperium/h2/blob/e2826c54601a2afd5083e496a6e021408cc2a11f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0>
+- hyper: <https://github.com/hyperium/hyper/tree/e9be344f16c8a996ccf3a9f69a66408437885f31>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/e9be344f16c8a996ccf3a9f69a66408437885f31/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -44,13 +44,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/251296dc54a044383dffd16d2179b443e2615672/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/0d608fdbb0e62fcaa9d3e7b5205207337f223831>
+- <https://github.com/tower-rs/tower-http/tree/7551a9b8b9706ca1e11c035659b243f688b136bd>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/0d608fdbb0e62fcaa9d3e7b5205207337f223831/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/7551a9b8b9706ca1e11c035659b243f688b136bd/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
