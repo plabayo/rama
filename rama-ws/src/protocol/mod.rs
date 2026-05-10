@@ -997,14 +997,20 @@ impl WebSocketContext {
                                     )?;
                                 return match deflate_state.decoder.decode(compressed_data.as_ref())
                                 {
-                                    Ok(raw_data) => match msg_type {
-                                        IncompleteMessageType::Text => {
-                                            Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                                    Ok(raw_data) => {
+                                        check_max_size(
+                                            raw_data.len(),
+                                            self.config.max_message_size,
+                                        )?;
+                                        match msg_type {
+                                            IncompleteMessageType::Text => Ok(Some(Message::Text(
+                                                Utf8Bytes::try_from(raw_data)?,
+                                            ))),
+                                            IncompleteMessageType::Binary => {
+                                                Ok(Some(Message::Binary(raw_data.into())))
+                                            }
                                         }
-                                        IncompleteMessageType::Binary => {
-                                            Ok(Some(Message::Binary(raw_data.into())))
-                                        }
-                                    },
+                                    }
                                     Err(err) => Err(ProtocolError::DeflateError(err)),
                                 };
                             }
@@ -1060,6 +1066,7 @@ impl WebSocketContext {
                                     .decoder
                                     .decode(&compressed_data)
                                     .map_err(ProtocolError::DeflateError)?;
+                                check_max_size(raw_data.len(), self.config.max_message_size)?;
                                 match t {
                                     IncompleteMessageType::Text => {
                                         Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
