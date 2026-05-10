@@ -57,8 +57,7 @@ where
                 chunk_size / 1024,
                 total_chunks * chunk_size / (1024 * 1024)
             );
-            let bytes = Bytes::from(vec![0; chunk_size]);
-            let data = vec![bytes.clone(); total_chunks];
+            let data = vec![Bytes::from(vec![0; chunk_size]); total_chunks];
             let stream = stream::iter(
                 data.into_iter()
                     .map(|b| Ok::<_, Infallible>(Frame::data(b))),
@@ -91,10 +90,9 @@ where
         .tx
         .send(get_request.as_bytes().to_vec())
         .map_err(|e| {
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to send request: {}", e),
-            ))
+            Box::new(std::io::Error::other(format!(
+                "Failed to send request: {e}",
+            )))
         })
         .unwrap();
 

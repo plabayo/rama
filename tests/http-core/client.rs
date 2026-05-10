@@ -3040,7 +3040,7 @@ mod conn {
     // `WINDOW_UPDATE` after its receive window is fully exhausted.
     #[tokio::test]
     async fn h2_idle_stream_does_not_pin_connection_window() {
-        use std::sync::{Arc, Mutex};
+        use std::sync::Arc;
 
         // The HTTP/2 spec fixes the initial connection-level window at 65535
         // (RFC 9113 section 6.9.2), and it can only be increased via
@@ -3065,9 +3065,9 @@ mod conn {
         // would let h2 auto-release its in-flight recv capacity and emit a
         // WINDOW_UPDATE, which would hide the bug.
         let (stream_a_done_tx, stream_a_done_rx) = oneshot::channel::<()>();
-        let stream_a_full_tx = Arc::new(Mutex::new(Some(stream_a_full_tx)));
-        let stream_b_got_tx = Arc::new(Mutex::new(Some(stream_b_got_tx)));
-        let stream_a_done_rx = Arc::new(Mutex::new(Some(stream_a_done_rx)));
+        let stream_a_full_tx = Arc::new(tokio::sync::Mutex::new(Some(stream_a_full_tx)));
+        let stream_b_got_tx = Arc::new(tokio::sync::Mutex::new(Some(stream_b_got_tx)));
+        let stream_a_done_rx = Arc::new(tokio::sync::Mutex::new(Some(stream_a_done_rx)));
         tokio::spawn(async move {
             let mut h2 = rama_http_core::h2::server::handshake(ServiceInput::new(server_io))
                 .await
@@ -3088,22 +3088,21 @@ mod conn {
                         // channel to hold on to the recv stream.
                         let mut received = 0usize;
                         while received < STREAM_A_LEN {
-                            let frame = match body.data().await {
-                                Some(Ok(f)) => f,
-                                _ => return,
+                            let Some(Ok(frame)) = body.data().await else {
+                                return;
                             };
                             received += frame.len();
                             // Intentionally do NOT call release_capacity.
                         }
-                        if let Some(tx) = stream_a_full_tx.lock().unwrap().take() {
-                            let _ = tx.send(());
+                        if let Some(tx) = stream_a_full_tx.lock().await.take() {
+                            let _send_result = tx.send(());
                         }
                         // Keep the recv stream alive so that dropping it
                         // cannot auto-release connection-level recv capacity
                         // and emit a WINDOW_UPDATE mid-test.
-                        let done = stream_a_done_rx.lock().unwrap().take();
+                        let done = stream_a_done_rx.lock().await.take();
                         if let Some(done) = done {
-                            let _ = done.await;
+                            let _done_result = done.await;
                         }
                         // Keep `body` in scope until here.
                         drop(body);
@@ -3113,11 +3112,11 @@ mod conn {
                         if let Some(Ok(frame)) = body.data().await {
                             received += frame.len();
                         }
-                        if let Some(tx) = stream_b_got_tx.lock().unwrap().take() {
-                            let _ = tx.send(received);
+                        if let Some(tx) = stream_b_got_tx.lock().await.take() {
+                            let _send_result = tx.send(received);
                         }
                         let mut send = respond.send_response(Response::new(()), false).unwrap();
-                        let _ = send.send_data(Bytes::from_static(b"ok"), true);
+                        drop(send.send_data(Bytes::from_static(b"ok"), true));
                     }
                 });
             }
@@ -3129,7 +3128,7 @@ mod conn {
             .await
             .expect("http handshake");
         tokio::spawn(async move {
-            let _ = conn.await;
+            drop(conn.await);
         });
 
         // Request A: streaming body that sends STREAM_A_LEN bytes and then
@@ -3188,13 +3187,13 @@ mod conn {
         );
 
         // Drive request B to completion so we don't leak the future.
-        let _ = tokio::time::timeout(Duration::from_secs(5), b_fut).await;
+        drop(tokio::time::timeout(Duration::from_secs(5), b_fut).await);
 
         // Close stream A cleanly: first release the server-side handler so
         // it drops the recv stream, then drop the body sender.
-        let _ = stream_a_done_tx.send(());
+        let _send_result = stream_a_done_tx.send(());
         drop(tx_a);
-        let _ = tokio::time::timeout(Duration::from_secs(5), a_handle).await;
+        drop(tokio::time::timeout(Duration::from_secs(5), a_handle).await);
     }
 }
 

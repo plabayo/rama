@@ -1,7 +1,4 @@
-#[path = "h1_server/mod.rs"]
-mod h1_server;
-
-use h1_server::{StreamReadHalf, fixture, init_tracing};
+use crate::h1_server::{StreamReadHalf, fixture, init_tracing};
 use pin_project_lite::pin_project;
 use rama::telemetry::tracing::error;
 use std::future::Future;
@@ -60,8 +57,7 @@ impl AsyncRead for UnbufferedStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let response = self.as_mut().project().read_half.poll_read(cx, buf);
-        response
+        self.as_mut().project().read_half.poll_read(cx, buf)
     }
 }
 

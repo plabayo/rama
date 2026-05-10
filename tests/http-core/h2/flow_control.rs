@@ -460,7 +460,7 @@ async fn padded_data_stream_error_releases_connection_capacity() {
 
     // Padded EOS frame: 1 byte pad_len + 8 bytes data + 1 byte padding.
     // flow_controlled_len = 10, payload (data only) = 8.
-    let mut padded_eos = vec![0u8; 10];
+    let mut padded_eos = [0u8; 10];
     padded_eos[0] = 1;
 
     let srv = async move {
@@ -1764,7 +1764,7 @@ async fn reserve_capacity_then_cancel_does_not_leak() {
                             break;
                         }
                     }
-                    other => panic!("unexpected: {:?}", other),
+                    other => panic!("unexpected: {other:?}"),
                 }
             }
             assert_eq!(data_bytes, 65535);
@@ -2626,14 +2626,14 @@ async fn poll_capacity_woken_on_library_reset() {
 
             // Wait for the client to finish. Otherwise Recv::recv_eof hides
             // the missing waker.
-            let _ = client_done_rx.await;
+            drop(client_done_rx.await);
         };
 
         let client = async move {
             let (mut client, conn) = client::handshake(io).await.unwrap();
             tokio::spawn(async move {
                 // Separate task so the polled method won't resolve unless notify_send wakes it.
-                let _ = conn.await;
+                drop(conn.await);
             });
 
             let request = Request::builder()
@@ -2682,7 +2682,7 @@ async fn poll_capacity_woken_on_library_reset() {
                 assert_eq!(reason, Reason::FLOW_CONTROL_ERROR);
             }
 
-            let _ = client_done_tx.send(());
+            let _send_result = client_done_tx.send(());
         };
 
         join(srv, client).await;

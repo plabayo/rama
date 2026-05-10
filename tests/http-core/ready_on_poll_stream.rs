@@ -1,7 +1,4 @@
-#[path = "h1_server/mod.rs"]
-mod h1_server;
-
-use h1_server::{StreamReadHalf, fixture, init_tracing};
+use crate::h1_server::{StreamReadHalf, fixture, init_tracing};
 use pin_project_lite::pin_project;
 use rama::telemetry::tracing::error;
 use std::future::Future;
@@ -95,15 +92,14 @@ impl AsyncWrite for ReadyOnPollStream {
         let len = buf.len();
 
         // Send data through the channel - this should always be ready for unbounded channels
-        match this.write_tx.send(buf) {
-            Ok(_) => Poll::Ready(Ok(len)),
-            Err(_) => {
-                error!("ReadyStream::poll_write failed - channel closed");
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "Write channel closed",
-                )))
-            }
+        if this.write_tx.send(buf) == Ok(()) {
+            Poll::Ready(Ok(len))
+        } else {
+            error!("ReadyStream::poll_write failed - channel closed");
+            Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Write channel closed",
+            )))
         }
     }
 
@@ -112,7 +108,7 @@ impl AsyncWrite for ReadyOnPollStream {
         // We require two flushes to complete each chunk, simulating a success at the end of the old
         // poll loop. After all chunks are written, we always succeed on flush to allow for finish.
         const TOTAL_CHUNKS: usize = 16;
-        if self.flush_count % 2 != 0 && self.flush_count < TOTAL_CHUNKS * 2 {
+        if !self.flush_count.is_multiple_of(2) && self.flush_count < TOTAL_CHUNKS * 2 {
             if let Some(sleep) = self.pending_write.as_mut() {
                 let sleep = sleep.as_mut();
                 ready!(Future::poll(sleep, cx));

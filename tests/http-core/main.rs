@@ -23,6 +23,8 @@ mod support;
 #[cfg(feature = "http-full")]
 mod client;
 #[cfg(feature = "http-full")]
+mod h1_server;
+#[cfg(feature = "http-full")]
 mod integration;
 #[cfg(feature = "http-full")]
 mod server;
