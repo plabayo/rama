@@ -349,6 +349,12 @@ impl<S, K> TlsConnector<S, K> {
         T: Io + ExtensionsRef + Unpin,
     {
         let connector_data = connector_data.unwrap_or(TlsConnectorData::try_new()?);
+        #[cfg(feature = "dial9")]
+        let dial9_server_name = connector_data
+            .server_name
+            .clone()
+            .or_else(|| maybe_server_host.cloned())
+            .context("server name missing")?;
 
         let server_name = rustls_pki_types::ServerName::rama_try_from(
             connector_data
@@ -359,7 +365,17 @@ impl<S, K> TlsConnector<S, K> {
 
         let connector = RustlsConnector::from(connector_data.client_config);
 
-        let stream = connector.connect(server_name, stream).await?;
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_started(dial9_server_name.clone());
+
+        let stream = match connector.connect(server_name, stream).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                #[cfg(feature = "dial9")]
+                crate::dial9::record_handshake_failed(dial9_server_name.clone(), &err);
+                return Err(err.into());
+            }
+        };
 
         let (_, conn_data_ref) = stream.get_ref();
 
@@ -379,6 +395,22 @@ impl<S, K> TlsConnector<S, K> {
                 .map(ApplicationProtocol::from),
             peer_certificate_chain: server_certificate_chain,
         };
+
+        #[cfg(feature = "dial9")]
+        {
+            use rama_net::tls::DataEncoding;
+            let depth = match params.peer_certificate_chain.as_ref() {
+                Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
+                Some(DataEncoding::DerStack(stack)) => stack.len(),
+                None => 0,
+            };
+            crate::dial9::record_handshake_completed(
+                dial9_server_name,
+                params.protocol_version,
+                conn_data_ref.alpn_protocol().map(ApplicationProtocol::from),
+                depth,
+            );
+        }
 
         Ok((stream, params))
     }

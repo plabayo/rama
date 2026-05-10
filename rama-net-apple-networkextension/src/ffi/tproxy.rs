@@ -76,7 +76,14 @@ impl TransparentProxyFlowMeta {
     ///
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
-    pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+    ///
+    /// Returns `Err(invalid_protocol_code)` when `self.protocol` is not
+    /// a known [`TransparentProxyFlowProtocol`] discriminant. The FFI
+    /// thunks treat that as a fail-safe `Passthrough` rather than
+    /// silently coercing the unknown code into a TCP flow.
+    pub unsafe fn as_owned_rust_type(&self) -> Result<tproxy::TransparentProxyFlowMeta, u32> {
+        let protocol = TransparentProxyFlowProtocol::from_raw_strict(self.protocol)?;
+
         // SAFETY: pointer + length validity is guaranteed by caller contract.
         let source_app_audit_token = unsafe {
             opt_audit_token(
@@ -90,7 +97,7 @@ impl TransparentProxyFlowMeta {
             source_app_audit_token.as_ref().map(AuditToken::pid)
         };
 
-        tproxy::TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::from(self.protocol))
+        Ok(tproxy::TransparentProxyFlowMeta::new(protocol)
             .maybe_with_remote_endpoint(
                 // SAFETY: pointer + length validity is guaranteed by caller contract.
                 unsafe { self.remote_endpoint.as_optional_host_with_port() },
@@ -118,10 +125,27 @@ impl TransparentProxyFlowMeta {
                 },
             )
             .maybe_with_source_app_audit_token(source_app_audit_token)
-            .maybe_with_source_app_pid(source_app_pid)
+            .maybe_with_source_app_pid(source_app_pid))
     }
 }
 
+/// FFI representation of a single network rule for the transparent
+/// proxy configuration.
+///
+/// **Adding a field that owns FFI memory?** You must mirror the new
+/// allocation in [`TransparentProxyConfig::from_rust_type`] (alloc
+/// path) AND update the per-rule loop in
+/// [`TransparentProxyConfig::free`] to release it. The struct is
+/// `repr(C)` POD with no `Drop` impl — the slice's `Box::from_raw`
+/// in `free` does NOT run a per-element Drop, so any heap memory
+/// owned by a field of this struct must be freed explicitly. The two
+/// existing `*_utf8` pairs are the template.
+///
+/// Enforcement: `tests::ffi_config_round_trip_freed_under_lsan` does
+/// the alloc → free round-trip with every field populated. Run under
+/// AddressSanitizer (`just test-e2e-asan`, scheduled in CI on macOS)
+/// for LeakSanitizer to catch any heap field that `free` didn't
+/// release.
 #[repr(C)]
 pub struct TransparentProxyNetworkRule {
     pub remote_network_utf8: *const c_char,
@@ -141,6 +165,10 @@ pub struct TransparentProxyConfig {
     pub tunnel_remote_address_utf8_len: usize,
     pub rules: *const TransparentProxyNetworkRule,
     pub rules_len: usize,
+    /// Per-flow TCP write-pump back-pressure cap in bytes. `0` means "use the
+    /// Swift-side built-in default". See
+    /// [`tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
+    pub tcp_write_pump_max_pending_bytes: usize,
 }
 
 #[repr(C)]
@@ -209,6 +237,7 @@ impl TransparentProxyConfig {
             tunnel_remote_address_utf8_len,
             rules,
             rules_len,
+            tcp_write_pump_max_pending_bytes: config.tcp_write_pump_max_pending_bytes(),
         }
     }
 
@@ -406,6 +435,12 @@ pub struct TcpEgressConnectOptions {
 #[repr(C)]
 pub struct UdpEgressConnectOptions {
     pub parameters: NwEgressParameters,
+    /// Whether `connect_timeout_ms` carries a meaningful value.
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_connect_timeout_ms: bool,
+    /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
+    /// reaching `.ready`. See `tproxy::types::NwUdpConnectOptions::connect_timeout`.
+    pub connect_timeout_ms: u32,
 }
 
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
@@ -477,7 +512,7 @@ unsafe fn free_utf8(ptr: *const c_char, len: usize) {
 
     let raw_slice = ptr::slice_from_raw_parts_mut(ptr as *mut u8, len);
     // SAFETY: caller guarantees this points to memory allocated via `alloc_utf8`.
-    let _ = unsafe { Box::from_raw(raw_slice) };
+    _ = unsafe { Box::from_raw(raw_slice) };
 }
 
 /// # Safety
@@ -529,9 +564,62 @@ unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
 mod tests {
     use std::ptr;
 
-    use crate::tproxy::TransparentProxyFlowProtocol;
+    use crate::tproxy::{
+        self, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+        TransparentProxyRuleProtocol,
+    };
 
-    use super::{TransparentFlowEndpoint, TransparentProxyFlowMeta};
+    use super::{
+        NwEgressParameters, TransparentFlowEndpoint, TransparentProxyConfig,
+        TransparentProxyFlowMeta,
+    };
+
+    /// Alloc → free round-trip for the FFI config struct. Designed so
+    /// that under LeakSanitizer (`just test-e2e-asan`) any heap field
+    /// added to `TransparentProxyNetworkRule` that `free` doesn't
+    /// release surfaces as a leak. Plain `cargo test` only verifies
+    /// that the round-trip doesn't double-free or panic.
+    #[test]
+    fn ffi_config_round_trip_freed_under_lsan() {
+        let config = tproxy::TransparentProxyConfig::default()
+            .with_tunnel_remote_address(rama_utils::str::arcstr::ArcStr::from("198.51.100.1:443"))
+            .with_rules(vec![
+                TransparentProxyNetworkRule::any()
+                    .with_remote_network(
+                        "example.com"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_remote_network_prefix(24)
+                    .with_local_network(
+                        "10.0.0.0"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_local_network_prefix(8)
+                    .with_protocol(TransparentProxyRuleProtocol::Tcp),
+                TransparentProxyNetworkRule::any(),
+            ]);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        // SAFETY: `ffi` was just created by `from_rust_type` and not
+        // freed yet.
+        unsafe { ffi.free() };
+    }
+
+    /// Locks in `preserve_original_meta_data: true` as the FFI default
+    /// for [`NwEgressParameters`]. Stacked-NE-provider deployments
+    /// rely on this so a downstream `NEAppProxyProvider` sees the
+    /// original app's `NEFlowMetaData` rather than the rama-extension
+    /// process; flipping the default would silently break attribution
+    /// in those topologies.
+    #[test]
+    fn ffi_egress_params_preserve_meta_default_round_trip() {
+        let rust = tproxy::NwEgressParameters::default();
+        assert!(rust.preserve_original_meta_data);
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(ffi.preserve_original_meta_data);
+    }
 
     #[test]
     fn flow_meta_uses_explicit_pid_when_present() {
@@ -559,8 +647,40 @@ mod tests {
 
         // SAFETY: every pointer field is null with matching len 0 above, so
         // the read-validity contract is trivially satisfied.
-        let owned = unsafe { meta.as_owned_rust_type() };
+        let owned = unsafe { meta.as_owned_rust_type() }.expect("known protocol decodes");
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());
+    }
+
+    /// Unknown protocol values must surface as `Err(raw)` so the FFI
+    /// thunks can fail-safe to passthrough rather than silently
+    /// fabricating a TCP flow. Pinning the contract: if a future ABI
+    /// renumbers the protocol enum, this test catches the regression.
+    #[test]
+    fn flow_meta_rejects_unknown_protocol() {
+        let meta = TransparentProxyFlowMeta {
+            protocol: 0xDEAD_BEEF,
+            remote_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            local_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            source_app_signing_identifier_utf8: ptr::null(),
+            source_app_signing_identifier_utf8_len: 0,
+            source_app_bundle_identifier_utf8: ptr::null(),
+            source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 0,
+            source_app_pid_is_set: false,
+        };
+        // SAFETY: same as above.
+        let result = unsafe { meta.as_owned_rust_type() };
+        assert_eq!(result.unwrap_err(), 0xDEAD_BEEF);
     }
 }

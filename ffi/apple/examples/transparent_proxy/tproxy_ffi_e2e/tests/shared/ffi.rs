@@ -26,9 +26,8 @@ fn get_or_generate_mitm_ca() -> &'static (String, String) {
         .expect("generate e2e test MITM CA");
         let cert_pem = String::from_utf8(cert.to_pem().expect("encode cert to PEM"))
             .expect("cert PEM is valid UTF-8");
-        let key_pem =
-            String::from_utf8(key.private_key_to_pem_pkcs8().expect("encode key to PEM"))
-                .expect("key PEM is valid UTF-8");
+        let key_pem = String::from_utf8(key.private_key_to_pem_pkcs8().expect("encode key to PEM"))
+            .expect("key PEM is valid UTF-8");
         (cert_pem, key_pem)
     })
 }

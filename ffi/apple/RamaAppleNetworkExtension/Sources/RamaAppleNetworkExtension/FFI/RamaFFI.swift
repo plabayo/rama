@@ -24,6 +24,9 @@ struct RamaTransparentProxyRuleBridge {
 struct RamaTransparentProxyConfigBridge {
     var tunnelRemoteAddress: String
     var rules: [RamaTransparentProxyRuleBridge]
+    /// Per-flow TCP write-pump back-pressure cap in bytes.
+    /// `0` means the Rust side did not set a value; Swift falls back to its built-in default.
+    var tcpWritePumpMaxPendingBytes: Int
 }
 
 enum RamaTransparentProxyFlowActionBridge: UInt32 {
@@ -319,6 +322,14 @@ private let ramaUdpOnSendToEgressCallback:
     }
 
 final class RamaTransparentProxyEngineHandle {
+    // Serialises `enginePtr` access so `stop()` can't free the engine
+    // while another thread is mid-FFI call. The session handles already
+    // use this exact pattern; mirror it here. Apple's
+    // `handleAppMessage(_:completionHandler:)` runs on the provider's
+    // dispatch queue, but a swift caller can still race a stop() against
+    // an in-flight message — without the lock, `enginePtr` is a non-
+    // atomic Swift property and the access is a data race.
+    private let lock = NSLock()
     private var enginePtr: OpaquePointer?
 
     init?(engineConfigJson: Data? = nil) {
@@ -339,6 +350,8 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     deinit {
+        // No lock: Swift's deinit only fires when no strong references
+        // exist, so there is no concurrent caller to race against.
         if let p = enginePtr {
             rama_transparent_proxy_engine_free(p)
         }
@@ -370,6 +383,8 @@ final class RamaTransparentProxyEngineHandle {
     }
 
     func config() -> RamaTransparentProxyConfigBridge? {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return nil }
         guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
         defer { rama_transparent_proxy_config_free(outPtr) }
@@ -408,14 +423,19 @@ final class RamaTransparentProxyEngineHandle {
 
         return RamaTransparentProxyConfigBridge(
             tunnelRemoteAddress: tunnelRemoteAddress,
-            rules: rules
+            rules: rules,
+            tcpWritePumpMaxPendingBytes: Int(out.tcp_write_pump_max_pending_bytes)
         )
     }
 
     func stop(reason: Int32) {
-        guard let p = enginePtr else { return }
-        rama_transparent_proxy_engine_stop(p, reason)
+        lock.lock()
+        let p = enginePtr
         enginePtr = nil
+        lock.unlock()
+        if let p {
+            rama_transparent_proxy_engine_stop(p, reason)
+        }
     }
 
     /// Forward a provider message into Rust and return the reply (or `nil` for
@@ -426,6 +446,11 @@ final class RamaTransparentProxyEngineHandle {
     /// from "no reply" — we surface both as `nil`. Rust handlers that want a
     /// distinguishable ack must return a non-empty payload.
     func handleAppMessage(_ message: Data) -> Data? {
+        // Hold the lock across the FFI call so a concurrent stop() can't
+        // free the engine while we're using it. stop() takes the same
+        // lock to swap enginePtr to nil before freeing.
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return nil }
 
         let ownedReply = message.withUnsafeBytes { raw in
@@ -446,6 +471,8 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(
@@ -493,6 +520,8 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyUdpSessionDecision {
+        lock.lock()
+        defer { lock.unlock() }
         guard let p = enginePtr else { return .passthrough }
 
         let callbackBox = Unmanaged.passRetained(
@@ -557,6 +586,12 @@ final class RamaTcpSessionHandle {
         egressCallbackBox = nil
         lock.unlock()
 
+        // Free the Rust session before releasing the boxes:
+        // `_session_free` invokes `cancel()` which serialises against
+        // any in-flight bridge dispatch via the engine's
+        // `callback_active` mutex (see `engine/mod.rs::guarded_*_sink`).
+        // The engine guard is the load-bearing piece; this ordering
+        // alone is necessary but insufficient.
         if let p {
             rama_transparent_proxy_tcp_session_free(p)
         }
@@ -623,6 +658,12 @@ final class RamaTcpSessionHandle {
     /// Activate the session once the egress `NWConnection` is ready and the
     /// intercepted flow has been opened successfully.
     ///
+    /// `activate` is one-shot: a second call would leak the previous
+    /// callback box (Rust still holds its raw pointer because Rust's
+    /// `_session_activate` rejects double-activation as a no-op + log)
+    /// and the new callbacks would never fire. Logged + ignored on
+    /// repeat.
+    ///
     /// - Parameters:
     ///   - onWriteToEgress: Called by Rust when the service has bytes to send to the
     ///     egress NWConnection.
@@ -635,6 +676,14 @@ final class RamaTcpSessionHandle {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
+        if egressCallbackBox != nil {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
+                message:
+                    "RamaTcpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
+            )
+            return
+        }
         let box = Unmanaged.passRetained(
             TcpEgressCallbackBox(
                 onWriteToEgress: onWriteToEgress,
@@ -770,7 +819,9 @@ final class RamaUdpSessionHandle {
                 has_attribution: false, attribution: 0,
                 prohibited_interface_types_mask: 0,
                 preserve_original_meta_data: true
-            )
+            ),
+            has_connect_timeout_ms: false,
+            connect_timeout_ms: 0
         )
         let hasCustom = rama_transparent_proxy_udp_session_get_egress_connect_options(s, &opts)
         return hasCustom ? opts : nil
@@ -778,12 +829,25 @@ final class RamaUdpSessionHandle {
 
     /// Activate the session once the egress `NWConnection` is ready.
     ///
+    /// `activate` is one-shot: a second call would leak the previous
+    /// callback box (Rust holds its raw pointer; Rust's
+    /// `_session_activate` rejects double-activation) and the new
+    /// callbacks would never fire. Logged + ignored on repeat.
+    ///
     /// - Parameter onSendToEgress: Called by Rust when the service has a datagram
     ///   to deliver via the egress NWConnection.
     func activate(onSendToEgress: @escaping (Data) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
+        if egressCallbackBox != nil {
+            RamaTransparentProxyEngineHandle.log(
+                level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
+                message:
+                    "RamaUdpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
+            )
+            return
+        }
         let box = Unmanaged.passRetained(UdpEgressCallbackBox(onSendToEgress: onSendToEgress))
         egressCallbackBox = box
 

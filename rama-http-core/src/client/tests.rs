@@ -2,7 +2,7 @@
 // FIXME: re-implement tests with `async/await`
 #[test]
 fn retryable_request() {
-    let _ = pretty_env_logger::try_init();
+    _ = pretty_env_logger::try_init();
 
     let mut rt = Runtime::new().expect("new rt");
     let mut connector = MockConnector::new();
@@ -50,7 +50,7 @@ fn retryable_request() {
 
 #[test]
 fn conn_reset_after_write() {
-    let _ = pretty_env_logger::try_init();
+    _ = pretty_env_logger::try_init();
 
     let mut rt = Runtime::new().expect("new rt");
     let mut connector = MockConnector::new();
@@ -99,7 +99,7 @@ fn conn_reset_after_write() {
 
 #[test]
 fn checkout_win_allows_connect_future_to_be_pooled() {
-    let _ = pretty_env_logger::try_init();
+    _ = pretty_env_logger::try_init();
 
     let mut rt = Runtime::new().expect("new rt");
     let mut connector = MockConnector::new();
@@ -198,7 +198,7 @@ fn checkout_win_allows_connect_future_to_be_pooled() {
 #[cfg(feature = "nightly")]
 #[bench]
 fn bench_http1_get_0b(b: &mut test::Bencher) {
-    let _ = pretty_env_logger::try_init();
+    _ = pretty_env_logger::try_init();
 
     let mut rt = Runtime::new().expect("new rt");
     let mut connector = MockConnector::new();
@@ -230,7 +230,7 @@ fn bench_http1_get_0b(b: &mut test::Bencher) {
 #[cfg(feature = "nightly")]
 #[bench]
 fn bench_http1_get_10b(b: &mut test::Bencher) {
-    let _ = pretty_env_logger::try_init();
+    _ = pretty_env_logger::try_init();
 
     let mut rt = Runtime::new().expect("new rt");
     let mut connector = MockConnector::new();

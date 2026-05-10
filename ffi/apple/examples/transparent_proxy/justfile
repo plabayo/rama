@@ -55,11 +55,14 @@ build-tproxy: build-tproxy-dev build-tproxy-dist
 
 notarize-tproxy-dist: build-tproxy-rs notarize-tproxy-app-dist
 
-install-tproxy-dev: build-tproxy-rs install-tproxy-app-dev
+clear-tproxy-files:
+    sudo rm -rf /var/root/Library/Application Support/rama/tproxy/dial9-traces
+
+install-tproxy-dev: build-tproxy-rs clear-tproxy-files install-tproxy-app-dev
 
 install-tproxy-dev-reset-profile: build-tproxy-rs install-tproxy-app-dev-reset-profile
 
-install-tproxy-dist: build-tproxy-rs install-tproxy-app-dist
+install-tproxy-dist: build-tproxy-rs clear-tproxy-files install-tproxy-app-dist
 
 install-tproxy-dist-reset-profile: build-tproxy-rs install-tproxy-app-dist-reset-profile
 
@@ -72,7 +75,7 @@ clippy *ARGS:
     cd ./tproxy_ffi_e2e && cargo clippy --all-targets --all-features {{ARGS}}
 
 sort:
-    @cargo install cargo-sort
+    @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
     cd ./tproxy_rs && cargo sort --workspace --grouped
     cd ./tproxy_ffi_e2e && cargo sort --workspace --grouped
 
@@ -86,12 +89,12 @@ rust-doc *ARGS:
 
 [working-directory: './tproxy_rs']
 rust-test *ARGS:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --no-tests=pass {{ARGS}}
 
 [working-directory: './tproxy_rs']
 rust-test-ignored:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --run-ignored=only --no-tests=pass
 
 [working-directory: './tproxy_rs']
@@ -115,8 +118,52 @@ cleanup-tproxy-ffi-e2e:
 run-tproxy-ffi-e2e:
     cargo test --test e2e -- --test-threads=1 --nocapture
 
+[working-directory: '.']
+run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
+    swift test \
+        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
+        -Xlinker -lrama_tproxy_example \
+        -Xlinker -lz \
+        -Xlinker -framework -Xlinker NetworkExtension \
+        -Xlinker -framework -Xlinker SystemConfiguration
+
 qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
 qa: qa-rust build-tproxy-dev
 
-test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e
+test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
+
+test-full: qa test-e2e
+
+# Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.
+#
+# Requires nightly Rust (`rustup toolchain install nightly`). The static lib
+# (`tproxy_rs`) and the test crate (`tproxy_ffi_e2e`) must both be built with
+# the sanitizer flag — otherwise instrumentation is incomplete and races slip
+# past. See the `cases::stress::*` tests for the high-churn scenarios that
+# give the sanitizer enough race windows to land on a real bug.
+[working-directory: './tproxy_rs']
+build-tproxy-rs-asan:
+    RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+        cargo +nightly build --target aarch64-apple-darwin
+
+[working-directory: './tproxy_ffi_e2e']
+run-tproxy-ffi-e2e-asan:
+    RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
+        RAMA_TPROXY_EXAMPLE_LIB_DIR="../tproxy_rs/target/aarch64-apple-darwin/debug" \
+        cargo +nightly test --target aarch64-apple-darwin \
+        --test e2e -- --test-threads=1 --nocapture cases::stress
+
+# Convenience target: build the staticlib with ASan and run the e2e stress
+# cases under it. Slower than `test-e2e` and requires nightly.
+test-e2e-asan: build-tproxy-rs-asan run-tproxy-ffi-e2e-asan
+
+# Generate live traffic against public HTTP/HTTPS endpoints to stress
+# the running sysext. Mixes small/large GET, large POST, parallel
+# connections, plain HTTP, and HTTP/1.1 ↔ HTTP/2. The sysext must be
+# installed and active. Tune via STRESS_DURATION /
+# STRESS_CONCURRENCY etc; with `MONITOR_PID=$(pgrep -f
+# org.ramaproxy.example.tproxy.dev.provider)` it also samples the
+# extension's RSS / VM regions / leaks every 5s.
+stress-traffic *ARGS:
+    bash ./scripts/stress_traffic.sh {{ARGS}}

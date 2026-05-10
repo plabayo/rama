@@ -104,12 +104,15 @@ block2 = "0.6"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
+cc = "1"
 clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
+dial9-tokio-telemetry = "0.3.8"
+dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
 flate2 = "1.1"
@@ -249,6 +252,7 @@ webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"
 x509-parser = { version = "0.18", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -445,6 +449,26 @@ opentelemetry = [
     "grpc",
     "rama-grpc?/opentelemetry",
 ]
+# Optional [dial9] runtime-telemetry support across the rama crate
+# family. When enabled on a sub-crate, that crate ships pre-defined
+# `TraceEvent` types and emits them at the corresponding lifecycle
+# hooks; emission is a no-op when the consumer's runtime is not a
+# `dial9-tokio-telemetry::TracedRuntime`.
+#
+# Enabling this feature requires building with `--cfg tokio_unstable`
+# (workspace-wide via `.cargo/config.toml`, or per-build via
+# `RUSTFLAGS`). Users who DO NOT enable `dial9` do not need
+# `tokio_unstable`.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = [
+    "rama-net?/dial9",
+    "rama-net-apple-networkextension?/dial9",
+    "rama-dns?/dial9",
+    "rama-tls-rustls?/dial9",
+    "rama-tls-boring?/dial9",
+    "rama-socks5?/dial9",
+]
 
 [dependencies]
 ahash = { workspace = true }
@@ -498,7 +522,7 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
@@ -506,7 +530,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
-tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 turmoil = { workspace = true }

@@ -48,5 +48,17 @@ let package = Package(
             name: "RamaAppleXpcClient",
             path: "ffi/apple/RamaAppleXpcClient/Sources/RamaAppleXpcClient"
         ),
+        // Swift FFI integration tests. Drive them via `just ttest-e2e-ffi-swift`
+        // so the rama staticlib path stays in one place. CI uses the same recipes.
+        .testTarget(
+            name: "RamaAppleNetworkExtensionTests",
+            dependencies: [
+                "RamaAppleNetworkExtension",
+                "RamaAppleSecureEnclave",
+                "RamaAppleNEFFI",
+                "RamaAppleSEFFI",
+            ],
+            path: "ffi/apple/RamaAppleNetworkExtension/Tests/RamaAppleNetworkExtensionTests"
+        ),
     ]
 )

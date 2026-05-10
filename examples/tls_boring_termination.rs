@@ -89,25 +89,22 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
+        let exec = Executor::graceful(guard);
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
             GetInputExtensionRefLayer::new(|st: &SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
-            IoToProxyBridgeIoLayer::new(
-                Executor::graceful(guard.clone()),
-                HostWithPort::local_ipv4(62801),
-            )
-            .with_connector(
-                // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp()
-                    .into_layer(TcpConnector::new(Executor::graceful(guard.clone()))),
-            ),
+            IoToProxyBridgeIoLayer::new(exec.clone(), HostWithPort::local_ipv4(62801))
+                .with_connector(
+                    // ha proxy protocol used to forwarded the client original IP
+                    HaProxyClientLayer::tcp().into_layer(TcpConnector::new(exec.clone())),
+                ),
         )
-            .into_layer(IoForwardService::new());
+            .into_layer(IoForwardService::new(exec.clone()));
 
-        TcpListener::bind_address("127.0.0.1:63801", Executor::graceful(guard.clone()))
+        TcpListener::bind_address("127.0.0.1:63801", exec)
             .await
             .expect("bind TCP Listener: tls")
             .serve(tcp_service)
@@ -116,7 +113,7 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
+        let exec = Executor::graceful(guard);
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service =

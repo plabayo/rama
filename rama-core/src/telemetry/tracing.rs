@@ -3,8 +3,43 @@
 #[doc(inline)]
 pub use tracing::*;
 
-#[doc(inline)]
-pub use ::tracing_appender as appender;
+/// Re-export of [`tracing_appender`] plus rama utilities that go with it.
+pub mod appender {
+    #[doc(inline)]
+    pub use ::tracing_appender::*;
+
+    #[doc(inline)]
+    pub use ::tracing_appender::{
+        non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard},
+        rolling::{RollingFileAppender, Rotation},
+    };
+
+    use std::path::Path;
+
+    /// Build a [`RollingFileAppender`] wrapped in [`NonBlocking`] so
+    /// file I/O (including rotation) runs on the appender's worker
+    /// thread instead of the caller's. The returned [`WorkerGuard`]
+    /// must be kept alive for the program's lifetime; drop it just
+    /// before exit to flush pending records.
+    pub fn rolling_dedicated_thread(
+        rotation: Rotation,
+        directory: impl AsRef<Path>,
+        file_name_prefix: impl AsRef<Path>,
+    ) -> (NonBlocking, WorkerGuard) {
+        let appender = RollingFileAppender::new(rotation, directory, file_name_prefix);
+        rolling_dedicated_thread_with_builder(NonBlockingBuilder::default(), appender)
+    }
+
+    /// [`rolling_dedicated_thread`] variant accepting a pre-configured
+    /// [`NonBlockingBuilder`] (custom buffer limit, lossy vs.
+    /// blocking back-pressure, thread name, …).
+    pub fn rolling_dedicated_thread_with_builder(
+        builder: NonBlockingBuilder,
+        appender: RollingFileAppender,
+    ) -> (NonBlocking, WorkerGuard) {
+        builder.finish(appender)
+    }
+}
 
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]

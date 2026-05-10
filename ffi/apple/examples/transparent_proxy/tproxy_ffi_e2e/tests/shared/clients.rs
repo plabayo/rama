@@ -53,7 +53,7 @@ unsafe extern "C" fn on_udp_server_datagram(ctx: *mut c_void, bytes: bindings::R
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
 }
 
 unsafe extern "C" fn on_udp_server_closed(_ctx: *mut c_void) {}
@@ -71,7 +71,7 @@ unsafe extern "C" fn on_udp_send_to_egress(ctx: *mut c_void, bytes: bindings::Ra
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
 }
 
 pub(crate) fn build_http_client(
@@ -175,6 +175,20 @@ pub(crate) async fn fetch_response(
     builder.send().await.expect("send request")
 }
 
+pub(crate) async fn post_with_body(
+    client: &ClientService,
+    url: &str,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+    body: Vec<u8>,
+) -> Response {
+    let builder = client.post(url).body(body);
+    let builder = apply_http_version(builder, version);
+    let builder = apply_proxy_extensions(builder, proxy_kind, proxy_addr);
+    builder.send().await.expect("send post request")
+}
+
 pub(crate) async fn websocket_echo(
     client: &ClientService,
     url: String,
@@ -215,7 +229,7 @@ pub(crate) async fn websocket_echo(
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, "ws reply received");
 
-    let _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
+    _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
 }
 
 pub(crate) async fn roundtrip_custom_protocol(
@@ -431,7 +445,7 @@ pub(crate) async fn udp_roundtrip(
                 next = egress_rx.recv() => {
                     match next {
                         Some(chunk) => {
-                            let _ = writer_socket.send(&chunk).await;
+                            _ = writer_socket.send(&chunk).await;
                         }
                         None => break,
                     }
@@ -493,8 +507,8 @@ pub(crate) async fn udp_roundtrip(
     stop_egress.notify_waiters();
     egress_writer.abort();
     egress_reader.abort();
-    let _ = egress_writer.await;
-    let _ = egress_reader.await;
+    _ = egress_writer.await;
+    _ = egress_reader.await;
 
     response
 }

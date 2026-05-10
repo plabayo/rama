@@ -98,6 +98,25 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         None
     }
 
+    /// Decide what to do with an incoming TCP flow.
+    ///
+    /// # Async-correctness contract
+    ///
+    /// This method **must be async-correct**: it must not block the executor
+    /// thread. In particular, do not perform synchronous DNS resolution or any
+    /// other blocking work inline. Wrap any unavoidable sync work in
+    /// [`tokio::task::spawn_blocking`].
+    ///
+    /// On macOS, blocking the executor here can deadlock against
+    /// `mDNSResponder` (the system DNS daemon), because mDNSResponder's UDP
+    /// traffic flows through the same provider that's calling this method —
+    /// see the `tproxy/apple` documentation on Bonjour DNS.
+    ///
+    /// The engine enforces a configurable deadline
+    /// ([`crate::tproxy::TransparentProxyEngineBuilder::with_decision_deadline`])
+    /// on this call. A handler that does not return within the deadline is
+    /// treated according to the configured
+    /// [`crate::tproxy::DecisionDeadlineAction`] (default: block).
     fn match_tcp_flow(
         &self,
         _exec: Executor,
@@ -111,6 +130,10 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }
 
+    /// Decide what to do with an incoming UDP flow.
+    ///
+    /// The same async-correctness contract as
+    /// [`Self::match_tcp_flow`] applies — see that method for details.
     fn match_udp_flow(
         &self,
         _exec: Executor,

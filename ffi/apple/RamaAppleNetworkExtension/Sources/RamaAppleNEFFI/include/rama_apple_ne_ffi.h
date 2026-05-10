@@ -8,11 +8,34 @@
 extern "C" {
 #endif
 
+/* ============================================================================
+ * Threading & concurrency contract (violating any of this is UB).
+ *
+ * - Engine handle: methods are Send + Sync and may be called
+ *   concurrently from any thread.
+ * - Session handles: single-owner. Never make two concurrent FFI
+ *   calls on the same pointer; the Swift wrappers serialise via
+ *   NSLock and any other consumer must do the same.
+ * - Cancellation (`_tcp_session_cancel`, `_udp_session_on_client_close`):
+ *   flips the engine's `callback_active` guard, drops senders, signals
+ *   shutdown, and returns. In-flight bridge dispatches that already
+ *   passed the guard run to completion before `_session_free` releases
+ *   the Swift callback box.
+ * - `_session_free` / `_engine_stop`: consume the pointer. The Swift
+ *   wrappers null their stored pointer so double-free is a no-op.
+ * ==========================================================================*/
+
 /// Opaque transparent proxy engine handle managed by Rust.
 typedef struct RamaTransparentProxyEngine RamaTransparentProxyEngine;
 /// Opaque TCP flow/session handle managed by Rust.
+///
+/// Concurrency: see the contract block at the top of this header. The
+/// session is single-owner; no two concurrent FFI calls on the same
+/// pointer.
 typedef struct RamaTransparentProxyTcpSession RamaTransparentProxyTcpSession;
 /// Opaque UDP flow/session handle managed by Rust.
+///
+/// Concurrency: see the contract block at the top of this header.
 typedef struct RamaTransparentProxyUdpSession RamaTransparentProxyUdpSession;
 
 /// Borrowed byte view.
@@ -185,6 +208,9 @@ typedef struct {
     const RamaTransparentProxyNetworkRule* rules;
     /// Number of rules at `rules`.
     size_t rules_len;
+    /// Per-flow TCP write-pump back-pressure cap in bytes.
+    /// 0 means "use the Swift-side built-in default (1 MiB)".
+    size_t tcp_write_pump_max_pending_bytes;
 } RamaTransparentProxyConfig;
 
 /// Initialization config passed once before using engine APIs.
@@ -337,6 +363,13 @@ typedef struct {
 /// Options for the egress NWConnection on UDP flows.
 typedef struct {
     RamaNwEgressParameters parameters;
+    /// Whether `connect_timeout_ms` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_connect_timeout_ms;
+    /// Wall-clock cap (ms) on the egress NWConnection reaching `.ready`.
+    /// UDP has no real handshake — this bounds the local DNS /
+    /// Network.framework preparation phase.
+    uint32_t connect_timeout_ms;
 } RamaUdpEgressConnectOptions;
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's

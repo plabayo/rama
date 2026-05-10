@@ -112,7 +112,7 @@
 //!         println!("RX: {:?}", chunk);
 //!
 //!         // Let the server send more data.
-//!         let _ = flow_control.release_capacity(chunk.len());
+//!         _ = flow_control.release_capacity(chunk.len());
 //!     }
 //!
 //!     Ok(())

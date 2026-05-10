@@ -16,6 +16,16 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=src/process_shim.c");
+
+    // Tiny C shim that calls libbsm's `audit_token_to_pid` macro (the
+    // public, header-defined API; the macro's internal field index is
+    // not). Compiled here so the Rust crate's `process::AuditToken::pid`
+    // does not depend on the audit_token_t internal layout.
+    cc::Build::new()
+        .file("src/process_shim.c")
+        .compile("rama_process_shim");
+    println!("cargo:rustc-link-lib=dylib=bsm");
 
     let sdk_path = env::var("SDKROOT")
         .ok()

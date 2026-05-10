@@ -1,6 +1,11 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-export RUSTFLAGS := "-D warnings"
+# `--cfg tokio_unstable` enables Tokio's unstable runtime APIs that
+# `dial9-tokio-telemetry` requires. It is benign for crates that do
+# not opt into the `dial9` feature; the workspace `.cargo/config.toml`
+# carries the same flag for raw `cargo` invocations. We set it via env
+# here because justfile's `export RUSTFLAGS` overrides cargo's config.
+export RUSTFLAGS := "-D warnings --cfg tokio_unstable"
 export RUST_LOG := "debug"
 
 fmt *ARGS:
@@ -16,7 +21,7 @@ fmt-check-crate CRATE *ARGS:
     cargo fmt --all -p {{CRATE}} --check {{ARGS}}
 
 sort:
-    @cargo install cargo-sort
+    @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
     cargo sort --workspace --grouped
 
 lint: fmt sort
@@ -80,14 +85,14 @@ hack:
     cargo hack check --each-feature --no-dev-deps --workspace
 
 test *ARGS:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace {{ARGS}}
 
 test-doc *ARGS:
     cargo test --doc --all-features --workspace {{ARGS}}
 
 test-crate CRATE *ARGS:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}
 
 test-doc-crate CRATE *ARGS:
@@ -99,20 +104,34 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --workspace --run-ignored=only
 
 test-ignored-release:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features --release --workspace --run-ignored=only
 
 test-loom:
-    @cargo install cargo-nextest --locked
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
 qq: fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
+
+# QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
+# and tests the rama crates that opt into dial9. `tokio_unstable` is
+# required by `dial9-tokio-telemetry` and is set workspace-wide in
+# `.cargo/config.toml` so this recipe does not need to set it explicitly.
+#
+# Kept separate from the main `qa` recipe so the standard QA path stays
+# focused — but is part of `qa-full` so anyone running the full suite
+# covers it. CI runs it as its own job.
+qa-dial9:
+    @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+    cargo check -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo clippy -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
+    cargo nextest run -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
 
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}
@@ -123,7 +142,7 @@ qa-crate CRATE:
     just test-doc-crate {{CRATE}}
 
 qa-ffi-apple:
-    just ./ffi/apple/examples/transparent_proxy/qa
+    RAMA_TPROXY_SKIP_CODESIGNING=1 RAMA_TPROXY_ISOLATED_CACHE=1 just ./ffi/apple/examples/transparent_proxy/qa
 
 qa-xpc-apple:
     cargo check -p rama-net-apple-xpc
@@ -136,7 +155,12 @@ qa-xpc-apple:
 test-e2e-ffi-apple:
     just ./ffi/apple/examples/transparent_proxy/test-e2e
 
-qa-full: qa hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+test-e2e-ffi-swift:
+    just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift
+
+test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-apple
+
+qa-full: qa qa-dial9 hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}

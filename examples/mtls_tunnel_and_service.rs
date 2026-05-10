@@ -174,7 +174,7 @@ async fn main() {
                     .into_layer(TcpConnector::new(exec.clone())),
             ),
         )
-            .into_layer(IoForwardService::new());
+            .into_layer(IoForwardService::new(exec.clone()));
 
         // L4 Proxy Service
         TcpListener::bind_address(TUNNEL_AUTHORITY, exec)

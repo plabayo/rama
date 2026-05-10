@@ -21,21 +21,29 @@ targets = ["x86_64-apple-darwin"]
 
 [features]
 default = []
+# Optional [dial9] runtime telemetry support.
+#
+# Building with this feature requires `--cfg tokio_unstable`.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
+dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
-rama-tcp = { workspace = true }
-rama-udp = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
+zeroize = { workspace = true }
 
 [build-dependencies]
 bindgen = { workspace = true }
+cc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

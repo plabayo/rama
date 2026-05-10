@@ -104,7 +104,7 @@ async fn main() {
 
         // read something that will never come,
         // so we stay blocked until client drops
-        let _ = fs.next().await;
+        _ = fs.next().await;
     });
 
     let udp_socket_relay = udp_binder

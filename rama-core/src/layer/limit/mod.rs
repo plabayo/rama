@@ -81,7 +81,7 @@ where
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
-                    let _ = guard;
+                    _ = guard;
                     return self.inner.serve(input).await.into_box_error();
                 }
                 policy::PolicyOutput::Abort(err) => return Err(err.into()),
@@ -111,7 +111,7 @@ where
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
-                    let _ = guard;
+                    _ = guard;
                     return self.inner.serve(input).await;
                 }
                 policy::PolicyOutput::Abort(err) => {

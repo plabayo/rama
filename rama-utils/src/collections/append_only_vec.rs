@@ -57,13 +57,13 @@ impl<T, const AMOUNT_OF_BINS: usize, const BIN_OFFSET: u32>
     /// ```compile_fail
     /// use rama_utils::collections::AppendOnlyVec;
     /// // This should fail because this overflow INITIAL_BIN_SIZE
-    /// let _ = AppendOnlyVec::<usize, 300, 100>::new();
+    /// _ = AppendOnlyVec::<usize, 300, 100>::new();
     /// ```
     ///
     /// ```compile_fail
     /// use rama_utils::collections::AppendOnlyVec;
     /// // This should fail because the total size exceeds isize::MAX
-    /// let _ = AppendOnlyVec::<u64, 60, 10>::new();
+    /// _ = AppendOnlyVec::<u64, 60, 10>::new();
     /// ```
     pub fn new() -> Self {
         // This has as a side effect that it will check if capacity fits in usize and is not 0
@@ -376,7 +376,7 @@ fn spin_wait(failures: &mut usize) {
 
     #[cfg(all(test, loom))]
     {
-        let _ = failures;
+        _ = failures;
         loom::thread::yield_now();
     }
 }

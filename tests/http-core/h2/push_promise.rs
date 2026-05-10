@@ -134,7 +134,7 @@ async fn recv_push_when_push_disabled_is_conn_error() {
 
     let (io, mut srv) = mock::new();
     let mock = async move {
-        let _ = srv.assert_client_handshake().await;
+        _ = srv.assert_client_handshake().await;
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://http2.akamai.com/")

@@ -479,7 +479,7 @@ mod test {
         // Using the name component of a previously indexed header (without
         // sensitive flag set)
 
-        let _ = encode(
+        _ = encode(
             &mut encoder,
             vec![self::header("my-password", "not-so-secret")],
         );
@@ -515,7 +515,7 @@ mod test {
         let name = "hello";
 
         // Encode first one
-        let _ = encode(&mut encoder, vec![header(name, "one")]);
+        _ = encode(&mut encoder, vec![header(name, "one")]);
 
         // Encode second one
         let res = encode(&mut encoder, vec![header(name, "two")]);
@@ -537,10 +537,10 @@ mod test {
         // The encoder only has space for 2 headers
         let mut encoder = Encoder::new(76, 0);
 
-        let _ = encode(&mut encoder, vec![header("foo", "bar")]);
+        _ = encode(&mut encoder, vec![header("foo", "bar")]);
         assert_eq!(1, encoder.table.len());
 
-        let _ = encode(&mut encoder, vec![header("bar", "foo")]);
+        _ = encode(&mut encoder, vec![header("bar", "foo")]);
         assert_eq!(2, encoder.table.len());
 
         // This will evict the first header, while still referencing the header
@@ -613,7 +613,7 @@ mod test {
         let mut encoder = Encoder::default();
 
         // Add a header
-        let _ = encode(&mut encoder, vec![header("foo", "bar")]);
+        _ = encode(&mut encoder, vec![header("foo", "bar")]);
 
         encoder.update_max_size(1);
         assert_eq!(1, encoder.table.len());
@@ -639,7 +639,7 @@ mod test {
         let mut encoder = Encoder::default();
 
         // Add a header
-        let _ = encode(&mut encoder, vec![header("foo", "bar")]);
+        _ = encode(&mut encoder, vec![header("foo", "bar")]);
 
         encoder.update_max_size(100);
         assert_eq!(1, encoder.table.len());

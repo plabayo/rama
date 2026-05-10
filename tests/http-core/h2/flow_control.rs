@@ -325,7 +325,7 @@ async fn recv_data_overflows_stream_window() {
     let (io, mut srv) = mock::new();
 
     let mock = async move {
-        let _ = srv.assert_client_handshake().await;
+        _ = srv.assert_client_handshake().await;
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://http2.akamai.com/")
@@ -1055,7 +1055,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
         //
         // A timeout is used here to avoid blocking forever if there is a
         // failure
-        let _ = tokio::time::timeout(Duration::from_secs(5), rx2)
+        _ = tokio::time::timeout(Duration::from_secs(5), rx2)
             .await
             .unwrap();
 
@@ -1086,7 +1086,7 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
     });
 
     // Wait for server handshake to complete.
-    let _ = tokio::time::timeout(Duration::from_secs(5), rx1)
+    _ = tokio::time::timeout(Duration::from_secs(5), rx1)
         .await
         .unwrap();
 

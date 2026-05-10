@@ -734,7 +734,7 @@ mod test {
             "/",
             async |mut mp: Multipart| -> Result<StatusCode, MultipartError> {
                 let f = mp.next_field().await?.unwrap();
-                let _ = f.bytes().await?;
+                _ = f.bytes().await?;
                 Ok(StatusCode::OK)
             },
         );

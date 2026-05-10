@@ -29,10 +29,18 @@ default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
 tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
+# Optional [dial9] runtime telemetry support.
+#
+# Building with this feature requires `--cfg tokio_unstable`.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
 ahash = { workspace = true }
 const_format = { workspace = true }
+dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }

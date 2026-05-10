@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     fn assert_try_into_err(src: impl TryInto<NonEmptyStr>) {
-        let _ = src.try_into().unwrap_err();
+        _ = src.try_into().unwrap_err();
     }
 
     #[cfg(not(loom))]

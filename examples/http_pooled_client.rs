@@ -93,7 +93,7 @@ async fn main() {
     let client = EasyHttpWebClient::default();
     let result = client.get(format!("http://{ADDRESS}/")).send().await;
 
-    let _ = result.unwrap_err();
+    _ = result.unwrap_err();
 }
 
 fn setup_tracing() {

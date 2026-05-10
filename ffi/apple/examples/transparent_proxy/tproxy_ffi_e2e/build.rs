@@ -36,9 +36,7 @@ fn main() {
     // SE code path.
     let stub = manifest_dir.join("stubs/rama_apple_se_stubs.c");
     println!("cargo:rerun-if-changed={}", stub.display());
-    cc::Build::new()
-        .file(&stub)
-        .compile("rama_apple_se_stubs");
+    cc::Build::new().file(&stub).compile("rama_apple_se_stubs");
 
     let bindings = bindgen::Builder::default()
         .header(header.display().to_string())

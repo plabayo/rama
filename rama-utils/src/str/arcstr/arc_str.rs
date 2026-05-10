@@ -116,7 +116,7 @@ use super::Substr;
 /// ```
 /// # use rama_utils::str::arcstr::ArcStr;
 /// fn accepts_str(s: &str) {
-///    # let _ = s;
+///    # _ = s;
 ///     // s...
 /// }
 ///
@@ -1037,7 +1037,7 @@ impl Drop for ArcStr {
             );
             // Note: `enc == PackedFlagUint::FALSE_ONE`
             if enc == PackedFlagUint::FALSE_ONE {
-                let _ = (*this).count_flag.load(Ordering::Acquire);
+                _ = (*this).count_flag.load(Ordering::Acquire);
                 ThinInner::destroy_cold(this)
             }
         }

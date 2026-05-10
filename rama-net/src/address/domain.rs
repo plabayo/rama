@@ -842,7 +842,7 @@ mod tests {
         for (domain_raw, sub) in test_cases.into_iter() {
             let domain = Domain::from_static(domain_raw);
             let msg = format!("{:?}", (domain_raw, sub));
-            let _ = domain.try_as_sub(sub).expect_err(&msg);
+            _ = domain.try_as_sub(sub).expect_err(&msg);
         }
     }
 

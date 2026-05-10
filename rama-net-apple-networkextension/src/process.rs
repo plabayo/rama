@@ -58,6 +58,13 @@ pub struct AuditToken {
     val: [u32; 8],
 }
 
+// Apple's `audit_token_t` is 32 bytes on every shipping macOS. If the
+// SDK ever changes the layout, this assert breaks the build before
+// our struct silently returns a wrong PID. Any change here also needs
+// matching updates to the C wrapper at
+// `rama_apple_ne_ffi.c::rama_apple_audit_token_to_pid`.
+const _: () = assert!(size_of::<AuditToken>() == 32);
+
 impl AuditToken {
     pub const BYTE_LEN: usize = size_of::<Self>();
 
@@ -94,16 +101,31 @@ impl AuditToken {
         unsafe { &*(self as *const Self).cast::<[u8; Self::BYTE_LEN]>() }
     }
 
+    /// Resolve the audit token to a process id via libbsm.
+    ///
+    /// We don't extract `val[N]` directly: Apple treats
+    /// `audit_token_t`'s internal layout as opaque and only commits
+    /// to the `audit_token_to_*` macros/functions in `<bsm/libbsm.h>`.
+    /// Calling those macros requires C — they read fields whose
+    /// indices Apple may renumber. We therefore compile a tiny C shim
+    /// (`__rama_audit_token_to_pid`, see `build.rs`) that takes
+    /// `(const uint8_t*, size_t)` and uses `audit_token_to_pid()`
+    /// internally; that keeps the libbsm header as the single source
+    /// of truth for the layout, and the Rust→C call passes only
+    /// pointer + length so there is no aggregate-passing ABI
+    /// dependency either. Returns `-1` on a malformed input length.
     #[must_use]
     pub fn pid(&self) -> i32 {
-        // SAFETY: Apple documents `audit_token_to_pid` for valid `audit_token_t` values.
-        unsafe { audit_token_to_pid(*self) }
+        let bytes = self.as_bytes();
+        // SAFETY: `bytes` points to `Self::BYTE_LEN` valid bytes; the
+        // shim re-validates the length internally and only reads
+        // through that span.
+        unsafe { __rama_audit_token_to_pid(bytes.as_ptr(), bytes.len()) }
     }
 }
 
-#[link(name = "bsm")]
 unsafe extern "C" {
-    fn audit_token_to_pid(token: AuditToken) -> libc::pid_t;
+    fn __rama_audit_token_to_pid(bytes: *const u8, len: usize) -> i32;
 }
 
 #[link(name = "proc")]
@@ -189,6 +211,16 @@ fn sysctl_read(mib: &mut [c_int], out: *mut c_void, out_len: &mut usize) -> io::
 /// PROCARGS2 buffer may be malformed, truncated, or already stale by the time
 /// the caller observes it (the parser is defensive against all of those).
 /// Treat the result as a best-effort, racy snapshot — not a security boundary.
+///
+/// # Cost
+///
+/// Each call queries `KERN_ARGMAX` (typically 1 MiB on macOS) and then
+/// allocates a `Vec<u8>` of that size to fetch the per-PID PROCARGS2
+/// buffer. That's fine for low-frequency lookups (e.g. one per flow at
+/// admission time), but **do not** call this on a per-packet hot path
+/// — at line-rate flow churn the 1 MiB allocation per call dominates.
+/// Cache the result per-PID at the caller if you need it more than
+/// once for the same process.
 pub unsafe fn pid_arguments(pid: i32) -> io::Result<Vec<String>> {
     if pid <= 0 {
         return Ok(Vec::new());

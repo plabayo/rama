@@ -53,13 +53,13 @@ transparent_proxy_ffi! {
 
 #[test]
 fn macro_generates_direct_dependency_ffi_symbols() {
-    let _ = rama_transparent_proxy_initialize
+    _ = rama_transparent_proxy_initialize
         as unsafe extern "C" fn(
             *const rama_net_apple_networkextension::ffi::tproxy::TransparentProxyInitConfig,
         ) -> bool;
-    let _ = rama_transparent_proxy_engine_new
+    _ = rama_transparent_proxy_engine_new
         as unsafe extern "C" fn() -> *mut RamaTransparentProxyEngine;
-    let _ = rama_transparent_proxy_engine_handle_app_message
+    _ = rama_transparent_proxy_engine_handle_app_message
         as unsafe extern "C" fn(
             *mut RamaTransparentProxyEngine,
             rama_net_apple_networkextension::ffi::BytesView,

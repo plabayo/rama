@@ -343,7 +343,12 @@ where
             *this.is_terminated = true;
         }
         polled.map_err(|_e| {
-            debug!("connection error: {_e:?}");
+            // GoAway(NO_ERROR) is a clean graceful shutdown — not a real error.
+            if _e.is_go_away() && _e.reason() == Some(crate::h2::Reason::NO_ERROR) {
+                trace!("connection closed gracefully (GoAway NO_ERROR)");
+            } else {
+                debug!("connection error: {_e:?}");
+            }
         })
     }
 }

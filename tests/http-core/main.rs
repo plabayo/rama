@@ -5,7 +5,6 @@
     clippy::print_stdout,
     clippy::dbg_macro,
     clippy::allow_attributes,
-    clippy::let_underscore_must_use,
     clippy::let_underscore_future,
     clippy::assertions_on_result_states,
     clippy::map_err_ignore,

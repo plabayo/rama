@@ -18,11 +18,52 @@ use rama_http_types::{
     proto::h2::PseudoHeaderOrder,
 };
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::conn::is_connection_error;
 use tokio::sync::Mutex;
 
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{borrow::Cow, marker::PhantomData};
+use std::{borrow::Cow, error::Error as StdError, marker::PhantomData};
+
+fn is_expected_http_connection_termination(err: &(dyn StdError + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(err) = current {
+        if let Some(http_err) = err.downcast_ref::<rama_http_core::Error>()
+            && (http_err.is_canceled() || http_err.is_closed() || http_err.is_body_write_aborted())
+        {
+            return true;
+        }
+
+        if let Some(h2_err) = err.downcast_ref::<rama_http_core::h2::Error>() {
+            if h2_err.is_go_away() {
+                return true;
+            }
+            if let Some(io_err) = h2_err.get_io()
+                && is_connection_error(io_err)
+            {
+                return true;
+            }
+        }
+
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>()
+            && is_connection_error(io_err)
+        {
+            return true;
+        }
+
+        current = err.source();
+    }
+
+    false
+}
+
+fn log_connection_termination(err: &rama_http_core::Error) {
+    if is_expected_http_connection_termination(err) {
+        tracing::trace!(error = ?err, "connection closed by peer / transport");
+    } else {
+        tracing::debug!(error = ?err, "connection failed");
+    }
+}
 
 #[derive(Debug, Clone)]
 /// A [`Service`] which establishes an HTTP Connection.
@@ -150,7 +191,7 @@ where
             exec.into_spawn_task(
                 async move {
                     if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {err:?}");
+                        log_connection_termination(&err);
                     }
                 }
                 .instrument(conn_span),
@@ -193,7 +234,7 @@ where
             exec.into_spawn_task(
                 async move {
                     if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {err:?}");
+                        log_connection_termination(&err);
                     }
                 }
                 .instrument(conn_span),

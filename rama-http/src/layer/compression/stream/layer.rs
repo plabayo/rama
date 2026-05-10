@@ -243,4 +243,143 @@ mod tests {
 
         Ok(())
     }
+
+    // RFC 9110 §9.3.2: server MUST NOT send a body in response to a HEAD request.
+    #[tokio::test]
+    async fn does_not_compress_head_response() {
+        use crate::header::CONTENT_ENCODING;
+        use http::Method;
+        let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
+        let req = Request::builder()
+            .method(Method::HEAD)
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "HEAD response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §9.3.6: CONNECT tunnels have no HTTP message body phase.
+    #[tokio::test]
+    async fn does_not_compress_connect_response() {
+        use crate::header::CONTENT_ENCODING;
+        use http::Method;
+        let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "CONNECT response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.3.5: 204 No Content responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_204_response() {
+        use crate::header::CONTENT_ENCODING;
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(Response::builder().status(204).body(Body::empty()).unwrap())
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "204 response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.4.5: 304 Not Modified responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_304_response() {
+        use crate::header::CONTENT_ENCODING;
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(Response::builder().status(304).body(Body::empty()).unwrap())
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "304 response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.2: 1xx Informational responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_1xx_response() {
+        use crate::header::CONTENT_ENCODING;
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(Response::builder().status(100).body(Body::empty()).unwrap())
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "1xx response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.3.6: 205 Reset Content responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_205_response() {
+        use crate::header::CONTENT_ENCODING;
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(Response::builder().status(205).body(Body::empty()).unwrap())
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "205 response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §14.2: partial-content responses carry Content-Range; compressing
+    // them would corrupt the byte-range offsets the client uses to reassemble the
+    // resource, so the service must pass them through unchanged.
+    #[tokio::test]
+    async fn does_not_compress_range_response() {
+        use crate::header::{CONTENT_ENCODING, CONTENT_RANGE};
+        let service =
+            StreamCompressionLayer::new().into_layer(service_fn(async |_: Request<Body>| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(206)
+                        .header(CONTENT_RANGE, "bytes 0-4/10")
+                        .body(Body::from("hello"))
+                        .unwrap(),
+                )
+            }));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "range response must not carry Content-Encoding"
+        );
+    }
 }

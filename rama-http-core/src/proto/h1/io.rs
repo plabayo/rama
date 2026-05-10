@@ -840,7 +840,7 @@ mod tests {
     TODO: needs tokio_test::io to allow configure write_buf calls
     #[test]
     fn write_buf_queue() {
-        let _ = pretty_env_logger::try_init();
+        _ = pretty_env_logger::try_init();
 
         let mock = AsyncIo::new_buf(vec![], 1024);
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);

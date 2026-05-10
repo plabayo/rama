@@ -72,6 +72,7 @@
 # Appendices
 
 - [📣 Ecosystem](./ecosystem.md)
+- [🐕 dial9](./dial9.md)
 - [🎧 Netstack.FM](./netstackfm.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)

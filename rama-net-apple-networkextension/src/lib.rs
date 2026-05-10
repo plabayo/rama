@@ -20,6 +20,26 @@
 //! - [Exporting a Developer ID Network Extension](https://developer.apple.com/forums/thread/737894)
 //! - [Debugging a Network Extension Provider](https://developer.apple.com/forums/thread/725805)
 //!
+//! ## NetworkExtension provider ordering
+//!
+//! When multiple NetworkExtension providers are active on a system, macOS
+//! evaluates them in the following order. This is useful for reasoning about
+//! how a transparent proxy provider built on top of this crate composes with
+//! other on-system middle-boxes (other VPNs, content filters, DNS proxies,
+//! etc.):
+//!
+//! 1. Per-app proxy
+//! 2. Content filter
+//! 3. Relays
+//! 4. Transparent proxy *(this crate)*
+//! 5. General VPN
+//! 6. DNS proxy
+//!
+//! This ordering is descriptive — observed system behavior — not a normative
+//! guarantee from Apple, and the implications for any specific deployment
+//! depend on which provider types are active and what each is configured to
+//! do.
+//!
 //! Below is relevant information communicated from some of the above sources.
 //!
 //! ## Terminology

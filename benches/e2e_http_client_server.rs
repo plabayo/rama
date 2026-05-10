@@ -272,7 +272,7 @@ where
                 ConsumeErrLayer::default(),
                 IoToProxyBridgeIoLayer::extension_proxy_target(Executor::default()),
             )
-                .into_layer(IoForwardService::new()),
+                .into_layer(IoForwardService::new(Executor::default())),
         ),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),

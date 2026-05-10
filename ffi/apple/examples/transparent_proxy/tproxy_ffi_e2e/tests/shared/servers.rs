@@ -6,6 +6,7 @@ use rama::{
     futures::async_stream::stream_fn,
     http::{
         Body, Request, Response, StatusCode,
+        body::util::BodyExt as _,
         header::SEC_WEBSOCKET_VERSION,
         headers::ContentType,
         layer::{
@@ -157,6 +158,32 @@ fn http_app(
                             }
                         }));
                         (Headers::single(ContentType::octet_stream()), body).into_response()
+                    }
+                }
+            })
+            .with_post("/echo", {
+                let observations = Arc::clone(observations);
+                move |req: Request| {
+                    let observations = Arc::clone(&observations);
+                    async move {
+                        record_http_observation(observations, &req).await;
+                        // Drain the request body and report the byte count back as a
+                        // header. Used to exercise the ingress→service backpressure
+                        // path with a large upload while other small flows run in
+                        // parallel — pre-#887 a slow drain here would stall every
+                        // other flow on the bridge.
+                        let body = req.into_body();
+                        let bytes = body
+                            .collect()
+                            .await
+                            .map(|c| c.to_bytes())
+                            .unwrap_or_default();
+                        let len = bytes.len();
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("x-echo-len", len.to_string())
+                            .body(Body::empty())
+                            .expect("build echo response")
                     }
                 }
             })
@@ -337,7 +364,7 @@ pub(crate) async fn spawn_combined_proxy() -> u16 {
             DefaultHttpProxyConnectReplyService::new(),
             ConsumeErrLayer::trace_as_debug().into_layer(
                 IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
-                    .into_layer(IoForwardService::new()),
+                    .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
         .into_layer(service_fn(http_plain_proxy)),
@@ -367,7 +394,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         let ws_client = HttpUpgradeMitmRelayLayer::new(
             Executor::default(),
             HttpWebSocketRelayServiceRequestMatcher::new(
-                ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::new()),
+                ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::default()),
             ),
         )
         .into_layer(inner_client);

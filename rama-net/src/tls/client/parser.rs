@@ -35,8 +35,9 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
         Ok((i, hello)) => {
             if !i.is_empty() {
                 tracing::debug!(
-                    "parse_client_hello: parse client hello handshake message: unexpected trailer content"
-                )
+                    ech = hello.has_encrypted_client_hello(),
+                    "parse_client_hello: parse client hello handshake message: unexpected trailer content",
+                );
             }
             Ok(hello)
         }
@@ -56,8 +57,9 @@ pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
         Ok((i, hello)) => {
             if !i.is_empty() {
                 tracing::debug!(
-                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content"
-                )
+                    ech = hello.has_encrypted_client_hello(),
+                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content",
+                );
             }
             Ok(hello)
         }

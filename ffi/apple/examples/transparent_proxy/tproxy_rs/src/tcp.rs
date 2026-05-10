@@ -105,17 +105,17 @@ impl DemoTcpMitmService {
         let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
 
         let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
-            self.http_relay_middleware(exec, within_connect_tunnel, settings.clone()),
+            self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
 
         let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::new());
+            .with_fallback(IoForwardService::new(exec.clone()));
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
         let tls_mitm_relay_policy =
-            TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
+            TlsMitmRelayPolicyLayer::new(exec.clone()).with_excluded_domains(excluded_domains);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
@@ -128,7 +128,7 @@ impl DemoTcpMitmService {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
         }
 
-        let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
+        let socks5_mitm_relay = Socks5MitmRelayService::new(exec, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
             .with_peek_timeout(peek_duration)
             .with_fallback(app_mitm_layer);
@@ -183,7 +183,7 @@ impl DemoTcpMitmService {
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
                         ConsumeErrLayer::trace_as_debug()
-                            .into_layer(IoForwardService::new())
+                            .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {
                         nested_mitm.new_bridge_service(exec, true).boxed()

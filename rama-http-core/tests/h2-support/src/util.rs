@@ -59,7 +59,7 @@ impl Future for WaitForCapacity {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            let _ = ready!(self.stream().poll_capacity(cx)).unwrap();
+            _ = ready!(self.stream().poll_capacity(cx)).unwrap();
 
             let act = self.stream().capacity();
 

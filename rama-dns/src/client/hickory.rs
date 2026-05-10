@@ -335,14 +335,14 @@ mod tests {
 
     #[test]
     fn test_box_hickory_system_dns_resolver() {
-        let _ = HickoryDnsResolver::try_new_system()
+        _ = HickoryDnsResolver::try_new_system()
             .unwrap()
             .into_box_dns_resolver();
     }
 
     #[test]
     fn test_box_hickory_cloudflare_dns_resolver() {
-        let _ = HickoryDnsResolver::try_new_cloudflare()
+        _ = HickoryDnsResolver::try_new_cloudflare()
             .unwrap()
             .into_box_dns_resolver();
     }

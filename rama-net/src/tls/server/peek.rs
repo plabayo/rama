@@ -174,7 +174,7 @@ mod test {
 
         async fn tls_service_fn(mut stream: impl Io + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
-            let _ = stream.read_to_end(&mut v).await?;
+            _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
 
             Ok("ok")
@@ -204,7 +204,7 @@ mod test {
 
             async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
-                let _ = stream.read_to_end(&mut v).await?;
+                _ = stream.read_to_end(&mut v).await?;
                 Ok(v)
             }
             let plain_service = service_fn(plain_service_fn);

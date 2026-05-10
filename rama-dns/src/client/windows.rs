@@ -303,7 +303,7 @@ fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
 
 fn mark_done<T, P>(state: &Arc<QueryState<T, P>>) {
     state.done.store(true, Ordering::SeqCst);
-    let _ = state.inflight.lock().take();
+    _ = state.inflight.lock().take();
     state.notify.notify_waiters();
 }
 

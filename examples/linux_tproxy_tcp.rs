@@ -191,8 +191,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("make sure Linux policy routing and TPROXY rules are installed first");
 
     let service = ProxyTargetFromGetSocketnameLayer::new().into_layer(service_fn({
-        let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec)
-            .into_layer(IoForwardService::new());
+        let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
+            .into_layer(IoForwardService::new(exec));
         move |stream: TcpStream| {
             let forward = forward.clone();
             async move {
