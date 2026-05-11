@@ -4,26 +4,54 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use rama_core::bytes::{Bytes, BytesMut};
 
+use crate::body::FastCgiBody;
 use crate::proto::{
     BeginRequestBody, EndRequestBody, FCGI_MAX_CONTENT_LEN, FCGI_NULL_REQUEST_ID, ProtocolStatus,
     RecordHeader, RecordType, Role, UnknownTypeBody,
+    io::{discard_n, with_optional_timeout},
     params::NvPairRef,
 };
 
 use super::{
     error::{ClientError, ClientErrorKind},
+    options::ClientOptions,
     types::{FastCgiClientRequest, FastCgiClientResponse},
 };
 
 /// Send a FastCGI request on an existing stream and return the response.
 ///
-/// `request_id` must be non-zero. If `keep_conn` is true, the `FCGI_KEEP_CONN` flag
-/// is set in `FCGI_BEGIN_REQUEST` and the connection is not closed by the application.
+/// Uses [`ClientOptions::default()`] for caps and timeouts. For custom
+/// options use [`send_on_with_options`].
 pub async fn send_on<IO>(
     stream: &mut IO,
     request_id: u16,
     request: FastCgiClientRequest,
     keep_conn: bool,
+) -> Result<FastCgiClientResponse, ClientError>
+where
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    send_on_with_options(
+        stream,
+        request_id,
+        request,
+        keep_conn,
+        &ClientOptions::default(),
+    )
+    .await
+}
+
+/// Send a FastCGI request on an existing stream with explicit options.
+///
+/// `request_id` must be non-zero. If `keep_conn` is true, the
+/// `FCGI_KEEP_CONN` flag is set in `FCGI_BEGIN_REQUEST` and the connection is
+/// not closed by the application.
+pub async fn send_on_with_options<IO>(
+    stream: &mut IO,
+    request_id: u16,
+    request: FastCgiClientRequest,
+    keep_conn: bool,
+    options: &ClientOptions,
 ) -> Result<FastCgiClientResponse, ClientError>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
@@ -37,9 +65,9 @@ where
     begin_body.write_to(stream).await.map_err(ClientError::io)?;
 
     send_params(stream, request_id, &request.params).await?;
-    send_stream(stream, request_id, RecordType::Stdin, &request.stdin).await?;
+    send_stdin_stream(stream, request_id, request.stdin).await?;
 
-    read_response(stream, request_id).await
+    read_response(stream, request_id, options).await
 }
 
 async fn send_params<W>(
@@ -62,7 +90,9 @@ where
         if !buf.is_empty() && buf.len() + needed > FCGI_MAX_CONTENT_LEN {
             flush_params_chunk(w, request_id, &buf.split().freeze()).await?;
         }
-        pair_ref.write_to_buf(&mut buf);
+        pair_ref
+            .write_to_buf(&mut buf)
+            .map_err(ClientError::protocol)?;
     }
     if !buf.is_empty() {
         flush_params_chunk(w, request_id, &buf.freeze()).await?;
@@ -81,45 +111,54 @@ where
     w.write_all(data).await.map_err(ClientError::io)
 }
 
-async fn send_stream<W>(
+/// Stream the request body as a series of `FCGI_STDIN` records, followed by
+/// an empty `FCGI_STDIN` terminator record.
+async fn send_stdin_stream<W>(
     w: &mut W,
     request_id: u16,
-    record_type: RecordType,
-    data: &[u8],
+    mut stdin: FastCgiBody,
 ) -> Result<(), ClientError>
 where
     W: AsyncWrite + Unpin,
 {
-    if !data.is_empty() {
-        let mut offset = 0;
-        while offset < data.len() {
-            let chunk = (data.len() - offset).min(FCGI_MAX_CONTENT_LEN);
-            let hdr = RecordHeader::new(record_type, request_id, chunk as u16);
-            hdr.write_to(w).await.map_err(ClientError::io)?;
-            w.write_all(&data[offset..offset + chunk])
-                .await
-                .map_err(ClientError::io)?;
-            offset += chunk;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = stdin.read(&mut buf).await.map_err(ClientError::io)?;
+        if n == 0 {
+            break;
         }
+        let chunk_len = n.min(FCGI_MAX_CONTENT_LEN) as u16;
+        let hdr = RecordHeader::new(RecordType::Stdin, request_id, chunk_len);
+        hdr.write_to(w).await.map_err(ClientError::io)?;
+        w.write_all(&buf[..chunk_len as usize])
+            .await
+            .map_err(ClientError::io)?;
     }
-    let hdr = RecordHeader::new(record_type, request_id, 0);
+    let hdr = RecordHeader::new(RecordType::Stdin, request_id, 0);
     hdr.write_to(w).await.map_err(ClientError::io)
 }
 
 async fn read_response<IO>(
     stream: &mut IO,
     request_id: u16,
+    options: &ClientOptions,
 ) -> Result<FastCgiClientResponse, ClientError>
 where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
     let mut stdout = BytesMut::new();
+    let mut stderr = BytesMut::new();
+    let mut stderr_truncated = false;
     let mut app_status = 0u32;
 
     loop {
-        let hdr = RecordHeader::read_from(stream)
-            .await
-            .map_err(ClientError::protocol)?;
+        let hdr = with_optional_timeout(options.read_timeout, async {
+            RecordHeader::read_from(stream)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })
+        .await
+        .map_err(ClientError::io)?;
 
         if hdr.request_id == FCGI_NULL_REQUEST_ID {
             handle_management_response(stream, &hdr).await?;
@@ -136,8 +175,21 @@ where
                 if hdr.content_length == 0 {
                     skip_padding(stream, hdr.padding_length).await?;
                 } else {
+                    let cl = hdr.content_length as usize;
+                    if stdout.len().saturating_add(cl) > options.max_stdout_bytes {
+                        return Err(ClientError {
+                            kind: ClientErrorKind::Protocol,
+                            source: Some(
+                                format!(
+                                    "fastcgi client: stdout exceeds max_stdout_bytes ({})",
+                                    options.max_stdout_bytes
+                                )
+                                .into(),
+                            ),
+                        });
+                    }
                     let start = stdout.len();
-                    stdout.resize(start + hdr.content_length as usize, 0);
+                    stdout.resize(start + cl, 0);
                     stream
                         .read_exact(&mut stdout[start..])
                         .await
@@ -146,13 +198,39 @@ where
                 }
             }
             RecordType::Stderr => {
-                discard_content(stream, hdr.content_length, hdr.padding_length).await?;
+                if hdr.content_length == 0 {
+                    skip_padding(stream, hdr.padding_length).await?;
+                } else {
+                    let cl = hdr.content_length as usize;
+                    let remaining = options.max_stderr_bytes.saturating_sub(stderr.len());
+                    let take = cl.min(remaining);
+                    if take > 0 {
+                        let start = stderr.len();
+                        stderr.resize(start + take, 0);
+                        stream
+                            .read_exact(&mut stderr[start..])
+                            .await
+                            .map_err(ClientError::io)?;
+                    }
+                    if cl > take {
+                        stderr_truncated = true;
+                        discard_n(stream, (cl - take) as u64)
+                            .await
+                            .map_err(ClientError::io)?;
+                    }
+                    skip_padding(stream, hdr.padding_length).await?;
+                }
             }
             RecordType::EndRequest => {
                 if hdr.content_length >= 8 {
                     let body = EndRequestBody::read_from(stream)
                         .await
                         .map_err(ClientError::protocol)?;
+                    if hdr.content_length > 8 {
+                        discard_n(stream, (hdr.content_length - 8) as u64)
+                            .await
+                            .map_err(ClientError::io)?;
+                    }
                     skip_padding(stream, hdr.padding_length).await?;
                     match body.protocol_status {
                         ProtocolStatus::RequestComplete => {}
@@ -174,14 +252,25 @@ where
                                 source: None,
                             });
                         }
-                        ProtocolStatus::Unknown(_) => {}
+                        ProtocolStatus::Unknown(_) => {
+                            rama_core::telemetry::tracing::debug!(
+                                "fastcgi client: unknown ProtocolStatus in END_REQUEST, treating as success"
+                            );
+                        }
                     }
                     app_status = body.app_status;
                 } else {
                     discard_content(stream, hdr.content_length, hdr.padding_length).await?;
                 }
+                if stderr_truncated {
+                    rama_core::telemetry::tracing::debug!(
+                        "fastcgi client: stderr truncated (max_stderr_bytes={})",
+                        options.max_stderr_bytes
+                    );
+                }
                 return Ok(FastCgiClientResponse {
                     stdout: stdout.freeze(),
+                    stderr: stderr.freeze(),
                     app_status,
                 });
             }
@@ -200,21 +289,25 @@ where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
     match hdr.record_type {
-        RecordType::GetValues => {
-            discard_content(stream, hdr.content_length, hdr.padding_length).await?;
-            let resp = RecordHeader::management(RecordType::GetValuesResult, 0);
-            resp.write_to(stream).await.map_err(ClientError::io)?;
-        }
         RecordType::UnknownType => {
             if hdr.content_length >= 8 {
                 let _body = UnknownTypeBody::read_from(stream)
                     .await
                     .map_err(ClientError::protocol)?;
+                if hdr.content_length > 8 {
+                    discard_n(stream, (hdr.content_length - 8) as u64)
+                        .await
+                        .map_err(ClientError::io)?;
+                }
+                skip_padding(stream, hdr.padding_length).await?;
             } else {
                 discard_content(stream, hdr.content_length, hdr.padding_length).await?;
             }
         }
         _ => {
+            // Backends should not send management records other than
+            // UNKNOWN_TYPE / GET_VALUES_RESULT (the latter is also fine to
+            // ignore in a single-request client). Drop on the floor.
             discard_content(stream, hdr.content_length, hdr.padding_length).await?;
         }
     }
@@ -225,12 +318,8 @@ async fn discard_content<R>(r: &mut R, len: u16, padding: u8) -> Result<(), Clie
 where
     R: AsyncRead + Unpin,
 {
-    let total = len as usize + padding as usize;
-    if total > 0 {
-        let mut discard = vec![0u8; total];
-        r.read_exact(&mut discard).await.map_err(ClientError::io)?;
-    }
-    Ok(())
+    let total = len as u64 + padding as u64;
+    discard_n(r, total).await.map_err(ClientError::io)
 }
 
 async fn skip_padding<R>(r: &mut R, padding_length: u8) -> Result<(), ClientError>

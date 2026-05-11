@@ -32,9 +32,17 @@
 //!
 //! Each response is the HTTP request echoed back by the backend handler.
 
+#![expect(
+    clippy::expect_used,
+    clippy::let_underscore_must_use,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     error::BoxError,
-    gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiHttpService, FastCgiServer},
+    gateway::fastcgi::{
+        FastCgiClientRequest, FastCgiHttpClient, FastCgiHttpService, FastCgiServer,
+    },
     http::{Body, Request, Response, StatusCode, body::util::BodyExt, server::HttpServer},
     net::client::EstablishedClientConnection,
     rt::Executor,
@@ -46,11 +54,13 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
+use rama_http::service::web::response::IntoResponse;
+use rama_net::address::SocketAddress;
 use std::sync::Arc;
 use std::time::Duration;
 
-const PROXY_ADDR: &str = "127.0.0.1:62053";
-const BACKEND_ADDR: &str = "127.0.0.1:62054";
+const PROXY_ADDR: SocketAddress = SocketAddress::local_ipv4(62053);
+const BACKEND_ADDR: SocketAddress = SocketAddress::local_ipv4(62054);
 
 #[tokio::main]
 async fn main() {
@@ -114,9 +124,10 @@ async fn echo_http(req: Request) -> Result<Response, BoxError> {
 
     let mut text = format!("=== {} {} ===\n", parts.method, parts.uri);
     for (name, value) in &parts.headers {
-        let _ = std::fmt::Write::write_fmt(
+        write!(
             &mut text,
-            format_args!("{}: {}\n", name, String::from_utf8_lossy(value.as_bytes())),
+            "{name}: {}\n",
+            String::from_utf8_lossy(value.as_bytes()),
         );
     }
     if !body_bytes.is_empty() {
@@ -125,11 +136,7 @@ async fn echo_http(req: Request) -> Result<Response, BoxError> {
         text.push('\n');
     }
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "text/plain")
-        .body(Body::from(text))
-        .expect("infallible"))
+    Ok(text.into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -178,10 +185,7 @@ impl rama::Service<Request> for FastCgiProxyService {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 tracing::error!("fastcgi backend error: {e}");
-                Ok(Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .body(Body::from("FastCGI backend error\n"))
-                    .expect("infallible"))
+                Ok((StatusCode::BAD_GATEWAY, "FastCGI backend error\n").into_response())
             }
         }
     }

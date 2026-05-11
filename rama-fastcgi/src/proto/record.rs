@@ -6,10 +6,7 @@
 use rama_core::bytes::BufMut;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::{
-    ProtocolError, ProtocolStatus, RecordType, Role,
-    error::ProtocolError as PE,
-};
+use super::{ProtocolError, ProtocolStatus, RecordType, Role, error::ProtocolError as PE};
 
 /// The 8-byte header that precedes every FastCGI record.
 ///
@@ -75,23 +72,28 @@ impl RecordHeader {
 
     /// Read a [`RecordHeader`] from the reader.
     ///
+    /// Reads all 8 bytes in a single `read_exact` call so the header is parsed
+    /// atomically: a future dropped mid-read either consumes the full header
+    /// or none of it (modulo what `read_exact` itself buffers), preventing
+    /// stream desync on a kept-alive connection.
+    ///
     /// Reference: FastCGI Specification §3.3
     pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
     where
         R: AsyncRead + Unpin,
     {
-        let version = r.read_u8().await?;
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf).await?;
+
+        let version = buf[0];
         if version != FCGI_VERSION_1 {
             return Err(PE::unexpected_byte(0, version));
         }
-
-        let type_byte = r.read_u8().await?;
-        let record_type = RecordType::from(type_byte);
-
-        let request_id = r.read_u16().await?;
-        let content_length = r.read_u16().await?;
-        let padding_length = r.read_u8().await?;
-        let _reserved = r.read_u8().await?;
+        let record_type = RecordType::from(buf[1]);
+        let request_id = u16::from_be_bytes([buf[2], buf[3]]);
+        let content_length = u16::from_be_bytes([buf[4], buf[5]]);
+        let padding_length = buf[6];
+        // buf[7] is reserved
 
         Ok(Self {
             record_type,
@@ -160,14 +162,11 @@ impl BeginRequestBody {
     where
         R: AsyncRead + Unpin,
     {
-        let role_raw = r.read_u16().await?;
-        let role = Role::from(role_raw);
-        let flags = r.read_u8().await?;
-        let keep_conn = (flags & FCGI_KEEP_CONN) != 0;
-        // skip 5 reserved bytes
-        let mut _reserved = [0u8; 5];
-        r.read_exact(&mut _reserved).await?;
-
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf).await?;
+        let role = Role::from(u16::from_be_bytes([buf[0], buf[1]]));
+        let keep_conn = (buf[2] & FCGI_KEEP_CONN) != 0;
+        // buf[3..8] are 5 reserved bytes
         Ok(Self { role, keep_conn })
     }
 
@@ -259,13 +258,11 @@ impl EndRequestBody {
     where
         R: AsyncRead + Unpin,
     {
-        let app_status = r.read_u32().await?;
-        let protocol_status_byte = r.read_u8().await?;
-        let protocol_status = ProtocolStatus::from(protocol_status_byte);
-        // skip 3 reserved bytes
-        let mut _reserved = [0u8; 3];
-        r.read_exact(&mut _reserved).await?;
-
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf).await?;
+        let app_status = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let protocol_status = ProtocolStatus::from(buf[4]);
+        // buf[5..8] are 3 reserved bytes
         Ok(Self {
             app_status,
             protocol_status,
@@ -321,10 +318,11 @@ impl UnknownTypeBody {
     where
         R: AsyncRead + Unpin,
     {
-        let unknown_type = r.read_u8().await?;
-        let mut _reserved = [0u8; 7];
-        r.read_exact(&mut _reserved).await?;
-        Ok(Self { unknown_type })
+        let mut buf = [0u8; 8];
+        r.read_exact(&mut buf).await?;
+        Ok(Self {
+            unknown_type: buf[0],
+        })
     }
 
     /// Write this [`UnknownTypeBody`] (8 bytes) to the writer.
@@ -357,10 +355,7 @@ mod tests {
             RecordHeader::new(RecordType::BeginRequest, 1, 8),
             RecordHeader,
         );
-        test_write_read_eq!(
-            RecordHeader::new(RecordType::Params, 1, 42),
-            RecordHeader,
-        );
+        test_write_read_eq!(RecordHeader::new(RecordType::Params, 1, 42), RecordHeader,);
         test_write_read_eq!(
             RecordHeader::management(RecordType::GetValues, 16),
             RecordHeader,

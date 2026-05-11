@@ -7,16 +7,21 @@
 //! incoming requests into FastCGI framing and forwards them to a backend application.
 
 mod error;
+mod options;
 mod proto;
 mod types;
 
 pub use error::ClientError;
-pub use proto::send_on;
+pub use options::ClientOptions;
+pub use proto::{send_on, send_on_with_options};
 pub use types::{FastCgiClientRequest, FastCgiClientResponse};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use rama_core::{Service, error::BoxError};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext as _},
+};
 use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -29,12 +34,30 @@ use rama_utils::macros::define_inner_service_accessors;
 #[derive(Debug, Clone)]
 pub struct FastCgiClient<S> {
     inner: S,
+    options: ClientOptions,
 }
 
 impl<S> FastCgiClient<S> {
-    /// Create a new [`FastCgiClient`] with the given inner connector.
+    /// Create a new [`FastCgiClient`] with the given inner connector and
+    /// [`ClientOptions::default()`].
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            options: ClientOptions::default(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the [`ClientOptions`] used for sending requests.
+        pub fn options(mut self, options: ClientOptions) -> Self {
+            self.options = options;
+            self
+        }
+    }
+
+    /// Get a reference to the current [`ClientOptions`].
+    pub fn options(&self) -> &ClientOptions {
+        &self.options
     }
 
     define_inner_service_accessors!();
@@ -43,10 +66,10 @@ impl<S> FastCgiClient<S> {
 impl<S, IO> Service<FastCgiClientRequest> for FastCgiClient<S>
 where
     S: Service<
-        FastCgiClientRequest,
-        Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
-        Error: Into<BoxError>,
-    >,
+            FastCgiClientRequest,
+            Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
+            Error: Into<BoxError>,
+        >,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = FastCgiClientResponse;
@@ -56,9 +79,13 @@ where
         let EstablishedClientConnection {
             input: req,
             mut conn,
-        } = self.inner.serve(req).await.map_err(Into::into)?;
-        send_on(&mut conn, 1, req, false)
+        } = self
+            .inner
+            .serve(req)
             .await
-            .map_err(Into::into)
+            .context("establish FactCGI connection")?;
+        send_on_with_options(&mut conn, 1, req, false, &self.options)
+            .await
+            .context("send FactCGI request")
     }
 }

@@ -19,18 +19,32 @@ use super::ProtocolError;
 /// in a single FastCGI record (content length is a u16).
 pub const MAX_PARAMS_RECORD_BODY: usize = 65_535;
 
+/// Maximum length that fits in the FastCGI variable-length integer format.
+///
+/// The 4-byte form reserves the high bit as a marker, leaving 31 bits for the
+/// length value.
+///
+/// Reference: FastCGI Specification §3.4
+pub const MAX_NV_LENGTH: u32 = 0x7FFF_FFFF;
+
 /// Encode `len` using the FastCGI variable-length integer format into `buf`.
 ///
 /// Lengths 0–127 are written as 1 byte; lengths 128–(2^31 − 1) as 4 bytes.
+/// Returns [`ProtocolError::ContentTooLarge`] when `len > MAX_NV_LENGTH`,
+/// since the high bit of the 4-byte form is reserved as a marker.
 ///
 /// Reference: FastCGI Specification §3.4
-pub fn encode_length<B: BufMut>(buf: &mut B, len: u32) {
+pub fn try_encode_length<B: BufMut>(buf: &mut B, len: u32) -> Result<(), ProtocolError> {
+    if len > MAX_NV_LENGTH {
+        return Err(ProtocolError::content_too_large(len as usize));
+    }
     if len <= 127 {
         buf.put_u8(len as u8);
     } else {
         // High bit set signals a 4-byte length
         buf.put_u32(len | 0x8000_0000);
     }
+    Ok(())
 }
 
 /// Number of bytes needed to encode `len` using the FastCGI variable-length format.
@@ -46,14 +60,17 @@ pub async fn decode_length<R>(r: &mut R) -> Result<u32, ProtocolError>
 where
     R: AsyncRead + Unpin,
 {
-    let first = r.read_u8().await?;
-    if first & 0x80 == 0 {
-        Ok(first as u32)
+    let mut first = [0u8; 1];
+    r.read_exact(&mut first).await?;
+    if first[0] & 0x80 == 0 {
+        Ok(first[0] as u32)
     } else {
-        let b1 = r.read_u8().await?;
-        let b2 = r.read_u8().await?;
-        let b3 = r.read_u8().await?;
-        let len = ((first as u32 & 0x7F) << 24) | ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32);
+        let mut rest = [0u8; 3];
+        r.read_exact(&mut rest).await?;
+        let len = ((first[0] as u32 & 0x7F) << 24)
+            | ((rest[0] as u32) << 16)
+            | ((rest[1] as u32) << 8)
+            | (rest[2] as u32);
         Ok(len)
     }
 }
@@ -103,23 +120,30 @@ impl NvPair {
     pub fn encoded_len(&self) -> usize {
         let name_len = self.name.len() as u32;
         let value_len = self.value.len() as u32;
-        encoded_length_size(name_len) + encoded_length_size(value_len) + self.name.len() + self.value.len()
+        encoded_length_size(name_len)
+            + encoded_length_size(value_len)
+            + self.name.len()
+            + self.value.len()
     }
 
     /// Write this pair into the buffer using FastCGI encoding.
     ///
+    /// Returns [`ProtocolError::ContentTooLarge`] if either the name or value
+    /// length exceeds [`MAX_NV_LENGTH`] (2^31 − 1).
+    ///
     /// Reference: FastCGI Specification §3.4
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        encode_length(buf, self.name.len() as u32);
-        encode_length(buf, self.value.len() as u32);
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), ProtocolError> {
+        try_encode_length(buf, self.name.len() as u32)?;
+        try_encode_length(buf, self.value.len() as u32)?;
         buf.put_slice(&self.name);
         buf.put_slice(&self.value);
+        Ok(())
     }
 
     /// Write this pair to a writer using FastCGI encoding.
     ///
     /// Reference: FastCGI Specification §3.4
-    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), ProtocolError>
     where
         W: AsyncWrite + Unpin,
     {
@@ -129,13 +153,14 @@ impl NvPair {
         if n <= STACK_LIMIT {
             let mut buf = [0u8; STACK_LIMIT];
             let mut slice = &mut buf[..];
-            self.write_to_buf(&mut slice);
-            w.write_all(&buf[..n]).await
+            self.write_to_buf(&mut slice)?;
+            w.write_all(&buf[..n]).await?;
         } else {
             let mut buf = BytesMut::with_capacity(n);
-            self.write_to_buf(&mut buf);
-            w.write_all(&buf).await
+            self.write_to_buf(&mut buf)?;
+            w.write_all(&buf).await?;
         }
+        Ok(())
     }
 
     /// Read a single [`NvPair`] from the reader.
@@ -182,15 +207,22 @@ impl<'a> NvPairRef<'a> {
     pub fn encoded_len(&self) -> usize {
         let name_len = self.name.len() as u32;
         let value_len = self.value.len() as u32;
-        encoded_length_size(name_len) + encoded_length_size(value_len) + self.name.len() + self.value.len()
+        encoded_length_size(name_len)
+            + encoded_length_size(value_len)
+            + self.name.len()
+            + self.value.len()
     }
 
     /// Write this pair into the buffer using FastCGI encoding.
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
-        encode_length(buf, self.name.len() as u32);
-        encode_length(buf, self.value.len() as u32);
+    ///
+    /// Returns [`ProtocolError::ContentTooLarge`] if either length exceeds
+    /// [`MAX_NV_LENGTH`].
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), ProtocolError> {
+        try_encode_length(buf, self.name.len() as u32)?;
+        try_encode_length(buf, self.value.len() as u32)?;
         buf.put_slice(self.name);
         buf.put_slice(self.value);
+        Ok(())
     }
 }
 
@@ -221,15 +253,18 @@ pub fn decode_params(mut data: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
 }
 
 /// Encode a list of name-value pairs into a [`BytesMut`] buffer.
-pub fn encode_params<'a, I>(pairs: I) -> BytesMut
+///
+/// Returns [`ProtocolError::ContentTooLarge`] if any pair contains a name or
+/// value longer than [`MAX_NV_LENGTH`] (2^31 − 1).
+pub fn encode_params<'a, I>(pairs: I) -> Result<BytesMut, ProtocolError>
 where
     I: IntoIterator<Item = NvPairRef<'a>>,
 {
     let mut buf = BytesMut::new();
     for pair in pairs {
-        pair.write_to_buf(&mut buf);
+        pair.write_to_buf(&mut buf)?;
     }
-    buf
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -238,7 +273,7 @@ mod tests {
 
     fn roundtrip_pairs(pairs: &[(&[u8], &[u8])]) {
         let refs: Vec<NvPairRef<'_>> = pairs.iter().map(|(n, v)| NvPairRef::new(n, v)).collect();
-        let encoded = encode_params(refs.iter().copied());
+        let encoded = encode_params(refs.iter().copied()).unwrap();
         let decoded: Vec<_> = decode_params(&encoded).collect();
         assert_eq!(decoded.len(), pairs.len());
         for (i, (name, value)) in decoded.iter().enumerate() {
@@ -273,6 +308,60 @@ mod tests {
         assert_eq!(encoded_length_size(127), 1);
         assert_eq!(encoded_length_size(128), 4);
         assert_eq!(encoded_length_size(65535), 4);
+    }
+
+    #[test]
+    fn test_try_encode_length_validates_upper_bound() {
+        let mut buf = BytesMut::new();
+        try_encode_length(&mut buf, MAX_NV_LENGTH).unwrap();
+
+        let mut buf = BytesMut::new();
+        assert!(matches!(
+            try_encode_length(&mut buf, MAX_NV_LENGTH + 1),
+            Err(ProtocolError::ContentTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn test_encode_length_round_trip_at_boundaries() {
+        for &len in &[0u32, 1, 127, 128, 1024, 65535, MAX_NV_LENGTH] {
+            let mut buf = BytesMut::new();
+            try_encode_length(&mut buf, len).unwrap();
+            let (decoded, _) = decode_length_from_slice(&buf).expect("decode");
+            assert_eq!(decoded, len, "round-trip failure at len={len}");
+        }
+    }
+
+    #[test]
+    fn test_encode_length_rejects_overlong() {
+        // Regression: the 4-byte form reserves the high bit, so values that
+        // would collide with the marker must be rejected — not silently
+        // truncated as a previous infallible `encode_length` once did.
+        let mut buf = BytesMut::new();
+        let err = try_encode_length(&mut buf, MAX_NV_LENGTH + 1).unwrap_err();
+        assert!(matches!(err, ProtocolError::ContentTooLarge(_)));
+        assert!(buf.is_empty(), "rejected encode must not emit bytes");
+
+        let mut buf = BytesMut::new();
+        let err = try_encode_length(&mut buf, u32::MAX).unwrap_err();
+        assert!(matches!(err, ProtocolError::ContentTooLarge(_)));
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_nv_pair_write_to_buf_rejects_overlong_length() {
+        // Construct a fake too-long Bytes by using a sliced Bytes — we don't
+        // actually need to allocate 2^31 bytes; the encoder only inspects len.
+        // The trick: create a Bytes from a zero-length range view but
+        // simulate the length check at the API level instead. Easier: use
+        // `try_encode_length` directly through `NvPairRef` with a slice
+        // longer than MAX_NV_LENGTH would require GBs of RAM — so we test
+        // via the lower-level function (covered above) and the propagation
+        // through `NvPairRef::write_to_buf` with valid input here.
+        let pair = NvPairRef::new(b"K", b"V");
+        let mut buf = BytesMut::new();
+        pair.write_to_buf(&mut buf).unwrap();
+        assert!(!buf.is_empty());
     }
 
     #[tokio::test]

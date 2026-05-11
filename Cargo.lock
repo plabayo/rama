@@ -3472,6 +3472,7 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tokio-test",
+ "tokio-util",
 ]
 
 [[package]]

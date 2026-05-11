@@ -2,7 +2,10 @@
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use rama_core::{Service, error::BoxError};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext as _},
+};
 use rama_http_types::{Request, Response};
 use rama_net::client::EstablishedClientConnection;
 use rama_utils::macros::define_inner_service_accessors;
@@ -36,18 +39,23 @@ impl<S> FastCgiHttpClientConnector<S> {
 impl<S, IO> Service<Request> for FastCgiHttpClientConnector<S>
 where
     S: Service<
-        FastCgiClientRequest,
-        Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
-        Error: Into<BoxError>,
-    >,
+            FastCgiClientRequest,
+            Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
+            Error: Into<BoxError>,
+        >,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = EstablishedClientConnection<IO, FastCgiClientRequest>;
     type Error = BoxError;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let fcgi_req = http_request_to_fastcgi(req).await?;
-        self.inner.serve(fcgi_req).await.map_err(Into::into)
+        let fcgi_req = http_request_to_fastcgi(req)
+            .await
+            .context("convert http request to FastCGI")?;
+        self.inner
+            .serve(fcgi_req)
+            .await
+            .context("serve converted FastCGI request")
     }
 }
 
@@ -79,10 +87,10 @@ impl<S> FastCgiHttpClient<S> {
 impl<S, IO> Service<Request> for FastCgiHttpClient<S>
 where
     S: Service<
-        FastCgiClientRequest,
-        Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
-        Error: Into<BoxError>,
-    >,
+            FastCgiClientRequest,
+            Output = EstablishedClientConnection<IO, FastCgiClientRequest>,
+            Error: Into<BoxError>,
+        >,
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = Response;

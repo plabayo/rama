@@ -6,6 +6,8 @@
 pub mod params;
 pub mod record;
 
+pub(crate) mod io;
+
 mod enums;
 pub use enums::{ProtocolStatus, RecordType, Role};
 

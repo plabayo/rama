@@ -77,6 +77,8 @@ impl FastCgiRequest {
 pub struct FastCgiResponse {
     /// Data to be sent as `FCGI_STDOUT`.
     pub stdout: FastCgiBody,
+    /// Optional diagnostic output to be sent as `FCGI_STDERR`. Empty by default.
+    pub stderr: FastCgiBody,
     /// Application exit status (0 for success).
     pub app_status: u32,
 }
@@ -91,8 +93,16 @@ impl FastCgiResponse {
     pub fn new(stdout: impl Into<FastCgiBody>) -> Self {
         Self {
             stdout: stdout.into(),
+            stderr: FastCgiBody::empty(),
             app_status: 0,
         }
+    }
+
+    /// Attach diagnostic output to be sent on `FCGI_STDERR`.
+    #[must_use]
+    pub fn with_stderr(mut self, stderr: impl Into<FastCgiBody>) -> Self {
+        self.stderr = stderr.into();
+        self
     }
 
     /// Create an error response with empty stdout and a non-zero exit code.
@@ -100,6 +110,7 @@ impl FastCgiResponse {
     pub fn error(app_status: u32) -> Self {
         Self {
             stdout: FastCgiBody::empty(),
+            stderr: FastCgiBody::empty(),
             app_status,
         }
     }

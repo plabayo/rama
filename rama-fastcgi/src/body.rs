@@ -52,10 +52,7 @@ impl FastCgiBody {
     /// Used internally by the server to bridge the IO reading task and the
     /// `FastCgiRequest` presented to the inner service.
     pub(crate) fn from_channel(rx: mpsc::Receiver<Result<Bytes, io::Error>>) -> Self {
-        Self(Box::new(ChannelBody {
-            rx,
-            current: None,
-        }))
+        Self(Box::new(ChannelBody { rx, current: None }))
     }
 
     /// Collect the entire body into a [`Bytes`] buffer.
@@ -128,19 +125,19 @@ impl AsyncRead for ChannelBody {
 
         loop {
             // Drain from the current buffered chunk first.
-            if let Some(mut chunk) = this.current.take() {
+            if let Some(mut chunk) = this.current.take()
+                && !chunk.is_empty()
+            {
+                // split_to(n) consumes first n bytes from `chunk`, returns them.
+                let to_copy = chunk.len().min(buf.remaining());
+                let prefix = chunk.split_to(to_copy);
+                buf.put_slice(&prefix);
                 if !chunk.is_empty() {
-                    // split_to(n) consumes first n bytes from `chunk`, returns them.
-                    let to_copy = chunk.len().min(buf.remaining());
-                    let prefix = chunk.split_to(to_copy);
-                    buf.put_slice(&prefix);
-                    if !chunk.is_empty() {
-                        this.current = Some(chunk);
-                    }
-                    return Poll::Ready(Ok(()));
+                    this.current = Some(chunk);
                 }
-                // Empty chunk: discard and try next.
+                return Poll::Ready(Ok(()));
             }
+            // Empty chunk: discard and try next.
 
             // Wait for the next chunk from the background reader task.
             match this.rx.poll_recv(cx) {

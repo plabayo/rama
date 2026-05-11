@@ -1,6 +1,7 @@
 //! Connection-level FastCGI framing: reading requests and writing responses.
 
 use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::telemetry::tracing;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf};
 use tokio::sync::mpsc;
@@ -8,10 +9,19 @@ use tokio::sync::mpsc;
 use crate::proto::{
     BeginRequestBody, EndRequestBody, FCGI_MAX_CONTENT_LEN, FCGI_NULL_REQUEST_ID, ProtocolError,
     ProtocolStatus, RecordHeader, RecordType, Role, UnknownTypeBody,
+    io::{discard_n, with_optional_timeout},
     params::{NvPairRef, decode_params, encode_params},
 };
 
-use super::{Error, types::FastCgiResponse};
+use super::{Error, options::ServerOptions, types::FastCgiResponse};
+
+/// Output of the begin/params reading phase.
+pub(super) struct BeginParams {
+    pub request_id: u16,
+    pub role: Role,
+    pub keep_conn: bool,
+    pub params: Vec<(Bytes, Bytes)>,
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1: read FCGI_BEGIN_REQUEST + FCGI_PARAMS
@@ -27,7 +37,8 @@ use super::{Error, types::FastCgiResponse};
 pub(super) async fn read_begin_and_params<R, W>(
     reader: &mut R,
     writer: &mut W,
-) -> Result<Option<(u16, Role, bool, Vec<(Bytes, Bytes)>)>, Error>
+    options: &ServerOptions,
+) -> Result<Option<BeginParams>, Error>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -36,9 +47,14 @@ where
     let request_id;
     let begin;
     loop {
-        let header = match RecordHeader::read_from(reader).await {
-            Ok(h) => h,
-            Err(_) => return Ok(None), // clean EOF
+        let Ok(header) = with_optional_timeout(options.read_timeout, async {
+            RecordHeader::read_from(reader)
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
+        .await
+        else {
+            return Ok(None); // clean EOF or idle timeout
         };
 
         if header.request_id == FCGI_NULL_REQUEST_ID {
@@ -52,7 +68,11 @@ where
                 header.record_type.into(),
             )));
         }
-        if header.content_length != 8 {
+        if options.strict_begin_body_size {
+            if header.content_length != 8 {
+                return Err(Error::protocol(ProtocolError::unexpected_byte(4, 0)));
+            }
+        } else if header.content_length < 8 {
             return Err(Error::protocol(ProtocolError::unexpected_byte(4, 0)));
         }
 
@@ -60,6 +80,11 @@ where
         begin = BeginRequestBody::read_from(reader)
             .await
             .map_err(Error::protocol)?;
+        if header.content_length > 8 {
+            discard_n(reader, (header.content_length - 8) as u64)
+                .await
+                .map_err(Error::io)?;
+        }
         skip_padding(reader, header.padding_length)
             .await
             .map_err(Error::io)?;
@@ -69,10 +94,34 @@ where
     // ── FCGI_PARAMS ───────────────────────────────────────────────────────
     let mut params_buf = BytesMut::new();
     loop {
-        let hdr = read_header(reader).await?;
+        let hdr = with_optional_timeout(options.read_timeout, async {
+            RecordHeader::read_from(reader)
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
+        .await
+        .map_err(Error::io)?;
+
+        if hdr.request_id == FCGI_NULL_REQUEST_ID {
+            handle_management_record(reader, writer, hdr).await?;
+            continue;
+        }
 
         if hdr.request_id != request_id {
-            return Err(Error::protocol(ProtocolError::unexpected_byte(2, 0)));
+            // A second concurrent request on the same connection: this
+            // implementation does not multiplex.
+            if hdr.record_type == RecordType::BeginRequest {
+                drain_record_body(reader, &hdr).await.map_err(Error::io)?;
+                if options.respond_cant_mpx_conn {
+                    write_end_request(writer, hdr.request_id, EndRequestBody::cant_mpx_conn())
+                        .await
+                        .map_err(Error::io)?;
+                }
+                continue;
+            }
+            // Stray record for an unknown request id — drop on the floor.
+            drain_record_body(reader, &hdr).await.map_err(Error::io)?;
+            continue;
         }
 
         match hdr.record_type {
@@ -92,6 +141,13 @@ where
                         .map_err(Error::io)?;
                     break;
                 }
+                if params_buf.len().saturating_add(hdr.content_length as usize)
+                    > options.max_params_bytes
+                {
+                    return Err(Error::protocol(ProtocolError::content_too_large(
+                        params_buf.len() + hdr.content_length as usize,
+                    )));
+                }
                 read_content_into(
                     reader,
                     hdr.content_length,
@@ -110,11 +166,17 @@ where
         }
     }
 
-    let params: Vec<(Bytes, Bytes)> = decode_params(&params_buf)
-        .map(|(n, v)| (Bytes::copy_from_slice(n), Bytes::copy_from_slice(v)))
+    let params_bytes: Bytes = params_buf.freeze();
+    let params: Vec<(Bytes, Bytes)> = decode_params(&params_bytes)
+        .map(|(n, v)| (params_bytes.slice_ref(n), params_bytes.slice_ref(v)))
         .collect();
 
-    Ok(Some((request_id, begin.role, begin.keep_conn, params)))
+    Ok(Some(BeginParams {
+        request_id,
+        role: begin.role,
+        keep_conn: begin.keep_conn,
+        params,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -124,21 +186,25 @@ where
 /// Background task: reads `FCGI_STDIN` (and `FCGI_DATA` for Filter) records
 /// from the split `ReadHalf` and forwards chunks to the inner service via mpsc
 /// channels.
-///
-/// Drops `stdin_tx` (and `data_tx`) on return so the body streams report EOF
-/// to the service. Returns the `ReadHalf` plus a flag indicating whether
-/// `FCGI_ABORT_REQUEST` was received.
 pub(super) async fn read_body_records<IO>(
     mut reader: ReadHalf<IO>,
     request_id: u16,
     stdin_tx: mpsc::Sender<Result<Bytes, io::Error>>,
     data_tx: Option<mpsc::Sender<Result<Bytes, io::Error>>>,
+    options: ServerOptions,
 ) -> io::Result<(ReadHalf<IO>, bool)>
 where
     IO: AsyncRead,
 {
-    let aborted =
-        read_stream_records(&mut reader, request_id, RecordType::Stdin, &stdin_tx).await?;
+    let aborted = read_stream_records(
+        &mut reader,
+        request_id,
+        RecordType::Stdin,
+        &stdin_tx,
+        options.max_stdin_bytes,
+        options.read_timeout,
+    )
+    .await?;
     drop(stdin_tx);
 
     if aborted {
@@ -146,8 +212,15 @@ where
     }
 
     if let Some(ref dtx) = data_tx {
-        let aborted =
-            read_stream_records(&mut reader, request_id, RecordType::Data, dtx).await?;
+        let aborted = read_stream_records(
+            &mut reader,
+            request_id,
+            RecordType::Data,
+            dtx,
+            options.max_data_bytes,
+            options.read_timeout,
+        )
+        .await?;
         drop(data_tx);
         if aborted {
             return Ok((reader, true));
@@ -157,32 +230,28 @@ where
     Ok((reader, false))
 }
 
-/// Read records of type `expected` from `reader` until an empty terminator
-/// record arrives, forwarding each non-empty chunk via `tx`.
-///
-/// Returns `true` if `FCGI_ABORT_REQUEST` was received. In that case an
-/// `io::ErrorKind::ConnectionAborted` error is sent through `tx` before
-/// returning so the service observes the abort.
 async fn read_stream_records<R>(
     reader: &mut R,
     request_id: u16,
     expected: RecordType,
     tx: &mpsc::Sender<Result<Bytes, io::Error>>,
+    max_bytes: Option<u64>,
+    read_timeout: Option<std::time::Duration>,
 ) -> io::Result<bool>
 where
     R: AsyncRead + Unpin,
 {
+    let mut received: u64 = 0;
     loop {
-        let hdr = RecordHeader::read_from(reader)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let hdr = with_optional_timeout(read_timeout, async {
+            RecordHeader::read_from(reader)
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        })
+        .await?;
 
         if hdr.request_id != request_id && hdr.request_id != FCGI_NULL_REQUEST_ID {
-            let total = hdr.content_length as usize + hdr.padding_length as usize;
-            if total > 0 {
-                let mut discard = vec![0u8; total];
-                reader.read_exact(&mut discard).await?;
-            }
+            drain_record_body(reader, &hdr).await?;
             continue;
         }
 
@@ -192,27 +261,58 @@ where
                     skip_padding(reader, hdr.padding_length).await?;
                     return Ok(false);
                 }
+                if let Some(cap) = max_bytes
+                    && received.saturating_add(hdr.content_length as u64) > cap
+                {
+                    if tx
+                        .send(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "fastcgi: stdin/data exceeds configured cap",
+                        )))
+                        .await
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            "fastcgi server: body channel closed before cap error could be reported"
+                        );
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "fastcgi: stdin/data exceeds configured cap",
+                    ));
+                }
                 let mut chunk = BytesMut::zeroed(hdr.content_length as usize);
                 reader.read_exact(&mut chunk).await?;
                 skip_padding(reader, hdr.padding_length).await?;
-                let _ = tx.send(Ok(chunk.freeze())).await;
+                received = received.saturating_add(hdr.content_length as u64);
+                if tx.send(Ok(chunk.freeze())).await.is_err() {
+                    tracing::debug!(
+                        "fastcgi server: body channel closed by service; dropping {} buffered bytes \
+                         and continuing to drain peer",
+                        hdr.content_length
+                    );
+                    // Keep draining the stream to EOS so the connection
+                    // can be reused (keep_conn) or closed cleanly.
+                }
             }
             RecordType::AbortRequest if hdr.request_id == request_id => {
                 skip_padding(reader, hdr.padding_length).await?;
-                let _ = tx
+                if tx
                     .send(Err(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
                         "FCGI_ABORT_REQUEST",
                     )))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(
+                        "fastcgi server: body channel closed before abort could be reported"
+                    );
+                }
                 return Ok(true);
             }
             _ => {
-                let total = hdr.content_length as usize + hdr.padding_length as usize;
-                if total > 0 {
-                    let mut discard = vec![0u8; total];
-                    reader.read_exact(&mut discard).await?;
-                }
+                drain_record_body(reader, &hdr).await?;
             }
         }
     }
@@ -222,27 +322,52 @@ where
 // Phase 4: write the response
 // ---------------------------------------------------------------------------
 
-/// Write a complete FastCGI response, streaming `response.stdout` in chunks.
+/// Write a complete FastCGI response, streaming `response.stderr` then
+/// `response.stdout`.
+///
+/// The spec allows STDERR and STDOUT to be interleaved; writing all STDERR
+/// up front keeps the writer single-pass and matches typical CGI usage.
 pub(super) async fn write_response<W>(
     w: &mut W,
     request_id: u16,
     response: FastCgiResponse,
+    _options: &ServerOptions,
 ) -> Result<(), io::Error>
 where
     W: AsyncWrite + Unpin,
 {
-    let mut stdout = response.stdout;
-    let mut chunk_buf = [0u8; 8192];
+    let mut buf = [0u8; 8192];
 
+    // STDERR stream (may be empty).
+    let mut stderr = response.stderr;
+    let mut emitted_stderr = false;
     loop {
-        let n = stdout.read(&mut chunk_buf).await?;
+        let n = stderr.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        emitted_stderr = true;
+        let chunk_len = n.min(FCGI_MAX_CONTENT_LEN) as u16;
+        let hdr = RecordHeader::new(RecordType::Stderr, request_id, chunk_len);
+        hdr.write_to(w).await?;
+        w.write_all(&buf[..chunk_len as usize]).await?;
+    }
+    if emitted_stderr {
+        let hdr = RecordHeader::new(RecordType::Stderr, request_id, 0);
+        hdr.write_to(w).await?;
+    }
+
+    // STDOUT stream
+    let mut stdout = response.stdout;
+    loop {
+        let n = stdout.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         let chunk_len = n.min(FCGI_MAX_CONTENT_LEN) as u16;
         let hdr = RecordHeader::new(RecordType::Stdout, request_id, chunk_len);
         hdr.write_to(w).await?;
-        w.write_all(&chunk_buf[..chunk_len as usize]).await?;
+        w.write_all(&buf[..chunk_len as usize]).await?;
     }
 
     let hdr = RecordHeader::new(RecordType::Stdout, request_id, 0);
@@ -259,10 +384,7 @@ where
     .await
 }
 
-pub(super) async fn write_abort_end_request<W>(
-    w: &mut W,
-    request_id: u16,
-) -> Result<(), io::Error>
+pub(super) async fn write_abort_end_request<W>(w: &mut W, request_id: u16) -> Result<(), io::Error>
 where
     W: AsyncWrite + Unpin,
 {
@@ -303,48 +425,40 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    match header.record_type {
-        RecordType::GetValues => {
-            let mut query_buf = vec![0u8; header.content_length as usize];
-            reader.read_exact(&mut query_buf).await.map_err(Error::io)?;
-            skip_padding(reader, header.padding_length)
-                .await
-                .map_err(Error::io)?;
+    if header.record_type == RecordType::GetValues {
+        let mut query_buf = vec![0u8; header.content_length as usize];
+        reader.read_exact(&mut query_buf).await.map_err(Error::io)?;
+        skip_padding(reader, header.padding_length)
+            .await
+            .map_err(Error::io)?;
 
-            let mut pairs: Vec<NvPairRef<'static>> = Vec::new();
-            for (name, _) in decode_params(&query_buf) {
-                match name {
-                    b"FCGI_MAX_CONNS" => pairs.push(NvPairRef::new(b"FCGI_MAX_CONNS", b"1")),
-                    b"FCGI_MAX_REQS" => pairs.push(NvPairRef::new(b"FCGI_MAX_REQS", b"1")),
-                    b"FCGI_MPXS_CONNS" => {
-                        pairs.push(NvPairRef::new(b"FCGI_MPXS_CONNS", b"0"))
-                    }
-                    _ => {}
-                }
-            }
-
-            let body = encode_params(pairs.into_iter());
-            let hdr =
-                RecordHeader::management(RecordType::GetValuesResult, body.len() as u16);
-            hdr.write_to(writer).await.map_err(Error::io)?;
-            if !body.is_empty() {
-                writer.write_all(&body).await.map_err(Error::io)?;
+        let mut pairs: Vec<NvPairRef<'static>> = Vec::new();
+        for (name, _) in decode_params(&query_buf) {
+            match name {
+                b"FCGI_MAX_CONNS" => pairs.push(NvPairRef::new(b"FCGI_MAX_CONNS", b"1")),
+                b"FCGI_MAX_REQS" => pairs.push(NvPairRef::new(b"FCGI_MAX_REQS", b"1")),
+                b"FCGI_MPXS_CONNS" => pairs.push(NvPairRef::new(b"FCGI_MPXS_CONNS", b"0")),
+                _ => {}
             }
         }
-        _ => {
-            let mut discard = vec![0u8; header.content_length as usize];
-            reader.read_exact(&mut discard).await.map_err(Error::io)?;
-            skip_padding(reader, header.padding_length)
-                .await
-                .map_err(Error::io)?;
 
-            let body = UnknownTypeBody {
-                unknown_type: header.record_type.into(),
-            };
-            let hdr = RecordHeader::management(RecordType::UnknownType, 8);
-            hdr.write_to(writer).await.map_err(Error::io)?;
-            body.write_to(writer).await.map_err(Error::io)?;
+        let body = encode_params(pairs).map_err(Error::protocol)?;
+        let hdr = RecordHeader::management(RecordType::GetValuesResult, body.len() as u16);
+        hdr.write_to(writer).await.map_err(Error::io)?;
+        if !body.is_empty() {
+            writer.write_all(&body).await.map_err(Error::io)?;
         }
+    } else {
+        drain_record_body(reader, &header)
+            .await
+            .map_err(Error::io)?;
+
+        let body = UnknownTypeBody {
+            unknown_type: header.record_type.into(),
+        };
+        let hdr = RecordHeader::management(RecordType::UnknownType, 8);
+        hdr.write_to(writer).await.map_err(Error::io)?;
+        body.write_to(writer).await.map_err(Error::io)?;
     }
     Ok(())
 }
@@ -352,13 +466,6 @@ where
 // ---------------------------------------------------------------------------
 // Low-level I/O helpers
 // ---------------------------------------------------------------------------
-
-async fn read_header<R>(r: &mut R) -> Result<RecordHeader, Error>
-where
-    R: AsyncRead + Unpin,
-{
-    RecordHeader::read_from(r).await.map_err(Error::protocol)
-}
 
 async fn skip_padding<R>(r: &mut R, padding_length: u8) -> Result<(), io::Error>
 where
@@ -369,6 +476,13 @@ where
         r.read_exact(&mut pad[..padding_length as usize]).await?;
     }
     Ok(())
+}
+
+async fn drain_record_body<R>(r: &mut R, hdr: &RecordHeader) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    discard_n(r, hdr.content_length as u64 + hdr.padding_length as u64).await
 }
 
 async fn read_content_into<R>(
@@ -384,4 +498,149 @@ where
     buf.resize(start + content_length as usize, 0);
     r.read_exact(&mut buf[start..]).await?;
     skip_padding(r, padding_length).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::params::NvPair;
+
+    /// Encode a complete client-side BEGIN+PARAMS+STDIN(EOF) request into a buffer.
+    async fn write_request(role: Role, params: &[(&[u8], &[u8])], stdin: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        // BEGIN_REQUEST
+        let hdr = RecordHeader::new(RecordType::BeginRequest, 1, 8);
+        hdr.write_to(&mut out).await.unwrap();
+        BeginRequestBody {
+            role,
+            keep_conn: false,
+        }
+        .write_to(&mut out)
+        .await
+        .unwrap();
+        // PARAMS
+        let mut pbuf = Vec::new();
+        for (n, v) in params {
+            NvPair::new(n.to_vec(), v.to_vec())
+                .write_to(&mut pbuf)
+                .await
+                .unwrap();
+        }
+        let hdr = RecordHeader::new(RecordType::Params, 1, pbuf.len() as u16);
+        hdr.write_to(&mut out).await.unwrap();
+        out.extend_from_slice(&pbuf);
+        // PARAMS terminator
+        let hdr = RecordHeader::new(RecordType::Params, 1, 0);
+        hdr.write_to(&mut out).await.unwrap();
+        // STDIN
+        if !stdin.is_empty() {
+            let hdr = RecordHeader::new(RecordType::Stdin, 1, stdin.len() as u16);
+            hdr.write_to(&mut out).await.unwrap();
+            out.extend_from_slice(stdin);
+        }
+        let hdr = RecordHeader::new(RecordType::Stdin, 1, 0);
+        hdr.write_to(&mut out).await.unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn test_read_begin_and_params_round_trip() {
+        let bytes = write_request(
+            Role::Responder,
+            &[(b"REQUEST_METHOD", b"GET"), (b"SCRIPT_NAME", b"/index")],
+            b"",
+        )
+        .await;
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut writer = Vec::new();
+        let opts = ServerOptions::default();
+        let begin = read_begin_and_params(&mut reader, &mut writer, &opts)
+            .await
+            .unwrap()
+            .expect("got begin");
+        assert_eq!(begin.request_id, 1);
+        assert_eq!(begin.role, Role::Responder);
+        assert!(!begin.keep_conn);
+        assert_eq!(begin.params.len(), 2);
+        assert_eq!(&begin.params[0].0[..], b"REQUEST_METHOD");
+        assert_eq!(&begin.params[0].1[..], b"GET");
+        // Server should not have written anything yet (no response).
+        assert!(writer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_max_params_bytes_enforced() {
+        // 16 KiB of params at default cap (1 MiB) → OK.
+        let huge_value: Vec<u8> = vec![b'x'; 16 * 1024];
+        let bytes = write_request(Role::Responder, &[(b"BIG", &huge_value)], b"").await;
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut writer = Vec::new();
+        let opts = ServerOptions {
+            max_params_bytes: 1024, // cap below the request size
+            ..ServerOptions::default()
+        };
+        let res = read_begin_and_params(&mut reader, &mut writer, &opts).await;
+        assert!(res.is_err(), "expected cap to reject oversize params");
+    }
+
+    #[tokio::test]
+    async fn test_management_get_values_response() {
+        // Construct a GET_VALUES record asking for FCGI_MPXS_CONNS, then a BEGIN.
+        let mut out = Vec::new();
+        let mut qbuf = Vec::new();
+        NvPair::new(b"FCGI_MPXS_CONNS".as_slice(), b"".as_slice())
+            .write_to(&mut qbuf)
+            .await
+            .unwrap();
+        let hdr = RecordHeader::management(RecordType::GetValues, qbuf.len() as u16);
+        hdr.write_to(&mut out).await.unwrap();
+        out.extend_from_slice(&qbuf);
+        // Then a BEGIN to terminate the loop with a real request.
+        let rest = write_request(Role::Responder, &[(b"REQUEST_METHOD", b"GET")], b"").await;
+        out.extend_from_slice(&rest);
+
+        let mut reader = std::io::Cursor::new(out);
+        let mut writer: Vec<u8> = Vec::new();
+        let opts = ServerOptions::default();
+        let begin = read_begin_and_params(&mut reader, &mut writer, &opts)
+            .await
+            .unwrap()
+            .expect("got begin");
+        assert_eq!(begin.request_id, 1);
+        // The writer should have a GET_VALUES_RESULT record reporting MPXS=0.
+        assert!(
+            !writer.is_empty(),
+            "expected GET_VALUES_RESULT to be written"
+        );
+        // First 8 bytes are the response header; ensure record type is correct.
+        assert_eq!(writer[1], u8::from(RecordType::GetValuesResult));
+    }
+
+    #[tokio::test]
+    async fn test_abort_during_params_phase_replies_end_request() {
+        // BEGIN_REQUEST then immediately ABORT_REQUEST.
+        let mut out = Vec::new();
+        let hdr = RecordHeader::new(RecordType::BeginRequest, 1, 8);
+        hdr.write_to(&mut out).await.unwrap();
+        BeginRequestBody {
+            role: Role::Responder,
+            keep_conn: false,
+        }
+        .write_to(&mut out)
+        .await
+        .unwrap();
+        let hdr = RecordHeader::new(RecordType::AbortRequest, 1, 0);
+        hdr.write_to(&mut out).await.unwrap();
+
+        let mut reader = std::io::Cursor::new(out);
+        let mut writer: Vec<u8> = Vec::new();
+        let opts = ServerOptions::default();
+        let res = read_begin_and_params(&mut reader, &mut writer, &opts)
+            .await
+            .unwrap();
+        assert!(res.is_none(), "abort returns None");
+        // Server should have written an END_REQUEST record.
+        assert!(!writer.is_empty());
+        assert_eq!(writer[1], u8::from(RecordType::EndRequest));
+    }
 }

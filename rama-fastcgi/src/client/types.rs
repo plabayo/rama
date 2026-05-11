@@ -3,16 +3,22 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 
+use crate::body::FastCgiBody;
+
 /// A FastCGI client request to send to a backend application server.
 ///
 /// Construct one with the CGI environment variables (params) and optionally a
 /// request body (stdin), then serve it via [`FastCgiClient`][super::FastCgiClient].
-#[derive(Debug, Clone)]
+///
+/// `stdin` is a streaming [`FastCgiBody`]; any of `Bytes`, `Vec<u8>`, `String`,
+/// `&'static [u8]`, or an [`AsyncRead`][tokio::io::AsyncRead] wrapper can be
+/// passed via [`Self::with_stdin`].
+#[derive(Debug)]
 pub struct FastCgiClientRequest {
     /// CGI environment variables to send as `FCGI_PARAMS`.
     pub params: Vec<(Bytes, Bytes)>,
     /// Request body to send as `FCGI_STDIN` (may be empty for GET requests).
-    pub stdin: Bytes,
+    pub stdin: FastCgiBody,
     /// Extensions for routing and metadata (e.g. connector target address).
     pub extensions: Extensions,
 }
@@ -23,14 +29,18 @@ impl FastCgiClientRequest {
     pub fn new(params: impl Into<Vec<(Bytes, Bytes)>>) -> Self {
         Self {
             params: params.into(),
-            stdin: Bytes::new(),
+            stdin: FastCgiBody::empty(),
             extensions: Extensions::new(),
         }
     }
 
     /// Attach a request body (stdin).
+    ///
+    /// Accepts anything convertible into a [`FastCgiBody`]: `Bytes`,
+    /// `Vec<u8>`, `String`, `&'static [u8]`, or wrap a streaming reader with
+    /// [`FastCgiBody::from_reader`].
     #[must_use]
-    pub fn with_stdin(mut self, stdin: impl Into<Bytes>) -> Self {
+    pub fn with_stdin(mut self, stdin: impl Into<FastCgiBody>) -> Self {
         self.stdin = stdin.into();
         self
     }
@@ -47,14 +57,19 @@ impl ExtensionsRef for FastCgiClientRequest {
     }
 }
 
-/// The raw stdout bytes received from a FastCGI application.
+/// The raw bytes received from a FastCGI application.
 ///
-/// For a RESPONDER application this typically contains HTTP response headers
-/// followed by a blank line and the response body, as per CGI conventions.
+/// For a RESPONDER application `stdout` typically contains HTTP response
+/// headers followed by a blank line and the response body, as per CGI
+/// conventions. `stderr` carries any diagnostic output the application
+/// emitted on `FCGI_STDERR`, capped by
+/// [`ClientOptions::max_stderr_bytes`][crate::client::ClientOptions::max_stderr_bytes].
 #[derive(Debug, Clone)]
 pub struct FastCgiClientResponse {
-    /// All bytes received via `FCGI_STDOUT` records.
+    /// All bytes received via `FCGI_STDOUT` records (capped).
     pub stdout: Bytes,
+    /// All bytes received via `FCGI_STDERR` records (capped).
+    pub stderr: Bytes,
     /// Application-level exit status from `FCGI_END_REQUEST`.
     pub app_status: u32,
 }

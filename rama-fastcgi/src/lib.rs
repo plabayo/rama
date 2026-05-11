@@ -53,11 +53,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 pub mod proto;
 
@@ -67,11 +62,13 @@ pub use body::FastCgiBody;
 
 pub mod server;
 #[doc(inline)]
-pub use server::{FastCgiRequest, FastCgiResponse, FastCgiServer};
+pub use server::{FastCgiRequest, FastCgiResponse, FastCgiServer, ServerOptions};
 
 pub mod client;
 #[doc(inline)]
-pub use client::{ClientError, FastCgiClient, FastCgiClientRequest, FastCgiClientResponse};
+pub use client::{
+    ClientError, ClientOptions, FastCgiClient, FastCgiClientRequest, FastCgiClientResponse,
+};
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]

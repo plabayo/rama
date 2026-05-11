@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
+http = ["dep:rama-http-types", "dep:tokio-util", "rama-net/http"]
 
 [dependencies]
 rama-core = { workspace = true }
@@ -28,6 +28,7 @@ rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, optional = true, features = ["io"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

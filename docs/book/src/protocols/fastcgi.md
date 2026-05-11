@@ -60,6 +60,9 @@ The most common role. The application receives the full CGI environment via para
 the HTTP request body via stdin, and returns a CGI-formatted response via stdout. This
 is what PHP-FPM, Python WSGI/ASGI bridges, and most other FastCGI backends implement.
 
+Note that FastCGI, as a variation of CGI, still uses the terms stdin/stdout. In practice
+however this is more to be read as the direction for data transported over TCP or UNIX sockets.
+
 ### Authorizer
 
 The application receives the CGI environment but no stdin. Its sole job is to decide
@@ -146,7 +149,7 @@ FastCGI specification: `rama-fastcgi/specifications/fastcgi_spec.txt` (embedded 
 
 ## Example
 
-The `fastcgi_reverse_proxy` example in the `examples/` directory demonstrates both
+The [`examples/fastcgi_reverse_proxy.rs`](https://github.com/plabayo/rama/blob/main/examples/fastcgi_reverse_proxy.rs) example demonstrates both
 sides of the HTTP adaptive layer in a single binary:
 
 - A FastCGI application server wrapping a plain HTTP echo handler via
