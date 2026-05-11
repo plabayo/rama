@@ -63,7 +63,6 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 uuid = { workspace = true, features = ["v4"] }
-derive_more = { workspace = true, features = ["display", "error"] }
 
 [dev-dependencies]
 brotli = { workspace = true }

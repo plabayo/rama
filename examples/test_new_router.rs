@@ -1,6 +1,5 @@
-use std::{error::Error, iter::successors};
+use std::{error::Error, fmt, iter::successors};
 
-use derive_more::{Display, Error};
 use h2_support::prelude::Response;
 use rama::{
     Layer, Service,
@@ -68,8 +67,16 @@ impl IntoResponse for Test {
     }
 }
 
-#[derive(Debug, Error, Display)]
+#[derive(Debug)]
 struct MyCustomErr;
+
+impl fmt::Display for MyCustomErr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self, f)
+    }
+}
+
+impl Error for MyCustomErr {}
 
 impl From<MissingHost> for MyCustomErr {
     fn from(value: MissingHost) -> Self {
