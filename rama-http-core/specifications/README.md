@@ -29,3 +29,20 @@ relied upon by rama-http-core or related to.
 
 * [rfc9113.txt](./rfc9113.txt)  
   HTTP/2
+
+### Related, vendored in sibling crates
+
+To avoid duplication, the following load-bearing specifications live next
+to the crate that owns their primary concern:
+
+* [rfc3986.txt](../../rama-net/specifications/uri/rfc3986.txt) —
+  URI Generic Syntax (request-target and `:authority` parsing).
+* [rfc6455.txt](../../rama-ws/specifications/rfc6455.txt) —
+  The WebSocket Protocol (h1 `Upgrade` handshake).
+* [rfc7239.txt](../../rama-http-headers/specifications/rfc7239.txt) —
+  `Forwarded` header.
+* [rfc7838.txt](../../rama-http/specifications/rfc7838.txt) — `Alt-Svc`.
+* [rfc8441.txt](../../rama-ws/specifications/rfc8441.txt) —
+  Bootstrapping WebSockets with HTTP/2 (Extended CONNECT / `:protocol`).
+* [rfc9111.txt](../../rama-http/specifications/rfc9111.txt) — HTTP Caching
+  (hop-by-hop / `Cache-Control` semantics relevant to proxy forwarding).

@@ -857,6 +857,11 @@ test! {
                 "Transfer-Encoding" => "chunked",
             },
             body: &b"hello"[..],
+            // RFC 9110 §6.5.1: framing/control fields MUST NOT appear in
+            // trailers. `decode_trailers` drops them so they cannot be
+            // smuggled past a downstream peer that merges trailers into
+            // the header section. `sneaky-trailer` is not in the Trailer
+            // header but is otherwise a legal trailer name and is kept.
             trailers: {
                 "chunky-trailer1" => "header data1",
                 "chunky-trailer2" => "header data2",
@@ -864,9 +869,6 @@ test! {
                 "chunky-trailer4" => "header data4",
                 "chunky-trailer5" => "header data5",
                 "sneaky-trailer" => "not in trailer header",
-                "transfer-encoding" => "chunked",
-                "content-length" => "5",
-                "trailer" => "foo",
             },
 }
 

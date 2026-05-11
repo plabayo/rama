@@ -706,6 +706,20 @@ impl Pseudo {
         pseudo
     }
 
+    /// Returns true if no pseudo-header fields are present.
+    ///
+    /// Used to validate trailers, which MUST NOT contain pseudo-headers
+    /// (RFC 9113 §8.1).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.method.is_none()
+            && self.scheme.is_none()
+            && self.authority.is_none()
+            && self.path.is_none()
+            && self.protocol.is_none()
+            && self.status.is_none()
+    }
+
     #[must_use]
     pub fn response(status: StatusCode) -> Self {
         Self {
@@ -1309,5 +1323,53 @@ mod test {
                 }
             );
         }
+    }
+
+    /// RFC 9113 §8.1: trailers MUST NOT contain pseudo-header fields.
+    /// Used by `Recv::recv_trailers` to short-circuit malformed trailers.
+    #[test]
+    fn pseudo_is_empty_detects_emptiness() {
+        let empty = Pseudo::default();
+        assert!(empty.is_empty());
+
+        let with_method = Pseudo {
+            method: Some(Method::GET),
+            ..Default::default()
+        };
+        assert!(!with_method.is_empty());
+
+        let with_status = Pseudo::response(StatusCode::OK);
+        assert!(!with_status.is_empty());
+
+        let with_path = Pseudo {
+            path: Some(BytesStr::from_static("/")),
+            ..Default::default()
+        };
+        assert!(!with_path.is_empty());
+    }
+
+    /// A trailers frame built by us is always pseudo-empty. After HPACK
+    /// decode of a malicious peer's HEADERS frame carrying trailers, the
+    /// pseudo block can be non-empty — mirror that with `pseudo_mut` and
+    /// verify the guard precondition used by `Recv::recv_trailers` fires.
+    #[test]
+    fn trailers_with_injected_pseudo_is_detected() {
+        let mut frame = Headers::trailers(
+            StreamId::from(1),
+            HeaderMap::new(),
+            OriginalHttp1Headers::default(),
+        );
+        assert!(
+            frame.pseudo().is_empty(),
+            "freshly-built trailers must have an empty pseudo block"
+        );
+
+        // Simulate what HPACK decode would do for malformed trailers
+        // carrying a pseudo-header (here `:status`).
+        frame.pseudo_mut().status = Some(StatusCode::OK);
+        assert!(
+            !frame.pseudo().is_empty(),
+            "trailers with an injected pseudo must NOT report is_empty"
+        );
     }
 }

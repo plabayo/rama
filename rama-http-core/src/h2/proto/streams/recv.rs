@@ -474,6 +474,14 @@ impl Recv {
             return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
         }
 
+        // RFC 9113 §8.1: a HEADERS frame carrying trailers MUST NOT contain
+        // pseudo-header fields. The HPACK decoder will have populated the
+        // pseudo block if any appeared on the wire; reject the stream.
+        if !frame.pseudo().is_empty() {
+            proto_err!(stream: "recv_trailers: pseudo-headers present in trailers; stream={:?};", stream.id);
+            return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR));
+        }
+
         let trailers = frame.into_fields();
 
         // Push the frame onto the stream's recv buffer

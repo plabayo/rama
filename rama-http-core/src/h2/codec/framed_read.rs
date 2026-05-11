@@ -211,7 +211,13 @@ fn decode_frame(
 
             res.map_err(|e| {
                 proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
-                Error::library_go_away(Reason::PROTOCOL_ERROR)
+                // RFC 9113 §6.5.2: SETTINGS_INITIAL_WINDOW_SIZE > 2^31-1
+                // MUST be treated as a FLOW_CONTROL_ERROR.
+                let reason = match e {
+                    frame::Error::InvalidInitialWindowSize => Reason::FLOW_CONTROL_ERROR,
+                    _ => Reason::PROTOCOL_ERROR,
+                };
+                Error::library_go_away(reason)
             })?
             .into()
         }

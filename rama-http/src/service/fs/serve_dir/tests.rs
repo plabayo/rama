@@ -1184,14 +1184,12 @@ fn verify_windows_device(name: &str, is_positive: bool) {
         if is_positive {
             assert_eq!(
                 file_type, FILE_TYPE_CHAR,
-                "Expected Windows to treat {:?} as a system character device",
-                name
+                "Expected Windows to treat {name:?} as a system character device",
             );
         } else {
             assert_ne!(
                 file_type, FILE_TYPE_CHAR,
-                "Expected Windows NOT to treat {:?} as a system character device",
-                name
+                "Expected Windows NOT to treat {name:?} as a system character device",
             );
         }
     }

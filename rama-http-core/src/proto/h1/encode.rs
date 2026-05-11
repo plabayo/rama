@@ -256,7 +256,7 @@ impl Encoder {
     }
 }
 
-fn is_valid_trailer_field(name: &HeaderName) -> bool {
+pub(super) fn is_valid_trailer_field(name: &HeaderName) -> bool {
     !matches!(
         *name,
         AUTHORIZATION
