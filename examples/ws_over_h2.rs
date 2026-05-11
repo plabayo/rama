@@ -21,10 +21,12 @@
 
 use rama::{
     Layer,
+    layer::ArcLayer,
     http::{
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
+        layer::error_handling::ErrorHandlerLayer,
     },
     layer::ConsumeErrLayer,
     net::tls::{
@@ -41,7 +43,7 @@ use rama::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -65,13 +67,15 @@ async fn main() {
     graceful.spawn_task_fn(async |guard| {
         let mut h2 = HttpServer::new_h2(Executor::graceful(guard.clone()));
         h2.h2_mut().set_enable_connect_protocol(); // required for WS sockets
-        let server = h2.service(Arc::new(
-            Router::new().with_get("/", Html(INDEX)).with_connect(
-                "/echo",
-                ConsumeErrLayer::trace_as_debug()
-                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+        let server = h2.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                Router::new().with_get("/", Html(INDEX)).with_connect(
+                    "/echo",
+                    ConsumeErrLayer::trace_as_debug()
+                        .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                ),
             ),
-        ));
+        );
 
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 

@@ -26,6 +26,7 @@ use rama::{
             IntoEndpointService,
             response::{IntoResponse, Json},
         },
+        layer::error_handling::ErrorHandlerLayer,
     },
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer},
 };
@@ -37,8 +38,11 @@ async fn main() {
     HttpServer::default()
         .listen(
             "127.0.0.1:62015",
-            UserAgentClassifierLayer::new()
-                .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            (
+                UserAgentClassifierLayer::new()
+                    .with_overwrite_header(HeaderName::from_static("x-proxy-ua")),
+                ErrorHandlerLayer::new(),
+            )
                 .into_layer(handle.into_endpoint_service()),
         )
         .await

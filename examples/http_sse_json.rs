@@ -29,11 +29,12 @@
 
 use rama::{
     Layer,
+    layer::ArcLayer,
     error::{BoxError, ErrorContext},
     futures::async_stream::stream_fn,
     http::{
         headers::LastEventId,
-        layer::trace::TraceLayer,
+        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
         server::HttpServer,
         service::web::{
             Router,
@@ -56,7 +57,7 @@ use rama::{
 };
 
 use serde::Serialize;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl IntoResponse {
     let mut id: u64 = last_id
@@ -117,11 +118,16 @@ async fn main() {
     tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
     graceful.spawn_task(async {
-        let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
-            Router::new()
-                .with_get("/", Html(INDEX_CONTENT))
-                .with_get("/api/events", api_events_endpoint),
-        ));
+        let app = (
+            ArcLayer::new(),
+            TraceLayer::new_for_http(),
+            ErrorHandlerLayer::new(),
+        )
+            .into_layer(
+                Router::new()
+                    .with_get("/", Html(INDEX_CONTENT))
+                    .with_get("/api/events", api_events_endpoint),
+            );
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 

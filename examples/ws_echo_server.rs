@@ -13,10 +13,12 @@
 
 use rama::{
     Layer,
+    layer::ArcLayer,
     http::{
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
+        layer::error_handling::ErrorHandlerLayer,
     },
     layer::ConsumeErrLayer,
     rt::Executor,
@@ -28,7 +30,7 @@ use rama::{
     },
 };
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -44,13 +46,15 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(
-            Router::new().with_get("/", Html(INDEX)).with_get(
-                "/echo",
-                ConsumeErrLayer::trace_as_debug()
-                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(
+            (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                Router::new().with_get("/", Html(INDEX)).with_get(
+                    "/echo",
+                    ConsumeErrLayer::trace_as_debug()
+                        .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                ),
             ),
-        ));
+        );
         info!("open web echo chat @ http://127.0.0.1:62032");
         info!("or connect directly to ws://127.0.0.1:62032/echo (via 'rama')");
         TcpListener::bind_address("127.0.0.1:62032", Executor::graceful(guard))

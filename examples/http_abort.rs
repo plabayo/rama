@@ -26,7 +26,10 @@ use rama::{
     http::{
         StatusCode,
         headers::exotic::XClacksOverhead,
-        layer::{set_header::SetResponseHeaderLayer, trace::TraceLayer},
+        layer::{
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            error_handling::ErrorHandlerLayer,
+        },
         server::HttpServer,
         service::web::Router,
     },
@@ -69,6 +72,7 @@ async fn main() {
     let http_middlewares = (
         TraceLayer::new_for_http(),
         SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
+        ErrorHandlerLayer::new(),
     );
 
     let tcp_svc = AbortableLayer::new().into_layer(

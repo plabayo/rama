@@ -2,10 +2,13 @@ use crate::examples::example_tests::utils::ExampleRunner;
 
 use super::utils;
 
-use std::sync::Arc;
-
 use rama::{
-    http::{BodyExtractExt, server::HttpServer, service::web::Router},
+    Layer,
+    layer::ArcLayer,
+    http::{
+        BodyExtractExt, server::HttpServer, service::web::Router,
+        layer::error_handling::ErrorHandlerLayer,
+    },
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -98,7 +101,8 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
+    let server = HttpServer::auto(Executor::default())
+        .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));
 

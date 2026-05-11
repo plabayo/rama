@@ -4,6 +4,7 @@ use super::utils;
 
 use rama::{
     Layer,
+    layer::ArcLayer,
     bytes::Bytes,
     extensions::Extensions,
     futures::{StreamExt as _, async_stream::stream_fn},
@@ -14,6 +15,7 @@ use rama::{
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
         layer::retry::{ManagedPolicy, RetryLayer},
+        layer::error_handling::ErrorHandlerLayer,
         matcher::HttpMatcher,
         server::HttpServer,
         service::client::HttpClientExt as _,
@@ -43,7 +45,7 @@ async fn test_http_mitm_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63003",
-                Arc::new(
+                (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                     Router::new()
                         .with_match_route(
                             "/echo",
@@ -132,7 +134,7 @@ async fn test_http_mitm_proxy() {
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
-        http_tp.service(Arc::new(
+        http_tp.service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
             Router::new()
                 .with_match_route(
                     "/echo",
@@ -171,7 +173,10 @@ async fn test_http_mitm_proxy() {
 
     let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
-        http_1_over_tls_server.service(Arc::new(Router::new().with_get("/ping", "pong"))),
+        http_1_over_tls_server.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new())
+                .into_layer(Router::new().with_get("/ping", "pong")),
+        ),
     );
 
     tokio::spawn(async {

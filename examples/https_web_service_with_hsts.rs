@@ -25,7 +25,7 @@ use rama::{
     graceful::Shutdown,
     http::{
         headers::StrictTransportSecurity,
-        layer::trace::TraceLayer,
+        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
         layer::{
             required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
         },
@@ -136,6 +136,7 @@ async fn main() {
                 SetResponseHeaderLayer::if_not_present_typed(
                     StrictTransportSecurity::excluding_subdomains_for_max_seconds(31536000),
                 ),
+                ErrorHandlerLayer::new(),
             )
                 .into_layer(
                     Router::new().with_get("/", Html(r##"<h1>Hello HSTS</h1>"##.to_owned())),

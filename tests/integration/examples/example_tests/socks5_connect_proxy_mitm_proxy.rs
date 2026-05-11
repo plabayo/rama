@@ -1,12 +1,17 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 use crate::examples::example_tests::utils::ExampleRunner;
 
 use super::utils;
 
 use rama::{
+    Layer,
+    layer::ArcLayer,
     error::{BoxError, ErrorContext},
-    http::{BodyExtractExt, server::HttpServer, service::web::Router},
+    http::{
+        BodyExtractExt, server::HttpServer, service::web::Router,
+        layer::error_handling::ErrorHandlerLayer,
+    },
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -115,7 +120,8 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::auto(Executor::default()).service(Arc::new(app));
+    let server = HttpServer::auto(Executor::default())
+        .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));
 
@@ -134,7 +140,8 @@ async fn spawn_https_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let http_server = HttpServer::auto(Executor::default()).service(Arc::new(app));
+    let http_server = HttpServer::auto(Executor::default())
+        .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     let data = try_new_tls_service_data().expect("create tls service data");
     let https_server = TlsAcceptorService::new(data, http_server, false);

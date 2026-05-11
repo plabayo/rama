@@ -34,6 +34,7 @@
 
 use rama::{
     Layer, Service,
+    service::StaticOutput,
     extensions::{ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
@@ -46,7 +47,7 @@ use rama::{
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
-        service::web::{StaticService, response::Html},
+        service::web::response::{Html, layer::IntoResponseLayer},
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
@@ -71,7 +72,7 @@ use std::{convert::Infallible, time::Duration};
 
 fn new_example_hijack_svc() -> impl Clone + Service<Request, Output = Response, Error = Infallible>
 {
-    StaticService::new(Html(
+    IntoResponseLayer::new().into_layer(StaticOutput::new(Html(
         r##"<!doctype html>
 <html>
 <head>
@@ -120,7 +121,7 @@ fn new_example_hijack_svc() -> impl Clone + Service<Request, Output = Response, 
 </body>
 </html>
 "##,
-    ))
+    )))
 }
 
 #[tokio::main]

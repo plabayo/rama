@@ -29,13 +29,17 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer, Service,
+    layer::ArcLayer,
     conversion::FromRef,
     error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
     http::{
         InfiniteReader,
         headers::ContentType,
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        layer::{
+            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
+            error_handling::ErrorHandlerLayer,
+        },
         server::HttpServer,
         service::web::{
             Router,
@@ -85,13 +89,15 @@ async fn main() {
         .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(Arc::new(
+    let app = HttpServer::auto(exec).service(
         (
+            ArcLayer::new(),
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
+            ErrorHandlerLayer::new(),
         )
             .into_layer(router),
-    ));
+    );
 
     let tcp_svc = (
         ConsumeErrLayer::default(),

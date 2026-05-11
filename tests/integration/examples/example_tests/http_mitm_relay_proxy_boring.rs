@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 
 use super::utils;
 
@@ -14,6 +14,7 @@ use rama::{
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
         layer::retry::{ManagedPolicy, RetryLayer},
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::client::HttpClientExt as _,
         service::web::{
@@ -21,7 +22,7 @@ use rama::{
             response::{Headers, IntoResponse as _, Json},
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{ConsumeErrLayer, ArcLayer},
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
     tcp::server::TcpListener,
@@ -41,12 +42,15 @@ async fn test_http_mitm_relay_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63015",
-                Arc::new(Router::new().with_get("/{*any}", async |req: Request| {
-                    Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    }))
-                })),
+                (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(Router::new().with_get(
+                    "/{*any}",
+                    async |req: Request| {
+                        Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                    },
+                )),
             )
             .await
             .unwrap();
@@ -56,9 +60,11 @@ async fn test_http_mitm_relay_proxy() {
         HttpServer::new_http1(Executor::default())
             .listen(
                 "127.0.0.1:63016",
-                Arc::new((
+                (
+                    ArcLayer::new(),
                     ConsumeErrLayer::default(),
                     CompressionLayer::new().with_compress_predicate(Always::new()),
+                    ErrorHandlerLayer::new(),
                 ).into_layer(Router::new()
                     .with_get("/response-stream", async || {
                         Ok::<_, Infallible>(
@@ -101,7 +107,7 @@ async fn test_http_mitm_relay_proxy() {
                                 .into_response(),
                         )
                     })),
-            ))
+            )
             .await
             .unwrap();
     });
@@ -120,14 +126,17 @@ async fn test_http_mitm_relay_proxy() {
 
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
-    let tcp_service = TlsAcceptorLayer::new(data).into_layer(http_tp.service(Arc::new(
-        Router::new().with_get("/{*any}", async |req: Request| {
-            Json(json!({
-                "method": req.method().as_str(),
-                "path": req.uri().path(),
-            }))
-        }),
-    )));
+    let tcp_service = TlsAcceptorLayer::new(data).into_layer(http_tp.service(
+        (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(Router::new().with_get(
+            "/{*any}",
+            async |req: Request| {
+                Json(json!({
+                    "method": req.method().as_str(),
+                    "path": req.uri().path(),
+                }))
+            },
+        )),
+    ));
 
     tokio::spawn(async {
         TcpListener::bind_address("127.0.0.1:63017", Executor::default())
@@ -148,7 +157,10 @@ async fn test_http_mitm_relay_proxy() {
 
     let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
-        http_1_over_tls_server.service(Arc::new(Router::new().with_get("/ping", "pong"))),
+        http_1_over_tls_server.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new())
+                .into_layer(Router::new().with_get("/ping", "pong")),
+        ),
     );
 
     tokio::spawn(async {

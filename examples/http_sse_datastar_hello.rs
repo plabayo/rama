@@ -45,7 +45,7 @@ use rama::{
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
-        layer::trace::TraceLayer,
+        layer::{trace::TraceLayer, error_handling::ErrorHandler},
         server::HttpServer,
         service::web::{
             Router,
@@ -122,7 +122,7 @@ async fn main() {
             .with_get("/assets/datastar.js.map", DatastarSourceMap::default())
             .with_get("/hotreload", handlers::hotreload);
 
-        let router = Arc::new(app);
+        let router = Arc::new(ErrorHandler::new(app));
         let graceful_router = GracefulRouter { router, controller };
 
         let app = TraceLayer::new_for_http().into_layer(graceful_router);
@@ -137,7 +137,7 @@ async fn main() {
 
 #[derive(Debug, Clone)]
 struct GracefulRouter {
-    router: Arc<Router<Controller>>,
+    router: Arc<ErrorHandler<Router<Controller>>>,
     controller: Controller,
 }
 
