@@ -21,6 +21,7 @@ fn main() {
                 &[
                     "proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
                     "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                    "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
                 ],
                 &["proto/"],
             )

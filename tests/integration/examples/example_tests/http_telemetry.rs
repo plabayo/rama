@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Extension)]
 struct CollectorState {
     metrics_received: AtomicU32,
+    logs_received: AtomicU32,
 }
 
 #[tokio::test]
@@ -25,6 +26,7 @@ async fn test_http_telemetry() {
 
     let state = Arc::new(CollectorState {
         metrics_received: AtomicU32::new(0),
+        logs_received: AtomicU32::new(0),
     });
     spawn_fake_otlp_collector(Arc::clone(&state)).await;
 
@@ -42,9 +44,16 @@ async fn test_http_telemetry() {
 
     // Give enough time for everything to flush and export
     let deadline = Instant::now() + Duration::from_secs(10);
-    while state.metrics_received.load(Ordering::SeqCst) == 0 {
+    loop {
+        let metrics = state.metrics_received.load(Ordering::SeqCst);
+        let logs = state.logs_received.load(Ordering::SeqCst);
+        if metrics > 0 && logs > 0 {
+            break;
+        }
         if Instant::now() > deadline {
-            panic!("no OTLP /v1/metrics POST reached the fake collector within 10s");
+            panic!(
+                "fake collector did not receive both signals within 10s (metrics={metrics}, logs={logs})"
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -52,13 +61,21 @@ async fn test_http_telemetry() {
 
 async fn spawn_fake_otlp_collector(state: Arc<CollectorState>) {
     let exec = Executor::default();
-    let web = WebService::default().with_post("/v1/metrics", async |ext: Extensions| {
-        ext.get_ref::<CollectorState>()
-            .unwrap()
-            .metrics_received
-            .fetch_add(1, Ordering::SeqCst);
-        StatusCode::OK
-    });
+    let web = WebService::default()
+        .with_post("/v1/metrics", async |ext: Extensions| {
+            ext.get_ref::<CollectorState>()
+                .unwrap()
+                .metrics_received
+                .fetch_add(1, Ordering::SeqCst);
+            StatusCode::OK
+        })
+        .with_post("/v1/logs", async |ext: Extensions| {
+            ext.get_ref::<CollectorState>()
+                .unwrap()
+                .logs_received
+                .fetch_add(1, Ordering::SeqCst);
+            StatusCode::OK
+        });
     let http_service = HttpServer::auto(exec.clone()).service(web);
 
     let listener = TcpListener::build(exec)

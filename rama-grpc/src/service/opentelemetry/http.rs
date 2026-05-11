@@ -1,6 +1,8 @@
 use super::{
     EnvCompressionSetting, OTEL_EXPORTER_OTLP_COMPRESSION, OTEL_EXPORTER_OTLP_ENDPOINT,
-    OTEL_EXPORTER_OTLP_HEADERS, OTEL_EXPORTER_OTLP_METRICS_COMPRESSION,
+    OTEL_EXPORTER_OTLP_HEADERS, OTEL_EXPORTER_OTLP_LOGS_COMPRESSION,
+    OTEL_EXPORTER_OTLP_LOGS_ENDPOINT, OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+    OTEL_EXPORTER_OTLP_LOGS_TIMEOUT, OTEL_EXPORTER_OTLP_METRICS_COMPRESSION,
     OTEL_EXPORTER_OTLP_METRICS_ENDPOINT, OTEL_EXPORTER_OTLP_METRICS_HEADERS,
     OTEL_EXPORTER_OTLP_METRICS_TIMEOUT, OTEL_EXPORTER_OTLP_TIMEOUT,
     OTEL_EXPORTER_OTLP_TRACES_COMPRESSION, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
@@ -12,7 +14,9 @@ use crate::{
         CompressionEncoding,
         compression::{CompressionSettings, compress},
     },
-    service::opentelemetry::proto::{ExportMetricsServiceResponse, ExportTraceServiceResponse},
+    service::opentelemetry::proto::{
+        ExportLogsServiceResponse, ExportMetricsServiceResponse, ExportTraceServiceResponse,
+    },
 };
 use arc_swap::ArcSwap;
 use prost::Message;
@@ -25,6 +29,7 @@ use rama_core::{
         sdk::{
             self,
             error::{OTelSdkError, OTelSdkResult},
+            logs::{LogBatch, LogExporter},
             metrics::exporter::PushMetricExporter,
             metrics::{Temporality, data::ResourceMetrics},
             trace::{SpanData, SpanExporter},
@@ -49,6 +54,7 @@ use std::{
 const DEFAULT_OTLP_HTTP_ENDPOINT: &str = "http://localhost:4318";
 const OTLP_HTTP_TRACE_PATH: &str = "/v1/traces";
 const OTLP_HTTP_METRICS_PATH: &str = "/v1/metrics";
+const OTLP_HTTP_LOGS_PATH: &str = "/v1/logs";
 const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 const CONTENT_ENCODING: &str = "content-encoding";
 
@@ -62,6 +68,7 @@ pub struct HttpExporter<S = ()> {
     headers: HeaderMap,
     traces: SignalSettings,
     metrics: SignalSettings,
+    logs: SignalSettings,
     env: EnvSettings,
     temporality: Temporality,
     resource: Arc<ArcSwap<transform::ResourceAttributesWithSchema>>,
@@ -82,12 +89,14 @@ struct EnvSettings {
     base: SignalSettings,
     traces: SignalSettings,
     metrics: SignalSettings,
+    logs: SignalSettings,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum SignalKind {
     Traces,
     Metrics,
+    Logs,
 }
 
 struct ResolvedConfig {
@@ -107,6 +116,7 @@ impl<S> HttpExporter<S> {
             headers: HeaderMap::new(),
             traces: SignalSettings::default(),
             metrics: SignalSettings::default(),
+            logs: SignalSettings::default(),
             env: EnvSettings::default(),
             temporality: Temporality::Cumulative,
             resource: Arc::new(ArcSwap::from_pointee(
@@ -220,6 +230,38 @@ impl<S> HttpExporter<S> {
     );
 
     generate_set_and_with!(
+        /// Override the logs-specific OTLP HTTP endpoint.
+        pub fn logs_endpoint(mut self, endpoint: Option<Uri>) -> Self {
+            self.logs.endpoint = endpoint;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Override the logs-specific OTLP HTTP timeout.
+        pub fn logs_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.logs.timeout = timeout;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Override the logs-specific OTLP HTTP compression.
+        pub fn logs_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
+            self.logs.compression = compression;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Override the logs-specific OTLP HTTP headers.
+        pub fn logs_headers(mut self, headers: HeaderMap) -> Self {
+            self.logs.headers = headers;
+            self
+        }
+    );
+
+    generate_set_and_with!(
         /// Configure the metric temporality used by this exporter.
         pub fn temporality(mut self, temporality: Temporality) -> Self {
             self.temporality = temporality;
@@ -288,6 +330,22 @@ impl<S> HttpExporter<S> {
             }
         }
 
+        if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_LOGS_ENDPOINT)? {
+            self.env.logs.endpoint = Some(endpoint);
+        }
+        if let Some(timeout) = env_timeout(OTEL_EXPORTER_OTLP_LOGS_TIMEOUT)? {
+            self.env.logs.timeout = Some(timeout);
+        }
+        if let Some(headers) = env_headers(OTEL_EXPORTER_OTLP_LOGS_HEADERS)? {
+            self.env.logs.headers = headers;
+        }
+        match env_compression(OTEL_EXPORTER_OTLP_LOGS_COMPRESSION)? {
+            EnvCompressionSetting::Unset => {}
+            EnvCompressionSetting::Value(compression) => {
+                self.env.logs.compression = compression;
+            }
+        }
+
         Ok(())
     }
 
@@ -298,6 +356,11 @@ impl<S> HttpExporter<S> {
 
     fn metrics_config(&self) -> Result<ResolvedConfig, OTelSdkError> {
         ResolvedConfig::new(self, SignalKind::Metrics)
+            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
+    }
+
+    fn logs_config(&self) -> Result<ResolvedConfig, OTelSdkError> {
+        ResolvedConfig::new(self, SignalKind::Logs)
             .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
     }
 }
@@ -322,6 +385,7 @@ where
         let config = match signal_kind {
             SignalKind::Traces => self.trace_config()?,
             SignalKind::Metrics => self.metrics_config()?,
+            SignalKind::Logs => self.logs_config()?,
         };
 
         let body = encode_body(request_body, config.compression)
@@ -470,6 +534,47 @@ where
     }
 }
 
+impl<S> LogExporter for HttpExporter<S>
+where
+    S: fmt::Debug + Clone + Service<Request, Output = Response, Error: Into<BoxError>>,
+{
+    async fn export(&self, batch: LogBatch<'_>) -> OTelSdkResult {
+        let request_body = {
+            let resource = self.resource.load();
+            transform::log_batch_to_request(&batch, &resource)
+        };
+
+        let response: ExportLogsServiceResponse =
+            self.export_request(SignalKind::Logs, request_body).await?;
+
+        otel_debug!(name: "RamaHttpOtelLogs.ExportSucceeded");
+
+        if let Some(partial_success) = response.partial_success.filter(|partial_success| {
+            partial_success.rejected_log_records > 0 || !partial_success.error_message.is_empty()
+        }) {
+            otel_warn!(
+                name: "RamaHttpOtelLogs.PartialSuccess",
+                rejected_log_records = partial_success.rejected_log_records,
+                error_message = partial_success.error_message.as_str(),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        if self.shutdown.swap(true, Ordering::AcqRel) {
+            return Err(OTelSdkError::AlreadyShutdown);
+        }
+
+        Ok(())
+    }
+
+    fn set_resource(&mut self, resource: &sdk::Resource) {
+        self.resource.store(Arc::new(resource.into()));
+    }
+}
+
 impl ResolvedConfig {
     fn new<S>(
         exporter: &HttpExporter<S>,
@@ -482,6 +587,7 @@ impl ResolvedConfig {
                 &exporter.env.metrics,
                 OTLP_HTTP_METRICS_PATH,
             ),
+            SignalKind::Logs => (&exporter.logs, &exporter.env.logs, OTLP_HTTP_LOGS_PATH),
         };
 
         let signal_endpoint = signal
