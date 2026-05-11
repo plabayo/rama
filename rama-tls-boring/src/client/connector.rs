@@ -475,10 +475,39 @@ where
     T: Io + Unpin + ExtensionsRef,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let TlsStream { inner: stream } =
-        tls_connect(stream, Some(connector_data))
-            .await
-            .map_err(|err| match err {
+    #[cfg(feature = "dial9")]
+    let dial9_server_name = connector_data.server_name.clone();
+    #[cfg(feature = "dial9")]
+    crate::dial9::record_handshake_started(dial9_server_name.clone());
+    let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
+        Ok(s) => s,
+        Err(err) => {
+            #[cfg(feature = "dial9")]
+            {
+                use crate::dial9::tls_handshake_error_kind as kind;
+                let (error_kind, io_error_kind) = match &err {
+                    TlsConnectError::Builder(_) => (kind::BUILDER, None),
+                    TlsConnectError::Handshake { error, .. } => {
+                        let io_error_kind = error
+                            .as_io_error()
+                            .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
+                        let error_kind = if io_error_kind.is_some() {
+                            kind::HANDSHAKE_IO
+                        } else if error.as_ssl_error_stack().is_some() {
+                            kind::HANDSHAKE_SSL_STACK
+                        } else {
+                            kind::HANDSHAKE_OTHER
+                        };
+                        (error_kind, io_error_kind)
+                    }
+                };
+                crate::dial9::record_handshake_failed(
+                    dial9_server_name.clone(),
+                    error_kind,
+                    io_error_kind,
+                );
+            }
+            return Err(match err {
                 TlsConnectError::Builder(error) => error.context("tls connect builder error"),
                 TlsConnectError::Handshake { error, server_name } => {
                     let maybe_ssl_code = error.code();
@@ -501,7 +530,9 @@ where
                         .context_debug_field("code", maybe_ssl_code)
                     }
                 }
-            })?;
+            });
+        }
+    };
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
@@ -541,6 +572,29 @@ where
             .into_box_error());
         }
     };
+
+    #[cfg(feature = "dial9")]
+    {
+        use rama_net::tls::DataEncoding;
+        // Approximate cert-chain depth: opaque single Der/Pem counts as
+        // 1 (we don't parse PEM here), an explicit DerStack contributes
+        // its real length, no chain stored yields 0. Used for telemetry
+        // bucketing only — exact length lives in the structured chain.
+        let depth = match params.peer_certificate_chain.as_ref() {
+            Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
+            Some(DataEncoding::DerStack(stack)) => stack.len(),
+            None => 0,
+        };
+        crate::dial9::record_handshake_completed(
+            dial9_server_name,
+            params.protocol_version,
+            stream
+                .ssl()
+                .selected_alpn_protocol()
+                .map(rama_net::tls::ApplicationProtocol::from),
+            depth,
+        );
+    }
 
     Ok((stream, params))
 }

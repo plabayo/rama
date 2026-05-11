@@ -396,7 +396,7 @@ async fn bind_echo_udp_service(
                 let socket = shared_udp_socket.clone();
                 let data = buf[..len].to_vec();
                 weak_guard.clone().upgrade().into_spawn_task(async move {
-                    let _ = permit;
+                    _ = permit;
                     match socket.send_to(&data, addr).await {
                         Ok(len) => {
                             tracing::trace!("sent {len} bytes sent to {addr}");

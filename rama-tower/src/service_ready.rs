@@ -12,7 +12,7 @@ pub(super) struct ReadyOneshot<T, Request> {
     _p: PhantomData<fn() -> Request>,
 }
 
-// Safety: This is safe because `Services`'s are always `Unpin`.
+// `Service`s are always `Unpin`, so this auto-trait impl is safe.
 impl<T, Request> Unpin for ReadyOneshot<T, Request> {}
 
 impl<T, Request> ReadyOneshot<T, Request>
@@ -33,7 +33,7 @@ where
 {
     type Output = Result<T, T::Error>;
 
-    #[allow(clippy::expect_used, reason = "tower madness")]
+    #[expect(clippy::expect_used, reason = "tower madness")]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         ready!(
             self.inner
@@ -60,7 +60,7 @@ where
 /// A future that yields a mutable reference to the service when it is ready to accept a request.
 pub(super) struct Ready<'a, T, Request>(ReadyOneshot<&'a mut T, Request>);
 
-// Safety: This is safe for the same reason that the impl for ReadyOneshot is safe.
+// `Unpin` for the same reason as the `ReadyOneshot` impl above.
 impl<T, Request> Unpin for Ready<'_, T, Request> {}
 
 impl<'a, T, Request> Ready<'a, T, Request>

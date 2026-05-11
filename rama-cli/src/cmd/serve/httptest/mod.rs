@@ -25,7 +25,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
-    utils::backoff::ExponentialBackoff,
+    utils::{backoff::ExponentialBackoff, octets::mib},
 };
 
 use clap::Args;
@@ -79,6 +79,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
 
     let router = Router::new()
         .with_get("/", endpoint::index::service())
+        .with_get("/bytes", endpoint::bytes::service())
         .with_match_route(
             "/method",
             HttpMatcher::custom(true),
@@ -97,7 +98,11 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             "/response-stream-compression",
             endpoint::response_stream_compression::service(),
         )
-        .with_get("/sse", endpoint::sse::service());
+        .with_get("/sse", endpoint::sse::service())
+        .with_get("/multipart", endpoint::multipart::get_form)
+        .with_post("/multipart", endpoint::multipart::post_service())
+        .with_post("/octet-stream", endpoint::octet_stream::service())
+        .with_post("/sink", endpoint::sink::service());
 
     let http_service = Arc::new(middlewares.into_layer(router));
 
@@ -165,8 +170,10 @@ where
         } else {
             Either::B(UnlimitedPolicy::new())
         }),
-        // Limit the body size to 1MB for both request and response
-        BodyLimitLayer::symmetric(1024 * 1024),
+        // Keep a public-service-wide cap while still allowing the
+        // stress endpoints (`/bytes`, `/octet-stream`) to exercise
+        // multi-megabyte bodies without third-party infrastructure.
+        BodyLimitLayer::symmetric(mib(32)),
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 

@@ -55,7 +55,7 @@ impl FromStr for LastEventId {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(LastEventId)
-            .map_err(|_| InvalidLastEventId)
+            .map_err(|_e| InvalidLastEventId)
     }
 }
 

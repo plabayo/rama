@@ -5,6 +5,7 @@ use crate::dep::hyperium::http::Extensions as HttpExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_utils::macros::generate_set_and_with;
 
 #[derive(Clone, Debug, Extension)]
 struct HyperExtensions(HttpExtensions);
@@ -665,6 +666,13 @@ impl<T> Request<T> {
         Request {
             body: f(self.body),
             head: self.head,
+        }
+    }
+
+    generate_set_and_with! {
+        pub fn extensions_mut(mut self, extensions: Extensions) -> Self {
+            self.head.extensions = extensions;
+            self
         }
     }
 }

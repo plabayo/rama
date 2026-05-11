@@ -7,7 +7,7 @@ mod send;
 mod state;
 mod store;
 mod stream;
-#[allow(clippy::module_inception)]
+#[expect(clippy::module_inception)]
 mod streams;
 
 pub(crate) use self::prioritize::Prioritized;
@@ -92,8 +92,7 @@ trait DebugStructExt<'a, 'b> {
         val: &T,
     ) -> &mut Self;
 
-    #[allow(clippy::ref_option)]
-    fn h2_field_some<T: std::fmt::Debug>(&mut self, name: &str, val: &Option<T>) -> &mut Self;
+    fn h2_field_some<T: std::fmt::Debug>(&mut self, name: &str, val: Option<&T>) -> &mut Self;
 }
 
 impl<'a, 'b> DebugStructExt<'a, 'b> for std::fmt::DebugStruct<'a, 'b> {
@@ -110,9 +109,8 @@ impl<'a, 'b> DebugStructExt<'a, 'b> for std::fmt::DebugStruct<'a, 'b> {
         if cond { self.field(name, val) } else { self }
     }
 
-    #[allow(clippy::ref_option)]
-    fn h2_field_some<T: std::fmt::Debug>(&mut self, name: &str, val: &Option<T>) -> &mut Self {
-        if val.is_some() {
+    fn h2_field_some<T: std::fmt::Debug>(&mut self, name: &str, val: Option<&T>) -> &mut Self {
+        if let Some(val) = val {
             self.field(name, val)
         } else {
             self

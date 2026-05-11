@@ -470,7 +470,7 @@ mod tests {
             trace: None,
         };
 
-        assert!(cmd.domain().is_err());
+        cmd.domain().unwrap_err();
     }
 
     #[test]

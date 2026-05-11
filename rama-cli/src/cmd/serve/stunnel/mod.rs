@@ -27,7 +27,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
@@ -161,7 +161,8 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         );
 
         let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
-            IoToProxyBridgeIoLayer::new(exec, forward_addr).into_layer(IoForwardService::new()),
+            IoToProxyBridgeIoLayer::new(exec.clone(), forward_addr)
+                .into_layer(IoForwardService::new(exec)),
         );
         tcp_listener.serve(tcp_service).await;
     });
@@ -194,9 +195,9 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
             .with_connector(
                 TlsConnectorLayer::secure()
                     .with_connector_data(tls_connector_data)
-                    .into_layer(TcpConnector::new(exec)),
+                    .into_layer(TcpConnector::new(exec.clone())),
             )
-            .into_layer(IoForwardService::new());
+            .into_layer(IoForwardService::new(exec));
 
         tcp_listener.serve(tcp_service).await;
     });
@@ -271,7 +272,10 @@ fn load_server_config(
             })))
         }
         (None, None) => Ok(try_new_server_config(None, exec)?),
-        _ => Err("Both certificate and key must be provided together, or neither".into()),
+        _ => Err(OpaqueError::from_static_str(
+            "Both certificate and key must be provided together, or neither",
+        )
+        .into_box_error()),
     }
 }
 

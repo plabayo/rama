@@ -610,8 +610,8 @@ mod tests {
         assert_eq!("preserve".parse::<TlsAgent>().unwrap(), TlsAgent::Preserve);
         assert_eq!("Preserve".parse::<TlsAgent>().unwrap(), TlsAgent::Preserve);
 
-        assert!("".parse::<TlsAgent>().is_err());
-        assert!("invalid".parse::<TlsAgent>().is_err());
+        "".parse::<TlsAgent>().unwrap_err();
+        "invalid".parse::<TlsAgent>().unwrap_err();
     }
 
     #[test]
@@ -652,9 +652,9 @@ mod tests {
             TlsAgent::Preserve
         );
 
-        assert!(serde_json::from_str::<TlsAgent>(r#""invalid""#).is_err());
-        assert!(serde_json::from_str::<TlsAgent>(r#""""#).is_err());
-        assert!(serde_json::from_str::<TlsAgent>("1").is_err());
+        serde_json::from_str::<TlsAgent>(r#""invalid""#).unwrap_err();
+        serde_json::from_str::<TlsAgent>(r#""""#).unwrap_err();
+        serde_json::from_str::<TlsAgent>("1").unwrap_err();
     }
 
     #[test]
@@ -677,8 +677,8 @@ mod tests {
             HttpAgent::Preserve
         );
 
-        assert!("".parse::<HttpAgent>().is_err());
-        assert!("invalid".parse::<HttpAgent>().is_err());
+        "".parse::<HttpAgent>().unwrap_err();
+        "invalid".parse::<HttpAgent>().unwrap_err();
     }
 
     #[test]
@@ -719,8 +719,8 @@ mod tests {
             HttpAgent::Preserve
         );
 
-        assert!(serde_json::from_str::<HttpAgent>("1").is_err());
-        assert!(serde_json::from_str::<HttpAgent>(r#""""#).is_err());
-        assert!(serde_json::from_str::<HttpAgent>(r#""invalid""#).is_err());
+        serde_json::from_str::<HttpAgent>("1").unwrap_err();
+        serde_json::from_str::<HttpAgent>(r#""""#).unwrap_err();
+        serde_json::from_str::<HttpAgent>(r#""invalid""#).unwrap_err();
     }
 }

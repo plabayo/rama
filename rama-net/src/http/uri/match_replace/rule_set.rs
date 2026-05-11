@@ -107,7 +107,7 @@ mod tests {
     }
 
     /// Assert that for every container view the output equals `want`.
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn expect_eq(rules: UriMatchReplaceRuleset, input: &'static str, want: Option<&'static str>) {
         let uri = Uri::from_static(input);
         let got = match rules.match_replace_uri(Cow::Borrowed(&uri)) {

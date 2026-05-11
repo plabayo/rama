@@ -23,10 +23,32 @@ impl BytesOwned {
             return;
         }
 
+        // `Vec::from_raw_parts` requires `len <= cap`. We clamp defensively for
+        // release builds (matches what the original `Vec` would have upheld),
+        // and shout in dev if the caller violated the contract — that means a
+        // bug somewhere upstream in the FFI ownership chain.
+        if len > cap {
+            // Defense in depth: dev panics on the assert; release clamps
+            // to keep the dealloc sound, but we'd rather hear about the
+            // ownership-chain bug than have it stay hidden until a
+            // memory bug surfaces in production. Surface as `error!`
+            // (not `warn!`) so it reliably appears in extension logs
+            // even at default filter levels.
+            tracing::error!(
+                target: "rama_apple_ne::ffi",
+                len,
+                cap,
+                "BytesOwned::free: len > cap (clamping for release-build safety) — caller violated Vec invariant somewhere upstream"
+            );
+        }
+        debug_assert!(
+            len <= cap,
+            "BytesOwned::free: len ({len}) > cap ({cap}) — caller violated Vec invariant"
+        );
         let vec_len = len.min(cap);
         let vec_cap = cap;
         // SAFETY: caller contract guarantees pointer/capacity originate from a `Vec<u8>`.
-        let _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
+        _ = unsafe { Vec::from_raw_parts(ptr, vec_len, vec_cap) };
     }
 }
 

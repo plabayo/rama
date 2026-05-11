@@ -27,6 +27,7 @@ mod concurrency;
 mod config;
 mod demo_trace_traffic;
 mod demo_xpc_server;
+mod dial9;
 mod http;
 mod policy;
 mod state;
@@ -297,5 +298,12 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
 
 apple_ne::transparent_proxy_ffi! {
     init = init,
-    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory),
+    // Engine defaults (15 min TCP idle backstop, 15 min UDP max-lifetime,
+    // 3s decision deadline) are applied automatically. Opt out via
+    // `.without_tcp_idle_timeout()` / `.without_udp_max_flow_lifetime()`.
+    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory)
+        // Optional dial9 runtime telemetry. Off unless
+        // RAMA_TPROXY_DIAL9_ENABLED=true is set in the extension's
+        // environment. See `src/dial9.rs` and the example README.
+        .with_runtime_factory(crate::dial9::make_runtime_factory()),
 }

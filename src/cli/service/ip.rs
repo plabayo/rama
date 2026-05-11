@@ -2,6 +2,11 @@
 //!
 //! [`Service`]: crate::Service
 
+#![expect(
+    clippy::allow_attributes,
+    reason = "feature-gated `mut self` consumed by some cfg branches but not others — `#[allow(unused_mut)]` would warn unfulfilled in the cfg arm where it IS used"
+)]
+
 use crate::{
     Layer, Service,
     cli::ForwardKind,

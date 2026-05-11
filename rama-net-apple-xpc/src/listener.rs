@@ -137,7 +137,7 @@ impl XpcListener {
             };
 
             if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
-                let _ = sender.send(peer_conn);
+                _ = sender.send(peer_conn);
             }
         });
 
@@ -145,6 +145,10 @@ impl XpcListener {
         // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
         // after xpc_connection_set_event_handler so it remains valid beyond this scope.
         // xpc_connection_activate must be called exactly once to begin accepting connections.
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "set-handler-then-activate is a single XPC listener-init sequence; the SAFETY comment above covers both calls"
+        )]
         unsafe {
             xpc_connection_set_event_handler(
                 raw_connection,
@@ -192,19 +196,27 @@ impl Drop for XpcListener {
     }
 }
 
+/// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
+/// helpers are reached only from the listener event-handler block where
+/// libxpc hands us a retained event).
 fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
+    // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
     let value_type = unsafe { xpc_get_type(event) };
     ptr::eq(value_type.cast::<c_void>(), ty)
 }
 
 fn raw_is_error(event: xpc_object_t) -> bool {
     raw_is_type(event, unsafe {
+        // SAFETY: `_xpc_type_error` is a static XPC type singleton exported
+        // by libxpc and valid for the lifetime of the process.
         &_xpc_type_error as *const _ as *const c_void
     })
 }
 
 fn raw_is_connection(event: xpc_object_t) -> bool {
     raw_is_type(event, unsafe {
+        // SAFETY: `_xpc_type_connection` is a static XPC type singleton
+        // exported by libxpc and valid for the lifetime of the process.
         &_xpc_type_connection as *const _ as *const c_void
     })
 }

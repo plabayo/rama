@@ -2,10 +2,9 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
+#![expect(
+    clippy::allow_attributes,
+    reason = "CLI: a few `#[allow]` annotations stay because their underlying lints (e.g. clippy::exit) only fire on some cfgs"
 )]
 
 use clap::{Parser, Subcommand};
@@ -43,7 +42,10 @@ struct CliDefault {
 }
 
 #[derive(Debug, Subcommand)]
-#[allow(clippy::large_enum_variant)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Subcommand variants vary in size; reordering would change CLI semantics"
+)]
 enum CliCommands {
     Resolve(cmd::resolve::ResolveCommand),
     Send(cmd::send::SendCommand),
@@ -53,13 +55,16 @@ enum CliCommands {
 
 #[tokio::main]
 async fn main() {
-    #[allow(clippy::print_stdout)]
+    #[expect(
+        clippy::print_stdout,
+        reason = "CLI: stdout is part of the user-facing output contract"
+    )]
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(err) => match err.kind() {
             clap::error::ErrorKind::DisplayHelp => {
                 if err.render().to_string().contains("rama <COMMAND>") {
-                    let _ = err.print();
+                    _ = err.print();
                     println!();
                     println!(
                         "When invoked without a subcommand, `rama` executes the `send` command."
@@ -67,7 +72,13 @@ async fn main() {
                     println!("Refer to the `send` command section below.");
                     println!();
                     CliDefault::parse_from(["rama", "--help"]);
-                    unreachable!("previous statement should exit");
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "CliDefault::parse_from(...--help...) calls process::exit before returning"
+                    )]
+                    {
+                        unreachable!("previous statement should exit")
+                    }
                 } else {
                     err.exit()
                 }
@@ -92,12 +103,12 @@ async fn main() {
         },
     };
 
-    #[allow(clippy::exit)]
+    #[allow(clippy::exit, reason = "CLI: explicit exit code propagation")]
     if let Err(err) = match cli.cmds {
-        CliCommands::Resolve(cfg) => cmd::resolve::run(cfg).await,
-        CliCommands::Send(cfg) => cmd::send::run(cfg).await,
-        CliCommands::Serve(cfg) => cmd::serve::run(cfg).await,
-        CliCommands::Probe(cfg) => cmd::probe::run(cfg).await,
+        CliCommands::Resolve(cfg) => Box::pin(cmd::resolve::run(cfg)).await,
+        CliCommands::Send(cfg) => Box::pin(cmd::send::run(cfg)).await,
+        CliCommands::Serve(cfg) => Box::pin(cmd::serve::run(cfg)).await,
+        CliCommands::Probe(cfg) => Box::pin(cmd::probe::run(cfg)).await,
     } {
         eprintln!("🚩 exit with error: {err}");
         let exit_code = err

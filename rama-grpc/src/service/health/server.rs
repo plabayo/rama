@@ -90,7 +90,7 @@ impl HealthReporter {
                 // receiver should always be present, only being dropped when clearing the
                 // service status. Consequently, `tx.send` should not fail, making use
                 // of `expect` here safe.
-                #[allow(clippy::expect_used)]
+                #[expect(clippy::expect_used)]
                 tx.send(status).expect("channel should not be closed");
             }
             None => {
@@ -102,7 +102,7 @@ impl HealthReporter {
     /// Clear the status of the given service.
     pub async fn clear_service_status(&mut self, service_name: &str) {
         let mut writer = self.statuses.write().await;
-        let _ = writer.remove(service_name);
+        _ = writer.remove(service_name);
     }
 }
 

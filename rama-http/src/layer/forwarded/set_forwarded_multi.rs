@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use crate::Request;
 use crate::headers::HeaderMapExt;
 use crate::headers::forwarded::ForwardHeader;
@@ -147,7 +152,13 @@ macro_rules! set_forwarded_service_for_tuple {
 
                 let mut forwarded_element = ForwardedElement::new_forwarded_by(self.by_node.clone());
 
-                if let Some(peer_addr) = req.extensions().get_ref::<SocketInfo>().map(|socket| socket.peer_addr()) {
+                if let Some(peer_addr) = req
+                    .extensions()
+                    .ingress()
+                    .and_then(|ext|ext.get_ref::<SocketInfo>())
+                    .map(|socket| socket.peer_addr())
+                {
+
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 

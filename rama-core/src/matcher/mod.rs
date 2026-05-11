@@ -169,8 +169,8 @@ pub struct MatcherRouter<N>(pub N);
 macro_rules! impl_matcher_service_tuple {
     ($($T:ident),+ $(,)?) => {
         paste!{
-            #[allow(non_camel_case_types)]
-            #[allow(non_snake_case)]
+            #[expect(non_camel_case_types)]
+            #[expect(non_snake_case)]
             impl<$([<M_ $T>], $T),+, S, Input, Output, Error> Service<Input> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
                 Input: Send + ExtensionsRef + 'static,

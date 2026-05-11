@@ -160,6 +160,10 @@ fn init_default_global_dns_resolver() -> BoxDnsResolver {
 ///
 /// Panics in case the global [`DnsResolver`] was already set.
 /// Use [`try_init_global_dns_resolver`] in case you wish to handle this more gracefully.
+#[expect(
+    clippy::panic,
+    reason = "documented as panicking; matches the `unwrap`-style API of `init_*`/`set_*` global initializers"
+)]
 pub fn init_global_dns_resolver(resolver: impl DnsResolver) {
     if try_init_global_dns_resolver(resolver).is_err() {
         panic!("global DNS resolver already set");

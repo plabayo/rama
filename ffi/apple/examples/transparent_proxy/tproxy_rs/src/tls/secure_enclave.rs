@@ -68,8 +68,8 @@ pub(super) fn load_or_create() -> Result<(X509, PKey<Private>), BoxError> {
                 se_blob_present = se_blob.is_some(),
                 cert_blob_present = cert_blob.is_some(),
                 key_blob_present = key_blob.is_some(),
-                cert_blob_looks_plaintext = cert_blob.as_deref().is_some_and(is_pem_plaintext),
-                key_blob_looks_plaintext = key_blob.as_deref().is_some_and(is_pem_plaintext),
+                cert_blob_looks_plaintext = cert_blob.as_deref().is_some_and(|v| is_pem_plaintext(v)),
+                key_blob_looks_plaintext = key_blob.as_deref().is_some_and(|v| is_pem_plaintext(v)),
                 "tls: incomplete MITM CA state for Secure Enclave path; WIPING and \
                  regenerating from scratch (this is expected on first SE-enabled boot \
                  after a pre-encryption build)"

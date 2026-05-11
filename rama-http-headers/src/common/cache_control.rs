@@ -67,12 +67,12 @@ impl Flags {
         Self { bits: 0 }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn contains(&self, flag: Self) -> bool {
         (self.bits & flag.bits) != 0
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn insert(&mut self, flag: Self) {
         self.bits |= flag.bits;
     }
@@ -549,15 +549,17 @@ impl FromStr for KnownDirective {
             _ => match s.find('=') {
                 Some(idx) if idx + 1 < s.len() => {
                     match (&s[..idx], (s[idx + 1..]).trim_matches('"')) {
-                        ("max-age", secs) => secs.parse().map(Directive::MaxAge).map_err(|_| ())?,
+                        ("max-age", secs) => {
+                            secs.parse().map(Directive::MaxAge).map_err(|_e| ())?
+                        }
                         ("max-stale", secs) => {
-                            secs.parse().map(Directive::MaxStale).map_err(|_| ())?
+                            secs.parse().map(Directive::MaxStale).map_err(|_e| ())?
                         }
                         ("min-fresh", secs) => {
-                            secs.parse().map(Directive::MinFresh).map_err(|_| ())?
+                            secs.parse().map(Directive::MinFresh).map_err(|_e| ())?
                         }
                         ("s-maxage", secs) => {
-                            secs.parse().map(Directive::SMaxAge).map_err(|_| ())?
+                            secs.parse().map(Directive::SMaxAge).map_err(|_e| ())?
                         }
                         _unknown => return Ok(Self::Unknown),
                     }

@@ -63,9 +63,18 @@ impl<Issuer> TlsMitmRelay<Issuer> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the [`keylog_intent`].
+        /// Set the [`KeyLogIntent`].
         ///
-        /// By default [`KeyLogIntent::Environment`] is used.
+        /// Default is [`KeyLogIntent::Environment`], matching Chrome,
+        /// Firefox, curl, and most TLS stacks: a non-empty
+        /// `SSLKEYLOGFILE` env var enables key logging. In a MITM
+        /// relay this exports session keys for both the ingress
+        /// (relay-mirrored) and egress (upstream) sides, so anyone
+        /// with read access to the keylog file can decrypt every
+        /// relayed flow. Treat the file as security-sensitive
+        /// (restricted dir, rotate, delete when done) and pick
+        /// [`KeyLogIntent::Disabled`] if your deployment shouldn't
+        /// honour the env var at all.
         pub fn keylog_intent(mut self, intent: KeyLogIntent) -> Self {
             self.keylog_intent = intent;
             self
@@ -187,14 +196,23 @@ impl TlsMitmRelayError {
         error: impl Into<BoxError>,
         ssl_code: Option<ErrorCode>,
     ) -> Self {
-        let maybe_relay_issue = ssl_code
-            .map(|code| code == ErrorCode::SYSCALL)
-            .unwrap_or_default();
+        // No SSL error stack and no I/O error — only the bare error
+        // code. SYSCALL here is the "empty error + SYSCALL" case
+        // discussed in <https://commondatastorage.googleapis.com/chromium-boringssl-docs/ssl.h.html#SSL_ERROR_SYSCALL>:
+        // typically a transport EOF, but could still be a cert
+        // rejection that the peer abandoned without surfacing a TLS
+        // alert. Classify as `MaybeCert` so callers using the strict
+        // `is_cert_issue` filter don't pin it permanently, while
+        // `is_maybe_cert_issue` still treats it as suspect.
+        let classification = match ssl_code {
+            Some(ErrorCode::SYSCALL) => HandshakeRelayClassification::MaybeCert,
+            _ => HandshakeRelayClassification::Unclassified,
+        };
 
         Self {
             kind: TlsMitmRelayErrorKind::Handshake {
                 direction,
-                maybe_relay_issue,
+                classification,
             },
             proxy_target: None,
             sni: None,
@@ -204,10 +222,13 @@ impl TlsMitmRelayError {
 
     #[inline(always)]
     fn handshake_io(direction: TlsMitmRelayErrorDirection, error: impl Into<BoxError>) -> Self {
+        // Raw I/O error during the TLS handshake. Most often a
+        // transport-layer disconnect (RST, EOF with errno) — not a
+        // cert decision by the peer. Stay `Unclassified`.
         Self {
             kind: TlsMitmRelayErrorKind::Handshake {
                 direction,
-                maybe_relay_issue: false,
+                classification: HandshakeRelayClassification::Unclassified,
             },
             proxy_target: None,
             sni: None,
@@ -221,21 +242,12 @@ impl TlsMitmRelayError {
         err: SslErrorStack,
         ssl_code: Option<ErrorCode>,
     ) -> Self {
-        let ssl_err = err.first();
-        let maybe_relay_issue = ssl_code
-            .map(|code| code == ErrorCode::SYSCALL)
-            .unwrap_or_default()
-            || ssl_err
-                .reason()
-                .map(|s| {
-                    any_submatch_ignore_ascii_case(s, ["unknown_ca", "certificate", "handshake"])
-                })
-                .unwrap_or_default();
+        let classification = classify_ssl_error_stack(&err, ssl_code);
 
         Self {
             kind: TlsMitmRelayErrorKind::Handshake {
                 direction,
-                maybe_relay_issue,
+                classification,
             },
             proxy_target: None,
             sni: None,
@@ -264,17 +276,67 @@ impl TlsMitmRelayError {
     }
 
     #[inline(always)]
-    /// Returns true in case the error can be classified handshake setup issue,
-    /// e.g. certificates or config issues, stopping it from happening. In which case you probably want to filter out this
-    /// traffic in your MITM flows.
+    /// Returns true in case the error can be classified as a handshake
+    /// setup issue, e.g. certificates or config issues, that is unlikely
+    /// to clear up on retry. Use this when deciding whether to filter
+    /// out the SNI/host from your MITM flows.
+    ///
+    /// Strictly broader than [`is_maybe_cert_issue`](Self::is_maybe_cert_issue):
+    /// also includes config-level errors that originate on our side
+    /// (acceptor build, missing peer cert, mirroring failure).
     pub fn is_handshake_relay_issue(&self) -> bool {
         matches!(
             self.kind,
             TlsMitmRelayErrorKind::Config
                 | TlsMitmRelayErrorKind::Handshake {
-                    maybe_relay_issue: true,
-                    direction: _
+                    classification: HandshakeRelayClassification::MaybeCert
+                        | HandshakeRelayClassification::Cert,
+                    ..
                 }
+        )
+    }
+
+    /// Returns true when the handshake error is *likely* cert-related —
+    /// either a strong cert signal in the BoringSSL reason stack, or a
+    /// weaker signal (e.g. `SSL_ERROR_SYSCALL` without an inner
+    /// `io::Error`) that we cannot rule out as a peer-side cert
+    /// rejection.
+    ///
+    /// Use this lenient filter when caching SNI/host exceptions: false
+    /// positives (caching a transient transport hiccup) are tolerable
+    /// and clear on the next retry, but missing a real cert rejection
+    /// causes thrash. For the strict variant — guaranteed cert signal
+    /// only — use [`is_cert_issue`](Self::is_cert_issue).
+    #[inline(always)]
+    pub fn is_maybe_cert_issue(&self) -> bool {
+        matches!(
+            self.kind,
+            TlsMitmRelayErrorKind::Handshake {
+                classification: HandshakeRelayClassification::MaybeCert
+                    | HandshakeRelayClassification::Cert,
+                ..
+            }
+        )
+    }
+
+    /// Returns true only when the handshake error carries an explicit
+    /// cert-related signal in the BoringSSL error stack (e.g. an
+    /// `unknown_ca` / `*certificate*` / `*untrusted*` reason).
+    ///
+    /// Strictly narrower than [`is_maybe_cert_issue`](Self::is_maybe_cert_issue):
+    /// excludes ambiguous transport-level signals like
+    /// `SSL_ERROR_SYSCALL` without errno. Use when you need a high-
+    /// confidence cert classification (e.g. permanent SNI exception
+    /// caching) and would rather miss some cert rejections than cache
+    /// transients.
+    #[inline(always)]
+    pub fn is_cert_issue(&self) -> bool {
+        matches!(
+            self.kind,
+            TlsMitmRelayErrorKind::Handshake {
+                classification: HandshakeRelayClassification::Cert,
+                ..
+            }
         )
     }
 
@@ -314,7 +376,7 @@ enum TlsMitmRelayErrorKind {
     Config,
     Handshake {
         direction: TlsMitmRelayErrorDirection,
-        maybe_relay_issue: bool,
+        classification: HandshakeRelayClassification,
     },
     TlsServe,
 }
@@ -323,6 +385,81 @@ enum TlsMitmRelayErrorKind {
 enum TlsMitmRelayErrorDirection {
     Ingress,
     Egress,
+}
+
+/// Classification of a handshake-time error against cert-related
+/// signals. See [`TlsMitmRelayError::is_maybe_cert_issue`] and
+/// [`TlsMitmRelayError::is_cert_issue`] for the public predicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakeRelayClassification {
+    /// Insufficient signal to attribute the failure to anything
+    /// cert-related. Most often a transport-level error.
+    Unclassified,
+    /// Heuristic match: ambiguous signals (e.g. `SSL_ERROR_SYSCALL`
+    /// without an inner `io::Error`, or generic `handshake_failure`
+    /// alerts) that the peer *might* have produced because of our
+    /// MITM cert. Not a strong signal — see
+    /// [`TlsMitmRelayError::is_maybe_cert_issue`].
+    MaybeCert,
+    /// Strong cert signal: the BoringSSL error stack carries a
+    /// reason string explicitly naming a cert problem (e.g.
+    /// `*unknown_ca*`, `*certificate*`, `*untrusted*`). Surfaced via
+    /// [`TlsMitmRelayError::is_cert_issue`].
+    Cert,
+}
+
+/// Inspect a BoringSSL error stack and the outer error code to
+/// produce a [`HandshakeRelayClassification`].
+///
+/// Strong cert signal (`Cert`): any error in the stack carries a
+/// reason string matching `unknown_ca`, `certificate`, `cert_`,
+/// `bad_cert`, `expired_cert`, `revoked_cert`, or `untrusted`.
+///
+/// Weak signal (`MaybeCert`): the outer code is `SYSCALL`, or any
+/// error in the stack mentions `handshake` (covers
+/// `handshake_failure` and similar generic alerts that don't carry
+/// a specific cert reason).
+fn classify_ssl_error_stack(
+    err: &SslErrorStack,
+    ssl_code: Option<ErrorCode>,
+) -> HandshakeRelayClassification {
+    if err
+        .iter()
+        .any(|e| e.reason().is_some_and(reason_is_cert_signal))
+    {
+        return HandshakeRelayClassification::Cert;
+    }
+    if ssl_code == Some(ErrorCode::SYSCALL) {
+        return HandshakeRelayClassification::MaybeCert;
+    }
+    if err
+        .iter()
+        .any(|e| e.reason().is_some_and(reason_is_handshake_signal))
+    {
+        return HandshakeRelayClassification::MaybeCert;
+    }
+    HandshakeRelayClassification::Unclassified
+}
+
+#[inline]
+fn reason_is_cert_signal(reason: &str) -> bool {
+    any_submatch_ignore_ascii_case(
+        reason,
+        [
+            "unknown_ca",
+            "certificate",
+            "cert_",
+            "bad_cert",
+            "expired_cert",
+            "revoked_cert",
+            "untrusted",
+        ],
+    )
+}
+
+#[inline]
+fn reason_is_handshake_signal(reason: &str) -> bool {
+    any_submatch_ignore_ascii_case(reason, ["handshake"])
 }
 
 impl<Issuer> TlsMitmRelay<Issuer>
@@ -584,5 +721,83 @@ impl<S, Issuer: Clone> Layer<S> for TlsMitmRelay<Issuer> {
 
     fn into_layer(self, inner: S) -> Self::Service {
         TlsMitmRelayService::new(self, inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reason_is_cert_signal, reason_is_handshake_signal};
+
+    /// `reason_is_cert_signal` is the load-bearing classifier for
+    /// "the peer rejected our MITM certificate" detection. Future
+    /// contributors editing the substring list silently change the
+    /// classification of real-world errors; pin the contract here.
+    #[test]
+    fn cert_signal_matches_known_boring_reasons() {
+        for reason in [
+            "unknown_ca",
+            "TLSV1_ALERT_UNKNOWN_CA",
+            "certificate_unknown",
+            "BAD_CERTIFICATE",
+            "bad_cert_request",
+            "expired_certificate",
+            "revoked_certificate",
+            "untrusted_ca",
+            "TLSV1_ALERT_UNTRUSTED",
+            "cert_chain_too_long",
+            "notbefore_is_in_certificate",
+        ] {
+            assert!(
+                reason_is_cert_signal(reason),
+                "expected reason {reason:?} to count as a cert signal",
+            );
+        }
+    }
+
+    /// Generic transport / protocol errors must NOT classify as cert.
+    /// A false-positive here would mark unrelated TLS failures as
+    /// "client rejected our cert" and skew triage.
+    #[test]
+    fn cert_signal_rejects_non_cert_reasons() {
+        for reason in [
+            "ssl_handshake_failure",
+            "TLSV1_ALERT_HANDSHAKE_FAILURE",
+            "decryption_failed",
+            "record_overflow",
+            "internal_error",
+            "no_shared_cipher",
+            "protocol_version",
+            "unexpected_message",
+            "",
+        ] {
+            assert!(
+                !reason_is_cert_signal(reason),
+                "reason {reason:?} must NOT count as a cert signal",
+            );
+        }
+    }
+
+    /// `reason_is_handshake_signal` is the weak / ambiguous classifier
+    /// — it should match generic handshake-stage failures without
+    /// being so loose that it catches everything.
+    #[test]
+    fn handshake_signal_matches_only_handshake_reasons() {
+        for reason in [
+            "ssl_handshake_failure",
+            "TLSV1_ALERT_HANDSHAKE_FAILURE",
+            "handshake_failure",
+            "handshake_not_complete",
+        ] {
+            assert!(
+                reason_is_handshake_signal(reason),
+                "expected reason {reason:?} to count as a handshake signal",
+            );
+        }
+        for reason in ["", "decryption_failed", "internal_error"] {
+            assert!(
+                !reason_is_handshake_signal(reason),
+                "reason {reason:?} must NOT count as a handshake signal",
+            );
+        }
     }
 }

@@ -1,5 +1,10 @@
 //! Generic WebSocket message stream.
 
+#![expect(
+    clippy::unreachable,
+    reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
+)]
+
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
@@ -199,6 +204,7 @@ pub struct PerMessageDeflateConfig {
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     fn from(value: &sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
         Self {
@@ -211,6 +217,7 @@ impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefl
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     #[inline]
     fn from(value: sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
@@ -219,6 +226,7 @@ impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefla
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     fn from(value: &PerMessageDeflateConfig) -> Self {
         Self {
@@ -232,6 +240,7 @@ impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefl
 }
 
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     #[inline]
     fn from(value: PerMessageDeflateConfig) -> Self {
@@ -240,7 +249,8 @@ impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefla
 }
 
 #[cfg(feature = "compression")]
-#[allow(clippy::derivable_impls)]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
+#[expect(clippy::derivable_impls)]
 impl Default for PerMessageDeflateConfig {
     fn default() -> Self {
         Self {
@@ -987,14 +997,20 @@ impl WebSocketContext {
                                     )?;
                                 return match deflate_state.decoder.decode(compressed_data.as_ref())
                                 {
-                                    Ok(raw_data) => match msg_type {
-                                        IncompleteMessageType::Text => {
-                                            Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                                    Ok(raw_data) => {
+                                        check_max_size(
+                                            raw_data.len(),
+                                            self.config.max_message_size,
+                                        )?;
+                                        match msg_type {
+                                            IncompleteMessageType::Text => Ok(Some(Message::Text(
+                                                Utf8Bytes::try_from(raw_data)?,
+                                            ))),
+                                            IncompleteMessageType::Binary => {
+                                                Ok(Some(Message::Binary(raw_data.into())))
+                                            }
                                         }
-                                        IncompleteMessageType::Binary => {
-                                            Ok(Some(Message::Binary(raw_data.into())))
-                                        }
-                                    },
+                                    }
                                     Err(err) => Err(ProtocolError::DeflateError(err)),
                                 };
                             }
@@ -1027,7 +1043,7 @@ impl WebSocketContext {
                 match (payload, fin) {
                     (None, true) =>
                     {
-                        #[allow(
+                        #[expect(
                             clippy::expect_used,
                             reason = "we can only reach here if incomplete is Some"
                         )]
@@ -1050,6 +1066,7 @@ impl WebSocketContext {
                                     .decoder
                                     .decode(&compressed_data)
                                     .map_err(ProtocolError::DeflateError)?;
+                                check_max_size(raw_data.len(), self.config.max_message_size)?;
                                 match t {
                                     IncompleteMessageType::Text => {
                                         Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
@@ -1116,7 +1133,7 @@ impl WebSocketContext {
     }
 
     /// Received a close frame. Tells if we need to return a close frame to the user.
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     fn do_close(&mut self, close: Option<CloseFrame>) -> Option<Option<CloseFrame>> {
         rama_core::telemetry::tracing::trace!("Received close frame: {close:?}");
         match self.state {

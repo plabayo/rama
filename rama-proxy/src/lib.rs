@@ -201,12 +201,12 @@
 //!             if let Some(countries) =
 //!                 filter.country.as_ref().filter(|t| !t.is_empty())
 //!             {
-//!                 let _ = write!(output, "country-{}", countries[0]);
+//!                 _ = write!(output, "country-{}", countries[0]);
 //!             }
 //!             if let Some(states) =
 //!                 filter.state.as_ref().filter(|t| !t.is_empty())
 //!             {
-//!                 let _ = write!(output, "state-{}", states[0]);
+//!                 _ = write!(output, "state-{}", states[0]);
 //!             }
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
@@ -240,11 +240,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 mod username;
 #[doc(inline)]

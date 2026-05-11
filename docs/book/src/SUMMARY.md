@@ -62,6 +62,7 @@
 - [Server-Sent Events (SSE)](./http/sse.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)
+- [Binary Bodies and Multipart Uploads](./http/multipart.md)
 
 # Deploy
 
@@ -72,6 +73,7 @@
 # Appendices
 
 - [📣 Ecosystem](./ecosystem.md)
+- [🐕 dial9](./dial9.md)
 - [🎧 Netstack.FM](./netstackfm.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)

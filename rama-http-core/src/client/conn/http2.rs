@@ -39,6 +39,13 @@ impl<B> Clone for SendRequest<B> {
 /// can process incoming and outgoing messages, notice hangups, and the like.
 ///
 /// Instances of this type are typically created via the [`handshake`] function
+///
+/// # Drop behavior
+///
+/// Dropping the `Connection` will close the underlying IO resource.
+/// Any in-flight requests that have not received a response will be
+/// interrupted. If graceful shutdown is desired, poll the connection
+/// until it completes instead of dropping.
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>
 where
@@ -614,7 +621,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // only compilation is checked
     async fn send_sync_executor_of_send_futures() {
-        #[allow(unused)]
+        #[expect(unused)]
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,

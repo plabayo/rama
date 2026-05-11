@@ -12,6 +12,7 @@ mod grpc_timeout;
 pub use self::grpc_timeout::{GrpcTimeout, GrpcTimeoutLayer};
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod health;
 
 mod router;

@@ -15,11 +15,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 mod socket;
 pub use socket::{
@@ -28,6 +23,10 @@ pub use socket::{
 };
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 pub use socket::bind_udp_with_device;
 
 #[doc(inline)]

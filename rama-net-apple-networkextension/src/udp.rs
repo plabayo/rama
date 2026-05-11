@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 /// A per-flow UDP datagram socket abstraction for transparent proxy services.
 pub struct UdpFlow {
-    incoming: mpsc::UnboundedReceiver<Bytes>,
+    incoming: mpsc::Receiver<Bytes>,
     outgoing: Arc<dyn Fn(Bytes) + Send + Sync + 'static>,
     extensions: Extensions,
     io_demand_once: Once,
@@ -17,7 +17,7 @@ pub struct UdpFlow {
 
 impl UdpFlow {
     pub(crate) fn new_with_io_demand(
-        incoming: mpsc::UnboundedReceiver<Bytes>,
+        incoming: mpsc::Receiver<Bytes>,
         outgoing: Arc<dyn Fn(Bytes) + Send + Sync + 'static>,
         on_io_demand: Option<Arc<dyn Fn() + Send + Sync + 'static>>,
     ) -> Self {

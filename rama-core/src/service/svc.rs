@@ -97,7 +97,7 @@ trait DynService<Input> {
     type Output;
     type Error;
 
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     fn serve_box(
         &self,
         input: Input,

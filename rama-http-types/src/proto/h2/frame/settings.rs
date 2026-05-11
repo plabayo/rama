@@ -109,7 +109,9 @@ impl Settings {
                 }
                 SettingId::InitialWindowSize => {
                     if setting.value as usize > MAX_INITIAL_WINDOW_SIZE {
-                        return Err(Error::InvalidSettingValue);
+                        // RFC 9113 §6.5.2: this is specifically a FLOW_CONTROL_ERROR,
+                        // not a generic PROTOCOL_ERROR.
+                        return Err(Error::InvalidInitialWindowSize);
                     } else {
                         settings.config.initial_window_size = Some(setting.value);
                     }
@@ -273,5 +275,42 @@ impl fmt::Debug for SettingsFlags {
         util::debug_flags(f, self.0)
             .flag_if(self.is_ack(), "ACK")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RFC 9113 §6.5.2: a SETTINGS_INITIAL_WINDOW_SIZE value above
+    /// 2^31-1 MUST be treated as a FLOW_CONTROL_ERROR — distinct from a
+    /// generic PROTOCOL_ERROR. Verify the dedicated error variant fires.
+    #[test]
+    fn settings_initial_window_size_overflow_is_flow_control_error() {
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        // SettingId::InitialWindowSize = 0x4, value = 2^31 (one over the cap).
+        let mut payload = [0u8; 6];
+        payload[0] = 0x00;
+        payload[1] = 0x04; // setting id
+        payload[2..6].copy_from_slice(&(1u32 << 31).to_be_bytes());
+
+        let err = Settings::load(head, &payload).expect_err("must reject");
+        assert!(
+            matches!(err, Error::InvalidInitialWindowSize),
+            "expected InvalidInitialWindowSize, got {err:?}"
+        );
+    }
+
+    /// A valid INITIAL_WINDOW_SIZE just at the boundary (2^31-1) must succeed.
+    #[test]
+    fn settings_initial_window_size_max_ok() {
+        let head = Head::new(Kind::Settings, 0, StreamId::zero());
+        let mut payload = [0u8; 6];
+        payload[0] = 0x00;
+        payload[1] = 0x04;
+        payload[2..6].copy_from_slice(&((1u32 << 31) - 1).to_be_bytes());
+
+        let settings = Settings::load(head, &payload).expect("must accept boundary");
+        assert_eq!(settings.config.initial_window_size, Some((1 << 31) - 1));
     }
 }

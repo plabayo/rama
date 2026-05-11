@@ -1,8 +1,13 @@
+#![allow(
+    clippy::cmp_owned,
+    clippy::allow_attributes,
+    reason = "the entire point of these tests is to exercise `PartialEq<&str>`/`PartialEq<String>`/etc. on ArcStr — `clippy::cmp_owned` fires on rustc <= 1.93 but not newer versions, so `#[expect]` would warn unfulfilled"
+)]
+
 use ahash::{HashMap, HashMapExt as _};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 #[test]
-#[allow(clippy::cmp_owned)]
 fn test_various_partial_eq() {
     macro_rules! check_partial_eq {
         (@eq1; $a:expr, $b:expr) => {{
@@ -117,7 +122,7 @@ fn test_serde() {
     use serde_test::{Token, assert_de_tokens, assert_tokens};
     let teststr = ArcStr::from("test test 123 456");
     assert_tokens(&teststr, &[Token::BorrowedStr("test test 123 456")]);
-    #[allow(clippy::redundant_clone)]
+    #[expect(clippy::redundant_clone)]
     assert_tokens(&teststr.clone(), &[Token::BorrowedStr("test test 123 456")]);
     assert_tokens(&ArcStr::default(), &[Token::BorrowedStr("")]);
 
@@ -200,7 +205,7 @@ fn test_ptr_eq() {
     assert!(!ArcStr::ptr_eq(&foobar, &other_foobar));
 
     const YET_AGAIN_A_DIFFERENT_FOOBAR: ArcStr = arcstr!("foobar");
-    #[allow(clippy::redundant_clone)]
+    #[expect(clippy::redundant_clone)]
     let strange_new_foobar = YET_AGAIN_A_DIFFERENT_FOOBAR.clone();
     let wild_blue_foobar = strange_new_foobar.clone();
     assert!(ArcStr::ptr_eq(&strange_new_foobar, &wild_blue_foobar));
@@ -333,7 +338,6 @@ fn repeat_string_errors_overflow() {
 }
 
 #[test]
-#[allow(unknown_lints)]
 fn test_leaking() {
     let s = ArcStr::from("foobar");
     assert!(!ArcStr::is_static(&s));

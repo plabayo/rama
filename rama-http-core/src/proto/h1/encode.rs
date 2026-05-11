@@ -256,7 +256,7 @@ impl Encoder {
     }
 }
 
-fn is_valid_trailer_field(name: &HeaderName) -> bool {
+pub(super) fn is_valid_trailer_field(name: &HeaderName) -> bool {
     !matches!(
         *name,
         AUTHORIZATION
@@ -386,7 +386,7 @@ impl fmt::Debug for ChunkSize {
 impl fmt::Write for ChunkSize {
     fn write_str(&mut self, num: &str) -> fmt::Result {
         use std::io::Write;
-        let _ = (&mut self.bytes[self.len.into()..]).write_all(num.as_bytes());
+        _ = (&mut self.bytes[self.len.into()..]).write_all(num.as_bytes());
         self.len += num.len() as u8; // safe because bytes is never bigger than 256
         Ok(())
     }

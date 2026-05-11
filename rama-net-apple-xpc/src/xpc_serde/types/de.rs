@@ -59,7 +59,7 @@ impl<'de> serde::Deserializer<'de> for XpcDeserializer {
             XpcMessage::String(s) => {
                 let n: i128 = s
                     .parse()
-                    .map_err(|_| DeError::custom(format!("cannot parse {s:?} as i128")))?;
+                    .map_err(|_e| DeError::custom(format!("cannot parse {s:?} as i128")))?;
                 visitor.visit_i128(n)
             }
             other => Err(DeError::custom(format!("expected integer, got {other:?}"))),
@@ -91,7 +91,7 @@ impl<'de> serde::Deserializer<'de> for XpcDeserializer {
             XpcMessage::String(s) => {
                 let n: u128 = s
                     .parse()
-                    .map_err(|_| DeError::custom(format!("cannot parse {s:?} as u128")))?;
+                    .map_err(|_e| DeError::custom(format!("cannot parse {s:?} as u128")))?;
                 visitor.visit_u128(n)
             }
             other => Err(DeError::custom(format!("expected integer, got {other:?}"))),

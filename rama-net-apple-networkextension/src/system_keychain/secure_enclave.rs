@@ -44,30 +44,6 @@
 //!
 //! [TN3137]: https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains
 //!
-//! # Example
-//!
-//! ```no_run
-//! use rama_net_apple_networkextension::system_keychain::{
-//!     self, secure_enclave::{SecureEnclaveAccessibility, SecureEnclaveKey},
-//! };
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Mint and persist once.
-//! let key = SecureEnclaveKey::create(SecureEnclaveAccessibility::Always)?;
-//! system_keychain::store_secret("rama", "se-key-v1", key.data_representation())?;
-//!
-//! // Reload on next boot.
-//! let blob = system_keychain::load_secret("rama", "se-key-v1")?
-//!     .expect("key was stored at install time");
-//! let key = SecureEnclaveKey::from_data_representation(blob);
-//!
-//! let envelope = key.encrypt(b"my secret")?;
-//! let plaintext = key.decrypt(&envelope)?;
-//! assert_eq!(plaintext, b"my secret");
-//! # Ok(())
-//! # }
-//! ```
-//!
 //! # Linking
 //!
 //! The Rust crate alone cannot resolve the bridge symbols; it relies on the
@@ -200,9 +176,17 @@ pub fn is_available() -> bool {
 ///
 /// Construction does not validate the blob — bad blobs surface as
 /// [`SecureEnclaveError::BadInput`] from [`Self::encrypt`] / [`Self::decrypt`].
+///
+/// The opaque `dataRepresentation` blob is wrapped in
+/// [`zeroize::Zeroizing`] so it's wiped from heap on drop. The blob is
+/// SE-encrypted and would not directly expose the private key on its
+/// own (the SE silicon retains the actual key material), but defence
+/// in depth — a long-lived plaintext copy of an SE-encrypted blob in
+/// process heap is unnecessary exposure when a panic / core-dump /
+/// memory-disclosure bug would surface it.
 #[derive(Debug, Clone)]
 pub struct SecureEnclaveKey {
-    blob: Vec<u8>,
+    blob: zeroize::Zeroizing<Vec<u8>>,
 }
 
 impl SecureEnclaveKey {
@@ -220,7 +204,7 @@ impl SecureEnclaveKey {
             return Err(SecureEnclaveError::from_code(code));
         }
         Ok(Self {
-            blob: take_bytes(out),
+            blob: zeroize::Zeroizing::new(take_bytes(out)),
         })
     }
 
@@ -228,8 +212,14 @@ impl SecureEnclaveKey {
     ///
     /// The blob is the bytes returned by [`Self::data_representation`] (or by
     /// CryptoKit's `dataRepresentation`). No validation happens here.
-    pub fn from_data_representation(blob: Vec<u8>) -> Self {
-        Self { blob }
+    ///
+    /// Accepts anything that derefs to a byte slice — both `Vec<u8>`
+    /// and `zeroize::Zeroizing<Vec<u8>>` work, so callers reading
+    /// from [`super::load_secret`] can pass the wrapped form directly.
+    pub fn from_data_representation(blob: impl AsRef<[u8]>) -> Self {
+        Self {
+            blob: zeroize::Zeroizing::new(blob.as_ref().to_vec()),
+        }
     }
 
     /// Borrow the opaque `dataRepresentation` so the caller can persist it.
@@ -259,7 +249,17 @@ impl SecureEnclaveKey {
     }
 
     /// Inverse of [`Self::encrypt`].
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, SecureEnclaveError> {
+    ///
+    /// The plaintext is wrapped in [`zeroize::Zeroizing`]: it's the
+    /// material the SE was protecting, and a long-lived plaintext copy
+    /// in process heap defeats the point of the SE round-trip when a
+    /// panic, core dump, or memory disclosure bug would surface it.
+    /// [`Self::encrypt`] returns a plain `Vec<u8>` because ciphertext
+    /// is not sensitive — symmetry isn't useful there.
+    pub fn decrypt(
+        &self,
+        ciphertext: &[u8],
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, SecureEnclaveError> {
         let mut out = RamaSeBytes::EMPTY;
         // SAFETY: blob/ciphertext pointers are valid for their stated lengths,
         // and `out` points to writable storage.
@@ -275,7 +275,7 @@ impl SecureEnclaveKey {
         if code != RAMA_SE_OK {
             return Err(SecureEnclaveError::from_code(code));
         }
-        Ok(take_bytes(out))
+        Ok(zeroize::Zeroizing::new(take_bytes(out)))
     }
 }
 

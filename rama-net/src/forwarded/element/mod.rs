@@ -398,6 +398,7 @@ impl TryFrom<&str> for ForwardedElement {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<HeaderValue> for ForwardedElement {
     type Error = BoxError;
 
@@ -407,6 +408,7 @@ impl TryFrom<HeaderValue> for ForwardedElement {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<&HeaderValue> for ForwardedElement {
     type Error = BoxError;
 

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "the bindgen-generated `mod bindings` include uses `#[allow(...)]` for a set of lints whose underlying triggers vary by libc/glibc shape; `#[expect]` would warn unfulfilled on some hosts"
+)]
+
 use std::{
     mem,
     net::{Ipv4Addr, Ipv6Addr},
@@ -65,7 +70,7 @@ where
         let join = tokio::task::spawn_blocking(move || {
             lookup_record_packet(domain, rrtype).and_then(|packet| match packet {
                 Some(packet) => parser(&packet, &mut |item| {
-                    let _ = tx.blocking_send(Ok(item));
+                    _ = tx.blocking_send(Ok(item));
                 }),
                 None => Ok(()),
             })
@@ -114,7 +119,10 @@ where
     })
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Domain is consumed by `as_str` borrow + dropped at fn end; taking by value makes the lifetime trivial inside `spawn_blocking`"
+)]
 fn lookup_record_packet(domain: Domain, rrtype: libc::c_int) -> Result<Option<Vec<u8>>, BoxError> {
     let name = dns_name_from_domain(domain.as_str())?;
     let mut state: ffi::ResState = unsafe { mem::zeroed() };
@@ -306,6 +314,8 @@ mod ffi {
 
     #[allow(
         clippy::all,
+        clippy::multiple_unsafe_ops_per_block,
+        clippy::undocumented_unsafe_blocks,
         non_camel_case_types,
         non_snake_case,
         non_upper_case_globals,

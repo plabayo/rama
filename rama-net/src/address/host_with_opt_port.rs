@@ -563,7 +563,7 @@ impl<'de> serde::Deserialize<'de> for HostWithOptPort {
 mod tests {
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: Option<u16>) {
         assert_eq!(hwop.host, host, "parsing: {s}");
         assert_eq!(hwop.port, port, "parsing: {s}");

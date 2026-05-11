@@ -85,6 +85,7 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub type RamaTransparentProxyEngine = $crate::tproxy::BoxedTransparentProxyEngine;
         pub type RamaTransparentProxyTcpSession = $crate::tproxy::TransparentProxyTcpSession;
         pub type RamaTransparentProxyUdpSession = $crate::tproxy::TransparentProxyUdpSession;
+        pub type RamaTcpDeliverStatus = $crate::tproxy::TcpDeliverStatus;
 
         pub type RamaTransparentProxyFlowMeta = $crate::ffi::tproxy::TransparentProxyFlowMeta;
         pub type RamaTransparentProxyFlowAction = $crate::ffi::tproxy::TransparentProxyFlowAction;
@@ -240,7 +241,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
 
             let engine = unsafe { &*engine };
-            let reply = engine.handle_app_message($crate::__RamaBytes::copy_from_slice(
+            let reply = engine.handle_app_message($crate::__private::Bytes::copy_from_slice(
                 unsafe { message.into_slice() },
             ));
 
@@ -251,7 +252,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             {
                 Ok(bytes) => bytes,
                 Err(err) => {
-                    $crate::__tracing::debug!(%err, "failed to encode transparent proxy app message reply");
+                    $crate::__private::tracing::debug!(%err, "failed to encode transparent proxy app message reply");
                     $crate::ffi::BytesOwned {
                         ptr: ::std::ptr::null_mut(),
                         len: 0,
@@ -279,22 +280,42 @@ macro_rules! __transparent_proxy_ffi_emit {
                     $crate::tproxy::TransparentProxyFlowProtocol::Tcp,
                 )
             } else {
-                unsafe { (*meta).as_owned_rust_type() }
+                match unsafe { (*meta).as_owned_rust_type() } {
+                    Ok(meta) => meta,
+                    Err(invalid) => {
+                        // Unknown / future ABI protocol code on a TCP
+                        // thunk. Fail-safe to passthrough rather than
+                        // fabricate a TCP flow with possibly wrong
+                        // semantics.
+                        $crate::__private::tracing::warn!(
+                            invalid_protocol = invalid,
+                            "rama_transparent_proxy_engine_new_tcp_session: unknown protocol code; passing flow through"
+                        );
+                        return RamaTransparentProxyTcpSessionResult {
+                            action: RamaTransparentProxyFlowAction::Passthrough,
+                            session: ::std::ptr::null_mut(),
+                        };
+                    }
+                }
             };
 
             let context = callbacks.context as usize;
             let on_server_bytes = callbacks.on_server_bytes;
+            let on_client_read_demand = callbacks.on_client_read_demand;
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
             let result = engine.new_tcp_session(
                 typed_meta,
-                ::std::sync::Arc::new(move |bytes: &[u8]| {
+                ::std::sync::Arc::new(move |bytes: &[u8]| -> RamaTcpDeliverStatus {
                     let Some(callback) = on_server_bytes else {
-                        return;
+                        // No Swift writer registered → behave as accepted
+                        // so the bridge keeps draining the duplex; bytes
+                        // simply go nowhere.
+                        return RamaTcpDeliverStatus::Accepted;
                     };
                     if bytes.is_empty() {
-                        return;
+                        return RamaTcpDeliverStatus::Accepted;
                     }
                     unsafe {
                         callback(
@@ -303,7 +324,12 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 ptr: bytes.as_ptr(),
                                 len: bytes.len(),
                             },
-                        );
+                        )
+                    }
+                }),
+                ::std::sync::Arc::new(move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
                     }
                 }),
                 ::std::sync::Arc::new(move || {
@@ -346,17 +372,28 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { drop(::std::boxed::Box::from_raw(session)) };
         }
 
+        /// Deliver bytes from the intercepted client flow into the Rust TCP
+        /// session.
+        ///
+        /// Returns a [`RamaTcpDeliverStatus`] code:
+        /// - `0` (`Accepted`): Swift may keep reading from the kernel.
+        /// - `1` (`Paused`): the per-flow ingress channel is full; Swift must
+        ///   pause `flow.readData` until the matching `on_client_read_demand`
+        ///   callback fires.
+        /// - `2` (`Closed`): the session is being torn down; Swift must
+        ///   terminate the read pump immediately — no further demand
+        ///   callback will fire.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes(
             session: *mut RamaTransparentProxyTcpSession,
             bytes: $crate::ffi::BytesView,
-        ) {
+        ) -> RamaTcpDeliverStatus {
             if session.is_null() {
-                return;
+                return RamaTcpDeliverStatus::Closed;
             }
 
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_client_bytes(slice) };
+            unsafe { (*session).on_client_bytes(slice) }
         }
 
         #[unsafe(no_mangle)]
@@ -399,7 +436,19 @@ macro_rules! __transparent_proxy_ffi_emit {
                     $crate::tproxy::TransparentProxyFlowProtocol::Udp,
                 )
             } else {
-                unsafe { (*meta).as_owned_rust_type() }
+                match unsafe { (*meta).as_owned_rust_type() } {
+                    Ok(meta) => meta,
+                    Err(invalid) => {
+                        $crate::__private::tracing::warn!(
+                            invalid_protocol = invalid,
+                            "rama_transparent_proxy_engine_new_udp_session: unknown protocol code; passing flow through"
+                        );
+                        return RamaTransparentProxyUdpSessionResult {
+                            action: RamaTransparentProxyFlowAction::Passthrough,
+                            session: ::std::ptr::null_mut(),
+                        };
+                    }
+                }
             };
 
             let context = callbacks.context as usize;
@@ -546,15 +595,19 @@ macro_rules! __transparent_proxy_ffi_emit {
             let context = callbacks.context as usize;
             let on_write_to_egress = callbacks.on_write_to_egress;
             let on_close_egress = callbacks.on_close_egress;
+            let on_egress_read_demand = callbacks.on_egress_read_demand;
 
             unsafe {
                 (*session).activate(
-                    move |bytes: $crate::__RamaBytes| {
+                    move |bytes: $crate::__private::Bytes| -> RamaTcpDeliverStatus {
                         let Some(callback) = on_write_to_egress else {
-                            return;
+                            // No Swift writer registered: behave as accepted
+                            // so the bridge keeps pulling bytes; they go
+                            // nowhere but at least the session doesn't stall.
+                            return RamaTcpDeliverStatus::Accepted;
                         };
                         if bytes.is_empty() {
-                            return;
+                            return RamaTcpDeliverStatus::Accepted;
                         }
                         unsafe {
                             callback(
@@ -563,7 +616,12 @@ macro_rules! __transparent_proxy_ffi_emit {
                                     ptr: bytes.as_ptr(),
                                     len: bytes.len(),
                                 },
-                            );
+                            )
+                        }
+                    },
+                    move || {
+                        if let Some(callback) = on_egress_read_demand {
+                            unsafe { callback(context as *mut ::std::ffi::c_void) };
                         }
                     },
                     move || {
@@ -575,20 +633,49 @@ macro_rules! __transparent_proxy_ffi_emit {
             };
         }
 
-        /// Deliver bytes from the egress `NWConnection` into the Rust TCP session.
+        /// Swift → Rust: signal that the `TcpClientWritePump` has drained
+        /// capacity after `on_server_bytes` returned `Paused`.
         ///
-        /// Called by Swift when the NWConnection receives data from the remote server.
+        /// Wakes the Rust bridge so it resumes forwarding response bytes.
+        /// Idempotent — collapses redundant calls into a single permit.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_bytes(
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_signal_server_drain(
             session: *mut RamaTransparentProxyTcpSession,
-            bytes: $crate::ffi::BytesView,
         ) {
             if session.is_null() {
                 return;
             }
+            unsafe { (*session).signal_server_drain() };
+        }
+
+        /// Swift → Rust: signal that the `NwTcpConnectionWritePump` has
+        /// drained capacity after `on_write_to_egress` returned `Paused`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_signal_egress_drain(
+            session: *mut RamaTransparentProxyTcpSession,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            unsafe { (*session).signal_egress_drain() };
+        }
+
+        /// Deliver bytes from the egress `NWConnection` into the Rust TCP session.
+        ///
+        /// Called by Swift when the NWConnection receives data from the remote
+        /// server. Same [`RamaTcpDeliverStatus`] return contract as
+        /// `rama_transparent_proxy_tcp_session_on_client_bytes`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_bytes(
+            session: *mut RamaTransparentProxyTcpSession,
+            bytes: $crate::ffi::BytesView,
+        ) -> RamaTcpDeliverStatus {
+            if session.is_null() {
+                return RamaTcpDeliverStatus::Closed;
+            }
 
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_egress_bytes(slice) };
+            unsafe { (*session).on_egress_bytes(slice) }
         }
 
         /// Signal EOF on the egress `NWConnection` direction.
@@ -625,8 +712,13 @@ macro_rules! __transparent_proxy_ffi_emit {
                 return false;
             };
 
+            let connect_timeout_ms = opts
+                .connect_timeout
+                .and_then(|d| u32::try_from(d.as_millis()).ok());
             let c_opts = RamaUdpEgressConnectOptions {
                 parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
+                has_connect_timeout_ms: connect_timeout_ms.is_some(),
+                connect_timeout_ms: connect_timeout_ms.unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true
@@ -649,7 +741,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             let on_send_to_egress = callbacks.on_send_to_egress;
 
             unsafe {
-                (*session).activate(move |bytes: $crate::__RamaBytes| {
+                (*session).activate(move |bytes: $crate::__private::Bytes| {
                     let Some(callback) = on_send_to_egress else {
                         return;
                     };

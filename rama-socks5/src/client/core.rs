@@ -129,18 +129,18 @@ impl fmt::Display for HandshakeError {
         let context = self.context.unwrap_or("no context");
         match &self.kind {
             HandshakeErrorKind::IO(error) => {
-                write!(f, "client: handshake eror: I/O: {error} ({context})")
+                write!(f, "client: handshake error: I/O: {error} ({context})")
             }
             HandshakeErrorKind::Protocol(error) => {
                 write!(
                     f,
-                    "client: handshake eror: protocol error: {error} ({context})"
+                    "client: handshake error: protocol error: {error} ({context})"
                 )
             }
             HandshakeErrorKind::MethodMismatch(method) => {
                 write!(
                     f,
-                    "client: handshake error: method mistmatch: {method:?} ({context})"
+                    "client: handshake error: method mismatch: {method:?} ({context})"
                 )
             }
             HandshakeErrorKind::Reply(reply) => {
@@ -156,7 +156,7 @@ impl fmt::Display for HandshakeError {
                 )
             }
             HandshakeErrorKind::Other(error) => {
-                write!(f, "client: handshake eror: other: {error} ({context})")
+                write!(f, "client: handshake error: other: {error} ({context})")
             }
         }
     }
@@ -189,10 +189,19 @@ impl Client {
         stream: &mut S,
         destination: &HostWithPort,
     ) -> Result<HostWithPort, HandshakeError> {
-        let selected_method = match self.auth.as_ref() {
-            Some(auth) => self.handshake_headers_auth(stream, auth).await?,
-            None => self.handshake_headers_no_auth(stream).await?,
+        let auth_outcome = match self.auth.as_ref() {
+            Some(auth) => self.handshake_headers_auth(stream, auth).await,
+            None => self.handshake_headers_no_auth(stream).await,
         };
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_auth(
+            match &auth_outcome {
+                Ok(m) => u8::from(*m),
+                Err(_) => 0xff,
+            },
+            auth_outcome.is_ok(),
+        );
+        let selected_method = auth_outcome?;
 
         let request = RequestRef::new(Command::Connect, destination);
         request
@@ -209,6 +218,14 @@ impl Client {
         let server_reply = server::Reply::read_from(stream)
             .await
             .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
+
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_connect(
+            destination.host.clone(),
+            destination.port,
+            server_reply.reply.into(),
+        );
+
         if server_reply.reply != ReplyKind::Succeeded {
             return Err(HandshakeError::reply_kind(server_reply.reply)
                 .with_context("server responded with non-success reply"));

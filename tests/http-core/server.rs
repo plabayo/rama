@@ -54,7 +54,7 @@ fn get_should_ignore_body() {
     ",
     )
     .unwrap();
-    let _ = req.read(&mut [0; 256]).unwrap();
+    _ = req.read(&mut [0; 256]).unwrap();
 
     assert_eq!(server.body(), b"");
 }
@@ -73,7 +73,7 @@ fn get_with_body() {
     ",
     )
     .unwrap();
-    let _ = req.read(&mut [0; 256]).unwrap();
+    _ = req.read(&mut [0; 256]).unwrap();
 
     // note: doesn't include trailing \r\n, cause Content-Length wasn't 21
     assert_eq!(server.body(), b"I'm a good request.");
@@ -452,7 +452,7 @@ fn post_with_content_length_body() {
     ",
     )
     .unwrap();
-    let _ = req.read(&mut [0; 256]).unwrap();
+    _ = req.read(&mut [0; 256]).unwrap();
 
     assert_eq!(server.body(), b"hello");
 }
@@ -498,7 +498,7 @@ fn post_with_chunked_body() {
     ",
     )
     .unwrap();
-    let _ = req.read(&mut [0; 256]).unwrap();
+    _ = req.read(&mut [0; 256]).unwrap();
 
     assert_eq!(server.body(), b"qwert");
 }
@@ -523,7 +523,7 @@ fn post_with_chunked_overflow() {
     ",
     )
     .unwrap();
-    let _ = req.read(&mut [0; 256]).unwrap();
+    _ = req.read(&mut [0; 256]).unwrap();
 
     let err = server.body_err().source().unwrap().to_string();
     assert!(
@@ -550,7 +550,7 @@ fn post_with_incomplete_body() {
 
     server.body_err();
 
-    let _ = req.read(&mut [0; 256]).expect("read");
+    _ = req.read(&mut [0; 256]).expect("read");
 }
 
 #[test]
@@ -572,7 +572,7 @@ fn post_with_chunked_missing_final_digit() {
 
     server.body_err();
 
-    let _ = req.read(&mut [0; 256]).expect("read");
+    _ = req.read(&mut [0; 256]).expect("read");
 }
 
 #[test]
@@ -1298,18 +1298,18 @@ async fn http1_graceful_shutdown_after_upgrade() {
         )
         .expect("write 1");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let response = s(&buf);
         assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
         assert!(!has_header(response, "content-length"));
-        let _ = read_101_tx.send(());
+        _ = read_101_tx.send(());
     });
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(service_fn(move |req: Request| {
         let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
-        let _ = upgrades_tx.send(on_upgrade);
+        _ = upgrades_tx.send(on_upgrade);
         future::ok::<_, Infallible>(
             Response::builder()
                 .status(101)
@@ -1383,7 +1383,7 @@ async fn http1_allow_half_close() {
         tcp.shutdown(::std::net::Shutdown::Write).expect("SHDN_WR");
 
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).unwrap();
+        _ = tcp.read(&mut buf).unwrap();
         let expected = "HTTP/1.1 200 OK\r\n";
         assert_eq!(s(&buf[..expected.len()]), expected);
     });
@@ -1440,7 +1440,7 @@ async fn returning_1xx_response_is_error() {
         let mut tcp = connect(&addr);
         tcp.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).unwrap();
+        _ = tcp.read(&mut buf).unwrap();
 
         let expected = "HTTP/1.1 500 ";
         assert_eq!(s(&buf[..expected.len()]), expected);
@@ -1683,11 +1683,11 @@ async fn upgrades() {
         )
         .expect("write 1");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let expected = "HTTP/1.1 101 Switching Protocols\r\n";
         assert_eq!(s(&buf[..expected.len()]), expected);
-        let _ = tx.send(());
+        _ = tx.send(());
 
         let n = tcp.read(&mut buf).expect("read 2");
         assert_eq!(s(&buf[..n]), "foo=bar");
@@ -1737,11 +1737,11 @@ async fn http_connect() {
         )
         .expect("write 1");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let expected = "HTTP/1.1 200 OK\r\n";
         assert_eq!(s(&buf[..expected.len()]), expected);
-        let _ = tx.send(());
+        _ = tx.send(());
 
         let n = tcp.read(&mut buf).expect("read 2");
         assert_eq!(s(&buf[..n]), "foo=bar");
@@ -1794,12 +1794,12 @@ async fn upgrades_new() {
         )
         .expect("write 1");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let response = s(&buf);
         assert!(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
         assert!(!has_header(response, "content-length"));
-        let _ = read_101_tx.send(());
+        _ = read_101_tx.send(());
 
         let n = tcp.read(&mut buf).expect("read 2");
         assert_eq!(s(&buf[..n]), "foo=bar");
@@ -1809,7 +1809,7 @@ async fn upgrades_new() {
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(service_fn(move |req: Request| {
         let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
-        let _ = upgrades_tx.send(on_upgrade);
+        _ = upgrades_tx.send(on_upgrade);
         future::ok::<_, Infallible>(
             Response::builder()
                 .status(101)
@@ -1901,11 +1901,11 @@ async fn http_connect_new() {
         )
         .expect("write 1");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let expected = "HTTP/1.1 200 OK\r\n";
         assert_eq!(s(&buf[..expected.len()]), expected);
-        let _ = read_200_tx.send(());
+        _ = read_200_tx.send(());
 
         let n = tcp.read(&mut buf).expect("read 2");
         assert_eq!(s(&buf[..n]), "foo=bar");
@@ -1915,7 +1915,7 @@ async fn http_connect_new() {
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(service_fn(move |req: Request| {
         let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
-        let _ = upgrades_tx.send(on_upgrade);
+        _ = upgrades_tx.send(on_upgrade);
         future::ok::<_, Infallible>(
             Response::builder()
                 .status(200)
@@ -1971,7 +1971,7 @@ async fn h2_connect() {
         let mut body = response.into_body();
         let bytes = body.data().await.unwrap().unwrap();
         assert_eq!(&bytes[..], b"Bread?");
-        let _ = body.flow_control().release_capacity(bytes.len());
+        _ = body.flow_control().release_capacity(bytes.len());
 
         (body, send_stream)
     }
@@ -2057,7 +2057,7 @@ async fn h2_connect_multiplex() {
                 let mut body = response.into_body();
                 let bytes = body.data().await.unwrap().unwrap();
                 assert_eq!(&bytes[..], b"Bread?");
-                let _ = body.flow_control().release_capacity(bytes.len());
+                _ = body.flow_control().release_capacity(bytes.len());
 
                 if i % 4 == 2 {
                     return;
@@ -2151,7 +2151,7 @@ async fn h2_connect_large_body() {
         let mut body = response.into_body();
         let bytes = body.data().await.unwrap().unwrap();
         assert_eq!(&bytes[..], b"Bread?");
-        let _ = body.flow_control().release_capacity(bytes.len());
+        _ = body.flow_control().release_capacity(bytes.len());
 
         (body, send_stream)
     }
@@ -2223,7 +2223,7 @@ async fn h2_connect_empty_frames() {
         let mut body = response.into_body();
         let bytes = body.data().await.unwrap().unwrap();
         assert_eq!(&bytes[..], b"Bread?");
-        let _ = body.flow_control().release_capacity(bytes.len());
+        _ = body.flow_control().release_capacity(bytes.len());
 
         (body, send_stream)
     }
@@ -2279,7 +2279,7 @@ async fn parse_errors_send_4xx_response() {
         let mut tcp = connect(&addr);
         tcp.write_all(b"GE T / HTTP/1.1\r\n\r\n").unwrap();
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).unwrap();
+        _ = tcp.read(&mut buf).unwrap();
 
         let expected = "HTTP/1.1 400 ";
         assert_eq!(s(&buf[..expected.len()]), expected);
@@ -2302,7 +2302,7 @@ async fn illegal_request_length_returns_400_response() {
         tcp.write_all(b"POST / HTTP/1.1\r\nContent-Length: foo\r\n\r\n")
             .unwrap();
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).unwrap();
+        _ = tcp.read(&mut buf).unwrap();
 
         let expected = "HTTP/1.1 400 ";
         assert_eq!(s(&buf[..expected.len()]), expected);
@@ -2339,7 +2339,7 @@ async fn max_buf_size() {
         tcp.write_all(b"POST /").expect("write 1");
         tcp.write_all(&[b'a'; MAX]).expect("write 2");
         let mut buf = [0; 256];
-        let _ = tcp.read(&mut buf).expect("read 1");
+        _ = tcp.read(&mut buf).expect("read 1");
 
         let expected = "HTTP/1.1 431 ";
         assert_eq!(s(&buf[..expected.len()]), expected);
@@ -3113,7 +3113,7 @@ impl ReplyBuilder<'_> {
 impl Drop for ReplyBuilder<'_> {
     fn drop(&mut self) {
         let mut tx = self.tx.lock();
-        let _ = tx.send(Reply::End);
+        _ = tx.send(Reply::End);
     }
 }
 

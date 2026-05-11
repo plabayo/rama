@@ -62,7 +62,7 @@ mod test_none_delimited_single_lifetime {
     macro_rules! m {
         ($life:lifetime) => {
             paste! {
-                pub struct S<$life>(#[allow(dead_code)] pub &$life ());
+                pub struct S<$life>(#[expect(dead_code, reason = "test fixture: field exists only to anchor the lifetime parameter")] pub &$life ());
                 impl<$life> S<$life> {
                     fn f() {}
                 }
@@ -222,8 +222,8 @@ mod test_type_in_path {
     #[test]
     fn test_type_in_path() {
         let _: S;
-        let _ = get_a;
-        let _ = get_b;
+        _ = get_a;
+        _ = get_b;
     }
 }
 
@@ -248,7 +248,7 @@ mod test_type_in_fn_arg {
 
     #[test]
     fn test_type_in_fn_arg() {
-        let _ = address;
+        _ = address;
     }
 }
 
@@ -262,7 +262,7 @@ mod test_pat_in_expr_position {
             paste! {
                 #[test]
                 fn test() {
-                    let _ = $e;
+                    _ = $e;
                 }
             }
         };

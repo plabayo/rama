@@ -112,7 +112,7 @@
 //!         println!("RX: {:?}", chunk);
 //!
 //!         // Let the server send more data.
-//!         let _ = flow_control.release_capacity(chunk.len());
+//!         _ = flow_control.release_capacity(chunk.len());
 //!     }
 //!
 //!     Ok(())
@@ -641,7 +641,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(send_request) = self.inner.as_mut() {
             ready!(send_request.poll_ready(cx))?;
-            #[allow(clippy::expect_used, reason = "memory cannot move in between polls")]
+            #[expect(clippy::expect_used, reason = "memory cannot move in between polls")]
             let send_request = self.inner.take().expect("inner SendRequest was Some above");
             Poll::Ready(Ok(send_request))
         } else {

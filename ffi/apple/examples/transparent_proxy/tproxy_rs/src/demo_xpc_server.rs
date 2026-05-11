@@ -3,7 +3,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use rama::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
     net::apple::xpc::{
         PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer,
     },
@@ -148,7 +148,10 @@ pub(crate) fn spawn_xpc_server(
                  config; refusing to bind XPC listener (fail-closed). Set it from the container \
                  app's `Bundle.main.bundleIdentifier`.",
             );
-            "xpc demo server: missing container_signing_identifier (fail-closed)".into()
+            OpaqueError::from_static_str(
+                "xpc demo server: missing container_signing_identifier (fail-closed)",
+            )
+            .into_box_error()
         })?;
 
     tracing::info!(
@@ -157,8 +160,9 @@ pub(crate) fn spawn_xpc_server(
         "xpc demo server: start config+spawn (peer pinned to same-team + signing identifier)",
     );
 
-    let config = XpcListenerConfig::new(service_name.clone())
-        .with_peer_requirement(PeerSecurityRequirement::TeamIdentity(Some(signing_identifier)));
+    let config = XpcListenerConfig::new(service_name.clone()).with_peer_requirement(
+        PeerSecurityRequirement::TeamIdentity(Some(signing_identifier)),
+    );
 
     let router = XpcMessageRouter::new()
         .with_typed_route::<UpdateSettingsRequest, UpdateSettingsReply, _>(

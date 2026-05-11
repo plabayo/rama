@@ -1,3 +1,8 @@
+#![expect(
+    clippy::expect_used,
+    reason = "build script: panicking on env/codegen failure aborts the build, which is the desired behavior"
+)]
+
 fn main() {
     use std::{env, path::PathBuf};
 
@@ -11,6 +16,16 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR env var"));
 
     println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=src/process_shim.c");
+
+    // Tiny C shim that calls libbsm's `audit_token_to_pid` macro (the
+    // public, header-defined API; the macro's internal field index is
+    // not). Compiled here so the Rust crate's `process::AuditToken::pid`
+    // does not depend on the audit_token_t internal layout.
+    cc::Build::new()
+        .file("src/process_shim.c")
+        .compile("rama_process_shim");
+    println!("cargo:rustc-link-lib=dylib=bsm");
 
     let sdk_path = env::var("SDKROOT")
         .ok()
@@ -32,6 +47,11 @@ fn main() {
         .clang_arg(format!("-isysroot{sdk_path}"))
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .formatter(bindgen::Formatter::Rustfmt)
+        // Disable layout tests to avoid the per-struct
+        // `#[expect(clippy::unnecessary_operation, clippy::identity_op)]` attributes
+        // bindgen emits on its layout-test consts — those expects are unfulfilled
+        // for structs whose offsets are non-zero, producing noise we can't suppress.
+        .layout_tests(false)
         // CoreFoundation.
         .allowlist_function("CFRelease")
         .allowlist_function("CFDataCreate")

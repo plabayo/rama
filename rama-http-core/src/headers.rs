@@ -122,6 +122,25 @@ pub(super) fn is_chunked_(value: &HeaderValue) -> bool {
     false
 }
 
+/// RFC 9112 §6.1: chunked MUST NOT be applied more than once. Returns true
+/// if the value's comma-separated coding list contains `chunked` more than
+/// once (case-insensitive, ignoring surrounding whitespace).
+pub(super) fn has_duplicate_chunked(value: &HeaderValue) -> bool {
+    let Ok(s) = value.to_str() else {
+        return false;
+    };
+    let mut seen = false;
+    for coding in s.split(',') {
+        if coding.trim().eq_ignore_ascii_case("chunked") {
+            if seen {
+                return true;
+            }
+            seen = true;
+        }
+    }
+    false
+}
+
 pub(super) fn add_chunked(mut entry: OccupiedEntry<'_, HeaderValue>) {
     const CHUNKED: &str = "chunked";
 
@@ -146,4 +165,44 @@ pub(super) fn add_chunked(mut entry: OccupiedEntry<'_, HeaderValue>) {
     }
 
     entry.insert(HeaderValue::from_static(CHUNKED));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_duplicate_chunked_detects_dupes() {
+        let cases_dup: &[&[u8]] = &[
+            b"chunked, chunked",
+            b"chunked,chunked",
+            b"Chunked, CHUNKED",
+            b"gzip, chunked, chunked",
+            b"chunked, gzip, chunked",
+        ];
+        for v in cases_dup {
+            let hv = HeaderValue::from_bytes(v).unwrap();
+            assert!(
+                has_duplicate_chunked(&hv),
+                "expected duplicate chunked detected in {:?}",
+                std::str::from_utf8(v).unwrap()
+            );
+        }
+
+        let cases_ok: &[&[u8]] = &[
+            b"chunked",
+            b"gzip, chunked",
+            b"identity",
+            b"deflate, gzip",
+            b"",
+        ];
+        for v in cases_ok {
+            let hv = HeaderValue::from_bytes(v).unwrap();
+            assert!(
+                !has_duplicate_chunked(&hv),
+                "expected no duplicate chunked in {:?}",
+                std::str::from_utf8(v).unwrap()
+            );
+        }
+    }
 }

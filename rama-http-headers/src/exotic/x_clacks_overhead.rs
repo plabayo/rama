@@ -124,7 +124,7 @@ impl FromStr for XClacksOverhead {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(XClacksOverhead)
-            .map_err(|_| InvalidXClacksOverhead)
+            .map_err(|_e| InvalidXClacksOverhead)
     }
 }
 
@@ -150,10 +150,10 @@ mod tests {
     use ahash::{HashSet, HashSetExt as _};
 
     fn test_value(value: &XClacksOverhead) -> String {
-        let _ = value.encode_to_value();
+        _ = value.encode_to_value();
 
         let s = value.to_string();
-        let _ = XClacksOverhead::from_str(&s).unwrap();
+        _ = XClacksOverhead::from_str(&s).unwrap();
 
         s
     }
@@ -161,13 +161,13 @@ mod tests {
     #[test]
     fn test_new() {
         let value = XClacksOverhead::new();
-        let _ = test_value(&value);
+        _ = test_value(&value);
     }
 
     #[test]
     fn test_default() {
         let value = XClacksOverhead::default();
-        let _ = test_value(&value);
+        _ = test_value(&value);
     }
 
     #[test]

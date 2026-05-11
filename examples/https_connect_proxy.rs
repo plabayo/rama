@@ -23,6 +23,12 @@
 //! In case you want to use it in a standard browser,
 //! you'll need to first import and trust the generated certificate.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     graceful::Shutdown,
@@ -131,9 +137,9 @@ async fn main() {
                     DefaultHttpProxyConnectReplyService::new(),
                     (
                         ConsumeErrLayer::default(),
-                        IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+                        IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
                     )
-                        .into_layer(IoForwardService::new()),
+                        .into_layer(IoForwardService::new(exec)),
                 ),
             )
                 .into_layer(service_fn(http_plain_proxy)),

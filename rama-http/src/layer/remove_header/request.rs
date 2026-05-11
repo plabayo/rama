@@ -201,7 +201,7 @@ mod test {
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -221,7 +221,7 @@ mod test {
             .header("x-foo-bar", "baz")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -240,7 +240,7 @@ mod test {
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -264,6 +264,6 @@ mod test {
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 }

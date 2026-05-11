@@ -49,7 +49,7 @@ impl Ja4 {
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
     /// [`ClientConfig`]: crate::tls::client::ClientConfig
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
         client_hello: impl ClientHelloProvider,
         negotiated_tls_version: Option<ProtocolVersion>,
@@ -232,7 +232,6 @@ fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
         "000000000000".into()
     } else {
         let sha256 = Sha256::digest(s);
-        #[allow(deprecated)]
         hex::encode(&sha256.as_slice()[..6]).into()
     }
 }

@@ -71,7 +71,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Uri;
+    use crate::{Method, Uri};
 
     struct Taint<P> {
         policy: P,
@@ -101,7 +101,9 @@ mod tests {
     fn redirect() {
         let attempt = Attempt {
             status: Default::default(),
+            method: &Method::GET,
             location: &Uri::from_static("*"),
+            previous_method: &Method::GET,
             previous: &Uri::from_static("*"),
         };
 

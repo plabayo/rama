@@ -314,8 +314,8 @@ mod tests {
         engine.input("{\"key\":1}\n{\"key\":1,\"value\":1}\n");
 
         let mut result = collect_output(engine).into_iter();
-        assert!(result.next().unwrap().is_err());
-        assert!(result.next().unwrap().is_ok());
+        result.next().unwrap().unwrap_err();
+        result.next().unwrap().unwrap();
         assert!(result.next().is_none());
     }
 
@@ -334,7 +334,7 @@ mod tests {
                 value: 200
             }
         );
-        assert!(result.next().unwrap().is_err());
+        result.next().unwrap().unwrap_err();
         assert_eq!(
             result.next().unwrap().unwrap(),
             TestStruct {
@@ -465,7 +465,7 @@ mod tests {
         engine.finalize();
 
         let mut result = collect_output(engine).into_iter();
-        assert!(result.next().unwrap().is_err());
+        result.next().unwrap().unwrap_err();
         assert!(result.next().is_none());
     }
 
@@ -507,7 +507,7 @@ mod tests {
         engine.finalize();
 
         let mut result = collect_output(engine).into_iter();
-        assert!(result.next().unwrap().is_err());
+        result.next().unwrap().unwrap_err();
         assert!(result.next().is_none());
     }
 

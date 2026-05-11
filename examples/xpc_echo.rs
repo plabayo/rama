@@ -32,6 +32,14 @@
 //! [server] connection closed (Interrupted), shutting down
 //! ```
 
+#![cfg_attr(
+    target_vendor = "apple",
+    expect(
+        clippy::expect_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
+)]
+
 #[cfg(not(target_vendor = "apple"))]
 fn main() {
     eprintln!("xpc_echo: XPC is only available on Apple platforms.");
@@ -126,10 +134,10 @@ async fn main() {
         // 3. Cancel to signal the server we're done.
         info!(target: "xpc_echo::client", "done, cancelling connection");
         client_conn.cancel();
-        let _ = shutdown_tx.send(());
+        _ = shutdown_tx.send(());
     });
 
-    let _ = tokio::join!(server_task, client_task);
+    _ = tokio::join!(server_task, client_task);
 
     graceful
         .shutdown_with_limit(Duration::from_secs(5))

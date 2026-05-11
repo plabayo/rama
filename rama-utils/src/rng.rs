@@ -71,6 +71,7 @@ pub struct HasherRng<
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl HasherRng {
     /// Create a new default [`HasherRng`].
     #[must_use]
@@ -80,6 +81,7 @@ impl HasherRng {
 }
 
 #[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 impl Default for HasherRng {
     fn default() -> Self {
         Self::with_hasher(std::hash::RandomState::default())

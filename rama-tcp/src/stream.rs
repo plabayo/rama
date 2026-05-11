@@ -33,6 +33,7 @@ impl TcpStream {
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     pub fn try_from_socket(
         socket: socket::core::Socket,
         extensions: Extensions,

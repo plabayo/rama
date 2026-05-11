@@ -211,7 +211,7 @@ impl FrameCodec {
             }
         };
 
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "we can only reach here in case header is Some (see payload loop)"
         )]
@@ -271,8 +271,8 @@ impl FrameCodec {
         trace!("writing frame {frame}");
 
         self.out_buffer.reserve(frame.len());
-        // Safety: writing into Vec cannot fail with error (only panics)
-        let _ = frame.format_into_buf(&mut self.out_buffer);
+        // Note: writing into Vec is infallible (only panics on alloc failure).
+        _ = frame.format_into_buf(&mut self.out_buffer);
 
         if self.out_buffer.len() > self.out_buffer_write_len {
             self.write_out_buffer(stream)
@@ -291,20 +291,30 @@ impl FrameCodec {
     where
         Stream: Write,
     {
-        while !self.out_buffer.is_empty() {
-            let len = stream.write(&self.out_buffer)?;
-            if len == 0 {
-                // This is the same as "Connection reset by peer"
-                return Err(IoError::new(
-                    IoErrorKind::ConnectionReset,
-                    "Connection reset while sending",
-                )
-                .into());
+        let mut pos = 0;
+        loop {
+            if pos == self.out_buffer.len() {
+                self.out_buffer.clear();
+                return Ok(());
             }
-            self.out_buffer.drain(0..len);
+            match stream.write(&self.out_buffer[pos..]) {
+                Ok(0) => {
+                    // Drain already-written bytes before returning so that
+                    // a retry starts from the correct position.
+                    self.out_buffer.drain(0..pos);
+                    return Err(IoError::new(
+                        IoErrorKind::ConnectionReset,
+                        "Connection reset while sending",
+                    )
+                    .into());
+                }
+                Ok(n) => pos += n,
+                Err(err) => {
+                    self.out_buffer.drain(0..pos);
+                    return Err(err.into());
+                }
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -368,7 +378,7 @@ mod tests {
             0x83, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
         ]);
         let mut sock = FrameSocket::new(raw);
-        let _ = sock.read(None); // should not crash
+        _ = sock.read(None); // should not crash
     }
 
     #[test]

@@ -24,6 +24,10 @@ pub use libc::rlim_t;
 pub fn raise_nofile(target: rlim_t) -> std::io::Result<()> {
     use std::{io, mem};
 
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "single contiguous libc::rlimit syscall sequence; splitting harms readability without changing safety"
+    )]
     unsafe {
         let mut lim: libc::rlimit = mem::zeroed();
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {

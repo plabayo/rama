@@ -12,5 +12,6 @@ pub use rama_tls_rustls as rustls;
 #[cfg(feature = "acme")]
 #[cfg_attr(docsrs, doc(cfg(feature = "acme")))]
 pub mod acme {
+    #[doc(inline)]
     pub use ::rama_tls_acme::*;
 }

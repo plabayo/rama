@@ -21,7 +21,7 @@ const UNCLAIMED_NUMERATOR: i32 = 1;
 const UNCLAIMED_DENOMINATOR: i32 = 2;
 
 #[test]
-#[allow(clippy::assertions_on_constants)]
+#[expect(clippy::assertions_on_constants)]
 fn sanity_unclaimed_ratio() {
     debug_assert!(UNCLAIMED_NUMERATOR < UNCLAIMED_DENOMINATOR);
     debug_assert!(UNCLAIMED_NUMERATOR >= 0);

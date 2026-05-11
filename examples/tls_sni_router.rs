@@ -42,6 +42,11 @@
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorExt, extra::OpaqueError},
@@ -163,7 +168,7 @@ where
         );
 
         IoToProxyBridgeIoLayer::new(self.exec.clone(), fwd_interface)
-            .into_layer(IoForwardService::new())
+            .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await
     }

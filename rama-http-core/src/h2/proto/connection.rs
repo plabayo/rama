@@ -537,7 +537,12 @@ where
 
     fn handle_go_away(&mut self, reason: Reason, debug_data: Bytes, initiator: Initiator) {
         let e = Error::GoAway(debug_data.clone(), reason, initiator);
-        tracing::debug!(error = ?e, "Connection::poll; connection error");
+        // GoAway(NO_ERROR) is a clean graceful shutdown — not an error.
+        if reason == Reason::NO_ERROR {
+            tracing::trace!(error = ?e, "Connection::poll; connection closing gracefully (GoAway NO_ERROR)");
+        } else {
+            tracing::debug!(error = ?e, "Connection::poll; connection error");
+        }
 
         // We may have already sent a GOAWAY for this error,
         // if so, don't send another, just flush and close up.

@@ -142,7 +142,6 @@ mod try_into {
     }
 }
 
-#[allow(unused)]
 pub(crate) use try_into::Sealed as TryIntoSealed;
 
 pub trait IntoHttp1HeaderName: into::Sealed {}
@@ -173,5 +172,4 @@ mod into {
     }
 }
 
-#[allow(unused)]
 pub(crate) use into::Sealed as IntoSealed;

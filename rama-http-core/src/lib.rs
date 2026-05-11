@@ -26,12 +26,13 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
+#![cfg_attr(feature = "unstable", expect(clippy::allow_attributes))]
 #![allow(unreachable_pub)]
+#![expect(
+    clippy::panic,
+    clippy::unreachable,
+    reason = "vendored from upstream `hyper`/`h2`: matches upstream invariant-violation panicking style and macro-internal `#[allow]` attrs"
+)]
 
 pub mod body;
 
