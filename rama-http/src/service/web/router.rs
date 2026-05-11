@@ -6,7 +6,7 @@ use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
-    layer::MapResult,
+    layer::{IntoErrLayer, MapResult},
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
@@ -23,6 +23,7 @@ use rama_utils::{
 use crate::{
     Request, Response,
     headers::Allow,
+    layer::error_handling::ErrorHandlerLayer,
     matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
     service::{
         fs::{DirectoryServeMode, ServeDir},
@@ -324,125 +325,6 @@ where
         self.set_match_route(path, matcher, service)
     }
 
-    // /// serve the given file under the given path.
-    // #[must_use]
-    // #[inline]
-    // pub fn with_file(self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
-    //     let service = ServeDir::new_single_file(file, mime);
-    //     match self.not_found.clone() {
-    //         Some(not_found) => self.with_sub_service(path, service.fallback(not_found)),
-    //         None => self.with_sub_service(path, service),
-    //     }
-    // }
-    //
-    // /// serve the given file under the given prefix (path).
-    // #[inline]
-    // pub fn set_file(
-    //     &mut self,
-    //     prefix: impl AsRef<str>,
-    //     file: impl AsRef<Path>,
-    //     mime: Mime,
-    // ) -> &mut Self {
-    //     let service = ServeDir::new_single_file(file, mime);
-    //     match self.not_found.clone() {
-    //         Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
-    //         None => self.set_sub_service(prefix, service),
-    //     }
-    // }
-    //
-    // /// serve the given directory under the given prefix (path).
-    // #[inline]
-    // #[must_use]
-    // pub fn with_dir(self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> Self {
-    //     self.with_dir_and_serve_mode(prefix, dir, Default::default())
-    // }
-    //
-    // /// serve the given directory under the given prefix (path).
-    // #[inline]
-    // pub fn set_dir(&mut self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> &mut Self {
-    //     self.set_dir_with_serve_mode(prefix, dir, Default::default())
-    // }
-    //
-    // /// serve the given directory under the given prefix (path),
-    // /// with a custom serve move.
-    // #[must_use]
-    // #[inline]
-    // pub fn with_dir_and_serve_mode(
-    //     self,
-    //     prefix: impl AsRef<str>,
-    //     dir: impl AsRef<Path>,
-    //     mode: DirectoryServeMode,
-    // ) -> Self {
-    //     let service = ServeDir::new(dir).with_directory_serve_mode(mode);
-    //     match self.not_found.clone() {
-    //         Some(not_found) => self.with_sub_service(prefix, service.fallback(not_found)),
-    //         None => self.with_sub_service(prefix, service),
-    //     }
-    // }
-    //
-    // /// serve the given directory under the given prefix (path),
-    // /// with a custom serve move.
-    // #[inline]
-    // pub fn set_dir_with_serve_mode(
-    //     &mut self,
-    //     prefix: impl AsRef<str>,
-    //     dir: impl AsRef<Path>,
-    //     mode: DirectoryServeMode,
-    // ) -> &mut Self {
-    //     let service = ServeDir::new(dir).with_directory_serve_mode(mode);
-    //     match self.not_found.clone() {
-    //         Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
-    //         None => self.set_sub_service(prefix, service),
-    //     }
-    // }
-    //
-    // /// serve the given embedded directory under the given prefix (path).
-    // #[inline]
-    // #[must_use]
-    // pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self {
-    //     self.with_dir_embed_and_serve_mode(prefix, dir, Default::default())
-    // }
-    //
-    // /// serve the given embedded directory under the given prefix (path).
-    // #[inline]
-    // pub fn set_dir_embed(
-    //     &mut self,
-    //     prefix: impl AsRef<str>,
-    //     dir: include_dir::Dir<'static>,
-    // ) -> &mut Self {
-    //     self.set_dir_embed_with_serve_mode(prefix, dir, Default::default())
-    // }
-    //
-    // /// serve the given embedded directory under the given prefix (path)
-    // /// with a custom serve move.
-    // #[must_use]
-    // #[inline]
-    // pub fn with_dir_embed_and_serve_mode(
-    //     mut self,
-    //     prefix: impl AsRef<str>,
-    //     dir: include_dir::Dir<'static>,
-    //     mode: DirectoryServeMode,
-    // ) -> Self {
-    //     self.set_dir_embed_with_serve_mode(prefix, dir, mode);
-    //     self
-    // }
-    //
-    // /// serve the given embedded directory under the given prefix (path)
-    // /// with a custom serve move.
-    // #[inline]
-    // pub fn set_dir_embed_with_serve_mode(
-    //     &mut self,
-    //     prefix: impl AsRef<str>,
-    //     dir: include_dir::Dir<'static>,
-    //     mode: DirectoryServeMode,
-    // ) -> &mut Self {
-    //     let service = ServeDir::new_embedded(dir).with_directory_serve_mode(mode);
-    //     match self.not_found.clone() {
-    //         Some(not_found) => self.set_sub_service(prefix, service.fallback(not_found)),
-    //         None => self.set_sub_service(prefix, service),
-    //     }
-    // }
-    //
     // /// register a nested router under a prefix (path).
     // ///
     // /// The prefix is used to match the request path and strip it from the request URI.
@@ -643,6 +525,130 @@ where
     }
 }
 
+impl<State, Layer, E> Router<State, Layer, Response, E>
+where
+    State: Send + Sync + Clone + 'static,
+    E: IntoResponse + From<Infallible> + Send + 'static,
+{
+    /// serve the given file under the given path.
+    #[must_use]
+    #[inline]
+    pub fn with_file(mut self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
+        self.set_file(path, file, mime);
+        self
+    }
+
+    /// serve the given file under the given prefix (path).
+    #[inline]
+    pub fn set_file(
+        &mut self,
+        prefix: impl AsRef<str>,
+        file: impl AsRef<Path>,
+        mime: Mime,
+    ) -> &mut Self {
+        let service = ServeDir::new_single_file(file, mime);
+        self.set_serve_dir_service(prefix, service)
+    }
+
+    /// serve the given directory under the given prefix (path).
+    #[inline]
+    #[must_use]
+    pub fn with_dir(self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> Self {
+        self.with_dir_and_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given directory under the given prefix (path).
+    #[inline]
+    pub fn set_dir(&mut self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> &mut Self {
+        self.set_dir_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given directory under the given prefix (path),
+    /// with a custom serve move.
+    #[must_use]
+    #[inline]
+    pub fn with_dir_and_serve_mode(
+        mut self,
+        prefix: impl AsRef<str>,
+        dir: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        self.set_dir_with_serve_mode(prefix, dir, mode);
+        self
+    }
+
+    /// serve the given directory under the given prefix (path),
+    /// with a custom serve move.
+    #[inline]
+    pub fn set_dir_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
+        let service = ServeDir::new(dir).with_directory_serve_mode(mode);
+        self.set_serve_dir_service(prefix, service)
+    }
+
+    /// serve the given embedded directory under the given prefix (path).
+    #[inline]
+    #[must_use]
+    pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self {
+        self.with_dir_embed_and_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given prefix (path).
+    #[inline]
+    pub fn set_dir_embed(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+    ) -> &mut Self {
+        self.set_dir_embed_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given prefix (path)
+    /// with a custom serve move.
+    #[must_use]
+    #[inline]
+    pub fn with_dir_embed_and_serve_mode(
+        mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        self.set_dir_embed_with_serve_mode(prefix, dir, mode);
+        self
+    }
+
+    /// serve the given embedded directory under the given prefix (path)
+    /// with a custom serve move.
+    #[inline]
+    pub fn set_dir_embed_with_serve_mode(
+        &mut self,
+        prefix: impl AsRef<str>,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> &mut Self {
+        let service = ServeDir::new_embedded(dir).with_directory_serve_mode(mode);
+        self.set_serve_dir_service(prefix, service)
+    }
+
+    fn set_serve_dir_service(&mut self, prefix: impl AsRef<str>, service: ServeDir) -> &mut Self {
+        match self.not_found.clone() {
+            Some(not_found) => self.set_sub_service_inner(
+                prefix,
+                IntoErrLayer::<E>::new()
+                    .layer(service.fallback(ErrorHandlerLayer::new().layer(not_found)))
+                    .boxed(),
+            ),
+            None => {
+                self.set_sub_service_inner(prefix, IntoErrLayer::<E>::new().layer(service).boxed())
+            }
+        }
+    }
+}
+
 impl Default for Router {
     fn default() -> Self {
         Self::new()
@@ -679,6 +685,12 @@ impl IntoResponse for RouterError {
                 .into_response(),
             RouterError::NotFound => StatusCode::NOT_FOUND.into_response(),
         }
+    }
+}
+
+impl From<Infallible> for RouterError {
+    fn from(_: Infallible) -> Self {
+        unreachable!()
     }
 }
 

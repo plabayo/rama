@@ -151,7 +151,7 @@ where
 #[derive(Debug, Clone)]
 pub struct IntoErr<S, E> {
     inner: S,
-    _error: PhantomData<E>,
+    _error: PhantomData<fn(E)>,
 }
 
 impl<S, E> IntoErr<S, E> {
@@ -168,7 +168,7 @@ impl<S, I, E> Service<I> for IntoErr<S, E>
 where
     S: Service<I, Error: Into<E>>,
     I: Send + 'static,
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     type Output = S::Output;
     type Error = E;
