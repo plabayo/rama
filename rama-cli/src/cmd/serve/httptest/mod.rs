@@ -173,7 +173,7 @@ where
         // Keep a public-service-wide cap while still allowing the
         // stress endpoints (`/bytes`, `/octet-stream`) to exercise
         // multi-megabyte bodies without third-party infrastructure.
-        BodyLimitLayer::symmetric(mib(32_usize)),
+        BodyLimitLayer::symmetric(mib(32)),
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 
