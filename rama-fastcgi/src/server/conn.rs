@@ -1,6 +1,7 @@
 //! Connection-level FastCGI framing: reading requests and writing responses.
 
 use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::io::discard;
 use rama_core::telemetry::tracing;
 use std::io;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf};
@@ -9,7 +10,6 @@ use tokio::sync::mpsc;
 use crate::proto::{
     BeginRequestBody, EndRequestBody, FCGI_MAX_CONTENT_LEN, FCGI_NULL_REQUEST_ID, ProtocolError,
     ProtocolStatus, RecordHeader, RecordType, Role, UnknownTypeBody,
-    io::{discard_n, with_optional_timeout},
     params::{NvPairRef, decode_params, encode_params},
 };
 
@@ -30,10 +30,10 @@ pub(super) struct BeginParams {
 /// Read the opening records of a FastCGI request: `FCGI_BEGIN_REQUEST`
 /// followed by all `FCGI_PARAMS` records.
 ///
-/// Returns `None` on a clean EOF before any records arrive.
-/// Management records (`request_id == 0`) are handled in-place and the loop
-/// continues; `FCGI_ABORT_REQUEST` arriving before params are complete is
-/// responded to and `Ok(None)` is returned.
+/// Returns `None` on a clean EOF, an idle read timeout before any records
+/// arrive, or `FCGI_ABORT_REQUEST` received before params are complete.
+/// In the latter two cases the appropriate response has been written to
+/// `writer` already.
 pub(super) async fn read_begin_and_params<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -43,18 +43,35 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    // ── FCGI_BEGIN_REQUEST ────────────────────────────────────────────────
-    let request_id;
-    let begin;
+    let Some((request_id, begin)) = read_begin_record(reader, writer, options).await? else {
+        return Ok(None);
+    };
+    let Some(params) = read_params_stream(reader, writer, request_id, options).await? else {
+        return Ok(None);
+    };
+    Ok(Some(BeginParams {
+        request_id,
+        role: begin.role,
+        keep_conn: begin.keep_conn,
+        params,
+    }))
+}
+
+/// Read records until a `FCGI_BEGIN_REQUEST` arrives, handling management
+/// records (request_id == 0) in-place. Returns `Ok(None)` on clean EOF.
+async fn read_begin_record<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    options: &ServerOptions,
+) -> Result<Option<(u16, BeginRequestBody)>, Error>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     loop {
-        let Ok(header) = with_optional_timeout(options.read_timeout, async {
-            RecordHeader::read_from(reader)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        })
-        .await
-        else {
-            return Ok(None); // clean EOF or idle timeout
+        let header = match RecordHeader::read_from(reader).await {
+            Ok(h) => h,
+            Err(_eof_or_io) => return Ok(None),
         };
 
         if header.request_id == FCGI_NULL_REQUEST_ID {
@@ -63,6 +80,11 @@ where
         }
 
         if header.record_type != RecordType::BeginRequest {
+            tracing::debug!(
+                rid = header.request_id,
+                record_type = ?header.record_type,
+                "fastcgi server: unexpected record type while awaiting BEGIN_REQUEST"
+            );
             return Err(Error::protocol(ProtocolError::unexpected_byte(
                 1,
                 header.record_type.into(),
@@ -76,31 +98,48 @@ where
             return Err(Error::protocol(ProtocolError::unexpected_byte(4, 0)));
         }
 
-        request_id = header.request_id;
-        begin = BeginRequestBody::read_from(reader)
+        let begin = BeginRequestBody::read_from(reader)
             .await
             .map_err(Error::protocol)?;
+        // Tolerate forward-compat: BeginRequestBody is 8 bytes today, but a
+        // future revision might extend it. Drop any surplus content silently.
         if header.content_length > 8 {
-            discard_n(reader, (header.content_length - 8) as u64)
+            discard(reader, (header.content_length - 8) as u64)
                 .await
                 .map_err(Error::io)?;
         }
         skip_padding(reader, header.padding_length)
             .await
             .map_err(Error::io)?;
-        break;
-    }
 
-    // ── FCGI_PARAMS ───────────────────────────────────────────────────────
+        tracing::trace!(
+            rid = header.request_id,
+            role = ?begin.role,
+            keep_conn = begin.keep_conn,
+            "fastcgi server: BEGIN_REQUEST received"
+        );
+        return Ok(Some((header.request_id, begin)));
+    }
+}
+
+/// Read `FCGI_PARAMS` records for `request_id` until an empty terminator,
+/// returning the decoded name/value pairs. Returns `Ok(None)` if an
+/// `FCGI_ABORT_REQUEST` was observed (and an END_REQUEST was written).
+async fn read_params_stream<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    request_id: u16,
+    options: &ServerOptions,
+) -> Result<Option<Vec<(Bytes, Bytes)>>, Error>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut params_buf = BytesMut::new();
     loop {
-        let hdr = with_optional_timeout(options.read_timeout, async {
-            RecordHeader::read_from(reader)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        })
-        .await
-        .map_err(Error::io)?;
+        let hdr = RecordHeader::read_from(reader)
+            .await
+            .map_err(Error::protocol)?;
 
         if hdr.request_id == FCGI_NULL_REQUEST_ID {
             handle_management_record(reader, writer, hdr).await?;
@@ -108,19 +147,7 @@ where
         }
 
         if hdr.request_id != request_id {
-            // A second concurrent request on the same connection: this
-            // implementation does not multiplex.
-            if hdr.record_type == RecordType::BeginRequest {
-                drain_record_body(reader, &hdr).await.map_err(Error::io)?;
-                if options.respond_cant_mpx_conn {
-                    write_end_request(writer, hdr.request_id, EndRequestBody::cant_mpx_conn())
-                        .await
-                        .map_err(Error::io)?;
-                }
-                continue;
-            }
-            // Stray record for an unknown request id — drop on the floor.
-            drain_record_body(reader, &hdr).await.map_err(Error::io)?;
+            handle_foreign_request_id(reader, writer, &hdr, options).await?;
             continue;
         }
 
@@ -129,6 +156,10 @@ where
                 skip_padding(reader, hdr.padding_length)
                     .await
                     .map_err(Error::io)?;
+                tracing::debug!(
+                    rid = request_id,
+                    "fastcgi server: FCGI_ABORT_REQUEST received during PARAMS phase"
+                );
                 write_abort_end_request(writer, request_id)
                     .await
                     .map_err(Error::io)?;
@@ -144,9 +175,14 @@ where
                 if params_buf.len().saturating_add(hdr.content_length as usize)
                     > options.max_params_bytes
                 {
-                    return Err(Error::protocol(ProtocolError::content_too_large(
-                        params_buf.len() + hdr.content_length as usize,
-                    )));
+                    let total = params_buf.len() + hdr.content_length as usize;
+                    tracing::debug!(
+                        rid = request_id,
+                        cap = options.max_params_bytes,
+                        total,
+                        "fastcgi server: PARAMS exceeded max_params_bytes"
+                    );
+                    return Err(Error::protocol(ProtocolError::content_too_large(total)));
                 }
                 read_content_into(
                     reader,
@@ -158,6 +194,11 @@ where
                 .map_err(Error::io)?;
             }
             other => {
+                tracing::debug!(
+                    rid = request_id,
+                    record_type = ?other,
+                    "fastcgi server: unexpected record type during PARAMS phase"
+                );
                 return Err(Error::protocol(ProtocolError::unexpected_byte(
                     1,
                     other.into(),
@@ -170,13 +211,42 @@ where
     let params: Vec<(Bytes, Bytes)> = decode_params(&params_bytes)
         .map(|(n, v)| (params_bytes.slice_ref(n), params_bytes.slice_ref(v)))
         .collect();
+    Ok(Some(params))
+}
 
-    Ok(Some(BeginParams {
-        request_id,
-        role: begin.role,
-        keep_conn: begin.keep_conn,
-        params,
-    }))
+/// Handle a record whose request_id does not match the current request:
+/// reply with `FCGI_END_REQUEST{CantMpxConn}` for a concurrent BEGIN
+/// (when enabled), and drop everything else on the floor.
+async fn handle_foreign_request_id<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    hdr: &RecordHeader,
+    options: &ServerOptions,
+) -> Result<(), Error>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    if hdr.record_type == RecordType::BeginRequest {
+        drain_record_body(reader, hdr).await.map_err(Error::io)?;
+        if options.respond_cant_mpx_conn {
+            tracing::debug!(
+                rid = hdr.request_id,
+                "fastcgi server: rejecting concurrent BEGIN_REQUEST with FCGI_CANT_MPX_CONN"
+            );
+            write_end_request(writer, hdr.request_id, EndRequestBody::cant_mpx_conn())
+                .await
+                .map_err(Error::io)?;
+        }
+    } else {
+        tracing::trace!(
+            rid = hdr.request_id,
+            record_type = ?hdr.record_type,
+            "fastcgi server: dropping stray record for unknown request id"
+        );
+        drain_record_body(reader, hdr).await.map_err(Error::io)?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +272,6 @@ where
         RecordType::Stdin,
         &stdin_tx,
         options.max_stdin_bytes,
-        options.read_timeout,
     )
     .await?;
     drop(stdin_tx);
@@ -218,7 +287,6 @@ where
             RecordType::Data,
             dtx,
             options.max_data_bytes,
-            options.read_timeout,
         )
         .await?;
         drop(data_tx);
@@ -236,19 +304,15 @@ async fn read_stream_records<R>(
     expected: RecordType,
     tx: &mpsc::Sender<Result<Bytes, io::Error>>,
     max_bytes: Option<u64>,
-    read_timeout: Option<std::time::Duration>,
 ) -> io::Result<bool>
 where
     R: AsyncRead + Unpin,
 {
     let mut received: u64 = 0;
     loop {
-        let hdr = with_optional_timeout(read_timeout, async {
-            RecordHeader::read_from(reader)
-                .await
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-        })
-        .await?;
+        let hdr = RecordHeader::read_from(reader)
+            .await
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         if hdr.request_id != request_id && hdr.request_id != FCGI_NULL_REQUEST_ID {
             drain_record_body(reader, &hdr).await?;
@@ -482,7 +546,7 @@ async fn drain_record_body<R>(r: &mut R, hdr: &RecordHeader) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
 {
-    discard_n(r, hdr.content_length as u64 + hdr.padding_length as u64).await
+    discard(r, hdr.content_length as u64 + hdr.padding_length as u64).await
 }
 
 async fn read_content_into<R>(

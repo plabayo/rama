@@ -7,11 +7,14 @@
 
 use std::time::Duration;
 
+use rama_utils::macros::generate_set_and_with;
+
 /// Configuration for [`FastCgiServer`][crate::server::FastCgiServer].
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     /// Maximum total bytes accepted across all `FCGI_PARAMS` records for a
-    /// single request. Excess data terminates the connection.
+    /// single request. Excess data terminates the connection with a protocol
+    /// error.
     ///
     /// Default: 1 MiB.
     pub max_params_bytes: usize,
@@ -28,14 +31,14 @@ pub struct ServerOptions {
     /// Default: `None`.
     pub max_data_bytes: Option<u64>,
 
-    /// Optional idle timeout between FastCGI records on the read side.
-    /// Catches slow-loris clients that hold a connection open without
-    /// progressing the request.
+    /// Optional idle timeout applied to the wrapped IO's read side, enforced
+    /// via [`rama_core::io::timeout::TimeoutIo`]. Catches slow-loris clients
+    /// that hold a connection open without progressing the request.
     ///
     /// Default: `None`.
     pub read_timeout: Option<Duration>,
 
-    /// Optional write timeout per response chunk.
+    /// Optional write timeout applied to the wrapped IO's write side.
     ///
     /// Default: `None`.
     pub write_timeout: Option<Duration>,
@@ -78,31 +81,62 @@ impl ServerOptions {
         Self::default()
     }
 
-    /// Set the maximum total bytes accepted across all `FCGI_PARAMS` records.
-    #[must_use]
-    pub fn with_max_params_bytes(mut self, n: usize) -> Self {
-        self.max_params_bytes = n;
-        self
+    generate_set_and_with! {
+        /// Maximum total bytes accepted across all `FCGI_PARAMS` records.
+        pub fn max_params_bytes(mut self, n: usize) -> Self {
+            self.max_params_bytes = n;
+            self
+        }
     }
 
-    /// Set the maximum total bytes accepted across all `FCGI_STDIN` records.
-    #[must_use]
-    pub fn with_max_stdin_bytes(mut self, n: u64) -> Self {
-        self.max_stdin_bytes = Some(n);
-        self
+    generate_set_and_with! {
+        /// Maximum total bytes accepted across all `FCGI_STDIN` records.
+        /// Set to `None` for unbounded.
+        pub fn max_stdin_bytes(mut self, n: Option<u64>) -> Self {
+            self.max_stdin_bytes = n;
+            self
+        }
     }
 
-    /// Set the idle read timeout between FastCGI records.
-    #[must_use]
-    pub fn with_read_timeout(mut self, d: Duration) -> Self {
-        self.read_timeout = Some(d);
-        self
+    generate_set_and_with! {
+        /// Maximum total bytes accepted across all `FCGI_DATA` records
+        /// (Filter role only). `None` means unbounded.
+        pub fn max_data_bytes(mut self, n: Option<u64>) -> Self {
+            self.max_data_bytes = n;
+            self
+        }
     }
 
-    /// Set the per-chunk write timeout.
-    #[must_use]
-    pub fn with_write_timeout(mut self, d: Duration) -> Self {
-        self.write_timeout = Some(d);
-        self
+    generate_set_and_with! {
+        /// Optional idle read timeout enforced at the IO layer.
+        pub fn read_timeout(mut self, d: Option<Duration>) -> Self {
+            self.read_timeout = d;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Optional write timeout enforced at the IO layer.
+        pub fn write_timeout(mut self, d: Option<Duration>) -> Self {
+            self.write_timeout = d;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Reject non-canonical `FCGI_BEGIN_REQUEST` body sizes.
+        pub fn strict_begin_body_size(mut self, on: bool) -> Self {
+            self.strict_begin_body_size = on;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Whether to reply with `FCGI_CANT_MPX_CONN` for a second concurrent
+        /// `FCGI_BEGIN_REQUEST` on the same connection.
+        pub fn respond_cant_mpx_conn(mut self, on: bool) -> Self {
+            self.respond_cant_mpx_conn = on;
+            self
+        }
     }
 }

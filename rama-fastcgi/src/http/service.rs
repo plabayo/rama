@@ -1,6 +1,9 @@
 //! FastCGI application service that wraps an HTTP service.
 
-use rama_core::{Service, error::BoxError};
+use rama_core::{
+    Service,
+    error::{BoxError, ErrorContext as _},
+};
 use rama_http_types::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -50,8 +53,17 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: FastCgiRequest) -> Result<Self::Output, Self::Error> {
-        let http_req = fastcgi_request_to_http(req).await?;
-        let http_resp = self.inner.serve(http_req).await.map_err(Into::into)?;
-        http_response_to_fastcgi(http_resp).await
+        let http_req = fastcgi_request_to_http(req)
+            .await
+            .context("FastCgiHttpService: convert FastCGI request to HTTP")?;
+        let http_resp = self
+            .inner
+            .serve(http_req)
+            .await
+            .map_err(Into::into)
+            .context("FastCgiHttpService: inner HTTP service")?;
+        http_response_to_fastcgi(http_resp)
+            .await
+            .context("FastCgiHttpService: serialise HTTP response to FastCGI")
     }
 }

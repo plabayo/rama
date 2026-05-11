@@ -159,100 +159,131 @@ impl<S> FastCgiServer<S> {
         IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
         S: Service<FastCgiRequest, Output = FastCgiResponse, Error: Into<BoxError>>,
     {
-        let (read_half, mut write_half) = tokio::io::split(stream);
-        let mut rh: ReadHalf<IO> = read_half;
+        // Apply read/write idle timeouts (if any) at the IO layer once so we
+        // don't have to thread them through every record-reading call site.
+        let timeout_io = rama_core::io::timeout::TimeoutIo::new(stream)
+            .maybe_with_read_timeout(self.options.read_timeout)
+            .maybe_with_write_timeout(self.options.write_timeout);
+        let (read_half, mut write_half) = tokio::io::split(timeout_io);
+        let mut rh = read_half;
 
         loop {
-            // ── Phase 1: read FCGI_BEGIN_REQUEST + FCGI_PARAMS ────────────
             let Some(begin) =
                 conn::read_begin_and_params(&mut rh, &mut write_half, &self.options).await?
             else {
-                tracing::debug!("fastcgi: client closed connection");
+                tracing::debug!("fastcgi server: client closed connection");
                 return Ok(());
             };
-            let conn::BeginParams {
-                request_id,
-                role,
-                keep_conn,
-                params,
-            } = begin;
+            let (request, reader_return_rx, mut task_guard) =
+                self.spawn_body_reader(rh, begin).await;
+            let keep_conn = request.keep_conn;
+            let request_id = request.request_id;
 
-            // ── Phase 2: spawn background task to stream STDIN (+ DATA) ──
-            let (stdin_tx, stdin_rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
-            let (data_tx, data_rx) = if role == Role::Filter {
-                let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
-                (Some(tx), Some(rx))
-            } else {
-                (None, None)
-            };
-            let (reader_return_tx, reader_return_rx) =
-                oneshot::channel::<io::Result<(ReadHalf<IO>, bool)>>();
-
-            let options_for_task = self.options.clone();
-            let handle = tokio::spawn(async move {
-                let result =
-                    conn::read_body_records(rh, request_id, stdin_tx, data_tx, options_for_task)
-                        .await;
-                if reader_return_tx.send(result).is_err() {
-                    tracing::debug!(
-                        "fastcgi server: reader_return channel dropped before task could deliver result \
-                         (parent future was cancelled)"
-                    );
-                }
-            });
-            let mut task_guard = Some(AbortOnDrop::new(handle));
-
-            let stdin = FastCgiBody::from_channel(stdin_rx);
-            let data = data_rx
-                .map(FastCgiBody::from_channel)
-                .unwrap_or_else(FastCgiBody::empty);
-
-            let request = FastCgiRequest {
-                request_id,
-                role,
-                keep_conn,
-                params,
-                stdin,
-                data,
-            };
-
-            // ── Phase 3: call inner service ───────────────────────────────
             let response = self
                 .inner
                 .serve(request)
                 .await
                 .map_err(|e| Error::service(e.into()))?;
 
-            // ── Phase 4: write response ───────────────────────────────────
             conn::write_response(&mut write_half, request_id, response, &self.options)
                 .await
                 .map_err(Error::io)?;
 
-            // ── Phase 5: wait for reading task, get reader back ───────────
-            // The body-reader task may still be running (the inner service
-            // may not have drained stdin). Disarm the abort guard and await.
-            if let Some(guard) = task_guard.take()
-                && let Some(join_handle) = guard.disarm()
-                && let Err(err) = join_handle.await
-            {
-                tracing::debug!(?err, "fastcgi server: body-reader task ended abnormally");
-            }
-            let (returned_rh, was_aborted) = reader_return_rx
-                .await
-                .map_err(|_recv_err| {
-                    Error::io(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "fastcgi stdin reader task panicked",
-                    ))
-                })?
-                .map_err(Error::io)?;
-
+            let (was_aborted, returned_rh) =
+                await_body_reader(&mut task_guard, reader_return_rx).await?;
             if was_aborted || !keep_conn {
                 return Ok(());
             }
             rh = returned_rh;
         }
     }
+
+    /// Build the [`FastCgiRequest`] handed to the inner service: spawn a
+    /// background task that streams `FCGI_STDIN` (and `FCGI_DATA` for the
+    /// Filter role) into mpsc-backed bodies, returning the read half of the
+    /// stream once the streams are exhausted.
+    async fn spawn_body_reader<IO>(
+        &self,
+        rh: ReadHalf<IO>,
+        begin: conn::BeginParams,
+    ) -> (
+        FastCgiRequest,
+        oneshot::Receiver<io::Result<(ReadHalf<IO>, bool)>>,
+        Option<AbortOnDrop<()>>,
+    )
+    where
+        IO: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let conn::BeginParams {
+            request_id,
+            role,
+            keep_conn,
+            params,
+        } = begin;
+
+        let (stdin_tx, stdin_rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+        let (data_tx, data_rx) = if role == Role::Filter {
+            let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let (reader_return_tx, reader_return_rx) =
+            oneshot::channel::<io::Result<(ReadHalf<IO>, bool)>>();
+
+        let options_for_task = self.options.clone();
+        let handle = tokio::spawn(async move {
+            let result =
+                conn::read_body_records(rh, request_id, stdin_tx, data_tx, options_for_task).await;
+            if reader_return_tx.send(result).is_err() {
+                tracing::debug!(
+                    rid = request_id,
+                    "fastcgi server: reader_return channel dropped before body-reader task delivered \
+                     its result (parent future was cancelled)"
+                );
+            }
+        });
+
+        let stdin = FastCgiBody::from_channel(stdin_rx);
+        let data = data_rx
+            .map(FastCgiBody::from_channel)
+            .unwrap_or_else(FastCgiBody::empty);
+
+        let request = FastCgiRequest {
+            request_id,
+            role,
+            keep_conn,
+            params,
+            stdin,
+            data,
+        };
+        (request, reader_return_rx, Some(AbortOnDrop::new(handle)))
+    }
+}
+
+/// Wait for the spawned body-reader task to finish, returning whether the
+/// peer aborted the request and the read half so it can be reused for a
+/// subsequent request on a keep-alive connection.
+async fn await_body_reader<IO>(
+    task_guard: &mut Option<AbortOnDrop<()>>,
+    reader_return_rx: oneshot::Receiver<io::Result<(ReadHalf<IO>, bool)>>,
+) -> Result<(bool, ReadHalf<IO>), Error> {
+    if let Some(guard) = task_guard.take()
+        && let Some(join_handle) = guard.disarm()
+        && let Err(err) = join_handle.await
+    {
+        tracing::debug!(?err, "fastcgi server: body-reader task ended abnormally");
+    }
+    let (returned_rh, was_aborted) = reader_return_rx
+        .await
+        .map_err(|_recv_err| {
+            Error::io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "fastcgi server: body-reader task panicked or was aborted",
+            ))
+        })?
+        .map_err(Error::io)?;
+    Ok((was_aborted, returned_rh))
 }
 
 // ---------------------------------------------------------------------------

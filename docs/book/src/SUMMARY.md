@@ -30,7 +30,11 @@
 
 - [dns](./dns.md)
 - [🍎 Apple XPC](./xpc.md)
-- [FastCGI](./protocols/fastcgi.md)
+
+# Gateways
+
+- [Gateway](./gateway/intro.md)
+  - [FastCGI](./gateway/fastcgi.md)
 
 # Intro to Proxies
 

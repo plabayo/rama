@@ -17,8 +17,24 @@ use super::convert::{fastcgi_response_to_http, http_request_to_fastcgi};
 /// A connector that translates HTTP requests into FastCGI connections.
 ///
 /// Wraps an inner FastCGI connector `S`. When called with an HTTP [`Request`], it
-/// collects the body, maps HTTP metadata to CGI environment variables, and passes
-/// the resulting [`FastCgiClientRequest`] to the inner connector.
+/// maps HTTP metadata to CGI environment variables (without buffering the body —
+/// the body becomes a streaming [`FastCgiBody`][crate::body::FastCgiBody]
+/// wrapping the original `Body` stream), then hands the resulting
+/// [`FastCgiClientRequest`] to the inner connector.
+///
+/// ### Why the conversion happens *before* the connection
+///
+/// `EstablishedClientConnection<IO, Req>` is generic on the request type that
+/// flows back to the caller alongside the established IO. The inner connector
+/// must therefore see a `FastCgiClientRequest`, not a `Request<Body>`:
+///
+/// - the inner connector may route on FastCGI-shaped routing extensions
+///   (Unix-socket path per `SCRIPT_FILENAME`, pool key per backend tag, …);
+/// - it allows the connector implementor to inspect / annotate the
+///   `FastCgiClientRequest::extensions` field — a stable interface across
+///   transports — rather than HTTP-specific request parts;
+/// - the body stays a stream (no `.collect()`); the conversion is essentially
+///   metadata-only, so doing it before the connect is cheap.
 ///
 /// The returned [`EstablishedClientConnection`] carries the IO stream ready for
 /// use with [`send_on`][crate::client::send_on] or inside [`FastCgiHttpClient`].
@@ -97,14 +113,22 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let fcgi_req = http_request_to_fastcgi(req).await?;
+        let fcgi_req = http_request_to_fastcgi(req)
+            .await
+            .context("FastCgiHttpClient: build CGI environment from HTTP request")?;
         let EstablishedClientConnection {
             input: fcgi_req,
             mut conn,
-        } = self.inner.serve(fcgi_req).await.map_err(Into::into)?;
+        } = self
+            .inner
+            .serve(fcgi_req)
+            .await
+            .map_err(Into::into)
+            .context("FastCgiHttpClient: establish backend connection")?;
         let fcgi_resp: FastCgiClientResponse = send_on(&mut conn, 1, fcgi_req, false)
             .await
-            .map_err(BoxError::from)?;
+            .map_err(BoxError::from)
+            .context("FastCgiHttpClient: run FastCGI exchange")?;
         Ok(fastcgi_response_to_http(fcgi_resp))
     }
 }

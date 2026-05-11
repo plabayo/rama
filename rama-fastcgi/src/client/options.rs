@@ -64,17 +64,17 @@ impl ClientOptions {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the idle read timeout between FastCGI records.
-        pub fn read_timeout(mut self, d: Duration) -> Self {
-            self.read_timeout = Some(d);
+        /// Optional idle read timeout enforced at the IO layer.
+        pub fn read_timeout(mut self, d: Option<Duration>) -> Self {
+            self.read_timeout = d;
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the per-record write timeout.
-        pub fn write_timeout(mut self, d: Duration) -> Self {
-            self.write_timeout = Some(d);
+        /// Optional write timeout enforced at the IO layer.
+        pub fn write_timeout(mut self, d: Option<Duration>) -> Self {
+            self.write_timeout = d;
             self
         }
     }

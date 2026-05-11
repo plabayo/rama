@@ -6,7 +6,7 @@ implements. Provenance and short rationale for each file:
 | File | What | Provenance |
 |---|---|---|
 | `fastcgi_spec.txt` | FastCGI 1.0 — Mark R. Brown, Open Market, 29 April 1996. The authoritative protocol document. | <https://fastcgi-archives.github.io/FastCGI_Specification.html> (mirror of the original fastcgi.com/devkit/doc/fcgi-spec.html) |
-| `rfc3875_cgi_v1.1.txt` | RFC 3875 — Common Gateway Interface (CGI) 1.1. Defines the semantics of the name-value pairs FastCGI carries (REQUEST_METHOD, SCRIPT_NAME, PATH_INFO, HTTP_* mapping, etc.). | <https://www.rfc-editor.org/rfc/rfc3875.txt> |
+| `rfc3875.txt` | RFC 3875 — Common Gateway Interface (CGI) 1.1. Defines the semantics of the name-value pairs FastCGI carries (REQUEST_METHOD, SCRIPT_NAME, PATH_INFO, HTTP_* mapping, etc.). | <https://www.rfc-editor.org/rfc/rfc3875.txt> |
 | `nginx_fastcgi_params.md` | Curated guide to the de-facto FastCGI parameter set used by nginx, Apache, and php-fpm. | This crate |
 
 ## Why all three?

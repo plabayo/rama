@@ -227,9 +227,9 @@ fn derive_server_info(
 pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response {
     if !resp.stderr.is_empty() {
         tracing::debug!(
-            "fastcgi backend stderr ({} bytes): {}",
-            resp.stderr.len(),
-            String::from_utf8_lossy(&resp.stderr)
+            stderr.bytes = resp.stderr.len(),
+            stderr.body = %String::from_utf8_lossy(&resp.stderr),
+            "fastcgi: backend wrote to STDERR"
         );
     }
 
@@ -262,8 +262,8 @@ pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response 
         }
         let Ok(header_name) = HeaderName::from_bytes(raw_name) else {
             tracing::debug!(
-                "fastcgi: dropping response header with invalid name: {:?}",
-                String::from_utf8_lossy(raw_name)
+                header.name = %String::from_utf8_lossy(raw_name),
+                "fastcgi: dropping response header with invalid name"
             );
             continue;
         };

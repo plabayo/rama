@@ -40,14 +40,15 @@
 
 use rama::{
     error::BoxError,
+    extensions::Extensions,
     gateway::fastcgi::{
         FastCgiClientRequest, FastCgiHttpClient, FastCgiHttpService, FastCgiServer,
     },
-    http::{Body, Request, Response, StatusCode, body::util::BodyExt, server::HttpServer},
+    http::{Request, Response, StatusCode, body::util::BodyExt, server::HttpServer},
     net::client::EstablishedClientConnection,
     rt::Executor,
     service::service_fn,
-    tcp::server::TcpListener,
+    tcp::{TcpStream, client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -56,6 +57,7 @@ use rama::{
 };
 use rama_http::service::web::response::IntoResponse;
 use rama_net::address::SocketAddress;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,10 +98,11 @@ async fn main() {
     // Spawn the HTTP reverse proxy that translates HTTP to FastCGI.
     {
         let exec2 = Executor::graceful(graceful.guard());
+        let connect_exec = exec.clone();
         let tcp = TcpListener::bind_address(PROXY_ADDR, exec)
             .await
             .expect("bind http proxy");
-        let proxy = Arc::new(FastCgiProxyService::new());
+        let proxy = Arc::new(FastCgiProxyService::new(connect_exec));
         graceful.spawn_task(tcp.serve(HttpServer::auto(exec2).service(proxy)));
         tracing::info!("HTTP→FastCGI reverse proxy listening on {PROXY_ADDR}");
     }
@@ -124,9 +127,10 @@ async fn echo_http(req: Request) -> Result<Response, BoxError> {
 
     let mut text = format!("=== {} {} ===\n", parts.method, parts.uri);
     for (name, value) in &parts.headers {
-        write!(
+        // `fmt::Write::write_fmt` cannot fail when writing into a `String`.
+        let _ = writeln!(
             &mut text,
-            "{name}: {}\n",
+            "{name}: {}",
             String::from_utf8_lossy(value.as_bytes()),
         );
     }
@@ -143,15 +147,20 @@ async fn echo_http(req: Request) -> Result<Response, BoxError> {
 // TCP connector for the FastCGI backend
 // ---------------------------------------------------------------------------
 
-/// Connector that opens a plain TCP connection to the FastCGI backend.
-struct BackendConnector;
+/// Connector that opens a plain TCP connection to the FastCGI backend using
+/// rama's built-in TCP client (happy-eyeballs, DNS-aware, extension-driven).
+struct BackendConnector {
+    exec: Executor,
+}
 
 impl rama::Service<FastCgiClientRequest> for BackendConnector {
-    type Output = EstablishedClientConnection<tokio::net::TcpStream, FastCgiClientRequest>;
-    type Error = std::io::Error;
+    type Output = EstablishedClientConnection<TcpStream, FastCgiClientRequest>;
+    type Error = BoxError;
 
     async fn serve(&self, input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
-        let conn = tokio::net::TcpStream::connect(BACKEND_ADDR).await?;
+        let ext = Extensions::default();
+        let (conn, _peer) =
+            default_tcp_connect(&ext, BACKEND_ADDR.into(), self.exec.clone()).await?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -169,9 +178,9 @@ struct FastCgiProxyService {
 }
 
 impl FastCgiProxyService {
-    fn new() -> Self {
+    fn new(exec: Executor) -> Self {
         Self {
-            client: FastCgiHttpClient::new(BackendConnector),
+            client: FastCgiHttpClient::new(BackendConnector { exec }),
         }
     }
 }

@@ -76,16 +76,19 @@ where
     type Error = BoxError;
 
     async fn serve(&self, req: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
-        let EstablishedClientConnection {
-            input: req,
-            mut conn,
-        } = self
+        let EstablishedClientConnection { input: req, conn } = self
             .inner
             .serve(req)
             .await
-            .context("establish FactCGI connection")?;
+            .context("establish FastCGI connection")?;
+        // Apply read/write timeouts (if any) at the IO layer.
+        let mut conn = Box::pin(
+            rama_core::io::timeout::TimeoutIo::new(conn)
+                .maybe_with_read_timeout(self.options.read_timeout)
+                .maybe_with_write_timeout(self.options.write_timeout),
+        );
         send_on_with_options(&mut conn, 1, req, false, &self.options)
             .await
-            .context("send FactCGI request")
+            .context("send FastCGI request")
     }
 }
