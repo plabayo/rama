@@ -325,11 +325,11 @@ where
         self.set_match_route(path, matcher, service)
     }
 
-    // /// register a nested router under a prefix (path).
-    // ///
-    // /// The prefix is used to match the request path and strip it from the request URI.
-    // ///
-    // /// Note: this sub-router is configured with the same State this router has.
+    /// register a nested router under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    ///
+    /// Note: this sub-router is configured with the same State this router has.
     #[must_use]
     #[inline]
     pub fn with_sub_router_make_fn(
@@ -345,11 +345,11 @@ where
         self
     }
 
-    // /// register a nested router under a prefix (path).
-    // ///
-    // /// The prefix is used to match the request path and strip it from the request URI.
-    // ///
-    // /// Note: this sub-router is configured with the same State this router has.
+    /// register a nested router under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    ///
+    /// Note: this sub-router is configured with the same State this router has.
     pub fn set_sub_router_make_fn(
         &mut self,
         prefix: impl AsRef<str>,
@@ -999,6 +999,8 @@ mod tests {
                 .with_get(format!("{prefix}assets/{{*path}}"), serve_assets_service())
                 .with_not_found(not_found_service());
 
+            let router = ErrorHandlerLayer::new().layer(router);
+
             for (method, path, expected_body, expected_status) in cases.iter() {
                 let req = match *method {
                     Method::GET => Request::get(*path),
@@ -1033,6 +1035,8 @@ mod tests {
             .with_get("/users/{user_id}", get_user_service())
             .with_delete("/users/{user_id}", delete_user_service())
             .with_not_found(not_found_service());
+
+        let router = ErrorHandlerLayer::new().layer(router);
 
         // PUT /users/123 → 405: verify status, Allow header, and empty body in one shot
         let req = Request::put("/users/123").body(Body::empty()).unwrap();
@@ -1077,6 +1081,8 @@ mod tests {
         let router = Router::new()
             .with_get("/users/{user_id}", get_user_service())
             .with_delete("/users/{user_id}", delete_user_service());
+
+        let router = ErrorHandlerLayer::new().layer(router);
 
         let req = Request::put("/users/123").body(Body::empty()).unwrap();
         let res = router.serve(req).await.unwrap();
@@ -1154,6 +1160,8 @@ mod tests {
             let app = Router::new()
                 .with_sub_service(format!("{prefix}api"), api_router)
                 .with_get(prefix, root_service());
+
+            let app = ErrorHandlerLayer::new().layer(app);
 
             for (method, path, expected_body, expected_status) in cases.iter() {
                 let req = match *method {

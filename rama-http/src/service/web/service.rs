@@ -4,9 +4,12 @@ use crate::{
     mime::Mime,
     service::{
         fs::{DirectoryServeMode, ServeDir},
-        web::{IntoEndpointServiceWithState, endpoint::response::IntoResponse},
+        web::{
+            IntoEndpointServiceWithState, endpoint::response::IntoResponse, response::ErrorResponse,
+        },
     },
     uri::try_to_strip_path_prefix_from_uri,
+    layer::error_handling::ErrorHandlerLayer,
 };
 
 use rama_core::{
@@ -15,6 +18,7 @@ use rama_core::{
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
     telemetry::tracing,
+    Layer,
 };
 use rama_http_types::OriginalRouterUri;
 use rama_utils::{include_dir, str::arcstr::ArcStr};
@@ -22,6 +26,8 @@ use rama_utils::{include_dir, str::arcstr::ArcStr};
 use std::{convert::Infallible, path::Path, sync::Arc};
 
 use super::{IntoEndpointService, endpoint::Endpoint};
+
+type DefaultLayer = ErrorHandlerLayer;
 
 /// A basic web service that can be used to serve HTTP requests.
 ///
@@ -66,6 +72,7 @@ where
     pub fn with_get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_get().and_path(path);
         self.with_matcher(matcher, service)
@@ -76,6 +83,7 @@ where
     pub fn set_get<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_get().and_path(path);
         self.set_matcher(matcher, service)
@@ -87,6 +95,7 @@ where
     pub fn with_post<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_post().and_path(path);
         self.with_matcher(matcher, service)
@@ -97,6 +106,7 @@ where
     pub fn set_post<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_post().and_path(path);
         self.set_matcher(matcher, service)
@@ -108,6 +118,7 @@ where
     pub fn with_put<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_put().and_path(path);
         self.with_matcher(matcher, service)
@@ -118,6 +129,7 @@ where
     pub fn set_put<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_put().and_path(path);
         self.set_matcher(matcher, service)
@@ -129,6 +141,7 @@ where
     pub fn with_delete<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_delete().and_path(path);
         self.with_matcher(matcher, service)
@@ -139,6 +152,7 @@ where
     pub fn set_delete<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_delete().and_path(path);
         self.set_matcher(matcher, service)
@@ -150,6 +164,7 @@ where
     pub fn with_patch<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_patch().and_path(path);
         self.with_matcher(matcher, service)
@@ -160,6 +175,7 @@ where
     pub fn set_patch<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_patch().and_path(path);
         self.set_matcher(matcher, service)
@@ -171,6 +187,7 @@ where
     pub fn with_head<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_head().and_path(path);
         self.with_matcher(matcher, service)
@@ -181,6 +198,7 @@ where
     pub fn set_head<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_head().and_path(path);
         self.set_matcher(matcher, service)
@@ -192,6 +210,7 @@ where
     pub fn with_options<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_options().and_path(path);
         self.with_matcher(matcher, service)
@@ -202,6 +221,7 @@ where
     pub fn set_options<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_options().and_path(path);
         self.set_matcher(matcher, service)
@@ -213,6 +233,7 @@ where
     pub fn with_trace<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_trace().and_path(path);
         self.with_matcher(matcher, service)
@@ -223,6 +244,7 @@ where
     pub fn set_trace<I, T>(&mut self, path: &str, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let matcher = HttpMatcher::method_trace().and_path(path);
         self.set_matcher(matcher, service)
@@ -266,6 +288,7 @@ where
     pub fn with_nest_service<I, T>(self, prefix: impl AsRef<str>, service: I) -> Self
     where
         I: IntoEndpointService<T>,
+        I::Service: Service<Request, Output = Response, Error = Infallible>,
     {
         self.with_nest_inner(prefix, service.into_endpoint_service())
     }
@@ -280,6 +303,7 @@ where
     pub fn set_nest_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
     where
         I: IntoEndpointService<T>,
+        I::Service: Service<Request, Output = Response, Error = Infallible>,
     {
         self.set_nest_inner(prefix, service.into_endpoint_service())
     }
@@ -411,11 +435,12 @@ where
     pub fn with_matcher<I, T>(mut self, matcher: HttpMatcher<Body>, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let endpoint = Endpoint {
             matcher,
-            service: service
-                .into_endpoint_service_with_state(self.state.clone())
+            service: DefaultLayer::default()
+                .layer(service.into_endpoint_service_with_state(self.state.clone()))
                 .boxed(),
         };
         self.endpoints.push(Arc::new(endpoint));
@@ -426,11 +451,12 @@ where
     pub fn set_matcher<I, T>(&mut self, matcher: HttpMatcher<Body>, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         let endpoint = Endpoint {
             matcher,
-            service: service
-                .into_endpoint_service_with_state(self.state.clone())
+            service: DefaultLayer::default()
+                .layer(service.into_endpoint_service_with_state(self.state.clone()))
                 .boxed(),
         };
         self.endpoints.push(Arc::new(endpoint));
@@ -442,9 +468,10 @@ where
     pub fn with_not_found<I, T>(mut self, service: I) -> Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
-        self.not_found = service
-            .into_endpoint_service_with_state(self.state.clone())
+        self.not_found = DefaultLayer::default()
+            .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
         self
     }
@@ -453,9 +480,10 @@ where
     pub fn set_not_found<I, T>(&mut self, service: I) -> &mut Self
     where
         I: IntoEndpointServiceWithState<T, State>,
+        I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
-        self.not_found = service
-            .into_endpoint_service_with_state(self.state.clone())
+        self.not_found = DefaultLayer::default()
+            .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
         self
     }
@@ -558,7 +586,6 @@ where
 ///   };
 ///
 ///   let resp = svc.serve(
-///
 ///       Request::post("https://www.test.io/world").body(Body::empty()).unwrap(),
 ///   ).await.unwrap();
 ///   assert_eq!(resp.status(), StatusCode::OK);
@@ -574,16 +601,17 @@ where
 /// use rama_http::{Body, Request, Response, StatusCode};
 /// use rama_http::body::util::BodyExt;
 /// use rama_http::service::web::IntoEndpointService;
+/// use rama_http::layer::error_handling::ErrorHandler;
 /// use rama_core::{Service};
 /// use rama_core::matcher::MatcherRouter;
 ///
 /// #[tokio::main]
 /// async fn main() {
 ///   let svc = MatcherRouter((
-///     (HttpMatcher::get("/hello"), "hello".into_endpoint_service()),
-///     (HttpMatcher::post("/world"), "world".into_endpoint_service()),
-///     (MethodMatcher::CONNECT, "connect".into_endpoint_service()),
-///     StatusCode::NOT_FOUND.into_endpoint_service(),
+///     (HttpMatcher::get("/hello"), ErrorHandler::new("hello".into_endpoint_service())),
+///     (HttpMatcher::post("/world"), ErrorHandler::new("world".into_endpoint_service())),
+///     (MethodMatcher::CONNECT, ErrorHandler::new("connect".into_endpoint_service())),
+///     ErrorHandler::new(StatusCode::NOT_FOUND.into_endpoint_service()),
 ///   ));
 ///
 ///   let resp = svc.serve(
@@ -601,8 +629,12 @@ where
 macro_rules! __match_service {
     ($($M:expr_2021 => $S:expr_2021),+, _ => $F:expr $(,)?) => {{
         use $crate::service::web::IntoEndpointService;
+        use $crate::layer::error_handling::ErrorHandler;
         use $crate::__macro_dep::__core::matcher::MatcherRouter;
-        MatcherRouter(($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service()))
+        MatcherRouter((
+            $(($M, ErrorHandler::new($S.into_endpoint_service()))),+,
+            ErrorHandler::new($F.into_endpoint_service()))
+        )
     }};
 }
 

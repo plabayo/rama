@@ -46,7 +46,7 @@
 //! # }
 //! ```
 
-use crate::service::web::response::IntoResponse;
+use crate::service::web::response::{ErrorResponse, IntoResponse};
 use crate::{Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -124,7 +124,7 @@ impl<S> ErrorHandler<S> {
 
 impl<S, Body> Service<Request<Body>> for ErrorHandler<S, ()>
 where
-    S: Service<Request<Body>, Output: IntoResponse, Error: IntoResponse>,
+    S: Service<Request<Body>, Output: IntoResponse, Error: Into<ErrorResponse>>,
     Body: Send + 'static,
 {
     type Output = Response;
@@ -133,7 +133,7 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
-            Err(error) => Ok(error.into_response()),
+            Err(error) => Ok(error.into().into_response()),
         }
     }
 }

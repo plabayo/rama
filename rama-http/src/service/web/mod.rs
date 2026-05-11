@@ -1,8 +1,8 @@
 //! basic web service
 
-// mod service;
-// #[doc(inline)]
-// pub use service::{WebService, match_service};
+mod service;
+#[doc(inline)]
+pub use service::{WebService, match_service};
 
 mod endpoint;
 #[doc(inline)]
@@ -11,9 +11,9 @@ pub use endpoint::{
     extract, response,
 };
 
-// pub mod k8s;
-// #[doc(inline)]
-// pub use k8s::{k8s_health, k8s_health_builder};
+pub mod k8s;
+#[doc(inline)]
+pub use k8s::{k8s_health, k8s_health_builder};
 
 pub mod error;
 
