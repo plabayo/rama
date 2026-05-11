@@ -201,209 +201,201 @@ mod private {
     impl<F, T, State> Sealed<(F, T), State> for F where F: EndpointServiceFn<T, State> {}
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//     use crate::{Body, Method, Request, StatusCode, body::util::BodyExt};
-//     use extract::*;
-//     use rama_core::conversion::FromRef;
-//
-//     fn assert_into_endpoint_service<T, I>(_: I)
-//     where
-//         I: IntoEndpointService<T>,
-//     {
-//     }
-//
-//     #[test]
-//     fn test_into_endpoint_service_static() {
-//         assert_into_endpoint_service(StatusCode::OK);
-//         assert_into_endpoint_service("hello");
-//         assert_into_endpoint_service("hello".to_owned());
-//     }
-//
-//     #[tokio::test]
-//     async fn test_into_endpoint_service_impl() {
-//         #[derive(Debug, Clone)]
-//         struct OkService;
-//
-//         impl Service<Request> for OkService {
-//             type Output = StatusCode;
-//             type Error = Infallible;
-//
-//             async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
-//                 Ok(StatusCode::OK)
-//             }
-//         }
-//
-//         let svc = OkService;
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp, StatusCode::OK);
-//
-//         assert_into_endpoint_service(svc)
-//     }
-//
-//     #[test]
-//     fn test_into_endpoint_service_fn_no_param() {
-//         assert_into_endpoint_service(async || StatusCode::OK);
-//         assert_into_endpoint_service(async || "hello");
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_no_param() {
-//         let svc = async || StatusCode::OK;
-//         let svc = svc.into_endpoint_service();
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_single_param_request() {
-//         let svc = async |req: Request| req.uri().to_string();
-//         let svc = svc.into_endpoint_service();
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//         let body = resp.into_body().collect().await.unwrap().to_bytes();
-//         assert_eq!(body, "http://example.com/")
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_with_state() {
-//         let state = "test_string".to_owned();
-//         let svc = async |State(state): State<String>| state;
-//         let svc = svc.into_endpoint_service_with_state(state.clone());
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//         let body = resp.into_body().collect().await.unwrap().to_bytes();
-//         assert_eq!(body, "test_string");
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_with_derived_state() {
-//         #[derive(Clone, Debug, Default, FromRef)]
-//         #[allow(dead_code)]
-//         struct GlobalState {
-//             numbers: u8,
-//             text: String,
-//         }
-//
-//         let state = GlobalState {
-//             text: "test_string".to_owned(),
-//             ..Default::default()
-//         };
-//
-//         let svc = async |State(state): State<GlobalState>| state.text;
-//         let svc = svc.into_endpoint_service_with_state(state.clone());
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//         let body = resp.into_body().collect().await.unwrap().to_bytes();
-//         assert_eq!(body, "test_string");
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_single_param_host() {
-//         let svc = async |Host(host): Host| host.to_string();
-//         let svc = svc.into_endpoint_service();
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//         let body = resp.into_body().collect().await.unwrap().to_bytes();
-//         assert_eq!(body, "example.com")
-//     }
-//
-//     #[tokio::test]
-//     async fn test_service_fn_wrapper_multi_param_host() {
-//         #[derive(Debug, Clone, serde::Deserialize)]
-//         struct Params {
-//             foo: String,
-//         }
-//
-//         let svc = crate::service::web::WebService::default().with_get(
-//             "/{foo}/bar",
-//             async |Host(host): Host, Path(params): Path<Params>| {
-//                 format!("{} => {}", host, params.foo)
-//             },
-//         );
-//         let svc = svc.into_endpoint_service();
-//
-//         let resp = svc
-//             .serve(
-//                 Request::builder()
-//                     .uri("http://example.com/42/bar")
-//                     .body(Body::empty())
-//                     .unwrap(),
-//             )
-//             .await
-//             .unwrap();
-//         assert_eq!(resp.status(), StatusCode::OK);
-//         let body = resp.into_body().collect().await.unwrap().to_bytes();
-//         assert_eq!(body, "example.com => 42")
-//     }
-//
-//     #[test]
-//     fn test_into_endpoint_service_fn_single_param() {
-//         #[derive(Debug, Clone, serde::Deserialize)]
-//         struct Params {
-//             foo: String,
-//         }
-//
-//         assert_into_endpoint_service(async |_path: Path<Params>| StatusCode::OK);
-//         assert_into_endpoint_service(async |Path(params): Path<Params>| params.foo);
-//         assert_into_endpoint_service(async |Query(query): Query<Params>| query.foo);
-//         assert_into_endpoint_service(async |method: Method| method.to_string());
-//         assert_into_endpoint_service(async |req: Request| req.uri().to_string());
-//         assert_into_endpoint_service(async |_host: Host| StatusCode::OK);
-//         assert_into_endpoint_service(async |Host(_host): Host| StatusCode::OK);
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Body, Method, Request, StatusCode, body::util::BodyExt};
+    use extract::*;
+    use rama_core::conversion::FromRef;
+
+    fn assert_into_endpoint_service<T, I>(_: I)
+    where
+        I: IntoEndpointService<T>,
+    {
+    }
+
+    #[test]
+    fn test_into_endpoint_service_static() {
+        assert_into_endpoint_service(StatusCode::OK);
+        assert_into_endpoint_service("hello");
+        assert_into_endpoint_service("hello".to_owned());
+    }
+
+    #[tokio::test]
+    async fn test_into_endpoint_service_impl() {
+        #[derive(Debug, Clone)]
+        struct OkService;
+
+        impl Service<Request> for OkService {
+            type Output = StatusCode;
+            type Error = Infallible;
+
+            async fn serve(&self, _req: Request) -> Result<Self::Output, Self::Error> {
+                Ok(StatusCode::OK)
+            }
+        }
+
+        let svc = OkService;
+        let resp = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp, StatusCode::OK);
+
+        assert_into_endpoint_service(svc)
+    }
+
+    #[test]
+    fn test_into_endpoint_service_fn_no_param() {
+        assert_into_endpoint_service(async || StatusCode::OK);
+        assert_into_endpoint_service(async || "hello");
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_no_param() {
+        let svc = async || StatusCode::OK;
+        let svc = svc.into_endpoint_service();
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_single_param_request() {
+        let svc = async |req: Request| req.uri().to_string();
+        let svc = svc.into_endpoint_service();
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, "http://example.com/")
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_with_state() {
+        let state = "test_string".to_owned();
+        let svc = async |State(state): State<String>| state;
+        let svc = svc.into_endpoint_service_with_state(state.clone());
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, "test_string");
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_with_derived_state() {
+        #[derive(Clone, Debug, Default, FromRef)]
+        #[allow(dead_code)]
+        struct GlobalState {
+            numbers: u8,
+            text: String,
+        }
+
+        let state = GlobalState {
+            text: "test_string".to_owned(),
+            ..Default::default()
+        };
+
+        let svc = async |State(state): State<GlobalState>| state.text;
+        let svc = svc.into_endpoint_service_with_state(state.clone());
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, "test_string");
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_single_param_host() {
+        let svc = async |Host(host): Host| host.to_string();
+        let svc = svc.into_endpoint_service();
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res, "example.com")
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_multi_param_host() {
+        #[derive(Debug, Clone, serde::Deserialize)]
+        struct Params {
+            foo: String,
+        }
+
+        let svc = crate::service::web::WebService::default().with_get(
+            "/{foo}/bar",
+            async |Host(host): Host, Path(params): Path<Params>| {
+                format!("{} => {}", host, params.foo)
+            },
+        );
+        let svc = svc.into_endpoint_service();
+
+        let resp = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com/42/bar")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "example.com => 42")
+    }
+
+    #[test]
+    fn test_into_endpoint_service_fn_single_param() {
+        #[derive(Debug, Clone, serde::Deserialize)]
+        struct Params {
+            foo: String,
+        }
+
+        assert_into_endpoint_service(async |_path: Path<Params>| StatusCode::OK);
+        assert_into_endpoint_service(async |Path(params): Path<Params>| params.foo);
+        assert_into_endpoint_service(async |Query(query): Query<Params>| query.foo);
+        assert_into_endpoint_service(async |method: Method| method.to_string());
+        assert_into_endpoint_service(async |req: Request| req.uri().to_string());
+        assert_into_endpoint_service(async |_host: Host| StatusCode::OK);
+        assert_into_endpoint_service(async |Host(_host): Host| StatusCode::OK);
+    }
+}
