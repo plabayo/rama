@@ -31,7 +31,7 @@ pub async fn send_on<IO>(
     keep_conn: bool,
 ) -> Result<FastCgiClientResponse, ClientError>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
     send_on_with_options(
         stream,
@@ -48,6 +48,13 @@ where
 /// `request_id` must be non-zero. If `keep_conn` is true, the
 /// `FCGI_KEEP_CONN` flag is set in `FCGI_BEGIN_REQUEST` and the connection is
 /// not closed by the application.
+///
+/// **Concurrent write/read.** The request side (BEGIN, PARAMS, STDIN) and
+/// the response side (STDOUT, STDERR, END_REQUEST) are driven concurrently
+/// against split halves of the stream. Without this, a large STDIN upload
+/// could deadlock with the backend's STDOUT writes: each side blocks waiting
+/// for the other to drain its socket buffer (classic FastCGI write-after-
+/// write deadlock).
 pub async fn send_on_with_options<IO>(
     stream: &mut IO,
     request_id: u16,
@@ -56,20 +63,41 @@ pub async fn send_on_with_options<IO>(
     options: &ClientOptions,
 ) -> Result<FastCgiClientResponse, ClientError>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    IO: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let begin_body = BeginRequestBody {
-        role: Role::Responder,
-        keep_conn,
+    let FastCgiClientRequest {
+        params,
+        stdin,
+        extensions: _,
+    } = request;
+
+    let (mut rh, mut wh) = tokio::io::split(stream);
+
+    // Write side: BEGIN, PARAMS, STDIN stream.
+    let write_fut = async {
+        let begin_body = BeginRequestBody {
+            role: Role::Responder,
+            keep_conn,
+        };
+        let hdr = RecordHeader::new(RecordType::BeginRequest, request_id, 8);
+        hdr.write_to(&mut wh).await.map_err(ClientError::io)?;
+        begin_body
+            .write_to(&mut wh)
+            .await
+            .map_err(ClientError::io)?;
+        send_params(&mut wh, request_id, &params).await?;
+        send_stdin_stream(&mut wh, request_id, stdin).await?;
+        Ok::<(), ClientError>(())
     };
-    let hdr = RecordHeader::new(RecordType::BeginRequest, request_id, 8);
-    hdr.write_to(stream).await.map_err(ClientError::io)?;
-    begin_body.write_to(stream).await.map_err(ClientError::io)?;
 
-    send_params(stream, request_id, &request.params).await?;
-    send_stdin_stream(stream, request_id, request.stdin).await?;
+    // Read side: STDOUT / STDERR until END_REQUEST.
+    let read_fut = read_response(&mut rh, request_id, options);
 
-    read_response(stream, request_id, options).await
+    // `try_join!` drives both futures concurrently and cancels the other on
+    // first error — so a write failure won't leave us blocked waiting for a
+    // response that will never come, and vice versa.
+    let ((), response) = tokio::try_join!(write_fut, read_fut)?;
+    Ok(response)
 }
 
 async fn send_params<W>(
@@ -140,13 +168,13 @@ where
     hdr.write_to(w).await.map_err(ClientError::io)
 }
 
-async fn read_response<IO>(
-    stream: &mut IO,
+async fn read_response<R>(
+    stream: &mut R,
     request_id: u16,
     options: &ClientOptions,
 ) -> Result<FastCgiClientResponse, ClientError>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
 {
     let mut stdout = BytesMut::new();
     let mut stderr = BytesMut::new();
@@ -278,12 +306,12 @@ where
     }
 }
 
-async fn handle_management_response<IO>(
-    stream: &mut IO,
+async fn handle_management_response<R>(
+    stream: &mut R,
     hdr: &RecordHeader,
 ) -> Result<(), ClientError>
 where
-    IO: AsyncRead + AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
 {
     match hdr.record_type {
         RecordType::UnknownType => {
@@ -336,6 +364,7 @@ where
 mod tests {
     use super::*;
     use crate::proto::params::NvPair;
+    use rama_utils::octets::kib;
 
     /// Simulate a FastCGI backend on the server side of a duplex stream:
     /// drain the client's request records, then write a canned response
@@ -394,7 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_on_collects_stdout_stderr_and_app_status() {
-        let (mut client_io, mut server_io) = tokio::io::duplex(16 * 1024);
+        let (mut client_io, mut server_io) = tokio::io::duplex(kib(16));
         let request = FastCgiClientRequest::new(vec![
             (
                 Bytes::from_static(b"REQUEST_METHOD"),
@@ -423,14 +452,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_on_stdout_cap_rejects_oversize_response() {
-        let (mut client_io, mut server_io) = tokio::io::duplex(64 * 1024);
+        let (mut client_io, mut server_io) = tokio::io::duplex(kib(64));
         let request = FastCgiClientRequest::new(vec![(
             Bytes::from_static(b"REQUEST_METHOD"),
             Bytes::from_static(b"GET"),
         )]);
         let backend = tokio::spawn(async move {
             // Returns 1 KiB of stdout; we cap at 100 bytes.
-            let big = vec![b'x'; 1024];
+            let big = vec![b'x'; kib(1)];
             // Don't use echo_backend because it asserts behaviour on framing.
             // Drain client's BEGIN+PARAMS+STDIN minimally.
             let mut io = &mut server_io;
@@ -468,12 +497,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_on_truncates_oversize_stderr() {
-        let (mut client_io, mut server_io) = tokio::io::duplex(64 * 1024);
+        let (mut client_io, mut server_io) = tokio::io::duplex(kib(64));
         let request = FastCgiClientRequest::new(vec![(
             Bytes::from_static(b"REQUEST_METHOD"),
             Bytes::from_static(b"GET"),
         )]);
-        let big_err = vec![b'e'; 1024];
+        let big_err = vec![b'e'; kib(1)];
         let big_err_clone = big_err.clone();
         let backend = tokio::spawn(async move {
             echo_backend(&mut server_io, 1, b"ok", &big_err_clone).await;
@@ -490,7 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_on_streams_stdin_chunks() {
-        let (mut client_io, mut server_io) = tokio::io::duplex(64 * 1024);
+        let (mut client_io, mut server_io) = tokio::io::duplex(kib(64));
         let body = vec![b'x'; 9000]; // larger than the 8 KiB stdin chunk
         let request = FastCgiClientRequest::new(vec![(
             Bytes::from_static(b"REQUEST_METHOD"),
@@ -553,5 +582,106 @@ mod tests {
         let mut buf = Vec::new();
         pair.write_to(&mut buf).await.unwrap();
         assert!(!buf.is_empty());
+    }
+
+    /// Regression: a large STDIN upload paired with a large STDOUT response
+    /// must NOT deadlock. The earlier implementation drained STDIN fully
+    /// before reading STDOUT; if the backend's socket buffer filled during
+    /// STDIN write while we weren't draining its STDOUT, both sides would
+    /// block forever.
+    ///
+    /// We simulate the deadlock-prone scenario with a tiny duplex buffer
+    /// (1 KiB each direction): on the wrong implementation the test
+    /// timeouts; on the fixed one it completes in milliseconds because
+    /// `send_on_with_options` writes and reads concurrently.
+    #[tokio::test]
+    async fn test_send_on_does_not_deadlock_on_large_streams() {
+        let (mut client_io, mut server_io) = tokio::io::duplex(kib(1));
+
+        // 64 KiB of stdin + 64 KiB of stdout = far more than the duplex
+        // buffer can hold in either direction. Sequential write-then-read
+        // would block at the first socket-buffer fill in either direction.
+        let stdin_body = vec![b's'; kib(64)];
+        let stdout_body = vec![b'o'; kib(64)];
+
+        let request = FastCgiClientRequest::new(vec![(
+            Bytes::from_static(b"REQUEST_METHOD"),
+            Bytes::from_static(b"POST"),
+        )])
+        .with_stdin(Bytes::from(stdin_body.clone()));
+
+        let stdin_len = stdin_body.len();
+        let stdout_clone = stdout_body.clone();
+        let backend = tokio::spawn(async move {
+            // Drain BEGIN + PARAMS + STDIN.
+            let _ = RecordHeader::read_from(&mut server_io).await.unwrap();
+            let _ = BeginRequestBody::read_from(&mut server_io).await.unwrap();
+            // PARAMS until empty terminator.
+            loop {
+                let h = RecordHeader::read_from(&mut server_io).await.unwrap();
+                if h.content_length == 0 {
+                    break;
+                }
+                let mut tmp = vec![0u8; h.content_length as usize];
+                server_io.read_exact(&mut tmp).await.unwrap();
+            }
+            // Interleave: write a chunk of STDOUT for every chunk of STDIN
+            // we drain, exercising the concurrent path on both sides.
+            let mut received = 0usize;
+            let mut sent = 0usize;
+            while received < stdin_len || sent < stdout_clone.len() {
+                if received < stdin_len {
+                    let h = RecordHeader::read_from(&mut server_io).await.unwrap();
+                    assert_eq!(h.record_type, RecordType::Stdin);
+                    if h.content_length == 0 {
+                        received = stdin_len; // EOS
+                    } else {
+                        let mut tmp = vec![0u8; h.content_length as usize];
+                        server_io.read_exact(&mut tmp).await.unwrap();
+                        received += tmp.len();
+                    }
+                }
+                if sent < stdout_clone.len() {
+                    let take = (stdout_clone.len() - sent).min(2048);
+                    let hdr = RecordHeader::new(RecordType::Stdout, 1, take as u16);
+                    hdr.write_to(&mut server_io).await.unwrap();
+                    server_io
+                        .write_all(&stdout_clone[sent..sent + take])
+                        .await
+                        .unwrap();
+                    sent += take;
+                }
+            }
+            // STDOUT EOS + END_REQUEST.
+            RecordHeader::new(RecordType::Stdout, 1, 0)
+                .write_to(&mut server_io)
+                .await
+                .unwrap();
+            RecordHeader::new(RecordType::EndRequest, 1, 8)
+                .write_to(&mut server_io)
+                .await
+                .unwrap();
+            EndRequestBody {
+                app_status: 0,
+                protocol_status: ProtocolStatus::RequestComplete,
+            }
+            .write_to(&mut server_io)
+            .await
+            .unwrap();
+        });
+
+        // Hard deadline: if the implementation deadlocks, this fails fast
+        // rather than hanging the test runner.
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            send_on(&mut client_io, 1, request, false),
+        )
+        .await
+        .expect("send_on must not deadlock on large streams")
+        .unwrap();
+
+        backend.await.unwrap();
+        assert_eq!(resp.app_status, 0);
+        assert_eq!(resp.stdout.len(), stdout_body.len());
     }
 }

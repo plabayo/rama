@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::mib;
 
 /// Configuration for [`FastCgiServer`][crate::server::FastCgiServer].
 #[derive(Debug, Clone)]
@@ -63,7 +64,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
-            max_params_bytes: 1024 * 1024,
+            max_params_bytes: mib(1),
             max_stdin_bytes: None,
             max_data_bytes: None,
             read_timeout: None,

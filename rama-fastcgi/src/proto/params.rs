@@ -165,13 +165,29 @@ impl NvPair {
 
     /// Read a single [`NvPair`] from the reader.
     ///
+    /// Rejects pairs whose declared `name + value` length would exceed
+    /// `max_pair_bytes` *before* allocating, returning
+    /// [`ProtocolError::ContentTooLarge`]. This guards against peer-controlled
+    /// length fields (up to `2^31 − 1` per side per the FastCGI spec) from
+    /// triggering multi-gigabyte allocations.
+    ///
+    /// **Note on cancellation:** this function performs multiple sequential
+    /// awaits (length, length, bytes, bytes). A future dropped mid-read can
+    /// leave the stream desynced. Use `decode_params` over a pre-read,
+    /// already-capped buffer (as the crate's framing layer does) when
+    /// cancellation safety matters.
+    ///
     /// Reference: FastCGI Specification §3.4
-    pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
+    pub async fn read_from<R>(r: &mut R, max_pair_bytes: usize) -> Result<Self, ProtocolError>
     where
         R: AsyncRead + Unpin,
     {
         let name_len = decode_length(r).await? as usize;
         let value_len = decode_length(r).await? as usize;
+        let total = name_len.saturating_add(value_len);
+        if total > max_pair_bytes {
+            return Err(ProtocolError::content_too_large(total));
+        }
 
         let mut name = vec![0u8; name_len];
         r.read_exact(&mut name).await?;
@@ -270,6 +286,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_utils::octets::kib;
 
     fn roundtrip_pairs(pairs: &[(&[u8], &[u8])]) {
         let refs: Vec<NvPairRef<'_>> = pairs.iter().map(|(n, v)| NvPairRef::new(n, v)).collect();
@@ -370,7 +387,26 @@ mod tests {
         let mut buf = Vec::new();
         pair.write_to(&mut buf).await.unwrap();
         let mut cursor = std::io::Cursor::new(buf);
-        let decoded = NvPair::read_from(&mut cursor).await.unwrap();
+        let decoded = NvPair::read_from(&mut cursor, kib(64)).await.unwrap();
         assert_eq!(pair, decoded);
+    }
+
+    #[tokio::test]
+    async fn test_nv_pair_read_from_rejects_oversize_before_allocating() {
+        // Hand-craft an NV pair header that declares a 2-GiB name. The
+        // decoder must reject by length *before* attempting to allocate.
+        // We use the 4-byte length form for ~2^31-1 (the spec max).
+        let mut bad_header = Vec::new();
+        // name_len = 0x7FFFFFFF, encoded as 4 bytes with high bit set.
+        bad_header.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        // value_len = 0 (single byte).
+        bad_header.push(0);
+
+        let mut cursor = std::io::Cursor::new(bad_header);
+        let err = NvPair::read_from(&mut cursor, kib(64)).await.unwrap_err();
+        match err {
+            ProtocolError::ContentTooLarge(n) => assert!(n >= 0x7FFF_FFFF),
+            other => panic!("expected ContentTooLarge, got {other:?}"),
+        }
     }
 }

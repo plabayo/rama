@@ -179,11 +179,23 @@ impl<S> FastCgiServer<S> {
             let keep_conn = request.keep_conn;
             let request_id = request.request_id;
 
-            let response = self
-                .inner
-                .serve(request)
-                .await
-                .map_err(|e| Error::service(e.into()))?;
+            let response = match self.inner.serve(request).await {
+                Ok(r) => r,
+                Err(err) => {
+                    // Politely tell the peer the application gave up so it
+                    // doesn't sit on a half-written response stream.
+                    if let Err(io_err) =
+                        conn::write_service_failure_end_request(&mut write_half, request_id).await
+                    {
+                        tracing::debug!(
+                            ?io_err,
+                            rid = request_id,
+                            "fastcgi server: failed to write END_REQUEST after inner-service error"
+                        );
+                    }
+                    return Err(Error::service(err.into()));
+                }
+            };
 
             conn::write_response(&mut write_half, request_id, response, &self.options)
                 .await

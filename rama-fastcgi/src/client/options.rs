@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use rama_utils::octets::{kib, mib};
+
 /// Configuration for [`FastCgiClient`][crate::client::FastCgiClient] and
 /// [`send_on`][crate::client::send_on].
 #[derive(Debug, Clone)]
@@ -32,8 +34,8 @@ pub struct ClientOptions {
 impl Default for ClientOptions {
     fn default() -> Self {
         Self {
-            max_stdout_bytes: 16 * 1024 * 1024,
-            max_stderr_bytes: 256 * 1024,
+            max_stdout_bytes: mib(16),
+            max_stderr_bytes: kib(256),
             read_timeout: None,
             write_timeout: None,
         }

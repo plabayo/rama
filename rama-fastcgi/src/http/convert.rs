@@ -107,17 +107,17 @@ pub(super) async fn http_request_to_fastcgi(
         }
     }
 
-    if let Some(cl) = content_length_header {
-        param!(cgi::CONTENT_LENGTH, cl);
-    } else {
-        // Unknown body length (chunked etc) — CGI requires CONTENT_LENGTH to be
-        // present per RFC 3875 §4.1.2 ("if and only if the request includes a
-        // message-body"). Set 0 if the method is body-less, otherwise omit and
-        // let the backend rely on EOF-on-STDIN.
-        if !matches!(parts.method, Method::POST | Method::PUT | Method::PATCH) {
-            param!(cgi::CONTENT_LENGTH, "0");
-        }
-    }
+    // Always emit CONTENT_LENGTH — nginx-compatible behaviour, and what
+    // php-fpm needs to populate `$_POST` / `$_FILES`. When the incoming HTTP
+    // request used `Transfer-Encoding: chunked` (so no header), fall back to
+    // `"0"`: the FastCGI STDIN stream is still terminated correctly by the
+    // empty-STDIN record, so `php://input` keeps working — only PHP's
+    // CL-driven body parsing (`$_POST`) won't auto-populate. Callers that
+    // need a real length for chunked uploads must dechunk + set CL upstream.
+    param!(
+        cgi::CONTENT_LENGTH,
+        content_length_header.unwrap_or_else(|| "0".to_owned())
+    );
 
     if let Some(ct) = parts.headers.get(rama_http_types::header::CONTENT_TYPE) {
         params.push((cgi::CONTENT_TYPE, Bytes::copy_from_slice(ct.as_bytes())));
@@ -562,5 +562,65 @@ mod tests {
         );
         // Host should NOT be forwarded as HTTP_HOST.
         assert!(find(b"HTTP_HOST").is_none());
+    }
+
+    /// Regression: every HTTP request — including a chunked POST that
+    /// arrives without a `Content-Length` header — must produce a
+    /// `CONTENT_LENGTH` CGI param. nginx's de-facto behaviour; php-fpm reads
+    /// it for `$_POST` / `$_FILES` body parsing. Earlier we *omitted* the
+    /// param entirely for POST/PUT/PATCH-without-CL, which broke PHP body
+    /// parsing on chunked uploads.
+    #[tokio::test]
+    async fn test_http_request_to_fastcgi_always_emits_content_length() {
+        // GET without a body: CL=0.
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let cl = fcgi
+            .params
+            .iter()
+            .find(|(n, _)| n.as_ref() == b"CONTENT_LENGTH")
+            .map(|(_, v)| v.clone());
+        assert_eq!(cl.as_deref(), Some(b"0".as_ref()));
+
+        // POST with explicit Content-Length: forwarded verbatim.
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .header("content-length", "9")
+            .body(Body::from("name=rama"))
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let cl = fcgi
+            .params
+            .iter()
+            .find(|(n, _)| n.as_ref() == b"CONTENT_LENGTH")
+            .map(|(_, v)| v.clone());
+        assert_eq!(cl.as_deref(), Some(b"9".as_ref()));
+
+        // POST without Content-Length (simulated chunked): CL=0 fallback.
+        // This is the regression case — previously we omitted CL entirely.
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::from("anything"))
+            .unwrap();
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let cl = fcgi
+            .params
+            .iter()
+            .find(|(n, _)| n.as_ref() == b"CONTENT_LENGTH")
+            .map(|(_, v)| v.clone());
+        assert_eq!(
+            cl.as_deref(),
+            Some(b"0".as_ref()),
+            "CONTENT_LENGTH must be present (even =0) for POST without Content-Length header"
+        );
     }
 }

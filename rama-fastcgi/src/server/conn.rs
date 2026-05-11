@@ -463,6 +463,36 @@ where
     .await
 }
 
+/// Inform the peer that the inner service failed before producing a response.
+///
+/// Emits an empty `FCGI_STDOUT` terminator (so the peer knows the stdout
+/// stream is complete) followed by `FCGI_END_REQUEST{app_status=1,
+/// RequestComplete}`. `app_status` is non-zero per CGI convention so the web
+/// server treats this as an application-level failure (it's free to retry or
+/// surface a 5xx).
+pub(super) async fn write_service_failure_end_request<W>(
+    w: &mut W,
+    request_id: u16,
+) -> Result<(), io::Error>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Empty STDOUT terminator: the spec requires every stream we *started*
+    // to be terminated with an empty record. We never wrote any STDOUT, but
+    // some peers expect the terminator anyway — it's a free signal.
+    let hdr = RecordHeader::new(RecordType::Stdout, request_id, 0);
+    hdr.write_to(w).await?;
+    write_end_request(
+        w,
+        request_id,
+        EndRequestBody {
+            app_status: 1,
+            protocol_status: ProtocolStatus::RequestComplete,
+        },
+    )
+    .await
+}
+
 async fn write_end_request<W>(
     w: &mut W,
     request_id: u16,
@@ -568,6 +598,7 @@ where
 mod tests {
     use super::*;
     use crate::proto::params::NvPair;
+    use rama_utils::octets::kib;
 
     /// Encode a complete client-side BEGIN+PARAMS+STDIN(EOF) request into a buffer.
     async fn write_request(role: Role, params: &[(&[u8], &[u8])], stdin: &[u8]) -> Vec<u8> {
@@ -635,7 +666,7 @@ mod tests {
     #[tokio::test]
     async fn test_max_params_bytes_enforced() {
         // 16 KiB of params at default cap (1 MiB) → OK.
-        let huge_value: Vec<u8> = vec![b'x'; 16 * 1024];
+        let huge_value: Vec<u8> = vec![b'x'; kib(16)];
         let bytes = write_request(Role::Responder, &[(b"BIG", &huge_value)], b"").await;
         let mut reader = std::io::Cursor::new(bytes);
         let mut writer = Vec::new();
@@ -706,5 +737,57 @@ mod tests {
         // Server should have written an END_REQUEST record.
         assert!(!writer.is_empty());
         assert_eq!(writer[1], u8::from(RecordType::EndRequest));
+    }
+
+    /// Regression: when the inner service errors out before producing a
+    /// response, the server must still send an `FCGI_END_REQUEST` record so
+    /// the peer doesn't sit on a half-written stream. `app_status` is
+    /// non-zero to signal application-level failure per CGI convention.
+    #[tokio::test]
+    async fn test_service_failure_writes_end_request() {
+        let mut buf = Vec::new();
+        write_service_failure_end_request(&mut buf, 7)
+            .await
+            .unwrap();
+
+        // Expect: STDOUT(empty)  +  END_REQUEST{app_status=1, RequestComplete}
+        // Each record is 8 bytes header + (0 or 8) body.
+        assert!(
+            buf.len() >= 8 + 8 + 8,
+            "got {} bytes: {:x?}",
+            buf.len(),
+            buf
+        );
+
+        // First record: empty STDOUT terminator.
+        assert_eq!(buf[1], u8::from(RecordType::Stdout));
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 7); // request_id
+        assert_eq!(u16::from_be_bytes([buf[4], buf[5]]), 0); // content_length
+
+        // Second record: END_REQUEST.
+        let end_hdr_off = 8;
+        assert_eq!(buf[end_hdr_off + 1], u8::from(RecordType::EndRequest));
+        assert_eq!(
+            u16::from_be_bytes([buf[end_hdr_off + 2], buf[end_hdr_off + 3]]),
+            7
+        );
+        assert_eq!(
+            u16::from_be_bytes([buf[end_hdr_off + 4], buf[end_hdr_off + 5]]),
+            8
+        );
+
+        // EndRequestBody: 4 bytes app_status (BE), 1 byte protocol_status, 3 reserved.
+        let body_off = end_hdr_off + 8;
+        let app_status = u32::from_be_bytes([
+            buf[body_off],
+            buf[body_off + 1],
+            buf[body_off + 2],
+            buf[body_off + 3],
+        ]);
+        assert_eq!(
+            app_status, 1,
+            "app_status must be non-zero on service failure"
+        );
+        assert_eq!(buf[body_off + 4], u8::from(ProtocolStatus::RequestComplete));
     }
 }
