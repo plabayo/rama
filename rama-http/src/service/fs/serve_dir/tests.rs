@@ -1172,7 +1172,7 @@ fn verify_windows_device(name: &str, is_positive: bool) {
     use std::fs::OpenOptions;
     use std::os::windows::io::AsRawHandle;
 
-    extern "system" {
+    unsafe extern "system" {
         fn GetFileType(hFile: *mut std::ffi::c_void) -> u32;
     }
     const FILE_TYPE_CHAR: u32 = 0x0002;
