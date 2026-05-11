@@ -3,6 +3,7 @@
 //! Reference: FastCGI spec 1.0
 //! (embedded in repo crate dir at `specifications/fastcgi_spec.txt`)
 
+pub mod cgi;
 pub mod params;
 pub mod record;
 

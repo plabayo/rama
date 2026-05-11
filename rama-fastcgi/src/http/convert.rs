@@ -20,6 +20,7 @@ use rama_net::stream::SocketInfo;
 
 use crate::body::FastCgiBody;
 use crate::client::{FastCgiClientRequest, FastCgiClientResponse};
+use crate::proto::cgi;
 use crate::server::{FastCgiRequest, FastCgiResponse};
 
 pub(super) fn version_to_protocol(v: Version) -> &'static str {
@@ -30,18 +31,6 @@ pub(super) fn version_to_protocol(v: Version) -> &'static str {
         _ => "HTTP/1.1",
     }
 }
-
-/// Headers that must NOT become HTTP_* CGI variables (hop-by-hop per RFC 7230
-/// §6.1) plus the ones that have dedicated CGI variables.
-pub(super) const HOP_BY_HOP: &[&str] = &[
-    "connection",
-    "keep-alive",
-    "proxy-connection",
-    "transfer-encoding",
-    "te",
-    "trailer",
-    "upgrade",
-];
 
 /// Build a [`FastCgiClientRequest`] from an HTTP request **without** buffering
 /// the body. The request body is plumbed through as a [`FastCgiBody`] backed
@@ -79,65 +68,59 @@ pub(super) async fn http_request_to_fastcgi(
 
     macro_rules! param {
         ($name:expr, $value:expr) => {
-            params.push((Bytes::from_static($name), Bytes::from($value)));
+            params.push(($name, Bytes::from($value)));
         };
     }
 
     // ── Required CGI/1.1 variables (RFC 3875 §4) ─────────────────────────
-    param!(b"GATEWAY_INTERFACE", "CGI/1.1".to_owned());
-    param!(b"SERVER_PROTOCOL", protocol);
-    param!(b"REQUEST_METHOD", method);
+    param!(cgi::GATEWAY_INTERFACE, "CGI/1.1");
+    param!(cgi::SERVER_PROTOCOL, protocol);
+    param!(cgi::REQUEST_METHOD, method);
 
     // ── Script / path split. The default policy treats the entire URL
     //    path as SCRIPT_NAME with empty PATH_INFO; this matches modern
     //    framework routing. Sites that need traditional script-file/extra
     //    path splitting should layer a router on top of this connector.
-    param!(b"SCRIPT_NAME", path.clone());
-    param!(b"PATH_INFO", String::new());
-    param!(b"QUERY_STRING", query);
+    param!(cgi::SCRIPT_NAME, path.clone());
+    param!(cgi::PATH_INFO, "");
+    param!(cgi::QUERY_STRING, query);
 
     // ── nginx de-facto variables ─────────────────────────────────────────
-    param!(b"REQUEST_URI", request_uri);
-    param!(b"DOCUMENT_URI", path);
-    param!(
-        b"REQUEST_SCHEME",
-        if is_https { "https" } else { "http" }.to_owned()
-    );
+    param!(cgi::REQUEST_URI, request_uri);
+    param!(cgi::DOCUMENT_URI, path);
+    param!(cgi::REQUEST_SCHEME, if is_https { "https" } else { "http" });
     if is_https {
-        param!(b"HTTPS", "on".to_owned());
+        param!(cgi::HTTPS, "on");
     }
     // Required by php-fpm (with cgi.force_redirect=1, the default).
-    param!(b"REDIRECT_STATUS", "200".to_owned());
+    param!(cgi::REDIRECT_STATUS, "200");
 
-    param!(b"SERVER_NAME", server_name);
-    param!(b"SERVER_PORT", server_port);
+    param!(cgi::SERVER_NAME, server_name);
+    param!(cgi::SERVER_PORT, server_port);
 
     if let Some(p) = peer.as_ref() {
         let peer_addr = p.peer_addr();
-        param!(b"REMOTE_ADDR", peer_addr.ip_addr.to_string());
-        param!(b"REMOTE_PORT", peer_addr.port.to_string());
+        param!(cgi::REMOTE_ADDR, peer_addr.ip_addr.to_string());
+        param!(cgi::REMOTE_PORT, peer_addr.port.to_string());
         if let Some(local) = p.local_addr() {
-            param!(b"SERVER_ADDR", local.ip_addr.to_string());
+            param!(cgi::SERVER_ADDR, local.ip_addr.to_string());
         }
     }
 
     if let Some(cl) = content_length_header {
-        param!(b"CONTENT_LENGTH", cl);
+        param!(cgi::CONTENT_LENGTH, cl);
     } else {
         // Unknown body length (chunked etc) — CGI requires CONTENT_LENGTH to be
         // present per RFC 3875 §4.1.2 ("if and only if the request includes a
         // message-body"). Set 0 if the method is body-less, otherwise omit and
         // let the backend rely on EOF-on-STDIN.
         if !matches!(parts.method, Method::POST | Method::PUT | Method::PATCH) {
-            param!(b"CONTENT_LENGTH", "0".to_owned());
+            param!(cgi::CONTENT_LENGTH, "0");
         }
     }
 
     if let Some(ct) = parts.headers.get(rama_http_types::header::CONTENT_TYPE) {
-        params.push((
-            Bytes::from_static(b"CONTENT_TYPE"),
-            Bytes::copy_from_slice(ct.as_bytes()),
-        ));
+        params.push((cgi::CONTENT_TYPE, Bytes::copy_from_slice(ct.as_bytes())));
     }
 
     // ── HTTP_* header mapping (RFC 3875 §4.1.18) ─────────────────────────
@@ -146,7 +129,7 @@ pub(super) async fn http_request_to_fastcgi(
         if n == "host" || n == "content-type" || n == "content-length" {
             continue;
         }
-        if HOP_BY_HOP.contains(&n) {
+        if cgi::HOP_BY_HOP_HEADERS.contains(&n) {
             continue;
         }
         let mut cgi_name = String::with_capacity(5 + n.len());
