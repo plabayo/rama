@@ -142,6 +142,14 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   An HTTP reverse proxy that translates incoming HTTP requests into FastCGI requests
   and forwards them to a FastCGI backend application server (embedded in the same binary
   for demonstration). Shows `FastCgiServer` on the backend and `FastCgiClient` on the proxy side.
+- [`gateway/fastcgi-php/gateway`](./gateway/fastcgi-php/gateway/main.rs) —
+  rama terminates HTTPS (rustls self-signed) and forwards every request to
+  php-fpm over **TCP**.
+- [`gateway/fastcgi-php/migration`](./gateway/fastcgi-php/migration/main.rs) —
+  rama serves `/api/health` and `/api/version` natively in Rust; everything
+  else falls back to php-fpm over a **Unix socket**. The PHP app implements
+  the Rust-served routes too, with a payload tag `"source":"php"` that the
+  tests assert is never observed — proving the migration boundary.
 
 ## TLS and Security
 

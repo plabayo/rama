@@ -44,7 +44,10 @@ use rama::{
         Request, Response, StatusCode,
         layer::trace::TraceLayer,
         server::HttpServer,
-        service::web::{Router, response::Json},
+        service::web::{
+            Router,
+            response::{IntoResponse, Json},
+        },
     },
     layer::Layer,
     net::{address::SocketAddress, client::EstablishedClientConnection},
@@ -135,8 +138,14 @@ fn php_fallback_service<S>(client: Arc<FastCgiHttpClient<S>>) -> PhpFallback<S> 
     PhpFallback(client)
 }
 
-#[derive(Clone)]
 struct PhpFallback<S>(Arc<FastCgiHttpClient<S>>);
+
+impl<S> Clone for PhpFallback<S> {
+    #[inline(always)]
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<S> Service<Request> for PhpFallback<S>
 where
@@ -154,17 +163,14 @@ where
             Ok(resp) => Ok(resp),
             Err(err) => {
                 tracing::error!(?err, "fastcgi backend error");
-                let body = serde_json::to_string(&json!({
-                    "error": "FastCGI backend unreachable",
-                    "source": "rust",
-                }))
-                .unwrap_or_else(|_| "{}".to_owned());
-                let resp = Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .header("content-type", "application/json")
-                    .body(body.into())
-                    .expect("infallible");
-                Ok(resp)
+                Ok((
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "FastCGI backend unreachable",
+                        "source": "rust",
+                    })),
+                )
+                    .into_response())
             }
         }
     }
