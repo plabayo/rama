@@ -467,6 +467,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn does_compress_grpc_web() {
+        async fn handle(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+            let mut res = Response::new(Body::from(
+                "a".repeat((SizeAbove::DEFAULT_MIN_SIZE * 2) as usize),
+            ));
+            res.headers_mut()
+                .insert(CONTENT_TYPE, "application/grpc-web+proto".parse().unwrap());
+            Ok(res)
+        }
+
+        let svc = Compression::new(service_fn(handle));
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .header(ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.headers()[CONTENT_ENCODING], "gzip");
+    }
+
+    #[tokio::test]
     async fn compress_with_quality() {
         const DATA: &str = "Check compression quality level! Check compression quality level! Check compression quality level!";
         let level = CompressionLevel::Best;

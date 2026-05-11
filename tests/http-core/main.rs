@@ -23,8 +23,15 @@ mod support;
 #[cfg(feature = "http-full")]
 mod client;
 #[cfg(feature = "http-full")]
+mod h1_server;
+#[cfg(feature = "http-full")]
 mod integration;
 #[cfg(feature = "http-full")]
 mod server;
+
+#[cfg(feature = "http-full")]
+mod ready_on_poll_stream;
+#[cfg(feature = "http-full")]
+mod unbuffered_stream;
 
 mod examples;

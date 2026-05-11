@@ -1574,6 +1574,8 @@ mod conn {
     use rama::bytes::{Buf, Bytes};
     use rama::extensions::{Extensions, ExtensionsRef};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
+    use rama_http::body::util::Full;
+    use rama_http::body::util::combinators::BoxBody;
     use rama_http::proto::h1::ext::ReasonPhrase;
     use rama_http::proto::h1::ext::informational::OnInformational;
     use rama_http::{Body, StreamingBody};
@@ -2630,7 +2632,7 @@ mod conn {
     }
 
     #[tokio::test]
-    async fn http2_responds_before_consuming_request_body() {
+    async fn http2_responds_before_consuming_request_body_no_trailers() {
         // Test that a early-response from server works correctly (request body wasn't fully consumed).
         // https://github.com/hyperium/hyper/issues/2872
         use rama::service::service_fn;
@@ -2672,15 +2674,98 @@ mod conn {
         let resp = client.send_request(req).await.expect("send_request");
         assert!(resp.status().is_success());
 
-        let mut body = String::new();
-        concat(resp)
+        let (body, trailers) = crate::client::concat_with_trailers(resp.into_body())
             .await
-            .unwrap()
-            .reader()
-            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body.as_ref(), b"No bread for you!");
+        assert!(trailers.is_none());
+    }
+
+    #[tokio::test]
+    async fn http2_responds_before_consuming_request_body_with_trailers() {
+        // Test that a early-response from server works correctly (request body wasn't fully consumed).
+        // https://github.com/hyperium/hyper/issues/2872
+        use rama::http::Response;
+        use rama::http::core::service::RamaHttpService;
+        use rama_core::service::service_fn;
+        use rama_http::body::SizeHint;
+        use rama_http::header::{HeaderMap, HeaderValue};
+
+        let (listener, addr) = setup_tk_test_server().await;
+
+        /// An `HttpBody` implementation whose `is_end_stream()` will
+        /// return `true` after sending trailers.
+        struct TrailersBody(Option<HeaderMap>);
+
+        impl StreamingBody for TrailersBody {
+            type Data = bytes::Bytes;
+            type Error = rama_http_core::Error;
+
+            fn poll_frame(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+            ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+                if let Some(trailers) = self.0.take() {
+                    Poll::Ready(Some(Ok(Frame::trailers(trailers))))
+                } else {
+                    Poll::Ready(None)
+                }
+            }
+
+            fn is_end_stream(&self) -> bool {
+                self.0.is_none()
+            }
+
+            fn size_hint(&self) -> SizeHint {
+                SizeHint::with_exact(0)
+            }
+        }
+
+        // Spawn an HTTP2 server that responds before reading the whole request body.
+        // It's normal case to decline the request due to headers or size of the body.
+        tokio::spawn(async move {
+            let sock = ServiceInput::new(listener.accept().await.unwrap().0);
+            rama::http::core::server::conn::http2::Builder::new(Executor::default())
+                .serve_connection(
+                    sock,
+                    RamaHttpService::new(service_fn(|_req| async move {
+                        let mut trailers = HeaderMap::new();
+                        trailers.insert("grpc", HeaderValue::from_static("0"));
+                        let body = TrailersBody(Some(trailers));
+                        Ok::<_, Infallible>(Response::new(body))
+                    })),
+                )
+                .await
+                .expect("serve_connection");
+        });
+
+        let io = ServiceInput::new(tcp_connect(&addr).await.expect("tcp connect"));
+        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+            .handshake(io)
+            .await
+            .expect("http handshake");
+
+        tokio::spawn(async move {
+            conn.await.expect("client conn shouldn't error");
+        });
+
+        // Use a channel to keep request stream open
+        let (_tx, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
+        let req = Request::post("/a").body(StreamBody::new(recv)).unwrap();
+        let resp = client.send_request(req).await.expect("send_request");
+        assert!(resp.status().is_success());
+
+        let (body, trailers) = crate::client::concat_with_trailers(resp.into_body())
+            .await
             .unwrap();
 
-        assert_eq!(&body, "No bread for you!");
+        // No body:
+        assert!(body.is_empty());
+
+        // Have our `grpc` trailer:
+        let trailers = trailers.expect("response has trailers");
+        assert_eq!(trailers.len(), 1);
+        assert_eq!(trailers.get("grpc").unwrap(), "0");
     }
 
     #[tokio::test]
@@ -2944,6 +3029,171 @@ mod conn {
 
         let got_rst = rst_rx.await.expect("server task should complete");
         assert!(got_rst, "server should receive RST_STREAM");
+    }
+
+    // https://github.com/hyperium/hyper/issues/4003
+    //
+    // An idle `PipeToSendStream` must not reserve any connection-level flow
+    // control capacity speculatively. If it does, a first stream that has
+    // filled the connection window will pin the remaining byte(s), and no
+    // second stream can make progress when talking to a peer that only emits
+    // `WINDOW_UPDATE` after its receive window is fully exhausted.
+    #[tokio::test]
+    async fn h2_idle_stream_does_not_pin_connection_window() {
+        use std::sync::Arc;
+
+        // The HTTP/2 spec fixes the initial connection-level window at 65535
+        // (RFC 9113 section 6.9.2), and it can only be increased via
+        // WINDOW_UPDATE. Stream A therefore sends 65534 bytes to leave exactly
+        // one byte of connection window for stream B.
+        const STREAM_A_LEN: usize = 65534;
+
+        let (client_io, server_io, _) = setup_duplex_test_server();
+        let (stream_a_full_tx, stream_a_full_rx) = oneshot::channel::<()>();
+        let (stream_b_got_tx, stream_b_got_rx) = oneshot::channel::<usize>();
+
+        // Raw h2 server that never calls `release_capacity`, so no
+        // connection-level WINDOW_UPDATE is ever sent — mimicking peers that
+        // only emit WINDOW_UPDATE after their receive window is fully
+        // exhausted. The main server task accepts streams in a loop so the
+        // h2 codec is driven continuously; each stream is dispatched to a
+        // spawned handler that reads the body without ever releasing
+        // capacity.
+        //
+        // The `stream_a_done` channel keeps stream A's server-side request
+        // alive until the test is done. Dropping the recv side of stream A
+        // would let h2 auto-release its in-flight recv capacity and emit a
+        // WINDOW_UPDATE, which would hide the bug.
+        let (stream_a_done_tx, stream_a_done_rx) = oneshot::channel::<()>();
+        let stream_a_full_tx = Arc::new(tokio::sync::Mutex::new(Some(stream_a_full_tx)));
+        let stream_b_got_tx = Arc::new(tokio::sync::Mutex::new(Some(stream_b_got_tx)));
+        let stream_a_done_rx = Arc::new(tokio::sync::Mutex::new(Some(stream_a_done_rx)));
+        tokio::spawn(async move {
+            let mut h2 = rama_http_core::h2::server::handshake(ServiceInput::new(server_io))
+                .await
+                .unwrap();
+            let mut seen = 0u32;
+            while let Some(result) = h2.accept().await {
+                let (req, mut respond) = result.unwrap();
+                seen += 1;
+                let which = seen;
+                let stream_a_full_tx = stream_a_full_tx.clone();
+                let stream_b_got_tx = stream_b_got_tx.clone();
+                let stream_a_done_rx = stream_a_done_rx.clone();
+                tokio::spawn(async move {
+                    let mut body = req.into_body();
+                    if which == 1 {
+                        // Stream A: drain the burst of body data without ever
+                        // releasing recv capacity, then park on the done
+                        // channel to hold on to the recv stream.
+                        let mut received = 0usize;
+                        while received < STREAM_A_LEN {
+                            let Some(Ok(frame)) = body.data().await else {
+                                return;
+                            };
+                            received += frame.len();
+                            // Intentionally do NOT call release_capacity.
+                        }
+                        if let Some(tx) = stream_a_full_tx.lock().await.take() {
+                            let _send_result = tx.send(());
+                        }
+                        // Keep the recv stream alive so that dropping it
+                        // cannot auto-release connection-level recv capacity
+                        // and emit a WINDOW_UPDATE mid-test.
+                        let done = stream_a_done_rx.lock().await.take();
+                        if let Some(done) = done {
+                            let _done_result = done.await;
+                        }
+                        // Keep `body` in scope until here.
+                        drop(body);
+                    } else {
+                        // Stream B: record the first data frame and respond.
+                        let mut received = 0usize;
+                        if let Some(Ok(frame)) = body.data().await {
+                            received += frame.len();
+                        }
+                        if let Some(tx) = stream_b_got_tx.lock().await.take() {
+                            let _send_result = tx.send(received);
+                        }
+                        let mut send = respond.send_response(Response::new(()), false).unwrap();
+                        drop(send.send_data(Bytes::from_static(b"ok"), true));
+                    }
+                });
+            }
+        });
+
+        let io = ServiceInput::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(Executor::default())
+            .handshake::<_, BoxBody<Bytes, BoxError>>(io)
+            .await
+            .expect("http handshake");
+        tokio::spawn(async move {
+            drop(conn.await);
+        });
+
+        // Request A: streaming body that sends STREAM_A_LEN bytes and then
+        // stays open, waiting for more data. This fills the advertised
+        // connection-level window down to one byte remaining.
+        let (mut tx_a, rx_a) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(4);
+        let body_a: BoxBody<Bytes, BoxError> = BodyExt::boxed(StreamBody::new(rx_a));
+        let req_a = Request::post("http://localhost/a").body(body_a).unwrap();
+        let mut client_a = client.clone();
+        let a_handle = tokio::spawn(async move { client_a.send_request(req_a).await });
+
+        // Push stream A's body in 16 KiB chunks to match the default h2
+        // `SETTINGS_MAX_FRAME_SIZE`.
+        use rama::futures::SinkExt;
+        let mut remaining = STREAM_A_LEN;
+        while remaining > 0 {
+            let take = remaining.min(16_384);
+            let bytes = Bytes::from(vec![b'A'; take]);
+            tx_a.send(Ok(Frame::data(bytes)))
+                .await
+                .expect("stream A channel send");
+            remaining -= take;
+        }
+
+        // Wait for the server to confirm it received the full body on stream
+        // A, which means the connection window is now down to its last byte.
+        tokio::time::timeout(Duration::from_secs(5), stream_a_full_rx)
+            .await
+            .expect("server should receive full stream A body in time")
+            .expect("stream_a_full_rx");
+
+        // Give the client's `PipeToSendStream` for stream A a moment to park
+        // itself waiting for more body frames, which (with the bug) would
+        // speculatively reserve the last byte of connection-level capacity.
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+
+        // Request B: one byte of body. With the bug in `PipeToSendStream`,
+        // stream A pins the last byte of connection window via a speculative
+        // reserve, so stream B can never ship its data frame.
+        let body_b: BoxBody<Bytes, BoxError> = BodyExt::boxed(
+            Full::new(Bytes::from_static(b"b"))
+                .map_err(|never: std::convert::Infallible| match never {}),
+        );
+        let req_b = Request::post("http://localhost/b").body(body_b).unwrap();
+        let b_fut = client.send_request(req_b);
+
+        let received_b = tokio::time::timeout(Duration::from_secs(5), stream_b_got_rx)
+            .await
+            .expect("stream B must reach the server even while stream A is idle")
+            .expect("stream_b_got_rx");
+        assert_eq!(
+            received_b, 1,
+            "stream B should deliver its single body byte"
+        );
+
+        // Drive request B to completion so we don't leak the future.
+        drop(tokio::time::timeout(Duration::from_secs(5), b_fut).await);
+
+        // Close stream A cleanly: first release the server-side handler so
+        // it drops the recv stream, then drop the body sender.
+        let _send_result = stream_a_done_tx.send(());
+        drop(tx_a);
+        drop(tokio::time::timeout(Duration::from_secs(5), a_handle).await);
     }
 }
 
