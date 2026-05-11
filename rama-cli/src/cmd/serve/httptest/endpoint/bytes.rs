@@ -8,12 +8,11 @@ use rama::{
         service::web::response::{IntoResponse, OctetStream as OctetStreamResponse},
     },
     service::service_fn,
-    utils::octets::mib,
 };
 use std::{convert::Infallible, time::Duration};
 
 const DEFAULT_BYTES: u64 = 1024;
-const MAX_BYTES: u64 = mib(32);
+const MAX_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_CHUNK: usize = 16 * 1024;
 const MAX_CHUNK: usize = 4 * 1024 * 1024;
 const MAX_DELAY_MS: u64 = 60_000;
