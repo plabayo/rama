@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+# Unreleased
+
+### rama-net: `address::Domain` — label-based model
+
+`rama-net::address` gains a label-aware structural layer for `Domain`. The
+canonical path for the new public types is `rama_net::address::domain::*`.
+
+#### Added
+
+- `Label` — `?Sized` view over an RFC 1035 label, with ASCII-case-insensitive
+  `PartialEq`/`Eq`/`Hash`/`Ord`/`PartialOrd`.
+- `LabelError` — typed error from `Label::from_str`, public newtype around a
+  private enum (`Empty`, `TooLong`, `LeadingHyphen`, `TrailingHyphen`,
+  `InvalidChar`).
+- `DomainLabels` trait — `labels()`, `label_count()`, `starts_with`,
+  `ends_with`, `is_subdomain_of`, `parent`, `suffix_iter`. Implemented for
+  `Domain` and `Host` (`Host::Name` delegates; `Host::Address` yields an empty
+  iterator).
+- `DomainBuilder` — incremental builder enforcing per-label charset, the
+  253-byte name cap, and the wildcard-only-as-leftmost positional rule on
+  every push. `finish` is infallible by invariant; `try_finish` for the empty
+  / bare-`*` cases.
+- `PushError` — typed error from the builder (`Empty`, `Label`, `TooLong`,
+  `MisplacedWildcard`), public newtype around a private enum.
+- `DomainParseError` — typed error from `Domain`'s `FromStr` / `TryFrom`
+  impls, public newtype around a private enum (`Empty`, `TooLong`, `NonUtf8`
+  with chained `Utf8Error`, `Label { at, error }`, `BadWildcard { at }`).
+- `TryFrom<&str>` for `Domain`.
+- `address::domain::MAX_NAME_LEN` — public constant (was private).
+
+#### Changed (breaking)
+
+- `Domain`'s `Eq`/`Hash`/`Ord` now normalize the trailing FQDN dot away.
+  `"example.com"` and `"example.com."` compare equal, hash to the same key,
+  and sort together. `is_fqdn()` still inspects the underlying representation
+  if you need to distinguish absolute from relative names. Code that stored
+  both forms as distinct `HashMap`/`HashSet` keys will now see them collapse.
+- `<Domain as FromStr>::Err` and `<Domain as TryFrom<{String,&str,&[u8],Vec<u8>}>>::Error`
+  changed from `BoxError` to `DomainParseError`. `?` to a `BoxError`-returning
+  function continues to work (via std's blanket `From<E: Error + Send + Sync + 'static>`);
+  explicit `|err: BoxError|` annotations or `?` chains through
+  `From<BoxError>` for a custom error need `.map_err(BoxError::from)` first.
+- `Domain::try_as_sub` / `Domain::try_as_wildcard` now return
+  `Result<_, PushError>` instead of `Result<_, BoxError>`.
+- `Domain::strip_sub`: prefix matching is now label-aware and
+  ASCII-case-insensitive (was raw case-sensitive string `strip_prefix`).
+  Aligns with `Domain`'s case-insensitive `Eq`/`Hash`/`Ord`. As a side
+  effect, stripping the entire domain returns `None` (no labels remain to
+  form a valid `Domain`).
+- Domain-name validation now accepts inputs like `.*.com` (leading-dot
+  before a wildcard prefix). Old behavior rejected these because the
+  leading-dot skip happened before the wildcard recognizer; the new
+  validator strips leading/trailing FQDN dots once and then validates the
+  labels, which is consistent with how `.example.com` is already accepted.
+- Error message wording from `Domain` parse paths and from
+  `Authority` / `HostWithOptPort` IPv6 parse failures has changed
+  (`"invalid domain"` → `"invalid label at index N: …"`; merged IPv6 bracket
+  context messages).
+
+#### Internal
+
+- `host_with_opt_port.rs` and `authority.rs` no longer duplicate the
+  `[ipv6]:port` / bare-IPv6 parser; both call a shared
+  `parse_bracketed_ipv6_with_port` helper in `address::parse_utils`.
+- `Domain`'s `Hash`/`Eq`/`Ord`/`cmp_domain`/`partial_eq_domain` paths now
+  share a single normalization rule (segment-by-segment ASCII-case-fold,
+  trim leading/trailing FQDN dot, drop empty segments) via the
+  `dotted_segments` / `cmp_segments` / `eq_segments` helpers.
+
 # 0.3.0-alpha.4
 
 > Release date: `2025-12-27`
