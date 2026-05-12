@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+# Unreleased
+
+### rama-net: `address::domain` & `address::DomainTrie`
+
+Label-based domain model + native wildcard-aware trie. New public types
+live under `rama_net::address::domain::*`: `Label`, `LabelError`,
+`DomainLabels` (sealed), `DomainBuilder`, `PushError`, `DomainParseError`,
+`MAX_NAME_LEN`. `Domain` gains `try_as_sub` / `try_as_wildcard` /
+`strip_sub` / `is_sub_of` reimplemented through the label layer.
+
+**Breaking — `Domain`:**
+- Equality, hashing, and ordering now normalize the trailing FQDN dot
+  away. `"example.com"` and `"example.com."` compare equal. Use
+  `is_fqdn()` if you need to distinguish.
+- `<Domain as FromStr>::Err` and `<Domain as TryFrom<…>>::Error` are
+  now `DomainParseError` (typed; chains `Utf8Error` and `LabelError` via
+  `Error::source`) instead of `BoxError`. `?` to a `BoxError` keeps
+  working; explicit `|err: BoxError|` annotations or
+  `From<BoxError>` chains need `.map_err(BoxError::from)`.
+- `Domain::try_as_sub` / `try_as_wildcard` return `Result<_, PushError>`
+  instead of `Result<_, BoxError>`.
+- `Domain::strip_sub` is now label-aware and ASCII-case-insensitive
+  (was raw `strip_prefix`); stripping the entire domain returns `None`.
+- The validator now accepts `.*.com`-style inputs (leading dot before
+  the wildcard label), aligning with `.example.com` already being
+  accepted.
+
+**Breaking — `DomainTrie`:**
+- `insert_domain` is now wildcard-aware:
+  `"*.example.com"` → subtree entry matching `example.com` + descendants;
+  bare `"example.com"` → exact entry matching only `example.com`.
+- Previously a bare insert silently matched descendants too, and a
+  wildcard insert was silently broken — both fixed under one name.
+  Callers that relied on bare = subtree should switch their inputs to
+  the wildcard form.
+
+**Added — `DomainTrie`:**
+- `get(domain) -> Option<DomainMatch<T>>` with explicit
+  `MatchKind::{ Exact, Subtree { apex: Domain } }`. Subtree hits carry
+  the stored apex so callers can synthesize `*.apex` via
+  `apex.try_as_wildcard()`.
+
+**Internal:**
+- `DomainTrie` nodes now carry separate `exact` / `subtree` slots; both
+  can coexist at the same name without callers needing to side-band the
+  mode in `T`.
+- `host_with_opt_port.rs` and `authority.rs` share one
+  `parse_bracketed_ipv6_with_port` helper instead of two
+  ~25-line duplicates.
+
 # 0.3.0-alpha.4
 
 > Release date: `2025-12-27`
