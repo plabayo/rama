@@ -6,7 +6,6 @@ use rama_core::{
     Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
-    extensions::Extensions,
     rt::Executor,
 };
 use rama_net::{address::HostWithPort, client::EstablishedClientConnection};
@@ -96,10 +95,10 @@ impl Service<FastCgiClientRequest> for FastCgiTcpConnector {
         for (name, value) in &self.extra_params {
             input.params.push((name.clone(), value.clone()));
         }
-        let ext = Extensions::default();
-        let (conn, _peer) = default_tcp_connect(&ext, self.target.clone(), self.exec.clone())
-            .await
-            .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
+        let (conn, _peer) =
+            default_tcp_connect(&input.extensions, self.target.clone(), self.exec.clone())
+                .await
+                .with_context(|| format!("connect to FastCGI backend over TCP: {}", self.target))?;
         Ok(EstablishedClientConnection { input, conn })
     }
 }

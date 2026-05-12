@@ -36,13 +36,21 @@ pub struct ServerOptions {
     /// via [`rama_core::io::timeout::TimeoutIo`]. Catches slow-loris clients
     /// that hold a connection open without progressing the request.
     ///
-    /// Default: `None`.
+    /// Default: `Some(30s)`. Set to `None` to disable.
     pub read_timeout: Option<Duration>,
 
     /// Optional write timeout applied to the wrapped IO's write side.
     ///
-    /// Default: `None`.
+    /// Default: `Some(30s)`. Set to `None` to disable.
     pub write_timeout: Option<Duration>,
+
+    /// Maximum number of requests served over a single keep-alive connection
+    /// before the server unilaterally closes it. `None` means unlimited (the
+    /// peer decides via `keep_conn=0`). Useful to bound resource pinning
+    /// from a single peer.
+    ///
+    /// Default: `Some(1024)`. Set to `None` to disable.
+    pub max_requests_per_connection: Option<u64>,
 
     /// Reject `FCGI_BEGIN_REQUEST` bodies whose content length differs from
     /// the canonical 8. By default the server tolerates `content_length >= 8`
@@ -67,8 +75,9 @@ impl Default for ServerOptions {
             max_params_bytes: mib(1),
             max_stdin_bytes: None,
             max_data_bytes: None,
-            read_timeout: None,
-            write_timeout: None,
+            read_timeout: Some(Duration::from_secs(30)),
+            write_timeout: Some(Duration::from_secs(30)),
+            max_requests_per_connection: Some(1024),
             strict_begin_body_size: false,
             respond_cant_mpx_conn: true,
         }
@@ -120,6 +129,15 @@ impl ServerOptions {
         /// Optional write timeout enforced at the IO layer.
         pub fn write_timeout(mut self, d: Option<Duration>) -> Self {
             self.write_timeout = d;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Maximum requests served per keep-alive connection. `None` means
+        /// unlimited; the peer decides via `keep_conn`.
+        pub fn max_requests_per_connection(mut self, n: Option<u64>) -> Self {
+            self.max_requests_per_connection = n;
             self
         }
     }

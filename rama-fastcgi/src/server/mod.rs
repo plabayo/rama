@@ -166,6 +166,7 @@ impl<S> FastCgiServer<S> {
             .maybe_with_write_timeout(self.options.write_timeout);
         let (read_half, mut write_half) = tokio::io::split(timeout_io);
         let mut rh = read_half;
+        let mut served: u64 = 0;
 
         loop {
             let Some(begin) =
@@ -203,7 +204,18 @@ impl<S> FastCgiServer<S> {
 
             let (was_aborted, returned_rh) =
                 await_body_reader(&mut task_guard, reader_return_rx).await?;
+            served = served.saturating_add(1);
             if was_aborted || !keep_conn {
+                return Ok(());
+            }
+            if let Some(cap) = self.options.max_requests_per_connection
+                && served >= cap
+            {
+                tracing::debug!(
+                    served,
+                    cap,
+                    "fastcgi server: max_requests_per_connection reached, closing"
+                );
                 return Ok(());
             }
             rh = returned_rh;

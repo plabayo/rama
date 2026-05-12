@@ -22,12 +22,12 @@ pub struct ClientOptions {
 
     /// Optional idle timeout between FastCGI records on the read side.
     ///
-    /// Default: `None`.
+    /// Default: `Some(30s)`. Set to `None` to disable.
     pub read_timeout: Option<Duration>,
 
     /// Optional write timeout per record on the write side.
     ///
-    /// Default: `None`.
+    /// Default: `Some(30s)`. Set to `None` to disable.
     pub write_timeout: Option<Duration>,
 }
 
@@ -36,8 +36,8 @@ impl Default for ClientOptions {
         Self {
             max_stdout_bytes: mib(16),
             max_stderr_bytes: kib(256),
-            read_timeout: None,
-            write_timeout: None,
+            read_timeout: Some(Duration::from_secs(30)),
+            write_timeout: Some(Duration::from_secs(30)),
         }
     }
 }

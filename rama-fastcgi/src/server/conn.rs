@@ -739,6 +739,39 @@ mod tests {
         assert_eq!(writer[1], u8::from(RecordType::EndRequest));
     }
 
+    /// Regression: an `FCGI_ABORT_REQUEST` arriving mid-body must surface to
+    /// the body-stream consumer as `io::ErrorKind::ConnectionAborted`, so the
+    /// inner service can distinguish a real abort from a normal EOS.
+    #[tokio::test]
+    async fn test_abort_mid_body_surfaces_connection_aborted() {
+        // STDIN chunk, then ABORT_REQUEST for the same request_id.
+        let mut out = Vec::new();
+        // First STDIN chunk: "hello"
+        RecordHeader::new(RecordType::Stdin, 1, 5)
+            .write_to(&mut out)
+            .await
+            .unwrap();
+        out.extend_from_slice(b"hello");
+        // Then ABORT_REQUEST for the in-flight request.
+        RecordHeader::new(RecordType::AbortRequest, 1, 0)
+            .write_to(&mut out)
+            .await
+            .unwrap();
+
+        let mut reader = std::io::Cursor::new(out);
+        let (tx, mut rx) = mpsc::channel::<Result<Bytes, io::Error>>(8);
+        let aborted = read_stream_records(&mut reader, 1, RecordType::Stdin, &tx, None)
+            .await
+            .unwrap();
+        assert!(aborted, "abort mid-body must return true");
+
+        // Drain channel: first the chunk, then the abort error.
+        let first = rx.recv().await.unwrap().unwrap();
+        assert_eq!(&first[..], b"hello");
+        let aborted_err = rx.recv().await.unwrap().unwrap_err();
+        assert_eq!(aborted_err.kind(), io::ErrorKind::ConnectionAborted);
+    }
+
     /// Regression: when the inner service errors out before producing a
     /// response, the server must still send an `FCGI_END_REQUEST` record so
     /// the peer doesn't sit on a half-written stream. `app_status` is

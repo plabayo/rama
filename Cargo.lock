@@ -3466,6 +3466,7 @@ version = "0.3.0-rc1"
 name = "rama-fastcgi"
 version = "0.3.0-rc1"
 dependencies = [
+ "parking_lot",
  "rama-core",
  "rama-http-types",
  "rama-net",

@@ -131,3 +131,70 @@ where
         Ok(fastcgi_response_to_http(fcgi_resp))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::env::FastCgiHttpEnv;
+    use parking_lot::Mutex;
+    use rama_core::bytes::Bytes;
+    use rama_core::extensions::ExtensionsRef;
+    use rama_http_types::Body;
+    use std::sync::Arc;
+    use tokio::io::duplex;
+
+    /// Connector that records the converted `FastCgiClientRequest` (so the
+    /// test can assert the env override propagated end-to-end through
+    /// `FastCgiHttpClientConnector`) and returns a dead duplex IO.
+    #[derive(Clone)]
+    struct CapturingConnector(Arc<Mutex<Option<FastCgiClientRequest>>>);
+
+    impl Service<FastCgiClientRequest> for CapturingConnector {
+        type Output = EstablishedClientConnection<tokio::io::DuplexStream, FastCgiClientRequest>;
+        type Error = BoxError;
+        async fn serve(&self, input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
+            let (a, _b) = duplex(64);
+            // Stash the request for the test to inspect, replacing extensions
+            // we don't need to clone.
+            let snapshot = FastCgiClientRequest::new(input.params.clone());
+            *self.0.lock() = Some(snapshot);
+            Ok(EstablishedClientConnection { input, conn: a })
+        }
+    }
+
+    /// FastCgiHttpEnv attached to the HTTP request must survive the
+    /// connector layer and land on the FastCgiClientRequest the inner
+    /// connector sees.
+    #[tokio::test]
+    async fn test_http_connector_propagates_env_override() {
+        let captured: Arc<Mutex<Option<FastCgiClientRequest>>> = Arc::new(Mutex::new(None));
+        let connector = FastCgiHttpClientConnector::new(CapturingConnector(Arc::clone(&captured)));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(
+            FastCgiHttpEnv::new()
+                .with_redirect_status("418")
+                .with_server_software("override/1.0"),
+        );
+
+        let _est = connector.serve(req).await.unwrap();
+        let captured = captured.lock().take().expect("connector was called");
+        let find = |k: &[u8]| -> Option<Bytes> {
+            captured
+                .params
+                .iter()
+                .find(|(n, _)| n.as_ref() == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(find(b"REDIRECT_STATUS").as_deref(), Some(b"418".as_ref()));
+        assert_eq!(
+            find(b"SERVER_SOFTWARE").as_deref(),
+            Some(b"override/1.0".as_ref())
+        );
+    }
+}
