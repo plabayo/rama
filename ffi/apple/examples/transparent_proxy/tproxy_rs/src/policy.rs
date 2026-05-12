@@ -26,7 +26,7 @@ impl DomainExclusionList {
 
     #[inline(always)]
     pub fn is_excluded(&self, domain: impl AsDomainRef) -> bool {
-        self.no_mitm_domains.match_exact(domain).is_some()
+        self.no_mitm_domains.is_match_exact(domain)
     }
 }
 

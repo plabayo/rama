@@ -56,7 +56,7 @@ pub(super) async fn read_authority<R: AsyncRead + Unpin>(
             let mut raw = vec![0u8; n as usize];
             r.read_exact(raw.as_mut_slice()).await?;
             Domain::try_from(raw)
-                .map_err(rama_core::error::BoxError::from)?
+                .map_err(rama_core::error::ErrorExt::into_box_error)?
                 .into()
         }
         AddressType::IpV6 => {
@@ -90,7 +90,7 @@ pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<HostWithPort, Re
             let mut raw = vec![0u8; n as usize];
             r.read_exact(raw.as_mut_slice())?;
             Domain::try_from(raw)
-                .map_err(rama_core::error::BoxError::from)?
+                .map_err(rama_core::error::ErrorExt::into_box_error)?
                 .into()
         }
         AddressType::IpV6 => {

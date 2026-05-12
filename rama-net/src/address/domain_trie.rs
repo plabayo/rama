@@ -290,6 +290,15 @@ impl<T> DomainTrie<T> {
             .and_then(|n| n.exact.as_ref().or(n.subtree.as_ref()))
     }
 
+    /// Returns `true` if `domain` is stored as an exact (or subtree-apex)
+    /// entry in this trie.
+    ///
+    /// Shortcut for `self.match_exact(domain).is_some()`.
+    #[inline]
+    pub fn is_match_exact(&self, domain: impl AsDomainRef) -> bool {
+        self.match_exact(domain).is_some()
+    }
+
     /// Iterate over the domains and values stored in this Trie.
     ///
     /// Each stored entry yields one item per slot that is set: a subtree

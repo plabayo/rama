@@ -375,7 +375,7 @@ fn to_opt_domain(
             tracing::trace!("boring: server_name to host: use client SNI: {sni}");
             Some(sni.parse::<Domain>().map_err(|err| {
                 tracing::warn!("boring: invalid servername received in callback: {err:?}");
-                BoxError::from(err).context("sni parse failed")
+                err.into_box_error().context("sni parse failed")
             })?) // from client (e.g. only possibility for SNI proxy)
         }
         (_, Some(host)) => {

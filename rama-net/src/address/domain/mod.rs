@@ -826,6 +826,18 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
             d.try_as_wildcard()
         }
     }
+
+    /// If `self` is already in wildcard form, return it as an owned
+    /// [`Domain`]; otherwise return `None`.
+    ///
+    /// Unlike [`Self::to_wildcard`], this does **not** transform bare inputs
+    /// into the wildcard form — use it when you want to know "was this
+    /// input already a wildcard?" without doing any conversion.
+    fn as_wildcard(&self) -> Option<Domain> {
+        let s = self.domain_as_str();
+        let trimmed = s.strip_prefix('.').unwrap_or(s);
+        trimmed.starts_with("*.").then(|| self.to_domain())
+    }
 }
 
 impl AsDomainRef for &'static str {}

@@ -152,9 +152,7 @@ impl CertIssuerHttpClient {
             // The trie's smart insert handles "*.x" -> subtree at x and bare
             // "x" -> exact at x. The stored value is just the wildcard form
             // for subtree entries (so norm_cn can return a borrowed ref).
-            let wildcard_form = domain
-                .as_wildcard_parent()
-                .and_then(|parent| parent.try_as_wildcard().ok());
+            let wildcard_form = domain.as_wildcard();
             self.allow_list
                 .get_or_insert_default()
                 .insert_domain(domain, wildcard_form);
