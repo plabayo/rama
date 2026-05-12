@@ -8,6 +8,10 @@ mod label;
 #[doc(inline)]
 pub use label::{Label, LabelError};
 
+mod labels;
+#[doc(inline)]
+pub use labels::{DomainLabelIter, DomainLabels, SuffixIter};
+
 /// A domain.
 ///
 /// # Remarks

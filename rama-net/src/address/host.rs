@@ -1,3 +1,4 @@
+use super::domain::{DomainLabelIter, DomainLabels, Label};
 use super::{Domain, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
@@ -200,6 +201,45 @@ impl PartialEq<IpAddr> for Host {
 impl PartialEq<Host> for IpAddr {
     fn eq(&self, other: &Host) -> bool {
         other == self
+    }
+}
+
+/// Label iterator for [`Host`]: delegates to the underlying [`Domain`] for
+/// [`Host::Name`], and is empty for [`Host::Address`].
+#[derive(Clone)]
+pub enum HostLabelIter<'a> {
+    Domain(DomainLabelIter<'a>),
+    Empty,
+}
+
+impl<'a> Iterator for HostLabelIter<'a> {
+    type Item = &'a Label;
+
+    fn next(&mut self) -> Option<&'a Label> {
+        match self {
+            Self::Domain(it) => it.next(),
+            Self::Empty => None,
+        }
+    }
+}
+
+impl DoubleEndedIterator for HostLabelIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Domain(it) => it.next_back(),
+            Self::Empty => None,
+        }
+    }
+}
+
+impl DomainLabels for Host {
+    type LabelIter<'a> = HostLabelIter<'a>;
+
+    fn labels(&self) -> Self::LabelIter<'_> {
+        match self {
+            Self::Name(d) => HostLabelIter::Domain(d.labels()),
+            Self::Address(_) => HostLabelIter::Empty,
+        }
     }
 }
 
@@ -550,5 +590,36 @@ mod tests {
             assert_eq!(expected, a == b, "a[{a}] == b[{b}]");
             assert_eq!(expected, b == a, "b[{b}] == a[{a}]");
         }
+    }
+
+    #[test]
+    fn host_labels_delegates_to_domain() {
+        let h = Host::Name(Domain::from_static("www.example.com"));
+        let labels: Vec<&str> = h.labels().map(|l| l.as_str()).collect();
+        assert_eq!(labels, vec!["www", "example", "com"]);
+        assert_eq!(h.label_count(), 3);
+
+        // is_subdomain_of works through Host
+        let parent_h = Host::Name(Domain::from_static("example.com"));
+        assert!(h.is_subdomain_of(&parent_h));
+
+        // parent() returns owned Domain
+        let p = h.parent().expect("parent");
+        assert_eq!(p.as_str(), "example.com");
+    }
+
+    #[test]
+    fn host_labels_ip_is_empty_and_never_subdomain() {
+        let h = Host::Address("127.0.0.1".parse().unwrap());
+        assert_eq!(h.labels().count(), 0);
+        assert_eq!(h.label_count(), 0);
+        assert!(h.parent().is_none());
+
+        // An IP is never a subdomain of any non-empty parent.
+        let parent = Host::Name(Domain::from_static("example.com"));
+        assert!(!h.is_subdomain_of(&parent));
+        // And a non-empty domain is never a subdomain of an IP host (empty parent).
+        let d_host = Host::Name(Domain::from_static("example.com"));
+        assert!(!d_host.is_subdomain_of(&h));
     }
 }
