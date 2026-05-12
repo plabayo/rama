@@ -321,10 +321,20 @@ impl<T> NodeData<T> {
 }
 
 /// Reverse a domain's labels and append the boundary `.` token used by the
-/// radix tree to prevent prefix collisions (so `"gel.com"` doesn't match
-/// `"kegel.com"`).
+/// radix tree to prevent prefix collisions.
 ///
 /// Result for `"example.com"` is `"com.example."`.
+///
+/// # Why the trailing `.` is load-bearing
+///
+/// `radix_trie` matches byte prefixes. Without the sentinel, a stored
+/// reversed key like `"com.example"` would be a byte-prefix of a query like
+/// `"com.examplea"` (because `"examplea"` byte-starts with `"example"`),
+/// so `get_ancestor("com.examplea")` would falsely return the entry stored
+/// for `example.com` as an ancestor of `examplea.com`. The trailing `.`
+/// forces a mismatch at the label boundary (byte 11: `.` vs `a`), keeping
+/// the match strictly per-label. **Do not remove it.** The
+/// `regression_no_byte_prefix_false_match` test in this module guards it.
 fn reverse_domain(domain: &str) -> String {
     let from = domain.trim_matches('.');
     // Pre-cap: same byte count as input + one trailing dot.
@@ -534,6 +544,35 @@ mod test {
         // gel.com is NOT a descendant of kegel.com.
         let m2 = DomainTrie::new().with_insert_domain("*.kegel.com", "v");
         assert!(m2.get("gel.com").is_none());
+    }
+
+    /// Regression guard for the trailing-`.` sentinel in `reverse_domain`.
+    ///
+    /// `examplea.com` is NOT a descendant of `example.com`, but its reversed
+    /// form `"com.examplea"` has `"com.example"` as a byte-prefix. Without
+    /// the sentinel the radix_trie would falsely return the entry stored
+    /// for `*.example.com` here. If this test starts passing without the
+    /// sentinel being present in `reverse_domain`, the sentinel was removed
+    /// (silently breaking correctness) — re-add it.
+    #[test]
+    fn regression_no_byte_prefix_false_match() {
+        let m = DomainTrie::new().with_insert_domain("*.example.com", "v");
+        // Single-label sibling whose reversed form byte-extends "example".
+        assert!(m.get("examplea.com").is_none());
+        // Same shape, but as a deeper descendant — sentinel must still fire.
+        assert!(m.get("foo.examplea.com").is_none());
+
+        // Sanity: a label that *prepends* a char (different at the start of
+        // the label, not the end) was never at risk — included so the
+        // regression test documents the contrast.
+        assert!(m.get("aexample.com").is_none());
+        assert!(m.get("foo.aexample.com").is_none());
+
+        // And the legitimate match still works.
+        assert_eq!(
+            m.get("foo.example.com"),
+            Some(subtree_match(&"v", "example.com"))
+        );
     }
 
     #[test]
