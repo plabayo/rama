@@ -373,9 +373,9 @@ fn to_opt_domain(
     let host = match (ssl_ref.servername(NameType::HOST_NAME), server_name) {
         (Some(sni), _) => {
             tracing::trace!("boring: server_name to host: use client SNI: {sni}");
-            Some(sni.parse().map_err(|err: BoxError| {
+            Some(sni.parse::<Domain>().map_err(|err| {
                 tracing::warn!("boring: invalid servername received in callback: {err:?}");
-                err.context("sni parse failed")
+                BoxError::from(err).context("sni parse failed")
             })?) // from client (e.g. only possibility for SNI proxy)
         }
         (_, Some(host)) => {

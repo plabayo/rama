@@ -1,4 +1,3 @@
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 use std::{cmp::Ordering, fmt};
 
@@ -15,6 +14,8 @@ pub use labels::{DomainLabelIter, DomainLabels, SuffixIter};
 mod builder;
 #[doc(inline)]
 pub use builder::{DomainBuilder, PushError};
+
+// (DomainParseError is defined in this module — see below.)
 
 /// Maximum byte length of a fully-qualified domain name (RFC 1035).
 pub const MAX_NAME_LEN: usize = 253;
@@ -316,51 +317,161 @@ impl fmt::Display for Domain {
 }
 
 impl std::str::FromStr for Domain {
-    type Err = BoxError;
+    type Err = DomainParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::try_from(s.to_owned())
+        validate_domain_str(s)?;
+        Ok(Self(SmolStr::new(s)))
     }
 }
 
 impl TryFrom<String> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        if is_valid_name(name.as_bytes()) {
-            Ok(Self(SmolStr::new(name)))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
-        }
+        validate_domain_str(&name)?;
+        Ok(Self(SmolStr::new(name)))
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Domain {
+    type Error = DomainParseError;
+
+    fn try_from(name: &'a str) -> Result<Self, Self::Error> {
+        validate_domain_str(name)?;
+        Ok(Self(SmolStr::new(name)))
     }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
-        if is_valid_name(name) {
-            Ok(Self(SmolStr::new(
-                std::str::from_utf8(name).context("convert domain bytes to utf-8 string")?,
-            )))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
-        }
+        let s = std::str::from_utf8(name).map_err(|_e| DomainParseError::non_utf8())?;
+        validate_domain_str(s)?;
+        Ok(Self(SmolStr::new(s)))
     }
 }
 
 impl TryFrom<Vec<u8>> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        if is_valid_name(name.as_slice()) {
-            Ok(Self(SmolStr::new(
-                String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
-            )))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
+        let s = String::from_utf8(name).map_err(|_e| DomainParseError::non_utf8())?;
+        validate_domain_str(&s)?;
+        Ok(Self(SmolStr::new(s)))
+    }
+}
+
+/// Error returned when parsing a string or byte sequence into a [`Domain`]
+/// fails.
+///
+/// Public newtype around a private enum so the variant set can evolve without
+/// breaking pattern-matching callers. Convert into a boxed error via
+/// `BoxError::from(err)` for the common composition case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainParseError(DomainParseErrorKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DomainParseErrorKind {
+    Empty,
+    TooLong { len: usize },
+    NonUtf8,
+    Label { at: usize, error: LabelError },
+    BadWildcard { at: usize },
+}
+
+impl DomainParseError {
+    #[inline]
+    fn empty() -> Self {
+        Self(DomainParseErrorKind::Empty)
+    }
+    #[inline]
+    fn too_long(len: usize) -> Self {
+        Self(DomainParseErrorKind::TooLong { len })
+    }
+    #[inline]
+    fn non_utf8() -> Self {
+        Self(DomainParseErrorKind::NonUtf8)
+    }
+    #[inline]
+    fn label(at: usize, error: LabelError) -> Self {
+        Self(DomainParseErrorKind::Label { at, error })
+    }
+    #[inline]
+    fn bad_wildcard(at: usize) -> Self {
+        Self(DomainParseErrorKind::BadWildcard { at })
+    }
+}
+
+impl fmt::Display for DomainParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            DomainParseErrorKind::Empty => f.write_str("empty domain"),
+            DomainParseErrorKind::TooLong { len } => {
+                write!(f, "domain is {len} bytes long, max is {MAX_NAME_LEN}")
+            }
+            DomainParseErrorKind::NonUtf8 => f.write_str("domain bytes are not valid UTF-8"),
+            DomainParseErrorKind::Label { at, error } => {
+                write!(f, "invalid label at index {at}: {error}")
+            }
+            DomainParseErrorKind::BadWildcard { at } => write!(
+                f,
+                "'*' wildcard label is only valid at index 0, found at index {at}"
+            ),
         }
     }
+}
+
+impl std::error::Error for DomainParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.0 {
+            DomainParseErrorKind::Label { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Validate a `&str` as a presentation-format domain.
+///
+/// Single source of truth for the runtime parse path (`FromStr` / `TryFrom`).
+/// Mirrors the const `is_valid_name` used by `from_static`, but reports
+/// position info via [`DomainParseError`].
+fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
+    if s.is_empty() {
+        return Err(DomainParseError::empty());
+    }
+    if s.len() > MAX_NAME_LEN {
+        return Err(DomainParseError::too_long(s.len()));
+    }
+
+    // Normalize leading/trailing FQDN dots away for label walking. Each is
+    // optional and at most one.
+    let trimmed = s.strip_prefix('.').unwrap_or(s);
+    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return Err(DomainParseError::empty());
+    }
+
+    let mut parts = trimmed.split('.');
+    let mut idx = 0usize;
+    let mut last_part: Option<&str> = None;
+    for part in &mut parts {
+        label::validate_label_bytes(part.as_bytes())
+            .map_err(|e| DomainParseError::label(idx, e))?;
+        // Wildcard label is only valid as the leftmost.
+        if part == "*" && idx != 0 {
+            return Err(DomainParseError::bad_wildcard(idx));
+        }
+        last_part = Some(part);
+        idx += 1;
+    }
+    // A bare wildcard ("*" alone) is not a valid domain — it must prefix at
+    // least one further label.
+    if idx == 1 && last_part == Some("*") {
+        return Err(DomainParseError::bad_wildcard(0));
+    }
+    Ok(())
 }
 
 /// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
@@ -1029,5 +1140,68 @@ mod tests {
         assert!(!m.contains_key(&Domain::from_static("examine.com")));
         assert!(!m.contains_key(&Domain::from_static("example.co")));
         assert!(!m.contains_key(&Domain::from_static("example.commerce")));
+    }
+
+    #[test]
+    fn parse_error_variant_empty() {
+        let err = Domain::try_from(String::new()).unwrap_err();
+        assert_eq!(format!("{err}"), "empty domain");
+        // also for purely-dot input — trims to empty
+        let err = Domain::try_from(".".to_owned()).unwrap_err();
+        assert_eq!(format!("{err}"), "empty domain");
+    }
+
+    #[test]
+    fn parse_error_variant_too_long() {
+        let too_long = "a".repeat(MAX_NAME_LEN + 1);
+        let err = Domain::try_from(too_long).unwrap_err();
+        assert!(format!("{err}").contains("max is 253"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_error_variant_label_at_index() {
+        // empty middle label → idx 1
+        let err = Domain::try_from("a..b".to_owned()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("index 1"), "msg: {msg}");
+        // a label-level Error is exposed via source()
+        let src = std::error::Error::source(&err);
+        assert!(src.is_some(), "label error should be source-chained");
+    }
+
+    #[test]
+    fn parse_error_variant_bad_wildcard() {
+        // wildcard not at index 0
+        let err = Domain::try_from("foo.*.com".to_owned()).unwrap_err();
+        assert!(
+            format!("{err}").contains("wildcard"),
+            "expected wildcard mention: {err}"
+        );
+        // bare wildcard
+        let err = Domain::try_from("*".to_owned()).unwrap_err();
+        assert!(
+            format!("{err}").contains("wildcard"),
+            "expected wildcard mention: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_variant_non_utf8() {
+        // 0xff is invalid UTF-8 as a starting byte
+        let bytes: Vec<u8> = vec![0xff, b'x', b'.', b'c', b'o', b'm'];
+        let err = <Domain as TryFrom<Vec<u8>>>::try_from(bytes.clone()).unwrap_err();
+        assert!(format!("{err}").contains("UTF-8"), "got: {err}");
+        let err = <Domain as TryFrom<&[u8]>>::try_from(bytes.as_slice()).unwrap_err();
+        assert!(format!("{err}").contains("UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_error_converts_to_box_error_via_questionmark() {
+        fn use_questionmark(s: &str) -> Result<Domain, rama_core::error::BoxError> {
+            let d: Domain = s.parse()?;
+            Ok(d)
+        }
+        use_questionmark("example.com").unwrap();
+        use_questionmark("").unwrap_err();
     }
 }
