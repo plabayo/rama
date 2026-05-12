@@ -1,8 +1,5 @@
 //! [`DomainBuilder`] — incrementally construct a [`Domain`] from labels,
 //! enforcing per-label and total-length invariants at push time.
-//!
-//! Modeled on `NLnetLabs/domain`'s `NameBuilder`, scoped to rama-net's
-//! presentation-format reality (no octets generic, `String`-backed).
 
 use std::fmt;
 
