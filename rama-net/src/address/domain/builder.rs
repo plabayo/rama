@@ -96,6 +96,13 @@ impl DomainBuilder {
     }
 
     fn push_validated_label(&mut self, label: &str) -> Result<&mut Self, PushError> {
+        // Wildcard `*` is only valid as the leftmost label. The label-level
+        // validator accepts `"*"` standalone, so the positional rule lives
+        // here in the builder.
+        if label == "*" && !self.buf.is_empty() {
+            return Err(PushError::misplaced_wildcard());
+        }
+
         // Each push adds `label.len()` plus a separating dot (except for the
         // very first label).
         let added = if self.buf.is_empty() {
@@ -172,6 +179,9 @@ impl DomainBuilder {
         if self.buf.is_empty() {
             panic!("DomainBuilder::finish called with no labels pushed");
         }
+        if self.buf == "*" {
+            panic!("DomainBuilder::finish: bare '*' is not a valid domain");
+        }
         // Safety: builder maintained the Domain invariant at every push.
         unsafe { Domain::from_maybe_borrowed_unchecked(self.buf) }
     }
@@ -185,6 +195,9 @@ impl DomainBuilder {
     pub fn try_finish(self) -> Result<Domain, PushError> {
         if self.buf.is_empty() {
             return Err(PushError::empty());
+        }
+        if self.buf == "*" {
+            return Err(PushError::misplaced_wildcard());
         }
         // Safety: as above.
         Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf) })
@@ -201,6 +214,7 @@ enum PushErrorKind {
     Empty,
     Label(LabelError),
     TooLong { len: usize },
+    MisplacedWildcard,
 }
 
 impl PushError {
@@ -215,6 +229,10 @@ impl PushError {
     #[inline]
     fn too_long(len: usize) -> Self {
         Self(PushErrorKind::TooLong { len })
+    }
+    #[inline]
+    fn misplaced_wildcard() -> Self {
+        Self(PushErrorKind::MisplacedWildcard)
     }
 
     /// Returns the underlying [`LabelError`] if this is a label-validation
@@ -236,6 +254,9 @@ impl fmt::Display for PushError {
             PushErrorKind::TooLong { len } => write!(
                 f,
                 "domain name would be {len} bytes long, max is {MAX_NAME_LEN}"
+            ),
+            PushErrorKind::MisplacedWildcard => f.write_str(
+                "wildcard label '*' is only valid as the leftmost label and never alone",
             ),
         }
     }
@@ -356,6 +377,59 @@ mod tests {
         b.push(l).unwrap();
         b.push_label("com").unwrap();
         assert_eq!(b.finish().as_str(), "example.com");
+    }
+
+    #[test]
+    fn rejects_wildcard_at_non_leftmost_position() {
+        // Pushed after a regular label.
+        let mut b = DomainBuilder::new();
+        b.push_label("example").unwrap();
+        let err = b.push_label("*").unwrap_err();
+        assert!(
+            format!("{err}").contains("wildcard"),
+            "expected wildcard mention, got: {err}"
+        );
+
+        // Pushed via push_label_segments.
+        let mut b = DomainBuilder::new();
+        let err = b.push_label_segments("x.*.com").unwrap_err();
+        assert!(format!("{err}").contains("wildcard"), "got: {err}");
+
+        // Pushed via append (Domain whose first label is `*`).
+        let parent = Domain::from_static("*.example.com");
+        let mut b = DomainBuilder::new();
+        b.push_label("foo").unwrap();
+        let err = b.append(&parent).unwrap_err();
+        assert!(format!("{err}").contains("wildcard"), "got: {err}");
+    }
+
+    #[test]
+    fn accepts_wildcard_as_leftmost_label() {
+        let mut b = DomainBuilder::new();
+        b.push_label("*").unwrap();
+        b.push_label("example").unwrap();
+        b.push_label("com").unwrap();
+        let d = b.finish();
+        assert_eq!(d.as_str(), "*.example.com");
+        // And the output reparses (no broken invariant).
+        Domain::try_from(d.as_str().to_owned()).expect("builder output reparses");
+    }
+
+    #[test]
+    fn rejects_bare_wildcard_on_finish() {
+        let mut b = DomainBuilder::new();
+        b.push_label("*").unwrap();
+        // Only one label, and it's `*` — not a valid domain on its own.
+        let err = b.try_finish().unwrap_err();
+        assert!(format!("{err}").contains("wildcard"), "got: {err}");
+    }
+
+    #[test]
+    #[should_panic(expected = "bare '*'")]
+    fn finish_panics_on_bare_wildcard() {
+        let mut b = DomainBuilder::new();
+        b.push_label("*").unwrap();
+        drop(b.finish());
     }
 
     #[test]
