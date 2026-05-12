@@ -202,6 +202,31 @@ impl DomainLabels for Domain {
     fn labels(&self) -> Self::LabelIter<'_> {
         DomainLabelIter::new(self.as_str())
     }
+
+    /// `Domain`-specialized fast path: slices the underlying buffer instead
+    /// of `collect`ing labels into a `Vec` and `join`-ing them.
+    fn parent(&self) -> Option<Domain> {
+        let s = self.as_str();
+        // Strip optional leading/trailing FQDN dots so we slice between real
+        // labels.
+        let start = if s.starts_with('.') { 1 } else { 0 };
+        let end = if s.len() > start && s.ends_with('.') {
+            s.len() - 1
+        } else {
+            s.len()
+        };
+        let trimmed = &s[start..end];
+        // Drop the leftmost label by slicing past the first '.'.
+        let dot = trimmed.find('.')?;
+        let rest = &trimmed[dot + 1..];
+        if rest.is_empty() {
+            return None;
+        }
+        // Safety: `rest` is a suffix of a validated domain at a label
+        // boundary. No `*` can be present (the wildcard is only valid as
+        // the leftmost label, which we just dropped).
+        Some(unsafe { Self::from_maybe_borrowed_unchecked(rest) })
+    }
 }
 
 #[cfg(test)]
