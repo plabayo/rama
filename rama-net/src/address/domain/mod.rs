@@ -369,7 +369,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(name).map_err(|_e| DomainParseError::non_utf8())?;
+        let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
         validate_domain_str(s)?;
         Ok(Self(SmolStr::new(s)))
     }
@@ -379,7 +379,7 @@ impl TryFrom<Vec<u8>> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        let s = String::from_utf8(name).map_err(|_e| DomainParseError::non_utf8())?;
+        let s = String::from_utf8(name).map_err(|e| DomainParseError::non_utf8(e.utf8_error()))?;
         validate_domain_str(&s)?;
         Ok(Self(SmolStr::new(s)))
     }
@@ -398,7 +398,7 @@ pub struct DomainParseError(DomainParseErrorKind);
 enum DomainParseErrorKind {
     Empty,
     TooLong { len: usize },
-    NonUtf8,
+    NonUtf8 { source: std::str::Utf8Error },
     Label { at: usize, error: LabelError },
     BadWildcard { at: usize },
 }
@@ -413,8 +413,8 @@ impl DomainParseError {
         Self(DomainParseErrorKind::TooLong { len })
     }
     #[inline]
-    fn non_utf8() -> Self {
-        Self(DomainParseErrorKind::NonUtf8)
+    fn non_utf8(source: std::str::Utf8Error) -> Self {
+        Self(DomainParseErrorKind::NonUtf8 { source })
     }
     #[inline]
     fn label(at: usize, error: LabelError) -> Self {
@@ -433,7 +433,9 @@ impl fmt::Display for DomainParseError {
             DomainParseErrorKind::TooLong { len } => {
                 write!(f, "domain is {len} bytes long, max is {MAX_NAME_LEN}")
             }
-            DomainParseErrorKind::NonUtf8 => f.write_str("domain bytes are not valid UTF-8"),
+            DomainParseErrorKind::NonUtf8 { source } => {
+                write!(f, "domain bytes are not valid UTF-8: {source}")
+            }
             DomainParseErrorKind::Label { at, error } => {
                 write!(f, "invalid label at index {at}: {error}")
             }
@@ -449,6 +451,7 @@ impl std::error::Error for DomainParseError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
             DomainParseErrorKind::Label { error, .. } => Some(error),
+            DomainParseErrorKind::NonUtf8 { source } => Some(source),
             _ => None,
         }
     }
