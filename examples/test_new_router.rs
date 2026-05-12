@@ -1,4 +1,4 @@
-#![allow(unused_variables, dead_code, unused_must_use)]
+#![allow(unused_variables, dead_code, unused_must_use, clippy::restriction)]
 
 use std::{error::Error, fmt, iter::successors};
 

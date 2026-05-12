@@ -914,3 +914,8 @@ required-features = ["http-full", "boring"]
 [[example]]
 name = "ws_over_h2"
 required-features = ["http-full", "boring"]
+
+# will remove before merge along with test_new_router.rs
+[[example]]
+name = "test_new_router"
+required-features = ["http-full"]

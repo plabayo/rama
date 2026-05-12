@@ -6,7 +6,7 @@ Its primary use case is to retrieve a custom [`Response`] after an error has bee
 a type-erasing error container, like BoxError
 
 Example how to implement it for an error
-```
+```rust,ignore
 #[derive(Clone)]
 struct CustomError;
 
