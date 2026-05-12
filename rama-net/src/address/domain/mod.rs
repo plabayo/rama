@@ -4,6 +4,10 @@ use std::{cmp::Ordering, fmt, iter::repeat};
 
 use super::Host;
 
+mod label;
+#[doc(inline)]
+pub use label::{Label, LabelError};
+
 /// A domain.
 ///
 /// # Remarks

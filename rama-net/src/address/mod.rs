@@ -13,7 +13,7 @@ mod host;
 #[doc(inline)]
 pub use host::Host;
 
-mod domain;
+pub mod domain;
 #[doc(inline)]
 pub use domain::{AsDomainRef, Domain, IntoDomain};
 
