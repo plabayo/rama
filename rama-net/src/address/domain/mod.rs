@@ -476,17 +476,62 @@ fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
 
 /// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
 ///
-/// Single source of truth for the `Domain`↔`str` normalization rules that
-/// used to live duplicated across `Hash`, `cmp_domain`, and
-/// `partial_eq_domain`.
-fn normalized_bytes(s: &str) -> impl Iterator<Item = u8> + '_ {
+/// Single helper: split `s` into label-shaped `&str` segments, dropping
+/// leading/trailing FQDN dots and any empty segments.
+///
+/// This is the str-side counterpart to [`DomainLabels::labels`] and is the
+/// shared source of truth for every `Domain`↔`str` comparison/hash impl.
+/// Unlike `labels()`, it makes no validity claims about each segment — the
+/// caller doesn't have to know whether `s` is a real domain.
+fn dotted_segments(s: &str) -> impl DoubleEndedIterator<Item = &str> + Clone {
     let s = s.strip_prefix('.').unwrap_or(s);
     let s = s.strip_suffix('.').unwrap_or(s);
-    s.bytes().map(|b| b.to_ascii_lowercase())
+    s.split('.').filter(|x| !x.is_empty())
+}
+
+/// Compare two label-shaped segment iterators ASCII-case-insensitively.
+fn cmp_segments<'a>(
+    mut a: impl Iterator<Item = &'a str>,
+    mut b: impl Iterator<Item = &'a str>,
+) -> Ordering {
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(x), Some(y)) => {
+                let ord = x
+                    .bytes()
+                    .map(|c| c.to_ascii_lowercase())
+                    .cmp(y.bytes().map(|c| c.to_ascii_lowercase()));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+}
+
+/// Equal-by-segments, ASCII-case-insensitive.
+fn eq_segments<'a>(
+    mut a: impl Iterator<Item = &'a str>,
+    mut b: impl Iterator<Item = &'a str>,
+) -> bool {
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(_), None) | (None, Some(_)) => return false,
+            (Some(x), Some(y)) => {
+                if !x.eq_ignore_ascii_case(y) {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
-    normalized_bytes(a.as_ref()).cmp(normalized_bytes(b.as_ref()))
+    cmp_segments(dotted_segments(a.as_ref()), dotted_segments(b.as_ref()))
 }
 
 impl PartialOrd<Self> for Domain {
@@ -497,10 +542,13 @@ impl PartialOrd<Self> for Domain {
 
 impl Ord for Domain {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Equivalent to `cmp_domain(self, other)` byte-for-byte (labels are
-        // dot-separated normalized segments) but expressed through the
-        // structural abstraction so the invariant is visible in code.
-        self.labels().cmp(other.labels())
+        // Same primitive as `cmp_domain(self, other)`. Both feed into
+        // `cmp_segments`; the Domain side just exposes its labels via the
+        // structural iterator rather than re-splitting the buffer.
+        cmp_segments(
+            self.labels().map(Label::as_str),
+            other.labels().map(Label::as_str),
+        )
     }
 }
 
@@ -544,12 +592,15 @@ impl PartialOrd<Domain> for String {
 }
 
 fn partial_eq_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> bool {
-    normalized_bytes(a.as_ref()).eq(normalized_bytes(b.as_ref()))
+    eq_segments(dotted_segments(a.as_ref()), dotted_segments(b.as_ref()))
 }
 
 impl PartialEq<Self> for Domain {
     fn eq(&self, other: &Self) -> bool {
-        self.labels().eq(other.labels())
+        eq_segments(
+            self.labels().map(Label::as_str),
+            other.labels().map(Label::as_str),
+        )
     }
 }
 
