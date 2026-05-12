@@ -1,3 +1,5 @@
+#![allow(unused_variables, dead_code, unused_must_use)]
+
 use std::{error::Error, fmt, iter::successors};
 
 use rama::{

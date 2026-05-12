@@ -39,9 +39,7 @@
 
 #[cfg(target_family = "unix")]
 mod unix_impl {
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::{path::PathBuf, sync::Arc, time::Duration};
 
     use rama::{
         Service,
@@ -50,14 +48,14 @@ mod unix_impl {
         graceful::Shutdown,
         http::{
             Request, Response, StatusCode,
-            layer::trace::TraceLayer,
+            layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
             server::HttpServer,
             service::web::{
                 Router,
                 response::{IntoResponse, Json},
             },
         },
-        layer::Layer,
+        layer::{ArcLayer, Layer},
         net::{address::SocketAddress, client::EstablishedClientConnection},
         rt::Executor,
         tcp::server::TcpListener,
@@ -113,19 +111,23 @@ mod unix_impl {
         ));
 
         // ── Router: Rust-native endpoints + FastCGI catch-all ───────────────
-        let router: Arc<Router> = Arc::new(
-            Router::new()
-                .with_get("/api/health", async || {
-                    Json(json!({ "status": "ok", "source": "rust" }))
-                })
-                .with_get("/api/version", async || {
-                    Json(json!({ "version": env!("CARGO_PKG_VERSION"), "source": "rust" }))
-                })
-                .with_not_found(php_fallback_service(fastcgi_fallback)),
-        );
+        let router = Router::new()
+            .with_get("/api/health", async || {
+                Json(json!({ "status": "ok", "source": "rust" }))
+            })
+            .with_get("/api/version", async || {
+                Json(json!({ "version": env!("CARGO_PKG_VERSION"), "source": "rust" }))
+            })
+            .with_not_found(php_fallback_service(fastcgi_fallback));
 
-        let http_server =
-            HttpServer::auto(exec.clone()).service(TraceLayer::new_for_http().into_layer(router));
+        let http_server = HttpServer::auto(exec.clone()).service(
+            (
+                ArcLayer::new(),
+                TraceLayer::new_for_http(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(router),
+        );
 
         let tcp = TcpListener::bind_address(listen, exec.clone())
             .await
