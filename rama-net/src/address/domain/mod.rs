@@ -94,10 +94,14 @@ impl Domain {
         self.0.ends_with('.')
     }
 
-    /// Returns `true` if this domain is a wildcard domain.
+    /// Returns `true` if this domain is a wildcard domain (i.e. its leftmost
+    /// label is `"*"`).
+    ///
+    /// Label-based — agrees with [`Self::as_wildcard_parent`] for inputs like
+    /// `".*.example.com"` where a leading FQDN dot precedes the wildcard.
     #[must_use]
     pub fn is_wildcard(&self) -> bool {
-        self.0.starts_with("*.")
+        self.labels().next().is_some_and(Label::is_wildcard)
     }
 
     /// Returns `true` if this domain is Top-Level [`Domain`] (TLD).
@@ -227,13 +231,14 @@ impl Domain {
                 return None;
             }
         }
-        // The remaining labels must form a non-empty domain.
-        let remaining: Vec<&Label> = self_labels.collect();
-        if remaining.is_empty() {
+        // Build from the remaining labels directly — no intermediate Vec.
+        let mut b = DomainBuilder::new();
+        b.push_labels(&mut self_labels).ok()?;
+        // At least one label must remain (otherwise the whole domain was
+        // stripped and no valid sub-domain is left).
+        if b.is_empty() {
             return None;
         }
-        let mut b = DomainBuilder::new();
-        b.push_labels(remaining).ok()?;
         b.finish().ok()
     }
 
@@ -462,6 +467,18 @@ impl std::error::Error for DomainParseError {
 /// Single source of truth for the runtime parse path (`FromStr` / `TryFrom`).
 /// Mirrors the const `is_valid_name` used by `from_static`, but reports
 /// position info via [`DomainParseError`].
+///
+/// # Accepted shapes
+///
+/// - bare: `"example.com"`, `"localhost"`
+/// - FQDN: `"example.com."` (trailing dot)
+/// - leading-dot: `".example.com"` (matches behaviour of the const path)
+/// - wildcard: `"*.example.com"`
+/// - leading-dot wildcard: `".*.example.com"` (the leading FQDN dot is
+///   stripped before label-walking; equivalent to `"*.example.com"`)
+///
+/// The bare wildcard label `"*"` is rejected (it must prefix at least one
+/// further label), and `"*"` is only valid as the leftmost label.
 fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
     if s.is_empty() {
         return Err(DomainParseError::empty());
@@ -788,14 +805,19 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
 
     /// Return this value in wildcard form (`*.x`).
     ///
-    /// If `self` already starts with `"*."`, an owned copy is returned
-    /// as-is. Otherwise this is equivalent to `self.to_domain().try_as_wildcard()`
+    /// If `self` is already a wildcard, an owned copy is returned as-is.
+    /// Otherwise this is equivalent to `self.to_domain().try_as_wildcard()`
     /// — i.e. `x` becomes `*.x` (with the usual length cap).
     ///
     /// # Errors
     ///
     /// Returns [`PushError`] if the resulting name would exceed
     /// [`MAX_NAME_LEN`].
+    ///
+    /// # Panics
+    ///
+    /// Inherited from [`Self::to_domain`]: for `&'static str` inputs this
+    /// panics on invalid domain syntax (matching [`Domain::from_static`]).
     fn to_wildcard(&self) -> Result<Domain, PushError> {
         let d = self.to_domain();
         if d.is_wildcard() {

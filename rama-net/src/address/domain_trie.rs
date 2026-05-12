@@ -192,12 +192,51 @@ impl<T> DomainTrie<T> {
         self
     }
 
-    #[inline]
     /// Returns `true` if `domain` matches at least one entry in this trie.
     ///
-    /// Shortcut for `self.get(domain).is_some()`.
+    /// Cheaper than `self.get(domain).is_some()` — does not build the
+    /// `MatchKind::Subtree { apex }` payload for subtree hits.
     pub fn is_match(&self, domain: impl AsDomainRef) -> bool {
-        self.get(domain).is_some()
+        let mut key = reverse_domain(domain.domain_as_str());
+        let mut is_first = true;
+        loop {
+            if let Some(node) = self.trie.get(&key) {
+                if is_first && node.exact.is_some() {
+                    return true;
+                }
+                if node.subtree.is_some() {
+                    return true;
+                }
+            }
+            if !truncate_to_parent(&mut key) {
+                return false;
+            }
+            is_first = false;
+        }
+    }
+
+    /// Returns the value for the most-specific entry that matches `domain`,
+    /// without computing the apex for subtree matches.
+    ///
+    /// Cheaper than [`Self::get`] when the caller doesn't need the apex.
+    /// Matching rules are identical to `get`.
+    pub fn get_value(&self, domain: impl AsDomainRef) -> Option<&T> {
+        let mut key = reverse_domain(domain.domain_as_str());
+        let mut is_first = true;
+        loop {
+            if let Some(node) = self.trie.get(&key) {
+                if is_first && let Some(v) = node.exact.as_ref() {
+                    return Some(v);
+                }
+                if let Some(v) = node.subtree.as_ref() {
+                    return Some(v);
+                }
+            }
+            if !truncate_to_parent(&mut key) {
+                return None;
+            }
+            is_first = false;
+        }
     }
 
     /// Look up `domain` and return a [`DomainMatch`] describing the most-

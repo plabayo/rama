@@ -81,11 +81,24 @@ pub trait DomainLabels: sealed::Sealed {
     /// Returns `false` when `parent` has zero labels (e.g. an IP-valued
     /// [`Host`](super::super::Host)).
     fn is_subdomain_of<D: DomainLabels + ?Sized>(&self, parent: &D) -> bool {
-        // Empty parent has no meaningful "subdomain of" relation.
-        if parent.labels().next().is_none() {
-            return false;
+        // One walk: walk reverse together. Empty-parent check is folded in —
+        // if parent has no labels at all, `b.next()` is None on the first
+        // iteration *and* we've consumed nothing, so we return false.
+        let mut a = self.labels().rev();
+        let mut b = parent.labels().rev();
+        let mut matched_any = false;
+        loop {
+            match (b.next(), a.next()) {
+                (None, _) => return matched_any,
+                (Some(_), None) => return false,
+                (Some(y), Some(x)) => {
+                    if x != y {
+                        return false;
+                    }
+                    matched_any = true;
+                }
+            }
         }
-        self.ends_with(parent)
     }
 
     /// Returns the parent [`Domain`] (everything but the leftmost label), or
