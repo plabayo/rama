@@ -3297,6 +3297,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-dns",
+ "rama-fastcgi",
  "rama-grpc",
  "rama-haproxy",
  "rama-http",
@@ -3460,6 +3461,23 @@ dependencies = [
 [[package]]
 name = "rama-error"
 version = "0.3.0-rc1"
+
+[[package]]
+name = "rama-fastcgi"
+version = "0.3.0-rc1"
+dependencies = [
+ "parking_lot",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-tcp",
+ "rama-unix",
+ "rama-utils",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+]
 
 [[package]]
 name = "rama-fuzz"

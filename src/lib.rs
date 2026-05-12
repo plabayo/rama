@@ -402,6 +402,14 @@ pub mod proxy {
     pub use ::rama_socks5 as socks5;
 }
 
+/// Application server gateway protocols (FastCGI, and similar).
+pub mod gateway {
+    #[cfg(feature = "fastcgi")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "fastcgi")))]
+    #[doc(inline)]
+    pub use ::rama_fastcgi as fastcgi;
+}
+
 #[cfg(feature = "ua")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ua")))]
 #[doc(inline)]

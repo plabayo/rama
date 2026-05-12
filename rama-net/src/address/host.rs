@@ -75,7 +75,7 @@ impl Host {
     /// Returns `true` if [`Host`] is a [`IpAddr::V6`].
     #[must_use]
     pub fn is_ipv6(&self) -> bool {
-        matches!(self, Self::Address(IpAddr::V4(_)))
+        matches!(self, Self::Address(IpAddr::V6(_)))
     }
 
     /// Returns [`Host`] as a string, only allocated if we need to render it.

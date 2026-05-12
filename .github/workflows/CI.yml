@@ -247,6 +247,30 @@ jobs:
       - name: Run dial9 QA checks
         run: just qa-dial9
 
+  test-fastcgi-php:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-fastcgi-php
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install php-fpm and jq
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            php-fpm php-cli jq curl
+      - name: Install just
+        run: cargo install just
+      - name: Run rama-fastcgi-php end-to-end examples
+        run: just test-fastcgi-php
+
   test-rust-linux-musl:
     strategy:
       matrix:
@@ -650,6 +674,7 @@ jobs:
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-ffi-apple-example-transparent-proxy-e2e-asan
       - test-rama-apple-ne-swift-ffi
+      - test-fastcgi-php
       - test-rust-linux-musl
       - test-rama-apple-xpc
       - test-rust-extra
