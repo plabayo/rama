@@ -2,12 +2,12 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        BodyExtractExt, Request, Response, StatusCode, Version,
+        BodyExtractExt, Request, StatusCode, Version,
         headers::ContentType,
         proto::h2,
         service::web::{
             extract::{Path, State as StateParam},
-            response::{self, IntoResponse, Json},
+            response::{self, ErrorResponse, IntoResponse, Json},
         },
         ws::{
             Utf8Bytes,
@@ -112,7 +112,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
 pub(super) async fn get_report(
     StateParam(state): StateParam<State>,
     req: Request,
-) -> Result<Html, Response> {
+) -> Result<Html, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -348,7 +348,7 @@ pub(super) async fn post_api_fetch_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<serde_json::Value>, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, body) = req.into_parts();
@@ -429,7 +429,7 @@ pub(super) async fn post_api_xml_http_request_number(
     StateParam(state): StateParam<State>,
     Path(params): Path<APINumberParams>,
     req: Request,
-) -> Result<Json<serde_json::Value>, Response> {
+) -> Result<Json<serde_json::Value>, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -484,7 +484,7 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(
     StateParam(state): StateParam<State>,
     req: Request,
-) -> Result<Html, Response> {
+) -> Result<Html, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();

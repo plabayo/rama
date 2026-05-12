@@ -15,7 +15,7 @@ use crate::{
         layer::set_header::SetResponseHeaderLayer,
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer,
+            trace::TraceLayer, into_response::IntoResponseService,
         },
         server::HttpServer,
         service::{
@@ -314,8 +314,8 @@ where
         };
 
         let serve_service = match &self.content_path {
-            None => Either3::A(StaticOutput::new(Html(include_str!(
-                "../../../docs/index.html"
+            None => Either3::A(IntoResponseService::new(StaticOutput::new(Html(
+                include_str!("../../../docs/index.html"),
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
             Some(path) if path.is_dir() => {
@@ -343,5 +343,5 @@ where
     }
 }
 
-type ServeStaticHtml = StaticOutput<Html<&'static str>>;
+type ServeStaticHtml = IntoResponseService<StaticOutput<Html<&'static str>>>;
 type ServeService = Either3<ServeStaticHtml, ServeFile, ServeDir>;

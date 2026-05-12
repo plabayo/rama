@@ -84,7 +84,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             HttpMatcher::custom(true),
             endpoint::method::handler,
         )
-        .with_sub_service(
+        .with_endpoint_service(
             "/request-compression",
             endpoint::request_compression::service(),
         )

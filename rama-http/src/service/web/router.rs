@@ -371,18 +371,56 @@ where
         self.set_sub_service_inner(prefix, nested)
     }
 
+    /// Register a nested endpoint service under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    /// Endpoint layer is applied to this sub-service.
+    ///
+    /// Warning: If a sub-service is a plain [`Service`], not an endpoint function,
+    /// it has no notion of the state this router has. If you want to create a sub-router
+    /// that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    #[must_use]
+    #[inline]
+    pub fn with_endpoint_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
+    where
+        I: IntoEndpointService<T>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_endpoint_service(prefix, service);
+        self
+    }
+
+    /// Register a nested endpoint service under a prefix (path).
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
+    /// Endpoint layer is applied to this sub-service.
+    ///
+    /// Warning: If a sub-service is a plain [`Service`], not an endpoint function,
+    /// it has no notion of the state this router has. If you want to create a sub-router
+    /// that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    #[inline]
+    pub fn set_endpoint_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointService<T>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let nested = self.layer.layer(service.into_endpoint_service()).boxed();
+        self.set_sub_service_inner(prefix, nested)
+    }
+
     /// Register a nested service under a prefix (path).
     ///
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
     /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    /// Also, the endpoint layer is not applied to it, so its Output / Error must match those of the Router
+    /// If you need its type conversions, consider [`Router::with_endpoint_service`]
     #[must_use]
     #[inline]
-    pub fn with_sub_service<I, T>(mut self, prefix: impl AsRef<str>, service: I) -> Self
+    pub fn with_sub_service<S>(mut self, prefix: impl AsRef<str>, service: S) -> Self
     where
-        I: IntoEndpointService<T>,
-        I::Service: Service<Request, Output = O, Error = E>,
+        S: Service<Request, Output = O, Error = E>,
     {
         self.set_sub_service(prefix, service);
         self
@@ -394,11 +432,12 @@ where
     ///
     /// Warning: This sub-service has no notion of the state this router has. If you want
     /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
+    /// Also, the endpoint layer is not applied to it, so its Output / Error must match those of the Router
+    /// If you need its type conversions, consider [`Router::set_endpoint_service`]
     #[inline]
-    pub fn set_sub_service<I, T>(&mut self, prefix: impl AsRef<str>, service: I) -> &mut Self
+    pub fn set_sub_service<S>(&mut self, prefix: impl AsRef<str>, service: S) -> &mut Self
     where
-        I: IntoEndpointService<T>,
-        I::Service: Service<Request, Output = O, Error = E>,
+        S: Service<Request, Output = O, Error = E>,
     {
         let nested = service.into_endpoint_service().boxed();
         self.set_sub_service_inner(prefix, nested)
