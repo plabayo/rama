@@ -5,7 +5,7 @@ use crate::http::{
     BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
 };
-use crate::net::address::{AsDomainRef, Domain, DomainParentMatch, DomainTrie};
+use crate::net::address::{AsDomainRef, Domain, DomainTrie};
 use crate::net::tls::{
     DataEncoding,
     client::ClientHello,
@@ -43,14 +43,11 @@ pub struct CertOrderOutput {
 /// It is up to the user of this client to provide their own server.
 pub struct CertIssuerHttpClient {
     endpoint: Uri,
-    allow_list: Option<DomainTrie<DomainAllowMode>>,
+    // Trie value `None` means an exact entry; `Some(wildcard)` is a subtree
+    // entry, storing the issuing-form wildcard (e.g. `"*.foo.com"`) so
+    // `norm_cn` can hand it back as a borrowed reference.
+    allow_list: Option<DomainTrie<Option<Domain>>>,
     http_client: BoxService<Request, Response, OpaqueError>,
-}
-
-#[derive(Debug, Clone)]
-enum DomainAllowMode {
-    Exact,
-    Parent(Domain),
 }
 
 impl CertIssuerHttpClient {
@@ -152,11 +149,15 @@ impl CertIssuerHttpClient {
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
-            if let Some(parent) = domain.as_wildcard_parent() && let Ok(domain) = parent.try_as_wildcard() {
-                self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent(domain));
-            } else {
-                self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
-            }
+            // The trie's smart insert handles "*.x" -> subtree at x and bare
+            // "x" -> exact at x. The stored value is just the wildcard form
+            // for subtree entries (so norm_cn can return a borrowed ref).
+            let wildcard_form = domain
+                .as_wildcard_parent()
+                .and_then(|parent| parent.try_as_wildcard().ok());
+            self.allow_list
+                .get_or_insert_default()
+                .insert_domain(domain, wildcard_form);
             self
         }
     }
@@ -177,12 +178,9 @@ impl CertIssuerHttpClient {
     /// Prefetch all certificates, useful to warm them up at startup time.
     pub async fn prefetch_certs(&self) {
         if let Some(allow_list) = &self.allow_list {
-            for (domain_key, mode) in allow_list.iter() {
-                let domain = match mode {
-                    // assumption: only valid domains in trie possible
-                    DomainAllowMode::Exact => domain_key,
-                    DomainAllowMode::Parent(domain) => domain.clone(),
-                };
+            // iter() yields the wildcard form for subtree entries and the
+            // apex for exact entries; both are the issuing form we want.
+            for (domain, _) in allow_list.iter() {
                 match self.fetch_certs(domain.clone()).await {
                     Ok(_) => tracing::debug!("prefetched certificates for domain: {domain}"),
                     Err(err) => tracing::error!(
@@ -249,31 +247,19 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
         let domain = match client_hello.ext_server_name() {
             Some(domain) => {
                 if let Some(ref allow_list) = self.allow_list {
-                    match allow_list.match_parent(domain) {
+                    match allow_list.get(domain) {
                         None => {
                             return Err(OpaqueError::from_static_str(
                                 "sni found: unexpected unknown domain",
                             )
                             .with_context_field("domain", || domain.clone()));
                         }
-                        Some(DomainParentMatch {
-                            value: &DomainAllowMode::Exact,
-                            is_exact,
-                            ..
-                        }) => {
-                            if is_exact {
-                                domain.clone()
-                            } else {
-                                return Err(OpaqueError::from_static_str(
-                                    "sni found: unexpected child domain",
-                                )
-                                .with_context_field("domain", || domain.clone()));
-                            }
-                        }
-                        Some(DomainParentMatch {
-                            value: DomainAllowMode::Parent(wildcard_domain),
-                            ..
-                        }) => wildcard_domain.clone(),
+                        Some(m) => match m.value {
+                            // Subtree match — issue using the stored wildcard form.
+                            Some(wildcard) => wildcard.clone(),
+                            // Exact match — issue for the queried domain itself.
+                            None => domain.clone(),
+                        },
                     }
                 } else {
                     domain.clone()
@@ -288,21 +274,10 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
     }
 
     fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
-        if let Some(ref allow_list) = self.allow_list {
-            match allow_list.match_parent(domain) {
-                None
-                | Some(DomainParentMatch {
-                    value: &DomainAllowMode::Exact,
-                    ..
-                }) => None,
-                Some(DomainParentMatch {
-                    value: DomainAllowMode::Parent(wildcard_domain),
-                    ..
-                }) => Some(wildcard_domain),
-            }
-        } else {
-            None
-        }
+        self.allow_list
+            .as_ref()?
+            .get(domain)
+            .and_then(|m| m.value.as_ref())
     }
 }
 

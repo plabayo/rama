@@ -776,6 +776,15 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
             .strip_prefix("*.")
             .and_then(|s| s.parse().ok())
     }
+
+    /// Return an owned [`Domain`].
+    ///
+    /// For `&'static str` inputs this validates and panics on invalid input
+    /// (matching [`Domain::from_static`]); for [`Domain`] it clones cheaply.
+    fn to_domain(&self) -> Domain {
+        // Safety: domain_as_str is contractually a validated domain string.
+        unsafe { Domain::from_maybe_borrowed_unchecked(self.domain_as_str()) }
+    }
 }
 
 impl AsDomainRef for &'static str {}

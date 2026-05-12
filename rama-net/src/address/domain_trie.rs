@@ -367,17 +367,14 @@ fn truncate_to_parent(key: &mut String) -> bool {
     if key.pop() != Some('.') {
         return false;
     }
-    match key.rfind('.') {
-        Some(pos) => {
-            key.truncate(pos + 1);
-            true
-        }
-        None => {
-            // No more dots — was a single-label name. Walking up from a
-            // single label has no ancestor.
-            key.clear();
-            false
-        }
+    if let Some(pos) = key.rfind('.') {
+        key.truncate(pos + 1);
+        true
+    } else {
+        // No more dots — was a single-label name. Walking up from a single
+        // label has no ancestor.
+        key.clear();
+        false
     }
 }
 
