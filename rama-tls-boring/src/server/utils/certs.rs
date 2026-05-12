@@ -140,7 +140,7 @@ pub fn self_signed_server_auth_gen_cert(
             .context("x509 cert builder: set auth key id extension")?;
     } else {
         tracing::debug!(
-            "skipping AuthorityKeyIdentifier emission: proxy CA has no SubjectKeyIdentifier"
+            "skipping AuthorityKeyIdentifier emission: CA has no SubjectKeyIdentifier"
         );
     }
 
@@ -293,7 +293,7 @@ pub fn self_signed_server_auth_mirror_cert(
                 .context("x509 cert builder: append mirrored authority key identifier")?;
         } else {
             tracing::debug!(
-                "skipping mirrored AuthorityKeyIdentifier: proxy CA has no SubjectKeyIdentifier"
+                "skipping mirrored AuthorityKeyIdentifier: CA has no SubjectKeyIdentifier"
             );
         }
     }
