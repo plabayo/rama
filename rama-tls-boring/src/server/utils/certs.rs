@@ -129,14 +129,20 @@ pub fn self_signed_server_auth_gen_cert(
         .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
-    let auth_key_identifier = AuthorityKeyIdentifier::new()
-        .keyid(false)
-        .issuer(false)
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build auth key id")?;
-    cert_builder
-        .append_extension(auth_key_identifier.as_ref())
-        .context("x509 cert builder: set auth key id extension")?;
+    if ca_cert.subject_key_id().is_some() {
+        let auth_key_identifier = AuthorityKeyIdentifier::new()
+            .keyid(false)
+            .issuer(false)
+            .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+            .context("x509 cert builder: build auth key id")?;
+        cert_builder
+            .append_extension(auth_key_identifier.as_ref())
+            .context("x509 cert builder: set auth key id extension")?;
+    } else {
+        tracing::debug!(
+            "skipping AuthorityKeyIdentifier emission: proxy CA has no SubjectKeyIdentifier"
+        );
+    }
 
     cert_builder
         .sign(ca_privkey, MessageDigest::sha256())
@@ -244,12 +250,15 @@ pub fn self_signed_server_auth_mirror_cert(
         .set_not_after(source_cert.not_after())
         .context("x509 cert builder: mirror source not-after")?;
 
+    let source_had_ski = source_cert.subject_key_id().is_some();
+    let source_had_aki = source_cert.authority_key_id().is_some();
+
     for source_ext in source_cert.extensions() {
         let ext_nid = source_ext.object().nid();
         if ext_nid == Nid::SUBJECT_KEY_IDENTIFIER || ext_nid == Nid::AUTHORITY_KEY_IDENTIFIER {
             tracing::trace!(
                 ?ext_nid,
-                "skip source key identifier extension (will regenerate)"
+                "skip source key identifier extension (will regenerate if applicable)"
             );
             continue;
         }
@@ -263,21 +272,31 @@ pub fn self_signed_server_auth_mirror_cert(
             .context("x509 cert builder: append mirrored source extension")?;
     }
 
-    let subject_key_identifier = SubjectKeyIdentifier::new()
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build mirrored subject key identifier")?;
-    cert_builder
-        .append_extension(subject_key_identifier.as_ref())
-        .context("x509 cert builder: append mirrored subject key identifier")?;
+    if source_had_ski {
+        let subject_key_identifier = SubjectKeyIdentifier::new()
+            .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+            .context("x509 cert builder: build mirrored subject key identifier")?;
+        cert_builder
+            .append_extension(subject_key_identifier.as_ref())
+            .context("x509 cert builder: append mirrored subject key identifier")?;
+    }
 
-    let auth_key_identifier = AuthorityKeyIdentifier::new()
-        .keyid(false)
-        .issuer(false)
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build mirrored authority key identifier")?;
-    cert_builder
-        .append_extension(auth_key_identifier.as_ref())
-        .context("x509 cert builder: append mirrored authority key identifier")?;
+    if source_had_aki {
+        if ca_cert.subject_key_id().is_some() {
+            let auth_key_identifier = AuthorityKeyIdentifier::new()
+                .keyid(false)
+                .issuer(false)
+                .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+                .context("x509 cert builder: build mirrored authority key identifier")?;
+            cert_builder
+                .append_extension(auth_key_identifier.as_ref())
+                .context("x509 cert builder: append mirrored authority key identifier")?;
+        } else {
+            tracing::debug!(
+                "skipping mirrored AuthorityKeyIdentifier: proxy CA has no SubjectKeyIdentifier"
+            );
+        }
+    }
 
     cert_builder
         .sign(ca_privkey, MessageDigest::sha256())
