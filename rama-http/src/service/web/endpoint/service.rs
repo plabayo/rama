@@ -11,8 +11,8 @@ use crate::{
     },
 };
 
-// Generic T = (Function, Input, Output)
-// Input = ((FromPartsStateRefPair), (FromRequest))
+// Generic T = (Input, () as Result<O, E> / Infallible as IntoResponse)
+// Input = ((FromPartsStateRefPair), FromRequest)
 
 /// [`rama_core::Service`] implemented for functions taking extractors.
 pub trait EndpointServiceFn<T, State>:
@@ -20,7 +20,7 @@ pub trait EndpointServiceFn<T, State>:
 {
 }
 
-impl<F, R, O, E, State> EndpointServiceFn<(F, ((), ()), (R, O)), State> for F
+impl<F, R, O, E, State> EndpointServiceFn<(((), ()), ()), State> for F
 where
     F: Fn() -> R + Clone + Send + Sync + 'static,
     R: Future<Output = Result<O, E>> + Send + 'static,
@@ -30,7 +30,7 @@ where
 {
 }
 
-impl<F, R, O, State> EndpointServiceFn<(F, ((), ()), (R, O), Infallible), State> for F
+impl<F, R, O, State> EndpointServiceFn<(((), ()), Infallible), State> for F
 where
     F: Fn() -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
@@ -39,7 +39,7 @@ where
 {
 }
 
-impl<F, R, O, E, I, State> EndpointServiceFn<(F, ((), (I,)), (R, O)), State> for F
+impl<F, R, O, E, I, State> EndpointServiceFn<(((), I), ()), State> for F
 where
     F: Fn(I) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = Result<O, E>> + Send + 'static,
@@ -50,7 +50,7 @@ where
 {
 }
 
-impl<F, R, O, I, State> EndpointServiceFn<(F, ((), (I,)), (R, O), Infallible), State> for F
+impl<F, R, O, I, State> EndpointServiceFn<(((), I), Infallible), State> for F
 where
     F: Fn(I) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
@@ -64,7 +64,7 @@ where
 macro_rules! impl_endpoint_service_fn_tuple {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<F, R, O, E, State, $($ty),+> EndpointServiceFn<(F, (($($ty),+,), ()), (R, O)), State> for F
+        impl<F, R, O, E, State, $($ty),+> EndpointServiceFn<((($($ty),+,), ()), ()), State> for F
             where
                 F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = Result<O, E>> + Send + 'static,
@@ -77,7 +77,7 @@ macro_rules! impl_endpoint_service_fn_tuple {
         }
 
         #[allow(non_snake_case)]
-        impl<F, R, O, State, $($ty),+> EndpointServiceFn<(F, (($($ty),+,), ()), (R, O), Infallible), State> for F
+        impl<F, R, O, State, $($ty),+> EndpointServiceFn<((($($ty),+,), ()), Infallible), State> for F
             where
                 F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
@@ -95,7 +95,7 @@ all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_tuple);
 macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<F, R, O, E, State, $($ty),+, I> EndpointServiceFn<(F, (($($ty),+,), I), (R, O)), State> for F
+        impl<F, R, O, E, State, $($ty),+, I> EndpointServiceFn<((($($ty),+,), I), ()), State> for F
             where
                 F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = Result<O, E>> + Send + 'static,
@@ -110,7 +110,7 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
         }
 
         #[allow(non_snake_case)]
-        impl<F, R, O, State, $($ty),+, I> EndpointServiceFn<(F, (($($ty),+,), I), (R, O), Infallible), State> for F
+        impl<F, R, O, State, $($ty),+, I> EndpointServiceFn<((($($ty),+,), I), Infallible), State> for F
             where
                 F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
@@ -145,7 +145,7 @@ mod private {
         ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send;
     }
 
-    impl<F, R, O, E, State> Sealed<(F, ((), ()), (R, O)), State> for F
+    impl<F, R, O, E, State> Sealed<(((), ()), ()), State> for F
     where
         F: Fn() -> R + Clone + Send + Sync + 'static,
         R: Future<Output = Result<O, E>> + Send + 'static,
@@ -165,7 +165,7 @@ mod private {
         }
     }
 
-    impl<F, R, O, State> Sealed<(F, ((), ()), (R, O), Infallible), State> for F
+    impl<F, R, O, State> Sealed<(((), ()), Infallible), State> for F
     where
         F: Fn() -> R + Clone + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
@@ -180,7 +180,7 @@ mod private {
         }
     }
 
-    impl<F, R, O, E, I, State> Sealed<(F, ((), (I,)), (R, O)), State> for F
+    impl<F, R, O, E, I, State> Sealed<(((), I), ()), State> for F
     where
         F: Fn(I) -> R + Clone + Send + Sync + 'static,
         R: Future<Output = Result<O, E>> + Send + 'static,
@@ -198,7 +198,7 @@ mod private {
         }
     }
 
-    impl<F, R, O, I, State> Sealed<(F, ((), (I,)), (R, O), Infallible), State> for F
+    impl<F, R, O, I, State> Sealed<(((), I), Infallible), State> for F
     where
         F: Fn(I) -> R + Clone + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
@@ -219,7 +219,7 @@ mod private {
     macro_rules! impl_endpoint_service_fn_sealed_tuple {
         ($($ty:ident),+ $(,)?) => {
             #[allow(non_snake_case)]
-            impl<F, R, O, E, State, $($ty),+> Sealed<(F, (($($ty),+,), ()), (R, O)), State> for F
+            impl<F, R, O, E, State, $($ty),+> Sealed<((($($ty),+,), ()), ()), State> for F
                 where
                     F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                     R: Future<Output = Result<O, E>> + Send + 'static,
@@ -240,7 +240,7 @@ mod private {
             }
 
             #[allow(non_snake_case)]
-            impl<F, R, O, State, $($ty),+> Sealed<(F, (($($ty),+,), ()), (R, O), Infallible), State> for F
+            impl<F, R, O, State, $($ty),+> Sealed<((($($ty),+,), ()), Infallible), State> for F
                 where
                     F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
@@ -266,7 +266,7 @@ mod private {
     macro_rules! impl_endpoint_service_fn_sealed_tuple_with_from_request {
         ($($ty:ident),+ $(,)?) => {
             #[allow(non_snake_case)]
-            impl<F, R, O, E, State, $($ty),+, I> Sealed<(F, (($($ty),+,), I), (R, O)), State> for F
+            impl<F, R, O, E, State, $($ty),+, I> Sealed<((($($ty),+,), I), ()), State> for F
                 where
                     F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
                     R: Future<Output = Result<O, E>> + Send + 'static,
@@ -291,7 +291,7 @@ mod private {
             }
 
             #[allow(non_snake_case)]
-            impl<F, R, O, State, $($ty),+, I> Sealed<(F, (($($ty),+,), I), (R, O), Infallible), State> for F
+            impl<F, R, O, State, $($ty),+, I> Sealed<((($($ty),+,), I), Infallible), State> for F
                 where
                     F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
