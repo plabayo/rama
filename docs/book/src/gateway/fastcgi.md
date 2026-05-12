@@ -47,6 +47,44 @@ digraph {
 | `FastCgiClient<S>`        | outbound | Wraps a connector, runs the FastCGI exchange |
 | `FastCgiHttpClient<S>`    | outbound | Same but takes an HTTP `Request` and returns an HTTP `Response` |
 
+## Common transports
+
+For the everyday case — point the client at a php-fpm-shaped backend over
+either TCP or a Unix socket — rama ships two turnkey connectors that plug
+straight into `FastCgiClient` / `FastCgiHttpClient`. No custom `Service`
+impl needed.
+
+```rust,ignore
+use rama::gateway::fastcgi::{FastCgiHttpClient, FastCgiTcpConnector};
+
+// php-fpm at 127.0.0.1:9000, front controller at /var/www/index.php
+let client = FastCgiHttpClient::new(FastCgiTcpConnector::php_fpm(
+    "127.0.0.1:9000".parse()?,
+    executor,
+    "/var/www/index.php",
+));
+```
+
+Same shape over a Unix socket (Unix-family targets only):
+
+```rust,ignore
+use rama::gateway::fastcgi::{FastCgiHttpClient, FastCgiUnixConnector};
+
+let client = FastCgiHttpClient::new(FastCgiUnixConnector::php_fpm(
+    "/run/php/php8.3-fpm.sock",
+    "/var/www/index.php",
+));
+```
+
+`php_fpm(target, script)` stages the two CGI params php-fpm needs
+(`SCRIPT_FILENAME` set to `script`, `DOCUMENT_ROOT` to its parent dir).
+For non-PHP backends, drop the preset and use `new(target)` plus
+`.with_param(cgi::REDIRECT_STATUS, "200")` etc. as appropriate.
+
+Both connectors live in `rama-fastcgi`'s default-on `transport` feature.
+Disable it (`default-features = false`) if you want the bare protocol
+layer and roll your own connector.
+
 ## Roles
 
 FastCGI defines three roles in `FCGI_BEGIN_REQUEST`. All three are dispatched to

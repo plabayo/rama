@@ -65,6 +65,12 @@ pub mod server;
 pub use server::{FastCgiRequest, FastCgiResponse, FastCgiServer, ServerOptions};
 
 pub mod client;
+#[cfg(feature = "transport")]
+#[doc(inline)]
+pub use client::FastCgiTcpConnector;
+#[cfg(all(feature = "transport", target_family = "unix"))]
+#[doc(inline)]
+pub use client::FastCgiUnixConnector;
 #[doc(inline)]
 pub use client::{
     ClientError, ClientOptions, FastCgiClient, FastCgiClientRequest, FastCgiClientResponse,

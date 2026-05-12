@@ -256,3 +256,40 @@ macro_rules! impl_stream_connector_factory_either {
 }
 
 ::rama_core::combinators::impl_either!(impl_stream_connector_factory_either);
+
+/// Establish a [`UnixStream`] connection to a Unix domain socket at `path`,
+/// returning the stream together with [`UnixSocketInfo`] describing the
+/// local + peer addresses.
+///
+/// Mirrors `rama_tcp::client::default_tcp_connect` in shape so the two
+/// transports compose interchangeably in higher-level connectors. Use
+/// [`UnixConnector`] if you need pluggable middleware (timeouts, retries,
+/// pools); this helper is the bare path for the common case.
+pub async fn default_unix_connect(
+    path: impl Into<PathBuf>,
+) -> Result<(UnixStream, UnixSocketInfo), BoxError> {
+    let path = path.into();
+    let stream: UnixStream = TokioUnixStream::connect(&path)
+        .await
+        .with_context(|| format!("connect to unix socket: {}", path.display()))?
+        .into();
+
+    let local_addr = stream
+        .stream
+        .local_addr()
+        .inspect_err(|err| {
+            tracing::debug!(
+                ?err,
+                path = %path.display(),
+                "failed to read local addr of established unix connection"
+            )
+        })
+        .ok();
+    let peer_addr = stream
+        .stream
+        .peer_addr()
+        .with_context(|| format!("read peer addr of unix connection: {}", path.display()))?;
+    let info = UnixSocketInfo::new(local_addr, peer_addr);
+
+    Ok((stream, info))
+}

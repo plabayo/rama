@@ -11,6 +11,13 @@ mod options;
 mod proto;
 mod types;
 
+#[cfg(feature = "transport")]
+pub mod transport;
+#[cfg(feature = "transport")]
+pub use transport::FastCgiTcpConnector;
+#[cfg(all(feature = "transport", target_family = "unix"))]
+pub use transport::FastCgiUnixConnector;
+
 pub use error::ClientError;
 pub use options::ClientOptions;
 pub use proto::{send_on, send_on_with_options};

@@ -45,9 +45,8 @@ mod unix_impl {
 
     use rama::{
         Service,
-        bytes::Bytes,
-        error::{BoxError, ErrorContext as _},
-        gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, proto::cgi},
+        error::BoxError,
+        gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiUnixConnector},
         graceful::Shutdown,
         http::{
             Request, Response, StatusCode,
@@ -67,7 +66,7 @@ mod unix_impl {
             level_filters::LevelFilter,
             subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
         },
-        unix::{TokioUnixStream, UnixStream},
+        unix::UnixStream,
     };
 
     use serde_json::json;
@@ -106,11 +105,12 @@ mod unix_impl {
         let exec = Executor::graceful(shutdown.guard());
 
         // ── FastCGI fallback service: anything we don't yet serve in Rust ────
-        let fastcgi_fallback = Arc::new(FastCgiHttpClient::new(PhpUnixBackendConnector {
-            socket_path: backend_socket,
-            script_filename: Bytes::from(script_filename),
-            document_root: Bytes::from(document_root),
-        }));
+        // `FastCgiUnixConnector::php_fpm` opens a Unix-socket connection to
+        // php-fpm and stages the two CGI params it requires.
+        let fastcgi_fallback = Arc::new(FastCgiHttpClient::new(
+            FastCgiUnixConnector::php_fpm(backend_socket, &script_filename)
+                .with_document_root(&document_root),
+        ));
 
         // ── Router: Rust-native endpoints + FastCGI catch-all ───────────────
         let router: Arc<Router> = Arc::new(
@@ -183,41 +183,6 @@ mod unix_impl {
             }
         }
     }
-
-    /// Connector that opens a Unix-socket connection to php-fpm and injects the
-    /// two CGI params php-fpm requires (`SCRIPT_FILENAME`, `DOCUMENT_ROOT`).
-    struct PhpUnixBackendConnector {
-        socket_path: PathBuf,
-        script_filename: Bytes,
-        document_root: Bytes,
-    }
-
-    impl Service<FastCgiClientRequest> for PhpUnixBackendConnector {
-        type Output = EstablishedClientConnection<UnixStream, FastCgiClientRequest>;
-        type Error = BoxError;
-
-        async fn serve(
-            &self,
-            mut input: FastCgiClientRequest,
-        ) -> Result<Self::Output, Self::Error> {
-            input
-                .push_param(cgi::SCRIPT_FILENAME, self.script_filename.clone())
-                .push_param(cgi::DOCUMENT_ROOT, self.document_root.clone());
-
-            let stream: TokioUnixStream = TokioUnixStream::connect(&self.socket_path)
-                .await
-                .with_context(|| {
-                    format!(
-                        "connect to php-fpm Unix socket: {}",
-                        self.socket_path.display()
-                    )
-                })?;
-            Ok(EstablishedClientConnection {
-                input,
-                conn: stream.into(),
-            })
-        }
-    }
 }
 
 #[cfg(target_family = "unix")]
@@ -233,6 +198,6 @@ async fn run() -> Result<(), rama::error::extra::OpaqueError> {
 
 #[tokio::main]
 async fn main() -> Result<(), rama::error::extra::OpaqueError> {
-    run().await;
+    _ = run().await;
     Ok(())
 }

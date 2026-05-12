@@ -36,10 +36,8 @@ use std::time::Duration;
 
 use rama::{
     Service,
-    bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
-    extensions::Extensions,
-    gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, proto::cgi},
+    error::BoxError,
+    gateway::fastcgi::{FastCgiClientRequest, FastCgiHttpClient, FastCgiTcpConnector},
     graceful::Shutdown,
     http::{
         Request, Response, StatusCode, layer::trace::TraceLayer, server::HttpServer,
@@ -52,7 +50,7 @@ use rama::{
         tls::server::SelfSignedData,
     },
     rt::Executor,
-    tcp::{TcpStream, client::default_tcp_connect, server::TcpListener},
+    tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{
         self,
         level_filters::LevelFilter,
@@ -106,12 +104,11 @@ async fn main() {
     .build();
 
     // ── FastCGI client: HTTP → CGI env (+SCRIPT_FILENAME) → php-fpm ──────
-    let connector = PhpBackendConnector {
-        backend: backend.clone(),
-        script_filename: Bytes::from(script_filename),
-        document_root: Bytes::from(document_root),
-        exec: exec.clone(),
-    };
+    // `FastCgiTcpConnector::php_fpm` opens a TCP connection to the backend
+    // and stages the two CGI params php-fpm requires (`SCRIPT_FILENAME` and
+    // `DOCUMENT_ROOT`) — no custom connector wrapper needed.
+    let connector = FastCgiTcpConnector::php_fpm(backend.clone(), exec.clone(), &script_filename)
+        .with_document_root(&document_root);
     let fastcgi_client = Arc::new(FastCgiHttpClient::new(connector));
 
     let app_service = GatewayService {
@@ -174,33 +171,5 @@ where
                     .into_response())
             }
         }
-    }
-}
-
-/// Connector wrapper: opens a TCP connection to php-fpm and injects the two
-/// CGI params php-fpm needs but that `rama-fastcgi` cannot derive without a
-/// document-root convention: `SCRIPT_FILENAME` (front controller path) and
-/// `DOCUMENT_ROOT` (directory containing it).
-struct PhpBackendConnector {
-    backend: HostWithPort,
-    script_filename: Bytes,
-    document_root: Bytes,
-    exec: Executor,
-}
-
-impl Service<FastCgiClientRequest> for PhpBackendConnector {
-    type Output = EstablishedClientConnection<TcpStream, FastCgiClientRequest>;
-    type Error = BoxError;
-
-    async fn serve(&self, mut input: FastCgiClientRequest) -> Result<Self::Output, Self::Error> {
-        input
-            .push_param(cgi::SCRIPT_FILENAME, self.script_filename.clone())
-            .push_param(cgi::DOCUMENT_ROOT, self.document_root.clone());
-
-        let ext = Extensions::default();
-        let (conn, _peer) = default_tcp_connect(&ext, self.backend.clone(), self.exec.clone())
-            .await
-            .context("connect to php-fpm over TCP")?;
-        Ok(EstablishedClientConnection { input, conn })
     }
 }
