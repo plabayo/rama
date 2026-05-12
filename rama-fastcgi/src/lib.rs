@@ -82,4 +82,4 @@ pub mod http;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 #[doc(inline)]
-pub use http::{FastCgiHttpClient, FastCgiHttpClientConnector, FastCgiHttpService};
+pub use http::{FastCgiHttpClient, FastCgiHttpClientConnector, FastCgiHttpEnv, FastCgiHttpService};

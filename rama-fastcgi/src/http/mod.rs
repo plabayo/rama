@@ -12,7 +12,9 @@
 
 mod client;
 mod convert;
+mod env;
 mod service;
 
 pub use client::{FastCgiHttpClient, FastCgiHttpClientConnector};
+pub use env::FastCgiHttpEnv;
 pub use service::FastCgiHttpService;

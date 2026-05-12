@@ -127,7 +127,6 @@ where
             .context("FastCgiHttpClient: establish backend connection")?;
         let fcgi_resp: FastCgiClientResponse = send_on(&mut conn, 1, fcgi_req, false)
             .await
-            .map_err(BoxError::from)
             .context("FastCgiHttpClient: run FastCGI exchange")?;
         Ok(fastcgi_response_to_http(fcgi_resp))
     }

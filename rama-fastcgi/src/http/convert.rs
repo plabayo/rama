@@ -8,43 +8,158 @@
 //! [`ClientOptions::max_stdout_bytes`][crate::client::ClientOptions::max_stdout_bytes]).
 
 use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::TryStreamExt;
-use tokio_util::io::{ReaderStream, StreamReader};
-
-use rama_core::{error::BoxError, extensions::ExtensionsRef, telemetry::tracing};
+use rama_core::telemetry::tracing;
 use rama_http_types::{
-    Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
+    Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
 };
+use rama_net::Protocol;
 use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
+use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::body::FastCgiBody;
 use crate::client::{FastCgiClientRequest, FastCgiClientResponse};
+use crate::http::env::FastCgiHttpEnv;
 use crate::proto::cgi;
 use crate::server::{FastCgiRequest, FastCgiResponse};
 
-pub(super) fn version_to_protocol(v: Version) -> &'static str {
+// ─────────────────────────────────────────────────────────────────────────
+// Header sets
+// ─────────────────────────────────────────────────────────────────────────
+
+static KEEP_ALIVE: HeaderName = HeaderName::from_static("keep-alive");
+static PROXY_CONNECTION: HeaderName = HeaderName::from_static("proxy-connection");
+
+/// HTTP request headers we don't forward as `HTTP_*` CGI variables —
+/// either hop-by-hop (RFC 7230 §6.1) or because they have a dedicated CGI
+/// variable (`Host` → `SERVER_NAME` + `SERVER_PORT`; `Content-Type` →
+/// `CONTENT_TYPE`; `Content-Length` → `CONTENT_LENGTH`).
+///
+/// `&'static HeaderName` (not `HeaderName`) because `HeaderName` has
+/// interior-mutable case storage that prevents owning copies inside a
+/// `static` slice; rustc rejects with `E0492`. Same pattern as
+/// `rama_http_core::proto::h2::CONNECTION_HEADERS`.
+pub(crate) static HOP_BY_HOP_OR_DEDICATED: &[&HeaderName] = &[
+    &header::CONNECTION,
+    &KEEP_ALIVE,
+    &PROXY_CONNECTION,
+    &header::TRANSFER_ENCODING,
+    &header::TE,
+    &header::TRAILER,
+    &header::UPGRADE,
+    &header::HOST,
+    &header::CONTENT_TYPE,
+    &header::CONTENT_LENGTH,
+];
+
+// ─────────────────────────────────────────────────────────────────────────
+// Outbound: HTTP request → FastCGI client request
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Translate a `Version` to its CGI `SERVER_PROTOCOL` string.
+///
+/// Errors on unsupported / unknown versions rather than silently
+/// down-casting — a backend deserves a clear `HTTP/x.y` mapping.
+fn version_to_protocol(v: Version) -> Result<&'static str, BoxError> {
     match v {
-        Version::HTTP_10 => "HTTP/1.0",
-        Version::HTTP_2 => "HTTP/2",
-        Version::HTTP_3 => "HTTP/3",
-        _ => "HTTP/1.1",
+        Version::HTTP_10 => Ok("HTTP/1.0"),
+        Version::HTTP_11 => Ok("HTTP/1.1"),
+        Version::HTTP_2 => Ok("HTTP/2"),
+        Version::HTTP_3 => Ok("HTTP/3"),
+        other => Err(OpaqueError::from_static_str(
+            "fastcgi: unsupported HTTP version (cannot map to SERVER_PROTOCOL)",
+        )
+        .context_debug_field("version", other)),
     }
+}
+
+/// Server-side info derived from the request: host, port, transport scheme.
+/// Always exists; falls back to localhost+default-port when no context can
+/// be inferred.
+struct ServerInfo {
+    host: String,
+    port: String,
+    is_https: bool,
+}
+
+/// Derive server info via rama's `RequestContext` (which already does the
+/// heavy lifting of URI / Forwarded / SNI / ProxyTarget / Host-header
+/// resolution). Falls back to localhost only when *all* of those signals
+/// are unavailable.
+fn derive_server_info(req_ctx: Option<&RequestContext>) -> ServerInfo {
+    let is_https = req_ctx.map(|c| c.protocol.is_secure()).unwrap_or(false);
+    let scheme = if is_https {
+        Protocol::HTTPS
+    } else {
+        Protocol::HTTP
+    };
+    let default_port = scheme.default_port().unwrap_or(80);
+
+    let (host, port) = if let Some(ctx) = req_ctx {
+        let host = ctx.authority.host.to_string();
+        let port = ctx
+            .authority
+            .port
+            .or_else(|| ctx.protocol.default_port())
+            .unwrap_or(default_port);
+        (host, port)
+    } else {
+        tracing::debug!(
+            "fastcgi: no RequestContext could be derived from the request, falling back to localhost"
+        );
+        ("localhost".to_owned(), default_port)
+    };
+
+    ServerInfo {
+        host,
+        port: port.to_string(),
+        is_https,
+    }
+}
+
+/// Map a header name into its `HTTP_*` CGI form (uppercase, `-` → `_`).
+fn http_star_name(name: &HeaderName) -> String {
+    let n = name.as_str();
+    let mut out = String::with_capacity(5 + n.len());
+    out.push_str("HTTP_");
+    for ch in n.chars() {
+        out.push(if ch == '-' {
+            '_'
+        } else {
+            ch.to_ascii_uppercase()
+        });
+    }
+    out
+}
+
+fn io_error(e: BoxError) -> std::io::Error {
+    std::io::Error::other(e)
 }
 
 /// Build a [`FastCgiClientRequest`] from an HTTP request **without** buffering
 /// the body. The request body is plumbed through as a [`FastCgiBody`] backed
 /// by the original [`Body`] stream.
+///
+/// CGI-environment defaults can be overridden by attaching a
+/// [`FastCgiHttpEnv`] to the request's extensions before this is called.
 pub(super) async fn http_request_to_fastcgi(
     req: Request,
 ) -> Result<FastCgiClientRequest, BoxError> {
     let peer = req.extensions().get_ref::<SocketInfo>().cloned();
-
-    // Best-effort RequestContext to recover scheme / authority. Failures are
-    // non-fatal — we fall back to header-derived values.
+    let env = req
+        .extensions()
+        .get_ref::<FastCgiHttpEnv>()
+        .cloned()
+        .unwrap_or_default();
     let req_ctx = RequestContext::try_from(&req).ok();
 
     let (parts, body) = req.into_parts();
+
+    let protocol = version_to_protocol(parts.version)
+        .context("fastcgi: build SERVER_PROTOCOL from HTTP version")?;
 
     let method = parts.method.as_str().to_owned();
     let path = parts.uri.path().to_owned();
@@ -54,15 +169,24 @@ pub(super) async fn http_request_to_fastcgi(
     } else {
         format!("{path}?{query}")
     };
-    let protocol = version_to_protocol(parts.version).to_owned();
 
-    let (server_name, server_port, is_https) = derive_server_info(&parts, req_ctx.as_ref());
+    let server = derive_server_info(req_ctx.as_ref());
+    let scheme = if server.is_https {
+        Protocol::HTTPS_SCHEME
+    } else {
+        Protocol::HTTP_SCHEME
+    };
 
     let content_length_header = parts
         .headers
-        .get(rama_http_types::header::CONTENT_LENGTH)
+        .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+
+    let gateway_interface = env
+        .gateway_interface
+        .unwrap_or(cgi::GATEWAY_INTERFACE_CGI_1_1);
+    let redirect_status = env.redirect_status.unwrap_or(cgi::REDIRECT_STATUS_OK);
 
     let mut params: Vec<(Bytes, Bytes)> = Vec::with_capacity(24);
 
@@ -73,7 +197,7 @@ pub(super) async fn http_request_to_fastcgi(
     }
 
     // ── Required CGI/1.1 variables (RFC 3875 §4) ─────────────────────────
-    param!(cgi::GATEWAY_INTERFACE, "CGI/1.1");
+    params.push((cgi::GATEWAY_INTERFACE, gateway_interface));
     param!(cgi::SERVER_PROTOCOL, protocol);
     param!(cgi::REQUEST_METHOD, method);
 
@@ -82,21 +206,25 @@ pub(super) async fn http_request_to_fastcgi(
     //    framework routing. Sites that need traditional script-file/extra
     //    path splitting should layer a router on top of this connector.
     param!(cgi::SCRIPT_NAME, path.clone());
-    param!(cgi::PATH_INFO, "");
+    params.push((cgi::PATH_INFO, Bytes::new()));
     param!(cgi::QUERY_STRING, query);
 
     // ── nginx de-facto variables ─────────────────────────────────────────
     param!(cgi::REQUEST_URI, request_uri);
     param!(cgi::DOCUMENT_URI, path);
-    param!(cgi::REQUEST_SCHEME, if is_https { "https" } else { "http" });
-    if is_https {
-        param!(cgi::HTTPS, "on");
+    param!(cgi::REQUEST_SCHEME, scheme);
+    if server.is_https {
+        params.push((cgi::HTTPS, cgi::HTTPS_ON));
     }
     // Required by php-fpm (with cgi.force_redirect=1, the default).
-    param!(cgi::REDIRECT_STATUS, "200");
+    params.push((cgi::REDIRECT_STATUS, redirect_status));
 
-    param!(cgi::SERVER_NAME, server_name);
-    param!(cgi::SERVER_PORT, server_port);
+    if let Some(server_software) = env.server_software {
+        params.push((cgi::SERVER_SOFTWARE, server_software));
+    }
+
+    param!(cgi::SERVER_NAME, server.host);
+    param!(cgi::SERVER_PORT, server.port);
 
     if let Some(p) = peer.as_ref() {
         let peer_addr = p.peer_addr();
@@ -107,42 +235,26 @@ pub(super) async fn http_request_to_fastcgi(
         }
     }
 
-    // Always emit CONTENT_LENGTH — nginx-compatible behaviour, and what
-    // php-fpm needs to populate `$_POST` / `$_FILES`. When the incoming HTTP
-    // request used `Transfer-Encoding: chunked` (so no header), fall back to
-    // `"0"`: the FastCGI STDIN stream is still terminated correctly by the
-    // empty-STDIN record, so `php://input` keeps working — only PHP's
-    // CL-driven body parsing (`$_POST`) won't auto-populate. Callers that
-    // need a real length for chunked uploads must dechunk + set CL upstream.
+    // CONTENT_LENGTH always emitted (matches nginx; php-fpm depends on it
+    // for `$_POST` parsing). Falls back to "0" when the upstream client
+    // used chunked encoding — `php://input` still works because FastCGI
+    // STDIN EOS terminates the body stream correctly.
     param!(
         cgi::CONTENT_LENGTH,
         content_length_header.unwrap_or_else(|| "0".to_owned())
     );
 
-    if let Some(ct) = parts.headers.get(rama_http_types::header::CONTENT_TYPE) {
+    if let Some(ct) = parts.headers.get(header::CONTENT_TYPE) {
         params.push((cgi::CONTENT_TYPE, Bytes::copy_from_slice(ct.as_bytes())));
     }
 
     // ── HTTP_* header mapping (RFC 3875 §4.1.18) ─────────────────────────
     for (name, value) in &parts.headers {
-        let n = name.as_str();
-        if n == "host" || n == "content-type" || n == "content-length" {
+        if HOP_BY_HOP_OR_DEDICATED.contains(&name) {
             continue;
-        }
-        if cgi::HOP_BY_HOP_HEADERS.contains(&n) {
-            continue;
-        }
-        let mut cgi_name = String::with_capacity(5 + n.len());
-        cgi_name.push_str("HTTP_");
-        for ch in n.chars() {
-            if ch == '-' {
-                cgi_name.push('_');
-            } else {
-                cgi_name.push(ch.to_ascii_uppercase());
-            }
         }
         params.push((
-            Bytes::from(cgi_name),
+            Bytes::from(http_star_name(name)),
             Bytes::copy_from_slice(value.as_bytes()),
         ));
     }
@@ -155,55 +267,16 @@ pub(super) async fn http_request_to_fastcgi(
     Ok(FastCgiClientRequest::new(params).with_stdin(stdin))
 }
 
-fn io_error(e: BoxError) -> std::io::Error {
-    std::io::Error::other(e)
-}
+// ─────────────────────────────────────────────────────────────────────────
+// Inbound: FastCGI client response → HTTP response
+// ─────────────────────────────────────────────────────────────────────────
 
-fn derive_server_info(
-    parts: &rama_http_types::request::Parts,
-    req_ctx: Option<&RequestContext>,
-) -> (String, String, bool) {
-    let is_https = match req_ctx {
-        Some(ctx) => ctx.protocol.is_secure(),
-        None => parts
-            .uri
-            .scheme()
-            .map(|s| s.as_str().eq_ignore_ascii_case("https"))
-            .unwrap_or(false),
-    };
-
-    // Prefer RequestContext authority (already accounts for forwarded headers).
-    if let Some(ctx) = req_ctx {
-        let host = ctx.authority.host.to_string();
-        let port = ctx
-            .authority
-            .port
-            .or_else(|| ctx.protocol.default_port())
-            .unwrap_or(if is_https { 443 } else { 80 });
-        return (host, port.to_string(), is_https);
-    }
-
-    let host_val = parts
-        .headers
-        .get(rama_http_types::header::HOST)
-        .and_then(|v| v.to_str().ok());
-
-    if let Some(host) = host_val {
-        if let Some(pos) = host.rfind(':') {
-            return (host[..pos].to_owned(), host[pos + 1..].to_owned(), is_https);
-        }
-        return (
-            host.to_owned(),
-            if is_https { "443" } else { "80" }.to_owned(),
-            is_https,
-        );
-    }
-
-    (
-        "localhost".to_owned(),
-        if is_https { "443" } else { "80" }.to_owned(),
-        is_https,
-    )
+/// Parse a `Status: NNN [reason]` value into a `StatusCode`.
+fn parse_cgi_status(raw_value: &[u8]) -> Option<StatusCode> {
+    let s = std::str::from_utf8(raw_value).ok()?;
+    let code_str = s.split(' ').next()?;
+    let n = code_str.parse::<u16>().ok()?;
+    StatusCode::from_u16(n).ok()
 }
 
 /// Parse a [`FastCgiClientResponse`] (CGI stdout) into an HTTP [`Response`].
@@ -227,19 +300,23 @@ pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response 
             continue;
         }
         let Some(sep) = line.iter().position(|&b| b == b':') else {
+            tracing::debug!(
+                line = %String::from_utf8_lossy(line),
+                "fastcgi: dropping malformed CGI response header (no ':' separator)"
+            );
             continue;
         };
         let raw_name = &line[..sep];
-        let raw_value = trim_ascii(&line[sep + 1..]);
+        let raw_value = line[sep + 1..].trim_ascii();
         if raw_name.eq_ignore_ascii_case(b"Status") {
-            // Status: NNN [reason]
-            if let Some(code) = std::str::from_utf8(raw_value)
-                .ok()
-                .and_then(|v| v.split(' ').next())
-                && let Ok(s) = code.parse::<u16>()
-                && let Ok(status) = StatusCode::from_u16(s)
-            {
-                builder = builder.status(status);
+            match parse_cgi_status(raw_value) {
+                Some(status) => builder = builder.status(status),
+                None => {
+                    tracing::debug!(
+                        value = %String::from_utf8_lossy(raw_value),
+                        "fastcgi: dropping invalid Status header; keeping default 200 OK"
+                    );
+                }
             }
             continue;
         }
@@ -251,7 +328,11 @@ pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response 
             continue;
         };
         let Ok(header_value) = HeaderValue::from_bytes(raw_value) else {
-            tracing::debug!("fastcgi: dropping response header with invalid value");
+            tracing::debug!(
+                header.name = %header_name,
+                header.value = %String::from_utf8_lossy(raw_value),
+                "fastcgi: dropping response header with invalid value"
+            );
             continue;
         };
         builder = builder.header(header_name, header_value);
@@ -262,37 +343,69 @@ pub(super) fn fastcgi_response_to_http(resp: FastCgiClientResponse) -> Response 
         .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Inbound: FastCGI server request → HTTP request
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Parse a CGI `SERVER_PROTOCOL` value into a `Version`. Returns `Err` on an
+/// unrecognised value (instead of silently downgrading), and logs at debug
+/// when defaulting because the variable was absent entirely.
+fn parse_server_protocol(value: Option<&str>) -> Result<Version, BoxError> {
+    match value {
+        Some("HTTP/1.0") => Ok(Version::HTTP_10),
+        Some("HTTP/1.1") => Ok(Version::HTTP_11),
+        Some("HTTP/2" | "HTTP/2.0") => Ok(Version::HTTP_2),
+        Some("HTTP/3" | "HTTP/3.0") => Ok(Version::HTTP_3),
+        Some(other) => Err(OpaqueError::from_static_str(
+            "fastcgi: unsupported SERVER_PROTOCOL value",
+        )
+        .context_str_field("value", other)),
+        None => {
+            tracing::debug!("fastcgi: SERVER_PROTOCOL missing, defaulting to HTTP/1.1");
+            Ok(Version::HTTP_11)
+        }
+    }
+}
+
+/// Read a UTF-8 param by name. Returns `None` if absent or non-UTF8.
+fn param_str<'a>(params: &'a [(Bytes, Bytes)], name: &[u8]) -> Option<&'a str> {
+    params
+        .iter()
+        .find(|(n, _)| n.as_ref() == name)
+        .and_then(|(_, v)| std::str::from_utf8(v).ok())
+}
+
+fn param_bytes<'a>(params: &'a [(Bytes, Bytes)], name: &[u8]) -> Option<&'a [u8]> {
+    params
+        .iter()
+        .find(|(n, _)| n.as_ref() == name)
+        .map(|(_, v)| v.as_ref())
+}
+
 /// Reconstruct an HTTP [`Request`] from FastCGI CGI environment variables,
 /// streaming the FastCGI `stdin` directly into the HTTP body.
 pub(super) async fn fastcgi_request_to_http(req: FastCgiRequest) -> Result<Request, BoxError> {
     let FastCgiRequest { params, stdin, .. } = req;
 
-    let param = |name: &[u8]| -> Option<&str> {
-        params
-            .iter()
-            .find(|(n, _)| n.as_ref() == name)
-            .and_then(|(_, v)| std::str::from_utf8(v).ok())
+    let method: Method = if let Some(m) = param_str(&params, b"REQUEST_METHOD") {
+        m.parse().context("fastcgi: parse REQUEST_METHOD")?
+    } else {
+        tracing::debug!("fastcgi: REQUEST_METHOD missing, defaulting to GET");
+        Method::GET
     };
-    let param_bytes = |name: &[u8]| -> Option<&[u8]> {
-        params
-            .iter()
-            .find(|(n, _)| n.as_ref() == name)
-            .map(|(_, v)| v.as_ref())
-    };
-
-    let method: Method = param(b"REQUEST_METHOD")
-        .and_then(|m| m.parse().ok())
-        .unwrap_or(Method::GET);
 
     // Prefer REQUEST_URI (raw URI as the web server received it) when present
     // — it round-trips path + query precisely, avoiding script/path-info
     // reconstruction ambiguity.
-    let uri_str: String = if let Some(req_uri) = param(b"REQUEST_URI") {
+    let uri_str: String = if let Some(req_uri) = param_str(&params, b"REQUEST_URI") {
         req_uri.to_owned()
     } else {
-        let script_name = param(b"SCRIPT_NAME").unwrap_or("/");
-        let path_info = param(b"PATH_INFO").unwrap_or("");
-        let query = param(b"QUERY_STRING").unwrap_or("");
+        tracing::debug!(
+            "fastcgi: REQUEST_URI absent, reconstructing URI from SCRIPT_NAME + PATH_INFO + QUERY_STRING"
+        );
+        let script_name = param_str(&params, b"SCRIPT_NAME").unwrap_or("/");
+        let path_info = param_str(&params, b"PATH_INFO").unwrap_or("");
+        let query = param_str(&params, b"QUERY_STRING").unwrap_or("");
         if query.is_empty() {
             format!("{script_name}{path_info}")
         } else {
@@ -300,14 +413,8 @@ pub(super) async fn fastcgi_request_to_http(req: FastCgiRequest) -> Result<Reque
         }
     };
 
-    let version = param(b"SERVER_PROTOCOL")
-        .map(|v| match v {
-            "HTTP/1.0" => Version::HTTP_10,
-            "HTTP/2" | "HTTP/2.0" => Version::HTTP_2,
-            "HTTP/3" | "HTTP/3.0" => Version::HTTP_3,
-            _ => Version::HTTP_11,
-        })
-        .unwrap_or(Version::HTTP_11);
+    let version =
+        parse_server_protocol(param_str(&params, b"SERVER_PROTOCOL")).context("fastcgi")?;
 
     let mut builder = Request::builder()
         .method(method)
@@ -321,39 +428,50 @@ pub(super) async fn fastcgi_request_to_http(req: FastCgiRequest) -> Result<Reque
             continue;
         };
         if let Some(suffix) = name_str.strip_prefix("HTTP_") {
-            let mut header = String::with_capacity(suffix.len());
+            let mut header_name = String::with_capacity(suffix.len());
             for ch in suffix.chars() {
-                if ch == '_' {
-                    header.push('-');
+                header_name.push(if ch == '_' {
+                    '-'
                 } else {
-                    header.push(ch.to_ascii_lowercase());
-                }
+                    ch.to_ascii_lowercase()
+                });
             }
-            let Ok(hname) = HeaderName::from_bytes(header.as_bytes()) else {
+            let Ok(hname) = HeaderName::from_bytes(header_name.as_bytes()) else {
+                tracing::debug!(
+                    cgi.name = %name_str,
+                    "fastcgi: dropping HTTP_* param with invalid header name"
+                );
                 continue;
             };
             let Ok(hval) = HeaderValue::from_bytes(value) else {
+                tracing::debug!(
+                    header.name = %hname,
+                    "fastcgi: dropping HTTP_* param with invalid header value"
+                );
                 continue;
             };
-            if hname == rama_http_types::header::HOST {
+            if hname == header::HOST {
                 have_host = true;
             }
             builder = builder.header(hname, hval);
         } else if name_str.eq_ignore_ascii_case("CONTENT_TYPE") {
             if let Ok(hval) = HeaderValue::from_bytes(value) {
-                builder = builder.header(rama_http_types::header::CONTENT_TYPE, hval);
+                builder = builder.header(header::CONTENT_TYPE, hval);
+            } else {
+                tracing::debug!("fastcgi: dropping CONTENT_TYPE with invalid header value");
             }
         } else if name_str.eq_ignore_ascii_case("CONTENT_LENGTH")
             && let Ok(hval) = HeaderValue::from_bytes(value)
         {
-            builder = builder.header(rama_http_types::header::CONTENT_LENGTH, hval);
+            builder = builder.header(header::CONTENT_LENGTH, hval);
         }
     }
 
     // Only synthesise Host from SERVER_NAME / SERVER_PORT when HTTP_HOST was
     // not already supplied — otherwise we'd inject a duplicate.
-    if !have_host && let Some(name_bytes) = param_bytes(b"SERVER_NAME") {
-        let host = match param(b"SERVER_PORT").filter(|&p| p != "80" && p != "443" && !p.is_empty())
+    if !have_host && let Some(name_bytes) = param_bytes(&params, b"SERVER_NAME") {
+        let host = match param_str(&params, b"SERVER_PORT")
+            .filter(|&p| p != "80" && p != "443" && !p.is_empty())
         {
             Some(port) => {
                 let mut h = BytesMut::with_capacity(name_bytes.len() + 1 + port.len());
@@ -364,17 +482,24 @@ pub(super) async fn fastcgi_request_to_http(req: FastCgiRequest) -> Result<Reque
             }
             None => Bytes::copy_from_slice(name_bytes),
         };
-        if let Ok(hval) = HeaderValue::from_bytes(&host) {
-            builder = builder.header(rama_http_types::header::HOST, hval);
+        match HeaderValue::from_bytes(&host) {
+            Ok(hval) => builder = builder.header(header::HOST, hval),
+            Err(err) => tracing::debug!(
+                ?err,
+                host = %String::from_utf8_lossy(&host),
+                "fastcgi: synthesised Host header is not a valid HeaderValue, dropping"
+            ),
         }
     }
 
     // Stream FastCgiBody → http Body without collecting.
     let stream = ReaderStream::new(stdin);
-    builder
-        .body(Body::from_stream(stream))
-        .map_err(BoxError::from)
+    builder.body(Body::from_stream(stream)).map_err(Into::into)
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Outbound: HTTP response → FastCGI server response (stdout serialization)
+// ─────────────────────────────────────────────────────────────────────────
 
 /// Serialize an HTTP [`Response`] to CGI stdout format, streaming the body
 /// through as a [`FastCgiBody`] (no buffering).
@@ -409,6 +534,15 @@ pub(super) async fn http_response_to_fastcgi(resp: Response) -> Result<FastCgiRe
     Ok(FastCgiResponse::new(FastCgiBody::from_reader(chained)))
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Header/body split for CGI stdout
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Split a CGI stdout buffer into `(headers_with_trailing_separator, body)`.
+///
+/// `pos` from `slice::windows(N).position(...)` is bounded by
+/// `data.len() - N`, so the additions below never overflow on practical
+/// inputs (a `&[u8]` has `len <= isize::MAX`).
 pub(super) fn split_cgi_response(data: &[u8]) -> (&[u8], &[u8]) {
     if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
         return (&data[..pos + 2], &data[pos + 4..]);
@@ -417,24 +551,6 @@ pub(super) fn split_cgi_response(data: &[u8]) -> (&[u8], &[u8]) {
         return (&data[..pos + 1], &data[pos + 2..]);
     }
     (data, b"")
-}
-
-fn trim_ascii(mut s: &[u8]) -> &[u8] {
-    while let Some((&first, rest)) = s.split_first() {
-        if first.is_ascii_whitespace() {
-            s = rest;
-        } else {
-            break;
-        }
-    }
-    while let Some((&last, rest)) = s.split_last() {
-        if last.is_ascii_whitespace() {
-            s = rest;
-        } else {
-            break;
-        }
-    }
-    s
 }
 
 #[cfg(test)]
@@ -491,6 +607,39 @@ mod tests {
             app_status: 0,
         });
         assert!(resp.headers().get("good-header").is_some());
+    }
+
+    #[test]
+    fn test_parse_cgi_status_handles_reason_phrase_or_bare_code() {
+        assert_eq!(parse_cgi_status(b"200 OK"), Some(StatusCode::OK));
+        assert_eq!(parse_cgi_status(b"201"), Some(StatusCode::CREATED));
+        assert_eq!(parse_cgi_status(b""), None);
+        assert_eq!(parse_cgi_status(b"not a number"), None);
+        assert_eq!(parse_cgi_status(b"9999"), None);
+    }
+
+    #[test]
+    fn test_version_to_protocol_rejects_unknown() {
+        assert_eq!(version_to_protocol(Version::HTTP_11).unwrap(), "HTTP/1.1");
+        assert_eq!(version_to_protocol(Version::HTTP_10).unwrap(), "HTTP/1.0");
+        assert_eq!(version_to_protocol(Version::HTTP_2).unwrap(), "HTTP/2");
+        // HTTP_09 is a valid Version variant but we don't support it.
+        version_to_protocol(Version::HTTP_09).unwrap_err();
+    }
+
+    #[test]
+    fn test_parse_server_protocol_errors_on_unknown() {
+        assert_eq!(
+            parse_server_protocol(Some("HTTP/1.1")).unwrap(),
+            Version::HTTP_11
+        );
+        assert_eq!(
+            parse_server_protocol(Some("HTTP/2.0")).unwrap(),
+            Version::HTTP_2
+        );
+        parse_server_protocol(Some("SPDY/3")).unwrap_err();
+        // Absent → debug-log + default to HTTP/1.1 (legitimate behaviour).
+        assert_eq!(parse_server_protocol(None).unwrap(), Version::HTTP_11);
     }
 
     #[tokio::test]
@@ -564,12 +713,38 @@ mod tests {
         assert!(find(b"HTTP_HOST").is_none());
     }
 
-    /// Regression: every HTTP request — including a chunked POST that
-    /// arrives without a `Content-Length` header — must produce a
-    /// `CONTENT_LENGTH` CGI param. nginx's de-facto behaviour; php-fpm reads
-    /// it for `$_POST` / `$_FILES` body parsing. Earlier we *omitted* the
-    /// param entirely for POST/PUT/PATCH-without-CL, which broke PHP body
-    /// parsing on chunked uploads.
+    #[tokio::test]
+    async fn test_http_request_to_fastcgi_env_override_honored() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com/")
+            .header("host", "example.com")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions().insert(
+            FastCgiHttpEnv::new()
+                .with_redirect_status("403")
+                .with_gateway_interface("CGI/1.0")
+                .with_server_software("custom/1.0"),
+        );
+        let fcgi = http_request_to_fastcgi(req).await.unwrap();
+        let find = |k: &[u8]| -> Option<Bytes> {
+            fcgi.params
+                .iter()
+                .find(|(n, _)| n.as_ref() == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(find(b"REDIRECT_STATUS").as_deref(), Some(b"403".as_ref()));
+        assert_eq!(
+            find(b"GATEWAY_INTERFACE").as_deref(),
+            Some(b"CGI/1.0".as_ref())
+        );
+        assert_eq!(
+            find(b"SERVER_SOFTWARE").as_deref(),
+            Some(b"custom/1.0".as_ref())
+        );
+    }
+
     #[tokio::test]
     async fn test_http_request_to_fastcgi_always_emits_content_length() {
         // GET without a body: CL=0.
@@ -604,7 +779,6 @@ mod tests {
         assert_eq!(cl.as_deref(), Some(b"9".as_ref()));
 
         // POST without Content-Length (simulated chunked): CL=0 fallback.
-        // This is the regression case — previously we omitted CL entirely.
         let req = Request::builder()
             .method("POST")
             .uri("http://example.com/")

@@ -69,6 +69,21 @@ pub const SERVER_PROTOCOL: Bytes = Bytes::from_static(b"SERVER_PROTOCOL");
 /// `SERVER_SOFTWARE` — name and version of the gateway. RFC 3875 §4.1.17.
 pub const SERVER_SOFTWARE: Bytes = Bytes::from_static(b"SERVER_SOFTWARE");
 
+// ── Spec-defined values for common CGI variables ──────────────────────────
+
+/// Canonical value of [`GATEWAY_INTERFACE`] when speaking CGI/1.1, which is
+/// what nginx and php-fpm hard-require.
+pub const GATEWAY_INTERFACE_CGI_1_1: Bytes = Bytes::from_static(b"CGI/1.1");
+
+/// Value of [`REDIRECT_STATUS`] meaning "no preceding redirect / safe to run".
+/// php-fpm with `--enable-force-cgi-redirect` (the upstream default) refuses
+/// to dispatch when this isn't set; `"200"` is the conventional value.
+pub const REDIRECT_STATUS_OK: Bytes = Bytes::from_static(b"200");
+
+/// Value of [`HTTPS`] for a TLS-protected request. Frameworks (Laravel,
+/// WordPress, …) read this for URL generation.
+pub const HTTPS_ON: Bytes = Bytes::from_static(b"on");
+
 // ── nginx / php-fpm de-facto extensions ───────────────────────────────────
 
 /// `SCRIPT_FILENAME` — absolute filesystem path of the script (the
@@ -110,24 +125,6 @@ pub const FCGI_MAX_REQS: Bytes = Bytes::from_static(b"FCGI_MAX_REQS");
 /// single connection, `0` otherwise. FastCGI spec §4.1.
 pub const FCGI_MPXS_CONNS: Bytes = Bytes::from_static(b"FCGI_MPXS_CONNS");
 
-// ── HTTP-header → CGI mapping helpers ─────────────────────────────────────
-
-/// HTTP request headers that are hop-by-hop (RFC 7230 §6.1) or carry
-/// CGI-dedicated semantics, and therefore **must not** be forwarded as
-/// `HTTP_*` CGI variables.
-///
-/// This is the set rama itself uses when building params from an HTTP
-/// request; expose it so custom adapters can reuse the same policy.
-pub const HOP_BY_HOP_HEADERS: &[&str] = &[
-    "connection",
-    "keep-alive",
-    "proxy-connection",
-    "transfer-encoding",
-    "te",
-    "trailer",
-    "upgrade",
-];
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,9 +153,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hop_by_hop_is_lowercase() {
-        for h in HOP_BY_HOP_HEADERS {
-            assert_eq!(h.to_lowercase(), *h, "{h} must be lowercase");
-        }
+    fn test_value_constants_match_canonical_strings() {
+        assert_eq!(&GATEWAY_INTERFACE_CGI_1_1[..], b"CGI/1.1");
+        assert_eq!(&REDIRECT_STATUS_OK[..], b"200");
+        assert_eq!(&HTTPS_ON[..], b"on");
     }
 }
