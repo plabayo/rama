@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use std::{convert::Infallible, error::Error, fmt, path::Path, sync::Arc};
 
 use http::Method;

@@ -24,15 +24,12 @@ static STORAGE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub(super) fn set_storage_dir(path: Option<PathBuf>) {
     if let Some(path) = path {
-        let _ = STORAGE_DIR.set(path);
+        _ = STORAGE_DIR.set(path);
     }
 }
 
-pub(super) fn storage_dir() -> PathBuf {
-    STORAGE_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::temp_dir().join("rama_tproxy_example"))
+pub(super) fn storage_dir() -> Option<&'static PathBuf> {
+    STORAGE_DIR.get()
 }
 
 #[derive(Debug)]
@@ -49,11 +46,11 @@ fn setup_tracing() -> Result<TraceContext, BoxError> {
     let oslog_layer = OsLogger::new("org.ramaproxy.example.tproxy", "extension-rust");
 
     subscriber::registry()
-        .with(filter::LevelFilter::DEBUG) // TODO: make customisable log level
+        .with(filter::LevelFilter::DEBUG)
         .with(stderr_layer)
         .with(oslog_layer)
         .try_init()
-        .context("init tracing subsriber")?;
+        .context("init tracing subscriber")?;
 
     Ok(TraceContext)
 }

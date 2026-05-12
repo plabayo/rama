@@ -75,7 +75,7 @@ impl Host {
     /// Returns `true` if [`Host`] is a [`IpAddr::V6`].
     #[must_use]
     pub fn is_ipv6(&self) -> bool {
-        matches!(self, Self::Address(IpAddr::V4(_)))
+        matches!(self, Self::Address(IpAddr::V6(_)))
     }
 
     /// Returns [`Host`] as a string, only allocated if we need to render it.
@@ -267,6 +267,7 @@ impl TryFrom<&str> for Host {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<HeaderValue> for Host {
     type Error = BoxError;
 
@@ -276,6 +277,7 @@ impl TryFrom<HeaderValue> for Host {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl TryFrom<&HeaderValue> for Host {
     type Error = BoxError;
 
@@ -346,7 +348,6 @@ fn try_to_parse_bytes_to_ip(value: &[u8]) -> Option<IpAddr> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
 

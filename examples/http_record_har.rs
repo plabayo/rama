@@ -33,6 +33,12 @@
 //! a tool for analysis. For example dev tools of a browser or some special-purpose
 //! HAR Analyzer tool.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},

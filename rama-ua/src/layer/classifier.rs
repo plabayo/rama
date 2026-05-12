@@ -30,7 +30,7 @@
 //! # async fn main() {
 //! let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 //!
-//! let _ = service
+//! _ = service
 //!     .get("http://www.example.com")
 //!     .typed_header(rama_http::headers::UserAgent::from_static(UA))
 //!     .send()
@@ -191,7 +191,7 @@ mod tests {
         )
             .into_layer(service_fn(handle));
 
-        let _ = service.get("http://www.example.com").send().await.unwrap();
+        _ = service.get("http://www.example.com").send().await.unwrap();
     }
 
     #[tokio::test]
@@ -212,7 +212,7 @@ mod tests {
 
         let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 
-        let _ = service
+        _ = service
             .get("http://www.example.com")
             .typed_header(headers::UserAgent::from_static(UA))
             .send()
@@ -238,7 +238,7 @@ mod tests {
 
         let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 
-        let _ = service
+        _ = service
             .get("http://www.example.com")
             .typed_header(headers::UserAgent::from_static(UA))
             .send()
@@ -266,7 +266,7 @@ mod tests {
             .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
-        let _ = service
+        _ = service
             .get("http://www.example.com")
             .header(
                 "x-proxy-ua",
@@ -301,7 +301,7 @@ mod tests {
             .with_overwrite_header(HeaderName::from_static("x-proxy-ua"))
             .into_layer(service_fn(handle));
 
-        let _ = service
+        _ = service
             .get("http://www.example.com")
             .header(
                 "x-proxy-ua",

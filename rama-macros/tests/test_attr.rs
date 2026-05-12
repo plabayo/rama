@@ -19,10 +19,10 @@ fn test_attr() {
         struct D;
     }
 
-    let _ = A;
-    let _ = B;
-    let _ = C;
-    let _ = D;
+    _ = A;
+    _ = B;
+    _ = C;
+    _ = D;
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn test_paste_cfg() {
     #[cfg(target_pointer_width = "32")]
     m!(Paste, 32);
 
-    let _ = new;
+    _ = new;
 }
 
 #[test]

@@ -1,10 +1,17 @@
-#![allow(
-// We follow libstd's lead and prefer to define both.
+#![expect(
+    // We follow libstd's lead and prefer to define both.
     clippy::partialeq_ne_impl,
-// This is a really annoying clippy lint, since it's required for so many cases...
+    // This is a really annoying clippy lint, since it's required for so many cases...
     clippy::cast_ptr_alignment,
-// For macros
-    clippy::redundant_slicing,
+    // Vendored from upstream `arcstr`: matches stdlib panicking conventions
+    // (capacity overflow, layout failure) and uses inner `#[allow]` attributes
+    // and `# Safety` doc sections in the upstream-idiomatic style.
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::unnecessary_safety_doc,
+    clippy::allow_attributes,
+    reason = "vendored from upstream arcstr; preserve upstream idioms"
 )]
 use core::alloc::Layout;
 use core::mem::{MaybeUninit, align_of, size_of};
@@ -109,7 +116,7 @@ use super::Substr;
 /// ```
 /// # use rama_utils::str::arcstr::ArcStr;
 /// fn accepts_str(s: &str) {
-///    # let _ = s;
+///    # _ = s;
 ///     // s...
 /// }
 ///
@@ -1030,7 +1037,7 @@ impl Drop for ArcStr {
             );
             // Note: `enc == PackedFlagUint::FALSE_ONE`
             if enc == PackedFlagUint::FALSE_ONE {
-                let _ = (*this).count_flag.load(Ordering::Acquire);
+                _ = (*this).count_flag.load(Ordering::Acquire);
                 ThinInner::destroy_cold(this)
             }
         }

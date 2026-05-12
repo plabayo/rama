@@ -16,14 +16,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg(target_family = "unix")]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 use rama_core::extensions::Extension;
-use std::ops::{Deref, DerefMut};
 
 mod address;
 pub use address::UnixSocketAddress;
@@ -42,35 +36,6 @@ pub use frame::UnixDatagramFramed;
 
 pub use tokio::net::unix::SocketAddr as TokioSocketAddress;
 pub use tokio::net::{UnixDatagram, UnixSocket};
-
-#[derive(Debug, Clone, Extension)]
-/// Information about the socket on the egress end.
-pub struct ClientUnixSocketInfo(pub UnixSocketInfo);
-
-impl AsRef<UnixSocketInfo> for ClientUnixSocketInfo {
-    fn as_ref(&self) -> &UnixSocketInfo {
-        &self.0
-    }
-}
-
-impl AsMut<UnixSocketInfo> for ClientUnixSocketInfo {
-    fn as_mut(&mut self) -> &mut UnixSocketInfo {
-        &mut self.0
-    }
-}
-
-impl Deref for ClientUnixSocketInfo {
-    type Target = UnixSocketInfo;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl DerefMut for ClientUnixSocketInfo {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 #[derive(Debug, Clone, Extension)]
 /// Connected unix socket information.

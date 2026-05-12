@@ -163,6 +163,19 @@ impl ClientHello {
         }
         None
     }
+
+    /// Return `true` when this [`ClientHello`] carries an
+    /// `EncryptedClientHello` extension. Useful for triage: trailing
+    /// trailer-content parse warnings often correlate with ECH-using
+    /// clients (e.g. recent Firefox builds), and a structured `ech`
+    /// field on the parse log lets operators grep `ech=true` rather
+    /// than infer.
+    #[must_use]
+    pub fn has_encrypted_client_hello(&self) -> bool {
+        self.extensions
+            .iter()
+            .any(|ext| matches!(ext, ClientHelloExtension::EncryptedClientHello(_)))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]

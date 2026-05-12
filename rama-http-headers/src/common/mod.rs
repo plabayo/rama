@@ -84,7 +84,6 @@ fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::needless_pass_by_value)]
 fn test_encode<T: crate::HeaderEncode>(header: T) -> ::rama_http_types::HeaderMap {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();

@@ -29,7 +29,7 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -69,7 +69,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -90,7 +90,7 @@ jobs:
           cargo fmt --all --check
       - name: doc
         run: |
-          cargo doc --all-features --no-deps --workspace --exclude rama-cli
+          cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
           cargo doc --all-features --no-deps -p rama-cli
 
   test-rust-base:
@@ -111,7 +111,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -137,11 +137,12 @@ jobs:
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -151,11 +152,124 @@ jobs:
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy-e2e
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install Apple Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install just
         run: brew install just
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Run transparent proxy Apple QA
+        run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
+        run: just test-e2e-ffi-apple
+
+  test-ffi-apple-example-transparent-proxy-e2e-asan:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      # ASan needs nightly for `-Z sanitizer=address` and a matching
+      # `rust-src` so the sanitizer-built std actually compiles.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
+      - name: Install just
+        run: brew install just
+      - name: Run transparent proxy FFI stress tests under AddressSanitizer
         working-directory: ./ffi/apple/examples/transparent_proxy
-        run: just test-e2e
+        run: just test-e2e-asan
+
+  test-rama-apple-ne-swift-ffi:
+    runs-on: macos-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-ne-swift-ffi
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install just
+        run: brew install just
+      - name: Run RamaAppleNetworkExtension Swift FFI tests
+        run: just test-e2e-ffi-swift
+
+  test-rama-apple-xpc:
+    runs-on: macos-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-xpc
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install just
+        run: brew install just
+      - name: Run Apple XPC QA checks
+        run: just qa-xpc-apple
+
+  test-rama-dial9:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-dial9
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install just
+        run: cargo install just
+      - name: Run dial9 QA checks
+        run: just qa-dial9
+
+  test-fastcgi-php:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-fastcgi-php
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Install php-fpm and jq
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            php-fpm php-cli jq curl
+      - name: Install just
+        run: cargo install just
+      - name: Run rama-fastcgi-php end-to-end examples
+        run: just test-fastcgi-php
 
   test-rust-linux-musl:
     strategy:
@@ -173,7 +287,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -298,7 +412,7 @@ jobs:
       - precheck-docs
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -357,8 +471,6 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -371,6 +483,12 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
+      - name: Baseline tests without tokio_unstable
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          cargo nextest run --workspace
+          cargo test --doc --workspace
       - name: install protoc
         run: |
           sudo apt-get update
@@ -384,7 +502,13 @@ jobs:
         # Extra: Cargo Hack
       - name: install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - name: cargo hack check
+      - name: cargo hack check without dial9
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
+      - name: cargo hack check with dial9
+        env:
+          RUSTFLAGS: -D warnings --cfg tokio_unstable
         run: cargo hack check --each-feature --no-dev-deps --workspace
         # Extra: Cargo Deny
       - name: cargo deny
@@ -410,7 +534,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -442,7 +566,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
@@ -469,7 +593,7 @@ jobs:
       - precheck-docs
     timeout-minutes: 90
     env:
-      RUSTFLAGS: -D warnings
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -548,7 +672,11 @@ jobs:
       - check-rust
       - test-rust-base
       - test-ffi-apple-example-transparent-proxy-e2e
+      - test-ffi-apple-example-transparent-proxy-e2e-asan
+      - test-rama-apple-ne-swift-ffi
+      - test-fastcgi-php
       - test-rust-linux-musl
+      - test-rama-apple-xpc
       - test-rust-extra
       - test-rust-e2e
       - test-rust-e2e-release

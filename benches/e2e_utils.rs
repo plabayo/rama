@@ -1,10 +1,17 @@
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stdout,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use std::{
     env::temp_dir,
     fs::{create_dir_all, exists, remove_file},
 };
 
 use rama::telemetry::tracing::{
-    appender::{self},
+    appender::{self, Rotation, rolling_dedicated_thread},
     subscriber::{filter, layer::SubscriberExt as _, util::SubscriberInitExt as _},
 };
 
@@ -20,8 +27,11 @@ pub fn setup_tracing(test_file: &str) -> appender::non_blocking::WorkerGuard {
         remove_file(&log_file_path).unwrap();
     }
 
-    let file_appender = appender::rolling::never(log_file_dir_path, log_file);
-    let (non_blocking, _guard) = appender::non_blocking(file_appender);
+    // Run the file appender on a dedicated OS thread so log rotations
+    // and file I/O don't block whichever runtime worker emitted the
+    // event — see `appender::rolling_dedicated_thread`.
+    let (non_blocking, _guard) =
+        rolling_dedicated_thread(Rotation::NEVER, log_file_dir_path, log_file);
 
     let file_layer = tracing_subscriber::fmt::layer()
         .json()

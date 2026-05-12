@@ -206,12 +206,21 @@ impl Acceptor for TcpListener {
     }
 }
 
-impl Default for DefaultBinder {
-    fn default() -> Self {
+impl DefaultBinder {
+    /// Create a [`DefaultBinder`] whose forward bridge observes graceful
+    /// shutdown via the given [`Executor`].
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
         Self::new(
             DefaultTimeout::new(DefaultAcceptorFactory::default(), Duration::from_secs(30)),
-            IoForwardService::default(),
+            IoForwardService::new(exec),
         )
+    }
+}
+
+impl Default for DefaultBinder {
+    fn default() -> Self {
+        Self::default_with_exec(Executor::default())
     }
 }
 
@@ -371,6 +380,11 @@ pub(crate) use test::MockBinder;
 
 #[cfg(test)]
 mod test {
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixtures: arms gated on the mock variants the test sets up"
+    )]
+
     use super::*;
     use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};

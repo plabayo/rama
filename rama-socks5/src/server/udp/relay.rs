@@ -96,7 +96,12 @@ impl UdpSocketRelay {
                             "north socket: received packet (len = {len}; src = {src})",
                         );
 
-                        if !self.client_address.eq(&src) {
+                        // Per RFC 1928 §7 the client MAY send all-zeros when it does not
+                        // know its own address/port yet; in that case we skip source
+                        // filtering and accept packets from any sender.
+                        if !self.client_address.ip_addr.is_unspecified()
+                            && !self.client_address.eq(&src)
+                        {
                             tracing::debug!(
                                 network.peer.address = %self.client_address.ip_addr,
                                 network.peer.port = %self.client_address.port,
@@ -149,7 +154,7 @@ impl UdpSocketRelay {
                         Ok(Some(UdpRelayState::ReadNorth(server_address)))
                     }
 
-                    Err(err) if is_fatal_io_error(&err) => {
+                    Err(err) if is_transient_udp_io_error(&err) => {
                         tracing::debug!("north socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
                     }
@@ -170,7 +175,7 @@ impl UdpSocketRelay {
                         Ok(Some(UdpRelayState::ReadSouth(src.into())))
                     }
 
-                    Err(err) if is_fatal_io_error(&err) => {
+                    Err(err) if is_transient_udp_io_error(&err) => {
                         tracing::debug!("south socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
                     }
@@ -183,7 +188,7 @@ impl UdpSocketRelay {
         }
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(super) async fn send_to_south(
         &mut self,
         data: Option<Bytes>,
@@ -240,15 +245,15 @@ impl UdpSocketRelay {
             }
 
             Err(err) => match err.downcast::<std::io::Error>() {
-                Ok(err) if is_fatal_io_error(&err) => {
-                    tracing::debug!(?err, "south socket: fatal I/O write error: {err:?}");
-                    Err(err.context("south socket fatal I/O write error"))
-                }
-                Ok(err) => {
+                Ok(err) if is_transient_udp_io_error(&err) => {
                     tracing::debug!(
                         "south socket: write error: packet lost but relay continues: {err:?}"
                     );
                     Ok(())
+                }
+                Ok(err) => {
+                    tracing::debug!(?err, "south socket: fatal I/O write error: {err:?}");
+                    Err(err.context("south socket fatal I/O write error"))
                 }
                 Err(err) => {
                     tracing::debug!("south socket: fatal unknown write error: {err:?}");
@@ -302,10 +307,8 @@ impl UdpSocketRelay {
                 server.address = %server_address.ip_addr,
                 server.port = %server_address.port,
                 "send packet north: data from south socket (len = {})",
-                self.north_read_buf.len(),
+                self.south_read_buf.len(),
             );
-            self.north_write_buf
-                .resize(self.south_read_buf.len() + header.serialized_len(), 0);
             header.write_to_buf(&mut self.north_write_buf);
             self.north_write_buf.extend_from_slice(&self.south_read_buf);
         };
@@ -329,15 +332,15 @@ impl UdpSocketRelay {
             }
 
             Err(err) => match err.downcast::<std::io::Error>() {
-                Ok(err) if is_fatal_io_error(&err) => {
-                    tracing::debug!("north socket: fatal I/O write error: {err:?}");
-                    Err(err.context("north socket fatal I/O write error"))
-                }
-                Ok(err) => {
+                Ok(err) if is_transient_udp_io_error(&err) => {
                     tracing::debug!(
                         "north socket: write error: packet lost but relay continues: {err:?}"
                     );
                     Ok(())
+                }
+                Ok(err) => {
+                    tracing::debug!("north socket: fatal I/O write error: {err:?}");
+                    Err(err.context("north socket fatal I/O write error"))
                 }
                 Err(err) => {
                     tracing::debug!("north socket: fatal unknown write error: {err:?}");
@@ -348,7 +351,7 @@ impl UdpSocketRelay {
     }
 }
 
-fn is_fatal_io_error(err: &std::io::Error) -> bool {
+fn is_transient_udp_io_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
         ErrorKind::WouldBlock
@@ -357,7 +360,6 @@ fn is_fatal_io_error(err: &std::io::Error) -> bool {
             | ErrorKind::ConnectionReset
             | ErrorKind::AddrNotAvailable
             | ErrorKind::PermissionDenied
-            | ErrorKind::Other
     )
 }
 
@@ -470,5 +472,110 @@ impl UdpSocketRelay {
             Host::Address(ip_addr) => ip_addr,
         };
         Ok((ip_addr, port).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression for Bug 2: send_to_north(None) was calling BytesMut::resize() after
+    // truncate(0), which filled the buffer with N zeros before appending header+data,
+    // producing [zeros][header][data] instead of the correct [header][data].
+    #[tokio::test]
+    async fn test_send_to_north_none_produces_header_then_data_no_leading_zeros() {
+        // client_socket receives north-bound packets
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let client_addr: std::net::SocketAddr = client.local_addr().unwrap();
+        let client_socket_addr: SocketAddress = client_addr.into();
+
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south_addr = south.local_addr().unwrap();
+
+        // server sends raw payload to south socket (simulates south data)
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let server_socket_addr: SocketAddress = server_addr.into();
+
+        let payload = b"regression bug2 payload";
+        server.send_to(payload, south_addr).await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_socket_addr, north, 4096, south, 4096);
+
+        // recv() reads south packet and stores raw payload in south_read_buf
+        let state = relay.recv().await.unwrap().unwrap();
+        assert!(
+            matches!(state, UdpRelayState::ReadSouth(addr) if addr == server_socket_addr),
+            "expected ReadSouth from server address"
+        );
+
+        // send_to_north(None) should relay [socks5_header][payload] to client, no leading zeros
+        relay.send_to_north(None, server_socket_addr).await.unwrap();
+
+        let mut buf = vec![0u8; 4096];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            client.recv_from(&mut buf),
+        )
+        .await
+        .expect("timed out waiting for north packet")
+        .unwrap();
+        let received = &buf[..n];
+
+        let expected_header = UdpHeader {
+            fragment_number: 0,
+            destination: server_socket_addr.into(),
+        };
+        let mut expected = BytesMut::new();
+        expected_header.write_to_buf(&mut expected);
+        expected.extend_from_slice(payload);
+
+        assert_eq!(
+            received,
+            &expected[..],
+            "send_to_north(None) must produce exactly [header][data]; \
+             got {} bytes, expected {} bytes",
+            received.len(),
+            expected.len(),
+        );
+    }
+
+    // Regression for Bug 3: when the client sends 0.0.0.0:0 in the UDP ASSOCIATE
+    // request (RFC 1928 §7 allows this when the client doesn't know its address),
+    // the relay was dropping ALL north packets because no source ever matches 0.0.0.0.
+    #[tokio::test]
+    async fn test_recv_north_unspecified_client_addr_accepts_any_source() {
+        // client_address = 0.0.0.0:0 — the RFC 1928 §7 all-zeros sentinel
+        let client_addr = SocketAddress::default_ipv4(0);
+
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096);
+
+        // Any sender (127.0.0.1:OS-assigned) sends a valid SOCKS5 UDP packet to north
+        let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target: SocketAddress = SocketAddress::local_ipv4(9999);
+        let header = UdpHeader {
+            fragment_number: 0,
+            destination: target.into(),
+        };
+        let mut packet = BytesMut::new();
+        header.write_to_buf(&mut packet);
+        packet.extend_from_slice(b"data");
+        sender.send_to(&packet, north_addr).await.unwrap();
+
+        let state = tokio::time::timeout(std::time::Duration::from_millis(500), relay.recv())
+            .await
+            .expect("timed out")
+            .unwrap()
+            .expect("packet must not be dropped when client_address is 0.0.0.0:0");
+
+        assert!(
+            matches!(state, UdpRelayState::ReadNorth(_)),
+            "RFC 1928 §7: packets from any source must be accepted when client_address is 0.0.0.0:0"
+        );
     }
 }

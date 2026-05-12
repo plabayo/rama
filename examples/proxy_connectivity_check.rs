@@ -32,9 +32,15 @@
 //! Note that in an actual production setting you would usually do this with a (sub)domain
 //! that you control rather than a thirdparty external web service.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
-    extensions::{ExtensionsRef, InputExtensions},
+    extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -52,7 +58,7 @@ use rama::{
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
         address::SocketAddress, http::server::HttpPeekRouter, proxy::IoForwardService,
-        stream::ClientSocketInfo, user::credentials::basic,
+        stream::SocketInfo, user::credentials::basic,
     },
     proxy::socks5::{
         Socks5Acceptor,
@@ -166,7 +172,7 @@ async fn main() {
                     ConsumeErrLayer::default(),
                     IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
                 )
-                    .into_layer(IoForwardService::new()),
+                    .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
             .into_layer(proxy_service.clone()),
@@ -175,7 +181,7 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec.clone()).service(proxy_service))
         .with_fallback(
             IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
-                .into_layer(IoForwardService::new()),
+                .into_layer(IoForwardService::new(exec.clone())),
         );
     let socks5_acceptor = Socks5Acceptor::new(exec.clone())
         .with_authorizer(basic!("john", "secret").into_authorizer())
@@ -195,10 +201,12 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(req).await {
         Ok(resp) => {
+            // We can also just directly fetch SocketInfo and it will traverse into egress/ingress chains,
+            // however to be clear and to avoid confusion in a MITM setup we access the egress one directly.
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get_ref()
-                .and_then(|InputExtensions(ext)| ext.get_ref::<ClientSocketInfo>())
+                .egress()
+                .and_then(|e| e.get_ref::<SocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),

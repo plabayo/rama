@@ -31,6 +31,11 @@
 //! You should see the items coming through and could also pipe it to
 //! some other tool or directly into your clipboard or a file.
 
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     error::{BoxError, ErrorContext as _},
     futures::SinkExt,

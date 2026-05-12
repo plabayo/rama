@@ -30,7 +30,8 @@ use rama::{
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    sync::mpsc,
+    net::UdpSocket,
+    sync::{Notify, mpsc},
 };
 
 use super::{
@@ -52,12 +53,26 @@ unsafe extern "C" fn on_udp_server_datagram(ctx: *mut c_void, bytes: bindings::R
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
 }
 
 unsafe extern "C" fn on_udp_server_closed(_ctx: *mut c_void) {}
 
 unsafe extern "C" fn on_udp_client_read_demand(_ctx: *mut c_void) {}
+
+struct UdpEgressCallbackContext {
+    sender: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+unsafe extern "C" fn on_udp_send_to_egress(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
+    let ctx = unsafe { &*(ctx as *const UdpEgressCallbackContext) };
+    let payload = if bytes.ptr.is_null() || bytes.len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
+    };
+    _ = ctx.sender.send(payload);
+}
 
 pub(crate) fn build_http_client(
     cert_store: Option<Arc<rama::tls::boring::core::x509::store::X509Store>>,
@@ -160,6 +175,20 @@ pub(crate) async fn fetch_response(
     builder.send().await.expect("send request")
 }
 
+pub(crate) async fn post_with_body(
+    client: &ClientService,
+    url: &str,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+    body: Vec<u8>,
+) -> Response {
+    let builder = client.post(url).body(body);
+    let builder = apply_http_version(builder, version);
+    let builder = apply_proxy_extensions(builder, proxy_kind, proxy_addr);
+    builder.send().await.expect("send post request")
+}
+
 pub(crate) async fn websocket_echo(
     client: &ClientService,
     url: String,
@@ -200,7 +229,7 @@ pub(crate) async fn websocket_echo(
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, "ws reply received");
 
-    let _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
+    _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
 }
 
 pub(crate) async fn roundtrip_custom_protocol(
@@ -319,6 +348,13 @@ where
     buf
 }
 
+/// One-shot UDP echo round-trip through the FFI proxy engine.
+///
+/// Same Swift-driven activate contract as TCP: bytes pushed via
+/// `on_client_datagram` only reach the service after the session is
+/// activated with the egress callbacks. The harness opens a real UDP
+/// socket connected to `remote_addr` and pretends to be the
+/// `NWConnection` Swift would have wired.
 pub(crate) async fn udp_roundtrip(
     engine: Arc<EngineHandle>,
     remote_addr: std::net::SocketAddr,
@@ -326,6 +362,10 @@ pub(crate) async fn udp_roundtrip(
 ) -> Vec<u8> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let ctx_ptr = Box::into_raw(Box::new(UdpCallbackContext { sender: tx })) as usize;
+
+    let (egress_tx, mut egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let egress_ctx_ptr =
+        Box::into_raw(Box::new(UdpEgressCallbackContext { sender: egress_tx })) as usize;
 
     let session = {
         let remote_host = remote_addr.ip().to_string().into_bytes();
@@ -372,6 +412,77 @@ pub(crate) async fn udp_roundtrip(
         raw as usize
     };
 
+    // Connect a UDP socket as our pretend-NWConnection to the upstream
+    // echo server. Bind 0 → ephemeral port; `connect` filters peer.
+    let egress_socket = UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind ffi udp egress socket");
+    egress_socket
+        .connect(remote_addr)
+        .await
+        .expect("connect ffi udp egress socket");
+    let egress_socket = Arc::new(egress_socket);
+
+    // Activate the session — until this is called bytes pushed via
+    // `on_client_datagram` queue up and never reach the service.
+    unsafe {
+        bindings::rama_transparent_proxy_udp_session_activate(
+            session as *mut bindings::RamaTransparentProxyUdpSession,
+            bindings::RamaTransparentProxyUdpEgressCallbacks {
+                context: egress_ctx_ptr as *mut c_void,
+                on_send_to_egress: Some(on_udp_send_to_egress),
+            },
+        );
+    }
+
+    // Egress writer: service-bound datagrams → upstream socket.
+    let stop_egress = Arc::new(Notify::new());
+    let stop_egress_for_writer = stop_egress.clone();
+    let writer_socket = egress_socket.clone();
+    let egress_writer = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                next = egress_rx.recv() => {
+                    match next {
+                        Some(chunk) => {
+                            _ = writer_socket.send(&chunk).await;
+                        }
+                        None => break,
+                    }
+                }
+                _ = stop_egress_for_writer.notified() => break,
+            }
+        }
+    });
+
+    // Egress reader: upstream datagrams → on_egress_datagram.
+    let stop_egress_for_reader = stop_egress.clone();
+    let reader_socket = egress_socket.clone();
+    let egress_session = session;
+    let egress_reader = tokio::spawn(async move {
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            tokio::select! {
+                result = reader_socket.recv(&mut buf) => {
+                    match result {
+                        Ok(n) if n > 0 => unsafe {
+                            bindings::rama_transparent_proxy_udp_session_on_egress_datagram(
+                                egress_session as *mut bindings::RamaTransparentProxyUdpSession,
+                                bindings::RamaBytesView {
+                                    ptr: buf.as_ptr(),
+                                    len: n,
+                                },
+                            );
+                        },
+                        Ok(_) | Err(_) => break,
+                    }
+                }
+                _ = stop_egress_for_reader.notified() => break,
+            }
+        }
+    });
+
+    // Now push the client datagram through the session.
     unsafe {
         bindings::rama_transparent_proxy_udp_session_on_client_datagram(
             session as *mut bindings::RamaTransparentProxyUdpSession,
@@ -392,6 +503,12 @@ pub(crate) async fn udp_roundtrip(
             session as *mut bindings::RamaTransparentProxyUdpSession,
         );
     }
+
+    stop_egress.notify_waiters();
+    egress_writer.abort();
+    egress_reader.abort();
+    _ = egress_writer.await;
+    _ = egress_reader.await;
 
     response
 }

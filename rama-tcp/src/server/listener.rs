@@ -243,6 +243,7 @@ impl TcpListener {
     }
 
     #[cfg(any(target_os = "windows", target_family = "unix"))]
+    #[cfg_attr(docsrs, doc(cfg(any(target_os = "windows", target_family = "unix"))))]
     pub fn try_from_socket(
         socket: rama_net::socket::core::Socket,
         exec: Executor,
@@ -321,7 +322,7 @@ impl TcpListener {
                             socket.extensions().insert(SocketInfo::new(local_addr, peer_addr.into()));
 
                             self.exec.spawn_task(async move {
-                                let _ = service.serve(socket).await;
+                                _ = service.serve(socket).await;
                             }.instrument(span));
                         }
                         Err(err) => {

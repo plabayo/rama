@@ -730,7 +730,7 @@ where
                                     request: parts,
                                 };
 
-                                let _ = handler.serve( server_socket).await;
+                                _ = handler.serve( server_socket).await;
                             }
                             Err(e) => {
                                 tracing::error!("ws upgrade error: {e:?}");
@@ -861,6 +861,11 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixtures: the `Version` matcher exhausts the variants the test setup actually produces"
+    )]
+
     use headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
     use rama_http::Body;
     use rama_utils::str::non_empty_str;

@@ -181,3 +181,125 @@ fn server_write_flush_behaviour() {
     assert_eq!(ws.get_ref().write_count, 3);
     assert_eq!(ws.get_ref().flush_count, 2);
 }
+
+// Deflate bomb: the compressed payload is small but decompresses to far more
+// than max_message_size.  Both code paths (single-frame and fragmented) must
+// check the *decompressed* length, not the wire length.
+
+/// Compress `data` using raw DEFLATE + SYNC_FLUSH, stripping the 4-byte
+/// sync-flush trailer, exactly as the per_message_deflate encoder does.
+#[cfg(feature = "compression")]
+fn raw_deflate_compress(data: &[u8]) -> Vec<u8> {
+    use flate2::{Compress, Compression, FlushCompress, Status};
+    let mut c = Compress::new_with_window_bits(Compression::default(), false, 15);
+    let mut buf: Vec<u8> = Vec::with_capacity(data.len());
+    let before = c.total_in();
+    // Process all input bytes.
+    while c.total_in() - before < data.len() as u64 {
+        buf.reserve(128);
+        match c
+            .compress_vec(
+                &data[(c.total_in() - before) as usize..],
+                &mut buf,
+                FlushCompress::Sync,
+            )
+            .unwrap()
+        {
+            Status::BufError => buf.reserve(buf.len()),
+            Status::Ok | Status::StreamEnd => {}
+        }
+    }
+    // Flush until the sync-flush trailer appears.
+    while !buf.ends_with(&[0x00, 0x00, 0xff, 0xff]) {
+        buf.reserve(8);
+        match c.compress_vec(&[], &mut buf, FlushCompress::Sync).unwrap() {
+            Status::BufError => buf.reserve(buf.len()),
+            Status::Ok | Status::StreamEnd => {}
+        }
+    }
+    buf.truncate(buf.len() - 4); // strip trailer
+    buf
+}
+
+/// Build a single-frame WebSocket binary message with RSV1=1 (compressed).
+#[cfg(feature = "compression")]
+fn ws_frame_compressed_binary(payload: &[u8]) -> Vec<u8> {
+    assert!(payload.len() < 126, "test helper only handles short frames");
+    let mut frame = vec![
+        0xC2, // FIN=1, RSV1=1, opcode=2 (binary)
+        payload.len() as u8,
+    ];
+    frame.extend_from_slice(payload);
+    frame
+}
+
+#[cfg(feature = "compression")]
+#[test]
+fn deflate_bomb_single_frame_rejected() {
+    // 500 identical bytes compress to ~20 bytes but decompress back to 500.
+    const PLAIN_LEN: usize = 500;
+    let compressed = raw_deflate_compress(&vec![b'A'; PLAIN_LEN]);
+    // max_size is above the wire payload (no false positive from the compressed-length
+    // pre-check) but well below the decompressed length.
+    let max_size = compressed.len() + 50;
+    assert!(
+        max_size < PLAIN_LEN,
+        "test invariant: max_size must be less than decompressed size"
+    );
+
+    let incoming = Cursor::new(ws_frame_compressed_binary(&compressed));
+    let limit = WebSocketConfig {
+        per_message_deflate: Some(PerMessageDeflateConfig::default()),
+        max_message_size: Some(max_size),
+        ..Default::default()
+    };
+    let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
+    assert!(matches!(
+        socket.read(),
+        Err(ProtocolError::MessageTooLong {
+            size: PLAIN_LEN,
+            max_size: _,
+        })
+    ));
+}
+
+#[cfg(feature = "compression")]
+#[test]
+fn deflate_bomb_fragmented_rejected() {
+    // Same 500-byte bomb, split into two compressed fragments.
+    const PLAIN_LEN: usize = 500;
+    let compressed = raw_deflate_compress(&vec![b'A'; PLAIN_LEN]);
+    let max_size = compressed.len() + 50;
+    assert!(
+        max_size < PLAIN_LEN,
+        "test invariant: max_size must be less than decompressed size"
+    );
+
+    let mid = compressed.len() / 2;
+    let (frag1, frag2) = compressed.split_at(mid);
+
+    let mut frame_bytes = Vec::new();
+    // Fragment 1: FIN=0, RSV1=1, opcode=2 (binary)
+    frame_bytes.push(0x42);
+    frame_bytes.push(frag1.len() as u8);
+    frame_bytes.extend_from_slice(frag1);
+    // Fragment 2: FIN=1, RSV1=0, opcode=0 (continuation)
+    frame_bytes.push(0x80);
+    frame_bytes.push(frag2.len() as u8);
+    frame_bytes.extend_from_slice(frag2);
+
+    let incoming = Cursor::new(frame_bytes);
+    let limit = WebSocketConfig {
+        per_message_deflate: Some(PerMessageDeflateConfig::default()),
+        max_message_size: Some(max_size),
+        ..Default::default()
+    };
+    let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
+    assert!(matches!(
+        socket.read(),
+        Err(ProtocolError::MessageTooLong {
+            size: PLAIN_LEN,
+            max_size: _,
+        })
+    ));
+}

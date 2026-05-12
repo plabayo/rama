@@ -10,8 +10,9 @@ use rama_utils::str::NonEmptyStr;
 use crate::ffi::BytesView;
 use crate::process::AuditToken;
 use crate::tproxy::{
-    self, TransparentProxyFlowAction as RustTransparentProxyFlowAction,
-    TransparentProxyFlowProtocol,
+    self, NwAttribution, NwEgressParameters as RustNwEgressParameters, NwInterfaceType,
+    NwMultipathServiceType, NwServiceClass,
+    TransparentProxyFlowAction as RustTransparentProxyFlowAction, TransparentProxyFlowProtocol,
 };
 
 #[repr(C)]
@@ -75,7 +76,15 @@ impl TransparentProxyFlowMeta {
     ///
     /// All pointer + length fields in `self` must be valid for reads during
     /// this call.
-    pub unsafe fn as_owned_rust_type(&self) -> tproxy::TransparentProxyFlowMeta {
+    ///
+    /// Returns `Err(invalid_protocol_code)` when `self.protocol` is not
+    /// a known [`TransparentProxyFlowProtocol`] discriminant. The FFI
+    /// thunks treat that as a fail-safe `Passthrough` rather than
+    /// silently coercing the unknown code into a TCP flow.
+    pub unsafe fn as_owned_rust_type(&self) -> Result<tproxy::TransparentProxyFlowMeta, u32> {
+        let protocol = TransparentProxyFlowProtocol::from_raw_strict(self.protocol)?;
+
+        // SAFETY: pointer + length validity is guaranteed by caller contract.
         let source_app_audit_token = unsafe {
             opt_audit_token(
                 self.source_app_audit_token_bytes,
@@ -88,7 +97,7 @@ impl TransparentProxyFlowMeta {
             source_app_audit_token.as_ref().map(AuditToken::pid)
         };
 
-        tproxy::TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::from(self.protocol))
+        Ok(tproxy::TransparentProxyFlowMeta::new(protocol)
             .maybe_with_remote_endpoint(
                 // SAFETY: pointer + length validity is guaranteed by caller contract.
                 unsafe { self.remote_endpoint.as_optional_host_with_port() },
@@ -116,10 +125,27 @@ impl TransparentProxyFlowMeta {
                 },
             )
             .maybe_with_source_app_audit_token(source_app_audit_token)
-            .maybe_with_source_app_pid(source_app_pid)
+            .maybe_with_source_app_pid(source_app_pid))
     }
 }
 
+/// FFI representation of a single network rule for the transparent
+/// proxy configuration.
+///
+/// **Adding a field that owns FFI memory?** You must mirror the new
+/// allocation in [`TransparentProxyConfig::from_rust_type`] (alloc
+/// path) AND update the per-rule loop in
+/// [`TransparentProxyConfig::free`] to release it. The struct is
+/// `repr(C)` POD with no `Drop` impl — the slice's `Box::from_raw`
+/// in `free` does NOT run a per-element Drop, so any heap memory
+/// owned by a field of this struct must be freed explicitly. The two
+/// existing `*_utf8` pairs are the template.
+///
+/// Enforcement: `tests::ffi_config_round_trip_freed_under_lsan` does
+/// the alloc → free round-trip with every field populated. Run under
+/// AddressSanitizer (`just test-e2e-asan`, scheduled in CI on macOS)
+/// for LeakSanitizer to catch any heap field that `free` didn't
+/// release.
 #[repr(C)]
 pub struct TransparentProxyNetworkRule {
     pub remote_network_utf8: *const c_char,
@@ -139,6 +165,10 @@ pub struct TransparentProxyConfig {
     pub tunnel_remote_address_utf8_len: usize,
     pub rules: *const TransparentProxyNetworkRule,
     pub rules_len: usize,
+    /// Per-flow TCP write-pump back-pressure cap in bytes. `0` means "use the
+    /// Swift-side built-in default". See
+    /// [`tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
+    pub tcp_write_pump_max_pending_bytes: usize,
 }
 
 #[repr(C)]
@@ -207,6 +237,7 @@ impl TransparentProxyConfig {
             tunnel_remote_address_utf8_len,
             rules,
             rules_len,
+            tcp_write_pump_max_pending_bytes: config.tcp_write_pump_max_pending_bytes(),
         }
     }
 
@@ -243,19 +274,210 @@ impl TransparentProxyConfig {
     }
 }
 
+/// Callbacks Swift provides for Rust TCP session events.
+///
+/// # Lifetime / threading contract for `context`
+///
+/// * `context` must remain valid (and the pointee must not move) until the
+///   corresponding session is freed via
+///   `rama_transparent_proxy_tcp_session_free`.
+///   `rama_transparent_proxy_tcp_session_cancel` guarantees no further
+///   callbacks fire after it returns, but `context` must still outlive the
+///   `_free` call — concurrent callbacks already in flight may still observe
+///   the pointer until they complete.
+///
+///   Only to be used for "public" information... its contents are logged
+///   to the native log system of Apple, by Apple.
+/// * Callbacks may be invoked from any Tokio worker thread. The Swift caller
+///   is responsible for any synchronization the pointee requires.
+/// * `BytesView` arguments are borrowed for the duration of the call and must
+///   be copied before the callback returns if the receiver wants to retain
+///   the data.
 #[repr(C)]
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
-    pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    /// Rust → Swift: deliver response bytes to the intercepted client flow.
+    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
+    /// pause when Swift's writer pump (`TcpClientWritePump`) is full and
+    /// resume only after the matching `signal_server_drain` call from Swift.
+    pub on_server_bytes:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow ingress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `Paused`.
+    /// Swift must keep `flow.readData` paused until this fires.
+    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// Callbacks Swift provides for Rust UDP session events.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_datagram: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+// ── Egress (NWConnection) options ─────────────────────────────────────────────
+
+/// C representation of `NwEgressParameters` — NWParameters-level settings
+/// shared between TCP and UDP egress `NWConnection`s.
+///
+/// Discriminant values for service_class:
+///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice
+///   4=ResponsiveData 5=Signaling
+///
+/// Discriminant values for multipath_service_type:
+///   0=Disabled 1=Handover 2=Interactive 3=Aggregate
+///
+/// Discriminant values for required_interface_type / prohibited mask bits:
+///   0=Cellular 1=Loopback 2=Other 3=Wifi 4=Wired
+///
+/// Discriminant values for attribution:
+///   0=Developer 1=User
+#[repr(C)]
+pub struct NwEgressParameters {
+    pub has_service_class: bool,
+    pub service_class: u8,
+    pub has_multipath_service_type: bool,
+    pub multipath_service_type: u8,
+    pub has_required_interface_type: bool,
+    pub required_interface_type: u8,
+    pub has_attribution: bool,
+    pub attribution: u8,
+    /// Bitmask of prohibited interface types (bit0=Cellular bit1=Loopback
+    /// bit2=Other bit3=Wifi bit4=Wired).
+    pub prohibited_interface_types_mask: u8,
+    /// When `true`, Swift calls `NEAppProxyFlow.setMetadata(_:)` to stamp the
+    /// intercepted flow's `NEFlowMetaData` onto the egress `NWParameters`.
+    /// See `tproxy::types::NwEgressParameters::preserve_original_meta_data`.
+    pub preserve_original_meta_data: bool,
+}
+
+impl NwEgressParameters {
+    pub fn from_rust_type(p: &RustNwEgressParameters) -> Self {
+        Self {
+            has_service_class: p.service_class.is_some(),
+            service_class: p.service_class.map(service_class_to_u8).unwrap_or(0),
+            has_multipath_service_type: p.multipath_service_type.is_some(),
+            multipath_service_type: p.multipath_service_type.map(multipath_to_u8).unwrap_or(0),
+            has_required_interface_type: p.required_interface_type.is_some(),
+            required_interface_type: p
+                .required_interface_type
+                .map(interface_type_to_u8)
+                .unwrap_or(0),
+            has_attribution: p.attribution.is_some(),
+            attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
+            prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
+            preserve_original_meta_data: p.preserve_original_meta_data,
+        }
+    }
+}
+
+fn service_class_to_u8(sc: NwServiceClass) -> u8 {
+    match sc {
+        NwServiceClass::Default => 0,
+        NwServiceClass::Background => 1,
+        NwServiceClass::InteractiveVideo => 2,
+        NwServiceClass::InteractiveVoice => 3,
+        NwServiceClass::ResponsiveData => 4,
+        NwServiceClass::Signaling => 5,
+    }
+}
+
+fn multipath_to_u8(m: NwMultipathServiceType) -> u8 {
+    match m {
+        NwMultipathServiceType::Disabled => 0,
+        NwMultipathServiceType::Handover => 1,
+        NwMultipathServiceType::Interactive => 2,
+        NwMultipathServiceType::Aggregate => 3,
+    }
+}
+
+fn interface_type_to_u8(t: NwInterfaceType) -> u8 {
+    match t {
+        NwInterfaceType::Cellular => 0,
+        NwInterfaceType::Loopback => 1,
+        NwInterfaceType::Other => 2,
+        NwInterfaceType::Wifi => 3,
+        NwInterfaceType::Wired => 4,
+    }
+}
+
+fn attribution_to_u8(a: NwAttribution) -> u8 {
+    match a {
+        NwAttribution::Developer => 0,
+        NwAttribution::User => 1,
+    }
+}
+
+fn interface_types_to_mask(types: &[NwInterfaceType]) -> u8 {
+    let mut mask: u8 = 0;
+    for &t in types {
+        mask |= 1 << interface_type_to_u8(t);
+    }
+    mask
+}
+
+/// C representation of egress options for TCP `NWConnection`s.
+#[repr(C)]
+pub struct TcpEgressConnectOptions {
+    pub parameters: NwEgressParameters,
+    pub has_connect_timeout_ms: bool,
+    /// Connection timeout in milliseconds (maps to `NWProtocolTCP.Options.connectionTimeout`).
+    pub connect_timeout_ms: u32,
+}
+
+/// C representation of egress options for UDP `NWConnection`s.
+#[repr(C)]
+pub struct UdpEgressConnectOptions {
+    pub parameters: NwEgressParameters,
+    /// Whether `connect_timeout_ms` carries a meaningful value.
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_connect_timeout_ms: bool,
+    /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
+    /// reaching `.ready`. See `tproxy::types::NwUdpConnectOptions::connect_timeout`.
+    pub connect_timeout_ms: u32,
+}
+
+/// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
+///
+/// These are Rust→Swift channels: Rust calls these when it has data for the
+/// egress `NWConnection`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must outlive the
+/// corresponding `_session_free` call, callbacks may run on any thread, and
+/// `BytesView` is borrowed for the call's duration.
+#[repr(C)]
+pub struct TransparentProxyTcpEgressCallbacks {
+    pub context: *mut c_void,
+    /// Rust calls this to send bytes from the service to the egress NWConnection.
+    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
+    /// pause when Swift's `NwTcpConnectionWritePump` is full and resume only
+    /// after the matching `signal_egress_drain` call from Swift.
+    pub on_write_to_egress:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
+    /// Rust calls this when the service is done writing to the egress NWConnection.
+    pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// Rust → Swift: signal that the per-flow egress channel has space again
+    /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `Paused`.
+    /// Swift must keep `connection.receive` paused until this fires.
+    pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above.
+#[repr(C)]
+pub struct TransparentProxyUdpEgressCallbacks {
+    pub context: *mut c_void,
+    /// Rust calls this to send one datagram to the egress NWConnection.
+    pub on_send_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
 }
 
 fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {
@@ -290,7 +512,7 @@ unsafe fn free_utf8(ptr: *const c_char, len: usize) {
 
     let raw_slice = ptr::slice_from_raw_parts_mut(ptr as *mut u8, len);
     // SAFETY: caller guarantees this points to memory allocated via `alloc_utf8`.
-    let _ = unsafe { Box::from_raw(raw_slice) };
+    _ = unsafe { Box::from_raw(raw_slice) };
 }
 
 /// # Safety
@@ -342,9 +564,62 @@ unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
 mod tests {
     use std::ptr;
 
-    use crate::tproxy::TransparentProxyFlowProtocol;
+    use crate::tproxy::{
+        self, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+        TransparentProxyRuleProtocol,
+    };
 
-    use super::{TransparentFlowEndpoint, TransparentProxyFlowMeta};
+    use super::{
+        NwEgressParameters, TransparentFlowEndpoint, TransparentProxyConfig,
+        TransparentProxyFlowMeta,
+    };
+
+    /// Alloc → free round-trip for the FFI config struct. Designed so
+    /// that under LeakSanitizer (`just test-e2e-asan`) any heap field
+    /// added to `TransparentProxyNetworkRule` that `free` doesn't
+    /// release surfaces as a leak. Plain `cargo test` only verifies
+    /// that the round-trip doesn't double-free or panic.
+    #[test]
+    fn ffi_config_round_trip_freed_under_lsan() {
+        let config = tproxy::TransparentProxyConfig::default()
+            .with_tunnel_remote_address(rama_utils::str::arcstr::ArcStr::from("198.51.100.1:443"))
+            .with_rules(vec![
+                TransparentProxyNetworkRule::any()
+                    .with_remote_network(
+                        "example.com"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_remote_network_prefix(24)
+                    .with_local_network(
+                        "10.0.0.0"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_local_network_prefix(8)
+                    .with_protocol(TransparentProxyRuleProtocol::Tcp),
+                TransparentProxyNetworkRule::any(),
+            ]);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        // SAFETY: `ffi` was just created by `from_rust_type` and not
+        // freed yet.
+        unsafe { ffi.free() };
+    }
+
+    /// Locks in `preserve_original_meta_data: true` as the FFI default
+    /// for [`NwEgressParameters`]. Stacked-NE-provider deployments
+    /// rely on this so a downstream `NEAppProxyProvider` sees the
+    /// original app's `NEFlowMetaData` rather than the rama-extension
+    /// process; flipping the default would silently break attribution
+    /// in those topologies.
+    #[test]
+    fn ffi_egress_params_preserve_meta_default_round_trip() {
+        let rust = tproxy::NwEgressParameters::default();
+        assert!(rust.preserve_original_meta_data);
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(ffi.preserve_original_meta_data);
+    }
 
     #[test]
     fn flow_meta_uses_explicit_pid_when_present() {
@@ -370,8 +645,42 @@ mod tests {
             source_app_pid_is_set: true,
         };
 
-        let owned = unsafe { meta.as_owned_rust_type() };
+        // SAFETY: every pointer field is null with matching len 0 above, so
+        // the read-validity contract is trivially satisfied.
+        let owned = unsafe { meta.as_owned_rust_type() }.expect("known protocol decodes");
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());
+    }
+
+    /// Unknown protocol values must surface as `Err(raw)` so the FFI
+    /// thunks can fail-safe to passthrough rather than silently
+    /// fabricating a TCP flow. Pinning the contract: if a future ABI
+    /// renumbers the protocol enum, this test catches the regression.
+    #[test]
+    fn flow_meta_rejects_unknown_protocol() {
+        let meta = TransparentProxyFlowMeta {
+            protocol: 0xDEAD_BEEF,
+            remote_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            local_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            source_app_signing_identifier_utf8: ptr::null(),
+            source_app_signing_identifier_utf8_len: 0,
+            source_app_bundle_identifier_utf8: ptr::null(),
+            source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 0,
+            source_app_pid_is_set: false,
+        };
+        // SAFETY: same as above.
+        let result = unsafe { meta.as_owned_rust_type() };
+        assert_eq!(result.unwrap_err(), 0xDEAD_BEEF);
     }
 }

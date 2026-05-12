@@ -33,6 +33,7 @@ Here is a list of all `rama` crates:
 - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension): Apple Network Extension support for rama
+- [`rama-net-apple-xpc`](https://crates.io/crates/rama-net-apple-xpc): Apple XPC support for rama
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
@@ -49,6 +50,7 @@ Here is a list of all `rama` crates:
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
+- [`rama-http-macros`](https://crates.io/crates/rama-http-macros): proc-macros powering the type-safe HTML templating in `rama-http::html`
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`

@@ -410,7 +410,7 @@ where
             if !cookie.is_empty() {
                 match HeaderValue::try_from(cookie) {
                     Ok(value) => {
-                        let _ = req.headers_mut().insert(COOKIE, value);
+                        _ = req.headers_mut().insert(COOKIE, value);
                     }
                     Err(err) => {
                         tracing::error!(

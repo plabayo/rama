@@ -32,6 +32,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 - [`http_octet_stream.rs`](./http_octet_stream.rs) - Binary data responses with file downloads
+- [`http_multipart.rs`](./http_multipart.rs) - `multipart/form-data` upload handling
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
@@ -135,6 +136,21 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
   supporting load balancers that support the proagation of client IP address.
 
+### FastCGI
+
+- [`fastcgi_reverse_proxy.rs`](./fastcgi_reverse_proxy.rs) -
+  An HTTP reverse proxy that translates incoming HTTP requests into FastCGI requests
+  and forwards them to a FastCGI backend application server (embedded in the same binary
+  for demonstration). Shows `FastCgiServer` on the backend and `FastCgiClient` on the proxy side.
+- [`gateway/fastcgi-php/gateway`](./gateway/fastcgi-php/gateway/main.rs) —
+  rama terminates HTTPS (rustls self-signed) and forwards every request to
+  php-fpm over **TCP**.
+- [`gateway/fastcgi-php/migration`](./gateway/fastcgi-php/migration/main.rs) —
+  rama serves `/api/health` and `/api/version` natively in Rust; everything
+  else falls back to php-fpm over a **Unix socket**. The PHP app implements
+  the Rust-served routes too, with a payload tag `"source":"php"` that the
+  tests assert is never observed — proving the migration boundary.
+
 ## TLS and Security
 
 - [`https_web_service_with_hsts.rs`](./https_web_service_with_hsts.rs) - HTTP Strict Transport Security (HSTS) example
@@ -155,6 +171,18 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
+
+## Apple XPC
+
+- [`xpc_echo.rs`](./xpc_echo.rs) - End-to-end XPC echo using an anonymous channel (no launchd required).
+  Demonstrates `XpcServer<S>`, anonymous listener acceptance, fire-and-forget send, request-reply,
+  graceful shutdown, and tracing output — Apple platforms only.
+- [`xpc_ca_exchange.rs`](./xpc_ca_exchange.rs) - A control-plane shaped XPC request/reply example.
+  Demonstrates fetching CA material over XPC, using the same service-driven anonymous-channel setup
+  that can later be moved behind a named Mach service with peer requirements.
+- [`../ffi/apple/examples/transparent_proxy`](../ffi/apple/examples/transparent_proxy) - A practical
+  Apple Network Extension demo that uses the same pattern to keep the MITM CA private key out of
+  the opaque startup config and request it from the host app over local XPC instead.
 
 ## Network and Transport
 - [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,

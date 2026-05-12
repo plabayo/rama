@@ -117,6 +117,23 @@ pub(in crate::cmd::serve::httptest) fn service()
                 <div id="content">
                 <ul>
                     <li>
+                        <a href="/bytes?size=1048576&amp;chunk=16384&amp;delay_ms=0">GET /bytes</a>
+                        — query params: <code>size</code> (default 1 KiB, max 32 MiB),
+                        <code>chunk</code> (bytes per chunk, default 16 KiB, max 4 MiB),
+                        <code>delay_ms</code> (sleep between chunks, default 0, max 60 000 ms).
+                        Streams exactly <code>size</code> zero bytes as
+                        <code>application/octet-stream</code> in chunks of <code>chunk</code> bytes
+                        with an optional inter-chunk delay. Useful for exercising backpressure,
+                        timeout, and h1/h2 stream-framing behaviour deterministically.
+                    </li>
+                    <li>
+                        <code>POST /sink</code>:
+                        accepts an arbitrarily large upload, reads and discards the body, then
+                        returns <code>{"bytes": &lt;n&gt;}</code> with the total number of
+                        bytes received. Useful for stressing ingress upload paths without echoing
+                        the body back.
+                    </li>
+                    <li>
                         <a href="/method">HTTP Method</a>:
                         any HTTP method used will be echod back your way as <code>text/plain</code>.
                     </li>
@@ -143,6 +160,15 @@ pub(in crate::cmd::serve::httptest) fn service()
                     </li>
                     <li>
                         <a href="/sse">Server-Side Events</a> (SSE) version of the Response Stream test.
+                    </li>
+                    <li>
+                        <a href="/multipart">Multipart Form Upload</a>:
+                        <code>GET</code> serves a small HTML upload form;
+                        <code>POST multipart/form-data</code> returns a JSON summary of each part received.
+                    </li>
+                    <li>
+                        <code>POST /octet-stream</code>:
+                        echoes the raw binary request body back as <code>application/octet-stream</code>.
                     </li>
                 </ul>
                 </div>

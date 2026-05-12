@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use super::CompressionBody;
 use super::CompressionLevel;
 use super::body::BodyInner;
@@ -6,6 +11,7 @@ use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_h
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
+use http::Method;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_headers::specifier::QualityValue;
@@ -163,11 +169,20 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let accepted_encodings: SmallVec<[QualityValue<Encoding>; 4]> =
             parse_accept_encoding_headers(req.headers(), self.accept).collect();
+        let req_method = req.method().clone();
 
         let mut res = self.inner.serve(req).await?;
         let mut respected_encoding = None;
 
         let should_compress =
+            // RFC 9110 §9.3.2 (HEAD) and §9.3.6 (CONNECT): server MUST NOT send
+            // a body for HEAD or CONNECT responses, so there is nothing to compress.
+            !matches!(req_method, Method::HEAD | Method::CONNECT) &&
+            // RFC 9110 §15.2 (1xx Informational), §15.3.5 (204 No Content),
+            // §15.3.6 (205 Reset Content), §15.4.5 (304 Not Modified): these
+            // status codes prohibit a message body, so compression would
+            // produce an empty Content-Encoding wrapper with no benefit.
+            !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304) &&
             //never compress responses that are ranges
             !res.headers().contains_key(header::CONTENT_RANGE) &&
             self.predicate.should_compress(&mut res) &&

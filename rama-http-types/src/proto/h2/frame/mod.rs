@@ -105,6 +105,12 @@ pub enum Error {
     /// An invalid setting value was provided
     InvalidSettingValue,
 
+    /// A SETTINGS_INITIAL_WINDOW_SIZE value above 2^31-1 was received.
+    ///
+    /// RFC 9113 §6.5.2 specifies that this MUST be treated as a
+    /// `FLOW_CONTROL_ERROR`, distinct from a generic `PROTOCOL_ERROR`.
+    InvalidInitialWindowSize,
+
     /// An invalid window update value
     InvalidWindowUpdateValue,
 

@@ -94,7 +94,10 @@ where
         match proxy {
             None => {
                 if self.required {
-                    return Err("proxy required but none is defined".into());
+                    return Err(
+                        OpaqueError::from_static_str("proxy required but none is defined")
+                            .into_box_error(),
+                    );
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
                 let EstablishedClientConnection { input, conn } =

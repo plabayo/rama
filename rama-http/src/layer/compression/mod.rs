@@ -378,7 +378,6 @@ mod tests {
         #[derive(Default, Clone)]
         struct EveryOtherResponse(Arc<RwLock<u64>>);
 
-        #[allow(clippy::dbg_macro)]
         impl Predicate for EveryOtherResponse {
             fn should_compress<B>(&self, _: &mut rama_http_types::Response<B>) -> bool
             where
@@ -414,7 +413,7 @@ mod tests {
         // read the compressed body
         let body = res.into_body();
         let data = body.collect().await.unwrap().to_bytes();
-        assert!(String::from_utf8(data.to_vec()).is_err());
+        String::from_utf8(data.to_vec()).unwrap_err();
     }
 
     #[tokio::test]
@@ -450,6 +449,31 @@ mod tests {
             ));
             res.headers_mut()
                 .insert(CONTENT_TYPE, "image/svg+xml".parse().unwrap());
+            Ok(res)
+        }
+
+        let svc = Compression::new(service_fn(handle));
+
+        let res = svc
+            .serve(
+                Request::builder()
+                    .header(ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.headers()[CONTENT_ENCODING], "gzip");
+    }
+
+    #[tokio::test]
+    async fn does_compress_grpc_web() {
+        async fn handle(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+            let mut res = Response::new(Body::from(
+                "a".repeat((SizeAbove::DEFAULT_MIN_SIZE * 2) as usize),
+            ));
+            res.headers_mut()
+                .insert(CONTENT_TYPE, "application/grpc-web+proto".parse().unwrap());
             Ok(res)
         }
 
@@ -586,5 +610,112 @@ mod tests {
         let res = svc.serve(req).await.unwrap();
         let body = res.into_body();
         assert_eq!(body.size_hint().exact().unwrap(), MSG.len() as u64);
+    }
+
+    // RFC 9110 §9.3.2: server MUST NOT send a body in response to a HEAD request.
+    // Compressing an absent body would produce a spurious Content-Encoding header.
+    #[tokio::test]
+    async fn does_not_compress_head_response() {
+        use http::Method;
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .method(Method::HEAD)
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "HEAD response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §9.3.6: CONNECT tunnels have no HTTP message body phase.
+    #[tokio::test]
+    async fn does_not_compress_connect_response() {
+        use http::Method;
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "CONNECT response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.3.5: 204 No Content responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_204_response() {
+        let svc = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::builder().status(204).body(Body::empty()).unwrap())
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "204 response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.4.5: 304 Not Modified responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_304_response() {
+        let svc = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::builder().status(304).body(Body::empty()).unwrap())
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "304 response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.2: 1xx Informational responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_1xx_response() {
+        let svc = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::builder().status(100).body(Body::empty()).unwrap())
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "1xx response must not carry Content-Encoding"
+        );
+    }
+
+    // RFC 9110 §15.3.6: 205 Reset Content responses have no body.
+    #[tokio::test]
+    async fn does_not_compress_205_response() {
+        let svc = Compression::new(service_fn(async |_| {
+            Ok::<_, Infallible>(Response::builder().status(205).body(Body::empty()).unwrap())
+        }))
+        .with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert!(
+            !res.headers().contains_key(CONTENT_ENCODING),
+            "205 response must not carry Content-Encoding"
+        );
     }
 }

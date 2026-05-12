@@ -51,6 +51,6 @@ async fn test_http_anti_bot_infinite_resource() {
     {
         let client = EasyHttpWebClient::default();
         let req_uri = format!("http://{ADDRESS}");
-        assert!(client.get(req_uri).send().await.is_err());
+        client.get(req_uri).send().await.unwrap_err();
     }
 }

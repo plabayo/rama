@@ -603,7 +603,7 @@ mod tests {
 
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(
         s: &str,
         authority: Authority,

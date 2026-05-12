@@ -88,7 +88,7 @@ where
             some
         } else {
             this.sleep.set(Some(sleep(*this.timeout)));
-            #[allow(clippy::expect_used)]
+            #[expect(clippy::expect_used)]
             this.sleep
                 .as_mut()
                 .as_pin_mut()
@@ -172,14 +172,12 @@ mod tests {
         };
         let timeout_body = TimeoutBody::new(timeout_sleep, mock_body);
 
-        assert!(
-            timeout_body
-                .boxed()
-                .frame()
-                .await
-                .expect("no frame")
-                .is_ok()
-        );
+        timeout_body
+            .boxed()
+            .frame()
+            .await
+            .expect("no frame")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -192,6 +190,6 @@ mod tests {
         };
         let timeout_body = TimeoutBody::new(timeout_sleep, mock_body);
 
-        assert!(timeout_body.boxed().frame().await.unwrap().is_err());
+        timeout_body.boxed().frame().await.unwrap().unwrap_err();
     }
 }

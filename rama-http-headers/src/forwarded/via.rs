@@ -149,6 +149,10 @@ impl Iterator for ViaIterator {
 impl std::str::FromStr for ViaElement {
     type Err = BoxError;
 
+    #[expect(
+        clippy::unreachable,
+        reason = "the `position` predicate above only matches `b'/'` or `b' '`, so the wildcard arm is unreachable"
+    )]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut bytes = s.as_bytes();
 

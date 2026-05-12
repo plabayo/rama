@@ -108,6 +108,78 @@ async fn test_http_echo() {
 
 #[ignore]
 #[tokio::test]
+async fn test_http_multipart_form() {
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::serve_echo(63102, utils::EchoMode::Http);
+
+    let lines = utils::RamaService::http(vec![
+        "http://127.0.0.1:63102",
+        "-F",
+        "username=glen",
+        "-F",
+        "language=rust;type=text/plain",
+    ])
+    .unwrap();
+
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    assert!(
+        lines.contains(r##""content-type","multipart/form-data;"##),
+        "lines: {lines:?}",
+    );
+    // Body bytes are echoed as hex; assert known field bytes are present.
+    // "glen" -> 676c656e, "rust" -> 72757374
+    assert!(lines.contains("676c656e"), "lines: {lines:?}");
+    assert!(lines.contains("72757374"), "lines: {lines:?}");
+    // Content-Disposition + name="username" appears in the part header bytes.
+    // "name=\"username\"" -> hex
+    let needle = hex_of("name=\"username\"");
+    assert!(lines.contains(&needle), "needle={needle} lines: {lines:?}");
+}
+
+#[ignore]
+#[tokio::test]
+async fn test_http_data_inmemory_emits_content_length() {
+    // Regression: literal `--data` items should ship with a precise
+    // Content-Length, not chunked, so middleware/peers see exact framing.
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::serve_echo(63105, utils::EchoMode::Http);
+
+    let lines = utils::RamaService::http(vec![
+        "http://127.0.0.1:63105",
+        "-d",
+        "name=John",
+        "-d",
+        "age=32",
+    ])
+    .unwrap();
+
+    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
+    assert!(lines.contains(r##""method":"POST""##), "lines: {lines:?}");
+    // Default content type for `-d` is form-urlencoded.
+    assert!(
+        lines.contains(r##""content-type","application/x-www-form-urlencoded""##),
+        "lines: {lines:?}",
+    );
+    // "name=John&age=32" is 16 bytes.
+    assert!(
+        lines.contains(r##""content-length","16""##),
+        "lines: {lines:?}",
+    );
+}
+
+fn hex_of(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.as_bytes() {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+#[ignore]
+#[tokio::test]
 async fn test_tcp_echo() {
     utils::init_tracing();
 

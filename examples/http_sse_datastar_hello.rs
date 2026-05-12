@@ -39,6 +39,12 @@
 //!
 //! This will open a web page which will be a simple hello world data app.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     futures::async_stream::stream_fn,
@@ -398,7 +404,7 @@ pub mod controller {
             const HOT_RELOAD: &str = r##"
                 <div
                     id="hotreload"
-                    data-init="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
+                    data-init="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWait:200})"
                 ></div>
             "##;
 

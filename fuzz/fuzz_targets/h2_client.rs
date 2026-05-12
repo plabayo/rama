@@ -1,3 +1,7 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 #![no_main]
 use h2_support::prelude::*;
 use libfuzzer_sys::{
@@ -29,7 +33,7 @@ async fn fuzz_entry(inp: HttpSpec) {
         // this could still trigger a user error:
         // - if the uri isn't absolute
         // - if the header name isn't allowed in http2 (like connection)
-        let _ = client.send_request(req, true);
+        _ = client.send_request(req, true);
     }
 }
 

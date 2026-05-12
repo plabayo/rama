@@ -25,12 +25,22 @@
 // rama provides everything out of the box for your primitive UDP needs,
 // thanks to the underlying implementation from Tokio
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "example: panic-on-error is the standard pattern for demos"
+)]
+
 use rama::{
     bytes::Bytes,
     error::BoxError,
     futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
     stream::codec::BytesCodec,
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     udp::{UdpFramed, bind_udp_with_address},
 };
 
@@ -42,6 +52,15 @@ use tokio::{io, time};
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    tracing::subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let mut a = UdpFramed::new(
         bind_udp_with_address(SocketAddress::local_ipv4(0)).await?,
         BytesCodec::new(),
@@ -62,9 +81,10 @@ async fn main() -> Result<(), BoxError> {
     let b = pong(&mut b);
 
     // Run both futures simultaneously of `a` and `b` sending messages back and forth.
-    match tokio::try_join!(a, b) {
-        Err(e) => println!("an error occurred; error = {e:?}"),
-        _ => println!("done!"),
+    if let Err(e) = tokio::try_join!(a, b) {
+        tracing::error!("an error occurred; error = {e:?}");
+    } else {
+        tracing::info!("done!");
     }
 
     Ok(())
@@ -76,7 +96,7 @@ async fn ping(socket: &mut UdpFramed<BytesCodec>, b_addr: SocketAddr) -> Result<
     for _ in 0..4usize {
         let (bytes, addr) = socket.next().map(|e| e.unwrap()).await?;
 
-        println!("[a] recv: {}", String::from_utf8_lossy(&bytes));
+        tracing::info!("[a] recv: {}", String::from_utf8_lossy(&bytes));
 
         socket.send((Bytes::from(&b"PING"[..]), addr)).await?;
     }
@@ -88,7 +108,7 @@ async fn pong(socket: &mut UdpFramed<BytesCodec>) -> Result<(), io::Error> {
     let timeout = Duration::from_millis(200);
 
     while let Ok(Some(Ok((bytes, addr)))) = time::timeout(timeout, socket.next()).await {
-        println!("[b] recv: {}", String::from_utf8_lossy(&bytes));
+        tracing::info!("[b] recv: {}", String::from_utf8_lossy(&bytes));
 
         socket.send((Bytes::from(&b"PONG"[..]), addr)).await?;
     }

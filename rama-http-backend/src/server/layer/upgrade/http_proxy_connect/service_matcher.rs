@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use rama_core::{
     extensions::ExtensionsRef,
     matcher::service::{ServiceMatch, ServiceMatcher},
+    rt::Executor,
     telemetry::tracing,
 };
 use rama_http::{Request, Response};
@@ -25,7 +26,21 @@ pub struct HttpProxyConnectRelayServiceRequestMatcher<S = IoForwardService> {
 impl Default for HttpProxyConnectRelayServiceRequestMatcher {
     fn default() -> Self {
         Self {
-            relay_svc: IoForwardService::new(),
+            relay_svc: IoForwardService::default(),
+        }
+    }
+}
+
+impl HttpProxyConnectRelayServiceRequestMatcher {
+    /// Create a [`HttpProxyConnectRelayServiceRequestMatcher`] whose default
+    /// fallback relay observes graceful shutdown via the given [`Executor`].
+    ///
+    /// Prefer this over [`Self::default`] when you have an executor available
+    /// — it lets the proxy connect bridges unwind cleanly on shutdown.
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
+        Self {
+            relay_svc: IoForwardService::new(exec),
         }
     }
 }

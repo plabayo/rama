@@ -85,7 +85,6 @@ pub enum CacheKind {
     Disabled,
 }
 
-#[allow(clippy::expect_used, reason = "8096 != 0 🧌")]
 const CACHE_KIND_DEFAULT_MAX_SIZE: NonZeroU64 =
     NonZeroU64::new(8096).expect("NonZeroU64: 8096 != 0");
 

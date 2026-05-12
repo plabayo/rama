@@ -44,6 +44,10 @@ impl OriginalHttp1Headers {
     pub fn iter(&self) -> impl Iterator<Item = &Http1HeaderName> {
         self.ordered_headers.iter()
     }
+
+    pub fn retain<F: FnMut(&Http1HeaderName) -> bool>(&mut self, f: F) {
+        self.ordered_headers.retain(f);
+    }
 }
 
 impl OriginalHttp1Headers {

@@ -27,7 +27,7 @@ pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
     let uri = req.uri();
     if let Ok(req_ctx) = RequestContext::try_from(req) {
         let mut buffer = SmallVec::<[u8; 128]>::new();
-        let _ = write!(
+        _ = write!(
             &mut buffer,
             "{}://{}{}",
             req_ctx.protocol,

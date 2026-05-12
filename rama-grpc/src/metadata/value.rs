@@ -297,7 +297,7 @@ impl MetadataValue<Ascii> {
     /// This function will perform a scan of the metadata value, checking all the
     /// characters.
     pub fn to_str(&self) -> Result<&str, ToStrError> {
-        self.inner.to_str().map_err(|_| ToStrError::new())
+        self.inner.to_str().map_err(|_e| ToStrError::new())
     }
 
     /// Converts a `MetadataValue` to a byte slice. For Binary values, use
@@ -425,7 +425,7 @@ impl FromStr for MetadataValue<Ascii> {
                 inner: value,
                 phantom: PhantomData,
             })
-            .map_err(|_| InvalidMetadataValue::new())
+            .map_err(|_e| InvalidMetadataValue::new())
     }
 }
 
@@ -701,6 +701,10 @@ fn test_value_eq_value() {
         Bmv::from_static("SGVsbG8hIQ")
     );
     // Invalid values are all just invalid from this point of view.
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "test: two parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
+    )]
     unsafe {
         assert_eq!(
             Bmv::from_shared_unchecked(Bytes::from_static(b"..{}")),
@@ -752,7 +756,7 @@ fn test_ascii_value_hash() {
     use std::collections::hash_map::DefaultHasher;
     type Amv = AsciiMetadataValue;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn hash(value: Amv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
@@ -776,7 +780,7 @@ fn test_valid_binary_value_hash() {
     use std::collections::hash_map::DefaultHasher;
     type Bmv = BinaryMetadataValue;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn hash(value: Bmv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
@@ -799,13 +803,17 @@ fn test_invalid_binary_value_hash() {
     use std::collections::hash_map::DefaultHasher;
     type Bmv = BinaryMetadataValue;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn hash(value: Bmv) -> u64 {
         let mut hasher = DefaultHasher::new();
         value.hash(&mut hasher);
         hasher.finish()
     }
 
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "test: parallel `from_shared_unchecked` calls covered by the same SAFETY contract"
+    )]
     unsafe {
         let value1 = Bmv::from_shared_unchecked(Bytes::from_static(b"..{}"));
         let value2 = Bmv::from_shared_unchecked(Bytes::from_static(b"{}.."));

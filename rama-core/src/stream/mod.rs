@@ -19,4 +19,5 @@ pub mod io {
     pub use tokio_util::io::*;
 }
 
+#[doc(inline)]
 pub use ::tokio_stream::*;

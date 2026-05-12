@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 #![allow(dead_code)]
 
 use std::{
@@ -24,7 +29,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = subscriber::registry()
+        _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

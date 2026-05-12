@@ -180,7 +180,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
         self.socket
             .poll_send(cx, &self.write_buffer[..])
             .map_err(Into::into)
-            .map_ok(|n| n - header.serialized_len() + 1)
+            .map_ok(|n| n - header.serialized_len())
     }
 
     /// Receives a single datagram message from the socks5 udp associate proxy.
@@ -251,7 +251,7 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
         .context_field("fragment_number", header.fragment_number));
     }
 
-    let header_offset = header.serialized_len() - 1;
+    let header_offset = header.serialized_len();
 
     let HostWithPort { host, port } = header.destination;
     let from: SocketAddress = match host {

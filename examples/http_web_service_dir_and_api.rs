@@ -24,17 +24,25 @@
 //! please also try go to the legal page and some other non-existing pages.
 
 // rama provides everything out of the box to build a complete web service.
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     extensions::Extensions,
     http::{
+        html::{
+            PreEscaped, a, body, button, footer, form, h1, h2, head, html, link, p, style, title,
+        },
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
             WebService,
             extract::State,
-            response::{Html, Redirect},
+            response::{Html, IntoResponse, Redirect},
         },
     },
     net::stream::{SocketInfo, matcher::SocketMatcher},
@@ -96,61 +104,53 @@ async fn main() {
         .unwrap();
 }
 
-async fn coin_page(State(state): State<Arc<AppState>>, ext: Extensions) -> Html<String> {
-    let emoji = if ext
+async fn coin_page(State(state): State<Arc<AppState>>, ext: Extensions) -> impl IntoResponse {
+    // The home-link variant uses an `<a>` element wrapping the emoji; the
+    // remote variant is just the emoji. We wrap in `Either` so both arms
+    // have the same type.
+    let emoji_block = if ext
         .get_ref::<SocketInfo>()
         .unwrap()
         .peer_addr()
         .ip_addr
         .is_loopback()
     {
-        r#"<a href="/home">🏠</a>"#
+        rama::http::html::Either::A(a!(href = "/home", "🏠"))
     } else {
-        "🌍"
+        rama::http::html::Either::B("🌍")
     };
 
     let count = state.counter.load(Ordering::Acquire);
-    Html(format!(
-        r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Coin Clicker</title>
-    <link rel="stylesheet" href="/style/reset.css">
-    <link rel="icon" href="/favicon.png" type="image/x-icon">
-    <style>
-        body {{
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            flex-direction: column;
-            text-align: center;
-        }}
 
-        footer {{
-            position: absolute;
-            bottom: 0;
-            width: 100%;
-            text-align: center;
-        }}
-    </style>
-</head>
-<body>
-    <h2>{emoji} Coin Clicker</h2>
-    <h1 id="coinCount">{count}</h1>
-    <p>Click the button for more coins.</p>
-    <form action="/coin" method="post">
-        <button type="submit">&#x1F4B0; Click</button>
-    </form>
+    // The CSS happens to contain `{` / `}` characters that we want
+    // rendered verbatim, so we wrap it in `PreEscaped`.
+    const CSS: PreEscaped<&str> = PreEscaped(
+        "body { display: flex; justify-content: center; align-items: center;\
+         height: 100vh; flex-direction: column; text-align: center; }\
+         footer { position: absolute; bottom: 0; width: 100%; text-align: center; }",
+    );
 
-    <footer>
-        <p>
-            See <a href="/legal.html">the legal page</a> for more information on your rights.
-        </p>
-    </footer>
-</body>
-</html>
-    "#
-    ))
+    html!(
+        head!(
+            title!("Coin Clicker"),
+            link!(rel = "stylesheet", href = "/style/reset.css"),
+            link!(rel = "icon", href = "/favicon.png", r#type = "image/x-icon"),
+            style!(CSS),
+        ),
+        body!(
+            h2!(emoji_block, " Coin Clicker"),
+            h1!(id = "coinCount", count),
+            p!("Click the button for more coins."),
+            form!(
+                action = "/coin",
+                method = "post",
+                button!(r#type = "submit", PreEscaped("&#x1F4B0; Click")),
+            ),
+            footer!(p!(
+                "See ",
+                a!(href = "/legal.html", "the legal page"),
+                " for more information on your rights.",
+            )),
+        ),
+    )
 }

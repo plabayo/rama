@@ -17,6 +17,13 @@ resolver = "3"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [package.metadata.cargo-machete]
 ignored = ["rustversion"]
@@ -33,6 +40,7 @@ members = [
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-fastcgi",
     "rama-grpc",
     "rama-grpc-build",
     "rama-haproxy",
@@ -42,11 +50,13 @@ members = [
     "rama-http-core/tests/h2-fuzz",
     "rama-http-core/tests/h2-support",
     "rama-http-headers",
+    "rama-http-macros",
     "rama-http-types",
     "rama-macros",
     "rama-macros/tests/macros",
     "rama-net",
     "rama-net-apple-networkextension",
+    "rama-net-apple-xpc",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
@@ -91,15 +101,19 @@ bb8 = "0.9"
 bb8-postgres = "0.9"
 bindgen = "0.72"
 bitflags = "2.11"
+block2 = "0.6"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
+cc = "1"
 clap = { version = "4.6", features = ["derive", "unstable-v5", "wrap_help"] }
 compression-codecs = "0.4"
 compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
+dial9-tokio-telemetry = "0.3.8"
+dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
 flate2 = "1.1"
@@ -109,7 +123,7 @@ futures = "0.3"
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
-hickory-resolver = { version = "0.26.0", default-features = false, features = ["tokio", "system-config", "serde"] }
+hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
 http = "1"
 http-body = "1"
@@ -123,7 +137,7 @@ iri-string = "0.7"
 itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-jiff = { version = "0.2.23", features = ["serde"] }
+jiff = { version = "0.2.24", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
@@ -134,6 +148,7 @@ mimalloc = { version = "=0.1.48", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
+multer = "3.1"
 nom = "8.0.0"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
@@ -160,6 +175,7 @@ rama-core = { version = "0.3.0-rc1", path = "./rama-core", default-features = fa
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns", default-features = false }
 rama-error = { version = "0.3.0-rc1", path = "./rama-error", default-features = false }
+rama-fastcgi = { version = "0.3.0-rc1", path = "./rama-fastcgi", default-features = false }
 rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc", default-features = false }
 rama-grpc-build = { version = "0.3.0-rc1", path = "./rama-grpc-build", default-features = false }
 rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy", default-features = false }
@@ -167,10 +183,12 @@ rama-http = { version = "0.3.0-rc1", path = "./rama-http", default-features = fa
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend", default-features = false }
 rama-http-core = { version = "0.3.0-rc1", path = "./rama-http-core", default-features = false }
 rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers", default-features = false }
+rama-http-macros = { version = "0.3.0-rc1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types", default-features = false }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros", default-features = false }
 rama-net = { version = "0.3.0-rc1", path = "./rama-net", default-features = false }
 rama-net-apple-networkextension = { version = "0.3.0-rc1", path = "./rama-net-apple-networkextension", default-features = false }
+rama-net-apple-xpc = { version = "0.3.0-rc1", path = "./rama-net-apple-xpc", default-features = false }
 rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy", default-features = false }
 rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp", default-features = false }
@@ -236,6 +254,7 @@ webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"
 x509-parser = { version = "0.18", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -244,45 +263,103 @@ unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(loom)'] }
 
 [workspace.lints.clippy]
+# Baseline: enable the full `clippy::all` group at warn, then layer on extras below.
+# `type_complexity` is opted out — async/Service-stack types tend to be deep, and
+# rewriting them as type aliases for the lint's sake makes APIs harder to read.
 all = { level = "warn", priority = -1 }
-todo = "warn"
+type_complexity = "allow"
+
+# Don't Panic — strictness matches the per-file `deny` we used to have in lib.rs/main.rs.
+# `unwrap_used`/`expect_used`/`panic` are allowed in tests via clippy.toml.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+print_stdout = "deny"
+dbg_macro = "deny"
+# Panic-adjacent
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+get_unwrap = "deny"
+unchecked_time_subtraction = "deny"
+# `unwrap_in_result` and `panic_in_result_fn` are intentionally NOT enabled:
+# redundant with `unwrap_used`/`panic` in production code (which we `deny`), and
+# there's no `allow-*-in-tests` flag for them — so they fire in the
+# `#[test] fn(...) -> Result<…>` pattern that uses `?`, even though the
+# underlying `unwrap`/`panic` is allowed in tests.
+
+# Don't Fail Silently — surface dropped futures and swallowed errors.
+let_underscore_future = "warn"
+let_underscore_must_use = "warn"
+unused_result_ok = "warn"
+map_err_ignore = "warn"
+assertions_on_result_states = "warn"
+
+# Don't Do Bad Async Stuff — common deadlock / concurrency footguns.
+if_let_mutex = "warn"
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+large_futures = "warn"
+
+# Memory safety / unsafe hygiene.
+mem_forget = "warn"
+unnecessary_safety_doc = "warn"
+unnecessary_safety_comment = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+# Numeric correctness — float comparisons and risky casts.
+float_cmp = "warn"
+float_cmp_const = "warn"
+lossy_float_literal = "warn"
+imprecise_flops = "warn"
+suboptimal_flops = "warn"
+invalid_upcast_comparisons = "warn"
+
+# Easy-to-avoid footguns and questionable patterns.
+rc_mutex = "warn"
+debug_assert_with_mut_call = "warn"
+iter_not_returning_iterator = "warn"
+expl_impl_clone_on_copy = "warn"
+infallible_try_from = "warn"
+
+# Suppression hygiene — force `#[expect(..)]` over silent `#[allow(..)]`,
+# so a lint that no longer applies surfaces (instead of being silently masked).
+allow_attributes = "warn"
+
+# Style / readability — pattern-match exhaustiveness, idiomatic borrowing,
+# `Self` usage, format-string hygiene, etc.
 empty_enums = "warn"
 enum_glob_use = "warn"
 equatable_if_let = "warn"
-mem_forget = "warn"
-unused_self = "warn"
 filter_map_next = "warn"
 needless_continue = "warn"
 needless_borrow = "warn"
 match_wildcard_for_single_variants = "warn"
-if_let_mutex = "warn"
+match_same_arms = "warn"
 implicit_clone = "warn"
-await_holding_lock = "warn"
-imprecise_flops = "warn"
-suboptimal_flops = "warn"
-lossy_float_literal = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 fn_params_excessive_bools = "warn"
-exit = "warn"
+manual_let_else = "warn"
+single_match_else = "warn"
+unnested_or_patterns = "warn"
+ref_option = "warn"
+option_option = "warn"
+str_to_string = "warn"
+uninlined_format_args = "warn"
+return_self_not_must_use = "warn"
+use_self = "warn"
+
+# API hygiene — push back against patterns that bloat APIs / cause perf regressions.
+unused_self = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+trivially_copy_pass_by_ref = "warn"
+redundant_clone = "warn"
 inefficient_to_string = "warn"
 linkedlist = "warn"
 macro_use_imports = "warn"
-manual_let_else = "warn"
-match_same_arms = "warn"
-needless_pass_by_ref_mut = "warn"
-needless_pass_by_value = "warn"
-option_option = "warn"
-redundant_clone = "warn"
-ref_option = "warn"
 verbose_file_reads = "warn"
-unnested_or_patterns = "warn"
-str_to_string = "warn"
-type_complexity = "allow"
-return_self_not_must_use = "warn"
-single_match_else = "warn"
-trivially_copy_pass_by_ref = "warn"
-use_self = "warn"
-uninlined_format_args = "warn"
+exit = "warn"
 fallible_impl_from = "warn"
 
 [workspace.lints.rustdoc]
@@ -324,6 +401,7 @@ cli = [
 ]
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
+net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
 dns = ["net", "dep:rama-dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]
@@ -340,6 +418,7 @@ http = [
     "rama-tls-boring?/ua",
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
+    "rama-fastcgi?/http",
 ]
 http-full = [
     "http",
@@ -349,11 +428,16 @@ http-full = [
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
+    "multipart",
+    "html",
     "dep:tokio",
     "rama-grpc?/transport",
 ]
+multipart = ["http", "rama-http?/multipart"]
+html = ["http", "rama-http?/html"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
+fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
 ua = ["dep:rama-ua"]
 ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
@@ -369,6 +453,26 @@ opentelemetry = [
     "grpc",
     "rama-grpc?/opentelemetry",
 ]
+# Optional [dial9] runtime-telemetry support across the rama crate
+# family. When enabled on a sub-crate, that crate ships pre-defined
+# `TraceEvent` types and emits them at the corresponding lifecycle
+# hooks; emission is a no-op when the consumer's runtime is not a
+# `dial9-tokio-telemetry::TracedRuntime`.
+#
+# Enabling this feature requires building with `--cfg tokio_unstable`
+# (workspace-wide via `.cargo/config.toml`, or per-build via
+# `RUSTFLAGS`). Users who DO NOT enable `dial9` do not need
+# `tokio_unstable`.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = [
+    "rama-net?/dial9",
+    "rama-net-apple-networkextension?/dial9",
+    "rama-dns?/dial9",
+    "rama-tls-rustls?/dial9",
+    "rama-tls-boring?/dial9",
+    "rama-socks5?/dial9",
+]
 
 [dependencies]
 ahash = { workspace = true }
@@ -379,6 +483,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
+rama-fastcgi = { workspace = true, optional = true }
 rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
@@ -386,6 +491,7 @@ rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-net-apple-networkextension = { workspace = true, optional = true }
+rama-net-apple-xpc = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
@@ -421,7 +527,7 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true }
@@ -519,6 +625,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_form"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_multipart"
 required-features = ["http-full"]
 
 [[example]]
@@ -684,6 +794,14 @@ name = "linux_tproxy_tcp"
 required-features = ["tcp"]
 
 [[example]]
+name = "xpc_echo"
+required-features = ["net-apple-xpc"]
+
+[[example]]
+name = "xpc_ca_exchange"
+required-features = ["net-apple-xpc"]
+
+[[example]]
 name = "tcp_nd_json"
 required-features = ["tcp"]
 
@@ -710,6 +828,20 @@ required-features = ["boring", "haproxy", "http-full"]
 [[example]]
 name = "tls_rustls_termination"
 required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
+
+[[example]]
+name = "fastcgi_reverse_proxy"
+required-features = ["http-full", "fastcgi"]
+
+[[example]]
+name = "fastcgi_php_gateway"
+path = "examples/gateway/fastcgi-php/gateway/main.rs"
+required-features = ["http-full", "fastcgi", "rustls", "aws-lc"]
+
+[[example]]
+name = "fastcgi_php_migration"
+path = "examples/gateway/fastcgi-php/migration/main.rs"
+required-features = ["http-full", "fastcgi"]
 
 [[example]]
 name = "socks5_connect_proxy"

@@ -1,10 +1,15 @@
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use std::net::IpAddr;
 
 use super::utils;
 
 use rama::{
     Layer as _, Service,
-    extensions::ExtensionsRef,
+    extensions::{Egress, ExtensionsRef},
     http::{
         Body, BodyExtractExt, Request, client::HttpConnectorLayer,
         layer::required_header::AddRequiredRequestHeaders,
@@ -67,7 +72,8 @@ async fn test_server_with_haproxy_v1() {
         .await
         .expect("establish a connection to the http server using haproxy v1");
 
-    req.extensions().extend(http_service.extensions());
+    req.extensions()
+        .insert(Egress(http_service.extensions().clone()));
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)
@@ -106,7 +112,8 @@ async fn test_server_with_haproxy_v2() {
         .await
         .expect("establish a connection to the http server using haproxy v2");
 
-    req.extensions().extend(http_service.extensions());
+    req.extensions()
+        .insert(Egress(http_service.extensions().clone()));
 
     let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(req)

@@ -21,7 +21,9 @@ pub mod arcstr;
 pub mod utf8;
 
 #[cfg(not(target_os = "windows"))]
+#[cfg_attr(docsrs, doc(cfg(not(target_os = "windows"))))]
 pub const NATIVE_NEWLINE: &str = "\n";
 
 #[cfg(target_os = "windows")]
+#[cfg_attr(docsrs, doc(cfg(target_os = "windows")))]
 pub const NATIVE_NEWLINE: &str = "\r\n";

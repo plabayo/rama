@@ -105,7 +105,6 @@ impl Incoming {
         Self { kind }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn empty() -> Self {
         Self::new(Kind::Empty)
     }
@@ -170,20 +169,20 @@ impl StreamingBody for Incoming {
                 if !*data_done {
                     match ready!(h2.poll_data(cx)) {
                         Some(Ok(bytes)) => {
-                            let _ = h2.flow_control().release_capacity(bytes.len());
+                            _ = h2.flow_control().release_capacity(bytes.len());
                             len.sub_if(bytes.len() as u64);
                             ping.record_data(bytes.len());
                             return Poll::Ready(Some(Ok(Frame::data(bytes))));
                         }
                         Some(Err(e)) => {
-                            return match e.reason() {
-                                // These reasons should cause the body reading to stop, but not fail it.
-                                // The same logic as for `Read for H2Upgraded` is applied here.
-                                Some(h2::Reason::NO_ERROR | h2::Reason::CANCEL) => {
-                                    Poll::Ready(None)
-                                }
-                                _ => Poll::Ready(Some(Err(crate::Error::new_body(e)))),
-                            };
+                            if e.reason() == Some(h2::Reason::NO_ERROR) {
+                                // As mentioned in RFC 7540 Section 8.1, a RST_STREAM with NO_ERROR
+                                // indicates an early response, and should cause the body reading
+                                // to stop, but not fail it:
+                                return Poll::Ready(None);
+                            } else {
+                                return Poll::Ready(Some(Err(crate::Error::new_body(e))));
+                            }
                         }
                         None => {
                             *data_done = true;
@@ -198,7 +197,16 @@ impl StreamingBody for Incoming {
                         ping.record_non_data();
                         Poll::Ready(Ok(t.map(Frame::trailers)).transpose())
                     }
-                    Err(e) => Poll::Ready(Some(Err(crate::Error::new_h2(e)))),
+                    Err(e) => {
+                        if e.reason() == Some(h2::Reason::NO_ERROR) {
+                            // Same as above, a RST_STREAM with NO_ERROR indicates an early
+                            // response, and should cause reading the trailers to stop, but
+                            // not fail it:
+                            Poll::Ready(None)
+                        } else {
+                            Poll::Ready(Some(Err(crate::Error::new_h2(e))))
+                        }
+                    }
                 }
             }
         }
@@ -254,7 +262,7 @@ impl Sender {
         ready!(self.poll_want(cx)?);
         self.data_tx
             .poll_ready(cx)
-            .map_err(|_| crate::Error::new_closed())
+            .map_err(|_e| crate::Error::new_closed())
     }
 
     fn poll_want(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
@@ -275,21 +283,21 @@ impl Sender {
 
     /// Send data on data channel when it is ready.
     #[cfg(test)]
-    #[allow(unused)]
+    #[expect(unused)]
     pub(crate) async fn send_data(&mut self, chunk: Bytes) -> crate::Result<()> {
         self.ready().await?;
         self.data_tx
             .try_send(Ok(chunk))
-            .map_err(|_| crate::Error::new_closed())
+            .map_err(|_e| crate::Error::new_closed())
     }
 
     /// Send trailers on trailers channel.
-    #[allow(unused)]
+    #[expect(unused)]
     pub(crate) async fn send_trailers(&mut self, trailers: HeaderMap) -> crate::Result<()> {
         let Some(tx) = self.trailers_tx.take() else {
             return Err(crate::Error::new_closed());
         };
-        tx.send(trailers).map_err(|_| crate::Error::new_closed())
+        tx.send(trailers).map_err(|_e| crate::Error::new_closed())
     }
 
     /// Try to send data on this channel.
@@ -306,7 +314,7 @@ impl Sender {
     /// `send_data()` instead.
     pub(crate) fn try_send_data(&mut self, chunk: Bytes) -> Result<(), Bytes> {
         self.data_tx.try_send(Ok(chunk)).map_err(|err| {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "we only send Ok, so into_inner here is always Ok..."
             )]
@@ -330,9 +338,9 @@ impl Sender {
         self.send_error(crate::Error::new_body_write_aborted());
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_error(&mut self, err: crate::Error) {
-        let _ = self
+        _ = self
             .data_tx
             // clone so the send works even if buffer is full
             .clone()
@@ -394,7 +402,7 @@ mod tests {
 
     #[test]
     fn size_hint() {
-        #[allow(clippy::needless_pass_by_value)]
+        #[expect(clippy::needless_pass_by_value)]
         fn eq(body: Incoming, b: SizeHint, note: &str) {
             let a = body.size_hint();
             assert_eq!(a.lower(), b.lower(), "lower for {note:?}");

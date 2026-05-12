@@ -630,10 +630,10 @@ mod tests {
                     let mut output = String::new();
 
                     if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
-                        let _ = write!(output, "country-{}", countries[0]);
+                        _ = write!(output, "country-{}", countries[0]);
                     }
                     if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
-                        let _ = write!(output, "state-{}", states[0]);
+                        _ = write!(output, "state-{}", states[0]);
                     }
 
                     return (!output.is_empty()).then(|| format!("{username}-{output}"));
@@ -1022,7 +1022,7 @@ mod tests {
                     );
                 }
                 None => {
-                    assert!(proxy_address_result.is_err());
+                    proxy_address_result.unwrap_err();
                 }
             }
         }
@@ -1122,7 +1122,7 @@ mod tests {
                     );
                 }
                 None => {
-                    assert!(proxy_result.is_err());
+                    proxy_result.unwrap_err();
                 }
             }
         }

@@ -119,7 +119,13 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
                     (value, false)
                 }
                 _ => {
-                    unreachable!("we should only ever find a quote or semicolon at this point")
+                    #[expect(
+                        clippy::unreachable,
+                        reason = "the iter::position above only returns indices for `\"`, `;`, or `,`"
+                    )]
+                    {
+                        unreachable!("we should only ever find a quote or semicolon at this point")
+                    }
                 }
             }
         } else {

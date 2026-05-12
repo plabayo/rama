@@ -9,58 +9,51 @@ packages:
     path: ../../../../..
 
 targets:
-  RamaTransparentProxyExampleHost:
+  RamaTransparentProxyExampleContainer:
     type: application
     platform: macOS
     sources:
-      - path: Host
+      - path: Container
+      - path: Shared
     dependencies:
       - target: RamaTransparentProxyExampleExtension
         embed: true
         codeSign: true
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleXpcClient
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev
-        CURRENT_PROJECT_VERSION: 1
-        INFOPLIST_FILE: Host/Info.plist
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
+        INFOPLIST_FILE: Container/Info.plist
         MARKETING_VERSION: 0.1
-        CODE_SIGN_ENTITLEMENTS: Host/Host.entitlements
+        CODE_SIGN_ENTITLEMENTS: Container/Container.entitlements
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: YES
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_HOST_SIGNING_IDENTITY)"
+        CODE_SIGN_IDENTITY: "$(RAMA_TPROXY_CONTAINER_SIGNING_IDENTITY)"
         DEVELOPMENT_TEAM: "$(RAMA_TPROXY_DEVELOPMENT_TEAM)"
-        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_HOST_PROFILE_SPECIFIER)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS:
-          - "$(inherited)"
-          - TPROXY_DEV_IDENTIFIERS
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
     platform: macOS
     sources:
       - path: Extension
-    postBuildScripts:
-      - name: Bump CFBundleVersion
-        script: |
-          VERSION=$(date +%Y%m%d%H%M%S)
-          PLIST="$TARGET_BUILD_DIR/$INFOPLIST_PATH"
-
-          echo "Updating CFBundleVersion in $PLIST to $VERSION"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
-
-          echo "Re-signing $CODESIGNING_FOLDER_PATH"
-          /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$CODESIGNING_FOLDER_PATH"
+      - path: Shared
     dependencies:
       - package: RamaAppleNetworkExtension
         product: RamaAppleNetworkExtension
+      - package: RamaAppleNetworkExtension
+        product: RamaAppleSecureEnclave
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.ramaproxy.example.tproxy.dev.provider
         PRODUCT_NAME: org.ramaproxy.example.tproxy.dev.provider
-        CURRENT_PROJECT_VERSION: 1
+        CURRENT_PROJECT_VERSION: "$(RAMA_TPROXY_CURRENT_PROJECT_VERSION)"
         INFOPLIST_FILE: Extension/Info.plist
         MARKETING_VERSION: 0.1
         CODE_SIGN_ENTITLEMENTS: Extension/Extension.entitlements
@@ -72,6 +65,7 @@ targets:
         PROVISIONING_PROFILE_SPECIFIER: "$(RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER)"
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
+        APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

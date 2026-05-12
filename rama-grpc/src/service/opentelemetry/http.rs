@@ -66,6 +66,7 @@ pub struct HttpExporter<S = ()> {
     temporality: Temporality,
     resource: Arc<ArcSwap<transform::ResourceAttributesWithSchema>>,
     shutdown: Arc<AtomicBool>,
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -112,6 +113,7 @@ impl<S> HttpExporter<S> {
                 transform::ResourceAttributesWithSchema::default(),
             )),
             shutdown: Arc::new(AtomicBool::new(false)),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
 
@@ -225,6 +227,18 @@ impl<S> HttpExporter<S> {
         }
     );
 
+    generate_set_and_with!(
+        /// Override the tokio runtime used to drive each export.
+        ///
+        /// `new` captures `Handle::try_current()` automatically. Use this to
+        /// pin the exporter to a specific runtime, or pass `None` to require
+        /// the caller to provide a tokio context for every `export` call.
+        pub fn runtime(mut self, runtime: Option<tokio::runtime::Handle>) -> Self {
+            self.runtime = runtime;
+            self
+        }
+    );
+
     fn apply_env(&mut self) -> Result<(), OtelExporterConfigError> {
         if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_ENDPOINT)? {
             self.env.base.endpoint = Some(endpoint);
@@ -299,7 +313,7 @@ where
     ) -> Result<Resp, OTelSdkError>
     where
         Req: Message,
-        Resp: Message + Default,
+        Resp: Message + Default + Send + 'static,
     {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
@@ -333,17 +347,29 @@ where
         merge_headers(request.headers_mut(), &config.headers);
 
         let service = self.service.clone();
-        let response_fut = service.serve(request);
-        let response = match config.timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, response_fut).await {
-                Ok(result) => result,
-                Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-            },
-            None => response_fut.await,
-        }
-        .map_err(|err| OTelSdkError::InternalFailure(err.into().to_string()))?;
+        let timeout = config.timeout;
+        let work = async move {
+            let response = match timeout {
+                Some(timeout) => {
+                    match tokio::time::timeout(timeout, service.serve(request)).await {
+                        Ok(result) => result,
+                        Err(_) => return Err(OTelSdkError::Timeout(timeout)),
+                    }
+                }
+                None => service.serve(request).await,
+            }
+            .map_err(|err| OTelSdkError::InternalFailure(err.into().to_string()))?;
 
-        decode_response(response).await
+            decode_response(response).await
+        };
+
+        match self.runtime.as_ref() {
+            Some(handle) => handle
+                .spawn(work)
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?,
+            None => work.await,
+        }
     }
 }
 
@@ -550,7 +576,7 @@ fn env_headers(var: &'static str) -> Result<Option<HeaderMap>, OtelExporterConfi
     };
     let value = value
         .into_string()
-        .map_err(|_| OtelExporterConfigError::new(format!("{var} contains invalid unicode")))?;
+        .map_err(|_e| OtelExporterConfigError::new(format!("{var} contains invalid unicode")))?;
 
     let mut headers = HeaderMap::new();
     for (key, value) in parse_header_string(&value) {
@@ -595,7 +621,7 @@ where
     T::decode(body).map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn encode_body<T>(
     message: T,
     compression: Option<CompressionEncoding>,

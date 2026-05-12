@@ -125,6 +125,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixture: closure is wired up but never invoked on the tested path"
+    )]
+
     use super::*;
 
     use std::{

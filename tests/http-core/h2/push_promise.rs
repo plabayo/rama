@@ -134,7 +134,7 @@ async fn recv_push_when_push_disabled_is_conn_error() {
 
     let (io, mut srv) = mock::new();
     let mock = async move {
-        let _ = srv.assert_client_handshake().await;
+        _ = srv.assert_client_handshake().await;
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://http2.akamai.com/")
@@ -318,7 +318,7 @@ async fn recv_invalid_push_promise_headers_is_stream_protocol_error() {
                 .field(http::header::CONTENT_LENGTH, 0),
         )
         .await;
-        srv.send_frame(frames::headers(1).response(404).eos()).await;
+        srv.send_frame(frames::data(1, "").eos()).await;
         srv.recv_frame(frames::reset(2).protocol_error()).await;
         srv.recv_frame(frames::reset(4).protocol_error()).await;
         srv.send_frame(frames::headers(6).response(200).eos()).await;

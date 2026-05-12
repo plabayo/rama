@@ -16,6 +16,13 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [features]
 # TODO: support nostd
@@ -26,11 +33,16 @@ opentelemetry = [
     "dep:opentelemetry_sdk",
     "dep:tracing-opentelemetry",
 ]
+# Route task spawns through `dial9-tokio-telemetry::spawn` so they pick
+# up wake-event tracking when a `TracedRuntime` is active. Inert when
+# no traced runtime is present. Requires `--cfg tokio_unstable`.
+dial9 = ["dep:dial9-tokio-telemetry"]
 
 [dependencies]
 ahash = { workspace = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
+dial9-tokio-telemetry = { workspace = true, optional = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }

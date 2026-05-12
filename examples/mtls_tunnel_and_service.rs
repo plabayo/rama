@@ -26,6 +26,13 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
 
 // rama provides everything out of the box to build mtls web services and proxies
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     graceful::Shutdown,
@@ -167,7 +174,7 @@ async fn main() {
                     .into_layer(TcpConnector::new(exec.clone())),
             ),
         )
-            .into_layer(IoForwardService::new());
+            .into_layer(IoForwardService::new(exec.clone()));
 
         // L4 Proxy Service
         TcpListener::bind_address(TUNNEL_AUTHORITY, exec)
