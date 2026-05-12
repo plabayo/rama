@@ -69,6 +69,50 @@ impl<T: PartialEq> PartialEq for DomainParentMatch<'_, T> {
 
 impl<T: PartialEq + Eq> Eq for DomainParentMatch<'_, T> {}
 
+/// Rich result of [`DomainTrie::get`].
+///
+/// `value` is the stored value; `kind` says whether the hit was the exact
+/// stored name or a subtree-of match, in which case it also carries the
+/// stored apex (so callers can synthesize the wildcard form via
+/// `apex.try_as_wildcard()` if they need it).
+#[non_exhaustive]
+pub struct DomainMatch<'a, T> {
+    pub value: &'a T,
+    pub kind: MatchKind,
+}
+
+/// Discriminator for [`DomainMatch::kind`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatchKind {
+    /// The query equaled the stored name and an exact entry was registered
+    /// for it.
+    Exact,
+    /// The query was the apex itself or a descendant of it, and a subtree
+    /// entry (`"*.apex"`) was registered for the apex.
+    Subtree {
+        /// The stored apex domain. The wildcard form is
+        /// `apex.try_as_wildcard().unwrap()`.
+        apex: Domain,
+    },
+}
+
+impl<T: fmt::Debug> fmt::Debug for DomainMatch<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DomainMatch")
+            .field("value", &self.value)
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+impl<T: PartialEq> PartialEq for DomainMatch<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.kind == other.kind
+    }
+}
+
+impl<T: PartialEq + Eq> Eq for DomainMatch<'_, T> {}
+
 impl<T> DomainTrie<T> {
     #[inline]
     /// Create a new [`DomainTrie`].
@@ -208,6 +252,44 @@ impl<T> DomainTrie<T> {
                 return None;
             }
             is_exact = false;
+        }
+    }
+
+    /// Look up `domain` and return a [`DomainMatch`] describing the most-
+    /// specific entry that matches it, along with whether the match was
+    /// exact or via a subtree apex.
+    ///
+    /// Same matching rules as [`Self::match_parent`]:
+    /// - exact entries match only their stored name,
+    /// - subtree entries match their apex plus every descendant.
+    ///
+    /// Returns `None` if no entry matches.
+    pub fn get(&self, domain: impl AsDomainRef) -> Option<DomainMatch<'_, T>> {
+        let mut key = reverse_domain(domain.domain_as_str());
+        // Track the "apex" key separately so we can recover the stored apex
+        // domain when we hit a subtree slot.
+        let mut is_first = true;
+        loop {
+            if let Some(node) = self.trie.get(&key) {
+                if is_first && let Some(value) = node.exact.as_ref() {
+                    return Some(DomainMatch {
+                        value,
+                        kind: MatchKind::Exact,
+                    });
+                }
+                if let Some(value) = node.subtree.as_ref() {
+                    return Some(DomainMatch {
+                        value,
+                        kind: MatchKind::Subtree {
+                            apex: reversed_key_to_domain(&key),
+                        },
+                    });
+                }
+            }
+            if !truncate_to_parent(&mut key) {
+                return None;
+            }
+            is_first = false;
         }
     }
 
@@ -495,6 +577,73 @@ mod test {
         // gel.com is NOT a descendant of kegel.com.
         let m2 = DomainTrie::new().with_insert_domain("*.kegel.com", "v");
         assert_eq!(m2.match_parent("gel.com"), None);
+    }
+
+    #[test]
+    fn get_returns_kind_exact_for_exact_entry() {
+        let m = DomainTrie::new().with_insert_domain("example.com", "v");
+        let hit = m.get("example.com").unwrap();
+        assert_eq!(hit.value, &"v");
+        assert_eq!(hit.kind, MatchKind::Exact);
+        assert!(m.get("foo.example.com").is_none());
+    }
+
+    #[test]
+    fn get_returns_kind_subtree_with_apex_for_subtree_entry() {
+        let m = DomainTrie::new().with_insert_domain("*.example.com", "v");
+        let hit_apex = m.get("example.com").unwrap();
+        let hit_child = m.get("a.b.example.com").unwrap();
+        assert_eq!(hit_apex.value, &"v");
+        assert_eq!(
+            hit_apex.kind,
+            MatchKind::Subtree {
+                apex: Domain::from_static("example.com")
+            }
+        );
+        assert_eq!(hit_child.value, &"v");
+        assert_eq!(
+            hit_child.kind,
+            MatchKind::Subtree {
+                apex: Domain::from_static("example.com")
+            }
+        );
+        // And the wildcard form is recoverable.
+        if let MatchKind::Subtree { apex } = &hit_child.kind {
+            assert_eq!(
+                apex.try_as_wildcard().unwrap(),
+                Domain::from_static("*.example.com")
+            );
+        }
+    }
+
+    #[test]
+    fn get_prefers_exact_over_subtree_at_same_name() {
+        let mut m = DomainTrie::new();
+        m.insert_domain("example.com", "exact");
+        m.insert_domain("*.example.com", "subtree");
+        let hit = m.get("example.com").unwrap();
+        assert_eq!(hit.value, &"exact");
+        assert_eq!(hit.kind, MatchKind::Exact);
+        // Descendant still gets subtree.
+        let hit_child = m.get("foo.example.com").unwrap();
+        assert_eq!(hit_child.value, &"subtree");
+        assert!(matches!(hit_child.kind, MatchKind::Subtree { .. }));
+    }
+
+    #[test]
+    fn get_does_not_let_exact_node_shadow_higher_subtree() {
+        let mut m = DomainTrie::new();
+        m.insert_domain("*.example.com", "subtree");
+        m.insert_domain("api.example.com", "exact-deep");
+
+        let hit = m.get("v1.api.example.com").unwrap();
+        assert_eq!(hit.value, &"subtree");
+        assert_eq!(
+            hit.kind,
+            MatchKind::Subtree {
+                apex: Domain::from_static("example.com")
+            }
+        );
     }
 
     #[test]
