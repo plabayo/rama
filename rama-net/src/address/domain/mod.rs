@@ -155,15 +155,24 @@ impl Domain {
             .unwrap_or_default()
     }
 
-    /// Returns the parent of this wildcard domain,
-    /// in case it is indeed a wildcast domain,
-    /// otherwise `None` is returned.
+    /// Returns the parent of this wildcard domain, or `None` if `self` is not
+    /// a wildcard.
     ///
-    /// Use [`Self::is_wildcard`] if you just wish to check
-    /// it is is a wildcard domain, as it is cheaper to use.
+    /// Equivalent to [`DomainLabels::parent`] when [`Self::is_wildcard`].
+    /// Use [`Self::is_wildcard`] alone if you only need the predicate; it
+    /// doesn't allocate.
     #[must_use]
     pub fn as_wildcard_parent(&self) -> Option<Self> {
-        self.0.strip_prefix("*.").map(|s| Self(s.into()))
+        let mut it = self.labels();
+        let first = it.next()?;
+        if !first.is_wildcard() {
+            return None;
+        }
+        // Use the trait's `parent`-style rebuild via the builder so the result
+        // is a properly-validated Domain (no string slicing).
+        let mut b = DomainBuilder::with_capacity(self.0.len());
+        b.push_labels(it).ok()?;
+        b.try_finish().ok()
     }
 
     /// Try to create a subdomain from the current [`Domain`] with the given
@@ -196,35 +205,48 @@ impl Domain {
     }
 
     /// Try to strip the subdomain (prefix) from the current domain.
+    ///
+    /// `prefix` is matched label-by-label, case-insensitively. Returns
+    /// `Some(remainder)` if every label of `prefix` matches the corresponding
+    /// leftmost label of `self` and at least one label remains; otherwise
+    /// `None`.
+    ///
+    /// # Behavior note
+    ///
+    /// Prior to the move to label-based matching, this performed a raw
+    /// case-sensitive string `strip_prefix`. The current implementation is
+    /// label-aware and case-insensitive, which is consistent with the rest
+    /// of the type (Eq/Hash/Ord are also case-insensitive).
     pub fn strip_sub(&self, prefix: impl AsDomainRef) -> Option<Self> {
-        self.0
-            .strip_prefix(prefix.domain_as_str())
-            .and_then(|s| s.trim_start_matches('.').parse().ok())
+        let prefix_str = prefix.domain_as_str();
+        let mut self_labels = self.labels();
+        // Walk the prefix label-by-label.
+        for prefix_seg in dotted_segments(prefix_str) {
+            let self_label = self_labels.next()?;
+            if !self_label.as_str().eq_ignore_ascii_case(prefix_seg) {
+                return None;
+            }
+        }
+        // The remaining labels must form a non-empty domain.
+        let remaining: Vec<&Label> = self_labels.collect();
+        if remaining.is_empty() {
+            return None;
+        }
+        let mut b = DomainBuilder::with_capacity(self.0.len());
+        b.push_labels(remaining).ok()?;
+        b.try_finish().ok()
     }
 
-    /// Returns `true` if this [`Domain`] is a parent of the other.
+    /// Returns `true` if `self` is a sub-domain of (or equal to) `other`.
     ///
-    /// Note that a [`Domain`] is a sub of itself.
+    /// Pure delegation to [`DomainLabels::is_subdomain_of`]; kept as an
+    /// inherent method for source-compat.
     #[must_use]
     pub fn is_sub_of(&self, other: &Self) -> bool {
-        let a = self.as_ref().trim_matches('.');
-        let b = other.as_ref().trim_matches('.');
-        match a.len().cmp(&b.len()) {
-            Ordering::Equal => a.eq_ignore_ascii_case(b),
-            Ordering::Greater => {
-                let n = a.len() - b.len();
-                let dot_char = a.chars().nth(n - 1);
-                let host_parent = &a[n..];
-                dot_char == Some('.') && b.eq_ignore_ascii_case(host_parent)
-            }
-            Ordering::Less => false,
-        }
+        <Self as DomainLabels>::is_subdomain_of(self, other)
     }
 
-    #[inline]
-    /// Returns `true` if this [`Domain`] is a subdomain of the other.
-    ///
-    /// Note that a [`Domain`] is a sub of itself.
+    /// Returns `true` if `self` is a parent of (or equal to) `other`.
     #[must_use]
     pub fn is_parent_of(&self, other: &Self) -> bool {
         other.is_sub_of(self)
@@ -1025,12 +1047,21 @@ mod tests {
             ("www.example.com", "www", Some("example.com")),
             ("example.com", "www", None),
             ("www.www.example.com", "www", Some("www.example.com")),
+            // Multi-label prefix.
+            ("a.b.example.com", "a.b", Some("example.com")),
+            ("a.b.example.com", "a.x", None),
+            // Stripping the entire domain returns None (no labels remain).
+            ("example.com", "example.com", None),
+            // Case-insensitive matching (behavior change in this PR; aligns
+            // with Eq/Hash/Ord, which are also case-insensitive).
+            ("WWW.example.com", "www", Some("example.com")),
+            ("www.example.com", "WWW", Some("example.com")),
         ];
         for (sub_raw, prefix, expected_output) in test_cases.into_iter() {
             let sub = Domain::from_static(sub_raw);
             let result = sub.strip_sub(prefix);
             let expected_result = expected_output.map(Domain::from_static);
-            assert_eq!(expected_result, result);
+            assert_eq!(expected_result, result, "sub={sub_raw} prefix={prefix}");
         }
     }
 
