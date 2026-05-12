@@ -42,7 +42,7 @@ impl SubdomainTrieMatcher {
 
     // Returns true if a domain is a subdomain of any domain lineage in this [`SubdomainTrieMatcher`].
     pub fn is_match(&self, domain: impl AsDomainRef) -> bool {
-        self.trie.is_match_parent(domain)
+        self.trie.is_match(domain)
     }
 }
 

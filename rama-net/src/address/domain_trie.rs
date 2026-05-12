@@ -45,30 +45,6 @@ impl<T> Default for DomainTrie<T> {
     }
 }
 
-/// Result of [`DomainTrie::match_parent`].
-#[non_exhaustive]
-pub struct DomainParentMatch<'a, T> {
-    pub value: &'a T,
-    pub is_exact: bool,
-}
-
-impl<T: fmt::Debug> fmt::Debug for DomainParentMatch<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DomainParentMatch")
-            .field("value", &self.value)
-            .field("is_exact", &self.is_exact)
-            .finish()
-    }
-}
-
-impl<T: PartialEq> PartialEq for DomainParentMatch<'_, T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.value == other.value && self.is_exact == other.is_exact
-    }
-}
-
-impl<T: PartialEq + Eq> Eq for DomainParentMatch<'_, T> {}
-
 /// Rich result of [`DomainTrie::get`].
 ///
 /// `value` is the stored value; `kind` says whether the hit was the exact
@@ -217,53 +193,23 @@ impl<T> DomainTrie<T> {
     }
 
     #[inline]
-    /// Returns true if the input domain matches at least one entry in this
-    /// trie (exact entry on exact key, or subtree entry on ancestor).
-    pub fn is_match_parent(&self, domain: impl AsDomainRef) -> bool {
-        self.match_parent(domain).is_some()
-    }
-
-    /// Returns the value for the most-specific entry that matches `domain`.
+    /// Returns `true` if `domain` matches at least one entry in this trie.
     ///
-    /// "Matches" is mode-aware:
-    /// - An **exact** entry at name `N` matches only the query `N`.
-    /// - A **subtree** entry at name `N` matches `N` and every descendant.
-    ///
-    /// `is_exact` on the returned [`DomainParentMatch`] is `true` iff the
-    /// query equals the stored name.
-    pub fn match_parent(&self, domain: impl AsDomainRef) -> Option<DomainParentMatch<'_, T>> {
-        let mut key = reverse_domain(domain.domain_as_str());
-        let mut is_exact = true;
-        loop {
-            if let Some(node) = self.trie.get(&key) {
-                let slot = if is_exact {
-                    node.exact.as_ref().or(node.subtree.as_ref())
-                } else {
-                    node.subtree.as_ref()
-                };
-                if let Some(value) = slot {
-                    return Some(DomainParentMatch { value, is_exact });
-                }
-            }
-            // Truncate to the next ancestor by dropping the rightmost label.
-            // key looks like "com.example.foo." — drop trailing "." then
-            // everything after the previous ".".
-            if !truncate_to_parent(&mut key) {
-                return None;
-            }
-            is_exact = false;
-        }
+    /// Shortcut for `self.get(domain).is_some()`.
+    pub fn is_match(&self, domain: impl AsDomainRef) -> bool {
+        self.get(domain).is_some()
     }
 
     /// Look up `domain` and return a [`DomainMatch`] describing the most-
     /// specific entry that matches it, along with whether the match was
     /// exact or via a subtree apex.
     ///
-    /// Same matching rules as [`Self::match_parent`]:
-    /// - exact entries match only their stored name,
-    /// - subtree entries match their apex plus every descendant.
+    /// Matching rules:
+    /// - **Exact** entries match only their stored name.
+    /// - **Subtree** entries match their apex plus every descendant.
     ///
-    /// Returns `None` if no entry matches.
+    /// For exact-only lookups, use
+    /// `get(d).filter(|m| matches!(m.kind, MatchKind::Exact))`.
     pub fn get(&self, domain: impl AsDomainRef) -> Option<DomainMatch<'_, T>> {
         let mut key = reverse_domain(domain.domain_as_str());
         // Track the "apex" key separately so we can recover the stored apex
@@ -293,15 +239,11 @@ impl<T> DomainTrie<T> {
         }
     }
 
-    #[inline]
-    /// Returns `true` if `domain` is stored as an exact (or subtree-apex)
-    /// entry in this trie.
-    pub fn is_match_exact(&self, domain: impl AsDomainRef) -> bool {
-        self.match_exact(domain).is_some()
-    }
-
     /// Returns the value stored for the exact `domain` (either its
     /// `exact` slot, or its `subtree` slot if `exact` is unset).
+    ///
+    /// Single-key direct lookup — not the same as [`Self::get`], which
+    /// walks ancestors.
     pub fn match_exact(&self, domain: impl AsDomainRef) -> Option<&T> {
         let key = reverse_domain(domain.domain_as_str());
         self.trie
@@ -425,47 +367,50 @@ mod test {
         assert_eq!(reverse_domain(""), ".");
     }
 
+    fn exact_match<'a>(value: &'a &'static str) -> DomainMatch<'a, &'static str> {
+        DomainMatch {
+            value,
+            kind: MatchKind::Exact,
+        }
+    }
+
+    fn subtree_match<'a>(
+        value: &'a &'static str,
+        apex: &'static str,
+    ) -> DomainMatch<'a, &'static str> {
+        DomainMatch {
+            value,
+            kind: MatchKind::Subtree {
+                apex: Domain::from_static(apex),
+            },
+        }
+    }
+
     #[test]
     fn exact_does_not_match_descendants() {
         // Bare insert is exact-only.
         let m = DomainTrie::new().with_insert_domain("example.com", "v");
-        assert_eq!(
-            m.match_parent("example.com"),
-            Some(DomainParentMatch {
-                value: &"v",
-                is_exact: true
-            })
-        );
-        assert_eq!(m.match_parent("foo.example.com"), None);
-        assert_eq!(m.match_parent("bar.foo.example.com"), None);
+        assert_eq!(m.get("example.com"), Some(exact_match(&"v")));
+        assert!(m.get("foo.example.com").is_none());
+        assert!(m.get("bar.foo.example.com").is_none());
     }
 
     #[test]
     fn wildcard_matches_apex_and_descendants() {
-        // Wildcard input *.x stores subtree at x.
         let m = DomainTrie::new().with_insert_domain("*.example.com", "v");
         assert_eq!(
-            m.match_parent("example.com"),
-            Some(DomainParentMatch {
-                value: &"v",
-                is_exact: true
-            })
+            m.get("example.com"),
+            Some(subtree_match(&"v", "example.com"))
         );
         assert_eq!(
-            m.match_parent("foo.example.com"),
-            Some(DomainParentMatch {
-                value: &"v",
-                is_exact: false
-            })
+            m.get("foo.example.com"),
+            Some(subtree_match(&"v", "example.com"))
         );
         assert_eq!(
-            m.match_parent("a.b.example.com"),
-            Some(DomainParentMatch {
-                value: &"v",
-                is_exact: false
-            })
+            m.get("a.b.example.com"),
+            Some(subtree_match(&"v", "example.com"))
         );
-        assert_eq!(m.match_parent("example.org"), None);
+        assert!(m.get("example.org").is_none());
     }
 
     #[test]
@@ -474,48 +419,24 @@ mod test {
         m.insert_domain("example.com", "exact");
         m.insert_domain("*.example.com", "subtree");
 
-        // exact-key query prefers the exact slot
+        assert_eq!(m.get("example.com"), Some(exact_match(&"exact")));
         assert_eq!(
-            m.match_parent("example.com"),
-            Some(DomainParentMatch {
-                value: &"exact",
-                is_exact: true
-            })
-        );
-        // descendant query falls back to subtree
-        assert_eq!(
-            m.match_parent("foo.example.com"),
-            Some(DomainParentMatch {
-                value: &"subtree",
-                is_exact: false
-            })
+            m.get("foo.example.com"),
+            Some(subtree_match(&"subtree", "example.com"))
         );
     }
 
     #[test]
     fn deepest_exact_does_not_shadow_higher_subtree() {
-        // The radix_trie quirk: an exact-only deeper node should not block
-        // a subtree match higher up.
         let mut m = DomainTrie::new();
         m.insert_domain("*.example.com", "subtree");
         m.insert_domain("api.example.com", "exact-deep");
 
-        // Direct exact hit:
+        assert_eq!(m.get("api.example.com"), Some(exact_match(&"exact-deep")));
+        // Descendant of the exact-only node — falls back to subtree higher up.
         assert_eq!(
-            m.match_parent("api.example.com"),
-            Some(DomainParentMatch {
-                value: &"exact-deep",
-                is_exact: true
-            })
-        );
-        // Descendant of the exact-only node — should NOT match the
-        // exact-deep value; must fall back to the subtree higher up.
-        assert_eq!(
-            m.match_parent("v1.api.example.com"),
-            Some(DomainParentMatch {
-                value: &"subtree",
-                is_exact: false
-            })
+            m.get("v1.api.example.com"),
+            Some(subtree_match(&"subtree", "example.com"))
         );
     }
 
@@ -526,26 +447,29 @@ mod test {
             .with_insert_domain("*.bar.example.com", "inner");
 
         assert_eq!(
-            m.match_parent("foo.bar.example.com"),
-            Some(DomainParentMatch {
-                value: &"inner",
-                is_exact: false
-            })
+            m.get("foo.bar.example.com"),
+            Some(subtree_match(&"inner", "bar.example.com"))
         );
         assert_eq!(
-            m.match_parent("bar.example.com"),
-            Some(DomainParentMatch {
-                value: &"inner",
-                is_exact: true
-            })
+            m.get("bar.example.com"),
+            Some(subtree_match(&"inner", "bar.example.com"))
         );
         assert_eq!(
-            m.match_parent("baz.example.com"),
-            Some(DomainParentMatch {
-                value: &"outer",
-                is_exact: false
-            })
+            m.get("baz.example.com"),
+            Some(subtree_match(&"outer", "example.com"))
         );
+    }
+
+    #[test]
+    fn is_match_shortcut() {
+        let m = DomainTrie::new()
+            .with_insert_domain("example.com", "v1")
+            .with_insert_domain("*.other.com", "v2");
+        assert!(m.is_match("example.com"));
+        assert!(!m.is_match("foo.example.com"));
+        assert!(m.is_match("other.com"));
+        assert!(m.is_match("any.thing.other.com"));
+        assert!(!m.is_match("nope.org"));
     }
 
     #[test]
@@ -565,15 +489,12 @@ mod test {
         let m = DomainTrie::new().with_insert_domain("*.example.com", "v");
         // bazfoo.bar.example.com is a descendant of example.com — should match.
         assert_eq!(
-            m.match_parent("bazfoo.bar.example.com"),
-            Some(DomainParentMatch {
-                value: &"v",
-                is_exact: false
-            })
+            m.get("bazfoo.bar.example.com"),
+            Some(subtree_match(&"v", "example.com"))
         );
         // gel.com is NOT a descendant of kegel.com.
         let m2 = DomainTrie::new().with_insert_domain("*.kegel.com", "v");
-        assert_eq!(m2.match_parent("gel.com"), None);
+        assert!(m2.get("gel.com").is_none());
     }
 
     #[test]
