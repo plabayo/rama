@@ -169,8 +169,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = ".", default-features = false }
-rama-boring = { version = "0.6.0", default-features = false }
-rama-boring-tokio = { version = "0.6.0", default-features = false }
+rama-boring = { version = "0.6.1", default-features = false }
+rama-boring-tokio = { version = "0.6.1", default-features = false }
 rama-core = { version = "0.3.0-rc1", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns", default-features = false }
