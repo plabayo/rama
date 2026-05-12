@@ -2,10 +2,10 @@ use std::convert::Infallible;
 
 use rama::{
     Service,
-    service::StaticOutput,
     http::{
-        Request, Response, service::web::response::Html, layer::into_response::IntoResponseService,
+        Request, Response, layer::into_response::IntoResponseService, service::web::response::Html,
     },
+    service::StaticOutput,
 };
 
 pub(in crate::cmd::serve::httptest) fn service()

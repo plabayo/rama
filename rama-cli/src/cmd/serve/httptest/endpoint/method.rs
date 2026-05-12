@@ -1,4 +1,4 @@
-use rama::http::{Method, StatusCode, service::web::response::IntoResponse, Response};
+use rama::http::{Method, Response, StatusCode, service::web::response::IntoResponse};
 
 pub(in crate::cmd::serve::httptest) async fn handler(method: Method) -> Response {
     if method == Method::CONNECT {

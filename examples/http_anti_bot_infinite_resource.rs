@@ -29,7 +29,6 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer, Service,
-    layer::ArcLayer,
     conversion::FromRef,
     error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
@@ -37,8 +36,8 @@ use rama::{
         InfiniteReader,
         headers::ContentType,
         layer::{
-            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
-            error_handling::ErrorHandlerLayer,
+            error_handling::ErrorHandlerLayer, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::web::{
@@ -50,7 +49,7 @@ use rama::{
             },
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{ArcLayer, ConsumeErrLayer},
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},

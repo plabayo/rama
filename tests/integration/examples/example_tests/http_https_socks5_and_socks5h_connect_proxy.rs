@@ -3,14 +3,14 @@ use std::time::Duration;
 use super::utils;
 
 use rama::{
-    Service, Layer,
-    layer::ArcLayer,
+    Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
-        service::web::Router, layer::error_handling::ErrorHandlerLayer,
+        Body, BodyExtractExt, Request, client::EasyHttpWebClient,
+        layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
     },
+    layer::ArcLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},

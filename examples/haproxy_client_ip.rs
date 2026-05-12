@@ -25,7 +25,6 @@
 use rama::{
     Layer,
     error::ErrorContext,
-    layer::ArcLayer,
     extensions::ExtensionsRef,
     http::{
         Request, StatusCode,
@@ -35,6 +34,7 @@ use rama::{
         server::HttpServer,
         service::web::{Router, response::ErrorResponse},
     },
+    layer::ArcLayer,
     net::{forwarded::Forwarded, stream::SocketInfo},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,

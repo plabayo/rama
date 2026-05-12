@@ -34,7 +34,6 @@
 
 use rama::{
     Layer, Service,
-    service::StaticOutput,
     extensions::{ExtensionsRef, InputExtensions},
     http::{
         Body, Request, Response, StatusCode,
@@ -60,6 +59,7 @@ use rama::{
         server::{LazyConnector, Socks5PeekRouter},
     },
     rt::Executor,
+    service::StaticOutput,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{

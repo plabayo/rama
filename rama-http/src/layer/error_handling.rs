@@ -47,15 +47,15 @@
 //! ```
 
 use crate::service::web::{
-    response::{ErrorResponse, IntoResponse},
     error::DowncastResponseError,
+    response::{ErrorResponse, IntoResponse},
 };
 use crate::{Request, Response};
+use http::StatusCode;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
 use std::error::Error;
-use http::StatusCode;
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.
 #[derive(Debug, Clone)]

@@ -21,22 +21,22 @@
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     bytes::Bytes,
     extensions::ExtensionsRef,
     http::{
         header,
         layer::{
             compression::CompressionLayer,
+            error_handling::ErrorHandlerLayer,
             sensitive_headers::{
                 SetSensitiveRequestHeadersLayer, SetSensitiveResponseHeadersLayer,
             },
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
-            error_handling::ErrorHandlerLayer,
         },
         server::HttpServer,
         service::web::{IntoEndpointService, response::Html},
     },
+    layer::ArcLayer,
     layer::{TimeoutLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,

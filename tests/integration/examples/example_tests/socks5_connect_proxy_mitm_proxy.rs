@@ -6,12 +6,12 @@ use super::utils;
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     error::{BoxError, ErrorContext},
     http::{
-        BodyExtractExt, server::HttpServer, service::web::Router,
-        layer::error_handling::ErrorHandlerLayer,
+        BodyExtractExt, layer::error_handling::ErrorHandlerLayer, server::HttpServer,
+        service::web::Router,
     },
+    layer::ArcLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},

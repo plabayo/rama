@@ -45,7 +45,7 @@ use rama::{
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
-        layer::{trace::TraceLayer, error_handling::ErrorHandler},
+        layer::{error_handling::ErrorHandler, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,

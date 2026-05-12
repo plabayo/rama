@@ -22,12 +22,12 @@
 
 use rama::{
     Layer as _, Service,
-    layer::ArcLayer,
     extensions::ExtensionsRef,
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
-        service::web::Router, layer::error_handling::ErrorHandlerLayer,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer,
+        layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
     },
+    layer::ArcLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},

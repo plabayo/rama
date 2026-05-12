@@ -1,10 +1,10 @@
 use rama::{
-    layer::ArcLayer,
     extensions::Extensions,
     http::{
         client::EasyHttpWebClient, headers::SecWebSocketProtocol,
-        ws::handshake::client::HttpClientWebSocketExt, layer::error_handling::ErrorHandlerLayer,
+        layer::error_handling::ErrorHandlerLayer, ws::handshake::client::HttpClientWebSocketExt,
     },
+    layer::ArcLayer,
     net::address::HostWithPort,
     rt::Executor,
     tcp::client::default_tcp_connect,

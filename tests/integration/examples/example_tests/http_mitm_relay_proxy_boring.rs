@@ -13,8 +13,8 @@ use rama::{
         client::proxy::layer::SetProxyAuthHttpHeaderLayer,
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
-        layer::retry::{ManagedPolicy, RetryLayer},
         layer::error_handling::ErrorHandlerLayer,
+        layer::retry::{ManagedPolicy, RetryLayer},
         server::HttpServer,
         service::client::HttpClientExt as _,
         service::web::{
@@ -22,7 +22,7 @@ use rama::{
             response::{Headers, IntoResponse as _, Json},
         },
     },
-    layer::{ConsumeErrLayer, ArcLayer},
+    layer::{ArcLayer, ConsumeErrLayer},
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
     tcp::server::TcpListener,

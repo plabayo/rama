@@ -150,7 +150,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::Uri;
-    use crate::{service::web::IntoEndpointService, layer::into_response::IntoResponseService};
+    use crate::{layer::into_response::IntoResponseService, service::web::IntoEndpointService};
     use rama_http_headers::HeaderMapExt;
     use rama_net::http::uri::UriMatchReplaceRule;
 

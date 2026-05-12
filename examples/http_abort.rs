@@ -27,8 +27,8 @@ use rama::{
         StatusCode,
         headers::exotic::XClacksOverhead,
         layer::{
-            set_header::SetResponseHeaderLayer, trace::TraceLayer,
-            error_handling::ErrorHandlerLayer,
+            error_handling::ErrorHandlerLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::web::Router,

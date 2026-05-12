@@ -21,12 +21,12 @@ use rama::{
     extensions::Extensions,
     http::{
         HeaderName,
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::{
             IntoEndpointService,
             response::{IntoResponse, Json},
         },
-        layer::error_handling::ErrorHandlerLayer,
     },
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer},
 };

@@ -28,7 +28,7 @@ use rama::{
     Layer,
     futures::async_stream::stream_fn,
     http::{
-        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{

@@ -13,13 +13,13 @@
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     http::{
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
-        layer::error_handling::ErrorHandlerLayer,
     },
+    layer::ArcLayer,
     layer::ConsumeErrLayer,
     rt::Executor,
     tcp::server::TcpListener,

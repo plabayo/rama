@@ -14,8 +14,8 @@ use crate::{
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::set_header::SetResponseHeaderLayer,
         layer::{
-            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer, into_response::IntoResponseService,
+            forwarded::GetForwardedHeaderLayer, into_response::IntoResponseService,
+            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
         },
         server::HttpServer,
         service::{
@@ -25,10 +25,10 @@ use crate::{
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    service::StaticOutput,
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    service::StaticOutput,
     tcp::TcpStream,
     telemetry::tracing,
     ua::layer::classifier::UserAgentClassifierLayer,

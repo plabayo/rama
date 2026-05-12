@@ -29,12 +29,11 @@
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     error::{BoxError, ErrorContext},
     futures::async_stream::stream_fn,
     http::{
         headers::LastEventId,
-        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
@@ -46,6 +45,7 @@ use rama::{
             server::{KeepAlive, KeepAliveStream},
         },
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,

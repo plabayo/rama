@@ -25,7 +25,7 @@ use rama::{
     graceful::Shutdown,
     http::{
         headers::StrictTransportSecurity,
-        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         layer::{
             required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
         },

@@ -21,18 +21,18 @@
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     futures::{StreamExt as _, async_stream::stream_fn},
     http::{
         Body,
         headers::ContentType,
-        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
             response::{Headers, IntoResponse},
         },
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     rt::Executor,
     stream::json::JsonWriteStream,

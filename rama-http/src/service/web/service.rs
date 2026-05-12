@@ -1,5 +1,6 @@
 use crate::{
     Body, Request, Response, StatusCode,
+    layer::error_handling::ErrorHandlerLayer,
     matcher::HttpMatcher,
     mime::Mime,
     service::{
@@ -9,16 +10,15 @@ use crate::{
         },
     },
     uri::try_to_strip_path_prefix_from_uri,
-    layer::error_handling::ErrorHandlerLayer,
 };
 
 use rama_core::{
+    Layer,
     extensions::Extensions,
     extensions::ExtensionsRef,
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
     telemetry::tracing,
-    Layer,
 };
 use rama_http_types::OriginalRouterUri;
 use rama_utils::{include_dir, str::arcstr::ArcStr};

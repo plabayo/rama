@@ -25,14 +25,13 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
-    layer::ArcLayer,
     http::{
         StatusCode,
         body::ZipBomb,
         headers::UserAgent,
         layer::{
-            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
-            error_handling::ErrorHandlerLayer,
+            error_handling::ErrorHandlerLayer, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::web::{
@@ -41,6 +40,7 @@ use rama::{
             response::{Html, IntoResponse},
         },
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,

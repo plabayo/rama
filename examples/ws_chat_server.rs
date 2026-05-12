@@ -17,18 +17,18 @@
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     extensions::{Extension, ExtensionsRef},
     http::{
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::{
             Message, ProtocolError,
             handshake::server::{ServerWebSocket, WebSocketAcceptor},
         },
-        layer::error_handling::ErrorHandlerLayer,
     },
     layer::AddInputExtensionLayer,
+    layer::ArcLayer,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -41,7 +41,7 @@ use rama::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::{time::Duration, convert::Infallible};
+use std::{convert::Infallible, time::Duration};
 use tokio::sync::broadcast;
 
 #[tokio::main]

@@ -4,7 +4,6 @@ use super::utils;
 
 use rama::{
     Layer,
-    layer::ArcLayer,
     bytes::Bytes,
     extensions::Extensions,
     futures::{StreamExt as _, async_stream::stream_fn},
@@ -14,8 +13,8 @@ use rama::{
         client::proxy::layer::SetProxyAuthHttpHeaderLayer,
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
-        layer::retry::{ManagedPolicy, RetryLayer},
         layer::error_handling::ErrorHandlerLayer,
+        layer::retry::{ManagedPolicy, RetryLayer},
         matcher::HttpMatcher,
         server::HttpServer,
         service::client::HttpClientExt as _,
@@ -25,6 +24,7 @@ use rama::{
         },
         ws::handshake::{matcher::WebSocketMatcher, server::WebSocketAcceptor},
     },
+    layer::ArcLayer,
     layer::ConsumeErrLayer,
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
@@ -134,24 +134,26 @@ async fn test_http_mitm_proxy() {
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
-        http_tp.service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
-            Router::new()
-                .with_match_route(
-                    "/echo",
-                    HttpMatcher::custom(WebSocketMatcher::new()),
-                    ConsumeErrLayer::trace_as_debug().into_layer(
-                        WebSocketAcceptor::new()
-                            .with_per_message_deflate_overwrite_extensions()
-                            .into_echo_service(),
-                    ),
-                )
-                .with_get("/{*any}", async |req: Request| {
-                    Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    }))
-                }),
-        )),
+        http_tp.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                Router::new()
+                    .with_match_route(
+                        "/echo",
+                        HttpMatcher::custom(WebSocketMatcher::new()),
+                        ConsumeErrLayer::trace_as_debug().into_layer(
+                            WebSocketAcceptor::new()
+                                .with_per_message_deflate_overwrite_extensions()
+                                .into_echo_service(),
+                        ),
+                    )
+                    .with_get("/{*any}", async |req: Request| {
+                        Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                    }),
+            ),
+        ),
     );
 
     tokio::spawn(async {

@@ -44,16 +44,16 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Layer, Service,
-    layer::ArcLayer,
     error::{BoxError, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     http::{
-        layer::{trace::TraceLayer, error_handling::ErrorHandlerLayer},
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::Router,
     },
     io::Io,
+    layer::ArcLayer,
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,

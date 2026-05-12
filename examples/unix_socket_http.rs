@@ -24,10 +24,10 @@
 mod unix_example {
     use rama::{
         Layer,
-        layer::ArcLayer,
         http::{
-            server::HttpServer, service::web::Router, layer::error_handling::ErrorHandlerLayer,
+            layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
         },
+        layer::ArcLayer,
         rt::Executor,
         telemetry::tracing::{
             self,
