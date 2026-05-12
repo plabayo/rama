@@ -139,9 +139,7 @@ pub fn self_signed_server_auth_gen_cert(
             .append_extension(auth_key_identifier.as_ref())
             .context("x509 cert builder: set auth key id extension")?;
     } else {
-        tracing::debug!(
-            "skipping AuthorityKeyIdentifier emission: CA has no SubjectKeyIdentifier"
-        );
+        tracing::debug!("skipping AuthorityKeyIdentifier emission: CA has no SubjectKeyIdentifier");
     }
 
     cert_builder
