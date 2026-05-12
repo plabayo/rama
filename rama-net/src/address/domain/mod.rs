@@ -1,6 +1,6 @@
 use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 use rama_utils::str::smol_str::{SmolStr, format_smolstr};
-use std::{cmp::Ordering, fmt, iter::repeat};
+use std::{cmp::Ordering, fmt};
 
 use super::Host;
 
@@ -280,11 +280,12 @@ impl Domain {
 
 impl std::hash::Hash for Domain {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let this = self.as_ref();
-        let this = this.strip_prefix('.').unwrap_or(this);
-        for b in this.bytes() {
-            let b = b.to_ascii_lowercase();
-            b.hash(state);
+        // Delegate to per-label hashing so the impl is consistent with
+        // PartialEq/Ord (both derived from label iteration). Label::hash is
+        // length-prefixed + ASCII-case-folded, so leading/trailing FQDN dots
+        // (normalized away by `labels()`) and case differences vanish.
+        for label in self.labels() {
+            label.hash(state);
         }
     }
 }
@@ -349,27 +350,19 @@ impl TryFrom<Vec<u8>> for Domain {
     }
 }
 
+/// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
+///
+/// Single source of truth for the `Domain`↔`str` normalization rules that
+/// used to live duplicated across `Hash`, `cmp_domain`, and
+/// `partial_eq_domain`.
+fn normalized_bytes(s: &str) -> impl Iterator<Item = u8> + '_ {
+    let s = s.strip_prefix('.').unwrap_or(s);
+    let s = s.strip_suffix('.').unwrap_or(s);
+    s.bytes().map(|b| b.to_ascii_lowercase())
+}
+
 fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
-    let a = a.as_ref();
-    let a = a.strip_prefix('.').unwrap_or(a);
-    let a = a.bytes().map(Some).chain(repeat(None));
-
-    let b = b.as_ref();
-    let b = b.strip_prefix('.').unwrap_or(b);
-    let b = b.bytes().map(Some).chain(repeat(None));
-
-    a.zip(b)
-        .find_map(|(a, b)| match (a, b) {
-            (Some(a), Some(b)) => match a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()) {
-                Ordering::Greater => Some(Ordering::Greater),
-                Ordering::Less => Some(Ordering::Less),
-                Ordering::Equal => None,
-            },
-            (Some(_), None) => Some(Ordering::Greater),
-            (None, Some(_)) => Some(Ordering::Less),
-            (None, None) => Some(Ordering::Equal),
-        })
-        .unwrap_or(Ordering::Equal)
+    normalized_bytes(a.as_ref()).cmp(normalized_bytes(b.as_ref()))
 }
 
 impl PartialOrd<Self> for Domain {
@@ -380,7 +373,10 @@ impl PartialOrd<Self> for Domain {
 
 impl Ord for Domain {
     fn cmp(&self, other: &Self) -> Ordering {
-        cmp_domain(self, other)
+        // Equivalent to `cmp_domain(self, other)` byte-for-byte (labels are
+        // dot-separated normalized segments) but expressed through the
+        // structural abstraction so the invariant is visible in code.
+        self.labels().cmp(other.labels())
     }
 }
 
@@ -424,18 +420,12 @@ impl PartialOrd<Domain> for String {
 }
 
 fn partial_eq_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> bool {
-    let a = a.as_ref();
-    let a = a.strip_prefix('.').unwrap_or(a);
-
-    let b = b.as_ref();
-    let b = b.strip_prefix('.').unwrap_or(b);
-
-    a.eq_ignore_ascii_case(b)
+    normalized_bytes(a.as_ref()).eq(normalized_bytes(b.as_ref()))
 }
 
 impl PartialEq<Self> for Domain {
     fn eq(&self, other: &Self) -> bool {
-        partial_eq_domain(self, other)
+        self.labels().eq(other.labels())
     }
 }
 
@@ -893,6 +883,11 @@ mod tests {
             (".example.com", ".example.com"),
             (".example.com", "example.com"),
             ("example.com", ".example.com"),
+            // FQDN trailing dot normalized away
+            ("example.com", "example.com."),
+            ("example.com.", "example.com"),
+            (".example.com.", "example.com"),
+            (".example.com", "example.com."),
         ];
         for (a, b) in test_cases.into_iter() {
             assert_eq!(Domain::from_static(a), b);
@@ -945,7 +940,6 @@ mod tests {
     fn is_not_equal() {
         let test_cases = vec![
             ("example.com", "localhost"),
-            ("example.com", "example.com."),
             ("example.com", "example.co"),
             ("example.com", "examine.com"),
             ("example.com", "example.com.us"),
@@ -969,7 +963,9 @@ mod tests {
             (".example.com", "example.com", Ordering::Equal),
             ("example.com", ".example.com", Ordering::Equal),
             ("example.com", "localhost", Ordering::Less),
-            ("example.com", "example.com.", Ordering::Less),
+            // FQDN trailing dot normalized away
+            ("example.com", "example.com.", Ordering::Equal),
+            ("example.com.", "example.com", Ordering::Equal),
             ("example.com", "example.co", Ordering::Greater),
             ("example.com", "examine.com", Ordering::Greater),
             ("example.com", "example.com.us", Ordering::Less),
@@ -1012,10 +1008,12 @@ mod tests {
         assert!(m.contains_key(&Domain::from_static("EXAMPLE.COM")));
         assert!(m.contains_key(&Domain::from_static(".example.com")));
         assert!(m.contains_key(&Domain::from_static(".example.COM")));
+        // FQDN trailing dot normalized away — same key
+        assert!(m.contains_key(&Domain::from_static("example.com.")));
+        assert!(m.contains_key(&Domain::from_static(".example.com.")));
 
         assert!(!m.contains_key(&Domain::from_static("www.example.com")));
         assert!(!m.contains_key(&Domain::from_static("examine.com")));
-        assert!(!m.contains_key(&Domain::from_static("example.com.")));
         assert!(!m.contains_key(&Domain::from_static("example.co")));
         assert!(!m.contains_key(&Domain::from_static("example.commerce")));
     }
