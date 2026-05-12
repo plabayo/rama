@@ -1,5 +1,5 @@
 use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
-use rama_utils::str::smol_str::{SmolStr, format_smolstr};
+use rama_utils::str::smol_str::SmolStr;
 use std::{cmp::Ordering, fmt};
 
 use super::Host;
@@ -11,6 +11,13 @@ pub use label::{Label, LabelError};
 mod labels;
 #[doc(inline)]
 pub use labels::{DomainLabelIter, DomainLabels, SuffixIter};
+
+mod builder;
+#[doc(inline)]
+pub use builder::{DomainBuilder, PushError};
+
+/// Maximum byte length of a fully-qualified domain name (RFC 1035).
+pub const MAX_NAME_LEN: usize = 253;
 
 /// A domain.
 ///
@@ -159,26 +166,32 @@ impl Domain {
     }
 
     /// Try to create a subdomain from the current [`Domain`] with the given
-    /// subdomain prefixed to it
-    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, BoxError> {
-        let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
-        if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
-        }
-        Ok(Self(sub))
+    /// subdomain prefixed to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if any segment of `sub` is not a valid label or
+    /// the combined name would exceed [`MAX_NAME_LEN`].
+    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, PushError> {
+        let mut b = DomainBuilder::with_capacity(self.0.len() + sub.domain_as_str().len() + 1);
+        b.push_label_segments(sub.domain_as_str())?;
+        b.append(self)?;
+        b.try_finish()
     }
 
     /// Promote this [`Domain`] to a wildcard.
     ///
     /// E.g. turn `example.com` in `*.example.com`.
     ///
-    /// This can fail, e.g. because the domain becomes too long.
-    pub fn try_as_wildcard(&self) -> Result<Self, BoxError> {
-        let sub = format_smolstr!("*.{}", self.0);
-        if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
-        }
-        Ok(Self(sub))
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the resulting name would exceed
+    /// [`MAX_NAME_LEN`].
+    pub fn try_as_wildcard(&self) -> Result<Self, PushError> {
+        let mut b = DomainBuilder::with_capacity(self.0.len() + 2);
+        b.push_label("*")?;
+        b.append(self)?;
+        b.try_finish()
     }
 
     /// Try to strip the subdomain (prefix) from the current domain.
@@ -491,10 +504,10 @@ impl<'de> serde::Deserialize<'de> for Domain {
 
 impl Domain {
     /// The maximum length of a domain label.
-    const MAX_LABEL_LEN: usize = 63;
+    const MAX_LABEL_LEN: usize = Label::MAX_LEN;
 
     /// The maximum length of a domain name.
-    const MAX_NAME_LEN: usize = 253;
+    const MAX_NAME_LEN: usize = MAX_NAME_LEN;
 }
 
 const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
