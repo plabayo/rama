@@ -66,8 +66,8 @@ async fn main() {
         let tcp_http_service = HttpServer::auto(exec.clone()).service(
             (
                 ArcLayer::new(),
-                ErrorHandlerLayer::new(),
                 AddRequiredResponseHeadersLayer::new(),
+                ErrorHandlerLayer::new(),
             )
                 .into_layer(Router::new().with_get(
                     "/",
