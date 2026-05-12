@@ -320,21 +320,11 @@ impl<T> NodeData<T> {
     }
 }
 
-/// Reverse a domain's labels and append the boundary `.` token used by the
-/// radix tree to prevent prefix collisions.
+/// Reverse a domain's labels and append a trailing `.` sentinel. The
+/// sentinel keeps radix_trie matching strictly per-label; see
+/// `regression_no_byte_prefix_false_match` for the case it guards.
 ///
 /// Result for `"example.com"` is `"com.example."`.
-///
-/// # Why the trailing `.` is load-bearing
-///
-/// `radix_trie` matches byte prefixes. Without the sentinel, a stored
-/// reversed key like `"com.example"` would be a byte-prefix of a query like
-/// `"com.examplea"` (because `"examplea"` byte-starts with `"example"`),
-/// so `get_ancestor("com.examplea")` would falsely return the entry stored
-/// for `example.com` as an ancestor of `examplea.com`. The trailing `.`
-/// forces a mismatch at the label boundary (byte 11: `.` vs `a`), keeping
-/// the match strictly per-label. **Do not remove it.** The
-/// `regression_no_byte_prefix_false_match` test in this module guards it.
 fn reverse_domain(domain: &str) -> String {
     let from = domain.trim_matches('.');
     // Pre-cap: same byte count as input + one trailing dot.
