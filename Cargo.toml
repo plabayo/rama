@@ -40,6 +40,7 @@ members = [
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-fastcgi",
     "rama-grpc",
     "rama-grpc-build",
     "rama-haproxy",
@@ -57,7 +58,6 @@ members = [
     "rama-net-apple-networkextension",
     "rama-net-apple-xpc",
     "rama-proxy",
-    "rama-fastcgi",
     "rama-socks5",
     "rama-tcp",
     "rama-tls-acme",
@@ -483,8 +483,8 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
-rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-fastcgi = { workspace = true, optional = true }
+rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }

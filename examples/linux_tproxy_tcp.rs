@@ -112,8 +112,10 @@
 //! increase on both the `output` and `prerouting` rules.
 
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!("the linux_tproxy_tcp example only supports Linux");
+fn main() -> Result<(), rama::error::extra::OpaqueError> {
+    Err(rama::error::extra::OpaqueError::from_static_str(
+        "the linux_tproxy_tcp example only supports Linux",
+    ))
 }
 
 #[cfg(target_os = "linux")]

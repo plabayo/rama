@@ -224,15 +224,15 @@ mod unix_impl {
 use unix_impl::run;
 
 #[cfg(not(target_family = "unix"))]
-async fn run() {
-    eprintln!(
+async fn run() -> Result<(), rama::error::extra::OpaqueError> {
+    Err(rama::error::extra::OpaqueError::from_static_str(
         "fastcgi_php_migration: this example uses Unix sockets and requires a \
-         Unix-family target (Linux, macOS, BSD)."
-    );
-    std::process::exit(1);
+         Unix-family target (Linux, macOS, BSD).",
+    ))
 }
 
 #[tokio::main]
-async fn main() {
-    run().await
+async fn main() -> Result<(), rama::error::extra::OpaqueError> {
+    run().await;
+    Ok(())
 }
