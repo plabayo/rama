@@ -702,7 +702,7 @@ impl Default for Router {
 #[derive(Debug, Clone)]
 pub enum RouterError {
     Internal,
-    MethodNotAllowed(NonEmptySmallVec<7, Method>),
+    MethodNotAllowed(Box<NonEmptySmallVec<7, Method>>),
     NotFound,
 }
 
@@ -721,20 +721,21 @@ impl Error for RouterError {
 impl IntoResponse for RouterError {
     fn into_response(self) -> Response {
         match self {
-            RouterError::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-            RouterError::MethodNotAllowed(allowed) => (
-                Headers::single(Allow(allowed)),
+            Self::Internal => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Self::MethodNotAllowed(allowed) => (
+                Headers::single(Allow(*allowed)),
                 StatusCode::METHOD_NOT_ALLOWED,
             )
                 .into_response(),
-            RouterError::NotFound => StatusCode::NOT_FOUND.into_response(),
+            Self::NotFound => StatusCode::NOT_FOUND.into_response(),
         }
     }
 }
 
 impl From<Infallible> for RouterError {
     fn from(_: Infallible) -> Self {
-        unreachable!()
+        // unreachable
+        Self::Internal
     }
 }
 
@@ -887,7 +888,7 @@ where
         if let Some(matcher) = allowed_methods
             && let Some(methods) = NonEmptySmallVec::collect(matcher.iter())
         {
-            return Err(RouterError::MethodNotAllowed(methods).into());
+            return Err(RouterError::MethodNotAllowed(Box::new(methods)).into());
         }
 
         if let Some(not_found) = &self.not_found {
