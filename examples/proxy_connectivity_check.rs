@@ -40,6 +40,7 @@ use rama::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
+            into_response::IntoResponseLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
@@ -47,7 +48,7 @@ use rama::{
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
-        service::web::response::{Html, layer::IntoResponseLayer},
+        service::web::response::Html,
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{

@@ -1,23 +1,22 @@
 use std::{error::Error, fmt, iter::successors};
 
-use h2_support::prelude::Response;
 use rama::{
     Layer, Service,
     error::BoxError,
     http::{
-        Body, Method, Request, StatusCode,
+        Body, Method, Request, Response, StatusCode,
+        layer::into_response::IntoResponseLayer,
         service::web::{Router, extract::Host},
     },
     layer::IntoErrLayer,
 };
 use rama_http::{
     self,
+    layer::error_handling::DowncastErrorHandlerLayer,
     matcher::HttpMatcher,
     service::web::{
-        RouterError,
-        error::{DowncastResponseError, DowncastResponseLayer},
-        extract::host::MissingHost,
-        response::{IntoResponse, layer::IntoResponseLayer},
+        RouterError, error::DowncastResponseError, extract::host::MissingHost,
+        response::IntoResponse,
     },
 };
 
@@ -134,7 +133,7 @@ async fn main() {
         dbg!(DowncastResponseError::try_as_response(&*err));
     }
 
-    let router = DowncastResponseLayer::as_ref().layer(router);
+    let router = DowncastErrorHandlerLayer::as_ref().layer(router);
     let res = router
         .serve(
             Request::builder()
@@ -148,7 +147,7 @@ async fn main() {
     let mut router1 = Router::new().with_endpoint_layer(());
     router1.set_match_route("/", HttpMatcher::method_get(), test_func5);
 
-    let res = DowncastResponseLayer::auto()
+    let res = DowncastErrorHandlerLayer::auto()
         .layer(router1)
         .serve(
             Request::builder()

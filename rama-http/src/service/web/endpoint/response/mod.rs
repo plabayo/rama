@@ -58,7 +58,6 @@ pub mod redirect;
 pub use redirect::Redirect;
 
 pub mod sse;
-pub mod layer;
 
 pub use sse::Sse;
 

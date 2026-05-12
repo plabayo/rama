@@ -46,11 +46,16 @@
 //! # }
 //! ```
 
-use crate::service::web::response::{ErrorResponse, IntoResponse};
+use crate::service::web::{
+    response::{ErrorResponse, IntoResponse},
+    error::DowncastResponseError,
+};
 use crate::{Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
+use std::error::Error;
+use http::StatusCode;
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.
 #[derive(Debug, Clone)]
@@ -152,6 +157,91 @@ where
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok((self.error_mapper)(error).into_response()),
+        }
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct ImplErrorMode;
+
+#[derive(Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct AsRefMode;
+
+pub struct DowncastErrorHandler<S, M> {
+    inner: S,
+    _mode: M,
+}
+
+impl<S, I> Service<I> for DowncastErrorHandler<S, ImplErrorMode>
+where
+    S: Service<I, Output: IntoResponse, Error: Error + 'static>,
+    I: Send + 'static,
+{
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
+        Ok(self.inner.serve(input).await.map_or_else(
+            |err| {
+                if let Some(resp) = DowncastResponseError::try_as_response(&err) {
+                    resp
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            },
+            IntoResponse::into_response,
+        ))
+    }
+}
+
+impl<S, I> Service<I> for DowncastErrorHandler<S, AsRefMode>
+where
+    S: Service<I, Output: IntoResponse, Error: AsRef<dyn Error + Send + Sync>>,
+    I: Send + 'static,
+{
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
+        Ok(self.inner.serve(input).await.map_or_else(
+            |err| {
+                if let Some(resp) = DowncastResponseError::try_as_response(err.as_ref()) {
+                    resp
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            },
+            IntoResponse::into_response,
+        ))
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DowncastErrorHandlerLayer<M>(M);
+
+impl DowncastErrorHandlerLayer<()> {
+    pub fn as_ref() -> DowncastErrorHandlerLayer<AsRefMode> {
+        Default::default()
+    }
+
+    pub fn impl_error() -> DowncastErrorHandlerLayer<ImplErrorMode> {
+        Default::default()
+    }
+
+    pub fn auto<M: Default>() -> DowncastErrorHandlerLayer<M> {
+        Default::default()
+    }
+}
+
+impl<S, M: Copy> Layer<S> for DowncastErrorHandlerLayer<M> {
+    type Service = DowncastErrorHandler<S, M>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        DowncastErrorHandler {
+            inner,
+            _mode: self.0,
         }
     }
 }

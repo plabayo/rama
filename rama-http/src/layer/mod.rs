@@ -50,6 +50,7 @@ pub mod trace;
 pub mod traffic_writer;
 pub mod validate_request;
 pub mod version_adapter;
+pub mod into_response;
 
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]

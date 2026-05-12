@@ -3,7 +3,7 @@ use rama_http_types::{Request, Response};
 
 use crate::service::web::response::IntoResponse;
 
-/// A [`Service`] that maps response for an inner service using [`IntoResponse`].
+/// A [`Service`] that maps Output of an inner service using [`IntoResponse`].
 #[derive(Debug, Clone)]
 pub struct IntoResponseService<S>(S);
 
@@ -31,7 +31,7 @@ where
     }
 }
 
-/// A [`Layer`] that maps response for an inner service using [`IntoResponse`].
+/// A [`Layer`] that maps Output of an inner service using [`IntoResponse`].
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct IntoResponseLayer;
