@@ -785,6 +785,25 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
         // Safety: domain_as_str is contractually a validated domain string.
         unsafe { Domain::from_maybe_borrowed_unchecked(self.domain_as_str()) }
     }
+
+    /// Return this value in wildcard form (`*.x`).
+    ///
+    /// If `self` already starts with `"*."`, an owned copy is returned
+    /// as-is. Otherwise this is equivalent to `self.to_domain().try_as_wildcard()`
+    /// — i.e. `x` becomes `*.x` (with the usual length cap).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the resulting name would exceed
+    /// [`MAX_NAME_LEN`].
+    fn to_wildcard(&self) -> Result<Domain, PushError> {
+        let d = self.to_domain();
+        if d.is_wildcard() {
+            Ok(d)
+        } else {
+            d.try_as_wildcard()
+        }
+    }
 }
 
 impl AsDomainRef for &'static str {}
