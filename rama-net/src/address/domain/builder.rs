@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use rama_utils::str::smol_str::SmolStrBuilder;
+
 use super::label::validate_label_bytes;
 use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
 
@@ -10,7 +12,10 @@ use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
 ///
 /// Labels are pushed in DNS-natural order: leftmost (most specific) first,
 /// rightmost (TLD) last. The builder maintains the [`Domain`] invariant
-/// after every successful push, so [`DomainBuilder::finish`] is infallible.
+/// after every successful push.
+///
+/// Backed by [`SmolStrBuilder`], so domains up to the inline cap stay on the
+/// stack — no heap allocation in the common case.
 ///
 /// # Example
 ///
@@ -21,49 +26,43 @@ use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
 /// b.push_label("www").unwrap();
 /// b.push_label("example").unwrap();
 /// b.push_label("com").unwrap();
-/// let d = b.finish();
+/// let d = b.finish().unwrap();
 /// assert_eq!(d.as_str(), "www.example.com");
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct DomainBuilder {
-    buf: String,
+    buf: SmolStrBuilder,
+    // SmolStrBuilder doesn't expose its current length, so we track it
+    // ourselves to enforce MAX_NAME_LEN and to know when the builder is
+    // empty / when we need a separator dot.
+    len: usize,
+    label_count: usize,
+    starts_with_wildcard: bool,
 }
 
 impl DomainBuilder {
     /// Creates an empty builder.
     #[must_use]
     pub fn new() -> Self {
-        Self { buf: String::new() }
-    }
-
-    /// Creates an empty builder pre-allocating `cap` bytes.
-    #[must_use]
-    pub fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
+        Self::default()
     }
 
     /// Returns the number of labels currently in the builder.
     #[must_use]
     pub fn label_count(&self) -> usize {
-        if self.buf.is_empty() {
-            0
-        } else {
-            self.buf.bytes().filter(|b| *b == b'.').count() + 1
-        }
+        self.label_count
     }
 
     /// Returns `true` if no labels have been pushed yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.buf.is_empty()
+        self.len == 0
     }
 
     /// Returns the current length in bytes (including separating dots).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.buf.len()
+        self.len
     }
 
     /// Push a single label.
@@ -96,25 +95,28 @@ impl DomainBuilder {
         // Wildcard `*` is only valid as the leftmost label. The label-level
         // validator accepts `"*"` standalone, so the positional rule lives
         // here in the builder.
-        if label == "*" && !self.buf.is_empty() {
+        let is_wildcard = label == "*";
+        if is_wildcard && !self.is_empty() {
             return Err(PushError::misplaced_wildcard());
         }
 
-        // Each push adds `label.len()` plus a separating dot (except for the
-        // very first label).
-        let added = if self.buf.is_empty() {
+        let added = if self.is_empty() {
             label.len()
         } else {
             label.len() + 1
         };
-        let new_len = self.buf.len() + added;
+        let new_len = self.len + added;
         if new_len > MAX_NAME_LEN {
             return Err(PushError::too_long(new_len));
         }
-        if !self.buf.is_empty() {
+        if !self.is_empty() {
             self.buf.push('.');
+        } else {
+            self.starts_with_wildcard = is_wildcard;
         }
         self.buf.push_str(label);
+        self.len = new_len;
+        self.label_count += 1;
         Ok(self)
     }
 
@@ -163,41 +165,20 @@ impl DomainBuilder {
 
     /// Consume the builder and produce a [`Domain`].
     ///
-    /// # Panics
-    ///
-    /// Panics if no labels have been pushed. Use [`Self::try_finish`] for a
-    /// non-panicking variant.
-    #[must_use]
-    #[expect(
-        clippy::panic,
-        reason = "API contract: caller must have pushed at least one label"
-    )]
-    pub fn finish(self) -> Domain {
-        if self.buf.is_empty() {
-            panic!("DomainBuilder::finish called with no labels pushed");
-        }
-        if self.buf == "*" {
-            panic!("DomainBuilder::finish: bare '*' is not a valid domain");
-        }
-        // Safety: builder maintained the Domain invariant at every push.
-        unsafe { Domain::from_maybe_borrowed_unchecked(self.buf) }
-    }
-
-    /// Consume the builder and produce a [`Domain`], or return [`PushError`]
-    /// if the builder is empty.
-    ///
     /// # Errors
     ///
-    /// Returns an empty [`PushError`] if no labels have been pushed.
-    pub fn try_finish(self) -> Result<Domain, PushError> {
-        if self.buf.is_empty() {
+    /// Returns a [`PushError`] if the builder is empty, or if the only pushed
+    /// label is the bare wildcard `"*"` (which is never a valid standalone
+    /// domain).
+    pub fn finish(self) -> Result<Domain, PushError> {
+        if self.label_count == 0 {
             return Err(PushError::empty());
         }
-        if self.buf == "*" {
+        if self.label_count == 1 && self.starts_with_wildcard {
             return Err(PushError::misplaced_wildcard());
         }
-        // Safety: as above.
-        Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf) })
+        // Safety: builder maintained the Domain invariant at every push.
+        Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf.finish()) })
     }
 }
 
@@ -284,7 +265,7 @@ mod tests {
         let mut b = DomainBuilder::new();
         b.push_label("com").unwrap();
         assert_eq!(b.label_count(), 1);
-        let d = b.finish();
+        let d = b.finish().unwrap();
         assert_eq!(d.as_str(), "com");
     }
 
@@ -295,7 +276,7 @@ mod tests {
         b.push_label("example").unwrap();
         b.push_label("com").unwrap();
         assert_eq!(b.label_count(), 3);
-        let d = b.finish();
+        let d = b.finish().unwrap();
         assert_eq!(d.as_str(), "www.example.com");
     }
 
@@ -305,7 +286,7 @@ mod tests {
         b.push_label("*").unwrap();
         b.push_label("example").unwrap();
         b.push_label("com").unwrap();
-        let d = b.finish();
+        let d = b.finish().unwrap();
         assert_eq!(d.as_str(), "*.example.com");
         assert!(d.is_wildcard());
     }
@@ -316,19 +297,19 @@ mod tests {
         let mut b = DomainBuilder::new();
         b.push_label("www").unwrap();
         b.append(&parent).unwrap();
-        assert_eq!(b.finish().as_str(), "www.example.com");
+        assert_eq!(b.finish().unwrap().as_str(), "www.example.com");
     }
 
     #[test]
     fn push_label_segments_handles_dots() {
         let mut b = DomainBuilder::new();
         b.push_label_segments("a.b.c").unwrap();
-        assert_eq!(b.finish().as_str(), "a.b.c");
+        assert_eq!(b.finish().unwrap().as_str(), "a.b.c");
 
         // leading/trailing/duplicate dots are squashed (split + filter empty)
         let mut b = DomainBuilder::new();
         b.push_label_segments(".a.b.").unwrap();
-        assert_eq!(b.finish().as_str(), "a.b");
+        assert_eq!(b.finish().unwrap().as_str(), "a.b");
     }
 
     #[test]
@@ -353,18 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn try_finish_empty() {
+    fn finish_empty_returns_err() {
         let b = DomainBuilder::new();
-        let err = b.try_finish().unwrap_err();
+        let err = b.finish().unwrap_err();
         assert!(format!("{err}").contains("no labels"));
-    }
-
-    #[test]
-    #[should_panic(expected = "no labels")]
-    fn finish_panics_when_empty() {
-        let b = DomainBuilder::new();
-        // Discard via drop, not `let _ = ...`, since `finish` is `#[must_use]`.
-        drop(b.finish());
     }
 
     #[test]
@@ -373,7 +346,7 @@ mod tests {
         let mut b = DomainBuilder::new();
         b.push(l).unwrap();
         b.push_label("com").unwrap();
-        assert_eq!(b.finish().as_str(), "example.com");
+        assert_eq!(b.finish().unwrap().as_str(), "example.com");
     }
 
     #[test]
@@ -406,7 +379,7 @@ mod tests {
         b.push_label("*").unwrap();
         b.push_label("example").unwrap();
         b.push_label("com").unwrap();
-        let d = b.finish();
+        let d = b.finish().unwrap();
         assert_eq!(d.as_str(), "*.example.com");
         // And the output reparses (no broken invariant).
         Domain::try_from(d.as_str().to_owned()).expect("builder output reparses");
@@ -417,16 +390,8 @@ mod tests {
         let mut b = DomainBuilder::new();
         b.push_label("*").unwrap();
         // Only one label, and it's `*` — not a valid domain on its own.
-        let err = b.try_finish().unwrap_err();
+        let err = b.finish().unwrap_err();
         assert!(format!("{err}").contains("wildcard"), "got: {err}");
-    }
-
-    #[test]
-    #[should_panic(expected = "bare '*'")]
-    fn finish_panics_on_bare_wildcard() {
-        let mut b = DomainBuilder::new();
-        b.push_label("*").unwrap();
-        drop(b.finish());
     }
 
     #[test]
@@ -438,7 +403,7 @@ mod tests {
         b.push_label("_acme-challenge").unwrap();
         b.push_label("example").unwrap();
         b.push_label("com").unwrap();
-        let s = b.clone().finish().as_str().to_owned();
+        let s = b.finish().unwrap().as_str().to_owned();
         Domain::try_from(s).expect("builder output must reparse");
     }
 }

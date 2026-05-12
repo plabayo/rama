@@ -170,9 +170,9 @@ impl Domain {
         }
         // Use the trait's `parent`-style rebuild via the builder so the result
         // is a properly-validated Domain (no string slicing).
-        let mut b = DomainBuilder::with_capacity(self.0.len());
+        let mut b = DomainBuilder::new();
         b.push_labels(it).ok()?;
-        b.try_finish().ok()
+        b.finish().ok()
     }
 
     /// Try to create a subdomain from the current [`Domain`] with the given
@@ -183,10 +183,10 @@ impl Domain {
     /// Returns [`PushError`] if any segment of `sub` is not a valid label or
     /// the combined name would exceed [`MAX_NAME_LEN`].
     pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, PushError> {
-        let mut b = DomainBuilder::with_capacity(self.0.len() + sub.domain_as_str().len() + 1);
+        let mut b = DomainBuilder::new();
         b.push_label_segments(sub.domain_as_str())?;
         b.append(self)?;
-        b.try_finish()
+        b.finish()
     }
 
     /// Promote this [`Domain`] to a wildcard.
@@ -198,10 +198,10 @@ impl Domain {
     /// Returns [`PushError`] if the resulting name would exceed
     /// [`MAX_NAME_LEN`].
     pub fn try_as_wildcard(&self) -> Result<Self, PushError> {
-        let mut b = DomainBuilder::with_capacity(self.0.len() + 2);
+        let mut b = DomainBuilder::new();
         b.push_label("*")?;
         b.append(self)?;
-        b.try_finish()
+        b.finish()
     }
 
     /// Try to strip the subdomain (prefix) from the current domain.
@@ -232,9 +232,9 @@ impl Domain {
         if remaining.is_empty() {
             return None;
         }
-        let mut b = DomainBuilder::with_capacity(self.0.len());
+        let mut b = DomainBuilder::new();
         b.push_labels(remaining).ok()?;
-        b.try_finish().ok()
+        b.finish().ok()
     }
 
     /// Returns `true` if `self` is a sub-domain of (or equal to) `other`.
@@ -515,6 +515,11 @@ fn dotted_segments(s: &str) -> impl DoubleEndedIterator<Item = &str> + Clone {
 }
 
 /// Compare two label-shaped segment iterators ASCII-case-insensitively.
+///
+/// Lazily flattens both sides to `(segment_index, byte)` pairs where every
+/// "segment break" comes first in `Ord` (so `"a"` < `"aa"`, mirroring stdlib
+/// string ordering on the same underlying bytes). Single source of truth via
+/// [`label::cmp_ignore_ascii_case`] for the inner per-segment compare.
 fn cmp_segments<'a>(
     mut a: impl Iterator<Item = &'a str>,
     mut b: impl Iterator<Item = &'a str>,
@@ -524,15 +529,10 @@ fn cmp_segments<'a>(
             (None, None) => return Ordering::Equal,
             (Some(_), None) => return Ordering::Greater,
             (None, Some(_)) => return Ordering::Less,
-            (Some(x), Some(y)) => {
-                let ord = x
-                    .bytes()
-                    .map(|c| c.to_ascii_lowercase())
-                    .cmp(y.bytes().map(|c| c.to_ascii_lowercase()));
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
+            (Some(x), Some(y)) => match label::cmp_ignore_ascii_case(x, y) {
+                Ordering::Equal => {}
+                non_eq => return non_eq,
+            },
         }
     }
 }
@@ -545,12 +545,8 @@ fn eq_segments<'a>(
     loop {
         match (a.next(), b.next()) {
             (None, None) => return true,
-            (Some(_), None) | (None, Some(_)) => return false,
-            (Some(x), Some(y)) => {
-                if !x.eq_ignore_ascii_case(y) {
-                    return false;
-                }
-            }
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(y) => {}
+            _ => return false,
         }
     }
 }

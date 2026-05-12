@@ -7,8 +7,7 @@
 //! to its label sequence.
 //!
 //! This module is presentation-format only — there is no DNS wire format,
-//! octets generic, or DNSSEC layer. The design mirrors the structural pieces
-//! of `NLnetLabs/domain`'s `Label` type, scoped to what rama-net needs.
+//! octets generic, or DNSSEC layer.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -132,20 +131,18 @@ impl Hash for Label {
 
 impl Ord for Label {
     fn cmp(&self, other: &Self) -> Ordering {
-        let mut a = self.0.bytes();
-        let mut b = other.0.bytes();
-        loop {
-            match (a.next(), b.next()) {
-                (Some(x), Some(y)) => match x.to_ascii_lowercase().cmp(&y.to_ascii_lowercase()) {
-                    Ordering::Equal => {}
-                    non_eq => return non_eq,
-                },
-                (Some(_), None) => return Ordering::Greater,
-                (None, Some(_)) => return Ordering::Less,
-                (None, None) => return Ordering::Equal,
-            }
-        }
+        cmp_ignore_ascii_case(&self.0, &other.0)
     }
+}
+
+/// Byte-by-byte ASCII-case-insensitive ordering on `&str`.
+///
+/// Equivalent of `str::eq_ignore_ascii_case` for `Ord`. Pulled out so both
+/// `Label::cmp` and the `cmp_segments` helper feed through one place.
+pub(super) fn cmp_ignore_ascii_case(a: &str, b: &str) -> Ordering {
+    a.bytes()
+        .map(|c| c.to_ascii_lowercase())
+        .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
 }
 
 impl PartialOrd for Label {

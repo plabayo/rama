@@ -5,19 +5,22 @@
 //! [`Host::Name`](super::super::Host::Name) variant delegates; the
 //! [`Host::Address`](super::super::Host::Address) variant has no labels).
 //!
-//! The trait mirrors `NLnetLabs/domain`'s `ToLabelIter`, scoped to rama-net's
-//! presentation-format reality: no octets generic, no wire format, no
+//! Presentation-format only — no octets generic, no DNS wire format, no
 //! parsed-name layer.
 
 use super::{Domain, Label};
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// A label-aware view over a domain-like type.
 ///
-/// Every method composes purely from [`labels`](Self::labels), so any type that
-/// can produce a sequence of [`Label`]s in DNS-natural order (most specific
-/// label first, TLD last) can implement the trait and inherit
-/// suffix/subdomain/parent behavior for free.
-pub trait DomainLabels {
+/// Every method composes purely from [`labels`](Self::labels), so any type
+/// that can produce a sequence of [`Label`]s in DNS-natural order (most
+/// specific label first, TLD last) inherits suffix/subdomain/parent behavior
+/// for free.
+pub trait DomainLabels: sealed::Sealed {
     /// Iterator over the labels of `self`, yielded most-specific-first
     /// (`"www.example.com".labels()` yields `www`, `example`, `com`).
     type LabelIter<'a>: Iterator<Item = &'a Label> + DoubleEndedIterator + Clone
@@ -176,6 +179,9 @@ impl<'a> DoubleEndedIterator for DomainLabelIter<'a> {
             .map(|s| unsafe { Label::from_str_unchecked(s) })
     }
 }
+
+impl sealed::Sealed for Domain {}
+impl sealed::Sealed for super::super::Host {}
 
 impl DomainLabels for Domain {
     type LabelIter<'a> = DomainLabelIter<'a>;
