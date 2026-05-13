@@ -140,7 +140,10 @@ fn decode_frame(
     tracing::trace!("decoding frame from {}B", bytes.len());
 
     // Parse the head
-    let head = frame::Head::parse(&bytes);
+    let head = frame::Head::parse(&bytes).map_err(|e| {
+        proto_err!(conn: "failed to parse frame head; err={:?}", e);
+        Error::library_go_away(Reason::PROTOCOL_ERROR)
+    })?;
 
     if partial_inout.is_some() && head.kind() != Kind::Continuation {
         proto_err!(conn: "expected CONTINUATION, got {:?}", head.kind());

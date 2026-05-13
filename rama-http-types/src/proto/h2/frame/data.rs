@@ -25,15 +25,28 @@ const ALL: u8 = END_STREAM | PADDED;
 
 impl<T> Data<T> {
     /// Creates a new DATA frame.
-    pub fn new(stream_id: StreamId, payload: T) -> Self {
-        assert!(!stream_id.is_zero());
-
-        Self {
+    ///
+    /// Errors with [`Error::InvalidStreamId`] if `stream_id` is zero —
+    /// DATA frames MUST be associated with a stream (RFC 9113 §6.1).
+    ///
+    /// ```
+    /// use rama_http_types::proto::h2::frame::{Data, Error, StreamId};
+    /// assert!(matches!(
+    ///     Data::new(StreamId::zero(), &[][..]),
+    ///     Err(Error::InvalidStreamId),
+    /// ));
+    /// assert!(Data::new(StreamId::from(1), &[][..]).is_ok());
+    /// ```
+    pub fn new(stream_id: StreamId, payload: T) -> Result<Self, Error> {
+        if stream_id.is_zero() {
+            return Err(Error::InvalidStreamId);
+        }
+        Ok(Self {
             stream_id,
             data: payload,
             flags: DataFlags::default(),
             pad_len: None,
-        }
+        })
     }
 
     /// Returns the stream identifier that this frame is associated with.

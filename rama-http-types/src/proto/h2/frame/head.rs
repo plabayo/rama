@@ -1,4 +1,4 @@
-use super::StreamId;
+use super::{Error, StreamId};
 
 use rama_core::bytes::BufMut;
 
@@ -37,16 +37,22 @@ impl Head {
         }
     }
 
-    /// Parse an HTTP/2 frame header
-    #[must_use]
-    pub fn parse(header: &[u8]) -> Self {
-        let (stream_id, _) = StreamId::parse(&header[5..]);
+    /// Parse an HTTP/2 frame header. Returns [`Error::ShortBuffer`] if
+    /// `header.len() < HEADER_LEN` (9 bytes).
+    pub fn parse(header: &[u8]) -> Result<Self, Error> {
+        if header.len() < super::HEADER_LEN {
+            return Err(Error::ShortBuffer {
+                needed: super::HEADER_LEN,
+                got: header.len(),
+            });
+        }
+        let (stream_id, _) = StreamId::parse(&header[5..])?;
 
-        Self {
+        Ok(Self {
             kind: Kind::new(header[3]),
             flag: header[4],
             stream_id,
-        }
+        })
     }
 
     #[must_use]
@@ -97,5 +103,19 @@ impl Kind {
             9 => Self::Continuation,
             _ => Self::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_errors_when_buffer_shorter_than_header_len() {
+        assert!(matches!(
+            Head::parse(&[0u8; super::super::HEADER_LEN - 1]),
+            Err(Error::ShortBuffer { needed, got })
+                if needed == super::super::HEADER_LEN && got == super::super::HEADER_LEN - 1,
+        ));
     }
 }

@@ -90,7 +90,7 @@ impl Settings {
         let mut setting_order = SettingOrder::default();
 
         for raw in payload.chunks(6) {
-            let setting = Setting::load(raw);
+            let setting = Setting::load(raw)?;
             setting_order.push(setting.id);
             match setting.id {
                 SettingId::HeaderTableSize => {
