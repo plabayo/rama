@@ -199,6 +199,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-vec"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1615,6 +1624,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-dns",
+ "rama-fastcgi",
  "rama-grpc",
  "rama-http",
  "rama-http-backend",
@@ -1639,9 +1649,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddc9b815c8dce0288dc1ecebf53039913c82977604766e48b72e80db99b06327"
+checksum = "9c65b2bf5409ff0b5c6f7a60d6253ee8d901cc22205f7213058332c0634c2641"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -1652,9 +1662,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7b68b0916fb03989d677548d40c3e25cd24d16da95d32b8c5861ce9805a03ce"
+checksum = "38b68650132a39b88012aad1ddd6041f38bf8d266d20476afcaa36f4f95088c9"
 dependencies = [
  "bindgen",
  "cmake",
@@ -1664,9 +1674,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ff8d421e3e7f5b7a08efcdf1c5292ad11307fb9a97847731f0696e3e15c9047"
+checksum = "21c3fb915e5e11154bf9a009106199ebc69b3d8da90c9e232a95ebf455f53c95"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -1732,6 +1742,18 @@ dependencies = [
 [[package]]
 name = "rama-error"
 version = "0.3.0-rc1"
+
+[[package]]
+name = "rama-fastcgi"
+version = "0.3.0-rc1"
+dependencies = [
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tokio-util",
+]
 
 [[package]]
 name = "rama-grpc"
@@ -2143,9 +2165,9 @@ checksum = "9d9575f44c8cf85bc843ad666dcdf20d05a7753772bef56eb2a5140282b32150"
 
 [[package]]
 name = "rcgen"
-version = "0.14.7"
+version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10b99e0098aa4082912d4c649628623db6aba77335e4f4569ff5083a6448b32e"
+checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
 dependencies = [
  "aws-lc-rs",
  "pem",
@@ -3305,10 +3327,11 @@ dependencies = [
 
 [[package]]
 name = "yasna"
-version = "0.5.2"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
 dependencies = [
+ "bit-vec",
  "time",
 ]
 
