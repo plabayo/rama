@@ -23,6 +23,13 @@ impl AllowOrigin {
         }
     }
 
+    /// Whether the emitted `Access-Control-Allow-Origin` depends on the
+    /// request's `Origin` header. When true, the response MUST include
+    /// `Vary: Origin` to avoid cache poisoning across origins.
+    pub(super) fn is_request_dependent(&self) -> bool {
+        matches!(self, Self::MirrorRequest | Self::Predicate(_))
+    }
+
     pub(super) fn extend_headers(
         &self,
         headers: &mut HeaderMap,
