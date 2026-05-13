@@ -1,5 +1,6 @@
 mod common;
 
+mod adversarial;
 mod backpressure;
 mod decision;
 mod flow_meta;
