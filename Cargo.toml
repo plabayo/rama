@@ -810,6 +810,10 @@ name = "udp_codec"
 required-features = ["udp"]
 
 [[example]]
+name = "udp_over_tcp"
+required-features = ["udp", "tcp"]
+
+[[example]]
 name = "tls_boring_dynamic_certs"
 required-features = ["boring", "http-full"]
 
