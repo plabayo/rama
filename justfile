@@ -24,6 +24,9 @@ sort:
     @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
     cargo sort --workspace --grouped
 
+sort-check *ARGS:
+    cargo sort --workspace --check {{ARGS}}
+
 lint: fmt sort
 
 deny:
@@ -115,7 +118,7 @@ test-loom:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: fmt-check check clippy doc extra-checks
+qq: sort-check fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
 
