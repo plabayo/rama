@@ -353,7 +353,8 @@ pub struct NwEgressParameters {
     pub prohibited_interface_types_mask: u8,
     /// When `true`, Swift calls `NEAppProxyFlow.setMetadata(_:)` to stamp the
     /// intercepted flow's `NEFlowMetaData` onto the egress `NWParameters`.
-    /// See `tproxy::types::NwEgressParameters::preserve_original_meta_data`.
+    ///
+    /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
 }
 
@@ -435,7 +436,8 @@ pub struct TcpEgressConnectOptions {
     /// Wall-clock cap (milliseconds) on how long the egress
     /// `NWConnection` is allowed to linger after the local side has
     /// sent its FIN before the Swift side force-cancels it.
-    /// See [`crate::tproxy::types::NwTcpConnectOptions::linger_close_timeout`].
+    ///
+    /// See [`crate::tproxy::NwTcpConnectOptions::linger_close_timeout`].
     pub linger_close_ms: u32,
     /// Whether `egress_eof_grace_ms` carries a meaningful value.
     /// `false` ⇒ Swift uses its built-in default.
@@ -443,7 +445,7 @@ pub struct TcpEgressConnectOptions {
     /// Grace window (milliseconds) between the egress read pump
     /// observing peer EOF and the Swift side force-cancelling the
     /// connection. See
-    /// [`crate::tproxy::types::NwTcpConnectOptions::egress_eof_grace`].
+    /// [`crate::tproxy::NwTcpConnectOptions::egress_eof_grace`].
     pub egress_eof_grace_ms: u32,
 }
 
@@ -455,7 +457,7 @@ pub struct UdpEgressConnectOptions {
     /// `false` ⇒ Swift uses its built-in default.
     pub has_connect_timeout_ms: bool,
     /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
-    /// reaching `.ready`. See `tproxy::types::NwUdpConnectOptions::connect_timeout`.
+    /// reaching `.ready`. See [`crate::tproxy::NwUdpConnectOptions::connect_timeout`].
     pub connect_timeout_ms: u32,
 }
 
