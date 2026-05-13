@@ -590,6 +590,76 @@ protocol TcpFlowWritable: AnyObject {
 }
 extension NEAppProxyTCPFlow: TcpFlowWritable {}
 
+/// Full surface the per-flow TCP state machine needs from a flow:
+/// the read + write halves (`TcpFlowReadable` + `TcpFlowWritable`),
+/// plus the lifecycle methods `open` / `closeReadWithError` /
+/// `closeWriteWithError`, plus a hook for applying NEFlowMetaData
+/// onto egress NWParameters. Apple's `NEAppProxyTCPFlow` conforms
+/// trivially; tests pass a `MockTcpFlow` that captures every call
+/// for assertion. Existence of this protocol is what lets
+/// `TransparentProxyCore.handleTcpFlow` be generic over flow type
+/// — and therefore unit-testable end-to-end without a live system
+/// extension.
+protocol TcpFlowLike: TcpFlowReadable, TcpFlowWritable, AnyObject {
+    func open(
+        withLocalEndpoint localEndpoint: NWHostEndpoint?,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+    func closeReadWithError(_ error: Error?)
+    func closeWriteWithError(_ error: Error?)
+    /// Stamp the intercepted flow's NEFlowMetaData (source app identifier,
+    /// audit token, …) onto the supplied egress `NWParameters`. Real
+    /// `NEAppProxyTCPFlow` calls into `applyFlowMetadata` here; tests
+    /// supply a no-op.
+    func applyMetadata(to params: NWParameters)
+}
+
+extension NEAppProxyTCPFlow: TcpFlowLike {
+    func applyMetadata(to params: NWParameters) {
+        applyFlowMetadata(self, params)
+    }
+}
+
+/// Async-read surface the UDP read pump needs. Mirror of
+/// `TcpFlowReadable` for the datagram path. `[NWEndpoint]?` tracks
+/// the per-datagram source so `sentBy:` on a corresponding write
+/// echoes back to the same peer.
+protocol UdpFlowReadable: AnyObject {
+    func readDatagrams(
+        completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
+    )
+}
+extension NEAppProxyUDPFlow: UdpFlowReadable {}
+
+/// Async-write surface the UDP writer pump needs.
+protocol UdpFlowWritable: AnyObject {
+    func writeDatagrams(
+        _ datagrams: [Data],
+        sentBy remoteEndpoints: [NWEndpoint],
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+}
+extension NEAppProxyUDPFlow: UdpFlowWritable {}
+
+/// Full surface the per-flow UDP state machine needs from a flow.
+/// Symmetric to `TcpFlowLike`: read + write halves plus the
+/// open/close lifecycle and the metadata stamping hook.
+protocol UdpFlowLike: UdpFlowReadable, UdpFlowWritable, AnyObject {
+    func open(
+        withLocalEndpoint localEndpoint: NWHostEndpoint?,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+    func closeReadWithError(_ error: Error?)
+    func closeWriteWithError(_ error: Error?)
+    func applyMetadata(to params: NWParameters)
+}
+
+extension NEAppProxyUDPFlow: UdpFlowLike {
+    func applyMetadata(to params: NWParameters) {
+        applyFlowMetadata(self, params)
+    }
+}
+
 /// Cross-thread state of `TcpClientWritePump`. Reachable only via
 /// `Locked.withLock` so the closed-flag / byte-budget / drain-signal
 /// triple is always read and updated as one consistent snapshot.
@@ -955,7 +1025,9 @@ private enum UdpWritePumpPhase {
 }
 
 private final class UdpClientWritePump {
-    private let flow: NEAppProxyUDPFlow
+    // Held behind the protocol so tests can drive the pump with a
+    // capture-mock; production passes a concrete NEAppProxyUDPFlow.
+    private let flow: any UdpFlowWritable
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
     private let queue: DispatchQueue
@@ -995,7 +1067,7 @@ private final class UdpClientWritePump {
     private var multiPeerLogged = false
 
     init(
-        flow: NEAppProxyUDPFlow,
+        flow: any UdpFlowWritable,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void
