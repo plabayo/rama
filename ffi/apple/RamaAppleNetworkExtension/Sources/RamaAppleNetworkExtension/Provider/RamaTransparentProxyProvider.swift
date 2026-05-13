@@ -236,6 +236,17 @@ let defaultLingerCloseMs: UInt32 = 5_000
 /// the originating app has stopped reading.
 let defaultEgressEofGraceMs: UInt32 = 2_000
 
+/// Default tolerance window for a post-ready `NWConnection` sitting
+/// in `.waiting(_)`. `.waiting` after `.ready` means Network.framework
+/// has lost the underlying path (network change, peer unreachable,
+/// NECP path update) and is holding the connection in a recoverable
+/// state. Briefly is fine — Wi-Fi roams routinely cause sub-second
+/// `.waiting` blips. Sitting in `.waiting` for many seconds means the
+/// path will not come back on its own and the connection is
+/// effectively dead. After this window the state handler treats it
+/// as failed and tears the flow down.
+let defaultEgressWaitingToleranceMs: UInt32 = 5_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields
@@ -1960,12 +1971,63 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
 
+        // Post-ready `.waiting(_)` tolerance — a Wi-Fi roam or other
+        // transient path change can take the connection briefly back
+        // into `.waiting` after it reached `.ready`. We allow a short
+        // window for the path to recover; staying in `.waiting` past
+        // the window means the path is gone and the flow must be torn
+        // down so the macOS NWConnection registration is released.
+        let egressWaitingToleranceMs = defaultEgressWaitingToleranceMs
+        var waitingWork: DispatchWorkItem?
+
+        // Post-ready teardown shared between the `.failed` arm and the
+        // `.waiting` tolerance timer. Idempotent — every step is safe
+        // to invoke twice, so a concurrent teardown path (the egress
+        // read pump's EOF backstop, the flow's hard-error terminal,
+        // an external `engine.stop`) that races with this closure
+        // does not corrupt state.
+        // Not `@Sendable` because it mutates `waitingWork`; all
+        // invocation sites run on `flowQueue` so single-threaded
+        // mutation is safe.
+        let tearDownPostReady: (Error?) -> Void = { [weak self, weak ctx] err in
+            waitingWork?.cancel()
+            waitingWork = nil
+            let nsErr =
+                err
+                ?? NSError(
+                    domain: "rama.tproxy.tcp",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"]
+                )
+            flow.closeReadWithError(nsErr)
+            flow.closeWriteWithError(nsErr)
+            ctx?.connection?.cancel()
+            ctx?.connection = nil
+            ctx?.egressReadPump?.cancel()
+            ctx?.egressReadPump = nil
+            ctx?.egressWritePump?.cancel()
+            ctx?.egressWritePump = nil
+            ctx?.clientReadPump = nil
+            ctx?.clientWritePump?.cancel()
+            ctx?.clientWritePump = nil
+            ctx?.session?.cancel()
+            self?.removeTcpFlow(flowId)
+        }
+
         connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
             flowQueue.async { [weak self, weak ctx] in
                 guard let ctx, let connection = ctx.connection else { return }
                 switch state {
                 case .ready:
-                    guard !egressReady else { return }
+                    if egressReady {
+                        // A duplicate `.ready` after a recovered
+                        // `.waiting` — cancel any pending tolerance
+                        // timer so it does not fire on the now-healthy
+                        // connection.
+                        waitingWork?.cancel()
+                        waitingWork = nil
+                        return
+                    }
                     egressReady = true
                     timeoutWork.cancel()
 
@@ -2071,17 +2133,72 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     }
 
                 case .failed(let error):
-                    guard !egressReady else { return }
-                    timeoutWork.cancel()
+                    if !egressReady {
+                        // Pre-ready failure — flow was never opened,
+                        // pumps were never wired, session has no
+                        // bridges to drain. The minimal cleanup is
+                        // enough.
+                        timeoutWork.cancel()
+                        self?.logDebug(
+                            "egress NWConnection failed before flow opened: \(String(describing: error))"
+                        )
+                        // Explicit cancel() releases the kernel NECP flow slot.
+                        connection.cancel()
+                        session.cancel()
+                        self?.removeTcpFlow(flowId)
+                    } else {
+                        // Post-ready failure — peer RST, TLS abort,
+                        // NECP path drop, or anything else that takes
+                        // an established `NWConnection` to `.failed`.
+                        // Without this branch the connection sits
+                        // registered until some other path (read pump
+                        // error, idle timeout, max-flow lifetime)
+                        // eventually catches it, which is exactly the
+                        // accumulation that turns into the
+                        // path-evaluator slowdown.
+                        self?.logDebug(
+                            "egress NWConnection failed after flow opened: \(String(describing: error))"
+                        )
+                        tearDownPostReady(error)
+                    }
+
+                case .waiting(let error):
+                    if !egressReady {
+                        // Pre-ready waiting is handled by
+                        // `connect_timeout` already; we leave it
+                        // alone here so two timers cannot race.
+                        break
+                    }
+                    // Post-ready waiting — start the tolerance timer
+                    // if one is not already pending. Returning to
+                    // `.ready` cancels it; staying in `.waiting` past
+                    // the tolerance triggers teardown via the same
+                    // path as `.failed`.
+                    if waitingWork != nil { break }
                     self?.logDebug(
-                        "egress NWConnection failed before flow opened: \(String(describing: error))"
+                        "egress NWConnection waiting after flow opened: \(String(describing: error))"
                     )
-                    // Explicit cancel() releases the kernel NECP flow slot.
-                    connection.cancel()
-                    session.cancel()
-                    self?.removeTcpFlow(flowId)
+                    let work = DispatchWorkItem {
+                        tearDownPostReady(error)
+                    }
+                    waitingWork = work
+                    flowQueue.asyncAfter(
+                        deadline: .now() + .milliseconds(Int(egressWaitingToleranceMs)),
+                        execute: work
+                    )
+
+                case .cancelled:
+                    // We initiated this cancel via one of the
+                    // teardown paths above (or the linger / EOF
+                    // backstops in the pumps). Nothing to do here
+                    // beyond making sure any pending `.waiting`
+                    // tolerance timer is invalidated.
+                    waitingWork?.cancel()
+                    waitingWork = nil
 
                 default:
+                    // `.preparing`, `.setup`, and future cases —
+                    // nothing actionable at the provider level.
                     break
                 }
             }
@@ -2288,12 +2405,23 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         flowQueue.asyncAfter(
             deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: timeoutWork)
 
+        // Mirror of the TCP path's `.waiting(_)` tolerance: a brief
+        // post-ready dip back into `.waiting` should be tolerated;
+        // sitting in `.waiting` past the window means the path is
+        // gone and the flow must be torn down.
+        let udpEgressWaitingToleranceMs = defaultEgressWaitingToleranceMs
+        var udpWaitingWork: DispatchWorkItem?
+
         connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
             flowQueue.async { [weak self, weak ctx] in
                 guard let ctx, let connection = ctx.connection else { return }
                 switch state {
                 case .ready:
-                    guard !egressReady else { return }
+                    if egressReady {
+                        udpWaitingWork?.cancel()
+                        udpWaitingWork = nil
+                        return
+                    }
                     egressReady = true
                     timeoutWork.cancel()
 
@@ -2351,16 +2479,50 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     }
 
                 case .failed(let error):
-                    guard !egressReady else { return }
-                    timeoutWork.cancel()
+                    if !egressReady {
+                        timeoutWork.cancel()
+                        self?.logDebug(
+                            "egress NWConnection failed before udp flow opened: \(String(describing: error))"
+                        )
+                        // See TCP path: explicit cancel() returns the kernel flow slot.
+                        connection.cancel()
+                        ctx.connection = nil
+                        session.onClientClose()
+                        self?.removeUdpFlow(flowId)
+                    } else {
+                        // Post-ready failure — route through the
+                        // shared `terminate` closure so the flow
+                        // teardown is consistent with all other UDP
+                        // failure paths (egress read pump, flow-side
+                        // read error, NWConnection send failure).
+                        udpWaitingWork?.cancel()
+                        udpWaitingWork = nil
+                        self?.logDebug(
+                            "egress NWConnection failed after udp flow opened: \(String(describing: error))"
+                        )
+                        ctx.terminate?(error)
+                    }
+
+                case .waiting(let error):
+                    if !egressReady {
+                        break
+                    }
+                    if udpWaitingWork != nil { break }
                     self?.logDebug(
-                        "egress NWConnection failed before udp flow opened: \(String(describing: error))"
+                        "egress NWConnection waiting after udp flow opened: \(String(describing: error))"
                     )
-                    // See TCP path: explicit cancel() returns the kernel flow slot.
-                    connection.cancel()
-                    ctx.connection = nil
-                    session.onClientClose()
-                    self?.removeUdpFlow(flowId)
+                    let work = DispatchWorkItem { [weak ctx] in
+                        ctx?.terminate?(error)
+                    }
+                    udpWaitingWork = work
+                    flowQueue.asyncAfter(
+                        deadline: .now() + .milliseconds(Int(udpEgressWaitingToleranceMs)),
+                        execute: work
+                    )
+
+                case .cancelled:
+                    udpWaitingWork?.cancel()
+                    udpWaitingWork = nil
 
                 default:
                     break

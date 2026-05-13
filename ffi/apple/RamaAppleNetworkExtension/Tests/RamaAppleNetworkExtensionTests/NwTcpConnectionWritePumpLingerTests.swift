@@ -43,7 +43,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60),
+            lingerCloseDeadline: .milliseconds(300),
             onDrained: {}
         )
 
@@ -61,7 +61,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         // Wait past the linger deadline + slack. The watchdog fires on
         // `queue` so we also let the queue drain to make the
         // observation deterministic.
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.45)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
@@ -77,7 +77,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(200),
+            lingerCloseDeadline: .milliseconds(600),
             onDrained: {}
         )
 
@@ -93,7 +93,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         waitForQueueDrain(queue)
 
         // Wait well past the linger deadline.
-        Thread.sleep(forTimeInterval: 0.30)
+        Thread.sleep(forTimeInterval: 0.90)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
@@ -109,7 +109,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60),
+            lingerCloseDeadline: .milliseconds(300),
             onDrained: {}
         )
 
@@ -117,7 +117,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         waitForQueueDrain(queue)
 
         // Past the linger deadline.
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.45)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(

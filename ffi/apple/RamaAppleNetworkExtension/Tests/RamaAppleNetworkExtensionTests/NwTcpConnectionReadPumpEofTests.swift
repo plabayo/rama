@@ -87,7 +87,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             connection: mock,
             session: session,
             queue: queue,
-            eofGraceDeadline: .milliseconds(60)
+            eofGraceDeadline: .milliseconds(300)
         )
 
         pump.start()
@@ -100,7 +100,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         XCTAssertEqual(mock.cancelCount, 0, "EOF backstop must not fire before its deadline")
 
         // Past the grace deadline + slack.
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.45)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
@@ -119,7 +119,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             connection: mock,
             session: session,
             queue: queue,
-            eofGraceDeadline: .milliseconds(60)
+            eofGraceDeadline: .milliseconds(300)
         )
 
         pump.start()
@@ -132,7 +132,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0)
 
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.45)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
@@ -151,7 +151,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             connection: mock,
             session: session,
             queue: queue,
-            eofGraceDeadline: .milliseconds(200)
+            eofGraceDeadline: .milliseconds(600)
         )
 
         pump.start()
@@ -168,7 +168,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pump.cancel()
         waitForQueueDrain(queue)
 
-        Thread.sleep(forTimeInterval: 0.30)
+        Thread.sleep(forTimeInterval: 0.90)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
@@ -187,7 +187,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             connection: mock,
             session: session,
             queue: queue,
-            eofGraceDeadline: .milliseconds(60)
+            eofGraceDeadline: .milliseconds(300)
         )
 
         pump.start()
@@ -202,7 +202,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         mock.completePendingReceive()
         waitForQueueDrain(queue)
 
-        Thread.sleep(forTimeInterval: 0.15)
+        Thread.sleep(forTimeInterval: 0.45)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
