@@ -1215,7 +1215,7 @@ private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
 /// `connection.receive` calls until the matching `onEgressReadDemand`
 /// callback flips `paused` back to `false` via `resume()`.
 private final class NwTcpConnectionReadPump {
-    private let connection: NWConnection
+    private let connection: any NwConnectionLike
     /// `weak` for the same retain-cycle / ownership reasons as
     /// [`TcpClientReadPump.session`].
     private weak var session: RamaTcpSessionHandle?
@@ -1230,7 +1230,7 @@ private final class NwTcpConnectionReadPump {
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
 
-    init(connection: NWConnection, session: RamaTcpSessionHandle, queue: DispatchQueue) {
+    init(connection: any NwConnectionLike, session: RamaTcpSessionHandle, queue: DispatchQueue) {
         self.connection = connection
         self.session = session
         self.queue = queue
@@ -1338,17 +1338,26 @@ private final class NwTcpConnectionReadPump {
 /// See `TcpClientReadPump` for the `@unchecked Sendable`
 /// rationale — same lock + queue confinement applies here.
 private final class NwTcpConnectionWritePump: @unchecked Sendable {
-    private let connection: NWConnection
+    private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
 
-    init(connection: NWConnection, queue: DispatchQueue, onDrained: @escaping () -> Void) {
+    init(connection: any NwConnectionLike, queue: DispatchQueue, onDrained: @escaping () -> Void) {
         self.connection = connection
         let core = TcpWritePumpCore(
             queue: queue,
             initialLifecycle: .open,
             onDrained: onDrained,
             doWrite: { data, completion in
-                connection.send(content: data, completion: .contentProcessed(completion))
+                // `isComplete: true` matches `NWConnection.send`'s own
+                // default for TCP; the value is a no-op for stream
+                // transports but is set explicitly here because the
+                // injectable protocol surface has no default arguments.
+                connection.send(
+                    content: data,
+                    contentContext: .defaultMessage,
+                    isComplete: true,
+                    completion: .contentProcessed(completion)
+                )
             },
             logHwm: { hwm in
                 RamaTransparentProxyEngineHandle.log(
@@ -1386,7 +1395,12 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
 
     fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
         guard connection.state == .ready else { return }
-        connection.send(content: nil, isComplete: true, completion: .contentProcessed({ _ in }))
+        connection.send(
+            content: nil,
+            contentContext: .defaultMessage,
+            isComplete: true,
+            completion: .contentProcessed({ _ in })
+        )
     }
 }
 
@@ -1469,10 +1483,13 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 /// Swift weak references are thread-safe for both load and store on modern
 /// runtimes, so no extra locking is required here.
 private final class TcpFlowContext {
+    // Connection is held behind the injectable protocol so unit tests
+    // can drive the per-flow state machine via a mock instead of
+    // standing up a real NWConnection.
     weak var session: RamaTcpSessionHandle?
     /// Egress NWConnection, reachable from late callbacks that must
     /// still be able to `cancel()` the flow.
-    var connection: NWConnection?
+    var connection: (any NwConnectionLike)?
     /// Read pumps reachable from the Rust → Swift demand callbacks.
     var clientReadPump: TcpClientReadPump?
     var egressReadPump: NwTcpConnectionReadPump?
@@ -1484,7 +1501,8 @@ private final class TcpFlowContext {
 
 private final class UdpFlowContext {
     weak var session: RamaUdpSessionHandle?
-    var connection: NWConnection?
+    // See `TcpFlowContext.connection` for why this is the protocol type.
+    var connection: (any NwConnectionLike)?
     /// Per-flow pumps + closures, owned by the provider's state map
     /// until the flow is removed.
     var egressReadPump: NwUdpConnectionReadPump?
@@ -1503,6 +1521,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
     private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
     private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
+
+    /// Factory used to construct egress `NWConnection`s for intercepted
+    /// flows. Production code leaves this at the default, which produces
+    /// real `NWConnection`s. Unit tests assign a mock factory so the
+    /// per-flow state machine can be driven without a real socket.
+    var nwConnectionFactory: NwConnectionFactoryFn = defaultNwConnectionFactory
 
     private func registerTcpFlow(
         _ flowId: ObjectIdentifier,
@@ -1797,8 +1821,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             applyFlowMetadata(flow, nwParams)
         }
 
-        guard let connection = makeNwConnection(
-            host: remoteHost, port: meta.remotePort, using: nwParams)
+        guard let connection = nwConnectionFactory(remoteHost, meta.remotePort, nwParams)
         else {
             logDebug(
                 "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session"
@@ -2117,8 +2140,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             applyFlowMetadata(flow, nwParams)
         }
 
-        guard let connection = makeNwConnection(
-            host: remoteHost, port: bootMeta.remotePort, using: nwParams)
+        guard let connection = nwConnectionFactory(remoteHost, bootMeta.remotePort, nwParams)
         else {
             logDebug(
                 "handleUdpFlow: invalid remote port \(bootMeta.remotePort); cancelling session"
@@ -2172,8 +2194,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         // closure runs on NWConnection's scheduler,
                         // hop back onto `flowQueue` so `terminate`
                         // sees flow-scoped state single-threaded.
+                        //
+                        // `isComplete: true` is the correct datagram
+                        // boundary marker on a UDP `NWConnection`; the
+                        // value is set explicitly here because the
+                        // injectable protocol surface has no default
+                        // arguments.
                         connection.send(
                             content: data,
+                            contentContext: .defaultMessage,
+                            isComplete: true,
                             completion: .contentProcessed({ error in
                                 if let error {
                                     flowQueue.async { ctx?.terminate?(error) }
