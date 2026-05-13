@@ -8,8 +8,9 @@ import XCTest
 ///
 /// The linger-cancel watchdog and the EOF backstop in the read pump are
 /// each tested in isolation by their own suites. The bugs that
-/// actually shipped in 1.4.0, though, came from the *interaction*
-/// between the two pumps and the NWConnection state machine — a
+/// actually showed up in the field, though, came from the
+/// *interaction* between the two pumps and the NWConnection
+/// state machine — a
 /// connection that lingered after FIN AND then peer-EOFed mid-linger,
 /// for example, has to leave nothing leaked regardless of which
 /// backstop fires first.

@@ -51,9 +51,10 @@ final class TransparentProxyCore {
 
     /// Timer that emits a per-protocol live-flow count every 60s.
     /// Operator-visible signal that catches accumulation regressions
-    /// (the 1.4.0 leak class would show up as `tcp_flows` growing
-    /// without bound in `log show`) before users notice degradation.
-    /// `nil` outside of `attachEngine` / `detachEngine` brackets.
+    /// — a registered-flow leak would show up as `tcp_flows` /
+    /// `udp_flows` growing without bound in `log show` — before
+    /// users notice degradation. `nil` outside of `attachEngine` /
+    /// `detachEngine` brackets.
     private var flowCountReportingTimer: DispatchSourceTimer?
 
     // MARK: - Engine lifecycle
@@ -97,8 +98,7 @@ final class TransparentProxyCore {
 
     /// Interval between live-flow-count reports. 60s is short enough
     /// to surface accumulation regressions within minutes of onset
-    /// (the 1.4.0 leak grew over hours) and long enough that the
-    /// resulting log volume is negligible.
+    /// and long enough that the resulting log volume is negligible.
     private static let flowCountReportingInterval: DispatchTimeInterval = .seconds(60)
 
     private func startFlowCountReporting() {

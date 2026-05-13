@@ -41,13 +41,15 @@ import RamaAppleNEFFI
 // `self` inside that scope is strong; an inner async block re-captures
 // it strongly unless you write `[weak self]` again.
 //
-// History: the 1.4.0 leak was traced to a single missing `[weak self]`
-// on `TcpClientReadPump.requestReadLocked`'s `flow.readData` callback.
-// The cycle was `pump → flow (let) → mock's _pendingReads → closure
-// → pump`. ARC can't see it; code review missed it for months. The
-// `CoreArcLeakSweepTests` suite catches any new instance of the same
-// shape, but only if the test layer is exercised — please keep the
-// closure-capture rule above in mind when adding new async surface.
+// Cautionary example: a single missing `[weak self]` on
+// `TcpClientReadPump.requestReadLocked`'s `flow.readData` callback
+// produced the cycle `pump → flow (let) → kernel callback queue →
+// closure → pump`. ARC can't see it; code review missed it for
+// months in production. The retain cycle leaked every intercepted
+// flow's per-flow context graph until the kernel-side flow state
+// machine wrapped up, which under stuck-peer conditions never
+// happened promptly. Please keep the closure-capture rule above
+// in mind when adding any new async surface.
 
 enum FlowLogLevel {
     case trace
@@ -454,10 +456,6 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.queue = queue
         self.logger = logger
         self.onTerminal = onTerminal
-        if tcpFlowContextDiagnosticsEnabled { TcpClientReadPumpLiveCounter.increment() }
-    }
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { TcpClientReadPumpLiveCounter.decrement() }
     }
 
     func requestRead() {
@@ -997,12 +995,8 @@ final class TcpClientWritePump: @unchecked Sendable {
         )
         self.core = core
         core.delegate = self
-        if tcpFlowContextDiagnosticsEnabled { TcpClientWritePumpLiveCounter.increment() }
     }
 
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { TcpClientWritePumpLiveCounter.decrement() }
-    }
 
     func markOpened() {
         core.queue.async { [weak self] in
@@ -1142,12 +1136,8 @@ final class UdpClientWritePump {
         self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
-        if tcpFlowContextDiagnosticsEnabled { UdpClientWritePumpLiveCounter.increment() }
     }
 
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { UdpClientWritePumpLiveCounter.decrement() }
-    }
 
     func markOpened() {
         queue.async {
@@ -1435,12 +1425,8 @@ final class NwTcpConnectionReadPump {
         self.session = session
         self.queue = queue
         self.eofGraceDeadline = eofGraceDeadline
-        if tcpFlowContextDiagnosticsEnabled { NwTcpConnectionReadPumpLiveCounter.increment() }
     }
 
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { NwTcpConnectionReadPumpLiveCounter.decrement() }
-    }
 
     func start() {
         queue.async { self.scheduleReadLocked() }
@@ -1629,12 +1615,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         )
         self.core = core
         core.delegate = self
-        if tcpFlowContextDiagnosticsEnabled { NwTcpConnectionWritePumpLiveCounter.increment() }
     }
 
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { NwTcpConnectionWritePumpLiveCounter.decrement() }
-    }
 
     /// Same status contract as `TcpClientWritePump.enqueue`.
     @discardableResult
@@ -1725,12 +1707,8 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
         self.session = session
         self.queue = queue
         self.onTerminate = onTerminate
-        if tcpFlowContextDiagnosticsEnabled { NwUdpConnectionReadPumpLiveCounter.increment() }
     }
 
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { NwUdpConnectionReadPumpLiveCounter.decrement() }
-    }
 
     func start() {
         scheduleRead()
@@ -1779,70 +1757,13 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 /// `TcpFlowContext.diagnosticCountersEnabled = true` to surface ARC
 /// leaks of the per-flow context graph. Off by default so production
 /// callers don't take an atomic on every flow alloc.
-nonisolated(unsafe) var tcpFlowContextDiagnosticsEnabled = false
-final class TcpFlowContextLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class TcpClientReadPumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class TcpClientWritePumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class NwTcpConnectionReadPumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class NwTcpConnectionWritePumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class UdpClientWritePumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class NwUdpConnectionReadPumpLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
-final class UdpFlowContextLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() { lock.lock(); _count += 1; lock.unlock() }
-    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
-    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
-}
 
 final class TcpFlowContext {
     // Connection is held behind the injectable protocol so unit tests
@@ -1861,19 +1782,11 @@ final class TcpFlowContext {
     var egressWritePump: NwTcpConnectionWritePump?
 
     init() {
-        if tcpFlowContextDiagnosticsEnabled { TcpFlowContextLiveCounter.increment() }
-    }
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { TcpFlowContextLiveCounter.decrement() }
     }
 }
 
 final class UdpFlowContext {
     init() {
-        if tcpFlowContextDiagnosticsEnabled { UdpFlowContextLiveCounter.increment() }
-    }
-    deinit {
-        if tcpFlowContextDiagnosticsEnabled { UdpFlowContextLiveCounter.decrement() }
     }
 
     weak var session: RamaUdpSessionHandle?

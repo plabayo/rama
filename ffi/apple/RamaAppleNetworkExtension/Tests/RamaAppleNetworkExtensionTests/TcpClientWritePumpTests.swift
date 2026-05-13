@@ -12,27 +12,6 @@ import XCTest
 /// `TransparentProxyCore.handleTcpFlow` lifecycle tests — the
 /// latter calls `open`, `closeReadWithError`, `closeWriteWithError`,
 /// and `applyMetadata(to:)` in addition to the read / write surfaces.
-/// Atomic counter of how many `MockTcpFlow` instances are currently
-/// alive. Useful for ARC-leak diagnostics: each instance increments
-/// in `init` and decrements in `deinit`; a test that drops every
-/// strong reference and then asserts `MockTcpFlow.liveCount == 0`
-/// gets a precise count of leftover instances regardless of which
-/// closure is pinning them.
-final class MockTcpFlowLiveCounter: @unchecked Sendable {
-    private static let lock = NSLock()
-    private static var _count: Int = 0
-    static func increment() {
-        lock.lock(); _count += 1; lock.unlock()
-    }
-    static func decrement() {
-        lock.lock(); _count -= 1; lock.unlock()
-    }
-    static var current: Int {
-        lock.lock(); defer { lock.unlock() }
-        return _count
-    }
-}
-
 final class MockTcpFlow: TcpFlowLike {
     private let lock = NSLock()
     private var _writes: [Data] = []
@@ -180,8 +159,6 @@ final class MockTcpFlow: TcpFlowLike {
         return _closeReadErrors.last ?? nil
     }
 
-    init() { MockTcpFlowLiveCounter.increment() }
-    deinit { MockTcpFlowLiveCounter.decrement() }
 }
 
 private func transientENOBUFS() -> Error {
