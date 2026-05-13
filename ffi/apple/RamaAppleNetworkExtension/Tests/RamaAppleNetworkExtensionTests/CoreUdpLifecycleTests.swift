@@ -143,6 +143,32 @@ final class CoreUdpLifecycleTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
     }
 
+    func testPostReadyWaitingTimesOutAndTearsDown() {
+        let savedTolerance = defaultEgressWaitingToleranceMs
+        defaultEgressWaitingToleranceMs = 200
+        defer { defaultEgressWaitingToleranceMs = savedTolerance }
+
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockUdpFlow()
+        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+
+        conn.transition(to: .ready)
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("read pump started") { flow.pendingReadCount > 0 }
+
+        conn.transition(to: .waiting(.posix(.ENETDOWN)))
+
+        waitFor("waiting tolerance fired teardown", timeout: 3.0) {
+            fx.core.udpFlowCount == 0
+        }
+        XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1)
+        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+    }
+
     // MARK: - flow.open error
 
     func testFlowOpenErrorAfterEgressReadyTearsDownCleanly() {

@@ -298,7 +298,11 @@ let defaultEgressEofGraceMs: UInt32 = 2_000
 /// path will not come back on its own and the connection is
 /// effectively dead. After this window the state handler treats it
 /// as failed and tears the flow down.
-let defaultEgressWaitingToleranceMs: UInt32 = 5_000
+///
+/// `var` for tests that need a short tolerance to keep runtime
+/// bounded — same pattern as `writePumpMaxPendingBytes`. Production
+/// code paths read; tests override before invoking the lifecycle.
+nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 

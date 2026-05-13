@@ -183,6 +183,104 @@ final class CoreEdgeCaseTests: XCTestCase {
         _ = core.handleAppMessage(Data())
     }
 
+    // MARK: - State transition after detachEngine
+
+    /// Apple delivers `stateUpdateHandler` state changes asynchronously
+    /// on the connection's queue. A state can in principle arrive
+    /// after the flow has already been torn down via `detachEngine`.
+    /// Because every `[weak self, weak ctx]` capture in the handler
+    /// observes both as nil, the late state must be a no-op rather
+    /// than crash or invoke any cleanup path.
+    func testStateUpdateAfterDetachIsNoOp() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+
+        let flow = MockTcpFlow()
+        _ = core.handleTcpFlow(flow, meta: makeMeta())
+        let conn = capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open invoked") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("egress receive in flight") { conn.pendingReceiveCount > 0 }
+
+        // Tear everything down — the engine is gone, ctx is gone,
+        // session is gone.
+        core.detachEngine(reason: 0)
+        XCTAssertEqual(core.tcpFlowCount, 0)
+
+        // Now fire a state transition. The handler is still set on
+        // the mock connection because we haven't called
+        // simulateCancelled; this models the real case of a late
+        // kernel callback firing on a connection that production
+        // code has already abandoned.
+        //
+        // The handler must process this without crashing. Pre-fix
+        // behavior would have been a segfault if `ctx` had been
+        // captured strongly; with `[weak ctx]` everywhere the
+        // closure body bails out at the `guard let ctx` line.
+        conn.transition(to: .failed(.posix(.ECONNRESET)))
+
+        // Sanity: no extra cancel call, no flow.close invocations
+        // from this late transition.
+        let cancelsBefore = conn.cancelCount
+        Thread.sleep(forTimeInterval: 0.10)
+        XCTAssertEqual(
+            conn.cancelCount, cancelsBefore,
+            "late state transition must not trigger any new cancel"
+        )
+        conn.simulateCancelled()
+        capture.releaseAll()
+    }
+
+    // MARK: - Duplicate .ready (Wi-Fi roam recovery shape)
+
+    /// Post-ready `.waiting` followed by another `.ready` is the
+    /// Wi-Fi roam pattern. The duplicate `.ready` arm in the state
+    /// handler must cancel any pending `.waiting` tolerance work
+    /// item so it doesn't fire on the now-healthy connection.
+    func testDuplicateReadyAfterWaitingCancelsToleranceTimer() {
+        let savedTolerance = defaultEgressWaitingToleranceMs
+        defaultEgressWaitingToleranceMs = 200
+        defer { defaultEgressWaitingToleranceMs = savedTolerance }
+
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+
+        let flow = MockTcpFlow()
+        _ = core.handleTcpFlow(flow, meta: makeMeta())
+        let conn = capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open invoked") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("egress receive in flight") { conn.pendingReceiveCount > 0 }
+
+        // Go into .waiting then bounce back to .ready before the
+        // tolerance fires.
+        conn.transition(to: .waiting(.posix(.ENETDOWN)))
+        Thread.sleep(forTimeInterval: 0.05)
+        conn.transition(to: .ready)
+
+        // Wait past where the tolerance would have fired had the
+        // duplicate .ready not cancelled it.
+        Thread.sleep(forTimeInterval: 0.40)
+
+        XCTAssertEqual(
+            core.tcpFlowCount, 1,
+            "duplicate .ready must cancel pending waiting-tolerance timer; flow should still be alive"
+        )
+
+        // Clean shutdown so the deferred detachEngine doesn't leak.
+        conn.completePendingReceive(isComplete: true)
+        waitFor("flow removed") { core.tcpFlowCount == 0 }
+        conn.simulateCancelled()
+        capture.releaseAll()
+    }
+
     // MARK: - Periodic flow-count reporting timer
 
     /// The flow-count reporting timer is scheduled on attachEngine
