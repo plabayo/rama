@@ -5,7 +5,16 @@ use std::{
     sync::mpsc,
 };
 
-use block2::StackBlock;
+use block2::{Block, StackBlock};
+
+/// Maximum nesting depth accepted by [`OwnedXpcObject::from_message`] and
+/// [`OwnedXpcObject::to_message`].
+///
+/// This guards against stack overflow when encoding or decoding deeply nested
+/// XPC arrays/dictionaries (e.g. from an untrusted peer). The limit is
+/// intentionally generous — graceful-by-default — and applies uniformly to
+/// both directions. Strictness can be tightened by callers if needed.
+pub(crate) const MAX_OBJECT_NESTING_DEPTH: usize = 256;
 
 use crate::{
     endpoint::XpcEndpoint,
@@ -54,6 +63,13 @@ impl OwnedXpcObject {
     }
 
     pub(crate) fn from_message(message: XpcMessage) -> Result<Self, XpcError> {
+        Self::from_message_inner(message, 0)
+    }
+
+    fn from_message_inner(message: XpcMessage, depth: usize) -> Result<Self, XpcError> {
+        if depth > MAX_OBJECT_NESTING_DEPTH {
+            return Err(XpcError::UnsupportedObjectType("nesting too deep"));
+        }
         // SAFETY for the entire match: each xpc_*_create function takes a valid Rust
         // value and returns a new retained XPC object (or NULL on allocation failure,
         // caught by from_raw). Arguments derived from Rust types satisfy each API's
@@ -91,7 +107,7 @@ impl OwnedXpcObject {
                 // SAFETY: Passing null/0 creates an empty mutable array.
                 let raw = unsafe { xpc_array_create(ptr::null_mut(), 0) };
                 for value in values {
-                    let value = Self::from_message(value)?;
+                    let value = Self::from_message_inner(value, depth + 1)?;
                     // SAFETY: raw is a valid mutable XPC array; value.raw is a valid
                     // retained XPC object. xpc_array_append_value retains value.raw.
                     unsafe { xpc_array_append_value(raw, value.raw) };
@@ -103,7 +119,7 @@ impl OwnedXpcObject {
                 let raw = unsafe { xpc_dictionary_create(ptr::null(), ptr::null_mut(), 0) };
                 for (key, value) in values {
                     let key = make_c_string(&key)?;
-                    let value = Self::from_message(value)?;
+                    let value = Self::from_message_inner(value, depth + 1)?;
                     // SAFETY: raw is a valid mutable XPC dictionary. key.as_ptr() is a
                     // valid null-terminated C string. value.raw is a valid retained XPC
                     // object. xpc_dictionary_set_value retains value.raw.
@@ -116,6 +132,13 @@ impl OwnedXpcObject {
     }
 
     pub(crate) fn to_message(&self) -> Result<XpcMessage, XpcError> {
+        self.to_message_inner(0)
+    }
+
+    fn to_message_inner(&self, depth: usize) -> Result<XpcMessage, XpcError> {
+        if depth > MAX_OBJECT_NESTING_DEPTH {
+            return Err(XpcError::UnsupportedObjectType("nesting too deep"));
+        }
         // Common precondition for every branch below: self.raw is a valid, non-null
         // XPC object held by OwnedXpcObject. is_type() confirms the runtime type
         // before any type-specific accessor is called.
@@ -198,15 +221,21 @@ impl OwnedXpcObject {
             // Return u8 (1 = continue, 0 = stop) because bool does not implement
             // objc2's Encode trait. The ABI is identical: XPC reads the 1-byte
             // return value and treats any non-zero as "continue".
-            let mut block = StackBlock::new(move |_idx: usize, value: xpc_object_t| -> u8 {
+            let block = StackBlock::new(move |_idx: usize, value: xpc_object_t| -> u8 {
                 _ = sender.send(Self::retain(value, "array element"));
                 1
             });
-            // SAFETY: self.raw is a valid XPC array. xpc_array_apply calls the block
-            // synchronously for each element before returning, so all sends complete
-            // before the subsequent recv() calls below.
+            // SAFETY: self.raw is a valid XPC array. `&*block` derefs the StackBlock
+            // to its inner `Block`, whose pointer is documented (block2 stack.rs) to
+            // be safe to reinterpret as an Objective-C block pointer. xpc_array_apply
+            // is documented as synchronous: it invokes the block once per element and
+            // returns only after the final invocation, so the StackBlock cannot outlive
+            // this scope and never needs to be `_Block_copy`'d to the heap.
             unsafe {
-                xpc_array_apply(self.raw, ptr::from_mut(&mut block).cast::<c_void>());
+                xpc_array_apply(
+                    self.raw,
+                    (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
+                );
             }
             let mut values = Vec::new();
             // SAFETY: xpc_array_get_count on a valid XPC array returns the element count.
@@ -216,14 +245,14 @@ impl OwnedXpcObject {
                 let value = receiver
                     .recv()
                     .map_err(|_e| XpcError::UnsupportedObjectType("array"))??;
-                values.push(value.to_message()?);
+                values.push(value.to_message_inner(depth + 1)?);
             }
             return Ok(XpcMessage::Array(values));
         }
         if self.is_type(unsafe { &_xpc_type_dictionary as *const _ as *const c_void }) {
             let (sender, receiver) = mpsc::channel();
             // Return u8 (1 = continue, 0 = stop) — same reasoning as the array case above.
-            let mut block = StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
+            let block = StackBlock::new(move |key: *const c_char, value: xpc_object_t| -> u8 {
                 // SAFETY: key is a valid null-terminated C string borrowed from the XPC
                 // dictionary for the duration of this callback invocation.
                 let key = unsafe { CStr::from_ptr(key) }
@@ -232,10 +261,15 @@ impl OwnedXpcObject {
                 _ = sender.send((key, Self::retain(value, "dictionary value")));
                 1
             });
-            // SAFETY: self.raw is a valid XPC dictionary. xpc_dictionary_apply calls the
-            // block synchronously for each entry before returning.
+            // SAFETY: self.raw is a valid XPC dictionary. `&*block` yields a pointer to
+            // the inner Block, which block2 documents as safe to reinterpret as an
+            // Objective-C block pointer. xpc_dictionary_apply is synchronous (see the
+            // array case above for the same reasoning).
             unsafe {
-                xpc_dictionary_apply(self.raw, ptr::from_mut(&mut block).cast::<c_void>());
+                xpc_dictionary_apply(
+                    self.raw,
+                    (&*block as *const Block<_>).cast::<c_void>().cast_mut(),
+                );
             }
             let mut values = BTreeMap::new();
             // SAFETY: xpc_dictionary_get_count on a valid XPC dictionary returns the entry
@@ -244,7 +278,7 @@ impl OwnedXpcObject {
                 let (key, value) = receiver
                     .recv()
                     .map_err(|_e| XpcError::UnsupportedObjectType("dictionary"))?;
-                values.insert(key, value?.to_message()?);
+                values.insert(key, value?.to_message_inner(depth + 1)?);
             }
             return Ok(XpcMessage::Dictionary(values));
         }
@@ -492,6 +526,52 @@ mod tests {
             ("version".into(), XpcMessage::Uint64(1)),
         ]));
         assert_eq!(rt(root.clone()), root);
+    }
+
+    // ── depth limit ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn depth_limit_rejects_excessive_array_nesting() {
+        use crate::object::MAX_OBJECT_NESTING_DEPTH;
+
+        let mut msg = XpcMessage::Null;
+        for _ in 0..(MAX_OBJECT_NESTING_DEPTH + 2) {
+            msg = XpcMessage::Array(vec![msg]);
+        }
+        assert!(
+            OwnedXpcObject::from_message(msg).is_err(),
+            "encoding past depth limit must error rather than overflow the stack",
+        );
+    }
+
+    #[test]
+    fn depth_limit_rejects_excessive_dictionary_nesting() {
+        use crate::object::MAX_OBJECT_NESTING_DEPTH;
+
+        let mut msg = XpcMessage::Null;
+        for i in 0..(MAX_OBJECT_NESTING_DEPTH + 2) {
+            let mut map = BTreeMap::new();
+            map.insert(format!("k{i}"), msg);
+            msg = XpcMessage::Dictionary(map);
+        }
+        assert!(
+            OwnedXpcObject::from_message(msg).is_err(),
+            "encoding past depth limit must error rather than overflow the stack",
+        );
+    }
+
+    #[test]
+    fn depth_limit_at_boundary_succeeds() {
+        use crate::object::MAX_OBJECT_NESTING_DEPTH;
+
+        // exactly at the limit should still encode/decode cleanly
+        let mut msg = XpcMessage::Int64(7);
+        for _ in 0..MAX_OBJECT_NESTING_DEPTH {
+            msg = XpcMessage::Array(vec![msg]);
+        }
+        let owned = OwnedXpcObject::from_message(msg.clone()).expect("encode at limit");
+        let decoded = owned.to_message().expect("decode at limit");
+        assert_eq!(decoded, msg);
     }
 
     // ── note on XpcMessage::Endpoint ─────────────────────────────────────────

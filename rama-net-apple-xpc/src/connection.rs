@@ -20,11 +20,21 @@ use rama_core::{
 };
 use rama_utils::str::arcstr::ArcStr;
 use tokio::sync::{
-    mpsc::{UnboundedReceiver, unbounded_channel},
+    mpsc::{Receiver, Sender, channel, error::TrySendError},
     oneshot,
 };
 
 use block2::RcBlock;
+
+/// Default capacity for the per-connection event channel.
+///
+/// Sized generously so that well-behaved peers never see back-pressure-induced
+/// drops, while still bounding the worst-case memory footprint of a misbehaving
+/// or stuck reader. Override per-connection via
+/// [`XpcClientConfig::with_max_pending_events`](crate::XpcClientConfig::with_max_pending_events)
+/// or via the listener-level knobs on
+/// [`XpcListenerConfig`](crate::XpcListenerConfig).
+pub const DEFAULT_MAX_PENDING_EVENTS: usize = 10_000;
 
 use crate::{
     call::XpcCall,
@@ -60,20 +70,18 @@ pub enum XpcEvent {
 
 /// An incoming XPC message together with the context needed to send a reply.
 ///
-/// Obtained from [`XpcEvent::Message`] via [`XpcConnection::recv`].
+/// Obtained from [`XpcEvent::Message`] via [`XpcConnection::recv`]. Holds its own
+/// retained reference to the originating connection: the parent
+/// [`XpcConnection`] may be dropped while a `ReceivedXpcMessage` is still in
+/// flight, and [`reply`](Self::reply) remains safe to call.
 #[derive(Debug)]
 pub struct ReceivedXpcMessage {
-    connection: xpc_connection_t,
+    // Independent retained reference to the originating connection — keeps it alive
+    // for the lifetime of this message even if the parent XpcConnection is dropped.
+    connection: OwnedXpcObject,
     message: XpcMessage,
     raw_event: OwnedXpcObject,
 }
-
-// SAFETY: `connection` is an `xpc_connection_t`, which Apple documents as thread-safe
-// (xpc_connection_send_message and friends may be called from any thread). `raw_event`
-// is held inside an `OwnedXpcObject` whose own Send+Sync impls cover its xpc_object_t.
-// `message` is owned, plain Rust data. No mutable shared state is exposed.
-unsafe impl Send for ReceivedXpcMessage {}
-unsafe impl Sync for ReceivedXpcMessage {}
 
 impl ReceivedXpcMessage {
     /// Borrow the decoded message.
@@ -91,7 +99,11 @@ impl ReceivedXpcMessage {
     /// `message` must be a [`XpcMessage::Dictionary`]; any other variant returns
     /// [`XpcError::ReplyNotExpected`]. The reply is delivered to the future awaiting
     /// [`XpcConnection::send_request`] on the other side.
-    pub fn reply(&self, message: XpcMessage) -> Result<(), XpcError> {
+    ///
+    /// `reply` consumes the message: each incoming message may be replied to at most
+    /// once. To inspect the message without replying use [`message`](Self::message);
+    /// to extract without replying use [`into_message`](Self::into_message).
+    pub fn reply(self, message: XpcMessage) -> Result<(), XpcError> {
         let XpcMessage::Dictionary(values) = message else {
             return Err(XpcError::ReplyNotExpected);
         };
@@ -110,10 +122,13 @@ impl ReceivedXpcMessage {
             unsafe { xpc_dictionary_set_value(reply.raw, key.as_ptr(), value.raw) };
         }
 
-        // SAFETY: self.connection is the raw connection from which this message was
-        // received; it remains valid because the kernel keeps the connection alive while
-        // an event handler block is executing. reply.raw is a valid retained XPC object.
-        unsafe { xpc_connection_send_message(self.connection, reply.raw) };
+        // SAFETY: self.connection holds an independent retain on the originating
+        // xpc_connection_t (taken when the event was decoded), so it is guaranteed
+        // valid for this call regardless of whether the parent XpcConnection has
+        // already been dropped. reply.raw is a valid retained XPC object.
+        unsafe {
+            xpc_connection_send_message(self.connection.raw as xpc_connection_t, reply.raw);
+        }
         Ok(())
     }
 }
@@ -161,47 +176,64 @@ impl ReceivedXpcMessage {
 pub struct XpcConnection {
     connection: OwnedXpcObject,
     extensions: Extensions,
-    receiver: UnboundedReceiver<XpcEvent>,
+    receiver: Receiver<XpcEvent>,
 }
 
 // SAFETY: `XpcConnection` wraps an `OwnedXpcObject` (an `xpc_connection_t`), an
-// `Extensions` map, and an `UnboundedReceiver<XpcEvent>`. Apple documents
+// `Extensions` map, and an `mpsc::Receiver<XpcEvent>`. Apple documents
 // `xpc_connection_t` as safe to use from any thread. `Extensions` is `Send`.
-// `UnboundedReceiver` is `Send` for `T: Send`.
+// `Receiver` is `Send` for `T: Send`.
 unsafe impl Send for XpcConnection {}
 // SAFETY: every `&self` method on `XpcConnection` only touches the
 // xpc_connection_t (Apple-documented thread-safe) and `Extensions`. The
-// `UnboundedReceiver` is exclusively reached via `&mut self` (`recv`), so two
+// `Receiver` is exclusively reached via `&mut self` (`recv`), so two
 // threads sharing `&XpcConnection` cannot race on it. The auto `Sync` derive
-// is blocked only because `UnboundedReceiver` is not `Sync`; we re-assert
+// is blocked only because `Receiver` is not `Sync`; we re-assert
 // here under that exclusive-access guarantee.
 unsafe impl Sync for XpcConnection {}
 
 impl XpcConnection {
     pub(crate) fn from_owned_peer(connection: OwnedXpcObject) -> Result<Self, XpcError> {
-        let (sender, receiver) = unbounded_channel();
+        Self::from_owned_peer_with_capacity(
+            connection,
+            DEFAULT_MAX_PENDING_EVENTS,
+            DEFAULT_MAX_PENDING_EVENTS,
+        )
+    }
+
+    pub(crate) fn from_owned_peer_with_capacity(
+        connection: OwnedXpcObject,
+        capacity: usize,
+        peer_event_capacity: usize,
+    ) -> Result<Self, XpcError> {
+        let capacity = capacity.max(1);
+        let peer_event_capacity = peer_event_capacity.max(1);
+        let (sender, receiver) = channel(capacity);
         let raw_connection = connection.raw as xpc_connection_t;
 
         let block = RcBlock::new(move |event: xpc_object_t| {
-            if raw_is_error(event) {
-                tracing::debug!("xpc peer got error event");
-                _ = sender.send(XpcEvent::Error(XpcConnectionError::Invalidated(None)));
-                return;
-            }
-
+            // Retain the event so it survives the event-handler scope before we
+            // classify it. Errors, peer connections, and messages all flow through
+            // `map_event`, which preserves the specific connection-error variant.
             let Ok(retained) = OwnedXpcObject::retain(event, "peer event") else {
+                tracing::warn!("xpc peer received null event object, dropping");
                 return;
             };
 
-            let event = map_event(raw_connection, retained);
-            _ = sender.send(event);
+            let event = map_event(raw_connection, retained, peer_event_capacity);
+            forward_event(&sender, event);
         });
 
-        // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
-        // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
-        // after xpc_connection_set_event_handler so it remains valid for the connection's
-        // lifetime. xpc_connection_resume activates the connection; it must be called
-        // exactly once before any messages are sent or received.
+        // SAFETY: `raw_connection` is a valid, non-null xpc_connection_t held by
+        // OwnedXpcObject for the lifetime of this Self. The `RcBlock` lives on the
+        // heap and `RcBlock::as_ptr` is documented (block2 rc_block.rs) to be valid
+        // for at least as long as the `RcBlock` is alive. Apple's
+        // `xpc_connection_set_event_handler` is documented to `_Block_copy` the
+        // block, which bumps the heap allocation's refcount — so when the local
+        // `RcBlock` is dropped at end-of-scope its refcount goes from 2 to 1 and
+        // libxpc's copy keeps the heap block alive for as long as it needs to
+        // invoke the handler. `xpc_connection_resume` activates the connection;
+        // it must be called exactly once before any messages are sent or received.
         #[expect(
             clippy::multiple_unsafe_ops_per_block,
             reason = "set-handler-then-resume is a single XPC initialization sequence; the SAFETY comment above covers both calls"
@@ -273,12 +305,19 @@ impl XpcConnection {
 
         {
             let block = RcBlock::new(move |reply: xpc_object_t| {
-                let result = if raw_is_error(reply) {
-                    Err(XpcError::Connection(XpcConnectionError::Invalidated(None)))
-                } else {
-                    match OwnedXpcObject::retain(reply, "async reply") {
-                        Ok(reply) => reply.to_message(),
-                        Err(err) => Err(err),
+                let result = match OwnedXpcObject::retain(reply, "async reply") {
+                    Err(err) => Err(err),
+                    Ok(reply_obj) => {
+                        if raw_is_error(reply) {
+                            // Preserve the specific connection-error variant
+                            // (Interrupted / Invalidated / PeerRequirementFailed)
+                            // rather than collapsing every error to `Invalidated(None)`.
+                            let error = map_connection_error(raw_connection, &reply_obj)
+                                .unwrap_or(XpcConnectionError::Invalidated(None));
+                            Err(XpcError::Connection(error))
+                        } else {
+                            reply_obj.to_message()
+                        }
                     }
                 };
 
@@ -287,10 +326,15 @@ impl XpcConnection {
                 }
             });
 
-            // SAFETY: raw_connection is a valid xpc_connection_t. object.raw is a valid
-            // retained XPC object. The queue argument is null, so XPC uses the connection's
-            // own queue. RcBlock is a heap-allocated reference-counted Block; XPC retains
-            // it until after the callback fires, at which point it is released.
+            // SAFETY: raw_connection is a valid xpc_connection_t held by
+            // self.connection for the lifetime of &self. object.raw is a valid retained
+            // XPC object. The queue argument is null, so XPC uses the connection's own
+            // queue. The `RcBlock` lives on the heap and `RcBlock::as_ptr` is documented
+            // (block2 rc_block.rs) to be valid for at least as long as the RcBlock is
+            // alive; Apple's `xpc_connection_send_message_with_reply` is documented to
+            // `_Block_copy` the handler block, so libxpc bumps the heap refcount before
+            // we drop our local `RcBlock` at end-of-scope. libxpc invokes the block
+            // exactly once and releases its copy afterwards.
             unsafe {
                 xpc_connection_send_message_with_reply(
                     raw_connection,
@@ -470,8 +514,8 @@ impl Service<XpcMessage> for XpcConnection {
 }
 
 /// Caller must pass a valid, non-null `xpc_object_t` (we always do — these
-/// helpers are reached only from the connection event-handler block where
-/// libxpc hands us a retained event).
+/// helpers are reached only from a connection event-handler block where libxpc
+/// hands us a retained event).
 fn raw_is_type(event: xpc_object_t, ty: *const c_void) -> bool {
     // SAFETY: see function-level comment — `event` is a valid xpc_object_t.
     let value_type = unsafe { xpc_get_type(event) };
@@ -486,7 +530,11 @@ fn raw_is_error(event: xpc_object_t) -> bool {
     })
 }
 
-pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> XpcEvent {
+pub(crate) fn map_event(
+    connection: xpc_connection_t,
+    event: OwnedXpcObject,
+    peer_event_capacity: usize,
+) -> XpcEvent {
     if let Some(error) = map_connection_error(connection, &event) {
         tracing::debug!(?error, "xpc connection lifecycle event");
         return XpcEvent::Error(error);
@@ -496,7 +544,11 @@ pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> 
     // by libxpc and valid for the lifetime of the process.
     if event.is_type(unsafe { &_xpc_type_connection as *const _ as *const std::ffi::c_void }) {
         tracing::debug!("xpc listener received peer connection");
-        return match XpcConnection::from_owned_peer(event) {
+        return match XpcConnection::from_owned_peer_with_capacity(
+            event,
+            peer_event_capacity,
+            peer_event_capacity,
+        ) {
             Ok(connection) => XpcEvent::Connection(connection),
             Err(err) => XpcEvent::Error(XpcConnectionError::Invalidated(Some(ArcStr::from(
                 err.to_string(),
@@ -507,8 +559,19 @@ pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> 
     match event.to_message() {
         Ok(message) => {
             tracing::trace!(message = ?message, "xpc incoming message");
+            // Independent retain on the connection so a held ReceivedXpcMessage outlives
+            // its parent XpcConnection if necessary (reply remains safe).
+            let connection_ref =
+                match OwnedXpcObject::retain(connection.cast(), "received connection ref") {
+                    Ok(c) => c,
+                    Err(err) => {
+                        return XpcEvent::Error(XpcConnectionError::Invalidated(Some(
+                            ArcStr::from(err.to_string()),
+                        )));
+                    }
+                };
             XpcEvent::Message(ReceivedXpcMessage {
-                connection,
+                connection: connection_ref,
                 message,
                 raw_event: event,
             })
@@ -517,6 +580,22 @@ pub(crate) fn map_event(connection: xpc_connection_t, event: OwnedXpcObject) -> 
             err.to_string(),
         )))),
     }
+}
+
+/// Send `event` on `sender` with backpressure-aware semantics.
+///
+/// On a full channel we **drop the new event** and log a warning. Graceful-by-default:
+/// a stuck reader cannot make us crash, deadlock, or grow memory without bound.
+/// Closed channels (receiver dropped) silently drop — the connection is being torn down.
+pub(crate) fn forward_event(sender: &Sender<XpcEvent>, event: XpcEvent) {
+    if let Err(TrySendError::Full(_)) = sender.try_send(event) {
+        tracing::warn!(
+            capacity = sender.max_capacity(),
+            "xpc connection event channel full; dropping event"
+        );
+    }
+    // Ok and Closed are both no-ops: send succeeded, or the receiver was dropped
+    // because the connection is being torn down.
 }
 
 pub(crate) fn map_connection_error(

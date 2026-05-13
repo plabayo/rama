@@ -34,6 +34,9 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 block2 = { workspace = true }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+
 [build-dependencies]
 bindgen = { workspace = true }
 
