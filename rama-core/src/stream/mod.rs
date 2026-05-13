@@ -1,5 +1,9 @@
 pub mod json;
 
+mod forward;
+#[doc(inline)]
+pub use forward::{BridgeCloseReason, StreamBridge, StreamForwardService};
+
 pub mod codec {
     //! Adaptors from `AsyncRead`/`AsyncWrite` to Stream/Sink
     //!

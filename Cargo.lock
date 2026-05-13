@@ -3949,6 +3949,8 @@ dependencies = [
 name = "rama-udp"
 version = "0.3.0-rc1"
 dependencies = [
+ "bytes",
+ "futures",
  "rama-core",
  "rama-dns",
  "rama-net",

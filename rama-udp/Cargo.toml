@@ -32,7 +32,9 @@ rama-core = { workspace = true }
 rama-dns = { workspace = true }
 rama-net = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tokio-util = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true, features = ["codec", "net"] }
+bytes = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 
