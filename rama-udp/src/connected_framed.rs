@@ -23,10 +23,10 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
-use bytes::{BufMut, BytesMut};
-use futures::{Sink, Stream};
+use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::futures::{Sink, Stream};
+use rama_core::stream::codec::{Decoder, Encoder};
 use tokio::net::UdpSocket;
-use tokio_util::codec::{Decoder, Encoder};
 
 const INITIAL_RD_CAPACITY: usize = 64 * 1024;
 const INITIAL_WR_CAPACITY: usize = 8 * 1024;
@@ -206,10 +206,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
-    use futures::{SinkExt, StreamExt};
+    use rama_core::bytes::Bytes;
+    use rama_core::futures::{SinkExt, StreamExt};
+    use rama_core::stream::codec::BytesCodec;
     use std::time::Duration;
-    use tokio_util::codec::BytesCodec;
 
     use crate::bind_udp_with_address;
     use rama_net::address::SocketAddress;

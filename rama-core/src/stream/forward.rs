@@ -597,5 +597,4 @@ mod tests {
         // a_user dropped first → first_eof = PeerEofLeft.
         assert_eq!(reason, BridgeCloseReason::PeerEofLeft);
     }
-
 }

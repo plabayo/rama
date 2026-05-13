@@ -16,8 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::IdleGuard;
 
 // `BridgeCloseReason` is shared with the frame-oriented bridge in
-// `rama-core::stream::forward`. Re-exported here so the historical path
-// `rama_net::proxy::forward::BridgeCloseReason` keeps working.
+// `rama-core::stream::forward`. Re-exported here for convience.
 #[doc(inline)]
 pub use rama_core::stream::BridgeCloseReason;
 
