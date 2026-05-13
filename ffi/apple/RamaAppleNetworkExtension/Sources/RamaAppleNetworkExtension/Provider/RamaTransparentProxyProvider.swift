@@ -408,6 +408,10 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.queue = queue
         self.logger = logger
         self.onTerminal = onTerminal
+        if tcpFlowContextDiagnosticsEnabled { TcpClientReadPumpLiveCounter.increment() }
+    }
+    deinit {
+        if tcpFlowContextDiagnosticsEnabled { TcpClientReadPumpLiveCounter.decrement() }
     }
 
     func requestRead() {
@@ -451,9 +455,20 @@ final class TcpClientReadPump: @unchecked Sendable {
         }
 
         phase = .reading
-        self.flow.readData { data, error in
-            self.queue.async {
-                guard self.phase != .closed else { return }
+        // `[weak self]` breaks the otherwise-fatal retain cycle:
+        //   pump → flow (let) → kernel/mocked read-callback queue → this closure → pump.
+        // `NEAppProxyTCPFlow` holds the completion handler in its
+        // internal callback queue until the flow itself is destroyed,
+        // so without the weak capture the pump (and through its
+        // strongly-held `flow` field, the flow object too) lives
+        // until the flow's kernel-side state machine wraps up — long
+        // past the per-flow context's logical lifetime. The same
+        // shape leaks `NEAppProxyUDPFlow` callbacks (see UDP read
+        // path).
+        self.flow.readData { [weak self] data, error in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.phase != .closed else { return }
                 self.phase = .open
 
                 if let error {
@@ -1680,6 +1695,27 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 ///
 /// Swift weak references are thread-safe for both load and store on modern
 /// runtimes, so no extra locking is required here.
+/// Atomic live-instance counter; flipped on by tests via
+/// `TcpFlowContext.diagnosticCountersEnabled = true` to surface ARC
+/// leaks of the per-flow context graph. Off by default so production
+/// callers don't take an atomic on every flow alloc.
+nonisolated(unsafe) var tcpFlowContextDiagnosticsEnabled = false
+final class TcpFlowContextLiveCounter: @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var _count: Int = 0
+    static func increment() { lock.lock(); _count += 1; lock.unlock() }
+    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
+    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
+}
+
+final class TcpClientReadPumpLiveCounter: @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var _count: Int = 0
+    static func increment() { lock.lock(); _count += 1; lock.unlock() }
+    static func decrement() { lock.lock(); _count -= 1; lock.unlock() }
+    static var current: Int { lock.lock(); defer { lock.unlock() }; return _count }
+}
+
 final class TcpFlowContext {
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
@@ -1695,6 +1731,13 @@ final class TcpFlowContext {
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
     var egressWritePump: NwTcpConnectionWritePump?
+
+    init() {
+        if tcpFlowContextDiagnosticsEnabled { TcpFlowContextLiveCounter.increment() }
+    }
+    deinit {
+        if tcpFlowContextDiagnosticsEnabled { TcpFlowContextLiveCounter.decrement() }
+    }
 }
 
 final class UdpFlowContext {

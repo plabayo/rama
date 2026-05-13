@@ -262,19 +262,88 @@ final class CoreTcpLifecycleTests: XCTestCase {
 
     // MARK: - ARC leak check
 
-    /// Disabled. This test exposes a real strong-reference leak in
-    /// the handleTcpFlow closure graph that survives logical
-    /// teardown (engine stop + dict removal + state-handler clear
-    /// + factory release): the `MockTcpFlow` is still alive after 5
-    /// seconds. The mock NWConnection *is* released, so the leak is
-    /// specific to closures that capture `flow` strongly (likely
-    /// inside the writer pump's `doWrite` closure or the engine's
-    /// onServerClosed body). Tracking down where to add a [weak]
-    /// requires a heap-graph capture session in Instruments and is
-    /// the next debugging step. Leaving the test in source as a
-    /// clear marker; the leak shape is exactly what this test
-    /// layer was added to surface.
-    func DISABLED_testFlowAndConnectionDeallocateAfterTeardown() {
+    /// Pre-ready failure is the SIMPLEST cleanup path — no
+    /// `flow.open`, no pumps wired, no flow.read/writeData calls,
+    /// no `TcpReadTerminal`, no `flowReadPump`. If the flow leaks
+    /// here, the leak is purely from the writer pump's stored
+    /// closures (`doWrite` and `onTerminalError`) and the engine
+    /// FFI box's session callbacks. This is the cleanest isolation
+    /// for hunting which closure pins the flow.
+    func testFlowDeallocatesAfterPreReadyFailure() {
+        let engine = makeEngine()
+        let core = TransparentProxyCore()
+        core.attachEngine(engine)
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+
+        let startLive = MockTcpFlowLiveCounter.current
+        autoreleasepool {
+            let flow = MockTcpFlow()
+            _ = core.handleTcpFlow(flow, meta: makeMeta())
+            let conn = capture.waitForLastConnection()
+            conn.transition(to: .failed(.posix(.ECONNREFUSED)))
+            self.waitFor("flow removed", timeout: 5.0) { core.tcpFlowCount == 0 }
+            conn.simulateCancelled()
+        }
+        capture.releaseAll()
+        core.detachEngine(reason: 0)
+
+        // Engine stop + GCD drain need a moment.
+        let deadline = Date().addingTimeInterval(3.0)
+        while MockTcpFlowLiveCounter.current > startLive && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertEqual(
+            MockTcpFlowLiveCounter.current, startLive,
+            "MockTcpFlow leaked after pre-ready failure cleanup"
+        )
+    }
+
+    func testCtxAndPumpDeallocateAfterHappyPath() {
+        tcpFlowContextDiagnosticsEnabled = true
+        defer { tcpFlowContextDiagnosticsEnabled = false }
+        let startCtx = TcpFlowContextLiveCounter.current
+        let startPump = TcpClientReadPumpLiveCounter.current
+
+        let engine = makeEngine()
+        let core = TransparentProxyCore()
+        core.attachEngine(engine)
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+
+        autoreleasepool {
+            let flow = MockTcpFlow()
+            _ = core.handleTcpFlow(flow, meta: makeMeta())
+            let conn = capture.waitForLastConnection()
+            conn.transition(to: .ready)
+            self.waitFor("flow.open") { flow.openWasInvoked }
+            flow.completeOpen(error: nil)
+            self.waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+            conn.completePendingReceive(isComplete: true)
+            self.waitFor("flow removed", timeout: 5.0) { core.tcpFlowCount == 0 }
+            conn.simulateCancelled()
+        }
+        capture.releaseAll()
+        core.detachEngine(reason: 0)
+
+        let deadline = Date().addingTimeInterval(3.0)
+        while (TcpFlowContextLiveCounter.current > startCtx
+            || TcpClientReadPumpLiveCounter.current > startPump)
+            && Date() < deadline
+        {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertEqual(
+            TcpFlowContextLiveCounter.current, startCtx,
+            "TcpFlowContext leaked after happy-path teardown"
+        )
+        XCTAssertEqual(
+            TcpClientReadPumpLiveCounter.current, startPump,
+            "TcpClientReadPump leaked after happy-path teardown — pump pins the flow"
+        )
+    }
+
+    func testFlowDeallocatesAfterHappyPath() {
         // For this test we need to stop the engine *before* checking
         // weak refs: the engine's tokio runtime detaches per-flow
         // bridge tasks rather than aborting them on session.cancel(),
