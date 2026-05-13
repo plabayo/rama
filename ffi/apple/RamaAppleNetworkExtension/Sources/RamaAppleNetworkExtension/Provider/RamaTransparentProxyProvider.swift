@@ -193,10 +193,15 @@ let writeRetryHardDeadlineMs: Int = 5_000
 /// holding the full chunk-count budget). A byte budget is constant
 /// regardless of chunk size.
 ///
-/// Default 1 MiB. May be overridden once at engine startup from
-/// `RamaTransparentProxyConfig.tcp_write_pump_max_pending_bytes` before
-/// any pump is created, so the write here is not concurrent with reads.
-nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 1 * 1024 * 1024
+/// Default 256 KiB, two pumps per flow = 512 KiB worst-case per flow on
+/// the write side. Smaller than it sounds: any actively backpressured flow
+/// uses far less because Swift hands us chunks of 4–16 KiB on a typical
+/// kernel read, so the pump pauses well before the byte cap. Handlers
+/// that proxy bulk transfers with rare backpressure can raise this via
+/// `RamaTransparentProxyConfig.tcp_write_pump_max_pending_bytes` for the
+/// flows that benefit; the global default is sized for the common case
+/// (many concurrent flows, modest per-flow throughput).
+nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 256 * 1024
 
 /// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
 /// definition, so the pump prefers dropping the newest datagram on

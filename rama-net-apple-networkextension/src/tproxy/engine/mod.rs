@@ -112,17 +112,24 @@ const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
 /// aborted the shared NEAppProxyProvider director, killing every flow on the
 /// extension.
 ///
-/// 1024 chunks is sized for HTTP/2 multiplexing: a single TCP flow can carry
-/// hundreds of concurrent streams, each with its own ~1 MiB initial flow
-/// window. With 1024 × 64 KiB = ~64 MiB of headroom per direction we comfortably
-/// absorb a handful of in-flight streams before Swift has to pause kernel
-/// reads. Smaller values starve high-fan-in h2 connections
-/// and cause stalls on large body transfers.
-const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 1024;
+/// 128 chunks is sized for L4 transparent forwarding (the design centre of
+/// this engine): one or two in-flight `flow.readData` results plus brief
+/// downstream backpressure absorb cleanly. At ~64 KiB per chunk that gives
+/// ~8 MiB of worst-case headroom per direction, ~16 MiB per flow — modest
+/// enough that a few hundred concurrent flows do not push the SE process
+/// past a sensible RSS, but generous enough that legitimate single-flow
+/// throughput does not see a pause every few packets. Handlers that
+/// terminate HTTP/2 (or other heavy fan-in protocols) should raise this
+/// via `TransparentProxyEngineBuilder::tcp_channel_capacity` for those
+/// flows specifically — the high default that used to live here was sized
+/// for that case but applied to every flow, which is the wrong tradeoff
+/// for an L4 transparent proxy.
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 128;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
 /// lossy, so on a full channel we drop the datagram rather than block; the
-/// bound is just a memory cap.
-const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 1024;
+/// bound is just a memory cap. Same sizing tradeoff as the TCP channel —
+/// 128 datagrams of headroom is plenty for any normal application.
+const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 128;
 
 /// Default for [`TransparentProxyEngineBuilder::with_tcp_paused_drain_max_wait`].
 /// Backstops a stuck downstream writer (a Swift `flow.write`
