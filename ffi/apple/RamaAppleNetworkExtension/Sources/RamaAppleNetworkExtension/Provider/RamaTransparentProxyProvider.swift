@@ -1184,8 +1184,17 @@ final class UdpClientWritePump {
 
         phase = .writing
         let chunk = pending.removeFirst().0
-        self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
-            self.queue.async {
+        // `[weak self]` for the same retain-cycle reason as
+        // `TcpClientReadPump`'s `flow.readData` capture: the flow
+        // (kernel or mock) stores the completion until it fires,
+        // and the pump's `let flow` field strongly holds the flow.
+        // Without the weak capture the pump is pinned until the
+        // completion fires; under load + slow shutdown the chain
+        // accumulates.
+        self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { [weak self] error in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self else { return }
                 if let error {
                     self.logger(
                         classifyFlowCallbackError(
@@ -1964,18 +1973,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return inferredHostPrefix(networkText)
     }
 
-    private static func inferredHostPrefix(_ text: String) -> Int? {
-        var v4 = in_addr()
-        if text.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
-            return 32
-        }
-        var v6 = in6_addr()
-        if text.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
-            return 128
-        }
-        return nil
-    }
-
     private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {
         guard let network, !network.isEmpty else { return nil }
         return NWHostEndpoint(hostname: network, port: "0")
@@ -2219,44 +2216,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
         }
         return parsed
-    }
-
-    private static func parseEndpointString(_ raw: String) -> (host: String, port: UInt16)? {
-        // IPv6 endpoint descriptions may be formatted as:
-        // - 2a02:...:1.53
-        // - [2a02:...:1]:53
-        // while IPv4/domain typically use host:port.
-
-        if raw.hasPrefix("["), let closeIdx = raw.lastIndex(of: "]") {
-            let host = String(raw[raw.index(after: raw.startIndex)..<closeIdx])
-            let tail = raw[raw.index(after: closeIdx)...]
-            if tail.first == ":" {
-                let portText = String(tail.dropFirst())
-                if let port = UInt16(portText), !host.isEmpty {
-                    return (host, port)
-                }
-            }
-        }
-
-        if let idx = raw.lastIndex(of: ":") {
-            let hostPart = String(raw[..<idx]).trimmingCharacters(
-                in: CharacterSet(charactersIn: "[]"))
-            let portPart = String(raw[raw.index(after: idx)...])
-            if let port = UInt16(portPart), !hostPart.isEmpty {
-                return (hostPart, port)
-            }
-        }
-
-        if let idx = raw.lastIndex(of: ".") {
-            let hostPart = String(raw[..<idx]).trimmingCharacters(
-                in: CharacterSet(charactersIn: "[]"))
-            let portPart = String(raw[raw.index(after: idx)...])
-            if hostPart.contains(":"), let port = UInt16(portPart), !hostPart.isEmpty {
-                return (hostPart, port)
-            }
-        }
-
-        return nil
     }
 
 }
