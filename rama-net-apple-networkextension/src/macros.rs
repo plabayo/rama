@@ -572,6 +572,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                     .connect_timeout
                     .map(|d| d.as_millis() as u32)
                     .unwrap_or(0),
+                has_linger_close_ms: opts.linger_close_timeout.is_some(),
+                linger_close_ms: opts
+                    .linger_close_timeout
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true

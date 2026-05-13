@@ -649,7 +649,9 @@ final class RamaTcpSessionHandle {
                 preserve_original_meta_data: true
             ),
             has_connect_timeout_ms: false,
-            connect_timeout_ms: 0
+            connect_timeout_ms: 0,
+            has_linger_close_ms: false,
+            linger_close_ms: 0
         )
         let hasCustom = rama_transparent_proxy_tcp_session_get_egress_connect_options(s, &opts)
         return hasCustom ? opts : nil

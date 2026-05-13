@@ -358,6 +358,16 @@ typedef struct {
     bool has_connect_timeout_ms;
     /// TCP connection timeout in milliseconds (maps to NWProtocolTCP.Options.connectionTimeout).
     uint32_t connect_timeout_ms;
+    /// Whether `linger_close_ms` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_linger_close_ms;
+    /// Wall-clock cap (ms) on how long the egress NWConnection lingers
+    /// after the local side has sent its FIN before Swift force-cancels
+    /// the connection. Without this watchdog a peer that fails to send
+    /// its own FIN-ACK keeps the socket pinned in FIN_WAIT_1 and the
+    /// macOS NECP flow registration alive, which compounds with new
+    /// flow starts into the path-evaluator slowdown.
+    uint32_t linger_close_ms;
 } RamaTcpEgressConnectOptions;
 
 /// Options for the egress NWConnection on UDP flows.

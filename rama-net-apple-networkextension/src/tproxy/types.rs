@@ -174,6 +174,14 @@ pub struct NwTcpConnectOptions {
     pub parameters: NwEgressParameters,
     /// Maps to `NWProtocolTCP.Options.connectionTimeout`.
     pub connect_timeout: Option<Duration>,
+    /// Wall-clock cap on how long the egress `NWConnection` is allowed
+    /// to linger after the local side has sent its FIN (an empty `send`
+    /// with `isComplete: true`). When the peer fails to respond with
+    /// its own FIN within this window the Swift side force-cancels the
+    /// connection, releasing the macOS NECP flow registration that
+    /// would otherwise keep the socket pinned in FIN_WAIT_1. `None`
+    /// falls back to the Swift-side default (currently 5 seconds).
+    pub linger_close_timeout: Option<Duration>,
 }
 
 /// Options for the egress `NWConnection` on UDP flows.

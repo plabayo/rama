@@ -218,6 +218,15 @@ nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPending
 /// log — same 50 % heuristic as the TCP byte threshold.
 private let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 
+/// Default wall-clock cap on how long the egress NWConnection lingers
+/// after the local side has sent its FIN before Swift force-cancels
+/// it. Applied when `RamaTcpEgressConnectOptions.has_linger_close_ms`
+/// is `false`; an explicit Rust-side `NwTcpConnectOptions.linger_close_timeout`
+/// overrides. 5 seconds is generous enough for any healthy peer to
+/// FIN-ACK and short enough that 200 slow-closing flows cap at a few
+/// hundred concurrent FIN_WAIT_1 sockets rather than accumulating.
+let defaultLingerCloseMs: UInt32 = 5_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields
@@ -1337,12 +1346,37 @@ private final class NwTcpConnectionReadPump {
 /// signal half-close to the remote.
 /// See `TcpClientReadPump` for the `@unchecked Sendable`
 /// rationale — same lock + queue confinement applies here.
-private final class NwTcpConnectionWritePump: @unchecked Sendable {
+///
+/// Internal (not private) so unit tests can construct one against a
+/// `MockNwConnection` and exercise the linger-cancel watchdog and the
+/// drain → FIN sequence directly. Tests are the only out-of-file
+/// consumers; production code still constructs this only from
+/// `handleTcpFlow`.
+final class NwTcpConnectionWritePump: @unchecked Sendable {
     private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
+    /// Wall-clock cap on how long the egress NWConnection lingers after
+    /// the local side has sent its FIN (an empty `send` with
+    /// `isComplete: true`) before this pump force-cancels the
+    /// connection. A peer that fails to send its own FIN-ACK would
+    /// otherwise keep the kernel socket in FIN_WAIT_1 and the macOS
+    /// NECP flow registration alive — accumulating leaked
+    /// registrations is what makes new `nw_connection_start` calls
+    /// linearly slower on the workloop queue.
+    private let lingerCloseDeadline: DispatchTimeInterval
+    /// Scheduled linger-cancel work, retained so we can invalidate it
+    /// when the connection closes naturally before the deadline (or
+    /// when the pump is externally cancelled).
+    private var lingerWork: DispatchWorkItem?
 
-    init(connection: any NwConnectionLike, queue: DispatchQueue, onDrained: @escaping () -> Void) {
+    init(
+        connection: any NwConnectionLike,
+        queue: DispatchQueue,
+        lingerCloseDeadline: DispatchTimeInterval,
+        onDrained: @escaping () -> Void
+    ) {
         self.connection = connection
+        self.lingerCloseDeadline = lingerCloseDeadline
         let core = TcpWritePumpCore(
             queue: queue,
             initialLifecycle: .open,
@@ -1383,7 +1417,15 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
 
     func cancel() {
         let coreCleanup = core.prepareCancel()
-        core.queue.async { coreCleanup() }
+        core.queue.async { [weak self] in
+            coreCleanup()
+            // External cancel makes any outstanding linger watchdog
+            // moot — its only job is to force-cancel a connection
+            // whose peer never closed, and that path has now been
+            // pre-empted.
+            self?.lingerWork?.cancel()
+            self?.lingerWork = nil
+        }
     }
 }
 
@@ -1401,6 +1443,20 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
             isComplete: true,
             completion: .contentProcessed({ _ in })
         )
+        // The FIN is queued. Schedule the linger watchdog so the
+        // NWConnection registration is released even if the peer
+        // never replies with its own FIN. `cancel()` is idempotent —
+        // if a natural close path (state handler, read-pump EOF
+        // backstop, external pump cancel) gets there first, this
+        // work item is cancelled before firing or the cancel call
+        // becomes a no-op.
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.connection.cancel()
+            self.lingerWork = nil
+        }
+        lingerWork = work
+        core.queue.asyncAfter(deadline: .now() + lingerCloseDeadline, execute: work)
     }
 }
 
@@ -1809,6 +1865,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         let egressOpts = session.getEgressConnectOptions()
         let connectTimeoutMs = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
+        let lingerCloseMs = egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil } ?? defaultLingerCloseMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
@@ -1858,6 +1915,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     let writePump = NwTcpConnectionWritePump(
                         connection: connection,
                         queue: flowQueue,
+                        lingerCloseDeadline: .milliseconds(Int(lingerCloseMs)),
                         onDrained: { [weak ctx] in
                             ctx?.session?.signalEgressDrain()
                         }
