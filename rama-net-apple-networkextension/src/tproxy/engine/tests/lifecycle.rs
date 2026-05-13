@@ -32,8 +32,9 @@ fn builder_default_tcp_idle_timeout_is_the_constant() {
 
 #[test]
 fn builder_without_tcp_idle_timeout_sets_none() {
-    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
-        .without_tcp_idle_timeout();
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .without_tcp_idle_timeout();
     assert_eq!(builder.current_tcp_idle_timeout(), None);
 }
 
@@ -54,8 +55,9 @@ fn builder_default_udp_max_flow_lifetime_is_the_constant() {
 
 #[test]
 fn builder_without_udp_max_flow_lifetime_sets_none() {
-    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
-        .without_udp_max_flow_lifetime();
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .without_udp_max_flow_lifetime();
     assert_eq!(builder.current_udp_max_flow_lifetime(), None);
 }
 
@@ -76,8 +78,9 @@ fn builder_default_tcp_paused_drain_max_wait_is_the_constant() {
 
 #[test]
 fn builder_without_tcp_paused_drain_max_wait_sets_none() {
-    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
-        .without_tcp_paused_drain_max_wait();
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .without_tcp_paused_drain_max_wait();
     assert_eq!(builder.current_tcp_paused_drain_max_wait(), None);
 }
 
