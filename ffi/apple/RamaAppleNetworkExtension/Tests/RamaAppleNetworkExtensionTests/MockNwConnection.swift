@@ -110,12 +110,34 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     /// `stateUpdateHandler` synchronously on the caller's thread.
     /// Production code always sees state changes via the handler, so
     /// tests should call this rather than mutating `_state` directly.
+    ///
+    /// On `.cancelled` the handler is fired and then released —
+    /// mirrors `NWConnection`'s real behavior of dropping the handler
+    /// once the connection has reached its terminal state, which is
+    /// what lets the connection (and everything its handler
+    /// captured) deallocate. Without this a test that asserts ARC
+    /// cleanup races against the mock pinning the handler graph.
     func transition(to newState: NWConnection.State) {
         lock.lock()
         _state = newState
         let handler = _stateUpdateHandler
         lock.unlock()
         handler?(newState)
+        if case .cancelled = newState {
+            lock.lock()
+            _stateUpdateHandler = nil
+            _pendingSendCompletions.removeAll()
+            _pendingReceiveCompletions.removeAll()
+            lock.unlock()
+        }
+    }
+
+    /// Convenience: cancel the connection and clear the handler so
+    /// the captured graph can deallocate. Used by tests that drive
+    /// the lifecycle externally without going through the state
+    /// machine's natural `.cancelled` transition.
+    func simulateCancelled() {
+        transition(to: .cancelled)
     }
 
     /// Pop and invoke the oldest pending send completion. Returns
