@@ -23,6 +23,16 @@ pub(super) struct TestHandler {
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestTcpService> + Send + Sync>,
     pub(super) udp_matcher:
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestUdpService> + Send + Sync>,
+    // Optional overrides for the egress-options trait methods. Default
+    // `None` keeps existing test sites compiling without their having
+    // to know these fields exist; tests that need to drive a non-default
+    // option set use `with_tcp_egress_options` / `with_udp_egress_options`.
+    pub(super) tcp_egress_options: Option<
+        Arc<dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions> + Send + Sync>,
+    >,
+    pub(super) udp_egress_options: Option<
+        Arc<dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions> + Send + Sync>,
+    >,
 }
 
 impl TestHandler {
@@ -31,7 +41,33 @@ impl TestHandler {
             app_message_handler: Arc::new(|_| None),
             tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
             udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+            tcp_egress_options: None,
+            udp_egress_options: None,
         }
+    }
+
+    #[expect(dead_code, reason = "used by `lifecycle::*_egress_options_override_flows*` tests")]
+    pub(super) fn with_tcp_egress_options(
+        mut self,
+        f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.tcp_egress_options = Some(Arc::new(f));
+        self
+    }
+
+    #[expect(dead_code, reason = "used by `lifecycle::*_egress_options_override_flows*` tests")]
+    pub(super) fn with_udp_egress_options(
+        mut self,
+        f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.udp_egress_options = Some(Arc::new(f));
+        self
     }
 }
 
@@ -81,6 +117,20 @@ impl TransparentProxyHandler for TestHandler {
     > + Send
     + '_ {
         std::future::ready((self.udp_matcher)(meta))
+    }
+
+    fn egress_tcp_connect_options(
+        &self,
+        meta: &TransparentProxyFlowMeta,
+    ) -> Option<crate::tproxy::NwTcpConnectOptions> {
+        self.tcp_egress_options.as_ref().and_then(|f| f(meta))
+    }
+
+    fn egress_udp_connect_options(
+        &self,
+        meta: &TransparentProxyFlowMeta,
+    ) -> Option<crate::tproxy::NwUdpConnectOptions> {
+        self.udp_egress_options.as_ref().and_then(|f| f(meta))
     }
 }
 

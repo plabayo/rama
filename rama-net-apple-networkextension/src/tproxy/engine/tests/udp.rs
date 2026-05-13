@@ -35,7 +35,9 @@ fn udp_bridge_delivers_server_datagram() {
             )
             .boxed(),
         }),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
@@ -86,7 +88,9 @@ fn udp_egress_drops_datagrams_when_service_does_not_drain() {
             )
             .boxed(),
         }),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)
         .with_udp_channel_capacity(2)
@@ -134,7 +138,9 @@ fn udp_session_requests_client_read_demand() {
             )
             .boxed(),
         }),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(

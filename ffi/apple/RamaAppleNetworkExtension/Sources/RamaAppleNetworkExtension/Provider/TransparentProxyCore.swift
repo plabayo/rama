@@ -49,6 +49,13 @@ final class TransparentProxyCore {
     /// state machine can be driven without a real socket.
     var nwConnectionFactory: NwConnectionFactoryFn = defaultNwConnectionFactory
 
+    /// Timer that emits a per-protocol live-flow count every 60s.
+    /// Operator-visible signal that catches accumulation regressions
+    /// (the 1.4.0 leak class would show up as `tcp_flows` growing
+    /// without bound in `log show`) before users notice degradation.
+    /// `nil` outside of `attachEngine` / `detachEngine` brackets.
+    private var flowCountReportingTimer: DispatchSourceTimer?
+
     // MARK: - Engine lifecycle
 
     /// Hand a freshly-built engine to the core. The provider's
@@ -59,13 +66,23 @@ final class TransparentProxyCore {
     /// engine here. Per-flow handling becomes available only after
     /// this is called.
     func attachEngine(_ engine: RamaTransparentProxyEngineHandle) {
+        // Single-shot in production (`startProxy` calls us once per
+        // lifecycle), but defensively detach any previous engine
+        // first so a future caller that double-attaches doesn't
+        // strand the original engine's Rust runtime + bridge tasks
+        // alive without anyone holding a way to stop them.
+        if self.engine != nil {
+            detachEngine(reason: 0)
+        }
         self.engine = engine
+        startFlowCountReporting()
     }
 
     /// Symmetric counterpart of `attachEngine` invoked from
     /// `stopProxy`. Stops the engine, clears all per-flow registrations.
     /// Idempotent — safe to call twice.
     func detachEngine(reason: Int32) {
+        stopFlowCountReporting()
         self.engine?.stop(reason: reason)
         self.engine = nil
         stateQueue.sync {
@@ -74,6 +91,39 @@ final class TransparentProxyCore {
             self.udpSessions.removeAll(keepingCapacity: false)
             self.udpContexts.removeAll(keepingCapacity: false)
         }
+    }
+
+    // MARK: - Periodic flow-count telemetry
+
+    /// Interval between live-flow-count reports. 60s is short enough
+    /// to surface accumulation regressions within minutes of onset
+    /// (the 1.4.0 leak grew over hours) and long enough that the
+    /// resulting log volume is negligible.
+    private static let flowCountReportingInterval: DispatchTimeInterval = .seconds(60)
+
+    private func startFlowCountReporting() {
+        stopFlowCountReporting()
+        let timer = DispatchSource.makeTimerSource(queue: stateQueue)
+        timer.schedule(
+            deadline: .now() + Self.flowCountReportingInterval,
+            repeating: Self.flowCountReportingInterval
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            // `stateQueue.sync` not needed — the timer fires ON
+            // `stateQueue`, so direct access to the maps is already
+            // serialised correctly.
+            let tcp = self.tcpContexts.count
+            let udp = self.udpContexts.count
+            self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
+        }
+        timer.resume()
+        flowCountReportingTimer = timer
+    }
+
+    private func stopFlowCountReporting() {
+        flowCountReportingTimer?.cancel()
+        flowCountReportingTimer = nil
     }
 
     // MARK: - App-message routing

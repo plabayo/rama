@@ -42,7 +42,9 @@ fn tcp_flow_exposes_meta_extension() {
             }
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
@@ -93,7 +95,9 @@ fn udp_flow_exposes_meta_extension() {
                 .boxed(),
             }
         }),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
@@ -157,7 +161,9 @@ fn flow_meta_records_intercept_decision_after_handler() {
             }
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(

@@ -158,7 +158,9 @@ fn run_one(behavior: PeerBehavior) {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
-    };
+        tcp_egress_options: None,
+        udp_egress_options: None,
+        };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(

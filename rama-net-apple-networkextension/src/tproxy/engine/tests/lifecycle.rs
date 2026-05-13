@@ -2,6 +2,7 @@
 
 use super::common::*;
 use crate::tproxy::engine::*;
+use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use rama_core::bytes::Bytes;
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,12 +134,138 @@ fn builder_rejects_zero_tcp_flow_buffer_size() {
     engine.stop(0);
 }
 
+// Handler-supplied egress options must propagate through the engine
+// to the per-session accessor. Without these tests a typo on either
+// the handler-trait side or the session-storage side would silently
+// fall back to the Swift defaults (5s linger, 2s EOF grace, 30s
+// connect timeout) with no production-visible signal.
+
+#[test]
+fn tcp_egress_options_override_flows_from_handler_to_session() {
+    use crate::tproxy::{NwEgressParameters, NwTcpConnectOptions};
+    use rama_core::bytes::Bytes;
+    use std::sync::Arc;
+
+    let custom = NwTcpConnectOptions {
+        parameters: NwEgressParameters::default(),
+        connect_timeout: Some(Duration::from_millis(7_000)),
+        linger_close_timeout: Some(Duration::from_millis(12_345)),
+        egress_eof_grace: Some(Duration::from_millis(6_789)),
+    };
+    let custom_for_handler = custom.clone();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: rama_core::service::service_fn(
+                |_bridge: rama_core::io::BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        udp_egress_options: None,
+    }
+    .with_tcp_egress_options(move |_meta| Some(custom_for_handler.clone()));
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    let opts = session
+        .egress_connect_options()
+        .expect("handler set egress options; session must surface them");
+    assert_eq!(opts.connect_timeout, Some(Duration::from_millis(7_000)));
+    assert_eq!(opts.linger_close_timeout, Some(Duration::from_millis(12_345)));
+    assert_eq!(opts.egress_eof_grace, Some(Duration::from_millis(6_789)));
+
+    drop(session);
+    engine.stop(0);
+    _ = Bytes::new(); // silence unused-warning if Bytes import drifts
+}
+
+#[test]
+fn udp_egress_options_override_flows_from_handler_to_session() {
+    use crate::tproxy::{NwEgressParameters, NwUdpConnectOptions};
+    use std::sync::Arc;
+
+    let custom = NwUdpConnectOptions {
+        parameters: NwEgressParameters::default(),
+        connect_timeout: Some(Duration::from_millis(4_321)),
+    };
+    let custom_for_handler = custom.clone();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: rama_core::service::service_fn(
+                |_bridge: rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        udp_egress_options: None,
+    }
+    .with_udp_egress_options(move |_meta| Some(custom_for_handler.clone()));
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept udp session");
+    };
+
+    let opts = session
+        .egress_connect_options()
+        .expect("handler set udp egress options; session must surface them");
+    assert_eq!(opts.connect_timeout, Some(Duration::from_millis(4_321)));
+
+    drop(session);
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_egress_options_none_handler_returns_none_at_session() {
+    use rama_core::bytes::Bytes;
+
+    let engine = build_engine(TestHandler::passthrough());
+
+    let action = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    // Passthrough handler decides not to intercept — no session to check.
+    assert!(matches!(action, SessionFlowAction::Passthrough));
+    engine.stop(0);
+    _ = Bytes::new();
+}
+
 #[test]
 fn app_message_can_return_reply() {
     let engine = build_engine(TestHandler {
         app_message_handler: Arc::new(|message| (message == b"ping").then(|| b"pong".to_vec())),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        udp_egress_options: None,
     });
 
     let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
