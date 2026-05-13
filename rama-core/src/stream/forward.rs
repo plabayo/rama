@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use rama_error::BoxError;
+use rama_error::{BoxError, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
 
 use crate::Service;
@@ -255,10 +255,9 @@ where
                         first_eof = Some(BridgeCloseReason::PeerEofLeft);
                     }
                     if let Err(err) = b_sink.close().await {
-                        let err: BoxError = err.into();
                         tracing::debug!(
                             target: "rama_core::stream::forward",
-                            error = %err,
+                            error = %err.into_box_error(),
                             "stream forward bridge: error while half-closing `b` after `a` EOF",
                         );
                     }
@@ -281,10 +280,9 @@ where
                         first_eof = Some(BridgeCloseReason::PeerEofRight);
                     }
                     if let Err(err) = a_sink.close().await {
-                        let err: BoxError = err.into();
                         tracing::debug!(
                             target: "rama_core::stream::forward",
-                            error = %err,
+                            error = %err.into_box_error(),
                             "stream forward bridge: error while half-closing `a` after `b` EOF",
                         );
                     }
