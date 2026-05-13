@@ -1,5 +1,5 @@
 use crate::core::{
-    asn1::Asn1Time,
+    asn1::{Asn1Object, Asn1Time},
     bn::{BigNum, MsbOption},
     dsa::Dsa,
     ec::{EcGroup, EcKey},
@@ -9,7 +9,7 @@ use crate::core::{
     rand::rand_bytes,
     rsa::Rsa,
     x509::{
-        X509, X509NameBuilder, X509Ref,
+        X509, X509Extension, X509NameBuilder, X509Ref,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
@@ -17,6 +17,31 @@ use rama_boring::x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeNam
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_net::{address::Domain, tls::server::SelfSignedData};
+
+/// Build an `AuthorityKeyIdentifier` extension whose `keyIdentifier` is derived from
+/// the CA's public key per RFC 5280 §4.2.1.2 method (1): SHA-1 of the SubjectPublicKey
+/// BIT STRING contents. Used as a fallback when the CA certificate carries no SKI extension.
+fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxError> {
+    let digest = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .context("compute SHA-1 of CA SubjectPublicKey BIT STRING")?;
+    let keyid: &[u8] = &digest[..];
+    debug_assert_eq!(keyid.len(), 20, "SHA-1 digest must be 20 bytes");
+
+    // AuthorityKeyIdentifier ::= SEQUENCE { [0] IMPLICIT OCTET STRING keyIdentifier }
+    let mut payload = Vec::with_capacity(4 + keyid.len());
+    payload.push(0x30); // SEQUENCE
+    payload.push((2 + keyid.len()) as u8);
+    payload.push(0x80); // [0] IMPLICIT OCTET STRING
+    payload.push(keyid.len() as u8);
+    payload.extend_from_slice(keyid);
+
+    // 2.5.29.35 = id-ce-authorityKeyIdentifier
+    let aki_oid =
+        Asn1Object::from_str("2.5.29.35").context("construct AuthorityKeyIdentifier OID object")?;
+    X509Extension::from_der_payload(aki_oid.as_ref(), false, &payload)
+        .context("build AuthorityKeyIdentifier extension from raw DER payload")
+}
 
 /// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
 ///
@@ -139,7 +164,10 @@ pub fn self_signed_server_auth_gen_cert(
             .append_extension(auth_key_identifier.as_ref())
             .context("x509 cert builder: set auth key id extension")?;
     } else {
-        tracing::debug!("skipping AuthorityKeyIdentifier emission: CA has no SubjectKeyIdentifier");
+        let auth_key_identifier = aki_from_ca_pubkey_keyid(ca_cert)?;
+        cert_builder
+            .append_extension(auth_key_identifier.as_ref())
+            .context("x509 cert builder: set derived auth key id extension")?;
     }
 
     cert_builder
@@ -290,9 +318,10 @@ pub fn self_signed_server_auth_mirror_cert(
                 .append_extension(auth_key_identifier.as_ref())
                 .context("x509 cert builder: append mirrored authority key identifier")?;
         } else {
-            tracing::debug!(
-                "skipping mirrored AuthorityKeyIdentifier: CA has no SubjectKeyIdentifier"
-            );
+            let auth_key_identifier = aki_from_ca_pubkey_keyid(ca_cert)?;
+            cert_builder
+                .append_extension(auth_key_identifier.as_ref())
+                .context("x509 cert builder: append derived mirrored authority key identifier")?;
         }
     }
 
