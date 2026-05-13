@@ -254,7 +254,7 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofLeft);
                     }
-                    let _ = b_sink.close().await;
+                    let _close = b_sink.close().await;
                 }
             },
 
@@ -273,7 +273,7 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofRight);
                     }
-                    let _ = a_sink.close().await;
+                    let _close = a_sink.close().await;
                 }
             },
         }
@@ -331,7 +331,7 @@ mod tests {
             self.get_mut()
                 .tx
                 .unbounded_send(item)
-                .map_err(|_| std::io::Error::other("send on closed channel"))
+                .map_err(|_err| std::io::Error::other("send on closed channel"))
         }
         fn poll_flush(
             self: Pin<&mut Self>,
