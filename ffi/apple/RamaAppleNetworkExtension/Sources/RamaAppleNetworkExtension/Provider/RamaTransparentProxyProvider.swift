@@ -297,7 +297,7 @@ private struct WriteRetry {
 
 /// Queue-confined state for a UDP flow's read side.  Replaces
 /// `closed: Bool`, `readPending: Bool`, and `demandPending: Bool`.
-private enum UdpFlowReadState {
+enum UdpFlowReadState {
     /// No read in flight, no pending demand.
     case idle
     /// A `readDatagrams` call is in flight.
@@ -1024,7 +1024,7 @@ private enum UdpWritePumpPhase {
     case closed
 }
 
-private final class UdpClientWritePump {
+final class UdpClientWritePump {
     // Held behind the protocol so tests can drive the pump with a
     // capture-mock; production passes a concrete NEAppProxyUDPFlow.
     private let flow: any UdpFlowWritable
@@ -1680,7 +1680,7 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 ///
 /// Swift weak references are thread-safe for both load and store on modern
 /// runtimes, so no extra locking is required here.
-private final class TcpFlowContext {
+final class TcpFlowContext {
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
     // standing up a real NWConnection.
@@ -1697,7 +1697,7 @@ private final class TcpFlowContext {
     var egressWritePump: NwTcpConnectionWritePump?
 }
 
-private final class UdpFlowContext {
+final class UdpFlowContext {
     weak var session: RamaUdpSessionHandle?
     // See `TcpFlowContext.connection` for why this is the protocol type.
     var connection: (any NwConnectionLike)?
@@ -1713,54 +1713,15 @@ private final class UdpFlowContext {
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
-    private var engine: RamaTransparentProxyEngineHandle?
-    private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
-    private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
-    private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
-    private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
-
-    /// Factory used to construct egress `NWConnection`s for intercepted
-    /// flows. Production code leaves this at the default, which produces
-    /// real `NWConnection`s. Unit tests assign a mock factory so the
-    /// per-flow state machine can be driven without a real socket.
-    var nwConnectionFactory: NwConnectionFactoryFn = defaultNwConnectionFactory
-
-    private func registerTcpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaTcpSessionHandle,
-        context: TcpFlowContext
-    ) {
-        stateQueue.sync {
-            self.tcpSessions[flowId] = session
-            self.tcpContexts[flowId] = context
-        }
-    }
-
-    private func registerUdpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaUdpSessionHandle,
-        context: UdpFlowContext
-    ) {
-        stateQueue.sync {
-            self.udpSessions[flowId] = session
-            self.udpContexts[flowId] = context
-        }
-    }
-
-    private func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.tcpSessions.removeValue(forKey: flowId)
-            self.tcpContexts.removeValue(forKey: flowId)
-        }
-    }
-
-    private func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.udpSessions.removeValue(forKey: flowId)
-            self.udpContexts.removeValue(forKey: flowId)
-        }
-    }
+    /// The Apple-framework-free state machine, engine handle, and
+    /// per-flow registration maps live here. This subclass exists
+    /// only because the system extension runtime requires a
+    /// `NETransparentProxyProvider` to instantiate; every override
+    /// below is a thin delegation onto the core (plus the
+    /// Apple-framework calls that can't move out of the subclass,
+    /// like `setTunnelNetworkSettings` and the metadata extraction
+    /// from `NEFlowMetaData`).
+    let core = TransparentProxyCore()
 
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
@@ -1785,18 +1746,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             completionHandler(error)
             return
         }
-        logInfo("extension startProxy")
+        core.logInfo("extension startProxy")
 
         let engineConfigJson = Self.engineConfigJson(
             protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
             startOptions: options
         )
         if let engineConfigJson {
-            self.logInfo("engine config json bytes=\(engineConfigJson.count)")
+            core.logInfo("engine config json bytes=\(engineConfigJson.count)")
         }
         guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
         else {
-            self.logError("engine creation error")
+            core.logError("engine creation error")
             completionHandler(
                 NSError(
                     domain: "org.ramaproxy.example.tproxy.engine",
@@ -1808,11 +1769,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
             return
         }
-        self.engine = engine
-        self.logInfo("engine created")
+        core.attachEngine(engine)
+        core.logInfo("engine created")
 
-        guard let startup = self.engine?.config() else {
-            logError("failed to get transparent proxy config from rust")
+        guard let startup = engine.config() else {
+            core.logError("failed to get transparent proxy config from rust")
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
                 code: 2,
@@ -1834,9 +1795,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         if startup.tcpWritePumpMaxPendingBytes > 0 {
             writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
             writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-            logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+            core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
         } else {
-            logInfo("tcp write pump cap using built-in default \(writePumpMaxPendingBytes) bytes")
+            core.logInfo("tcp write pump cap using built-in default \(writePumpMaxPendingBytes) bytes")
         }
 
         let settings = NETransparentProxyNetworkSettings(
@@ -1846,26 +1807,25 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         for (idx, rule) in startup.rules.enumerated() {
             if let built = Self.makeNetworkRule(rule) {
                 builtRules.append(built)
-                logInfo(
+                core.logInfo(
                     "include rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
                 )
             } else {
-                logError(
+                core.logError(
                     "invalid rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
                 )
             }
         }
         settings.includedNetworkRules = builtRules
-        logInfo("included network rules count=\(builtRules.count)")
+        core.logInfo("included network rules count=\(builtRules.count)")
 
-        setTunnelNetworkSettings(settings) { error in
+        setTunnelNetworkSettings(settings) { [core] error in
             if let error {
-                self.logError("setTunnelNetworkSettings error: \(error)")
+                core.logError("setTunnelNetworkSettings error: \(error)")
                 completionHandler(error)
                 return
             }
-
-            self.logInfo("setTunnelNetworkSettings ok")
+            core.logInfo("setTunnelNetworkSettings ok")
             completionHandler(nil)
         }
     }
@@ -1873,15 +1833,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
-        logInfo("extension stopProxy reason=\(reason.rawValue)")
-        self.engine?.stop(reason: Int32(reason.rawValue))
-        self.engine = nil
-        stateQueue.sync {
-            self.tcpSessions.removeAll(keepingCapacity: false)
-            self.tcpContexts.removeAll(keepingCapacity: false)
-            self.udpSessions.removeAll(keepingCapacity: false)
-            self.udpContexts.removeAll(keepingCapacity: false)
-        }
+        core.logInfo("extension stopProxy reason=\(reason.rawValue)")
+        core.detachEngine(reason: Int32(reason.rawValue))
         completionHandler()
     }
 
@@ -1889,15 +1842,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         _ messageData: Data,
         completionHandler: ((Data?) -> Void)? = nil
     ) {
-        logDebug("handleAppMessage bytes=\(messageData.count)")
-
-        guard let engine else {
-            logDebug("handleAppMessage ignored because engine is unavailable")
-            completionHandler?(nil)
-            return
-        }
-
-        completionHandler?(engine.handleAppMessage(messageData))
+        completionHandler?(core.handleAppMessage(messageData))
     }
 
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
@@ -1910,7 +1855,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return handleUdpFlow(udp)
         }
 
-        logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
+        core.logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
         return false
     }
 
@@ -1927,7 +1872,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             flow: flow,
             queue: flowQueue,
             logger: { [weak self] message in
-                self?.logFlowMessage(message)
+                self?.core.logFlowMessage(message)
             },
             onTerminalError: { [weak self, weak ctx] error in
                 // [weak ctx] keeps the writer's onTerminalError closure
@@ -1937,7 +1882,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 flow.closeWriteWithError(error)
                 ctx?.connection?.cancel()
                 ctx?.session?.cancel()
-                self?.removeTcpFlow(flowId)
+                self?.core.removeTcpFlow(flowId)
             },
             onDrained: { [weak ctx] in
                 ctx?.session?.signalServerDrain()
@@ -1946,7 +1891,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         ctx.clientWritePump = writer
 
         let decision =
-            engine?.newTcpSession(
+            core.engine?.newTcpSession(
                 meta: meta,
                 onServerBytes: { [weak ctx] data in
                     // Reach the writer through ctx so the Rust callback
@@ -1975,7 +1920,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             flow.closeWriteWithError(error)
                         }
                         ctx?.connection?.cancel()
-                        self?.removeTcpFlow(flowId)
+                        self?.core.removeTcpFlow(flowId)
                     }
                 }
             ) ?? .passthrough
@@ -1985,23 +1930,23 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         case .intercept(let createdSession):
             session = createdSession
         case .passthrough:
-            logDebug("handleNewFlow tcp bypassed by rust flow policy")
+            core.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:
-            logInfo("handleNewFlow tcp blocked by rust flow policy")
+            core.logInfo("handleNewFlow tcp blocked by rust flow policy")
             blockFlow(flow)
             return true
         }
 
         ctx.session = session
         // Publish the flow state before any callback that may observe it can fire.
-        registerTcpFlow(flowId, session: session, context: ctx)
+        core.registerTcpFlow(flowId, session: session, context: ctx)
 
         // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
-            logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
+            core.logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
             session.cancel()
-            removeTcpFlow(flowId)
+            core.removeTcpFlow(flowId)
             return true
         }
 
@@ -2023,13 +1968,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             applyFlowMetadata(flow, nwParams)
         }
 
-        guard let connection = nwConnectionFactory(remoteHost, meta.remotePort, nwParams)
+        guard let connection = core.nwConnectionFactory(remoteHost, meta.remotePort, nwParams)
         else {
-            logDebug(
+            core.logDebug(
                 "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session"
             )
             session.cancel()
-            removeTcpFlow(flowId)
+            core.removeTcpFlow(flowId)
             return true
         }
         ctx.connection = connection
@@ -2041,10 +1986,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let timeoutMs = Int(connectTimeoutMs)
         let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
             guard !egressReady else { return }
-            self?.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
+            self?.core.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
             ctx?.connection?.cancel()
             ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
+            self?.core.removeTcpFlow(flowId)
         }
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
 
@@ -2088,7 +2033,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             ctx?.clientWritePump?.cancel()
             ctx?.clientWritePump = nil
             ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
+            self?.core.removeTcpFlow(flowId)
         }
 
         connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
@@ -2142,7 +2087,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
                         flowQueue.async {
                             if let error {
-                                self?.logDebug("flow.open error after egress ready: \(error)")
+                                self?.core.logDebug("flow.open error after egress ready: \(error)")
                                 connection.cancel()
                                 ctx?.connection = nil
                                 readPump.cancel()
@@ -2152,10 +2097,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                 ctx?.clientWritePump?.cancel()
                                 ctx?.clientWritePump = nil
                                 session.cancel()
-                                self?.removeTcpFlow(flowId)
+                                self?.core.removeTcpFlow(flowId)
                                 return
                             }
-                            self?.logTrace("flow.open ok (tcp, egress pre-connected)")
+                            self?.core.logTrace("flow.open ok (tcp, egress pre-connected)")
                             writer.markOpened()
                             readPump.start()
 
@@ -2173,7 +2118,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                             let terminal = TcpReadTerminal(
                                 onNaturalEof: {
                                     [weak self, weak readPump, weak session] in
-                                    self?.logTrace(
+                                    self?.core.logTrace(
                                         "tcp natural EOF: deferring teardown to closeWhenDrained"
                                     )
                                     flow.closeReadWithError(nil)
@@ -2194,14 +2139,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                                     ctx?.egressReadPump = nil
                                     ctx?.clientWritePump = nil
                                     ctx?.egressWritePump = nil
-                                    self?.removeTcpFlow(flowId)
+                                    self?.core.removeTcpFlow(flowId)
                                 }
                             )
                             let flowReadPump = TcpClientReadPump(
                                 flow: flow,
                                 session: session,
                                 queue: flowQueue,
-                                logger: { [weak self] message in self?.logFlowMessage(message) },
+                                logger: { [weak self] message in self?.core.logFlowMessage(message) },
                                 onTerminal: terminal.dispatch
                             )
                             ctx?.clientReadPump = flowReadPump
@@ -2216,13 +2161,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         // bridges to drain. The minimal cleanup is
                         // enough.
                         timeoutWork.cancel()
-                        self?.logDebug(
+                        self?.core.logDebug(
                             "egress NWConnection failed before flow opened: \(String(describing: error))"
                         )
                         // Explicit cancel() releases the kernel NECP flow slot.
                         connection.cancel()
                         session.cancel()
-                        self?.removeTcpFlow(flowId)
+                        self?.core.removeTcpFlow(flowId)
                     } else {
                         // Post-ready failure — peer RST, TLS abort,
                         // NECP path drop, or anything else that takes
@@ -2233,7 +2178,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         // eventually catches it, which is exactly the
                         // accumulation that turns into the
                         // path-evaluator slowdown.
-                        self?.logDebug(
+                        self?.core.logDebug(
                             "egress NWConnection failed after flow opened: \(String(describing: error))"
                         )
                         tearDownPostReady(error)
@@ -2252,7 +2197,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     // the tolerance triggers teardown via the same
                     // path as `.failed`.
                     if waitingWork != nil { break }
-                    self?.logDebug(
+                    self?.core.logDebug(
                         "egress NWConnection waiting after flow opened: \(String(describing: error))"
                     )
                     let work = DispatchWorkItem {
@@ -2306,7 +2251,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 ctx.connection?.cancel()
                 ctx.connection = nil
                 ctx.session?.onClientClose()
-                self?.removeUdpFlow(flowId)
+                self?.core.removeUdpFlow(flowId)
             }
         }
 
@@ -2314,7 +2259,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             flow: flow,
             queue: flowQueue,
             logger: { [weak self] message in
-                self?.logFlowMessage(message)
+                self?.core.logFlowMessage(message)
             },
             onTerminalError: { [weak ctx] error in
                 // Route through `[weak ctx]` so this closure (held
@@ -2357,7 +2302,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         let hadPendingDemand = ctx.readState == .readingWithDemand
                         ctx.readState = .idle
                         if let error {
-                            self?.logFlowMessage(
+                            self?.core.logFlowMessage(
                                 classifyFlowCallbackError(error, operation: "udp flow.read")
                             )
                             ctx.terminate?(error)
@@ -2365,7 +2310,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         }
 
                         guard let datagrams, !datagrams.isEmpty else {
-                            self?.logTrace("flow.readDatagrams eof")
+                            self?.core.logTrace("flow.readDatagrams eof")
                             ctx.terminate?(nil)
                             return
                         }
@@ -2381,14 +2326,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         if let endpoints, endpoints.count > 1,
                             !endpoints.dropFirst().allSatisfy({ $0 == endpoints[0] })
                         {
-                            self?.logDebug(
+                            self?.core.logDebug(
                                 "udp flow.readDatagrams returned mixed peer endpoints in one batch (\(endpoints.count) entries); single-peer assumption violated"
                             )
                         }
                         ctx.writer?.setSentByEndpoint(endpoint)
 
                         guard let session = ctx.session else {
-                            self?.logDebug(
+                            self?.core.logDebug(
                                 "udp flow read received but session no longer active; closing flow"
                             )
                             ctx.terminate?(nil)
@@ -2407,7 +2352,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        let decision = engine?.newUdpSession(
+        let decision = core.engine?.newUdpSession(
             meta: bootMeta,
             // Rust-held closures route through `[weak ctx]` so the
             // callback box (Rust) does not strong-pin the per-flow
@@ -2424,23 +2369,23 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         case .intercept(let createdSession):
             session = createdSession
         case .passthrough:
-            logDebug("handleNewFlow udp bypassed by rust flow policy")
+            core.logDebug("handleNewFlow udp bypassed by rust flow policy")
             return false
         case .blocked:
-            logInfo("handleNewFlow udp blocked by rust flow policy")
+            core.logInfo("handleNewFlow udp blocked by rust flow policy")
             blockFlow(flow)
             return true
         }
 
         ctx.session = session
         // Publish the flow state before any callback that may observe it can fire.
-        registerUdpFlow(flowId, session: session, context: ctx)
+        core.registerUdpFlow(flowId, session: session, context: ctx)
 
         // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
         guard let remoteHost = bootMeta.remoteHost, bootMeta.remotePort > 0 else {
-            logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
+            core.logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
             session.onClientClose()
-            removeUdpFlow(flowId)
+            core.removeUdpFlow(flowId)
             return true
         }
 
@@ -2453,13 +2398,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             applyFlowMetadata(flow, nwParams)
         }
 
-        guard let connection = nwConnectionFactory(remoteHost, bootMeta.remotePort, nwParams)
+        guard let connection = core.nwConnectionFactory(remoteHost, bootMeta.remotePort, nwParams)
         else {
-            logDebug(
+            core.logDebug(
                 "handleUdpFlow: invalid remote port \(bootMeta.remotePort); cancelling session"
             )
             session.onClientClose()
-            removeUdpFlow(flowId)
+            core.removeUdpFlow(flowId)
             return true
         }
         ctx.connection = connection
@@ -2471,13 +2416,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         // default 30s when the handler does not override.
         let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
             guard !egressReady else { return }
-            self?.logDebug(
+            self?.core.logDebug(
                 "egress NWConnection timed out for udp flow remote=\(remoteHost):\(bootMeta.remotePort)"
             )
             ctx?.connection?.cancel()
             ctx?.connection = nil
             ctx?.session?.onClientClose()
-            self?.removeUdpFlow(flowId)
+            self?.core.removeUdpFlow(flowId)
         }
         flowQueue.asyncAfter(
             deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: timeoutWork)
@@ -2539,16 +2484,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
                         flowQueue.async {
                             if let error {
-                                self?.logDebug("udp flow.open error after egress ready: \(error)")
+                                self?.core.logDebug("udp flow.open error after egress ready: \(error)")
                                 connection.cancel()
                                 readPump.cancel()
                                 ctx?.egressReadPump = nil
                                 ctx?.connection = nil
                                 session.onClientClose()
-                                self?.removeUdpFlow(flowId)
+                                self?.core.removeUdpFlow(flowId)
                                 return
                             }
-                            self?.logTrace("flow.open ok (udp, egress pre-connected)")
+                            self?.core.logTrace("flow.open ok (udp, egress pre-connected)")
                             ctx?.writer?.markOpened()
                             readPump.start()
                             ctx?.requestRead?()
@@ -2558,14 +2503,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 case .failed(let error):
                     if !egressReady {
                         timeoutWork.cancel()
-                        self?.logDebug(
+                        self?.core.logDebug(
                             "egress NWConnection failed before udp flow opened: \(String(describing: error))"
                         )
                         // See TCP path: explicit cancel() returns the kernel flow slot.
                         connection.cancel()
                         ctx.connection = nil
                         session.onClientClose()
-                        self?.removeUdpFlow(flowId)
+                        self?.core.removeUdpFlow(flowId)
                     } else {
                         // Post-ready failure — route through the
                         // shared `terminate` closure so the flow
@@ -2574,7 +2519,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         // read error, NWConnection send failure).
                         udpWaitingWork?.cancel()
                         udpWaitingWork = nil
-                        self?.logDebug(
+                        self?.core.logDebug(
                             "egress NWConnection failed after udp flow opened: \(String(describing: error))"
                         )
                         ctx.terminate?(error)
@@ -2585,7 +2530,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                         break
                     }
                     if udpWaitingWork != nil { break }
-                    self?.logDebug(
+                    self?.core.logDebug(
                         "egress NWConnection waiting after udp flow opened: \(String(describing: error))"
                     )
                     let work = DispatchWorkItem { [weak ctx] in
@@ -2964,44 +2909,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
-    private func logTrace(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-            message: message
-        )
-    }
-
-    private func logDebug(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: message
-        )
-    }
-
-    private func logInfo(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_INFO.rawValue),
-            message: message
-        )
-    }
-
-    private func logError(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
-            message: message
-        )
-    }
-
-    private func logFlowMessage(_ message: FlowLogMessage) {
-        switch message.level {
-        case .trace:
-            logTrace(message.text)
-        case .debug:
-            logDebug(message.text)
-        case .error:
-            logError(message.text)
-        }
-    }
 }
 
 extension RamaTransparentProxyProvider {
