@@ -207,6 +207,12 @@ impl<T: serde::de::DeserializeOwned> EventDataLineReader for EventDataJsonReader
     }
 
     fn data(&mut self, _event: Option<&str>) -> Result<Option<Self::Data>, BoxError> {
+        // An event with no `data:` line leaves the buffer empty; in that case
+        // there is no JSON to decode and we surface `Ok(None)` rather than
+        // erroring on `from_str("")`.
+        if self.buf.is_empty() {
+            return Ok(None);
+        }
         let data: T = serde_json::from_str(&self.buf).context("read json event data")?;
         self.buf.clear();
         Ok(Some(JsonEventData(data)))
