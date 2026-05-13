@@ -281,11 +281,11 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
     func testRandomSequencesDoNotLeakPumps() {
         let envSeed = ProcessInfo.processInfo.environment["RAMA_FUZZ_SEED"]
         let baseSeed = envSeed.flatMap(UInt32.init) ?? UInt32.random(in: 0..<UInt32.max)
-        // 100 random sequences keeps the suite under ~40 s on a
+        // 50 random sequences keeps the suite under ~20 s on a
         // dev machine. RAMA_FUZZ_DEEP=1 raises the count for nightly
         // / offline soaks where finding a one-in-a-thousand sequence
         // is worth the runtime.
-        let count = ProcessInfo.processInfo.environment["RAMA_FUZZ_DEEP"] != nil ? 5_000 : 100
+        let count = ProcessInfo.processInfo.environment["RAMA_FUZZ_DEEP"] != nil ? 5_000 : 50
         print(
             "TcpEgressPumpFuzzTests: baseSeed=\(baseSeed) count=\(count) "
                 + "(re-run with RAMA_FUZZ_SEED=\(baseSeed) to reproduce)"

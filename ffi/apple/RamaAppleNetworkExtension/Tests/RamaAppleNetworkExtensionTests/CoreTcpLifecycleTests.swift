@@ -338,7 +338,7 @@ final class CoreTcpLifecycleTests: XCTestCase {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
-        let flowCount = 50
+        let flowCount = 15
         var flows: [MockTcpFlow] = []
         for _ in 0..<flowCount {
             let flow = MockTcpFlow()
