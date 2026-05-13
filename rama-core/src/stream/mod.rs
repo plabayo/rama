@@ -4,6 +4,10 @@ mod forward;
 #[doc(inline)]
 pub use forward::{BridgeCloseReason, StreamBridge, StreamForwardService};
 
+mod bytes_freeze;
+#[doc(inline)]
+pub use bytes_freeze::BytesFreeze;
+
 pub mod codec {
     //! Adaptors from `AsyncRead`/`AsyncWrite` to Stream/Sink
     //!

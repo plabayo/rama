@@ -15,64 +15,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::IdleGuard;
 
-/// Reason why an [`IoForwardService`] bridge — or any equivalent bidirectional
-/// byte relay — terminated.
-///
-/// Shared vocabulary used in close-log events emitted by rama bridges.
-/// Consumers are free to emit any subset; each variant carries no metadata
-/// of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum BridgeCloseReason {
-    /// Graceful shutdown was requested via the configured shutdown signal.
-    Shutdown,
-    /// The bridge observed no byte progress in either direction within the
-    /// configured idle window.
-    IdleTimeout,
-    /// The "left" / ingress / client side reached EOF.
-    PeerEofLeft,
-    /// The "right" / egress / target side reached EOF.
-    PeerEofRight,
-    /// Read from the left half failed.
-    ReadErrorLeft,
-    /// Read from the right half failed.
-    ReadErrorRight,
-    /// Write to the left half failed.
-    WriteErrorLeft,
-    /// Write to the right half failed.
-    WriteErrorRight,
-    /// A protocol-peek read deadline elapsed before the peek completed.
-    /// Used by tproxy bridges that peek the first bytes for protocol detection.
-    PeekTimeout,
-    /// The flow handler did not produce a decision within the configured
-    /// deadline. The flow was rejected (or passed through, depending on
-    /// configuration) without bridging.
-    HandlerDeadline,
-    /// A backpressure-paused write side was never re-armed by its peer
-    /// drain signal within the configured maximum-pause window. Surfaces
-    /// stuck downstream writers (e.g. a Swift `flow.write` completion
-    /// handler that never invokes `signalServerDrain`) instead of
-    /// wedging the bridge indefinitely.
-    PausedTimeout,
-}
-
-impl std::fmt::Display for BridgeCloseReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Shutdown => "shutdown",
-            Self::IdleTimeout => "idle_timeout",
-            Self::PeerEofLeft => "peer_eof_left",
-            Self::PeerEofRight => "peer_eof_right",
-            Self::ReadErrorLeft => "read_error_left",
-            Self::ReadErrorRight => "read_error_right",
-            Self::WriteErrorLeft => "write_error_left",
-            Self::WriteErrorRight => "write_error_right",
-            Self::PeekTimeout => "peek_timeout",
-            Self::HandlerDeadline => "handler_deadline",
-            Self::PausedTimeout => "paused_timeout",
-        })
-    }
-}
+// `BridgeCloseReason` is shared with the frame-oriented bridge in
+// `rama-core::stream::forward`. Re-exported here so the historical path
+// `rama_net::proxy::forward::BridgeCloseReason` keeps working.
+#[doc(inline)]
+pub use rama_core::stream::BridgeCloseReason;
 
 /// Direction tag used internally by [`run_bridge`] to disambiguate
 /// per-direction errors when classifying I/O failures.

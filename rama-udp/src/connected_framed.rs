@@ -41,12 +41,13 @@ const INITIAL_WR_CAPACITY: usize = 8 * 1024;
 /// # Example
 ///
 /// ```no_run
+/// use std::net::Ipv4Addr;
 /// use rama_udp::{ConnectedUdpFramed, bind_udp_socket_with_connect_default_dns};
 /// use tokio_util::codec::BytesCodec;
 ///
 /// # async fn _example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// let socket = bind_udp_socket_with_connect_default_dns(
-///     ("127.0.0.1", 51820),
+///     (Ipv4Addr::LOCALHOST, 51820),
 ///     None,
 /// ).await?;
 /// let framed = ConnectedUdpFramed::new(socket, BytesCodec::new());

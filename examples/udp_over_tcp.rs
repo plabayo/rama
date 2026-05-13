@@ -49,19 +49,17 @@
 )]
 
 use std::net::SocketAddr;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use rama::{
     Service,
-    bytes::{Bytes, BytesMut},
+    bytes::Bytes,
     error::BoxError,
-    futures::{Sink, SinkExt, Stream, StreamExt},
+    futures::{SinkExt, StreamExt},
     net::address::SocketAddress,
     rt::Executor,
     stream::{
-        StreamBridge, StreamForwardService,
+        BytesFreeze, StreamBridge, StreamForwardService,
         codec::{BytesCodec, Framed, LengthDelimitedCodec},
     },
     tcp::{TcpStream, client::default_tcp_connect, server::TcpListener},
@@ -178,8 +176,8 @@ async fn udp2tcp_run(udp: UdpSocket, tcp_peer: SocketAddr) -> Result<(), BoxErro
     StreamForwardService::new()
         .with_idle_timeout(Duration::from_secs(300))
         .serve(StreamBridge::new(
-            FreezeBytes::new(udp),
-            FreezeBytes::new(tcp),
+            BytesFreeze::new(udp),
+            BytesFreeze::new(tcp),
         ))
         .await?;
 
@@ -202,61 +200,10 @@ async fn tcp2udp_one(tcp: TcpStream, udp_dst: SocketAddr) -> Result<(), BoxError
     StreamForwardService::new()
         .with_idle_timeout(Duration::from_secs(300))
         .serve(StreamBridge::new(
-            FreezeBytes::new(tcp),
-            FreezeBytes::new(udp),
+            BytesFreeze::new(tcp),
+            BytesFreeze::new(udp),
         ))
         .await?;
 
     Ok(())
-}
-
-/// Tiny adapter that normalises the `BytesMut` decoder output / `Bytes`
-/// encoder input asymmetry of both `BytesCodec` and `LengthDelimitedCodec`
-/// onto a single item type `Bytes`. Both sides of the bridge can then
-/// share `T = Bytes`, satisfying the symmetric bound of
-/// [`StreamForwardService`].
-///
-/// (In practice this is one of the rare places where the symmetric-`T`
-/// design of `StreamForwardService` shows: codecs in `tokio_util` decode
-/// to `BytesMut` and encode `Bytes`. A `LengthDelimitedCodec` that decoded
-/// to `Bytes` directly would let us drop this adapter.)
-struct FreezeBytes<S> {
-    inner: S,
-}
-
-impl<S> FreezeBytes<S> {
-    fn new(inner: S) -> Self {
-        Self { inner }
-    }
-}
-
-impl<S, E> Stream for FreezeBytes<S>
-where
-    S: Stream<Item = Result<BytesMut, E>> + Unpin,
-{
-    type Item = Result<Bytes, E>;
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.inner)
-            .poll_next(cx)
-            .map(|opt| opt.map(|res| res.map(BytesMut::freeze)))
-    }
-}
-
-impl<S, E> Sink<Bytes> for FreezeBytes<S>
-where
-    S: Sink<Bytes, Error = E> + Unpin,
-{
-    type Error = E;
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.inner).poll_ready(cx)
-    }
-    fn start_send(mut self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
-        Pin::new(&mut self.inner).start_send(item)
-    }
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
-    }
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.inner).poll_close(cx)
-    }
 }

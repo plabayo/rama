@@ -83,6 +83,54 @@ impl std::fmt::Display for BridgeCloseReason {
     }
 }
 
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+impl dial9_trace_format::TraceField for BridgeCloseReason {
+    type Ref<'a> = Self;
+
+    fn field_type() -> dial9_trace_format::types::FieldType {
+        dial9_trace_format::types::FieldType::U8
+    }
+
+    fn encode<W: std::io::Write>(
+        &self,
+        enc: &mut dial9_trace_format::EventEncoder<'_, W>,
+    ) -> std::io::Result<()> {
+        let code = match self {
+            Self::Shutdown => 1,
+            Self::IdleTimeout => 2,
+            Self::PeerEofLeft => 3,
+            Self::PeerEofRight => 4,
+            Self::ReadErrorLeft => 5,
+            Self::ReadErrorRight => 6,
+            Self::WriteErrorLeft => 7,
+            Self::WriteErrorRight => 8,
+            Self::PeekTimeout => 9,
+            Self::HandlerDeadline => 10,
+            Self::PausedTimeout => 11,
+        };
+        enc.write_u8(code)
+    }
+
+    fn decode_ref<'a>(val: &dial9_trace_format::types::FieldValueRef<'a>) -> Option<Self::Ref<'a>> {
+        use dial9_trace_format::types::FieldValueRef;
+        match val {
+            FieldValueRef::Varint(1) => Some(Self::Shutdown),
+            FieldValueRef::Varint(2) => Some(Self::IdleTimeout),
+            FieldValueRef::Varint(3) => Some(Self::PeerEofLeft),
+            FieldValueRef::Varint(4) => Some(Self::PeerEofRight),
+            FieldValueRef::Varint(5) => Some(Self::ReadErrorLeft),
+            FieldValueRef::Varint(6) => Some(Self::ReadErrorRight),
+            FieldValueRef::Varint(7) => Some(Self::WriteErrorLeft),
+            FieldValueRef::Varint(8) => Some(Self::WriteErrorRight),
+            FieldValueRef::Varint(9) => Some(Self::PeekTimeout),
+            FieldValueRef::Varint(10) => Some(Self::HandlerDeadline),
+            FieldValueRef::Varint(11) => Some(Self::PausedTimeout),
+            _ => None,
+        }
+    }
+}
+
 /// Input to [`StreamForwardService`]: the two duplex endpoints to bridge.
 ///
 /// Both `a` and `b` must be [`Stream`] + [`Sink`] over the *same* item type
@@ -189,21 +237,24 @@ where
     let mut b_done = false;
     // The reason of whichever side ended first — that's the one that
     // initiated the close. The other side just drained whatever the
-    // initiator had buffered before its half-close.
-    let mut first_eof: Option<BridgeCloseReason> = None;
+    // initiator had buffered before its half-close. Default value is
+    // never observed without being overwritten because the loop only
+    // exits via `a_done && b_done`, which requires at least one EOF
+    // arm to have run.
+    let mut first_eof = BridgeCloseReason::PeerEofLeft;
 
     let mut idle: Option<Pin<Box<tokio::time::Sleep>>> =
         idle_timeout.map(|d| Box::pin(tokio::time::sleep(d)));
+    // Progress counter: bumped on every successful forward. The idle arm
+    // re-checks this against `last_progress` before declaring a timeout,
+    // to absorb the race where idle fires in the same select tick that a
+    // forward also became ready.
+    let mut progress: u64 = 0;
+    let mut last_progress: u64 = 0;
 
-    loop {
+    let result = loop {
         if a_done && b_done {
-            let reason = first_eof.unwrap_or(BridgeCloseReason::PeerEofLeft);
-            tracing::trace!(
-                target: "rama_core::stream::forward",
-                reason = %reason,
-                "stream forward bridge closed",
-            );
-            return Ok(reason);
+            break Ok(first_eof);
         }
 
         let cancelled = async {
@@ -222,38 +273,36 @@ where
 
         tokio::select! {
             biased;
-            () = cancelled => {
-                tracing::trace!(
-                    target: "rama_core::stream::forward",
-                    reason = %BridgeCloseReason::Shutdown,
-                    "stream forward bridge closed",
-                );
-                return Ok(BridgeCloseReason::Shutdown);
-            }
+            () = cancelled => break Ok(BridgeCloseReason::Shutdown),
             () = idle_tick => {
-                tracing::trace!(
-                    target: "rama_core::stream::forward",
-                    reason = %BridgeCloseReason::IdleTimeout,
-                    "stream forward bridge closed",
-                );
-                return Ok(BridgeCloseReason::IdleTimeout);
+                // Re-check the progress counter: a forward may have
+                // completed in the same poll cycle that idle fired.
+                if progress != last_progress {
+                    last_progress = progress;
+                    if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
+                        s.as_mut().reset(tokio::time::Instant::now() + d);
+                    }
+                    continue;
+                }
+                break Ok(BridgeCloseReason::IdleTimeout);
             }
 
             item = a_stream.next(), if !a_done => match item {
                 Some(Ok(t)) => {
+                    if let Err(e) = b_sink.send(t).await {
+                        break Err((BridgeCloseReason::WriteErrorRight, e.into_box_error()));
+                    }
+                    progress = progress.wrapping_add(1);
                     if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
                         s.as_mut().reset(tokio::time::Instant::now() + d);
                     }
-                    if let Err(e) = b_sink.send(t).await {
-                        return Err(e.into());
-                    }
                 }
-                Some(Err(e)) => return Err(e.into()),
+                Some(Err(e)) => break Err((BridgeCloseReason::ReadErrorLeft, e.into_box_error())),
                 None => {
-                    a_done = true;
-                    if first_eof.is_none() {
-                        first_eof = Some(BridgeCloseReason::PeerEofLeft);
+                    if !b_done {
+                        first_eof = BridgeCloseReason::PeerEofLeft;
                     }
+                    a_done = true;
                     if let Err(err) = b_sink.close().await {
                         tracing::debug!(
                             target: "rama_core::stream::forward",
@@ -266,19 +315,20 @@ where
 
             item = b_stream.next(), if !b_done => match item {
                 Some(Ok(t)) => {
+                    if let Err(e) = a_sink.send(t).await {
+                        break Err((BridgeCloseReason::WriteErrorLeft, e.into_box_error()));
+                    }
+                    progress = progress.wrapping_add(1);
                     if let (Some(d), Some(s)) = (idle_timeout, idle.as_mut()) {
                         s.as_mut().reset(tokio::time::Instant::now() + d);
                     }
-                    if let Err(e) = a_sink.send(t).await {
-                        return Err(e.into());
-                    }
                 }
-                Some(Err(e)) => return Err(e.into()),
+                Some(Err(e)) => break Err((BridgeCloseReason::ReadErrorRight, e.into_box_error())),
                 None => {
-                    b_done = true;
-                    if first_eof.is_none() {
-                        first_eof = Some(BridgeCloseReason::PeerEofRight);
+                    if !a_done {
+                        first_eof = BridgeCloseReason::PeerEofRight;
                     }
+                    b_done = true;
                     if let Err(err) = a_sink.close().await {
                         tracing::debug!(
                             target: "rama_core::stream::forward",
@@ -288,6 +338,26 @@ where
                     }
                 }
             },
+        }
+    };
+
+    match result {
+        Ok(reason) => {
+            tracing::trace!(
+                target: "rama_core::stream::forward",
+                reason = %reason,
+                "stream forward bridge closed",
+            );
+            Ok(reason)
+        }
+        Err((reason, err)) => {
+            tracing::debug!(
+                target: "rama_core::stream::forward",
+                reason = %reason,
+                error = %err,
+                "stream forward bridge closed with error",
+            );
+            Err(err)
         }
     }
 }
@@ -419,5 +489,167 @@ mod tests {
         // Keep peers alive past the assertion so they don't EOF early.
         drop(a_user);
         drop(b_user);
+    }
+
+    #[tokio::test]
+    async fn idle_timer_resets_on_activity() {
+        let (mut a_user, a_proxy) = duplex_pair::<u32>();
+        let (mut b_user, b_proxy) = duplex_pair::<u32>();
+
+        let svc = StreamForwardService::new().with_idle_timeout(Duration::from_millis(150));
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, b_proxy))
+                .await
+                .unwrap()
+        });
+
+        // Push one item every 50ms for ~400ms — total elapsed > idle
+        // window, but each individual gap is well below it. The bridge
+        // must not declare IdleTimeout.
+        for i in 0..8u32 {
+            a_user.send(i).await.unwrap();
+            let r = b_user.next().await.unwrap().unwrap();
+            assert_eq!(r, i);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        drop(a_user);
+        drop(b_user);
+        let reason = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("bridge did not unwind on EOF within 2s")
+            .unwrap();
+        assert!(
+            matches!(
+                reason,
+                BridgeCloseReason::PeerEofLeft | BridgeCloseReason::PeerEofRight
+            ),
+            "expected EOF reason, got {reason}",
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_guard_terminates_bridge() {
+        use crate::graceful::Shutdown;
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = Shutdown::new(async move {
+            _ = rx.await;
+        });
+        let guard = shutdown.guard();
+
+        let (_a_user, a_proxy) = duplex_pair::<u32>();
+        let (_b_user, b_proxy) = duplex_pair::<u32>();
+
+        let svc = StreamForwardService::new().with_shutdown_guard(guard);
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, b_proxy))
+                .await
+                .unwrap()
+        });
+
+        // Bridge is idle but should not return on its own.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!task.is_finished());
+
+        tx.send(()).unwrap();
+        let reason = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("bridge did not unwind on shutdown within 2s")
+            .unwrap();
+        assert_eq!(reason, BridgeCloseReason::Shutdown);
+        drop(shutdown);
+    }
+
+    #[tokio::test]
+    async fn half_close_keeps_other_direction_alive() {
+        // After `a_user` drops, `a_proxy`'s stream EOFs (PeerEofLeft is
+        // pinned as first_eof) but the bridge must NOT unwind yet — it
+        // should keep pumping `b -> a` direction until `b_user` also
+        // drops. We assert this by:
+        //   1. Drop `a_user` early.
+        //   2. After a short pause, verify the service task hasn't
+        //      finished.
+        //   3. Drop `b_user`.
+        //   4. The bridge unwinds and `first_eof` wins → PeerEofLeft.
+        let (a_user, a_proxy) = duplex_pair::<u32>();
+        let (b_user, b_proxy) = duplex_pair::<u32>();
+
+        let svc = StreamForwardService::new();
+        let task = tokio::spawn(async move {
+            svc.serve(StreamBridge::new(a_proxy, b_proxy))
+                .await
+                .unwrap()
+        });
+
+        drop(a_user);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !task.is_finished(),
+            "bridge unwound before second side closed (a half-close should not be enough)",
+        );
+
+        drop(b_user);
+        let reason = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("bridge did not unwind within 2s")
+            .unwrap();
+        // a_user dropped first → first_eof = PeerEofLeft.
+        assert_eq!(reason, BridgeCloseReason::PeerEofLeft);
+    }
+
+    #[tokio::test]
+    async fn read_error_propagates_with_classification() {
+        // Endpoint whose stream yields a single Err and then ends.
+        struct FailingStream {
+            fired: bool,
+        }
+        impl Stream for FailingStream {
+            type Item = Result<u32, std::io::Error>;
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Self::Item>> {
+                if self.fired {
+                    std::task::Poll::Ready(None)
+                } else {
+                    self.fired = true;
+                    std::task::Poll::Ready(Some(Err(std::io::Error::other("boom"))))
+                }
+            }
+        }
+        impl Sink<u32> for FailingStream {
+            type Error = std::io::Error;
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn start_send(self: Pin<&mut Self>, _: u32) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Result<(), Self::Error>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        impl Unpin for FailingStream {}
+
+        let (_b_user, b_proxy) = duplex_pair::<u32>();
+        let svc = StreamForwardService::new();
+        let err = svc
+            .serve(StreamBridge::new(FailingStream { fired: false }, b_proxy))
+            .await
+            .expect_err("expected bridge to surface the read error");
+        assert!(err.to_string().contains("boom"));
     }
 }
