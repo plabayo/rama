@@ -577,6 +577,11 @@ macro_rules! __transparent_proxy_ffi_emit {
                     .linger_close_timeout
                     .map(|d| d.as_millis() as u32)
                     .unwrap_or(0),
+                has_egress_eof_grace_ms: opts.egress_eof_grace.is_some(),
+                egress_eof_grace_ms: opts
+                    .egress_eof_grace
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true

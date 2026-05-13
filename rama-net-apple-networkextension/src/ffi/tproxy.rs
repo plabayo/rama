@@ -437,6 +437,14 @@ pub struct TcpEgressConnectOptions {
     /// sent its FIN before the Swift side force-cancels it.
     /// See [`crate::tproxy::types::NwTcpConnectOptions::linger_close_timeout`].
     pub linger_close_ms: u32,
+    /// Whether `egress_eof_grace_ms` carries a meaningful value.
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_egress_eof_grace_ms: bool,
+    /// Grace window (milliseconds) between the egress read pump
+    /// observing peer EOF and the Swift side force-cancelling the
+    /// connection. See
+    /// [`crate::tproxy::types::NwTcpConnectOptions::egress_eof_grace`].
+    pub egress_eof_grace_ms: u32,
 }
 
 /// C representation of egress options for UDP `NWConnection`s.

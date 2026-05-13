@@ -227,6 +227,15 @@ private let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 /// hundred concurrent FIN_WAIT_1 sockets rather than accumulating.
 let defaultLingerCloseMs: UInt32 = 5_000
 
+/// Default grace window between the egress read pump observing peer
+/// EOF / read error and the backstop `connection.cancel()` firing.
+/// Applied when `RamaTcpEgressConnectOptions.has_egress_eof_grace_ms`
+/// is `false`. 2 seconds is enough headroom for the clean teardown
+/// path (`on_server_closed` → `closeWhenDrained` → cancel) to
+/// complete on the common case, while still bounding cleanup when
+/// the originating app has stopped reading.
+let defaultEgressEofGraceMs: UInt32 = 2_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields
@@ -1223,12 +1232,21 @@ private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
 /// per-flow egress channel is full, and we stop scheduling further
 /// `connection.receive` calls until the matching `onEgressReadDemand`
 /// callback flips `paused` back to `false` via `resume()`.
-private final class NwTcpConnectionReadPump {
+final class NwTcpConnectionReadPump {
     private let connection: any NwConnectionLike
     /// `weak` for the same retain-cycle / ownership reasons as
     /// [`TcpClientReadPump.session`].
     private weak var session: RamaTcpSessionHandle?
     private let queue: DispatchQueue
+    /// Grace window between observing peer EOF / error and force-
+    /// cancelling the underlying connection. The clean teardown path
+    /// (`on_server_closed` → cancel) depends on the originating app
+    /// being able to drain; the grace gives the clean path a chance to
+    /// run before the backstop fires.
+    private let eofGraceDeadline: DispatchTimeInterval
+    /// Scheduled EOF-cancel work, retained so we can invalidate it
+    /// when the clean path beats us to the cancel.
+    private var eofWork: DispatchWorkItem?
     /// Lifecycle phase — replaces the former `closed`, `paused`, and
     /// `receiving` boolean triple.  The `receiving` → `.reading` mapping
     /// also prevents `Network.framework`'s unsupported concurrent-receive
@@ -1239,10 +1257,16 @@ private final class NwTcpConnectionReadPump {
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
 
-    init(connection: any NwConnectionLike, session: RamaTcpSessionHandle, queue: DispatchQueue) {
+    init(
+        connection: any NwConnectionLike,
+        session: RamaTcpSessionHandle,
+        queue: DispatchQueue,
+        eofGraceDeadline: DispatchTimeInterval
+    ) {
         self.connection = connection
         self.session = session
         self.queue = queue
+        self.eofGraceDeadline = eofGraceDeadline
     }
 
     func start() {
@@ -1327,6 +1351,27 @@ private final class NwTcpConnectionReadPump {
                 if isComplete || error != nil {
                     self.phase = .closed
                     self.session?.onEgressEof()
+                    // The clean teardown path runs `on_egress_eof` →
+                    // bridge exits → `on_server_closed` → Swift
+                    // cancels the connection. That path depends on
+                    // the originating app's write pump being able to
+                    // drain its queued response bytes. If the app
+                    // stopped reading (process exit, browser tab
+                    // closed) the drain never completes and the
+                    // clean path stalls. Schedule a fallback cancel
+                    // so the NWConnection registration is released
+                    // within a bounded window regardless of app
+                    // behavior. `cancel()` is idempotent — if the
+                    // clean path reaches it first, the work item is
+                    // invalidated by `cancel()` below or the call
+                    // becomes a no-op.
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self else { return }
+                        self.connection.cancel()
+                        self.eofWork = nil
+                    }
+                    self.eofWork = work
+                    self.queue.asyncAfter(deadline: .now() + self.eofGraceDeadline, execute: work)
                     return
                 }
                 self.scheduleReadLocked()
@@ -1335,7 +1380,16 @@ private final class NwTcpConnectionReadPump {
     }
 
     func cancel() {
-        queue.async { [self] in phase = .closed }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.phase = .closed
+            // External cancel pre-empts the EOF backstop: the work
+            // item's only job is to ensure cancel reaches the
+            // connection if no other path does, and that no-longer-
+            // applies once an outer teardown has fired.
+            self.eofWork?.cancel()
+            self.eofWork = nil
+        }
     }
 }
 
@@ -1866,6 +1920,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let egressOpts = session.getEgressConnectOptions()
         let connectTimeoutMs = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
         let lingerCloseMs = egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil } ?? defaultLingerCloseMs
+        let egressEofGraceMs = egressOpts.flatMap {
+            $0.has_egress_eof_grace_ms ? $0.egress_eof_grace_ms : nil
+        } ?? defaultEgressEofGraceMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
@@ -1922,7 +1979,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                     )
                     ctx.egressWritePump = writePump
                     let readPump = NwTcpConnectionReadPump(
-                        connection: connection, session: session, queue: flowQueue)
+                        connection: connection,
+                        session: session,
+                        queue: flowQueue,
+                        eofGraceDeadline: .milliseconds(Int(egressEofGraceMs))
+                    )
                     ctx.egressReadPump = readPump
 
                     session.activate(
