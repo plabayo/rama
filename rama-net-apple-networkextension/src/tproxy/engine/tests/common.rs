@@ -46,7 +46,6 @@ impl TestHandler {
         }
     }
 
-    #[expect(dead_code, reason = "used by `lifecycle::*_egress_options_override_flows*` tests")]
     pub(super) fn with_tcp_egress_options(
         mut self,
         f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
@@ -58,7 +57,6 @@ impl TestHandler {
         self
     }
 
-    #[expect(dead_code, reason = "used by `lifecycle::*_egress_options_override_flows*` tests")]
     pub(super) fn with_udp_egress_options(
         mut self,
         f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>

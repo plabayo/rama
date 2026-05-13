@@ -1088,7 +1088,7 @@ private enum UdpWritePumpPhase {
     case closed
 }
 
-final class UdpClientWritePump {
+final class UdpClientWritePump: @unchecked Sendable {
     // Held behind the protocol so tests can drive the pump with a
     // capture-mock; production passes a concrete NEAppProxyUDPFlow.
     private let flow: any UdpFlowWritable

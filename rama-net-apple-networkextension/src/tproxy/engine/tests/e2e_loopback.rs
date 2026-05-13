@@ -99,8 +99,7 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     let _hold = socket;
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
-                PeerBehavior::EchoThenAbort {
-                } => {
+                PeerBehavior::EchoThenAbort => {
                     let mut buf = vec![0u8; 8 * 1024];
                     if let Ok(n) = socket.read(&mut buf).await {
                         if n > 0 {

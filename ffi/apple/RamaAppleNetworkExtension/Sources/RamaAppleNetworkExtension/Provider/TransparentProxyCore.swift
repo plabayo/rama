@@ -33,7 +33,13 @@ import RamaAppleNEFFI
 /// `UdpFlowLike`, `NwConnectionLike`). The provider passes flow
 /// metadata in via the `RamaTransparentProxyFlowMetaBridge` struct so
 /// the core never has to access `NEFlowMetaData`.
-final class TransparentProxyCore {
+/// `@unchecked Sendable` because mutable state is either confined to
+/// `stateQueue` (registration maps, engine handle, flow-count timer)
+/// or set once at construction and only mutated via documented
+/// single-threaded entry points (`nwConnectionFactory` from tests
+/// before any flow handling starts). Swift can't see the runtime
+/// invariants; the annotation tells the type system to trust them.
+final class TransparentProxyCore: @unchecked Sendable {
     // MARK: - Owned state
 
     private(set) var engine: RamaTransparentProxyEngineHandle?
