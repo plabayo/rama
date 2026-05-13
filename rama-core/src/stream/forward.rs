@@ -254,7 +254,14 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofLeft);
                     }
-                    let _close = b_sink.close().await;
+                    if let Err(err) = b_sink.close().await {
+                        let err: BoxError = err.into();
+                        tracing::debug!(
+                            target: "rama_core::stream::forward",
+                            error = %err,
+                            "stream forward bridge: error while half-closing `b` after `a` EOF",
+                        );
+                    }
                 }
             },
 
@@ -273,7 +280,14 @@ where
                     if first_eof.is_none() {
                         first_eof = Some(BridgeCloseReason::PeerEofRight);
                     }
-                    let _close = a_sink.close().await;
+                    if let Err(err) = a_sink.close().await {
+                        let err: BoxError = err.into();
+                        tracing::debug!(
+                            target: "rama_core::stream::forward",
+                            error = %err,
+                            "stream forward bridge: error while half-closing `a` after `b` EOF",
+                        );
+                    }
                 }
             },
         }
