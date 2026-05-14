@@ -204,6 +204,110 @@ final class CoreStressTests: XCTestCase {
         }
     }
 
+    // MARK: - Parallel UDP churn
+
+    /// 100 UDP flows all driven through open → first read → EOF in
+    /// parallel. Mirrors `testParallelTcpHappyPathChurn` for the UDP
+    /// path, which no longer has an NWConnection state machine
+    /// (egress is service-owned in Rust); the test thus drives the
+    /// lifecycle purely through `MockUdpFlow` events. Validates that
+    /// the engine + per-flow UDP queues handle bursty arrival
+    /// without falling behind or leaking registration entries.
+    func testParallelUdpHappyPathChurn() {
+        let (core, _) = makeFixture()
+        defer { core.detachEngine(reason: 0) }
+
+        let flowCount = 100
+        var flows: [MockUdpFlow] = []
+        flows.reserveCapacity(flowCount)
+        for _ in 0..<flowCount {
+            let flow = MockUdpFlow()
+            flows.append(flow)
+            _ = core.handleUdpFlow(flow, meta: makeMeta(protocolRaw: 2, port: 5000))
+        }
+        XCTAssertEqual(core.udpFlowCount, flowCount)
+
+        // Phase 1: every flow gets flow.open() right after intercept;
+        // wait until all 100 are observed in flight.
+        waitFor("all \(flowCount) flows reached flow.open", timeout: 30.0) {
+            flows.allSatisfy { $0.openWasInvoked }
+        }
+
+        // Phase 2: complete every flow.open in a tight loop, then
+        // wait once for every flow's read pump to have issued its
+        // first readDatagrams.
+        for flow in flows { flow.completeOpen(error: nil) }
+        waitFor("all \(flowCount) read pumps started", timeout: 30.0) {
+            flows.allSatisfy { $0.pendingReadCount > 0 }
+        }
+
+        // Phase 3: EOF every flow in parallel; wait for the aggregate
+        // registration count to drain.
+        for flow in flows {
+            flow.completePendingRead(datagrams: [], endpoints: nil, error: nil)
+        }
+        waitFor("all \(flowCount) flows cleaned up", timeout: 30.0) {
+            core.udpFlowCount == 0
+        }
+    }
+
+    /// 50 UDP flows split across the cleanup arms in parallel:
+    /// happy-EOF, flow.open error, and read error. Validates that
+    /// every UDP cleanup arm composes with every other at
+    /// concurrency without corrupting shared registration state.
+    func testParallelUdpFailureMixChurn() {
+        let (core, _) = makeFixture()
+        defer { core.detachEngine(reason: 0) }
+
+        let total = 50
+        var happyFlows: [MockUdpFlow] = []
+        var openErrorFlows: [MockUdpFlow] = []
+        var readErrorFlows: [MockUdpFlow] = []
+
+        for i in 0..<total {
+            let flow = MockUdpFlow()
+            switch i % 3 {
+            case 0: happyFlows.append(flow)
+            case 1: openErrorFlows.append(flow)
+            default: readErrorFlows.append(flow)
+            }
+            _ = core.handleUdpFlow(flow, meta: makeMeta(protocolRaw: 2, port: 5000))
+        }
+        XCTAssertEqual(core.udpFlowCount, total)
+
+        waitFor("flow.open observed for all UDP flows", timeout: 30.0) {
+            (happyFlows + openErrorFlows + readErrorFlows).allSatisfy { $0.openWasInvoked }
+        }
+
+        // open-error arm: complete with an NSError; cleanup must run
+        // without arming the read pump.
+        for flow in openErrorFlows {
+            flow.completeOpen(error: NSError(domain: "test.open", code: 1))
+        }
+
+        // happy + read-error arms: complete open successfully, wait
+        // for the read pump, then drive the divergent completion.
+        for flow in happyFlows + readErrorFlows {
+            flow.completeOpen(error: nil)
+        }
+        waitFor("read pumps active for happy + read-error arms", timeout: 30.0) {
+            (happyFlows + readErrorFlows).allSatisfy { $0.pendingReadCount > 0 }
+        }
+        for flow in happyFlows {
+            flow.completePendingRead(datagrams: [], endpoints: nil, error: nil)
+        }
+        for flow in readErrorFlows {
+            flow.completePendingRead(
+                datagrams: nil, endpoints: nil,
+                error: NSError(domain: "test.read", code: 2)
+            )
+        }
+
+        waitFor("all UDP flows cleaned up", timeout: 60.0) {
+            core.udpFlowCount == 0
+        }
+    }
+
     // MARK: - Engine.stop unblocks any mid-flight state
 
     /// Drive flows into a mix of pre-ready / ready / post-ready
