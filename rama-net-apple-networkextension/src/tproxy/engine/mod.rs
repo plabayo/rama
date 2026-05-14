@@ -59,6 +59,8 @@ pub use self::runtime::{
     TransparentProxyAsyncRuntimeFactory,
 };
 
+mod udp_egress;
+
 /// Default deadline for flow-handler decisions. Tuned via
 /// [`TransparentProxyEngineBuilder::with_decision_deadline`].
 pub const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(3);
@@ -959,31 +961,38 @@ struct UdpSessionPendingData {
     on_server_datagram: DatagramSink,
     /// Demand sink captured into `UdpFlow` at activate.
     client_read_demand_sink: DemandSink,
-    /// Capacity used for the egress mpsc channel created at activate.
-    udp_channel_capacity: usize,
     /// Per-flow metadata. Shared as `Arc` because the service task
     /// also needs it (close-event emission); a single refcount-bumped
     /// clone is cheaper than copying the whole struct.
     meta: Arc<TransparentProxyFlowMeta>,
-    /// Handler-supplied egress options.
+    /// Egress UDP socket + send/recv pump tasks. Bound and spawned in
+    /// the async factory (runtime context required for
+    /// `UdpSocket::from_std` and `tokio::spawn`); ownership moves into
+    /// the session at `activate` so it lives for the flow's lifetime.
+    egress: udp_egress::UdpEgress,
+    /// Bridge-side egress half (service's view of the wire). Built
+    /// alongside `egress` so the `NwUdpSocket` interface is wired up
+    /// to the spawned send pump's outbound queue.
+    egress_socket_iface: NwUdpSocket,
+    /// Handler-supplied egress options, retained so the FFI getter
+    /// can still surface them to Swift for diagnostics / future
+    /// `setsockopt` hookup (service class, IP_BOUND_IF). Rust owns
+    /// the socket now, so Swift no longer applies these directly.
     egress_connect_options: Option<NwUdpConnectOptions>,
-    /// Per-flow shutdown guard. Held in pending so activate() and any
-    /// future per-flow tasks can clone it just like the TCP path does;
-    /// keeps the two session shapes symmetric.
-    #[expect(
-        dead_code,
-        reason = "reserved for symmetry with the TCP pending; activate() does not yet need it but future per-flow UDP tasks (e.g. an idle/inactivity watchdog) will clone from here"
-    )]
-    flow_guard: ShutdownGuard,
 }
 
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::Sender<Datagram>>,
     on_client_read_demand: DemandSink,
 
-    /// Egress datagrams (NWConnection→Rust, populated by activate).
-    /// Each [`Datagram`] carries the peer the reply arrived from.
-    egress_tx: Option<mpsc::Sender<Datagram>>,
+    /// Rust-owned egress UDP socket and its pump tasks. Bound when the
+    /// session is constructed (in the async factory, where a tokio
+    /// runtime context exists for `UdpSocket::from_std`); dropped at
+    /// `on_client_close`. See the `udp_egress` module for the
+    /// rationale (BSD socket + per-datagram destination is the right
+    /// model for a stateless connectionless protocol — see Apple
+    /// TN3151 + issue #894).
+    egress: Option<udp_egress::UdpEgress>,
 
     flow_stop_tx: Option<oneshot::Sender<()>>,
     pending: Option<UdpSessionPendingData>,
@@ -1065,9 +1074,12 @@ impl TransparentProxyUdpSession {
                 "udp on_client_close: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
             );
         }
-        // Drop senders so the bridge IO sees EOF.
+        // Drop senders so the bridge IO sees EOF. Dropping `egress`
+        // closes the BSD socket FD and drops the bridge's egress
+        // mpsc sender held by the send pump; the service's
+        // `egress.recv()` returns `None`.
         self.client_tx = None;
-        self.egress_tx = None;
+        self.egress = None;
         // Drop pending — drops bridge_tx so a service still parked on
         // `bridge_rx.await` returns Err and the synthetic close fires.
         self.pending = None;
@@ -1086,45 +1098,6 @@ impl TransparentProxyUdpSession {
         _ = self.service_task.take();
     }
 
-    /// Called by Swift when a datagram arrives from the egress `NWConnection`.
-    ///
-    /// Drop-on-full, intentionally. Unlike the ingress
-    /// ([`Self::on_client_datagram`]) path, there is no demand
-    /// callback to re-arm a paused Swift-side reader: the egress
-    /// `NWConnection.receive` is recursion-driven by
-    /// `NwUdpConnectionReadPump`, and the Rust→Swift channel back to
-    /// the bridge is bounded. When the service can't keep up we drop
-    /// the newest datagram rather than block the FFI thread or grow
-    /// the queue. UDP is lossy by design — the kernel would have
-    /// dropped these too in line-rate conditions; we do it inside
-    /// the proxy a few microseconds later. Pinned by
-    /// `tests::udp::udp_egress_drops_datagrams_when_service_does_not_drain`.
-    /// Deliver one egress→service datagram. `peer` is the source the
-    /// reply arrived from — used when the bridge later sends it back
-    /// to the client via `flow.writeDatagrams(_:sentBy:)`.
-    pub fn on_egress_datagram(&mut self, bytes: &[u8], peer: Option<SocketAddr>) {
-        // Zero-length datagrams are valid per RFC 768; see
-        // `on_client_datagram` for the rationale. Forward unchanged.
-        if let Some(tx) = self.egress_tx.as_mut() {
-            // `Full` is expected and silent: drop-on-full is the
-            // documented UDP semantics. `Closed` is unexpected and
-            // worth a breadcrumb — it means the bridge's egress
-            // receiver was already gone when this datagram landed
-            // (service teardown raced ahead of egress reads, or the
-            // service dropped its bridge half).
-            let datagram = Datagram {
-                payload: Bytes::copy_from_slice(bytes),
-                peer,
-            };
-            if let Err(TrySendError::Closed(_)) = tx.try_send(datagram) {
-                tracing::debug!(
-                    target: "rama_apple_ne::tproxy",
-                    "udp on_egress_datagram: egress channel closed; dropping datagram",
-                );
-            }
-        }
-    }
-
     /// Return the handler-supplied egress connect options, if any.
     pub fn egress_connect_options(&self) -> Option<&NwUdpConnectOptions> {
         self.pending
@@ -1132,17 +1105,20 @@ impl TransparentProxyUdpSession {
             .and_then(|p| p.egress_connect_options.as_ref())
     }
 
-    /// Activate the session once the egress NWConnection layer is ready.
+    /// Activate the session.
     ///
-    /// `on_send_to_egress` — Rust→Swift: dispatch a datagram to the
-    /// matching per-peer `NWConnection`. The datagram's `peer` field
-    /// tells Swift which peer the datagram is addressed to; Swift
-    /// lazy-opens a peer-specific `NWConnection` if one is not already
-    /// in its per-flow map.
-    pub fn activate<OnSendToEgress>(&mut self, on_send_to_egress: OnSendToEgress)
-    where
-        OnSendToEgress: Fn(Datagram) + Send + Sync + 'static,
-    {
+    /// Binds the egress UDP socket and starts the pump tasks that
+    /// drive it (send-from-bridge, recv-into-bridge). Swift does not
+    /// supply a callback here any more — the egress socket lives in
+    /// Rust now, which matches UDP's stateless / per-datagram-peer
+    /// semantics and removes the per-peer NWConnection bookkeeping
+    /// the previous design needed. See `udp_egress` and issue #894
+    /// for the rationale and trade-offs.
+    ///
+    /// On bind failure the session is torn down (Swift's
+    /// `on_server_closed` fires) and `activate` returns; subsequent
+    /// `on_client_datagram` calls become no-ops.
+    pub fn activate(&mut self) {
         let Some(pending) = self.pending.take() else {
             tracing::warn!(
                 "TransparentProxyUdpSession::activate called on already-active or cancelled session"
@@ -1155,12 +1131,10 @@ impl TransparentProxyUdpSession {
             client_rx,
             on_server_datagram,
             client_read_demand_sink,
-            udp_channel_capacity,
             meta,
+            egress,
+            egress_socket_iface,
             egress_connect_options: _,
-            // Reserved for future per-flow tasks that need cooperative
-            // shutdown — see TCP path which clones into bridge tasks.
-            flow_guard: _,
         } = pending;
 
         // ingress flow (client ↔ service)
@@ -1176,32 +1150,26 @@ impl TransparentProxyUdpSession {
             ingress_flow.extensions().insert(ProxyTarget(remote));
         }
 
-        // egress socket (service ↔ NWConnection)
-        let (egress_client_tx, egress_client_rx) = mpsc::channel::<Datagram>(udp_channel_capacity);
-        // Guard the Rust→Swift egress send under the same flag as the
-        // ingress callbacks: any task still holding this `egress_sink`
-        // after `on_client_close` flipped the flag will short-circuit
-        // before reaching the Swift `context`.
-        let egress_sink: DatagramSink =
-            guarded_datagram_sink(self.callback_active.clone(), Arc::new(on_send_to_egress));
-        let egress_socket = NwUdpSocket::new(egress_client_rx, egress_sink);
-        self.egress_tx = Some(egress_client_tx);
+        let local_addr = egress.local_addr;
+        self.egress = Some(egress);
 
-        tracing::debug!(protocol = ?protocol, "udp session activated");
+        tracing::debug!(
+            protocol = ?protocol,
+            local = %local_addr,
+            "udp session activated"
+        );
 
         if bridge_tx
-            .send(BridgeIo(ingress_flow, egress_socket))
+            .send(BridgeIo(ingress_flow, egress_socket_iface))
             .is_err()
         {
             // The service task receives via `bridge_rx` exactly once.
             // If we get here it means the task ended before activate
             // ran — `parent_guard` cancelled (engine shutting down)
             // or the task panicked. Either way the BridgeIo we just
-            // built (with the ingress flow's mpsc receiver inside)
-            // is dropped on send failure, which closes the
-            // client-ingress channel from the receiver side. Log so
-            // a future "everything in this flow returns Closed"
-            // mystery has a breadcrumb.
+            // built is dropped, which closes the client-ingress
+            // channel from the receiver side. Log so a future
+            // "everything returns Closed" mystery has a breadcrumb.
             tracing::debug!(
                 target: "rama_apple_ne::tproxy",
                 protocol = ?protocol,
@@ -1245,6 +1213,7 @@ where
     let flow_protocol = meta.protocol;
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
+    let exec_for_pending = exec.clone();
     let Ok(flow_action) =
         tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await
     else {
@@ -1378,21 +1347,70 @@ where
         closed_sink();
     });
 
+    // Bind the egress UDP socket and stand up its send/recv pumps
+    // here, inside the async factory — `UdpSocket::from_std` and
+    // `tokio::spawn` both require a current runtime, which the FFI
+    // `activate` entrypoint (called from a Swift dispatch queue) does
+    // not have. Doing it here also surfaces bind failures
+    // synchronously to the engine before the session escapes.
+    let (egress_client_tx, egress_client_rx) = mpsc::channel::<Datagram>(udp_channel_capacity);
+    let egress = match udp_egress::spawn_udp_egress(
+        &exec_for_pending,
+        &flow_guard,
+        egress_client_tx,
+        udp_channel_capacity,
+        egress_connect_options.as_ref(),
+    ) {
+        Ok(egress) => egress,
+        Err(err) => {
+            tracing::warn!(
+                target: "rama_apple_ne::tproxy",
+                flow_id,
+                error = %err,
+                "udp new_session: failed to bind egress UDP socket; declining flow",
+            );
+            // Signal the per-flow shutdown so the service task we just
+            // spawned exits cleanly (bridge_rx will see the dropped
+            // sender). Flip callback_active so any late dispatch is a
+            // no-op.
+            *callback_active.lock() = false;
+            _ = flow_stop_tx.send(());
+            return SessionFlowAction::Blocked;
+        }
+    };
+
+    // Bridge-side egress half: the outbound sink pushes into the send
+    // pump's queue (drop-on-full matches UDP wire semantics); the
+    // inbound receiver surfaces wire-side replies tagged with peer.
+    let outbound = egress.outbound_tx.clone();
+    let outbound_sink: DatagramSink = guarded_datagram_sink(
+        callback_active.clone(),
+        Arc::new(move |datagram: Datagram| {
+            if let Err(TrySendError::Closed(_)) = outbound.try_send(datagram) {
+                tracing::trace!(
+                    target: "rama_apple_ne::tproxy",
+                    "udp egress: outbound channel closed; dropping datagram"
+                );
+            }
+        }),
+    );
+    let egress_socket_iface = NwUdpSocket::new(egress_client_rx, outbound_sink);
+
     let pending = UdpSessionPendingData {
         bridge_tx,
         client_rx,
         on_server_datagram: datagram_sink,
         client_read_demand_sink: client_read_demand_sink.clone(),
-        udp_channel_capacity,
         meta: meta_arc,
+        egress,
+        egress_socket_iface,
         egress_connect_options,
-        flow_guard,
     };
 
     SessionFlowAction::Intercept(TransparentProxyUdpSession {
         client_tx: Some(client_tx),
         on_client_read_demand: client_read_demand_sink,
-        egress_tx: None,
+        egress: None,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
         service_task: Some(service_task),

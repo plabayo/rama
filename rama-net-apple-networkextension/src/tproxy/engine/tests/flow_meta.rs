@@ -108,7 +108,7 @@ fn udp_flow_exposes_meta_extension() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
 

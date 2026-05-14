@@ -221,7 +221,7 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     let deadline = Instant::now() + Duration::from_millis(750);
     while closed.load(Ordering::Relaxed) == 0 {
@@ -296,7 +296,7 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Push 8 datagrams. Channel capacity is 2 and the service never
     // reads, so 6 will hit `Full`. Demand must fire on every push.
@@ -353,7 +353,7 @@ fn udp_on_client_close_runs_service_close_epilogue() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Give activate's bridge_tx → service_task wiring a moment to
     // reach the select! before we close. Without this the service
@@ -429,7 +429,7 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Push a datagram; the demand sink should fire (and the bridge
     // should accept the datagram into the channel).

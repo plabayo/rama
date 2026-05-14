@@ -37,7 +37,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 zeroize = { workspace = true }
 
