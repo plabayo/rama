@@ -110,7 +110,6 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 

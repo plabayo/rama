@@ -852,31 +852,6 @@ final class RamaUdpSessionHandle {
         }
     }
 
-    /// Query handler-supplied egress connect options.
-    ///
-    /// Returns the options struct when the handler provided custom settings, or
-    /// `nil` when Swift should use `NWParameters` defaults.
-    func getEgressConnectOptions() -> RamaUdpEgressConnectOptions? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return nil }
-
-        var opts = RamaUdpEgressConnectOptions(
-            parameters: RamaNwEgressParameters(
-                has_service_class: false, service_class: 0,
-                has_multipath_service_type: false, multipath_service_type: 0,
-                has_required_interface_type: false, required_interface_type: 0,
-                has_attribution: false, attribution: 0,
-                prohibited_interface_types_mask: 0,
-                preserve_original_meta_data: true
-            ),
-            has_connect_timeout_ms: false,
-            connect_timeout_ms: 0
-        )
-        let hasCustom = rama_transparent_proxy_udp_session_get_egress_connect_options(s, &opts)
-        return hasCustom ? opts : nil
-    }
-
     /// Activate the session.
     ///
     /// The Rust engine owns the egress UDP socket (one unconnected

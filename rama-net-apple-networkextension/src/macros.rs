@@ -97,11 +97,8 @@ macro_rules! __transparent_proxy_ffi_emit {
             $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacks;
         pub type RamaNwEgressParameters = $crate::ffi::tproxy::NwEgressParameters;
         pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
-        pub type RamaUdpEgressConnectOptions = $crate::ffi::tproxy::UdpEgressConnectOptions;
         pub type RamaTransparentProxyTcpEgressCallbacks =
             $crate::ffi::tproxy::TransparentProxyTcpEgressCallbacks;
-        pub type RamaTransparentProxyUdpEgressCallbacks =
-            $crate::ffi::tproxy::TransparentProxyUdpEgressCallbacks;
 
         #[repr(C)]
         pub struct RamaTransparentProxyTcpSessionResult {
@@ -719,37 +716,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_egress_eof() };
         }
 
-        // ── UDP egress ──────────────────────────────────────────────────────────
-
-        /// Query handler-supplied egress connect options for a UDP session.
-        ///
-        /// Returns `true` and fills `out_options` when the handler provided custom
-        /// options. Returns `false` when Swift should use `NWParameters` defaults.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_get_egress_connect_options(
-            session: *mut RamaTransparentProxyUdpSession,
-            out_options: *mut RamaUdpEgressConnectOptions,
-        ) -> bool {
-            if session.is_null() || out_options.is_null() {
-                return false;
-            }
-
-            let session = unsafe { &*session };
-            let Some(opts) = session.egress_connect_options() else {
-                return false;
-            };
-
-            let connect_timeout_ms = opts
-                .connect_timeout
-                .and_then(|d| u32::try_from(d.as_millis()).ok());
-            let c_opts = RamaUdpEgressConnectOptions {
-                parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
-                has_connect_timeout_ms: connect_timeout_ms.is_some(),
-                connect_timeout_ms: connect_timeout_ms.unwrap_or(0),
-            };
-            unsafe { *out_options = c_opts };
-            true
-        }
+        // ── UDP session control ─────────────────────────────────────────────────
 
         /// Activate a UDP session.
         ///

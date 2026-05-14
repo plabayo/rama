@@ -1302,15 +1302,6 @@ func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     return params
 }
 
-/// Creates UDP `NWParameters` from optional Rust-supplied egress options.
-func makeUdpNwParameters(_ opts: RamaUdpEgressConnectOptions?) -> NWParameters {
-    let params = NWParameters.udp
-    if let opts {
-        applyNwEgressParameters(opts.parameters, to: params)
-    }
-    return params
-}
-
 /// Stamp the intercepted flow's `NEFlowMetaData` onto the given egress
 /// `NWParameters` via `NEAppProxyFlow.setMetadata(_:)`.
 ///

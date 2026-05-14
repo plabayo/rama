@@ -87,9 +87,9 @@ pub use self::{
     },
     types::{
         NwAttribution, NwEgressParameters, NwInterfaceType, NwMultipathServiceType, NwServiceClass,
-        NwTcpConnectOptions, NwUdpConnectOptions, TransparentProxyConfig,
-        TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
-        TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+        NwTcpConnectOptions, TransparentProxyConfig, TransparentProxyFlowAction,
+        TransparentProxyFlowMeta, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+        TransparentProxyRuleProtocol,
     },
 };
 pub use crate::process::AuditToken;

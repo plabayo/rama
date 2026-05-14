@@ -166,7 +166,6 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     }
     .with_tcp_egress_options(move |_meta| Some(custom.clone()));
     let engine = build_engine(handler);
@@ -196,52 +195,6 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
 }
 
 #[test]
-fn udp_egress_options_override_flows_from_handler_to_session() {
-    use crate::tproxy::{NwEgressParameters, NwUdpConnectOptions};
-    use std::sync::Arc;
-
-    let custom = NwUdpConnectOptions {
-        parameters: NwEgressParameters::default(),
-        connect_timeout: Some(Duration::from_millis(4_321)),
-    };
-
-    let handler = TestHandler {
-        app_message_handler: Arc::new(|_| None),
-        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
-        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
-            meta,
-            service: rama_core::service::service_fn(
-                |_bridge: rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    Ok(())
-                },
-            )
-            .boxed(),
-        }),
-        tcp_egress_options: None,
-        udp_egress_options: None,
-    }
-    .with_udp_egress_options(move |_meta| Some(custom.clone()));
-    let engine = build_engine(handler);
-
-    let SessionFlowAction::Intercept(session) = engine.new_udp_session(
-        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
-        |_| {},
-        || {},
-        || {},
-    ) else {
-        panic!("expected intercept udp session");
-    };
-
-    let opts = session
-        .egress_connect_options()
-        .expect("handler set udp egress options; session must surface them");
-    assert_eq!(opts.connect_timeout, Some(Duration::from_millis(4_321)));
-
-    drop(session);
-    engine.stop(0);
-}
-
-#[test]
 fn tcp_egress_options_none_handler_returns_none_at_session() {
     use rama_core::bytes::Bytes;
 
@@ -266,7 +219,6 @@ fn app_message_can_return_reply() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     });
 
     let reply = engine.handle_app_message(Bytes::from_static(b"ping"));

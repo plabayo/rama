@@ -458,18 +458,6 @@ pub struct TcpEgressConnectOptions {
     pub egress_eof_grace_ms: u32,
 }
 
-/// C representation of egress options for UDP `NWConnection`s.
-#[repr(C)]
-pub struct UdpEgressConnectOptions {
-    pub parameters: NwEgressParameters,
-    /// Whether `connect_timeout_ms` carries a meaningful value.
-    /// `false` ⇒ Swift uses its built-in default.
-    pub has_connect_timeout_ms: bool,
-    /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
-    /// reaching `.ready`. See [`crate::tproxy::NwUdpConnectOptions::connect_timeout`].
-    pub connect_timeout_ms: u32,
-}
-
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
 ///
 /// These are Rust→Swift channels: Rust calls these when it has data for the
@@ -494,23 +482,6 @@ pub struct TransparentProxyTcpEgressCallbacks {
     /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `Paused`.
     /// Swift must keep `connection.receive` paused until this fires.
     pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
-}
-
-/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
-///
-/// `context` lifetime / threading contract: see
-/// [`TransparentProxyTcpSessionCallbacks`] above.
-///
-/// `on_send_to_egress` receives the datagram plus the destination
-/// peer. Swift routes the datagram through the per-peer
-/// `NWConnection` for that endpoint, lazy-opening one if no existing
-/// connection in the per-flow map covers that peer.
-#[repr(C)]
-pub struct TransparentProxyUdpEgressCallbacks {
-    pub context: *mut c_void,
-    /// Rust calls this to send one datagram to the egress NWConnection.
-    pub on_send_to_egress:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
 }
 
 fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {

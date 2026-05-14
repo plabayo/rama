@@ -35,7 +35,6 @@ fn tcp_cancel_serialises_against_inflight_user_callback() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -136,7 +135,6 @@ fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine_with_tcp_paused_drain_max_wait(handler, Duration::from_millis(150));
 
@@ -192,18 +190,15 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    // Never returns — the test verifies the timeout
-                    // wraps and aborts this future.
-                    std::future::pending::<()>().await;
-                    Ok(())
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                // Never returns — the test verifies the timeout
+                // wraps and aborts this future.
+                std::future::pending::<()>().await;
+                Ok(())
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine_with_udp_max_flow_lifetime(handler, Duration::from_millis(150));
 
@@ -264,16 +259,13 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
             // worker-vs-test-thread race. Real services keep bridge
             // alive by actually using it; the test mimics that with
             // an explicit hold.
-            service: service_fn(
-                |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    let _hold = bridge;
-                    std::future::pending::<Result<(), Infallible>>().await
-                },
-            )
+            service: service_fn(|bridge: crate::UdpFlow| async move {
+                let _hold = bridge;
+                std::future::pending::<Result<(), Infallible>>().await
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     // Tiny channel capacity so we hit Full quickly.
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
@@ -332,15 +324,12 @@ fn udp_on_client_close_runs_service_close_epilogue() {
             meta,
             // Service runs forever — the close path is what brings
             // the task down, not the service itself.
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    std::future::pending::<Result<(), Infallible>>().await
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                std::future::pending::<Result<(), Infallible>>().await
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -395,16 +384,13 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    std::future::pending::<()>().await;
-                    Ok(())
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -491,7 +477,6 @@ fn tcp_engine_stop_completes_when_on_server_bytes_callbacks_block() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 

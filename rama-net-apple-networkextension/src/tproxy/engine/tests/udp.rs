@@ -4,7 +4,6 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
-use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
 use std::sync::{
@@ -24,22 +23,18 @@ fn udp_bridge_delivers_server_datagram() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    let BridgeIo(mut ingress, _egress) = bridge;
-                    if let Some(datagram) = ingress.recv().await {
-                        // Echo back — Datagram carries peer; for the
-                        // echo path we reuse the same Datagram so the
-                        // reply is correlated to the originating peer.
-                        ingress.send(datagram);
-                    }
-                    Ok(())
-                },
-            )
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                if let Some(datagram) = flow.recv().await {
+                    // Echo back — Datagram carries peer; reuse the
+                    // same Datagram so the reply is correlated to
+                    // the originating peer.
+                    flow.send(datagram);
+                }
+                Ok(())
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -126,28 +121,35 @@ fn udp_egress_loopback_multi_peer() {
             FlowAction::Intercept {
                 meta,
                 service: service_fn(
-                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
+                    move |mut flow: crate::UdpFlow| {
                         let replies = replies.clone();
                         let notify_tx = notify_tx.clone();
                         async move {
-                            let BridgeIo(mut ingress, mut egress) = bridge;
-                            // Forward each ingress datagram to its peer
-                            // (`peer` carries the destination the app
-                            // addressed) and forward each egress reply
-                            // back to the client.
+                            // Service owns egress: one unconnected
+                            // tokio UDP socket, `send_to(peer)` per
+                            // datagram, `recv_from` per reply. This is
+                            // the shape every UDP handler is expected
+                            // to implement (or to wrap with whatever
+                            // socket pooling / rama-udp transport it
+                            // wants).
+                            let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+                                .await
+                                .expect("bind egress socket");
+                            let mut buf = vec![0u8; 65_535];
                             loop {
                                 tokio::select! {
-                                    maybe_in = ingress.recv() => {
+                                    maybe_in = flow.recv() => {
                                         let Some(datagram) = maybe_in else { break };
-                                        egress.send(datagram);
+                                        if let Some(peer) = datagram.peer {
+                                            _ = socket.send_to(&datagram.payload, peer).await;
+                                        }
                                     }
-                                    maybe_out = egress.recv() => {
-                                        let Some(datagram) = maybe_out else { break };
-                                        replies.lock().push((
-                                            datagram.payload.to_vec(),
-                                            datagram.peer,
-                                        ));
+                                    result = socket.recv_from(&mut buf) => {
+                                        let Ok((n, peer)) = result else { break };
+                                        let payload = rama_core::bytes::Bytes::copy_from_slice(&buf[..n]);
+                                        replies.lock().push((payload.to_vec(), Some(peer)));
                                         _ = notify_tx.send(());
+                                        flow.send(crate::Datagram { payload, peer: Some(peer) });
                                     }
                                 }
                             }
@@ -159,7 +161,6 @@ fn udp_egress_loopback_multi_peer() {
             }
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -227,17 +228,13 @@ fn udp_session_requests_client_read_demand() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    let BridgeIo(mut ingress, _egress) = bridge;
-                    _ = ingress.recv().await;
-                    Ok(())
-                },
-            )
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                _ = flow.recv().await;
+                Ok(())
+            })
             .boxed(),
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -280,29 +277,25 @@ fn udp_zero_length_datagram_from_client_reaches_service() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(
-                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
-                        let received = received.clone();
-                        let notify_tx = notify_tx.clone();
-                        async move {
-                            let BridgeIo(mut ingress, _egress) = bridge;
-                            // Capture lengths so we can prove the empty
-                            // datagram crossed the boundary; do NOT
-                            // filter on `is_empty()` here — that's the
-                            // exact mistake the framework had.
-                            while let Some(datagram) = ingress.recv().await {
-                                received.lock().push(datagram.payload.len());
-                                _ = notify_tx.send(());
-                            }
-                            Ok::<_, std::convert::Infallible>(())
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received = received.clone();
+                    let notify_tx = notify_tx.clone();
+                    async move {
+                        // Capture lengths so we can prove the empty
+                        // datagram crossed the boundary; do NOT
+                        // filter on `is_empty()` here — that's the
+                        // exact mistake the framework had.
+                        while let Some(datagram) = flow.recv().await {
+                            received.lock().push(datagram.payload.len());
+                            _ = notify_tx.send(());
                         }
-                    },
-                )
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
                 .boxed(),
             }
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -355,36 +348,39 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
             let notify_tx = notify_tx.clone();
             FlowAction::Intercept {
                 meta,
-                service: service_fn(
-                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
-                        let received = received.clone();
-                        let notify_tx = notify_tx.clone();
-                        async move {
-                            let BridgeIo(mut ingress, mut egress) = bridge;
-                            loop {
-                                tokio::select! {
-                                    maybe_in = ingress.recv() => {
-                                        // Forward the "kick" out to the
-                                        // loopback peer so it can reply.
-                                        let Some(datagram) = maybe_in else { break };
-                                        egress.send(datagram);
-                                    }
-                                    maybe_out = egress.recv() => {
-                                        let Some(datagram) = maybe_out else { break };
-                                        received.lock().push(datagram.payload.len());
-                                        _ = notify_tx.send(());
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received = received.clone();
+                    let notify_tx = notify_tx.clone();
+                    async move {
+                        // Service-owned egress socket. Forwards
+                        // each ingress datagram to its peer and
+                        // records every reply that comes back.
+                        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+                            .await
+                            .expect("bind egress socket");
+                        let mut buf = vec![0u8; 65_535];
+                        loop {
+                            tokio::select! {
+                                maybe_in = flow.recv() => {
+                                    let Some(datagram) = maybe_in else { break };
+                                    if let Some(peer) = datagram.peer {
+                                        _ = socket.send_to(&datagram.payload, peer).await;
                                     }
                                 }
+                                result = socket.recv_from(&mut buf) => {
+                                    let Ok((n, _peer)) = result else { break };
+                                    received.lock().push(n);
+                                    _ = notify_tx.send(());
+                                }
                             }
-                            Ok::<_, std::convert::Infallible>(())
                         }
-                    },
-                )
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
                 .boxed(),
             }
         }),
         tcp_egress_options: None,
-        udp_egress_options: None,
     };
     let engine = build_engine(handler);
 

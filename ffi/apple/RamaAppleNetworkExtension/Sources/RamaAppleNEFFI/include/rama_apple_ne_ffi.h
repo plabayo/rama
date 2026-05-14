@@ -401,18 +401,6 @@ typedef struct {
     uint32_t egress_eof_grace_ms;
 } RamaTcpEgressConnectOptions;
 
-/// Options for the egress NWConnection on UDP flows.
-typedef struct {
-    RamaNwEgressParameters parameters;
-    /// Whether `connect_timeout_ms` carries a meaningful value;
-    /// `false` ⇒ Swift uses its built-in default.
-    bool has_connect_timeout_ms;
-    /// Wall-clock cap (ms) on the egress NWConnection reaching `.ready`.
-    /// UDP has no real handshake — this bounds the local DNS /
-    /// Network.framework preparation phase.
-    uint32_t connect_timeout_ms;
-} RamaUdpEgressConnectOptions;
-
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
 /// `NwTcpConnectionWritePump` is full. Swift MUST call
 /// `rama_transparent_proxy_tcp_session_signal_egress_drain` after its writer
@@ -641,21 +629,12 @@ void rama_transparent_proxy_udp_session_on_client_datagram(
 /// Signal UDP flow closure from client side.
 void rama_transparent_proxy_udp_session_on_client_close(RamaTransparentProxyUdpSession* session);
 
-/// Query handler-supplied egress connect options for a UDP session.
-///
-/// Fills `out_options` and returns `true` when the handler provided custom
-/// options. Returns `false` when Swift should use default NWParameters.
-bool rama_transparent_proxy_udp_session_get_egress_connect_options(
-    RamaTransparentProxyUdpSession* session,
-    RamaUdpEgressConnectOptions* out_options
-);
-
 /// Activate a UDP session.
 ///
-/// The Rust engine owns the egress UDP socket (one unconnected BSD
-/// socket per flow) and drives `send_to` / `recv_from` from internal
-/// pump tasks. Swift no longer supplies an egress sink. Subsequent
-/// calls are ignored.
+/// UDP egress is the handler's responsibility (one or more sockets,
+/// pooled or per-flow, opened however the handler's service wants
+/// using rama-udp / `tokio::net::UdpSocket` / anything else).
+/// Subsequent calls are ignored.
 void rama_transparent_proxy_udp_session_activate(
     RamaTransparentProxyUdpSession* session
 );

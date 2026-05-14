@@ -3,11 +3,8 @@ use std::{convert::Infallible, future::Future};
 use rama_core::{Service, bytes::Bytes, error::BoxError, io::BridgeIo, rt::Executor};
 
 use crate::{
-    NwTcpStream, NwUdpSocket, TcpFlow, UdpFlow,
-    tproxy::{
-        TransparentProxyConfig, TransparentProxyFlowMeta,
-        types::{NwTcpConnectOptions, NwUdpConnectOptions},
-    },
+    NwTcpStream, TcpFlow, UdpFlow,
+    tproxy::{TransparentProxyConfig, TransparentProxyFlowMeta, types::NwTcpConnectOptions},
 };
 
 use super::TransparentProxyServiceContext;
@@ -85,19 +82,6 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         None
     }
 
-    /// Return custom options for the egress `NWConnection` on UDP flows.
-    ///
-    /// `meta` is the same metadata that will subsequently be passed to
-    /// [`match_udp_flow`](Self::match_udp_flow).
-    ///
-    /// Return `None` (the default) to let Swift use sane `NWParameters` defaults.
-    fn egress_udp_connect_options(
-        &self,
-        _meta: &TransparentProxyFlowMeta,
-    ) -> Option<NwUdpConnectOptions> {
-        None
-    }
-
     /// Decide what to do with an incoming TCP flow.
     ///
     /// # Async-correctness contract
@@ -132,17 +116,30 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
 
     /// Decide what to do with an incoming UDP flow.
     ///
+    /// UDP is stateless and asymmetric, so the engine does *not* hand
+    /// the service a `BridgeIo`. The service receives a [`UdpFlow`] —
+    /// the ingress half only — and is fully responsible for egress:
+    /// opening sockets, pooling them across flows, applying any
+    /// platform-specific binding (interface, service class, marking,
+    /// metadata propagation) before `bind`/`connect`. Every datagram
+    /// surfaced through `flow.recv()` carries its peer, so a service
+    /// can do `send_to(peer)` on a single pooled socket and dispatch
+    /// the right way without holding per-peer state.
+    ///
+    /// The flow's [`rama_core::extensions::ExtensionsRef`] surface
+    /// carries the per-flow [`TransparentProxyFlowMeta`] so the
+    /// service can read the originating-app info (audit token, PID,
+    /// bundle ID, remote endpoint) it needs to decorate egress
+    /// sockets before binding.
+    ///
     /// The same async-correctness contract as
     /// [`Self::match_tcp_flow`] applies — see that method for details.
     fn match_udp_flow(
         &self,
         _exec: Executor,
         _meta: TransparentProxyFlowMeta,
-    ) -> impl Future<
-        Output = FlowAction<
-            impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
-        >,
-    > + Send
+    ) -> impl Future<Output = FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>>>
+    + Send
     + '_ {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }

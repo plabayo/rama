@@ -13,8 +13,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 pub(super) type TestTcpService =
     BoxService<rama_core::io::BridgeIo<crate::TcpFlow, crate::NwTcpStream>, (), Infallible>;
-pub(super) type TestUdpService =
-    BoxService<rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>, (), Infallible>;
+pub(super) type TestUdpService = BoxService<crate::UdpFlow, (), Infallible>;
 
 #[derive(Clone)]
 pub(super) struct TestHandler {
@@ -34,13 +33,6 @@ pub(super) struct TestHandler {
                 + Sync,
         >,
     >,
-    pub(super) udp_egress_options: Option<
-        Arc<
-            dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>
-                + Send
-                + Sync,
-        >,
-    >,
 }
 
 impl TestHandler {
@@ -50,7 +42,6 @@ impl TestHandler {
             tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
             udp_matcher: Arc::new(|_| FlowAction::Passthrough),
             tcp_egress_options: None,
-            udp_egress_options: None,
         }
     }
 
@@ -62,17 +53,6 @@ impl TestHandler {
         + 'static,
     ) -> Self {
         self.tcp_egress_options = Some(Arc::new(f));
-        self
-    }
-
-    pub(super) fn with_udp_egress_options(
-        mut self,
-        f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Self {
-        self.udp_egress_options = Some(Arc::new(f));
         self
     }
 }
@@ -113,13 +93,7 @@ impl TransparentProxyHandler for TestHandler {
         _exec: Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<
-            impl Service<
-                rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>,
-                Output = (),
-                Error = Infallible,
-            >,
-        >,
+        Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
         std::future::ready((self.udp_matcher)(meta))
@@ -130,13 +104,6 @@ impl TransparentProxyHandler for TestHandler {
         meta: &TransparentProxyFlowMeta,
     ) -> Option<crate::tproxy::NwTcpConnectOptions> {
         self.tcp_egress_options.as_ref().and_then(|f| f(meta))
-    }
-
-    fn egress_udp_connect_options(
-        &self,
-        meta: &TransparentProxyFlowMeta,
-    ) -> Option<crate::tproxy::NwUdpConnectOptions> {
-        self.udp_egress_options.as_ref().and_then(|f| f(meta))
     }
 }
 

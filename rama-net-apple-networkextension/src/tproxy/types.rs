@@ -196,20 +196,6 @@ pub struct NwTcpConnectOptions {
     pub egress_eof_grace: Option<Duration>,
 }
 
-/// Options for the egress `NWConnection` on UDP flows.
-#[derive(Clone, Debug, Default)]
-pub struct NwUdpConnectOptions {
-    /// Shared `NWParameters`-level settings.
-    pub parameters: NwEgressParameters,
-    /// Maximum time the Swift bridge waits for the egress
-    /// `NWConnection.stateUpdateHandler` to reach `.ready` before
-    /// closing the flow as failed. UDP has no real handshake, so this
-    /// is a wall-clock cap on the local DNS / Network.framework
-    /// preparation phase. `None` falls back to the Swift-side
-    /// default of 30 seconds.
-    pub connect_timeout: Option<Duration>,
-}
-
 /// Protocol filter used by transparent-proxy network rules.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
