@@ -75,19 +75,6 @@ final class CoreFlowOpenRaceTests: XCTestCase {
         )
     }
 
-    private func makeUdpMeta() -> RamaTransparentProxyFlowMetaBridge {
-        RamaTransparentProxyFlowMetaBridge(
-            protocolRaw: 2,
-            remoteHost: "example.com",
-            remotePort: 5000,
-            localHost: nil, localPort: 0,
-            sourceAppSigningIdentifier: nil,
-            sourceAppBundleIdentifier: nil,
-            sourceAppAuditToken: nil,
-            sourceAppPid: 4242
-        )
-    }
-
     private func waitFor(
         _ description: String,
         timeout: TimeInterval = 2.0,
@@ -162,56 +149,11 @@ final class CoreFlowOpenRaceTests: XCTestCase {
         )
     }
 
-    // MARK: - UDP: post-ready failure while flow.open is pending
-
-    /// UDP mirror of the TCP test. The post-ready terminate path
-    /// runs, then flow.open completes successfully — that completion
-    /// must not start the egress read pump (which would race a new
-    /// `receive` against a cancelled UDP NWConnection) nor invoke
-    /// `requestRead` on the flow.
-    func testUdpFlowOpenCompletingAfterPostReadyFailureIsANoOp() {
-        let fx = makeFixture()
-        defer { tearDownFixture(fx) }
-
-        let flow = MockUdpFlow()
-        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeUdpMeta()))
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
-
-        let conn = fx.capture.waitForLastConnection()
-        conn.transition(to: .ready)
-
-        waitFor("flow.open called by .ready handler") { flow.openWasInvoked }
-        // Egress receive starts inside the flow.open completion, so
-        // it must still be 0 here. `flow.pendingReadCount` may have
-        // grown to 1 already because the Rust side can demand a
-        // client read independently of flow.open (see
-        // `onClientReadDemand` wiring), so we snapshot it instead.
-        XCTAssertEqual(
-            conn.pendingReceiveCount, 0,
-            "no egress receive must be in flight before flow.open completes"
-        )
-        let readsBeforeTeardown = flow.pendingReadCount
-
-        // Inject post-ready failure → ctx.terminate(_) runs.
-        conn.transition(to: .failed(.posix(.ECONNRESET)))
-        waitFor("post-ready terminate removed the flow") {
-            fx.core.udpFlowCount == 0
-        }
-
-        flow.completeOpen(error: nil)
-        Thread.sleep(forTimeInterval: 0.15)
-
-        XCTAssertEqual(
-            flow.pendingReadCount, readsBeforeTeardown,
-            "racy flow.open completion must not start a fresh flow.readDatagrams after terminate"
-        )
-        XCTAssertEqual(
-            fx.core.udpFlowCount, 0,
-            "racy flow.open completion must not resurrect the flow registration"
-        )
-        XCTAssertEqual(
-            conn.pendingReceiveCount, 0,
-            "racy flow.open completion must not arm a fresh receive against the cancelled NWConnection"
-        )
-    }
+    // No UDP mirror of the post-ready failure race: the UDP path no
+    // longer drives an `NWConnection` state machine — egress is a
+    // Rust-owned BSD socket on the service side, opened after
+    // `flow.open` succeeds. There is no pre-`flow.open` NWConnection
+    // window in which a post-ready failure could race a pending
+    // `flow.open` completion, so the bug class this guarded against
+    // is structurally absent in the new UDP path.
 }

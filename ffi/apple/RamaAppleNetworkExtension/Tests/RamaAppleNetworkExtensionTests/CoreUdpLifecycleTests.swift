@@ -5,9 +5,12 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 /// End-to-end lifecycle tests for `TransparentProxyCore.handleUdpFlow`.
-/// Symmetric to `CoreTcpLifecycleTests` — drives the full per-flow
-/// state machine against a `MockUdpFlow` + `MockNwConnection`
-/// against the real Rust engine.
+///
+/// The UDP path no longer drives an `NWConnection` state machine
+/// (egress is a Rust-owned BSD socket on the service side), so these
+/// tests drive the lifecycle purely through `MockUdpFlow` events
+/// and the real Rust engine. Symmetric to `CoreTcpLifecycleTests`
+/// but without any `NwConnectionCapture` wiring.
 final class CoreUdpLifecycleTests: XCTestCase {
 
     override class func setUp() {
@@ -29,16 +32,13 @@ final class CoreUdpLifecycleTests: XCTestCase {
     private struct CoreFixture {
         let engine: RamaTransparentProxyEngineHandle
         let core: TransparentProxyCore
-        let capture: NwConnectionCapture
     }
 
     private func makeFixture() -> CoreFixture {
         let engine = makeEngine()
         let core = TransparentProxyCore()
         core.attachEngine(engine)
-        let capture = NwConnectionCapture()
-        core.nwConnectionFactory = capture.factory
-        return CoreFixture(engine: engine, core: core, capture: capture)
+        return CoreFixture(engine: engine, core: core)
     }
 
     private func tearDown(_ fx: CoreFixture) {
@@ -75,6 +75,8 @@ final class CoreUdpLifecycleTests: XCTestCase {
 
     // MARK: - Happy path
 
+    /// flow.open succeeds → read pump arms → EOF from kernel tears
+    /// the flow down cleanly with the registration returning to zero.
     func testHappyPath_UdpFlowOpenReadEofClean() {
         let fx = makeFixture()
         defer { tearDown(fx) }
@@ -83,114 +85,69 @@ final class CoreUdpLifecycleTests: XCTestCase {
         XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
         XCTAssertEqual(fx.core.udpFlowCount, 1)
 
-        let conn = fx.capture.waitForLastConnection()
-        conn.transition(to: .ready)
-
-        waitFor("flow.open called") { flow.openWasInvoked }
+        waitFor("flow.open called immediately on intercept") { flow.openWasInvoked }
         flow.completeOpen(error: nil)
 
         waitFor("client read pump issued first read") { flow.pendingReadCount > 0 }
 
-        // Drive an EOF on the flow's read side — empty datagrams
-        // array signals end-of-data in the production code.
+        // EOF on the read side — empty datagrams array signals
+        // end-of-data in production.
         flow.completePendingRead(datagrams: [], endpoints: nil, error: nil)
 
         waitFor("flow removed from registration", timeout: 5.0) {
             fx.core.udpFlowCount == 0
         }
-        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
-    }
-
-    // MARK: - Pre-ready failure
-
-    func testPreReadyConnectionFailedTearsDownCleanly() {
-        let fx = makeFixture()
-        defer { tearDown(fx) }
-
-        let flow = MockUdpFlow()
-        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
-
-        let conn = fx.capture.waitForLastConnection()
-        conn.transition(to: .failed(.posix(.ECONNREFUSED)))
-
-        waitFor("flow registration removed") { fx.core.udpFlowCount == 0 }
-        XCTAssertEqual(conn.cancelCount, 1)
-        XCTAssertFalse(flow.openWasInvoked)
-    }
-
-    // MARK: - Post-ready failure
-
-    func testPostReadyConnectionFailedTearsDownCleanly() {
-        let fx = makeFixture()
-        defer { tearDown(fx) }
-
-        let flow = MockUdpFlow()
-        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
-        let conn = fx.capture.waitForLastConnection()
-
-        conn.transition(to: .ready)
-        waitFor("flow.open called") { flow.openWasInvoked }
-        flow.completeOpen(error: nil)
-        waitFor("read pump started") { flow.pendingReadCount > 0 }
-
-        conn.transition(to: .failed(.posix(.ENETDOWN)))
-
-        waitFor("post-ready failure cleaned up", timeout: 3.0) {
-            fx.core.udpFlowCount == 0
-        }
-        XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1)
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
-    }
-
-    func testPostReadyWaitingTimesOutAndTearsDown() {
-        let savedTolerance = defaultEgressWaitingToleranceMs
-        defaultEgressWaitingToleranceMs = 200
-        defer { defaultEgressWaitingToleranceMs = savedTolerance }
-
-        let fx = makeFixture()
-        defer { tearDown(fx) }
-
-        let flow = MockUdpFlow()
-        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
-        let conn = fx.capture.waitForLastConnection()
-
-        conn.transition(to: .ready)
-        waitFor("flow.open called") { flow.openWasInvoked }
-        flow.completeOpen(error: nil)
-        waitFor("read pump started") { flow.pendingReadCount > 0 }
-
-        conn.transition(to: .waiting(.posix(.ENETDOWN)))
-
-        waitFor("waiting tolerance fired teardown", timeout: 3.0) {
-            fx.core.udpFlowCount == 0
-        }
-        XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1)
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
     }
 
     // MARK: - flow.open error
 
-    func testFlowOpenErrorAfterEgressReadyTearsDownCleanly() {
+    /// flow.open returning an error must tear the flow down without
+    /// arming the read pump, and the registration must return to zero.
+    func testFlowOpenErrorTearsDownCleanly() {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
         let flow = MockUdpFlow()
         XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
-        let conn = fx.capture.waitForLastConnection()
 
-        conn.transition(to: .ready)
         waitFor("flow.open called") { flow.openWasInvoked }
         flow.completeOpen(error: NSError(domain: "test", code: 1))
 
         waitFor("flow.open error cleanup", timeout: 3.0) {
             fx.core.udpFlowCount == 0
         }
-        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+    }
+
+    // MARK: - Read error
+
+    /// A flow.readDatagrams completion with an error must terminate
+    /// the flow without leaving a dangling registration.
+    func testReadErrorTearsDownCleanly() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockUdpFlow()
+        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
+
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("read pump started") { flow.pendingReadCount > 0 }
+
+        flow.completePendingRead(
+            datagrams: nil, endpoints: nil,
+            error: NSError(domain: "test.read", code: 2)
+        )
+
+        waitFor("read-error cleanup", timeout: 3.0) {
+            fx.core.udpFlowCount == 0
+        }
     }
 
     // MARK: - Churn
 
+    /// N back-to-back UDP flows, each driven through open → first
+    /// read → EOF, must all clear out of the registration.
     func testManyFlowsChurnReturnsRegistrationToZero() {
         let fx = makeFixture()
         defer { tearDown(fx) }
@@ -205,9 +162,6 @@ final class CoreUdpLifecycleTests: XCTestCase {
 
         XCTAssertEqual(fx.core.udpFlowCount, flowCount)
 
-        for conn in fx.capture.allConnections {
-            conn.transition(to: .ready)
-        }
         for flow in flows {
             waitFor("flow.open for all flows", timeout: 5.0) { flow.openWasInvoked }
             flow.completeOpen(error: nil)

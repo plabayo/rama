@@ -343,11 +343,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
 
         let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-        let lingerCloseMs = egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil } ?? defaultLingerCloseMs
-        let egressEofGraceMs = egressOpts.flatMap {
-            $0.has_egress_eof_grace_ms ? $0.egress_eof_grace_ms : nil
-        } ?? defaultEgressEofGraceMs
+        let connectTimeoutMs =
+            egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
+        let lingerCloseMs =
+            egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil }
+            ?? defaultLingerCloseMs
+        let egressEofGraceMs =
+            egressOpts.flatMap {
+                $0.has_egress_eof_grace_ms ? $0.egress_eof_grace_ms : nil
+            } ?? defaultEgressEofGraceMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
@@ -382,7 +386,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         let timeoutMs = Int(connectTimeoutMs)
         let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
             guard !egressReady else { return }
-            self?.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
+            self?.logDebug(
+                "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)"
+            )
             ctx?.connection?.cancel()
             ctx?.session?.cancel()
             self?.removeTcpFlow(flowId)
@@ -415,7 +421,9 @@ final class TransparentProxyCore: @unchecked Sendable {
                 ?? NSError(
                     domain: "rama.tproxy.tcp",
                     code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"]
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"
+                    ]
                 )
             flow.closeReadWithError(nsErr)
             flow.closeWriteWithError(nsErr)
@@ -778,24 +786,25 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
 
-        let decision = engine?.newUdpSession(
-            meta: bootMeta,
-            // Rust-held closures route through `[weak ctx]` so the
-            // callback box (Rust) does not strong-pin the per-flow
-            // pumps. The box is dropped on `_session_free`, so once
-            // `removeUdpFlow` releases the session-handle these
-            // closures stop firing — no late-arrival hazard.
-            onServerDatagram: { [weak ctx] data, peer in
-                // `peer` is the source the reply came from; thread it
-                // into the writer pump as the `sentBy` endpoint so
-                // `flow.writeDatagrams` tags the kernel-bound write
-                // correctly per datagram, even when the flow has been
-                // talking to multiple peers.
-                ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
-            },
-            onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
-            onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
-        ) ?? .passthrough
+        let decision =
+            engine?.newUdpSession(
+                meta: bootMeta,
+                // Rust-held closures route through `[weak ctx]` so the
+                // callback box (Rust) does not strong-pin the per-flow
+                // pumps. The box is dropped on `_session_free`, so once
+                // `removeUdpFlow` releases the session-handle these
+                // closures stop firing — no late-arrival hazard.
+                onServerDatagram: { [weak ctx] data, peer in
+                    // `peer` is the source the reply came from; thread it
+                    // into the writer pump as the `sentBy` endpoint so
+                    // `flow.writeDatagrams` tags the kernel-bound write
+                    // correctly per datagram, even when the flow has been
+                    // talking to multiple peers.
+                    ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
+                },
+                onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
+                onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
+            ) ?? .passthrough
 
         let session: RamaUdpSessionHandle
         switch decision {
@@ -819,8 +828,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // ── Phase 2: open the flow and hand control to Rust ──
         //
         // Egress lives on the Rust side, owned by the handler's
-        // service: the service opens its own socket(s) (tokio
-        // `UdpSocket`, a pool, rama-udp, whatever fits the workload),
+        // service: the service opens its own socket(s),
         // routes by per-datagram peer, and writes replies back via
         // `flow.send`. The pre-ready NWConnection state machine that
         // once gated `flow.open` is gone — as soon as Rust says
