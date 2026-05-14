@@ -72,7 +72,9 @@ pub struct HttpExporter<S = ()> {
     env: EnvSettings,
     temporality: Temporality,
     resource: Arc<ArcSwap<transform::ResourceAttributesWithSchema>>,
-    shutdown: Arc<AtomicBool>,
+    shutdown_traces: Arc<AtomicBool>,
+    shutdown_metrics: Arc<AtomicBool>,
+    shutdown_logs: Arc<AtomicBool>,
     runtime: Option<tokio::runtime::Handle>,
 }
 
@@ -122,7 +124,9 @@ impl<S> HttpExporter<S> {
             resource: Arc::new(ArcSwap::from_pointee(
                 transform::ResourceAttributesWithSchema::default(),
             )),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            shutdown_traces: Arc::new(AtomicBool::new(false)),
+            shutdown_metrics: Arc::new(AtomicBool::new(false)),
+            shutdown_logs: Arc::new(AtomicBool::new(false)),
             runtime: tokio::runtime::Handle::try_current().ok(),
         }
     }
@@ -349,6 +353,14 @@ impl<S> HttpExporter<S> {
         Ok(())
     }
 
+    fn shutdown_flag(&self, signal_kind: SignalKind) -> &Arc<AtomicBool> {
+        match signal_kind {
+            SignalKind::Traces => &self.shutdown_traces,
+            SignalKind::Metrics => &self.shutdown_metrics,
+            SignalKind::Logs => &self.shutdown_logs,
+        }
+    }
+
     fn trace_config(&self) -> Result<ResolvedConfig, OTelSdkError> {
         ResolvedConfig::new(self, SignalKind::Traces)
             .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
@@ -378,7 +390,7 @@ where
         Req: Message,
         Resp: Message + Default + Send + 'static,
     {
-        if self.shutdown.load(Ordering::Acquire) {
+        if self.shutdown_flag(signal_kind).load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -466,7 +478,7 @@ where
     }
 
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::AcqRel) {
+        if self.shutdown_traces.swap(true, Ordering::AcqRel) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -474,7 +486,7 @@ where
     }
 
     fn force_flush(&mut self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::Acquire) {
+        if self.shutdown_traces.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -514,7 +526,7 @@ where
     }
 
     fn force_flush(&self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::Acquire) {
+        if self.shutdown_metrics.load(Ordering::Acquire) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -522,7 +534,7 @@ where
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::AcqRel) {
+        if self.shutdown_metrics.swap(true, Ordering::AcqRel) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -563,7 +575,7 @@ where
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::AcqRel) {
+        if self.shutdown_logs.swap(true, Ordering::AcqRel) {
             return Err(OTelSdkError::AlreadyShutdown);
         }
 
@@ -754,5 +766,32 @@ where
             Ok(compressed)
         }
         None => Ok(body),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutting_down_one_signal_leaves_other_signals_alive_on_clones() {
+        let exporter: HttpExporter<()> = HttpExporter::new(());
+        let clone = exporter.clone();
+
+        let already = clone.shutdown_logs.swap(true, Ordering::AcqRel);
+        assert!(!already, "logs were not shut down yet");
+
+        assert!(
+            !exporter.shutdown_traces.load(Ordering::Acquire),
+            "traces must remain alive when only logs were shut down",
+        );
+        assert!(
+            !exporter.shutdown_metrics.load(Ordering::Acquire),
+            "metrics must remain alive when only logs were shut down",
+        );
+        assert!(
+            exporter.shutdown_logs.load(Ordering::Acquire),
+            "logs shutdown must be visible across clones (same signal)",
+        );
     }
 }
