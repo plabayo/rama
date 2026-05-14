@@ -1104,10 +1104,11 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// uses the peer that was current when the reply was produced
     /// even if a later `setSentByEndpoint` call has shifted the
     /// active peer in the meantime — fixes a queue-vs-peer-change
-    /// race, but does NOT change the single-peer assumption (see
-    /// `sentByEndpoint`): a multi-peer read batch is still collapsed
-    /// to its first endpoint at the read site, so queued replies
-    /// produced from that batch carry only that single endpoint.
+    /// race. Combined with the engine's per-datagram peer
+    /// threading (`Datagram::peer` carried through Rust both ways),
+    /// the pump fully supports multi-peer UDP flows: each reply
+    /// is written to its own peer, not collapsed to a flow-wide
+    /// "current" peer.
     // `ChunkQueue` replaces `[(Data, NWEndpoint?)]` so dequeue is
     // amortised O(1) instead of O(n) on every drain step (UDP pumps
     // can queue up to `udpWritePumpMaxPending` entries under burst).
@@ -1120,18 +1121,12 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// exactly once per pump lifetime.
     private var pendingCountHwm: Int = 0
     /// Most-recently-seen source endpoint from `readDatagrams`.
-    /// Used as the `sentBy` endpoint when writing datagrams back.
-    ///
-    /// **Single-peer assumption.** This implementation maintains one
-    /// egress `NWConnection` per intercepted flow, established to the
-    /// peer in `NEAppProxyUDPFlow.metaData.remoteEndpoint`. Apps that
-    /// `sendto()` multiple peers from the same UDP socket are not
-    /// faithfully proxied — outbound traffic is forwarded to the
-    /// initial peer regardless of the destination the app intended,
-    /// and replies are tagged with the most-recently-observed peer
-    /// rather than per-peer correlated. We log a one-time warn when
-    /// a multi-peer signal is detected (a `setSentByEndpoint` call
-    /// with an endpoint different from the current one).
+    /// Used only as a *fallback* `sentBy` endpoint for callers that
+    /// `enqueue` without an explicit peer (e.g. early bootstrap
+    /// before any client read has surfaced an endpoint, or tests).
+    /// Healthy multi-peer flows carry per-datagram peers through
+    /// the engine and each `enqueue` supplies its own `sentBy`, so
+    /// this field is rarely consulted in production.
     private var sentByEndpoint: NWEndpoint?
     /// Sticky flag that fires a debug log exactly once when
     /// `flushLocked` cannot make progress because neither the
@@ -1142,7 +1137,6 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// `log show`. The flag clears whenever a write finally
     /// progresses, so flapping is logged once per stall episode.
     private var unresolvedEndpointLogged = false
-    private var multiPeerLogged = false
 
     init(
         flow: any UdpFlowWritable,
@@ -1179,14 +1173,6 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard let endpoint else {
                 self.flushLocked()
                 return
-            }
-            if let prev = self.sentByEndpoint, prev != endpoint, !self.multiPeerLogged {
-                self.multiPeerLogged = true
-                RamaTransparentProxyEngineHandle.log(
-                    level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
-                    message:
-                        "udp flow observed multiple peer endpoints (\(prev) → \(endpoint)); replies will be best-effort routed to the most-recent peer per datagram (single-peer assumption violated)"
-                )
             }
             self.sentByEndpoint = endpoint
             self.flushLocked()
