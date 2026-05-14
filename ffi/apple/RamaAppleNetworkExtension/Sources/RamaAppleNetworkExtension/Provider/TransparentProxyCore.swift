@@ -3,9 +3,8 @@ import Network
 import NetworkExtension
 import RamaAppleNEFFI
 
-/// Apple-framework-free home of the transparent-proxy per-flow state
-/// machine, the engine handle ownership, and the session / context
-/// registration maps.
+/// Home of the transparent-proxy per-flow state machine, the engine
+/// handle ownership, and the session / context registration maps.
 ///
 /// `RamaTransparentProxyProvider` is the type the Apple system-extension
 /// runtime instantiates and calls into; that subclass requirement is the
@@ -24,16 +23,24 @@ import RamaAppleNEFFI
 /// * end-to-end tests exercise the *real* Rust engine with mocked
 ///   Apple-framework surface, verifying byte flow + cleanup + memory
 ///   bounds under realistic scheduling;
-/// * the provider become a thin (~150-line) adapter that delegates
-///   every override to a method on the core, keeping the
-///   Apple-specific boundary in one place.
+/// * the provider become a thin adapter that delegates every override
+///   to a method on the core, keeping `NETransparentProxyProvider`-
+///   subclass-specific concerns (the runtime contract) in one place.
 ///
-/// The core has no `import NetworkExtension` dependency. Everything it
-/// touches is either Rust-FFI (`Ram*Handle`), the `Network` framework
-/// (which is testable), or its own protocols (`TcpFlowLike`,
-/// `UdpFlowLike`, `NwConnectionLike`). The provider passes flow
-/// metadata in via the `RamaTransparentProxyFlowMetaBridge` struct so
-/// the core never has to access `NEFlowMetaData`.
+/// Frameworks consumed here:
+///
+/// * `RamaAppleNEFFI` — the Rust engine FFI.
+/// * `Network` — for `NWConnection` (egress on TCP flows) and
+///   `NWParameters`.
+/// * `NetworkExtension` — for `NWHostEndpoint` /
+///   `NetworkExtension.NWEndpoint` (kernel-supplied flow endpoints
+///   on the UDP read path) and for `NEAppProxyUDPFlow` /
+///   `NEAppProxyTCPFlow` typing on the `UdpFlowLike` /
+///   `TcpFlowLike` protocols' real-flow implementations. Concrete
+///   `NEAppProxyFlow` subclasses and `NEFlowMetaData` extraction
+///   live in the provider, not the core; the core never reaches
+///   into a real flow's framework innards.
+///
 /// `@unchecked Sendable` because mutable state is either confined to
 /// `stateQueue` (registration maps, engine handle, flow-count timer)
 /// or set once at construction and only mutated via documented

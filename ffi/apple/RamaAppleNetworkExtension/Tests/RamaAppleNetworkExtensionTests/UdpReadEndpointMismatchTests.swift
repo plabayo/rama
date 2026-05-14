@@ -1,3 +1,11 @@
+// This whole file relies on the `#if DEBUG`-gated instrumentation
+// fields on `UdpClientWritePump` (`testSentByEndpointSetCount` /
+// `testLastSentByEndpoint`). Release-mode builds compile out those
+// fields entirely (zero ARC churn on the production hot path), and
+// they can't compile this file in Release as a result. Tests run
+// in Debug, where the instrumentation is present.
+#if DEBUG
+
 import Foundation
 import NetworkExtension
 import XCTest
@@ -214,3 +222,5 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         )
     }
 }
+
+#endif  // DEBUG
