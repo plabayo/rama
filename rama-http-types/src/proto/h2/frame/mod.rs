@@ -138,4 +138,22 @@ pub enum Error {
 
     /// Failed to perform HPACK decoding
     Hpack(DecoderError),
+
+    /// The input buffer was too short to parse the requested frame piece.
+    ///
+    /// Returned by `Head::parse`, `StreamId::parse`, and `Setting::load`
+    /// when their byte slice is shorter than the format mandates.
+    ShortBuffer {
+        /// Minimum number of bytes the parser needed.
+        needed: usize,
+        /// Number of bytes actually available.
+        got: usize,
+    },
+
+    /// A raw stream id had the reserved most-significant bit set.
+    ///
+    /// RFC 9113 §5.1.1 reserves the high bit of the stream id and
+    /// requires receivers to ignore it on the wire; senders MUST NOT
+    /// set it. Returned by `StreamId::try_from(u32)`.
+    ReservedStreamIdBit,
 }
