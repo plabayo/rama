@@ -58,7 +58,7 @@ use rama::{
     telemetry::{
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
-            collector::HttpExporter,
+            collector::OtelExporter,
             logs::{LogRecord, Logger, LoggerProvider},
             metrics::UpDownCounter,
             sdk::{
@@ -119,11 +119,11 @@ async fn main() {
         )
         .init();
 
-    let meter_exporter = HttpExporter::new(EasyHttpWebClient::default())
+    let exporter = OtelExporter::new_http(EasyHttpWebClient::default())
         .with_endpoint(Uri::from_static("http://localhost:4318"))
         .with_timeout(Duration::from_secs(10));
 
-    let meter_reader = PeriodicReader::builder(meter_exporter)
+    let meter_reader = PeriodicReader::builder(exporter.clone())
         .with_interval(Duration::from_secs(3))
         .build();
 
@@ -139,13 +139,9 @@ async fn main() {
 
     opentelemetry::global::set_meter_provider(meter);
 
-    let log_exporter = HttpExporter::new(EasyHttpWebClient::default())
-        .with_endpoint(Uri::from_static("http://localhost:4318"))
-        .with_timeout(Duration::from_secs(10));
-
     let logger_provider = SdkLoggerProvider::builder()
         .with_resource(resource)
-        .with_batch_exporter(log_exporter)
+        .with_batch_exporter(exporter)
         .build();
 
     // state for our custom app metrics + logger

@@ -1,31 +1,22 @@
-use crate::{
-    Request,
-    client::{Grpc, GrpcService},
-    codec::CompressionEncoding,
-    metadata::MetadataMap,
-    protobuf::ProstCodec,
-};
-use parking_lot::RwLock;
-use rama_core::error::BoxError;
+use crate::codec::CompressionEncoding;
+use prost::Message;
 use rama_core::telemetry::opentelemetry::{
     otel_debug, otel_warn,
     sdk::{
         self,
         error::{OTelSdkError, OTelSdkResult},
+        logs::{LogBatch, LogExporter},
         metrics::exporter::PushMetricExporter,
         metrics::{Temporality, data::ResourceMetrics},
         trace::{SpanData, SpanExporter},
     },
 };
-use rama_http::{
-    Body, StreamingBody,
-    uri::{PathAndQuery, Uri},
-};
+use rama_http::uri::Uri;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::macros::generate_set_and_with;
 use std::{
     fmt,
-    str::FromStr,
+    future::Future,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -33,19 +24,12 @@ use std::{
     time::Duration,
 };
 
+mod grpc;
 mod http;
 pub mod proto;
 mod transform;
 
-pub use http::HttpExporter;
-
-use proto::{
-    ExportMetricsServiceRequest, ExportMetricsServiceResponse, ExportTraceServiceRequest,
-    ExportTraceServiceResponse,
-};
-use transform::{ResourceAttributesWithSchema, span_batch_to_request};
-
-const DEFAULT_OTLP_GRPC_ENDPOINT: &str = "http://localhost:4317";
+use proto::{ExportLogsServiceResponse, ExportMetricsServiceResponse, ExportTraceServiceResponse};
 
 const OTEL_EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const OTEL_EXPORTER_OTLP_TIMEOUT: &str = "OTEL_EXPORTER_OTLP_TIMEOUT";
@@ -67,62 +51,22 @@ const OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: &str = "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT";
 const OTEL_EXPORTER_OTLP_LOGS_HEADERS: &str = "OTEL_EXPORTER_OTLP_LOGS_HEADERS";
 const OTEL_EXPORTER_OTLP_LOGS_COMPRESSION: &str = "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION";
 
-const TRACE_EXPORT_PATH: &str = "/opentelemetry.proto.collector.trace.v1.TraceService/Export";
-const METRICS_EXPORT_PATH: &str = "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export";
-
-/// Wrapper type which allows you to use a rama gRPC [`GrpcService`]
-/// as a gRPC OTLP exporter for your OpenTelemetry setup.
-///
-/// [`GrpcService`]: crate::client::GrpcService
-#[must_use]
-#[derive(Debug, Clone)]
-pub struct OtelExporter<S = ()> {
-    service: S,
-    endpoint: Option<Uri>,
-    timeout: Option<Duration>,
-    compression: Option<CompressionEncoding>,
-    metadata: MetadataMap,
-    traces: SignalSettings,
-    metrics: SignalSettings,
-    env: EnvSettings,
-    temporality: Temporality,
-    resource: Arc<RwLock<ResourceAttributesWithSchema>>,
-    shutdown: Arc<AtomicBool>,
+/// Identifies one of the three OTLP signal types.
+#[derive(Debug, Clone, Copy)]
+pub enum SignalKind {
+    Traces,
+    Metrics,
+    Logs,
 }
 
-#[derive(Debug, Clone)]
-struct SignalSettings {
-    endpoint: Option<Uri>,
-    timeout: Option<Duration>,
-    compression: Option<CompressionEncoding>,
-    metadata: MetadataMap,
-}
-
-impl Default for SignalSettings {
-    fn default() -> Self {
-        Self {
-            endpoint: None,
-            timeout: None,
-            compression: None,
-            metadata: MetadataMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct EnvSettings {
-    base: SignalSettings,
-    traces: SignalSettings,
-    metrics: SignalSettings,
-}
-
+/// Failure to parse OTLP exporter configuration (e.g. from env vars).
 #[derive(Debug)]
 pub struct OtelExporterConfigError {
     message: String,
 }
 
 impl OtelExporterConfigError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -137,31 +81,104 @@ impl fmt::Display for OtelExporterConfigError {
 
 impl std::error::Error for OtelExporterConfigError {}
 
-impl<S> OtelExporter<S> {
-    /// Create a new [`OtelExporter`] with default OTLP gRPC settings.
-    ///
-    /// Defaults to `http://localhost:4317` and no extra metadata or compression.
-    pub fn new(service: S) -> Self {
+/// Abstraction over the header/metadata that works for http/grpc transport
+///
+/// Implemented for [`rama_http::HeaderMap`] (HTTP exporter)
+/// and [`crate::metadata::MetadataMap`] (gRPC exporter).
+pub trait HeaderBag: Clone + Default + fmt::Debug + Send + Sync + 'static {
+    /// Merge `other` into `self`, with `other` entries winning on conflict.
+    fn merge(&mut self, other: Self);
+
+    /// Parse an OTEL_EXPORTER_OTLP_*_HEADERS env var value into a header bag.
+    /// `var` is the env var name.
+    fn from_env(raw: &str, var: &'static str) -> Result<Self, OtelExporterConfigError>;
+}
+
+/// How `OtelExporter` actually sends a protobuf-encoded OTLP request for a
+/// given signal. Implemented for `OtelExporter<S, HeaderMap>` (HTTP) and
+/// `OtelExporter<S, MetadataMap>` (gRPC).
+pub trait OtlpTransport {
+    fn send_proto<Req, Resp>(
+        &self,
+        signal: SignalKind,
+        request: Req,
+    ) -> impl Future<Output = Result<Resp, OTelSdkError>> + Send
+    where
+        Req: Message + Send + 'static,
+        Resp: Message + Default + Send + 'static;
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SignalSettings<H> {
+    pub(crate) endpoint: Option<Uri>,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) compression: Option<CompressionEncoding>,
+    pub(crate) metadata: H,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EnvSettings<H> {
+    pub(crate) base: SignalSettings<H>,
+    pub(crate) traces: SignalSettings<H>,
+    pub(crate) metrics: SignalSettings<H>,
+    pub(crate) logs: SignalSettings<H>,
+}
+
+pub(crate) struct ResolvedConfig<H> {
+    pub(crate) endpoint: Uri,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) compression: Option<CompressionEncoding>,
+    pub(crate) metadata: H,
+}
+
+/// http or grpc OTLP exporter
+///
+/// Create via [`OtelExporter::new_http`] / [`OtelExporter::from_env_http`] for HTTP exporters,
+/// or [`OtelExporter::new_grpc`] / [`OtelExporter::from_env_grpc`] for gRPC.
+#[must_use]
+#[derive(Debug, Clone)]
+pub struct OtelExporter<S, H> {
+    pub(crate) service: S,
+    pub(crate) endpoint: Option<Uri>,
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) compression: Option<CompressionEncoding>,
+    pub(crate) metadata: H,
+    pub(crate) traces: SignalSettings<H>,
+    pub(crate) metrics: SignalSettings<H>,
+    pub(crate) logs: SignalSettings<H>,
+    pub(crate) env: EnvSettings<H>,
+    pub(crate) temporality: Temporality,
+    pub(crate) resource: Arc<arc_swap::ArcSwap<transform::ResourceAttributesWithSchema>>,
+    pub(crate) shutdown_traces: Arc<AtomicBool>,
+    pub(crate) shutdown_metrics: Arc<AtomicBool>,
+    pub(crate) shutdown_logs: Arc<AtomicBool>,
+    pub(crate) runtime: Option<tokio::runtime::Handle>,
+}
+
+// Most OtelExporter logic is shared between http/grpc
+// For transport specific logic see grpc.rs and http.rs
+
+impl<S, H: HeaderBag> OtelExporter<S, H> {
+    pub(crate) fn with_defaults(service: S) -> Self {
         Self {
             service,
             endpoint: None,
             timeout: None,
             compression: None,
-            metadata: MetadataMap::new(),
+            metadata: H::default(),
             traces: SignalSettings::default(),
             metrics: SignalSettings::default(),
+            logs: SignalSettings::default(),
             env: EnvSettings::default(),
             temporality: Temporality::Cumulative,
-            resource: Arc::new(RwLock::new(ResourceAttributesWithSchema::default())),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            resource: Arc::new(arc_swap::ArcSwap::from_pointee(
+                transform::ResourceAttributesWithSchema::default(),
+            )),
+            shutdown_traces: Arc::new(AtomicBool::new(false)),
+            shutdown_metrics: Arc::new(AtomicBool::new(false)),
+            shutdown_logs: Arc::new(AtomicBool::new(false)),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }
-    }
-
-    /// Configure this exporter using the OTLP environment variables.
-    pub fn from_env(service: S) -> Result<Self, OtelExporterConfigError> {
-        let mut exporter = Self::new(service);
-        exporter.apply_env()?;
-        Ok(exporter)
     }
 
     generate_set_and_with!(
@@ -189,15 +206,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the base OTLP metadata.
-        pub fn metadata(mut self, metadata: MetadataMap) -> Self {
-            self.metadata = metadata;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Override the trace-specific endpoint.
+        /// Override the trace-specific OTLP endpoint.
         pub fn traces_endpoint(mut self, endpoint: Option<Uri>) -> Self {
             self.traces.endpoint = endpoint;
             self
@@ -205,7 +214,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the trace-specific timeout.
+        /// Override the trace-specific OTLP timeout.
         pub fn traces_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.traces.timeout = timeout;
             self
@@ -213,7 +222,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the trace-specific compression.
+        /// Override the trace-specific OTLP compression.
         pub fn traces_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
             self.traces.compression = compression;
             self
@@ -221,15 +230,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the trace-specific metadata.
-        pub fn traces_metadata(mut self, metadata: MetadataMap) -> Self {
-            self.traces.metadata = metadata;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Override the metrics-specific endpoint.
+        /// Override the metrics-specific OTLP endpoint.
         pub fn metrics_endpoint(mut self, endpoint: Option<Uri>) -> Self {
             self.metrics.endpoint = endpoint;
             self
@@ -237,7 +238,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the metrics-specific timeout.
+        /// Override the metrics-specific OTLP timeout.
         pub fn metrics_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.metrics.timeout = timeout;
             self
@@ -245,7 +246,7 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the metrics-specific compression.
+        /// Override the metrics-specific OTLP compression.
         pub fn metrics_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
             self.metrics.compression = compression;
             self
@@ -253,9 +254,25 @@ impl<S> OtelExporter<S> {
     );
 
     generate_set_and_with!(
-        /// Override the metrics-specific metadata.
-        pub fn metrics_metadata(mut self, metadata: MetadataMap) -> Self {
-            self.metrics.metadata = metadata;
+        /// Override the logs-specific OTLP endpoint.
+        pub fn logs_endpoint(mut self, endpoint: Option<Uri>) -> Self {
+            self.logs.endpoint = endpoint;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Override the logs-specific OTLP timeout.
+        pub fn logs_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.logs.timeout = timeout;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Override the logs-specific OTLP compression.
+        pub fn logs_compression(mut self, compression: Option<CompressionEncoding>) -> Self {
+            self.logs.compression = compression;
             self
         }
     );
@@ -268,187 +285,167 @@ impl<S> OtelExporter<S> {
         }
     );
 
-    fn apply_env(&mut self) -> Result<(), OtelExporterConfigError> {
-        if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_ENDPOINT)? {
-            self.env.base.endpoint = Some(endpoint);
+    generate_set_and_with!(
+        /// Override the tokio runtime used to drive each export.
+        ///
+        /// Constructors capture `Handle::try_current()` automatically. Use this
+        /// to pin the exporter to a specific runtime, or pass `None` to require
+        /// the caller to provide a tokio context for every export.
+        pub fn runtime(mut self, runtime: Option<tokio::runtime::Handle>) -> Self {
+            self.runtime = runtime;
+            self
         }
-        if let Some(timeout) = env_timeout(OTEL_EXPORTER_OTLP_TIMEOUT)? {
-            self.env.base.timeout = Some(timeout);
-        }
-        if let Some(metadata) = env_headers(OTEL_EXPORTER_OTLP_HEADERS)? {
-            self.env.base.metadata = metadata;
-        }
-        match env_compression(OTEL_EXPORTER_OTLP_COMPRESSION)? {
-            EnvCompressionSetting::Unset => {}
-            EnvCompressionSetting::Value(compression) => {
-                self.env.base.compression = compression;
-            }
-        }
+    );
 
-        if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)? {
-            self.env.traces.endpoint = Some(endpoint);
-        }
-        if let Some(timeout) = env_timeout(OTEL_EXPORTER_OTLP_TRACES_TIMEOUT)? {
-            self.env.traces.timeout = Some(timeout);
-        }
-        if let Some(metadata) = env_headers(OTEL_EXPORTER_OTLP_TRACES_HEADERS)? {
-            self.env.traces.metadata = metadata;
-        }
-        match env_compression(OTEL_EXPORTER_OTLP_TRACES_COMPRESSION)? {
-            EnvCompressionSetting::Unset => {}
-            EnvCompressionSetting::Value(compression) => {
-                self.env.traces.compression = compression;
-            }
-        }
-
-        if let Some(endpoint) = env_endpoint(OTEL_EXPORTER_OTLP_METRICS_ENDPOINT)? {
-            self.env.metrics.endpoint = Some(endpoint);
-        }
-        if let Some(timeout) = env_timeout(OTEL_EXPORTER_OTLP_METRICS_TIMEOUT)? {
-            self.env.metrics.timeout = Some(timeout);
-        }
-        if let Some(metadata) = env_headers(OTEL_EXPORTER_OTLP_METRICS_HEADERS)? {
-            self.env.metrics.metadata = metadata;
-        }
-        match env_compression(OTEL_EXPORTER_OTLP_METRICS_COMPRESSION)? {
-            EnvCompressionSetting::Unset => {}
-            EnvCompressionSetting::Value(compression) => {
-                self.env.metrics.compression = compression;
-            }
-        }
-
+    pub(crate) fn apply_env(&mut self) -> Result<(), OtelExporterConfigError> {
+        apply_env_signal(
+            &mut self.env.base,
+            OTEL_EXPORTER_OTLP_ENDPOINT,
+            OTEL_EXPORTER_OTLP_TIMEOUT,
+            OTEL_EXPORTER_OTLP_HEADERS,
+            OTEL_EXPORTER_OTLP_COMPRESSION,
+        )?;
+        apply_env_signal(
+            &mut self.env.traces,
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+            OTEL_EXPORTER_OTLP_TRACES_TIMEOUT,
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS,
+            OTEL_EXPORTER_OTLP_TRACES_COMPRESSION,
+        )?;
+        apply_env_signal(
+            &mut self.env.metrics,
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+            OTEL_EXPORTER_OTLP_METRICS_TIMEOUT,
+            OTEL_EXPORTER_OTLP_METRICS_HEADERS,
+            OTEL_EXPORTER_OTLP_METRICS_COMPRESSION,
+        )?;
+        apply_env_signal(
+            &mut self.env.logs,
+            OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+            OTEL_EXPORTER_OTLP_LOGS_TIMEOUT,
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+            OTEL_EXPORTER_OTLP_LOGS_COMPRESSION,
+        )?;
         Ok(())
     }
 
-    fn trace_config(&self) -> ResolvedConfig {
-        ResolvedConfig::new(self, SignalKind::Traces)
+    pub(crate) fn shutdown_flag(&self, signal: SignalKind) -> &Arc<AtomicBool> {
+        match signal {
+            SignalKind::Traces => &self.shutdown_traces,
+            SignalKind::Metrics => &self.shutdown_metrics,
+            SignalKind::Logs => &self.shutdown_logs,
+        }
     }
 
-    fn metrics_config(&self) -> ResolvedConfig {
-        ResolvedConfig::new(self, SignalKind::Metrics)
+    pub(crate) fn shutdown_signal(&self, signal: SignalKind) -> OTelSdkResult {
+        if self.shutdown_flag(signal).swap(true, Ordering::AcqRel) {
+            Err(OTelSdkError::AlreadyShutdown)
+        } else {
+            Ok(())
+        }
     }
-}
 
-#[derive(Debug, Clone, Copy)]
-enum SignalKind {
-    Traces,
-    Metrics,
-}
+    pub(crate) fn force_flush_signal(&self, signal: SignalKind) -> OTelSdkResult {
+        if self.shutdown_flag(signal).load(Ordering::Acquire) {
+            Err(OTelSdkError::AlreadyShutdown)
+        } else {
+            Ok(())
+        }
+    }
 
-struct ResolvedConfig {
-    endpoint: Uri,
-    timeout: Option<Duration>,
-    compression: Option<CompressionEncoding>,
-    metadata: MetadataMap,
-}
+    pub(crate) fn store_resource(&self, resource: &sdk::Resource) {
+        self.resource.store(Arc::new(resource.into()));
+    }
 
-impl ResolvedConfig {
-    fn new<S>(exporter: &OtelExporter<S>, signal_kind: SignalKind) -> Self {
-        let (signal, env_signal) = match signal_kind {
-            SignalKind::Traces => (&exporter.traces, &exporter.env.traces),
-            SignalKind::Metrics => (&exporter.metrics, &exporter.env.metrics),
+    pub(crate) fn resolve_config(
+        &self,
+        signal: SignalKind,
+        default_endpoint: &'static str,
+        append_signal_path: impl FnOnce(Uri) -> Result<Uri, OtelExporterConfigError>,
+    ) -> Result<ResolvedConfig<H>, OtelExporterConfigError> {
+        let (signal_settings, env_signal) = match signal {
+            SignalKind::Traces => (&self.traces, &self.env.traces),
+            SignalKind::Metrics => (&self.metrics, &self.env.metrics),
+            SignalKind::Logs => (&self.logs, &self.env.logs),
         };
 
-        let endpoint = signal
+        let signal_endpoint = signal_settings
             .endpoint
             .clone()
-            .or_else(|| exporter.endpoint.clone())
-            .or_else(|| env_signal.endpoint.clone())
-            .or_else(|| exporter.env.base.endpoint.clone())
-            .unwrap_or_else(|| Uri::from_static(DEFAULT_OTLP_GRPC_ENDPOINT));
-        let timeout = signal
+            .or_else(|| env_signal.endpoint.clone());
+        let endpoint = match signal_endpoint {
+            Some(endpoint) => endpoint,
+            None => append_signal_path(
+                self.endpoint
+                    .clone()
+                    .or_else(|| self.env.base.endpoint.clone())
+                    .unwrap_or_else(|| Uri::from_static(default_endpoint)),
+            )?,
+        };
+
+        let timeout = signal_settings
             .timeout
-            .or(exporter.timeout)
+            .or(self.timeout)
             .or(env_signal.timeout)
-            .or(exporter.env.base.timeout);
-        let compression = signal
+            .or(self.env.base.timeout);
+        let compression = signal_settings
             .compression
-            .or(exporter.compression)
+            .or(self.compression)
             .or(env_signal.compression)
-            .or(exporter.env.base.compression);
+            .or(self.env.base.compression);
 
-        let mut metadata = exporter.env.base.metadata.clone();
+        let mut metadata = self.env.base.metadata.clone();
         metadata.merge(env_signal.metadata.clone());
-        metadata.merge(exporter.metadata.clone());
-        metadata.merge(signal.metadata.clone());
+        metadata.merge(self.metadata.clone());
+        metadata.merge(signal_settings.metadata.clone());
 
-        Self {
+        Ok(ResolvedConfig {
             endpoint,
             timeout,
             compression,
             metadata,
+        })
+    }
+
+    pub(crate) async fn run_on_runtime<F, T>(&self, work: F) -> Result<T, OTelSdkError>
+    where
+        F: Future<Output = Result<T, OTelSdkError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        match self.runtime.as_ref() {
+            Some(handle) => handle
+                .spawn(work)
+                .await
+                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?,
+            None => work.await,
         }
     }
 }
 
-impl<S> SpanExporter for OtelExporter<S>
+impl<S, H> SpanExporter for OtelExporter<S, H>
 where
-    S: fmt::Debug + Clone + GrpcService<Body>,
-    S::ResponseBody: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
+    H: HeaderBag,
+    S: fmt::Debug + Send + Sync + 'static,
+    Self: OtlpTransport + Send + Sync,
 {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        let service = self.service.clone();
-        let config = self.trace_config();
-        let resource = self.resource.clone();
-        let shutdown = self.shutdown.clone();
-
-        if shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        let mut grpc = Grpc::new(service, config.endpoint);
-        if let Some(compression) = config.compression {
-            grpc = grpc
-                .with_send_compressed(compression)
-                .with_accept_compressed(compression);
-        }
-
         let request_body = {
-            let guard = resource.read();
-            span_batch_to_request(&batch, &guard)
+            let resource = self.resource.load();
+            transform::span_batch_to_request(&batch, &resource)
         };
+        let response: ExportTraceServiceResponse =
+            self.send_proto(SignalKind::Traces, request_body).await?;
 
-        let mut request = Request::new(request_body);
-        *request.metadata_mut() = config.metadata;
-        if let Some(timeout) = config.timeout {
-            request
-                .try_set_timeout(timeout)
-                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
-        }
+        otel_debug!(name: "RamaOtel.Traces.ExportSucceeded");
 
-        let rpc = grpc.unary(
-            request,
-            PathAndQuery::from_static(TRACE_EXPORT_PATH),
-            ProstCodec::<ExportTraceServiceRequest, ExportTraceServiceResponse>::new(),
-        );
-
-        let response = match config.timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
-                Ok(result) => result,
-                Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-            },
-            None => rpc.await,
-        }
-        .map_err(|status| OTelSdkError::InternalFailure(format!("export error: {status:?}")))?;
-
-        otel_debug!(name: "RamaGrpcOtelTraces.ExportSucceeded");
-
-        if let Some(partial_success) =
-            response
-                .into_inner()
-                .partial_success
-                .filter(|partial_success| {
-                    partial_success.rejected_spans > 0 || !partial_success.error_message.is_empty()
-                })
+        if let Some(partial) = response
+            .partial_success
+            .filter(|p| p.rejected_spans > 0 || !p.error_message.is_empty())
         {
             otel_warn!(
-                name: "RamaGrpcOtelTraces.PartialSuccess",
-                rejected_spans = partial_success.rejected_spans,
-                error_message = partial_success.error_message.as_str(),
+                name: "RamaOtel.Traces.PartialSuccess",
+                rejected_spans = partial.rejected_spans,
+                error_message = partial.error_message.as_str(),
             );
         }
 
@@ -456,91 +453,39 @@ where
     }
 
     fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        Ok(())
+        self.shutdown_signal(SignalKind::Traces)
     }
 
     fn force_flush(&mut self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        Ok(())
+        self.force_flush_signal(SignalKind::Traces)
     }
 
     fn set_resource(&mut self, resource: &sdk::Resource) {
-        let mut guard = self.resource.write();
-        *guard = resource.into();
+        self.store_resource(resource);
     }
 }
 
-impl<S> PushMetricExporter for OtelExporter<S>
+impl<S, H> PushMetricExporter for OtelExporter<S, H>
 where
-    S: fmt::Debug + Clone + GrpcService<Body>,
-    S::ResponseBody: StreamingBody<Error: Into<BoxError>> + Send + Sync + 'static,
+    H: HeaderBag,
+    S: fmt::Debug + Send + Sync + 'static,
+    Self: OtlpTransport + Send + Sync,
 {
     async fn export(&self, metrics: &ResourceMetrics) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        let service = self.service.clone();
-        let config = self.metrics_config();
-        let shutdown = self.shutdown.clone();
         let request_body = transform::resource_metrics_to_request(metrics);
+        let response: ExportMetricsServiceResponse =
+            self.send_proto(SignalKind::Metrics, request_body).await?;
 
-        if shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
+        otel_debug!(name: "RamaOtel.Metrics.ExportSucceeded");
 
-        let mut grpc = Grpc::new(service, config.endpoint);
-        if let Some(compression) = config.compression {
-            grpc = grpc
-                .with_send_compressed(compression)
-                .with_accept_compressed(compression);
-        }
-
-        let mut request = Request::new(request_body);
-        *request.metadata_mut() = config.metadata;
-        if let Some(timeout) = config.timeout {
-            request
-                .try_set_timeout(timeout)
-                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
-        }
-
-        let rpc = grpc.unary(
-            request,
-            PathAndQuery::from_static(METRICS_EXPORT_PATH),
-            ProstCodec::<ExportMetricsServiceRequest, ExportMetricsServiceResponse>::new(),
-        );
-
-        let response = match config.timeout {
-            Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
-                Ok(result) => result,
-                Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-            },
-            None => rpc.await,
-        }
-        .map_err(|status| OTelSdkError::InternalFailure(format!("export error: {status:?}")))?;
-
-        otel_debug!(name: "RamaGrpcOtelMetrics.ExportSucceeded");
-
-        if let Some(partial_success) =
-            response
-                .into_inner()
-                .partial_success
-                .filter(|partial_success| {
-                    partial_success.rejected_data_points > 0
-                        || !partial_success.error_message.is_empty()
-                })
+        if let Some(partial) = response
+            .partial_success
+            .filter(|p| p.rejected_data_points > 0 || !p.error_message.is_empty())
         {
             otel_warn!(
-                name: "RamaGrpcOtelMetrics.PartialSuccess",
-                rejected_data_points = partial_success.rejected_data_points,
-                error_message = partial_success.error_message.as_str(),
+                name: "RamaOtel.Metrics.PartialSuccess",
+                rejected_data_points = partial.rejected_data_points,
+                error_message = partial.error_message.as_str(),
             );
         }
 
@@ -548,19 +493,11 @@ where
     }
 
     fn force_flush(&self) -> OTelSdkResult {
-        if self.shutdown.load(Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        Ok(())
+        self.force_flush_signal(SignalKind::Metrics)
     }
 
     fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
-        if self.shutdown.swap(true, Ordering::SeqCst) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
-
-        Ok(())
+        self.shutdown_signal(SignalKind::Metrics)
     }
 
     fn temporality(&self) -> Temporality {
@@ -568,15 +505,80 @@ where
     }
 }
 
-fn env_endpoint(var: &'static str) -> Result<Option<Uri>, OtelExporterConfigError> {
-    let value = match std::env::var(var) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => return Ok(None),
-        Err(err) => {
-            return Err(OtelExporterConfigError::new(format!(
-                "failed to read {var}: {err}"
-            )));
+impl<S, H> LogExporter for OtelExporter<S, H>
+where
+    H: HeaderBag,
+    S: fmt::Debug + Send + Sync + 'static,
+    Self: OtlpTransport + Send + Sync,
+{
+    async fn export(&self, batch: LogBatch<'_>) -> OTelSdkResult {
+        let request_body = {
+            let resource = self.resource.load();
+            transform::log_batch_to_request(&batch, &resource)
+        };
+        let response: ExportLogsServiceResponse =
+            self.send_proto(SignalKind::Logs, request_body).await?;
+
+        otel_debug!(name: "RamaOtel.Logs.ExportSucceeded");
+
+        if let Some(partial) = response
+            .partial_success
+            .filter(|p| p.rejected_log_records > 0 || !p.error_message.is_empty())
+        {
+            otel_warn!(
+                name: "RamaOtel.Logs.PartialSuccess",
+                rejected_log_records = partial.rejected_log_records,
+                error_message = partial.error_message.as_str(),
+            );
         }
+
+        Ok(())
+    }
+
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+        self.shutdown_signal(SignalKind::Logs)
+    }
+
+    fn set_resource(&mut self, resource: &sdk::Resource) {
+        self.store_resource(resource);
+    }
+}
+
+fn apply_env_signal<H: HeaderBag>(
+    settings: &mut SignalSettings<H>,
+    endpoint_var: &'static str,
+    timeout_var: &'static str,
+    headers_var: &'static str,
+    compression_var: &'static str,
+) -> Result<(), OtelExporterConfigError> {
+    if let Some(endpoint) = env_endpoint(endpoint_var)? {
+        settings.endpoint = Some(endpoint);
+    }
+    if let Some(timeout) = env_timeout(timeout_var)? {
+        settings.timeout = Some(timeout);
+    }
+    if let Some(raw) = read_env_var(headers_var)? {
+        settings.metadata = H::from_env(&raw, headers_var)?;
+    }
+    if let EnvCompressionSetting::Value(compression) = env_compression(compression_var)? {
+        settings.compression = compression;
+    }
+    Ok(())
+}
+
+fn read_env_var(var: &'static str) -> Result<Option<String>, OtelExporterConfigError> {
+    match std::env::var(var) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err) => Err(OtelExporterConfigError::new(format!(
+            "failed to read {var}: {err}"
+        ))),
+    }
+}
+
+fn env_endpoint(var: &'static str) -> Result<Option<Uri>, OtelExporterConfigError> {
+    let Some(value) = read_env_var(var)? else {
+        return Ok(None);
     };
 
     let endpoint = value
@@ -587,14 +589,8 @@ fn env_endpoint(var: &'static str) -> Result<Option<Uri>, OtelExporterConfigErro
 }
 
 fn env_timeout(var: &'static str) -> Result<Option<Duration>, OtelExporterConfigError> {
-    let value = match std::env::var(var) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => return Ok(None),
-        Err(err) => {
-            return Err(OtelExporterConfigError::new(format!(
-                "failed to read {var}: {err}"
-            )));
-        }
+    let Some(value) = read_env_var(var)? else {
+        return Ok(None);
     };
 
     let timeout_ms = value
@@ -604,56 +600,14 @@ fn env_timeout(var: &'static str) -> Result<Option<Duration>, OtelExporterConfig
     Ok(Some(Duration::from_millis(timeout_ms)))
 }
 
-fn env_headers(var: &'static str) -> Result<Option<MetadataMap>, OtelExporterConfigError> {
-    let value = match std::env::var(var) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => return Ok(None),
-        Err(err) => {
-            return Err(OtelExporterConfigError::new(format!(
-                "failed to read {var}: {err}"
-            )));
-        }
-    };
-
-    let mut metadata = MetadataMap::new();
-    for (key, value) in parse_header_string(&value) {
-        if key.ends_with("-bin") {
-            let key = crate::metadata::BinaryMetadataKey::from_str(&key).map_err(|err| {
-                OtelExporterConfigError::new(format!("invalid {var} key {key}: {err}"))
-            })?;
-            let parsed = crate::metadata::BinaryMetadataValue::try_from(value.into_bytes())
-                .map_err(|err| {
-                    OtelExporterConfigError::new(format!("invalid {var} value for {key}: {err}"))
-                })?;
-            metadata.insert_bin(key, parsed);
-        } else {
-            let key = crate::metadata::AsciiMetadataKey::from_str(&key).map_err(|err| {
-                OtelExporterConfigError::new(format!("invalid {var} key {key}: {err}"))
-            })?;
-            let parsed = value.parse().map_err(|err| {
-                OtelExporterConfigError::new(format!("invalid {var} value for {key}: {err}"))
-            })?;
-            metadata.insert(key, parsed);
-        }
-    }
-
-    Ok(Some(metadata))
-}
-
-enum EnvCompressionSetting {
+pub(crate) enum EnvCompressionSetting {
     Unset,
     Value(Option<CompressionEncoding>),
 }
 
 fn env_compression(var: &'static str) -> Result<EnvCompressionSetting, OtelExporterConfigError> {
-    let value = match std::env::var(var) {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => return Ok(EnvCompressionSetting::Unset),
-        Err(err) => {
-            return Err(OtelExporterConfigError::new(format!(
-                "failed to read {var}: {err}"
-            )));
-        }
+    let Some(value) = read_env_var(var)? else {
+        return Ok(EnvCompressionSetting::Unset);
     };
 
     let encoding = match value.trim().to_ascii_lowercase().as_str() {
@@ -671,7 +625,7 @@ fn env_compression(var: &'static str) -> Result<EnvCompressionSetting, OtelExpor
     Ok(EnvCompressionSetting::Value(encoding))
 }
 
-fn parse_header_string(value: &str) -> impl Iterator<Item = (String, String)> + '_ {
+pub(crate) fn parse_header_string(value: &str) -> impl Iterator<Item = (String, String)> + '_ {
     value.split_terminator(',').filter_map(|pair| {
         let pair = pair.trim();
         if pair.is_empty() {
@@ -696,30 +650,8 @@ fn parse_header_string(value: &str) -> impl Iterator<Item = (String, String)> + 
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use parking_lot::Mutex;
-    use std::sync::LazyLock;
-
-    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-    fn with_env_var<T>(key: &'static str, value: Option<&str>, f: impl FnOnce() -> T) -> T {
-        let _guard = ENV_LOCK.lock();
-        let previous = std::env::var(key).ok();
-
-        match value {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        let result = f();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-
-        result
-    }
 
     #[test]
     fn parse_header_string_decodes_percent_encoded_values() {
@@ -727,24 +659,6 @@ mod tests {
         assert_eq!(
             headers,
             vec![("authorization".to_owned(), "Bearer abc/123".to_owned())]
-        );
-    }
-
-    #[tokio::test]
-    async fn resolved_trace_config_prefers_programmatic_override_over_env_signal_value() {
-        with_env_var(
-            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
-            Some("http://localhost:4318"),
-            || {
-                let exporter = OtelExporter::from_env(())
-                    .expect("env config should parse")
-                    .with_endpoint(Uri::from_static("http://localhost:9999"));
-
-                assert_eq!(
-                    exporter.trace_config().endpoint,
-                    Uri::from_static("http://localhost:9999")
-                );
-            },
         );
     }
 }

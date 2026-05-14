@@ -603,13 +603,11 @@ fn log_record_into(record: &SdkLogRecord) -> ProtoLogRecord {
     let attributes = record
         .attributes_iter()
         .filter_map(|(key, value)| {
-            let value = match log_any_value_into(value) {
-                Some(value) => value,
-                None => {
-                    dropped_attributes_count += 1;
-                    return None;
-                }
+            let Some(value) = log_any_value_into(value) else {
+                dropped_attributes_count += 1;
+                return None;
             };
+
             Some(KeyValue {
                 key: key.as_str().to_owned(),
                 value: Some(value),
