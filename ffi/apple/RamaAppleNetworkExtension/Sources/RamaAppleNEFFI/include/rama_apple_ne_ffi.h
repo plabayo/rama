@@ -446,18 +446,6 @@ typedef struct {
     RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
 
-typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);
-
-/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
-///
-/// `context` lifetime / threading contract: see the matching contract on
-/// `RamaTransparentProxyTcpSessionCallbacks` above.
-typedef struct {
-    /// Opaque user context passed back to callbacks. See lifetime contract above.
-    void* context;
-    RamaUdpEgressSendFn on_send_to_egress;
-} RamaTransparentProxyUdpEgressCallbacks;
-
 // Logging
 
 /// Forward a log message to Rust tracing.
@@ -662,26 +650,14 @@ bool rama_transparent_proxy_udp_session_get_egress_connect_options(
     RamaUdpEgressConnectOptions* out_options
 );
 
-/// Activate a UDP session after the egress NWConnection is ready.
+/// Activate a UDP session.
 ///
-/// `callbacks.on_send_to_egress` is called by Rust to deliver datagrams to
-/// the egress NWConnection.
+/// The Rust engine owns the egress UDP socket (one unconnected BSD
+/// socket per flow) and drives `send_to` / `recv_from` from internal
+/// pump tasks. Swift no longer supplies an egress sink. Subsequent
+/// calls are ignored.
 void rama_transparent_proxy_udp_session_activate(
-    RamaTransparentProxyUdpSession* session,
-    RamaTransparentProxyUdpEgressCallbacks callbacks
-);
-
-/// Deliver one datagram from the egress NWConnection to the Rust UDP session.
-///
-/// Called by Swift when NWConnection.receive delivers a datagram from
-/// the remote. `bytes` and `peer` are borrowed for the duration of the
-/// call. `peer` should carry the bound endpoint of the per-peer
-/// NWConnection the datagram arrived from; Swift uses that endpoint
-/// later as the `sentBy` argument to `flow.writeDatagrams`.
-void rama_transparent_proxy_udp_session_on_egress_datagram(
-    RamaTransparentProxyUdpSession* session,
-    RamaBytesView bytes,
-    RamaUdpPeerView peer
+    RamaTransparentProxyUdpSession* session
 );
 
 // RAII

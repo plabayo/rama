@@ -1702,100 +1702,6 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     }
 }
 
-/// Minimal receive surface the UDP read pump needs. Abstracts
-/// `NWConnection` so tests can drive the pump without a real
-/// network socket.
-protocol UdpConnectionReadable: AnyObject {
-    func receive(
-        minimumIncompleteLength: Int,
-        maximumLength: Int,
-        completion: @escaping @Sendable (Data?, NWConnection.ContentContext?, Bool, NWError?) -> Void
-    )
-}
-
-extension NWConnection: UdpConnectionReadable {}
-
-/// Reads datagrams from a `NWConnection` in a loop and delivers
-/// them to a Rust UDP session, **tagged with the peer this
-/// connection is bound to**.
-///
-/// `peer` is the bound endpoint of the per-peer egress
-/// `NWConnection`. NWConnection is connection-pinned for UDP, so
-/// every datagram this pump receives is by definition from `peer` —
-/// we therefore tag at the pump rather than peering the receive's
-/// (absent for connected UDP) source attribution. The peer threads
-/// through to `session.onEgressDatagram(_:peer:)`, which Rust then
-/// surfaces as `Datagram.peer` to the service; the service forwards
-/// it back to Swift's writer pump, where it becomes the `sentBy`
-/// argument to `flow.writeDatagrams`.
-final class NwUdpConnectionReadPump: @unchecked Sendable {
-    private let connection: any UdpConnectionReadable
-    private let session: RamaUdpSessionHandle
-    private let queue: DispatchQueue
-    private var closed = false
-    /// Bound peer of this connection. `nil` only in test setups
-    /// that don't model a per-peer connection (the production path
-    /// always has one).
-    private let peer: RamaUdpPeer?
-    // Wires read-side EOF/error into the flow's `terminate` so a
-    // half-open flow doesn't sit until `udp_max_flow_lifetime` reaps it.
-    private let onTerminate: (Error?) -> Void
-
-    init(
-        connection: any UdpConnectionReadable,
-        session: RamaUdpSessionHandle,
-        queue: DispatchQueue,
-        peer: RamaUdpPeer? = nil,
-        onTerminate: @escaping (Error?) -> Void
-    ) {
-        self.connection = connection
-        self.session = session
-        self.queue = queue
-        self.peer = peer
-        self.onTerminate = onTerminate
-    }
-
-
-    func start() {
-        scheduleRead()
-    }
-
-    private func scheduleRead() {
-        // `minimumIncompleteLength: 0` so a zero-length UDP datagram
-        // (valid per RFC 768) wakes the receive instead of blocking
-        // until at least one payload byte arrives.
-        connection.receive(minimumIncompleteLength: 0, maximumLength: 65_535) {
-            [weak self] data, _, _, error in
-            guard let self else { return }
-            self.queue.async {
-                guard !self.closed else { return }
-                // Forward the datagram even if it has no payload —
-                // empty Data is still a real datagram on UDP.
-                if let data {
-                    self.session.onEgressDatagram(data, peer: self.peer)
-                }
-                // For UDP, `isComplete` is set on every successful
-                // receive — it marks the datagram boundary, not the
-                // end of the stream. Apple docs:
-                // <https://developer.apple.com/documentation/network/nw_connection_receive_completion_t>.
-                // Treating it as terminal would tear the flow down
-                // after the very first datagram. Only an actual
-                // error (cancel, ECONNRESET, etc.) terminates.
-                if let error {
-                    self.closed = true
-                    self.onTerminate(error)
-                    return
-                }
-                self.scheduleRead()
-            }
-        }
-    }
-
-    func cancel() {
-        queue.async { [self] in closed = true }
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Per-flow late-binding container for the Rust session handle.
@@ -1852,16 +1758,17 @@ final class TcpFlowContext: @unchecked Sendable {
 
 /// See `TcpFlowContext` for the `@unchecked Sendable` rationale —
 /// same queue-confinement invariant applies on the UDP side.
+///
+/// UDP egress lives entirely in Rust now (one unconnected
+/// `tokio::net::UdpSocket` per intercepted flow); there is no
+/// `NWConnection` or egress read pump to retain on the Swift side.
 final class UdpFlowContext: @unchecked Sendable {
     init() {
     }
 
     weak var session: RamaUdpSessionHandle?
-    // See `TcpFlowContext.connection` for why this is the protocol type.
-    var connection: (any NwConnectionLike)?
-    /// Per-flow pumps + closures, owned by the provider's state map
-    /// until the flow is removed.
-    var egressReadPump: NwUdpConnectionReadPump?
+    /// Writer pump for client-bound replies; per-datagram `sentBy`
+    /// endpoint is set from Rust's per-datagram peer attribution.
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
     var terminate: ((Error?) -> Void)?

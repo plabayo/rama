@@ -205,25 +205,9 @@ final class SessionHandleTests: XCTestCase {
         XCTAssertNil(firstSentinel, "session deinit failed to release the first callback box")
     }
 
-    /// UDP variant of the activate-leak regression test.
-    func testUdpRepeatedActivateDoesNotLeakSecondCallbackBox() {
-        let engine = makeEngine()
-        defer { engine.stop(reason: 0) }
-
-        weak var firstSentinel: Sentinel?
-        weak var secondSentinel: Sentinel?
-        do {
-            let session = newInterceptedUdpSession(on: engine)
-            let s1 = Sentinel()
-            let s2 = Sentinel()
-            firstSentinel = s1
-            secondSentinel = s2
-            session.activate(onSendToEgress: { [s1] _, _ in _ = s1 })
-            session.activate(onSendToEgress: { [s2] _, _ in _ = s2 })
-        }
-        XCTAssertNil(secondSentinel, "second activate leaked its callback box")
-        XCTAssertNil(firstSentinel, "session deinit failed to release the first callback box")
-    }
+    // UDP variant of the activate-leak regression test was removed:
+    // the UDP `activate()` no longer takes a callback (Rust owns the
+    // egress UDP socket), so there is no box to leak.
 }
 
 /// Lifetime sentinel: weak refs to instances tell the test whether

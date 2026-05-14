@@ -19,7 +19,7 @@ import Network
 /// be unit-tested against a mock implementation that drives state
 /// transitions on demand. Real production code passes an `NWConnection`,
 /// which conforms via the trivial extension below.
-protocol NwConnectionLike: UdpConnectionReadable {
+protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
     // The protocol's `stateUpdateHandler` is intentionally NOT marked
     // `@Sendable`. `NWConnection`'s real declaration *is* `@Sendable`, so
@@ -47,6 +47,13 @@ protocol NwConnectionLike: UdpConnectionReadable {
         contentContext: NWConnection.ContentContext,
         isComplete: Bool,
         completion: NWConnection.SendCompletion
+    )
+
+    /// Mirrors `NWConnection.receive`. Used by the TCP egress read pump.
+    func receive(
+        minimumIncompleteLength: Int,
+        maximumLength: Int,
+        completion: @escaping @Sendable (Data?, NWConnection.ContentContext?, Bool, NWError?) -> Void
     )
 }
 

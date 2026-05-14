@@ -77,17 +77,6 @@ final class UdpSessionLifecycleTests: XCTestCase {
         session.onClientClose()  // second call must not crash
     }
 
-    /// A late `onEgressDatagram` arriving after `onClientClose` (e.g. an
-    /// NWConnection receive callback that fires after `terminate` ran and
-    /// nil'd the pump) must be silently dropped via the `cancelled` guard.
-    func testOnEgressDatagramAfterOnClientCloseIsNoop() {
-        let engine = makeEngine()
-        defer { engine.stop(reason: 0) }
-        let session = newInterceptedUdpSession(on: engine)
-        session.onClientClose()
-        session.onEgressDatagram(Data("late egress datagram".utf8), peer: nil)
-    }
-
     /// A late `onClientDatagram` arriving after `onClientClose` must be
     /// silently dropped — the same guard as the TCP `.closed` path.
     func testOnClientDatagramAfterOnClientCloseIsNoop() {
@@ -108,7 +97,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _, _ in })
+        session.activate()
         session.onClientClose()
     }
 
@@ -121,7 +110,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         for _ in 0..<64 {
             let session = newInterceptedUdpSession(on: engine)
-            session.activate(onSendToEgress: { _, _ in })
+            session.activate()
             session.onClientClose()
         }
     }
@@ -142,7 +131,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
             DispatchQueue.global(qos: .userInitiated).async(group: group) {
                 for _ in 0..<perWorker {
                     let session = self.newInterceptedUdpSession(on: engine)
-                    session.activate(onSendToEgress: { _, _ in })
+                    session.activate()
                     session.onClientClose()
                 }
             }
@@ -153,18 +142,4 @@ final class UdpSessionLifecycleTests: XCTestCase {
         )
     }
 
-    /// `onEgressDatagram` with an empty payload is a valid UDP
-    /// datagram (RFC 768) and MUST be forwarded across the FFI
-    /// boundary, not silently dropped. The earlier version of this
-    /// test asserted the opposite — see
-    /// `UdpZeroLengthDatagramTests` for the deeper round-trip
-    /// coverage. This shrunk version just guarantees the call does
-    /// not crash now that the early-return is gone.
-    func testOnEgressDatagramWithEmptyDataDoesNotCrash() {
-        let engine = makeEngine()
-        defer { engine.stop(reason: 0) }
-        let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _, _ in })
-        session.onEgressDatagram(Data(), peer: nil)
-    }
 }

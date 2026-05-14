@@ -667,13 +667,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             flowQueue.async { [weak self, weak ctx] in
                 guard let ctx, ctx.readState != .closed else { return }
                 ctx.readState = .closed
-                ctx.egressReadPump?.cancel()
-                ctx.egressReadPump = nil
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                ctx.connection?.cancel()
-                ctx.connection = nil
                 ctx.session?.onClientClose()
                 self?.removeUdpFlow(flowId)
             }
@@ -820,209 +816,38 @@ final class TransparentProxyCore: @unchecked Sendable {
         // Publish the flow state before any callback that may observe it can fire.
         registerUdpFlow(flowId, session: session, context: ctx)
 
-        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
-        guard let remoteHost = bootMeta.remoteHost, bootMeta.remotePort > 0 else {
-            logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
-            session.onClientClose()
-            removeUdpFlow(flowId)
-            return true
-        }
-
-        let egressOpts = session.getEgressConnectOptions()
-        let nwParams = makeUdpNwParameters(egressOpts)
-        let connectTimeoutMs: UInt32 =
-            egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-
-        // See TCP path for rationale; same metadata-propagation behavior.
-        // The protocol's `applyMetadata(to:)` keeps the core ignorant of
-        // `NEFlowMetaData`.
-        if egressOpts?.parameters.preserve_original_meta_data ?? true {
-            flow.applyMetadata(to: nwParams)
-        }
-
-        guard let connection = nwConnectionFactory(remoteHost, bootMeta.remotePort, nwParams)
-        else {
-            logDebug(
-                "handleUdpFlow: invalid remote port \(bootMeta.remotePort); cancelling session"
-            )
-            session.onClientClose()
-            removeUdpFlow(flowId)
-            return true
-        }
-        ctx.connection = connection
-
-        var egressReady = false
-
-        // Wall-clock cap on the NWConnection.stateUpdateHandler reaching
-        // `.ready`. Configurable via `NwUdpConnectOptions.connect_timeout`;
-        // default 30s when the handler does not override.
-        let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
-            guard !egressReady else { return }
-            self?.logDebug(
-                "egress NWConnection timed out for udp flow remote=\(remoteHost):\(bootMeta.remotePort)"
-            )
-            ctx?.connection?.cancel()
-            ctx?.connection = nil
-            ctx?.session?.onClientClose()
-            self?.removeUdpFlow(flowId)
-        }
-        flowQueue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: timeoutWork)
-
-        // Mirror of the TCP path's `.waiting(_)` tolerance: a brief
-        // post-ready dip back into `.waiting` should be tolerated;
-        // sitting in `.waiting` past the window means the path is
-        // gone and the flow must be torn down.
-        let udpEgressWaitingToleranceMs = defaultEgressWaitingToleranceMs
-        var udpWaitingWork: DispatchWorkItem?
-
-        connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
+        // ── Phase 2: open the flow and hand control to Rust ──
+        //
+        // Egress now lives entirely on the Rust side: one unconnected
+        // tokio `UdpSocket` per flow, `send_to(peer)` per datagram,
+        // `recv_from` tagging each reply with its source. The pre-
+        // ready NWConnection state machine that previously gated
+        // `flow.open` is gone — see `udp_egress.rs` in the engine and
+        // issue #894 for the rationale. As soon as Rust says "intercept"
+        // we open the flow and arm the session.
+        //
+        // Trade-off: a downstream `NEAppProxyProvider` no longer sees
+        // the egress flow as an `NEAppProxyFlow` carrying the original
+        // `NEFlowMetaData` (BSD socket sits below NE attribution). This
+        // matches stacked-provider behavior under any direct-socket
+        // egress; downstream `NEFilterPacketProvider` policies already
+        // saw the extension PID. Audit-token attribution to the
+        // ORIGINATING app is preserved end-to-end via Rust's
+        // `TransparentProxyFlowMeta`.
+        flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
             flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, let connection = ctx.connection else { return }
-                switch state {
-                case .ready:
-                    if egressReady {
-                        udpWaitingWork?.cancel()
-                        udpWaitingWork = nil
-                        return
-                    }
-                    egressReady = true
-                    timeoutWork.cancel()
-
-                    let readPump = NwUdpConnectionReadPump(
-                        connection: connection,
-                        session: session,
-                        queue: flowQueue,
-                        // Same anti-cycle pattern as the writer's
-                        // `onTerminalError`: weak forwarder so the
-                        // read pump doesn't strong-pin `terminate`.
-                        onTerminate: { [weak ctx] error in ctx?.terminate?(error) }
-                    )
-                    ctx.egressReadPump = readPump
-
-                    session.activate(onSendToEgress: { [weak ctx] data, _ in
-                        // Surface send failures: the completion
-                        // closure runs on NWConnection's scheduler,
-                        // hop back onto `flowQueue` so `terminate`
-                        // sees flow-scoped state single-threaded.
-                        //
-                        // `isComplete: true` is the correct datagram
-                        // boundary marker on a UDP `NWConnection`; the
-                        // value is set explicitly here because the
-                        // injectable protocol surface has no default
-                        // arguments.
-                        //
-                        // NB: the per-datagram `peer` argument is
-                        // ignored here — this code path uses a
-                        // single bootstrap-pinned `NWConnection`,
-                        // which is the single-peer model. The
-                        // upcoming Rust-owned UDP socket replaces
-                        // this layer entirely; until that lands,
-                        // multi-peer datagrams are routed to the
-                        // bootstrap peer (current production
-                        // behavior).
-                        connection.send(
-                            content: data,
-                            contentContext: .defaultMessage,
-                            isComplete: true,
-                            completion: .contentProcessed({ error in
-                                if let error {
-                                    flowQueue.async { ctx?.terminate?(error) }
-                                }
-                            })
-                        )
-                    })
-
-                    flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
-                        flowQueue.async {
-                            if let error {
-                                self?.logDebug("udp flow.open error after egress ready: \(error)")
-                                connection.cancel()
-                                readPump.cancel()
-                                ctx?.egressReadPump = nil
-                                ctx?.connection = nil
-                                session.onClientClose()
-                                self?.removeUdpFlow(flowId)
-                                return
-                            }
-                            // Same teardown-race guard as the TCP
-                            // path: post-ready `.failed`/`.waiting`
-                            // → `terminate` runs its cleanup
-                            // asynchronously, so the flow.open
-                            // completion can still fire after
-                            // teardown. `ctx.connection == nil` is
-                            // the canonical signal that the state
-                            // machine moved on; starting the read
-                            // pump and re-issuing flow.readDatagrams
-                            // here would arm work against a
-                            // cancelled NWConnection and a flow that
-                            // has already been close-erred.
-                            guard let ctx, ctx.connection != nil else {
-                                self?.logTrace(
-                                    "udp flow.open completion observed teardown; dropping"
-                                )
-                                return
-                            }
-                            self?.logTrace("flow.open ok (udp, egress pre-connected)")
-                            ctx.writer?.markOpened()
-                            readPump.start()
-                            ctx.requestRead?()
-                        }
-                    }
-
-                case .failed(let error):
-                    if !egressReady {
-                        timeoutWork.cancel()
-                        self?.logDebug(
-                            "egress NWConnection failed before udp flow opened: \(String(describing: error))"
-                        )
-                        // See TCP path: explicit cancel() returns the kernel flow slot.
-                        connection.cancel()
-                        ctx.connection = nil
-                        session.onClientClose()
-                        self?.removeUdpFlow(flowId)
-                    } else {
-                        // Post-ready failure — route through the
-                        // shared `terminate` closure so the flow
-                        // teardown is consistent with all other UDP
-                        // failure paths (egress read pump, flow-side
-                        // read error, NWConnection send failure).
-                        udpWaitingWork?.cancel()
-                        udpWaitingWork = nil
-                        self?.logDebug(
-                            "egress NWConnection failed after udp flow opened: \(String(describing: error))"
-                        )
-                        ctx.terminate?(error)
-                    }
-
-                case .waiting(let error):
-                    if !egressReady {
-                        break
-                    }
-                    if udpWaitingWork != nil { break }
-                    self?.logDebug(
-                        "egress NWConnection waiting after udp flow opened: \(String(describing: error))"
-                    )
-                    let work = DispatchWorkItem { [weak ctx] in
-                        ctx?.terminate?(error)
-                    }
-                    udpWaitingWork = work
-                    flowQueue.asyncAfter(
-                        deadline: .now() + .milliseconds(Int(udpEgressWaitingToleranceMs)),
-                        execute: work
-                    )
-
-                case .cancelled:
-                    udpWaitingWork?.cancel()
-                    udpWaitingWork = nil
-
-                default:
-                    break
+                guard let ctx else { return }
+                if let error {
+                    self?.logDebug("udp flow.open error: \(error)")
+                    ctx.terminate?(error)
+                    return
                 }
+                self?.logTrace("flow.open ok (udp; egress on Rust-owned BSD socket)")
+                ctx.writer?.markOpened()
+                ctx.session?.activate()
+                ctx.requestRead?()
             }
         }
-
-        connection.start(queue: flowQueue)
         return true
     }
 }
