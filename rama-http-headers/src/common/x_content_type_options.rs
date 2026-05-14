@@ -4,7 +4,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `X-Content-Type-Options` header, as defined by the
 /// Fetch Living Standard, section "X-Content-Type-Options header"
-/// (vendored at `rama-http-headers/specifications/fetch.whatwg.org.bs`).
+/// (vendored at `rama-http-headers/specifications/fetch.whatwg.org.md`).
 ///
 /// The only legal value is `nosniff`, instructing browsers to block requests
 /// whose response MIME type does not match the `destination` (style/script).

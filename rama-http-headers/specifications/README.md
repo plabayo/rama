@@ -23,6 +23,6 @@ if we have implemented it at all.
 
 ### WHATWG
 
-* [fetch.whatwg.org.bs](./fetch.whatwg.org.bs)  
-  Fetch Living Standard (bikeshed source). Defines the `X-Content-Type-Options` header
+* [fetch.whatwg.org.md](./fetch.whatwg.org.md)  
+  Fetch Living Standard. Defines the `X-Content-Type-Options` header
   (see the "X-Content-Type-Options header" section).
