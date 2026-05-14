@@ -757,17 +757,30 @@ final class TransparentProxyCore: @unchecked Sendable {
                         // peer instead of collapsing to a single
                         // bootstrap endpoint. RFC 768: zero-length
                         // datagrams are valid; forward unchanged.
+                        let endpointMismatch =
+                            endpoints != nil
+                            && (endpoints?.count ?? 0) != datagrams.count
+                        if endpointMismatch && !ctx.endpointMismatchLogged {
+                            ctx.endpointMismatchLogged = true
+                            self?.logDebug(
+                                "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(datagrams.count), endpoints=\(endpoints?.count ?? 0)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
+                            )
+                        }
                         for (index, datagram) in datagrams.enumerated() {
-                            // Pick the per-datagram endpoint when
-                            // `flow.readDatagrams` supplies a parallel
-                            // array; fall back to whatever the kernel
-                            // returned for entries past the end.
-                            // Carry the kernel-supplied `NWEndpoint`
-                            // unfiltered; `ramaUdpPeer(from:)` does
-                            // the narrowing (NWHostEndpoint fast
-                            // path + macOS-15 NWConcreteHostEndpoint
-                            // KVC fallback) and logs once if an
-                            // unexpected subclass ever appears.
+                            // Strict parallel-array semantics: Apple
+                            // documents `readDatagrams` as returning
+                            // `[Data]` paired with `[NWEndpoint]`
+                            // element-for-element. If the endpoint
+                            // array is missing or shorter than the
+                            // datagrams array, the surplus entries
+                            // get `nil` peer — we do NOT fabricate
+                            // attribution from `eps.first`, which on
+                            // a multi-peer flow would actively
+                            // misroute every reply past the first
+                            // index back to the first observed peer.
+                            // `ramaUdpPeer(from:)` does the
+                            // NWHostEndpoint fast path + macOS-15
+                            // NWConcreteHostEndpoint KVC fallback.
                             //
                             // Element type inferred from
                             // `endpoints: [NWEndpoint]?` (NetworkExtension's
@@ -775,7 +788,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                             // with the modern `Network.NWEndpoint` enum
                             // imported elsewhere in this file.
                             let endpoint = endpoints.flatMap { eps in
-                                index < eps.count ? eps[index] : eps.first
+                                index < eps.count ? eps[index] : nil
                             }
                             let peer = endpoint.flatMap(ramaUdpPeer(from:))
                             // Update the writer pump's cached

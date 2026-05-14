@@ -1787,6 +1787,12 @@ final class UdpFlowContext: @unchecked Sendable {
     /// Read-side lifecycle — replaces the former `closed: Bool`,
     /// `readPending: Bool`, and `demandPending: Bool` triple.
     var readState: UdpFlowReadState = .idle
+    /// Sticky one-shot flag: when `flow.readDatagrams` returns
+    /// parallel arrays whose lengths do not match, we log once
+    /// per flow instead of spamming. Subsequent mismatches still
+    /// take the strict-paired-only code path (surplus datagrams
+    /// get `peer = nil`).
+    var endpointMismatchLogged: Bool = false
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {

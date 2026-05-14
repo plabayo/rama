@@ -68,17 +68,18 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
         "tproxy udp forwarding started"
     );
 
-    let mut egress_v4: Option<UdpSocket> = None;
-    let mut egress_v6: Option<UdpSocket> = None;
+    // Egress state per address family — socket + recv buffer
+    // allocated together, lazily, on first use of that family. A
+    // single-family flow (the overwhelming common case) thus only
+    // pays for one 64 KiB buffer, not two. The recv buffers being
+    // bound to the same `Option` as the socket means a torn-down
+    // socket also frees its buffer.
+    let mut egress_v4: Option<(UdpSocket, Vec<u8>)> = None;
+    let mut egress_v6: Option<(UdpSocket, Vec<u8>)> = None;
     let mut up_packets: u64 = 0;
     let mut down_packets: u64 = 0;
     let mut up_bytes: u64 = 0;
     let mut down_bytes: u64 = 0;
-    // Independent buffers per family so `tokio::select!` can poll
-    // both `recv_from`s concurrently without a double-mutable-borrow
-    // conflict on a shared scratch.
-    let mut buf_v4 = vec![0u8; 64 * 1024];
-    let mut buf_v6 = vec![0u8; 64 * 1024];
 
     loop {
         // The select! arms below participate only when the
@@ -108,28 +109,27 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
                     break;
                 }
             }
-            res = recv_from_optional(egress_v4.as_ref(), &mut buf_v4), if egress_v4.is_some() => {
+            res = recv_from_mut_pair(egress_v4.as_mut()), if egress_v4.is_some() => {
                 match res {
-                    Ok((n, peer)) => {
-                        let payload = rama::bytes::Bytes::copy_from_slice(&buf_v4[..n]);
+                    Ok((n, peer, payload)) => {
                         down_packets += 1;
                         down_bytes += n as u64;
                         ingress.send(Datagram::new(payload, peer));
                     }
                     Err(err) => {
                         tracing::warn!(%err, family = "v4", "tproxy udp egress recv_from failed; tearing socket down");
-                        // Drop the socket so the next loop iteration
+                        // Drop the slot so the next loop iteration
                         // stops polling it — otherwise the broken
                         // socket re-errors on every iteration and
-                        // spams the log without making progress.
+                        // spams the log. Dropping also releases the
+                        // 64 KiB recv buffer.
                         egress_v4 = None;
                     }
                 }
             }
-            res = recv_from_optional(egress_v6.as_ref(), &mut buf_v6), if egress_v6.is_some() => {
+            res = recv_from_mut_pair(egress_v6.as_mut()), if egress_v6.is_some() => {
                 match res {
-                    Ok((n, peer)) => {
-                        let payload = rama::bytes::Bytes::copy_from_slice(&buf_v6[..n]);
+                    Ok((n, peer, payload)) => {
                         down_packets += 1;
                         down_bytes += n as u64;
                         ingress.send(Datagram::new(payload, peer));
@@ -156,35 +156,41 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
 
 /// Lazily bind a per-family egress socket on first use. Returns
 /// `None` and logs on bind failure (the caller treats this as a
-/// flow-terminal condition).
+/// flow-terminal condition). Allocates the per-family receive
+/// buffer alongside the socket so an idle family pays nothing.
 async fn ensure_bound<'s>(
-    slot: &'s mut Option<UdpSocket>,
+    slot: &'s mut Option<(UdpSocket, Vec<u8>)>,
     bind_addr: &str,
 ) -> Option<&'s UdpSocket> {
     if slot.is_none() {
         match bind_udp_with_address(bind_addr).await {
-            Ok(s) => *slot = Some(s),
+            Ok(s) => *slot = Some((s, vec![0u8; 64 * 1024])),
             Err(err) => {
                 tracing::error!(%err, bind_addr, "tproxy udp failed to bind egress socket");
                 return None;
             }
         }
     }
-    slot.as_ref()
+    slot.as_ref().map(|(s, _buf)| s)
 }
 
-/// `recv_from` wrapper that lets the `select!` branch guard cleanly
-/// short-circuit when the socket is `None`. The branch's `if` guard
-/// ensures this is only polled with `Some`. Errors propagate to the
-/// caller so it can tear down the broken socket — otherwise a hard
-/// error (interface down, etc.) would spam the log on every
-/// `select!` cycle.
-async fn recv_from_optional(
-    socket: Option<&UdpSocket>,
-    buf: &mut [u8],
-) -> std::io::Result<(usize, SocketAddr)> {
-    match socket {
-        Some(s) => s.recv_from(buf).await,
+/// Wrapper used inside `tokio::select!` arms — receives one
+/// datagram on the slot's socket into the slot's buffer, returning
+/// the byte count, peer, and a freshly-cloned `Bytes` payload.
+/// `None` shorts to `pending()` so the arm `if` guard is the only
+/// gate that matters.
+///
+/// Errors propagate so the caller can tear down the slot — without
+/// that, a hard error (interface down, etc.) would re-error on
+/// every `select!` cycle and spam the log without making progress.
+async fn recv_from_mut_pair(
+    slot: Option<&mut (UdpSocket, Vec<u8>)>,
+) -> std::io::Result<(usize, SocketAddr, rama::bytes::Bytes)> {
+    match slot {
+        Some((socket, buf)) => {
+            let (n, peer) = socket.recv_from(buf).await?;
+            Ok((n, peer, rama::bytes::Bytes::copy_from_slice(&buf[..n])))
+        }
         None => std::future::pending().await,
     }
 }
