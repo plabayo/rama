@@ -132,6 +132,17 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     /// bundle ID, remote endpoint) it needs to decorate egress
     /// sockets before binding.
     ///
+    /// **Backpressure is lossy.** Unlike TCP, the ingress channel
+    /// feeding `flow.recv()` is bounded (see
+    /// [`crate::tproxy::TransparentProxyEngineBuilder::with_udp_channel_capacity`])
+    /// and an `on_client_datagram` arriving while the channel is
+    /// full is *dropped*, not blocked. This matches UDP's
+    /// connection-less semantics — every layer above (the app, the
+    /// kernel, the wire) already tolerates packet loss — and keeps
+    /// a slow / stuck service from stalling kernel-side reads. A
+    /// service that wants higher reliability should drain promptly
+    /// or raise the channel capacity at builder time.
+    ///
     /// The same async-correctness contract as
     /// [`Self::match_tcp_flow`] applies — see that method for details.
     fn match_udp_flow(

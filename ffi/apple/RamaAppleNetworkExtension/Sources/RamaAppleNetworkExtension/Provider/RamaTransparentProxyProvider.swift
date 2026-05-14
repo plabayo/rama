@@ -1133,6 +1133,15 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// a multi-peer signal is detected (a `setSentByEndpoint` call
     /// with an endpoint different from the current one).
     private var sentByEndpoint: NWEndpoint?
+    /// Sticky flag that fires a debug log exactly once when
+    /// `flushLocked` cannot make progress because neither the
+    /// per-datagram `sentBy` nor the cached `sentByEndpoint` is
+    /// known. Without this the pump silently stalls until either
+    /// a future datagram arrives with a peer or the engine's
+    /// UDP max-lifetime backstop closes the flow — invisible in
+    /// `log show`. The flag clears whenever a write finally
+    /// progresses, so flapping is logged once per stall episode.
+    private var unresolvedEndpointLogged = false
     private var multiPeerLogged = false
 
     init(
@@ -1244,8 +1253,23 @@ final class UdpClientWritePump: @unchecked Sendable {
         guard let head = pending.first(),
             let endpoint = head.1 ?? sentByEndpoint
         else {
+            // Head stays in `pending` — a later `setSentByEndpoint`
+            // call or a later datagram carrying a peer will re-arm
+            // forward progress. Log once per stall episode so the
+            // condition is visible in incident traces.
+            if !unresolvedEndpointLogged {
+                unresolvedEndpointLogged = true
+                logger(
+                    FlowLogMessage(
+                        level: .debug,
+                        text:
+                            "udp write pump stalled: pending datagram has no sentBy peer and no cached endpoint; holding until a peer is known or flow times out"
+                    )
+                )
+            }
             return
         }
+        unresolvedEndpointLogged = false
 
         phase = .writing
         // Safe: `first()` returned non-nil, no other thread mutates

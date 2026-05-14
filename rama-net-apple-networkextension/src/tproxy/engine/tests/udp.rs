@@ -428,3 +428,199 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
         "non-empty follow-up datagram must also be delivered; observed lengths: {lens:?}"
     );
 }
+
+/// Contract: when a service sends a `Datagram` with `peer = None`
+/// (the safety-valve case the framework reserves for kernel-
+/// attribution gaps), the engine must deliver it as-is to
+/// `on_server_datagram` — drop / fallback is the *Swift* writer
+/// pump's problem (it caches the latest known peer and logs a
+/// stall episode once). The engine itself must not crash, must
+/// not synthesise a peer, must not silently drop.
+#[test]
+fn udp_send_with_no_peer_is_delivered_to_callback_with_none() {
+    let peers = Arc::new(Mutex::new(Vec::<Option<std::net::SocketAddr>>::new()));
+    let peers_clone = peers.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                flow.send(crate::Datagram::without_peer(
+                    rama_core::bytes::Bytes::from_static(b"orphan"),
+                ));
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        move |datagram: crate::Datagram| {
+            peers_clone.lock().push(datagram.peer);
+            _ = notify_tx.send(());
+        },
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate();
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+
+    let got = peers.lock().clone();
+    assert_eq!(
+        got,
+        vec![None],
+        "engine must deliver Datagram::without_peer with peer = None, untouched"
+    );
+}
+
+/// `activate()` arriving after the engine has already stopped must
+/// not panic and must not leak: the service task is gone, so
+/// `flow_tx.send` fails, the `UdpFlow` is dropped, and that
+/// drop is the only externally observable event. Pin the
+/// silent-failure path described in the activate doc.
+#[test]
+fn udp_activate_after_engine_stop_is_safe_noop() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                while flow.recv().await.is_some() {}
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    // Stop the engine before activate — the per-flow service task
+    // is cancelled by `parent_guard`, so the next `flow_tx.send`
+    // will fail with a dropped receiver.
+    engine.stop(0);
+
+    // Must not panic, must not hang.
+    session.activate();
+    // Drop the session — its drop calls `on_client_close`, which
+    // also must be safe post-stop.
+    drop(session);
+}
+
+/// Double-`activate()` on the same session is misuse but must be
+/// observable as a warning, not a panic / UB. The second call
+/// finds `pending = None` and returns. Pin the no-crash invariant.
+#[test]
+fn udp_double_activate_is_safe_noop() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                while flow.recv().await.is_some() {}
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate();
+    session.activate(); // second call must be a logged no-op
+    engine.stop(0);
+}
+
+/// A UDP datagram approaching the maximum payload size (just
+/// under 64 KiB — the IPv4 UDP cap once the 8-byte header is
+/// accounted for) must round-trip through the engine without
+/// truncation or panic. Real protocols (BitTorrent uTP, certain
+/// game frames) hit close to this boundary; the bounded ingress
+/// channel must not malfunction on a single large item.
+#[test]
+fn udp_large_datagram_near_max_payload_roundtrips() {
+    use std::net::{Ipv4Addr, SocketAddr};
+    const PAYLOAD_LEN: usize = 65_507; // IPv4 max UDP payload
+
+    let received_len = Arc::new(AtomicUsize::new(0));
+    let received_len_clone = received_len.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let received_len = received_len_clone.clone();
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_len = received_len.clone();
+                    let notify_tx = notify_tx.clone();
+                    async move {
+                        if let Some(datagram) = flow.recv().await {
+                            received_len.store(datagram.payload.len(), Ordering::Relaxed);
+                            _ = notify_tx.send(());
+                        }
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate();
+    let payload = vec![0xABu8; PAYLOAD_LEN];
+    let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 53));
+    session.on_client_datagram(&payload, Some(peer));
+
+    _ = notify_rx.recv_timeout(Duration::from_secs(2));
+    engine.stop(0);
+
+    assert_eq!(
+        received_len.load(Ordering::Relaxed),
+        PAYLOAD_LEN,
+        "large datagram must round-trip without truncation"
+    );
+}
