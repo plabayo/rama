@@ -1,4 +1,3 @@
-Installed 5 packages in 7ms
 Fetch Standard
 
 
