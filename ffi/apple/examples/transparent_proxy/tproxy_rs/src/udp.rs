@@ -52,10 +52,9 @@ async fn service(bridge: BridgeIo<UdpFlow, NwUdpSocket>) -> Result<(), Infallibl
                 let Some(datagram) = maybe_datagram else {
                     break;
                 };
-                if datagram.is_empty() {
-                    continue;
-                }
-
+                // Zero-length UDP datagrams are valid (RFC 768) — forward
+                // unchanged. A real proxy that wants to drop them can do
+                // so by policy; the example does not impose one.
                 up_packets += 1;
                 up_bytes += datagram.len() as u64;
                 egress.send(datagram);
@@ -64,10 +63,6 @@ async fn service(bridge: BridgeIo<UdpFlow, NwUdpSocket>) -> Result<(), Infallibl
                 let Some(datagram) = maybe_datagram else {
                     break;
                 };
-                if datagram.is_empty() {
-                    continue;
-                }
-
                 down_packets += 1;
                 down_bytes += datagram.len() as u64;
                 ingress.send(datagram);

@@ -757,7 +757,11 @@ final class TransparentProxyCore: @unchecked Sendable {
                             return
                         }
 
-                        for datagram in datagrams where !datagram.isEmpty {
+                        // RFC 768: zero-length UDP datagrams are valid
+                        // and some protocols depend on them; forward
+                        // unchanged. The session/service decides
+                        // whether to filter, not this layer.
+                        for datagram in datagrams {
                             session.onClientDatagram(datagram)
                         }
 

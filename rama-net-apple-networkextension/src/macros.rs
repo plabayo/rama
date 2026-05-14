@@ -463,9 +463,12 @@ macro_rules! __transparent_proxy_ffi_emit {
                     let Some(callback) = on_server_datagram else {
                         return;
                     };
-                    if bytes.is_empty() {
-                        return;
-                    }
+                    // Do NOT short-circuit on `bytes.is_empty()`: a
+                    // zero-length UDP datagram is valid per RFC 768 and
+                    // some protocols depend on it (DTLS heartbeats, NAT-
+                    // binding probes, application keep-alives). The
+                    // analogous filter on the TCP side is correct because
+                    // an empty TCP read carries no semantic information.
                     unsafe {
                         callback(
                             context as *mut ::std::ffi::c_void,
@@ -755,9 +758,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                     let Some(callback) = on_send_to_egress else {
                         return;
                     };
-                    if bytes.is_empty() {
-                        return;
-                    }
+                    // RFC 768 admits zero-length UDP datagrams; see the
+                    // matching note on `on_server_datagram` above.
                     unsafe {
                         callback(
                             context as *mut ::std::ffi::c_void,

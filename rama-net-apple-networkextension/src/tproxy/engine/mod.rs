@@ -992,9 +992,10 @@ pub struct TransparentProxyUdpSession {
 
 impl TransparentProxyUdpSession {
     pub fn on_client_datagram(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
+        // Zero-length datagrams are valid per RFC 768; some protocols
+        // (DTLS heartbeats, NAT-binding probes, keep-alives) rely on
+        // them. Forward them through the bridge unchanged — the
+        // service decides whether to filter, not the framework.
         if let Some(tx) = self.client_tx.as_mut() {
             // Bounded channel + lossy semantics: when the service can't keep up
             // we drop the datagram rather than block the FFI thread or grow the
@@ -1080,9 +1081,8 @@ impl TransparentProxyUdpSession {
     /// the proxy a few microseconds later. Pinned by
     /// `tests::udp::udp_egress_drops_datagrams_when_service_does_not_drain`.
     pub fn on_egress_datagram(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
+        // Zero-length datagrams are valid per RFC 768; see
+        // `on_client_datagram` for the rationale. Forward unchanged.
         if let Some(tx) = self.egress_tx.as_mut() {
             // `Full` is expected and silent: drop-on-full is the
             // documented UDP semantics. `Closed` is unexpected and

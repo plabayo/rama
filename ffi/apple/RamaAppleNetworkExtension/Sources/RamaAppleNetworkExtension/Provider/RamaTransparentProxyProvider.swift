@@ -1180,7 +1180,9 @@ final class UdpClientWritePump: @unchecked Sendable {
     }
 
     func enqueue(_ data: Data) {
-        guard !data.isEmpty else { return }
+        // RFC 768 admits zero-length UDP datagrams. Forward them
+        // unchanged — filtering belongs in the service layer, not in
+        // the transport plumbing.
         queue.async {
             if self.phase == .closed { return }
             // Drop-on-full: UDP is lossy. Indefinite buffering would
@@ -1726,12 +1728,17 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
     }
 
     private func scheduleRead() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_535) {
+        // `minimumIncompleteLength: 0` so a zero-length UDP datagram
+        // (valid per RFC 768) wakes the receive instead of blocking
+        // until at least one payload byte arrives.
+        connection.receive(minimumIncompleteLength: 0, maximumLength: 65_535) {
             [weak self] data, _, _, error in
             guard let self else { return }
             self.queue.async {
                 guard !self.closed else { return }
-                if let data, !data.isEmpty {
+                // Forward the datagram even if it has no payload —
+                // empty Data is still a real datagram on UDP.
+                if let data {
                     self.session.onEgressDatagram(data)
                 }
                 // For UDP, `isComplete` is set on every successful

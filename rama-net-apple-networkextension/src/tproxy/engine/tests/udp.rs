@@ -37,7 +37,7 @@ fn udp_bridge_delivers_server_datagram() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
@@ -90,7 +90,7 @@ fn udp_egress_drops_datagrams_when_service_does_not_drain() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)
         .with_udp_channel_capacity(2)
@@ -140,7 +140,7 @@ fn udp_session_requests_client_read_demand() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
@@ -162,4 +162,146 @@ fn udp_session_requests_client_read_demand() {
     engine.stop(0);
 
     assert!(demand_count.load(Ordering::Relaxed) >= 1);
+}
+
+/// RFC 768 says a UDP datagram with a zero-length payload is valid
+/// (the length field can be `8`, header-only). Real protocols use
+/// them as keep-alives or signalling pings. The client→service path
+/// MUST forward such datagrams instead of silently dropping them.
+#[test]
+fn udp_zero_length_datagram_from_client_reaches_service() {
+    let received = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let received_clone = received.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let received = received_clone.clone();
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
+                        let received = received.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(mut ingress, _egress) = bridge;
+                            // Capture lengths so we can prove the empty
+                            // datagram crossed the boundary; do NOT
+                            // filter on `is_empty()` here — that's the
+                            // exact mistake the framework had.
+                            while let Some(datagram) = ingress.recv().await {
+                                received.lock().push(datagram.len());
+                                _ = notify_tx.send(());
+                            }
+                            Ok::<_, std::convert::Infallible>(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        udp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::local_ipv4(5353)),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {});
+    session.on_client_datagram(b"");
+    session.on_client_datagram(b"payload");
+
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+
+    let lens = received.lock().clone();
+    assert!(
+        lens.contains(&0),
+        "zero-length client datagram must reach the service; observed lengths: {lens:?}"
+    );
+    assert!(
+        lens.contains(&7),
+        "non-empty follow-up datagram must also be delivered; observed lengths: {lens:?}"
+    );
+}
+
+/// Mirror of the above for the egress→service direction: a zero-
+/// length datagram coming back from the egress NWConnection (think
+/// of a keep-alive reply that carries no payload) must also be
+/// forwarded into the service's `egress` half of the bridge.
+#[test]
+fn udp_zero_length_datagram_from_egress_reaches_service() {
+    let received = Arc::new(Mutex::new(Vec::<usize>::new()));
+    let received_clone = received.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let received = received_clone.clone();
+            let notify_tx = notify_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| {
+                        let received = received.clone();
+                        let notify_tx = notify_tx.clone();
+                        async move {
+                            let BridgeIo(_ingress, mut egress) = bridge;
+                            while let Some(datagram) = egress.recv().await {
+                                received.lock().push(datagram.len());
+                                _ = notify_tx.send(());
+                            }
+                            Ok::<_, std::convert::Infallible>(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        udp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::local_ipv4(5353)),
+        |_| {},
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| {});
+    session.on_egress_datagram(b"");
+    session.on_egress_datagram(b"payload");
+
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+
+    let lens = received.lock().clone();
+    assert!(
+        lens.contains(&0),
+        "zero-length egress datagram must reach the service; observed lengths: {lens:?}"
+    );
+    assert!(
+        lens.contains(&7),
+        "non-empty follow-up datagram must also be delivered; observed lengths: {lens:?}"
+    );
 }

@@ -36,7 +36,7 @@ fn tcp_cancel_serialises_against_inflight_user_callback() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     // The closure spins on a flag flipped by the test thread; until
@@ -137,7 +137,7 @@ fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine_with_tcp_paused_drain_max_wait(handler, Duration::from_millis(150));
 
     let closed = Arc::new(AtomicUsize::new(0));
@@ -204,7 +204,7 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine_with_udp_max_flow_lifetime(handler, Duration::from_millis(150));
 
     let closed = Arc::new(AtomicUsize::new(0));
@@ -274,7 +274,7 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     // Tiny channel capacity so we hit Full quickly.
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)
@@ -341,7 +341,7 @@ fn udp_on_client_close_runs_service_close_epilogue() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
@@ -405,7 +405,7 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
         }),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let demand = Arc::new(AtomicUsize::new(0));
@@ -492,7 +492,7 @@ fn tcp_engine_stop_completes_when_on_server_bytes_callbacks_block() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     const SESSIONS: usize = 8;

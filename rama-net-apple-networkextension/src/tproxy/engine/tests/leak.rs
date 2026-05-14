@@ -23,7 +23,7 @@ fn tcp_drop_many_sessions_completes_in_bounded_time() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let started = Instant::now();
@@ -74,7 +74,7 @@ fn engine_stop_with_live_sessions_drains_within_bound() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let mut keep_alive = Vec::new();
@@ -125,7 +125,7 @@ fn tcp_session_churn_does_not_grow_unboundedly() {
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
         udp_egress_options: None,
-        };
+    };
     let engine = build_engine(handler);
 
     let total = 4096_usize;

@@ -28,10 +28,18 @@ pub(super) struct TestHandler {
     // to know these fields exist; tests that need to drive a non-default
     // option set use `with_tcp_egress_options` / `with_udp_egress_options`.
     pub(super) tcp_egress_options: Option<
-        Arc<dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions> + Send + Sync>,
+        Arc<
+            dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
+                + Send
+                + Sync,
+        >,
     >,
     pub(super) udp_egress_options: Option<
-        Arc<dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions> + Send + Sync>,
+        Arc<
+            dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>
+                + Send
+                + Sync,
+        >,
     >,
 }
 
@@ -49,9 +57,9 @@ impl TestHandler {
     pub(super) fn with_tcp_egress_options(
         mut self,
         f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.tcp_egress_options = Some(Arc::new(f));
         self
@@ -60,9 +68,9 @@ impl TestHandler {
     pub(super) fn with_udp_egress_options(
         mut self,
         f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwUdpConnectOptions>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.udp_egress_options = Some(Arc::new(f));
         self

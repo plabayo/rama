@@ -185,7 +185,10 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         .egress_connect_options()
         .expect("handler set egress options; session must surface them");
     assert_eq!(opts.connect_timeout, Some(Duration::from_millis(7_000)));
-    assert_eq!(opts.linger_close_timeout, Some(Duration::from_millis(12_345)));
+    assert_eq!(
+        opts.linger_close_timeout,
+        Some(Duration::from_millis(12_345))
+    );
     assert_eq!(opts.egress_eof_grace, Some(Duration::from_millis(6_789)));
 
     drop(session);

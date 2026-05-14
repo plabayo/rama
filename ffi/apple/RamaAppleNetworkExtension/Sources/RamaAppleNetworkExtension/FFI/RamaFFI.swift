@@ -268,7 +268,9 @@ private let ramaUdpOnServerDatagramCallback:
         guard let context else { return }
         let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
         let data = dataFromView(view)
-        if data.isEmpty { return }
+        // RFC 768: zero-length UDP datagrams are valid; forward
+        // unchanged. The matching filter on TCP (`onServerBytes`)
+        // is correct because an empty TCP read is a non-event.
         box.onServerDatagram(data)
     }
 
@@ -317,7 +319,8 @@ private let ramaUdpOnSendToEgressCallback:
         guard let context else { return }
         let box = Unmanaged<UdpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
         let data = dataFromView(view)
-        if data.isEmpty { return }
+        // See `ramaUdpOnServerDatagramCallback`: RFC 768 admits
+        // zero-length UDP datagrams. Forward unchanged.
         box.onSendToEgress(data)
     }
 
@@ -792,15 +795,17 @@ final class RamaUdpSessionHandle {
     }
 
     func onClientDatagram(_ data: Data) {
-        guard !data.isEmpty else { return }
-
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
 
+        // Zero-length datagrams are valid per RFC 768 and must be
+        // forwarded. `withUnsafeBytes` may hand us a nil baseAddress
+        // for an empty `Data` — the Rust `BytesView::into_slice`
+        // treats (null ptr, len 0) as an empty slice so passing nil
+        // through is safe.
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
             let view = RamaBytesView(ptr: base, len: Int(data.count))
             rama_transparent_proxy_udp_session_on_client_datagram(s, view)
         }
@@ -864,15 +869,15 @@ final class RamaUdpSessionHandle {
 
     /// Deliver one datagram from the egress `NWConnection` to the Rust session.
     func onEgressDatagram(_ data: Data) {
-        guard !data.isEmpty else { return }
-
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
 
+        // Zero-length datagrams are valid per RFC 768 — see
+        // `onClientDatagram` for the rationale and the BytesView
+        // null-pointer guarantee.
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return }
             let view = RamaBytesView(ptr: base, len: data.count)
             rama_transparent_proxy_udp_session_on_egress_datagram(s, view)
         }
