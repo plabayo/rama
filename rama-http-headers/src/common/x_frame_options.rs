@@ -2,8 +2,9 @@ use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
-/// `X-Frame-Options` header, as defined in
-/// [RFC 7034](https://datatracker.ietf.org/doc/html/rfc7034).
+/// `X-Frame-Options` header, as defined in RFC 7034
+/// ("HTTP Header Field X-Frame-Options"),
+/// vendored at `rama-http-headers/specifications/rfc7034.txt`.
 ///
 /// Controls whether a browser is allowed to render a page in a `<frame>`,
 /// `<iframe>`, `<embed>` or `<object>`. The deprecated `ALLOW-FROM` directive

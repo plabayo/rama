@@ -15,5 +15,14 @@ if we have implemented it at all.
 * [rfc6797.txt](./rfc6797.txt)  
   HTTP Strict Transport Security (HSTS).
 
+* [rfc7034.txt](./rfc7034.txt)  
+  HTTP Header Field X-Frame-Options.
+
 * [rfc7239.txt](./rfc7239.txt)  
   Forwarded HTTP Extension.
+
+### WHATWG
+
+* [fetch.whatwg.org.bs](./fetch.whatwg.org.bs)  
+  Fetch Living Standard (bikeshed source). Defines the `X-Content-Type-Options` header
+  (see the "X-Content-Type-Options header" section).

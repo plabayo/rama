@@ -2,8 +2,9 @@ use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
-/// `X-Content-Type-Options` header, as defined in
-/// [Fetch §X-Content-Type-Options](https://fetch.spec.whatwg.org/#x-content-type-options-header).
+/// `X-Content-Type-Options` header, as defined by the
+/// Fetch Living Standard, section "X-Content-Type-Options header"
+/// (vendored at `rama-http-headers/specifications/fetch.whatwg.org.bs`).
 ///
 /// The only legal value is `nosniff`, instructing browsers to block requests
 /// whose response MIME type does not match the `destination` (style/script).
