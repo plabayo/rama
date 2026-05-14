@@ -1014,6 +1014,22 @@ impl TransparentProxyUdpSession {
             //
             // Only the `Closed` arm skips the demand: the session is gone,
             // no point asking Swift to read more.
+            //
+            // Allocation is gated on free capacity so the overload
+            // path (saturating burst that would be dropped) skips
+            // the `Bytes::copy_from_slice` heap allocation entirely.
+            // `Sender::capacity()` returns the remaining slots; we
+            // only race the receiver freeing a slot (single FFI
+            // sender thread; no other producers), and "lost the
+            // race" just degrades to the original (allocate + drop)
+            // behaviour, which is the same cost we had before.
+            if tx.capacity() == 0 {
+                (self.on_client_read_demand)();
+                return;
+            }
+            if tx.is_closed() {
+                return;
+            }
             let datagram = Datagram {
                 payload: Bytes::copy_from_slice(bytes),
                 peer,

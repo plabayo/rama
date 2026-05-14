@@ -79,26 +79,14 @@ private var unexpectedEndpointLoggedFlag = false
 private let unexpectedEndpointLoggedLock = NSLock()
 
 func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
-    if let host = neEndpoint as? NWHostEndpoint {
-        guard !host.hostname.isEmpty, let port = UInt16(host.port) else { return nil }
-        // Split off `%zone` for IPv6 link-local addresses. The
-        // kernel surfaces these as `fe80::1%en0`; the FFI carries
-        // the bare IP plus a numeric scope id so the round-trip
-        // is exact (the interface name is not stable across
-        // reboots but its index resolves to the same name within
-        // a single boot via `if_nametoindex` / `if_indextoname`).
-        if let percent = host.hostname.firstIndex(of: "%") {
-            let ip = String(host.hostname[..<percent])
-            let zone = String(host.hostname[host.hostname.index(after: percent)...])
-            let scopeId = interfaceIndexForName(zone)
-            // If zone-name resolution fails (interface gone), we
-            // still pass the IP through without scope — the
-            // sending side will likely fail, which is the same
-            // failure mode the kernel would have surfaced.
-            return RamaUdpPeer(host: ip, port: port, scopeId: scopeId)
-        }
-        return RamaUdpPeer(host: host.hostname, port: port)
+    if let (hostname, portString) = hostnameAndPort(of: neEndpoint) {
+        return ramaUdpPeer(hostname: hostname, portString: portString)
     }
+    // The endpoint isn't an NWHostEndpoint *and* doesn't respond to
+    // the documented `hostname` / `port` KVC keys either — record
+    // a one-shot debug log so a future Apple SDK that broadens the
+    // surface becomes immediately visible in `log show`. The
+    // datagram still flows; peer attribution drops to nil.
     unexpectedEndpointLoggedLock.lock()
     let alreadyLogged = unexpectedEndpointLoggedFlag
     unexpectedEndpointLoggedFlag = true
@@ -107,8 +95,49 @@ func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
         RamaTransparentProxyEngineHandle.log(
             level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
             message:
-                "udp readDatagrams returned an NWEndpoint subclass other than NWHostEndpoint (\(type(of: neEndpoint))); peer attribution dropped for affected datagrams. This is the first occurrence in this process — subsequent occurrences will not be logged."
+                "udp readDatagrams returned an NWEndpoint subclass that exposes neither NWHostEndpoint nor a `hostname`/`port` KVC pair (\(type(of: neEndpoint))); peer attribution dropped for affected datagrams. This is the first occurrence in this process."
         )
     }
     return nil
+}
+
+/// Extract the documented `hostname: String` / `port: String` pair
+/// from an `NWEndpoint`, regardless of which concrete subclass the
+/// kernel returns.
+///
+/// * Fast path: `NWHostEndpoint` (NetworkExtension class, macOS ≤ 14).
+/// * Fallback: macOS 15+ surfaces a private `NWConcreteHostEndpoint`
+///   that does NOT inherit from `NWHostEndpoint` but DOES expose
+///   the same KVC keys. Reach for them via `value(forKey:)` — the
+///   same approach `endpointHostPort` uses for flow metadata.
+private func hostnameAndPort(of endpoint: NWEndpoint) -> (String, String)? {
+    if let host = endpoint as? NWHostEndpoint {
+        return (host.hostname, host.port)
+    }
+    if let obj = endpoint as? NSObject,
+        obj.responds(to: NSSelectorFromString("hostname")),
+        obj.responds(to: NSSelectorFromString("port")),
+        let hostname = obj.value(forKey: "hostname") as? String,
+        let portStr = obj.value(forKey: "port") as? String
+    {
+        return (hostname, portStr)
+    }
+    return nil
+}
+
+/// Parse the `hostname` + textual `port` pair into a `RamaUdpPeer`.
+/// Handles IPv6 `%zone` extraction (scope id is carried numerically
+/// across the FFI).
+private func ramaUdpPeer(hostname: String, portString: String) -> RamaUdpPeer? {
+    guard !hostname.isEmpty, let port = UInt16(portString) else { return nil }
+    if let percent = hostname.firstIndex(of: "%") {
+        let ip = String(hostname[..<percent])
+        let zone = String(hostname[hostname.index(after: percent)...])
+        // If zone-name resolution fails (interface gone), we still
+        // pass the IP through without scope — the sending side will
+        // likely fail, which is the same failure mode the kernel
+        // would have surfaced.
+        return RamaUdpPeer(host: ip, port: port, scopeId: interfaceIndexForName(zone))
+    }
+    return RamaUdpPeer(host: hostname, port: port)
 }

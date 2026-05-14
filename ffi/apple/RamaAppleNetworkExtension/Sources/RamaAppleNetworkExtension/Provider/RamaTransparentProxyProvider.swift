@@ -1233,26 +1233,37 @@ final class UdpClientWritePump: @unchecked Sendable {
     private func flushLocked() {
         guard phase == .idle, !pending.isEmpty else { return }
 
-        // Resolve the endpoint: prefer the one captured at enqueue
-        // time; fall back to the latest known peer for entries that
-        // arrived before any `setSentByEndpoint` call.
-        guard let head = pending.first(),
-            let endpoint = head.1 ?? sentByEndpoint
-        else {
-            // Head stays in `pending` — a later `setSentByEndpoint`
-            // call or a later datagram carrying a peer will re-arm
-            // forward progress. Log once per stall episode so the
-            // condition is visible in incident traces.
-            if !unresolvedEndpointLogged {
-                unresolvedEndpointLogged = true
-                logger(
-                    FlowLogMessage(
-                        level: .debug,
-                        text:
-                            "udp write pump stalled: pending datagram has no sentBy peer and no cached endpoint; holding until a peer is known or flow times out"
-                    )
+        // Drain any leading orphan entries — a queued reply with
+        // no captured `sentBy` and no usable `sentByEndpoint`
+        // fallback has no kernel-acceptable peer. Holding it would
+        // head-of-line block every later (attributed) reply in the
+        // FIFO until either a future `setSentByEndpoint` populates
+        // the cache or the engine's UDP max-flow-lifetime closes
+        // the flow. UDP is lossy by design; dropping the orphan
+        // is the correct trade-off.
+        var droppedOrphans = 0
+        while let head = pending.first(), head.1 == nil && sentByEndpoint == nil {
+            _ = pending.popFront()
+            droppedOrphans += 1
+        }
+        if droppedOrphans > 0 && !unresolvedEndpointLogged {
+            unresolvedEndpointLogged = true
+            logger(
+                FlowLogMessage(
+                    level: .debug,
+                    text:
+                        "udp write pump dropped \(droppedOrphans) orphan datagram(s): no per-datagram peer and no cached endpoint. Subsequent drops in this episode will not be logged."
                 )
-            }
+            )
+        }
+        guard let head = pending.first() else { return }
+        // `head.1 ?? sentByEndpoint` is now guaranteed non-nil for
+        // the head because the orphan-drain above already removed
+        // any leading entry where both were nil. If `head.1` is
+        // nil here, `sentByEndpoint` must be non-nil.
+        guard let endpoint = head.1 ?? sentByEndpoint else {
+            // Defensive: should be unreachable after the orphan drain.
+            // Keep as a safety net.
             return
         }
         unresolvedEndpointLogged = false

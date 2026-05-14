@@ -764,12 +764,12 @@ final class TransparentProxyCore: @unchecked Sendable {
                             // returned for entries past the end.
                             // Carry the kernel-supplied `NWEndpoint`
                             // unfiltered; `ramaUdpPeer(from:)` does
-                            // the narrowing-to-NWHostEndpoint and
-                            // logs once if an unexpected subclass
-                            // ever appears. Keeping the cast here
-                            // would short-circuit that defensive
-                            // log and silently drop attribution.
-                            // Let Swift infer the element type from
+                            // the narrowing (NWHostEndpoint fast
+                            // path + macOS-15 NWConcreteHostEndpoint
+                            // KVC fallback) and logs once if an
+                            // unexpected subclass ever appears.
+                            //
+                            // Element type inferred from
                             // `endpoints: [NWEndpoint]?` (NetworkExtension's
                             // legacy class); writing it explicitly conflicts
                             // with the modern `Network.NWEndpoint` enum
@@ -779,14 +779,18 @@ final class TransparentProxyCore: @unchecked Sendable {
                             }
                             let peer = endpoint.flatMap(ramaUdpPeer(from:))
                             // Update the writer pump's cached
-                            // "latest peer" too — it's the fallback
-                            // for callers (tests, early bootstrap)
-                            // that don't supply an explicit `sentBy`
-                            // in `enqueue`. Skip non-NWHostEndpoint
-                            // for the fallback path — `flow.writeDatagrams`
-                            // ultimately wants `NWHostEndpoint`.
-                            if let host = endpoint as? NWHostEndpoint {
-                                ctx.writer?.setSentByEndpoint(host)
+                            // "latest peer" — the fallback for
+                            // outbound datagrams that arrive
+                            // without explicit `sentBy`. Rebuild
+                            // from the parsed `RamaUdpPeer` so the
+                            // cache is always a kernel-acceptable
+                            // `NWHostEndpoint`, regardless of which
+                            // concrete `NWEndpoint` subclass the
+                            // kernel surfaced.
+                            if let peer {
+                                ctx.writer?.setSentByEndpoint(
+                                    peer.toNetworkExtensionEndpoint()
+                                )
                             }
                             session.onClientDatagram(datagram, peer: peer)
                         }
