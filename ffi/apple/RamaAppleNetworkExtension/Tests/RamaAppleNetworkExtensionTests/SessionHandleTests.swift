@@ -78,7 +78,7 @@ final class SessionHandleTests: XCTestCase {
     ) -> RamaUdpSessionHandle {
         let decision = engine.newUdpSession(
             meta: udpMeta(),
-            onServerDatagram: { _ in },
+            onServerDatagram: { _, _ in },
             onClientReadDemand: {},
             onServerClosed: {}
         )
@@ -152,7 +152,7 @@ final class SessionHandleTests: XCTestCase {
                 for _ in 0..<perWorker {
                     let session = self.newInterceptedUdpSession(on: engine)
                     intercepted.increment()
-                    session.onClientDatagram(Data("dgram".utf8))
+                    session.onClientDatagram(Data("dgram".utf8), peer: nil)
                     session.onClientClose()
                 }
             }
@@ -218,8 +218,8 @@ final class SessionHandleTests: XCTestCase {
             let s2 = Sentinel()
             firstSentinel = s1
             secondSentinel = s2
-            session.activate(onSendToEgress: { [s1] _ in _ = s1 })
-            session.activate(onSendToEgress: { [s2] _ in _ = s2 })
+            session.activate(onSendToEgress: { [s1] _, _ in _ = s1 })
+            session.activate(onSendToEgress: { [s2] _, _ in _ = s2 })
         }
         XCTAssertNil(secondSentinel, "second activate leaked its callback box")
         XCTAssertNil(firstSentinel, "session deinit failed to release the first callback box")

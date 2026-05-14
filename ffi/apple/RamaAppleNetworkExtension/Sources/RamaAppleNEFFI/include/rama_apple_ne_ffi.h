@@ -294,7 +294,27 @@ typedef struct {
     RamaTcpClientReadDemandFn on_client_read_demand;
 } RamaTransparentProxyTcpSessionCallbacks;
 
-typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
+/// Per-datagram peer endpoint passed across the FFI in both directions.
+///
+/// `present = false` means the caller has no endpoint attribution for
+/// this datagram (rare; usually a test or a kernel-callback edge case).
+/// When `present = true`, `host_utf8` is the textual host — in
+/// production this is a numeric IP literal because the kernel's
+/// `flow.readDatagrams` returns resolved IPs and the per-peer
+/// NWConnection's bound endpoint is also an IP. `host_utf8` is NOT
+/// required to be NUL-terminated.
+///
+/// Borrowed for the duration of the call; the Swift side may stage
+/// the host bytes on the stack of the closure that issues the C call,
+/// and the Rust side does the same in reverse.
+typedef struct {
+    bool present;
+    const uint8_t* host_utf8;
+    size_t host_utf8_len;
+    uint16_t port;
+} RamaUdpPeerView;
+
+typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);
 typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
@@ -426,7 +446,7 @@ typedef struct {
     RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
 
-typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes);
+typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);
 
 /// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
 ///
@@ -620,10 +640,14 @@ void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* ses
 
 /// Deliver one client->server UDP datagram into Rust session.
 ///
-/// `bytes` is borrowed for duration of the call.
+/// `bytes` and `peer` are borrowed for duration of the call.
+/// `peer.present = false` is allowed and is treated as "no peer
+/// attribution"; in production every kernel-delivered datagram comes
+/// with an endpoint.
 void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaTransparentProxyUdpSession* session,
-    RamaBytesView bytes
+    RamaBytesView bytes,
+    RamaUdpPeerView peer
 );
 
 /// Signal UDP flow closure from client side.
@@ -649,11 +673,15 @@ void rama_transparent_proxy_udp_session_activate(
 
 /// Deliver one datagram from the egress NWConnection to the Rust UDP session.
 ///
-/// Called by Swift when NWConnection.receive delivers a datagram from the remote.
-/// `bytes` is borrowed for the duration of the call.
+/// Called by Swift when NWConnection.receive delivers a datagram from
+/// the remote. `bytes` and `peer` are borrowed for the duration of the
+/// call. `peer` should carry the bound endpoint of the per-peer
+/// NWConnection the datagram arrived from; Swift uses that endpoint
+/// later as the `sentBy` argument to `flow.writeDatagrams`.
 void rama_transparent_proxy_udp_session_on_egress_datagram(
     RamaTransparentProxyUdpSession* session,
-    RamaBytesView bytes
+    RamaBytesView bytes,
+    RamaUdpPeerView peer
 );
 
 // RAII

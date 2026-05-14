@@ -38,7 +38,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
 
     private func newInterceptedUdpSession(
         on engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data) -> Void = { _ in }
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in }
     ) -> RamaUdpSessionHandle {
         // Port 5000 (not 53): the demo handler treats DNS as passthrough
         // because the NE sandbox cannot bind raw UDP sockets.
@@ -85,7 +85,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
         session.onClientClose()
-        session.onEgressDatagram(Data("late egress datagram".utf8))
+        session.onEgressDatagram(Data("late egress datagram".utf8), peer: nil)
     }
 
     /// A late `onClientDatagram` arriving after `onClientClose` must be
@@ -95,7 +95,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
         session.onClientClose()
-        session.onClientDatagram(Data("late client datagram".utf8))
+        session.onClientDatagram(Data("late client datagram".utf8), peer: nil)
     }
 
     /// Activate the egress send callback then immediately close the
@@ -108,7 +108,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _ in })
+        session.activate(onSendToEgress: { _, _ in })
         session.onClientClose()
     }
 
@@ -121,7 +121,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         for _ in 0..<64 {
             let session = newInterceptedUdpSession(on: engine)
-            session.activate(onSendToEgress: { _ in })
+            session.activate(onSendToEgress: { _, _ in })
             session.onClientClose()
         }
     }
@@ -142,7 +142,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
             DispatchQueue.global(qos: .userInitiated).async(group: group) {
                 for _ in 0..<perWorker {
                     let session = self.newInterceptedUdpSession(on: engine)
-                    session.activate(onSendToEgress: { _ in })
+                    session.activate(onSendToEgress: { _, _ in })
                     session.onClientClose()
                 }
             }
@@ -164,7 +164,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _ in })
-        session.onEgressDatagram(Data())
+        session.activate(onSendToEgress: { _, _ in })
+        session.onEgressDatagram(Data(), peer: nil)
     }
 }

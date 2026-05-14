@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::tproxy::{
@@ -16,6 +17,12 @@ pub type BoxedServerBytesSink = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
 /// full.
 pub(crate) type BoxedServerBytesStatusSink =
     Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static>;
+/// UDP variant of [`BoxedServerBytesSink`]. Receives the datagram
+/// payload together with the peer the reply came from — Swift uses
+/// `peer` as the `sentBy` endpoint when writing back through
+/// `flow.writeDatagrams`. `None` is the safety valve for paths
+/// without endpoint attribution.
+pub type BoxedServerDatagramSink = Arc<dyn Fn(&[u8], Option<SocketAddr>) + Send + Sync + 'static>;
 pub type BoxedClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
@@ -33,7 +40,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn new_udp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerBytesSink,
+        on_server_datagram: BoxedServerDatagramSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession>;
@@ -73,13 +80,15 @@ where
     fn new_udp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerBytesSink,
+        on_server_datagram: BoxedServerDatagramSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession> {
         self.new_udp_session(
             meta,
-            move |bytes| on_server_datagram(bytes.as_ref()),
+            move |datagram: crate::Datagram| {
+                on_server_datagram(datagram.payload.as_ref(), datagram.peer)
+            },
             move || on_client_read_demand(),
             move || on_server_closed(),
         )
@@ -119,7 +128,7 @@ impl BoxedTransparentProxyEngine {
     pub fn new_udp_session(
         &self,
         meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerBytesSink,
+        on_server_datagram: BoxedServerDatagramSink,
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession> {

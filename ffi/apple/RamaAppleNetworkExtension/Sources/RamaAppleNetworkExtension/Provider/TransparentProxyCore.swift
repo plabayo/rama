@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import NetworkExtension
 import RamaAppleNEFFI
 
 /// Apple-framework-free home of the transparent-proxy per-flow state
@@ -719,9 +720,11 @@ final class TransparentProxyCore: @unchecked Sendable {
                         let hadPendingDemand = ctx.readState == .readingWithDemand
                         ctx.readState = .idle
                         if let error {
-                            self?.logFlowMessage(
-                                classifyFlowCallbackError(error, operation: "udp flow.read")
+                            let msg = classifyFlowCallbackError(
+                                error,
+                                operation: "udp flow.read"
                             )
+                            self?.logFlowMessage(msg)
                             ctx.terminate?(error)
                             return
                         }
@@ -732,23 +735,6 @@ final class TransparentProxyCore: @unchecked Sendable {
                             return
                         }
 
-                        // Per-batch endpoint extraction. A multi-
-                        // endpoint batch (rare; sendto() to multiple
-                        // peers on an unconnected UDP socket) gets
-                        // collapsed because the egress side has one
-                        // NWConnection per flow; within-batch peer
-                        // variation is logged so operators see the
-                        // single-peer assumption being violated.
-                        let endpoint = endpoints?.first
-                        if let endpoints, endpoints.count > 1,
-                            !endpoints.dropFirst().allSatisfy({ $0 == endpoints[0] })
-                        {
-                            self?.logDebug(
-                                "udp flow.readDatagrams returned mixed peer endpoints in one batch (\(endpoints.count) entries); single-peer assumption violated"
-                            )
-                        }
-                        ctx.writer?.setSentByEndpoint(endpoint)
-
                         guard let session = ctx.session else {
                             self?.logDebug(
                                 "udp flow read received but session no longer active; closing flow"
@@ -757,12 +743,35 @@ final class TransparentProxyCore: @unchecked Sendable {
                             return
                         }
 
-                        // RFC 768: zero-length UDP datagrams are valid
-                        // and some protocols depend on them; forward
-                        // unchanged. The session/service decides
-                        // whether to filter, not this layer.
-                        for datagram in datagrams {
-                            session.onClientDatagram(datagram)
+                        // Forward each datagram tagged with its
+                        // per-datagram peer. `flow.readDatagrams`
+                        // returns parallel arrays (`datagrams[i]`
+                        // paired with `endpoints[i]`); we honour
+                        // that pairing so a multi-peer flow (DNS
+                        // stub resolver, NTP, gaming) faithfully
+                        // proxies each datagram to its intended
+                        // peer instead of collapsing to a single
+                        // bootstrap endpoint. RFC 768: zero-length
+                        // datagrams are valid; forward unchanged.
+                        for (index, datagram) in datagrams.enumerated() {
+                            // Pick the per-datagram endpoint when
+                            // `flow.readDatagrams` supplies a parallel
+                            // array; fall back to whatever the kernel
+                            // returned for entries past the end.
+                            let endpoint = endpoints.flatMap { eps -> NWHostEndpoint? in
+                                let pick = index < eps.count ? eps[index] : eps.first
+                                return pick as? NWHostEndpoint
+                            }
+                            let peer = endpoint.flatMap(ramaUdpPeer(from:))
+                            // Update the writer pump's cached
+                            // "latest peer" too — it's the fallback
+                            // for callers (tests, early bootstrap)
+                            // that don't supply an explicit `sentBy`
+                            // in `enqueue`.
+                            if let endpoint {
+                                ctx.writer?.setSentByEndpoint(endpoint)
+                            }
+                            session.onClientDatagram(datagram, peer: peer)
                         }
 
                         if hadPendingDemand {
@@ -780,7 +789,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             // pumps. The box is dropped on `_session_free`, so once
             // `removeUdpFlow` releases the session-handle these
             // closures stop firing — no late-arrival hazard.
-            onServerDatagram: { [weak ctx] data in ctx?.writer?.enqueue(data) },
+            onServerDatagram: { [weak ctx] data, peer in
+                // `peer` is the source the reply came from; thread it
+                // into the writer pump as the `sentBy` endpoint so
+                // `flow.writeDatagrams` tags the kernel-bound write
+                // correctly per datagram, even when the flow has been
+                // talking to multiple peers.
+                ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
+            },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
         ) ?? .passthrough
@@ -884,7 +900,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     )
                     ctx.egressReadPump = readPump
 
-                    session.activate(onSendToEgress: { [weak ctx] data in
+                    session.activate(onSendToEgress: { [weak ctx] data, _ in
                         // Surface send failures: the completion
                         // closure runs on NWConnection's scheduler,
                         // hop back onto `flowQueue` so `terminate`
@@ -895,6 +911,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                         // value is set explicitly here because the
                         // injectable protocol surface has no default
                         // arguments.
+                        //
+                        // NB: the per-datagram `peer` argument is
+                        // ignored here — this code path uses a
+                        // single bootstrap-pinned `NWConnection`,
+                        // which is the single-peer model. The
+                        // upcoming Rust-owned UDP socket replaces
+                        // this layer entirely; until that lands,
+                        // multi-peer datagrams are routed to the
+                        // bootstrap peer (current production
+                        // behavior).
                         connection.send(
                             content: data,
                             contentContext: .defaultMessage,

@@ -459,26 +459,34 @@ macro_rules! __transparent_proxy_ffi_emit {
             let engine = unsafe { &*engine };
             let result = engine.new_udp_session(
                 typed_meta,
-                ::std::sync::Arc::new(move |bytes: &[u8]| {
-                    let Some(callback) = on_server_datagram else {
-                        return;
-                    };
-                    // Do NOT short-circuit on `bytes.is_empty()`: a
-                    // zero-length UDP datagram is valid per RFC 768 and
-                    // some protocols depend on it (DTLS heartbeats, NAT-
-                    // binding probes, application keep-alives). The
-                    // analogous filter on the TCP side is correct because
-                    // an empty TCP read carries no semantic information.
-                    unsafe {
-                        callback(
-                            context as *mut ::std::ffi::c_void,
-                            $crate::ffi::BytesView {
-                                ptr: bytes.as_ptr(),
-                                len: bytes.len(),
-                            },
-                        );
-                    }
-                }),
+                ::std::sync::Arc::new(
+                    move |bytes: &[u8], peer: ::std::option::Option<::std::net::SocketAddr>| {
+                        let Some(callback) = on_server_datagram else {
+                            return;
+                        };
+                        // Do NOT short-circuit on `bytes.is_empty()`: a
+                        // zero-length UDP datagram is valid per RFC 768
+                        // (DTLS heartbeats, NAT-binding probes, keep-
+                        // alives rely on them). The analogous TCP filter
+                        // is correct because an empty TCP read carries
+                        // no semantic information.
+                        let peer_scratch = $crate::ffi::UdpPeerScratch::new(peer);
+                        unsafe {
+                            callback(
+                                context as *mut ::std::ffi::c_void,
+                                $crate::ffi::BytesView {
+                                    ptr: bytes.as_ptr(),
+                                    len: bytes.len(),
+                                },
+                                peer_scratch.as_view(),
+                            );
+                        }
+                        // `peer_scratch` is dropped here; the C callback
+                        // has returned and any pointer borrowed from it
+                        // is no longer accessed.
+                        drop(peer_scratch);
+                    },
+                ),
                 ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_client_read_demand {
                         unsafe { callback(context as *mut ::std::ffi::c_void) };
@@ -528,13 +536,17 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_datagram(
             session: *mut RamaTransparentProxyUdpSession,
             bytes: $crate::ffi::BytesView,
+            peer: $crate::ffi::UdpPeerView,
         ) {
             if session.is_null() {
                 return;
             }
 
+            // SAFETY: caller contract on `peer` matches `bytes` — both
+            // pointers are valid for the duration of this call.
+            let peer = unsafe { peer.into_socket_addr() };
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_client_datagram(slice) };
+            unsafe { (*session).on_client_datagram(slice, peer) };
         }
 
         #[unsafe(no_mangle)]
@@ -754,21 +766,25 @@ macro_rules! __transparent_proxy_ffi_emit {
             let on_send_to_egress = callbacks.on_send_to_egress;
 
             unsafe {
-                (*session).activate(move |bytes: $crate::__private::Bytes| {
+                (*session).activate(move |datagram: $crate::Datagram| {
                     let Some(callback) = on_send_to_egress else {
                         return;
                     };
                     // RFC 768 admits zero-length UDP datagrams; see the
                     // matching note on `on_server_datagram` above.
+                    let payload = &datagram.payload;
+                    let peer_scratch = $crate::ffi::UdpPeerScratch::new(datagram.peer);
                     unsafe {
                         callback(
                             context as *mut ::std::ffi::c_void,
                             $crate::ffi::BytesView {
-                                ptr: bytes.as_ptr(),
-                                len: bytes.len(),
+                                ptr: payload.as_ptr(),
+                                len: payload.len(),
                             },
+                            peer_scratch.as_view(),
                         );
                     }
+                    drop(peer_scratch);
                 })
             };
         }
@@ -780,13 +796,16 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_egress_datagram(
             session: *mut RamaTransparentProxyUdpSession,
             bytes: $crate::ffi::BytesView,
+            peer: $crate::ffi::UdpPeerView,
         ) {
             if session.is_null() {
                 return;
             }
 
+            // SAFETY: same as `on_client_datagram` above.
+            let peer = unsafe { peer.into_socket_addr() };
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_egress_datagram(slice) };
+            unsafe { (*session).on_egress_datagram(slice, peer) };
         }
 
         #[unsafe(no_mangle)]

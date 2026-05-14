@@ -314,10 +314,18 @@ pub struct TransparentProxyTcpSessionCallbacks {
 ///
 /// `context` lifetime / threading contract: see
 /// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
+///
+/// `on_server_datagram` receives each Rust→Swift datagram along
+/// with its peer — the source the reply arrived from, used as the
+/// `sentBy` endpoint when Swift writes back through
+/// `flow.writeDatagrams`. Peer may be marked absent
+/// (`UdpPeerView { present: false, .. }`) when the engine cannot
+/// supply attribution.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
-    pub on_server_datagram: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    pub on_server_datagram:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
@@ -492,11 +500,17 @@ pub struct TransparentProxyTcpEgressCallbacks {
 ///
 /// `context` lifetime / threading contract: see
 /// [`TransparentProxyTcpSessionCallbacks`] above.
+///
+/// `on_send_to_egress` receives the datagram plus the destination
+/// peer. Swift routes the datagram through the per-peer
+/// `NWConnection` for that endpoint, lazy-opening one if no existing
+/// connection in the per-flow map covers that peer.
 #[repr(C)]
 pub struct TransparentProxyUdpEgressCallbacks {
     pub context: *mut c_void,
     /// Rust calls this to send one datagram to the egress NWConnection.
-    pub on_send_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    pub on_send_to_egress:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
 }
 
 fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {

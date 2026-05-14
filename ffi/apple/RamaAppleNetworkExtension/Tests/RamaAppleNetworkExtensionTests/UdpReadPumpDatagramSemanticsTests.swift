@@ -43,7 +43,7 @@ final class UdpReadPumpDatagramSemanticsTests: XCTestCase {
 
     private func makeInterceptedSession(
         _ engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data) -> Void
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void
     ) -> RamaUdpSessionHandle {
         let meta = RamaTransparentProxyFlowMetaBridge(
             protocolRaw: 2,
@@ -65,7 +65,7 @@ final class UdpReadPumpDatagramSemanticsTests: XCTestCase {
             XCTFail("demo handler unexpectedly returned non-intercept")
             preconditionFailure()
         }
-        session.activate(onSendToEgress: { _ in })
+        session.activate(onSendToEgress: { _, _ in })
         return session
     }
 
@@ -93,7 +93,7 @@ final class UdpReadPumpDatagramSemanticsTests: XCTestCase {
         let firstDelivered = expectation(description: "first datagram delivered")
         let secondDelivered = expectation(description: "second datagram delivered")
         var deliveryCount = 0
-        let session = makeInterceptedSession(engine, onServerDatagram: { data in
+        let session = makeInterceptedSession(engine, onServerDatagram: { data, _ in
             deliveryCount += 1
             if data == Data("first".utf8) { firstDelivered.fulfill() }
             if data == Data("second".utf8) { secondDelivered.fulfill() }
@@ -140,7 +140,7 @@ final class UdpReadPumpDatagramSemanticsTests: XCTestCase {
         let total = 16
         let allDelivered = expectation(description: "all datagrams delivered")
         allDelivered.expectedFulfillmentCount = total
-        let session = makeInterceptedSession(engine, onServerDatagram: { _ in
+        let session = makeInterceptedSession(engine, onServerDatagram: { _, _ in
             allDelivered.fulfill()
         })
 
@@ -168,7 +168,7 @@ final class UdpReadPumpDatagramSemanticsTests: XCTestCase {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
 
-        let session = makeInterceptedSession(engine, onServerDatagram: { _ in })
+        let session = makeInterceptedSession(engine, onServerDatagram: { _, _ in })
         let connection = MockUdpConnection()
         let terminated = expectation(description: "terminate on error")
         let pump = NwUdpConnectionReadPump(

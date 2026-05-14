@@ -54,17 +54,25 @@ async fn service(bridge: BridgeIo<UdpFlow, NwUdpSocket>) -> Result<(), Infallibl
                 };
                 // Zero-length UDP datagrams are valid (RFC 768) — forward
                 // unchanged. A real proxy that wants to drop them can do
-                // so by policy; the example does not impose one.
+                // so by policy; the example does not impose one. The
+                // datagram's `peer` field is the destination the
+                // originating app addressed this datagram to; forwarding
+                // the whole struct preserves multi-peer fidelity (the
+                // Swift side routes by `peer` to the matching egress
+                // NWConnection).
                 up_packets += 1;
-                up_bytes += datagram.len() as u64;
+                up_bytes += datagram.payload.len() as u64;
                 egress.send(datagram);
             }
             maybe_datagram = egress.recv() => {
                 let Some(datagram) = maybe_datagram else {
                     break;
                 };
+                // `datagram.peer` is the source the reply came from;
+                // forwarding it makes `flow.writeDatagrams(_:sentBy:)`
+                // tag the kernel-bound write with the correct peer.
                 down_packets += 1;
-                down_bytes += datagram.len() as u64;
+                down_bytes += datagram.payload.len() as u64;
                 ingress.send(datagram);
             }
         }

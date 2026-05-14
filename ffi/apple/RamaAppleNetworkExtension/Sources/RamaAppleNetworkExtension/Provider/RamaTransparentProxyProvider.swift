@@ -1184,7 +1184,13 @@ final class UdpClientWritePump: @unchecked Sendable {
         }
     }
 
-    func enqueue(_ data: Data) {
+    /// Enqueue a reply datagram. `sentBy` is the peer the reply came
+    /// from — surfaced from `Datagram.peer` on the Rust side and
+    /// threaded through here so the kernel-bound write tags the
+    /// correct source. `nil` falls back to the latest known peer
+    /// captured via `setSentByEndpoint` (used by tests and very
+    /// early bootstrap before the first per-peer read).
+    func enqueue(_ data: Data, sentBy: NWEndpoint? = nil) {
         // RFC 768 admits zero-length UDP datagrams. Forward them
         // unchanged — filtering belongs in the service layer, not in
         // the transport plumbing.
@@ -1202,11 +1208,11 @@ final class UdpClientWritePump: @unchecked Sendable {
                 )
                 return
             }
-            // Capture the endpoint at enqueue time so a queued reply
-            // does not pick up a later peer change at flush time.
-            // Pre-first-read replies have nil here and resolve at
-            // flush time once `sentByEndpoint` is known.
-            self.pending.pushBack((data, self.sentByEndpoint))
+            // Capture the endpoint at enqueue time. Prefer the
+            // per-datagram peer (multi-peer correctness); fall back
+            // to the cached `sentByEndpoint` for callers that haven't
+            // been peer-aware-ified yet (tests, early bootstrap).
+            self.pending.pushBack((data, sentBy ?? self.sentByEndpoint))
             let depth = self.pending.count
             if depth > self.pendingCountHwm {
                 self.pendingCountHwm = depth
@@ -1709,12 +1715,28 @@ protocol UdpConnectionReadable: AnyObject {
 
 extension NWConnection: UdpConnectionReadable {}
 
-/// Reads datagrams from a `NWConnection` in a loop and delivers them to a Rust UDP session.
+/// Reads datagrams from a `NWConnection` in a loop and delivers
+/// them to a Rust UDP session, **tagged with the peer this
+/// connection is bound to**.
+///
+/// `peer` is the bound endpoint of the per-peer egress
+/// `NWConnection`. NWConnection is connection-pinned for UDP, so
+/// every datagram this pump receives is by definition from `peer` —
+/// we therefore tag at the pump rather than peering the receive's
+/// (absent for connected UDP) source attribution. The peer threads
+/// through to `session.onEgressDatagram(_:peer:)`, which Rust then
+/// surfaces as `Datagram.peer` to the service; the service forwards
+/// it back to Swift's writer pump, where it becomes the `sentBy`
+/// argument to `flow.writeDatagrams`.
 final class NwUdpConnectionReadPump: @unchecked Sendable {
     private let connection: any UdpConnectionReadable
     private let session: RamaUdpSessionHandle
     private let queue: DispatchQueue
     private var closed = false
+    /// Bound peer of this connection. `nil` only in test setups
+    /// that don't model a per-peer connection (the production path
+    /// always has one).
+    private let peer: RamaUdpPeer?
     // Wires read-side EOF/error into the flow's `terminate` so a
     // half-open flow doesn't sit until `udp_max_flow_lifetime` reaps it.
     private let onTerminate: (Error?) -> Void
@@ -1723,11 +1745,13 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
         connection: any UdpConnectionReadable,
         session: RamaUdpSessionHandle,
         queue: DispatchQueue,
+        peer: RamaUdpPeer? = nil,
         onTerminate: @escaping (Error?) -> Void
     ) {
         self.connection = connection
         self.session = session
         self.queue = queue
+        self.peer = peer
         self.onTerminate = onTerminate
     }
 
@@ -1748,7 +1772,7 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
                 // Forward the datagram even if it has no payload —
                 // empty Data is still a real datagram on UDP.
                 if let data {
-                    self.session.onEgressDatagram(data)
+                    self.session.onEgressDatagram(data, peer: self.peer)
                 }
                 // For UDP, `isComplete` is set on every successful
                 // receive — it marks the datagram boundary, not the

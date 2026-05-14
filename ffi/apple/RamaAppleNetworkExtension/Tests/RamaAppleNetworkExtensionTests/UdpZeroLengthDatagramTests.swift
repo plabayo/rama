@@ -52,7 +52,7 @@ final class UdpZeroLengthDatagramTests: XCTestCase {
 
     private func makeUdpSession(
         on engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data) -> Void = { _ in }
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in }
     ) -> RamaUdpSessionHandle {
         let meta = RamaTransparentProxyFlowMetaBridge(
             protocolRaw: 2,
@@ -132,7 +132,7 @@ final class UdpZeroLengthDatagramTests: XCTestCase {
         // want to ensure we do NOT see a duplicate, so the inverted
         // sibling guards that.
         observed.assertForOverFulfill = true
-        let session = makeUdpSession(on: engine, onServerDatagram: { data in
+        let session = makeUdpSession(on: engine, onServerDatagram: { data, _ in
             XCTAssertEqual(data.count, 0, "session must receive the empty datagram unchanged")
             observed.fulfill()
         })
@@ -141,7 +141,7 @@ final class UdpZeroLengthDatagramTests: XCTestCase {
         // egress half is half-open and `on_egress_datagram` has no
         // tx to forward through. This is the same shape every other
         // pump-level test uses.
-        session.activate(onSendToEgress: { _ in })
+        session.activate(onSendToEgress: { _, _ in })
         let connection = MockUdpConnection()
         let pump = NwUdpConnectionReadPump(
             connection: connection,

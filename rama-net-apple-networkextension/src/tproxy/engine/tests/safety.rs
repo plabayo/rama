@@ -302,7 +302,7 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     // reads, so 6 will hit `Full`. Demand must fire on every push.
     let pushed = 8usize;
     for i in 0..pushed {
-        session.on_client_datagram(format!("datagram {i}").as_bytes());
+        session.on_client_datagram(format!("datagram {i}").as_bytes(), None);
     }
 
     assert_eq!(
@@ -433,14 +433,14 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
 
     // Push a datagram; the demand sink should fire (and the bridge
     // should accept the datagram into the channel).
-    session.on_client_datagram(b"hello");
+    session.on_client_datagram(b"hello", None);
     // Tear down. After this returns, no further user callbacks fire.
     session.on_client_close();
     let demand_after_close = demand.load(Ordering::Relaxed);
 
     // Try to push another datagram after close. The session is closed,
     // so the user demand callback MUST NOT fire.
-    session.on_client_datagram(b"after-close");
+    session.on_client_datagram(b"after-close", None);
     std::thread::sleep(Duration::from_millis(25));
 
     assert_eq!(

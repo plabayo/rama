@@ -76,9 +76,9 @@ mod types;
 
 pub use self::{
     engine::{
-        BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedTransparentProxyEngine,
-        DEFAULT_DECISION_DEADLINE, DEFAULT_TCP_IDLE_TIMEOUT, DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT,
-        DEFAULT_UDP_MAX_FLOW_LIFETIME, DecisionDeadlineAction,
+        BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedServerDatagramSink,
+        BoxedTransparentProxyEngine, DEFAULT_DECISION_DEADLINE, DEFAULT_TCP_IDLE_TIMEOUT,
+        DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, DEFAULT_UDP_MAX_FLOW_LIFETIME, DecisionDeadlineAction,
         DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, SessionFlowAction,
         TcpDeliverStatus, TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory,
         TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyHandler,

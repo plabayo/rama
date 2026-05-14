@@ -96,13 +96,26 @@ final class TcpSessionCallbackBox {
     }
 }
 
+/// Per-datagram peer at the FFI boundary. Carries the textual host
+/// (in production: a numeric IP literal) and the UDP port. The Swift
+/// core translates to and from `NWEndpoint`; the FFI layer stays
+/// free of the `Network` import.
+struct RamaUdpPeer: Hashable {
+    let host: String
+    let port: UInt16
+}
+
 final class UdpSessionCallbackBox {
-    let onServerDatagram: (Data) -> Void
+    /// Rust→Swift datagram. `peer` is the source the reply came
+    /// from; the per-peer NWConnection's bound endpoint. Swift uses
+    /// `peer` as the `sentBy` argument to `flow.writeDatagrams`.
+    /// `nil` is the safety valve for paths without attribution.
+    let onServerDatagram: (Data, RamaUdpPeer?) -> Void
     let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
     init(
-        onServerDatagram: @escaping (Data) -> Void,
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) {
@@ -137,9 +150,15 @@ final class TcpEgressCallbackBox {
 
 /// Holds the Rust→Swift egress callback for a UDP session.
 final class UdpEgressCallbackBox {
-    let onSendToEgress: (Data) -> Void
+    /// Rust→Swift datagram bound for the wire. `peer` is the
+    /// destination the originating app addressed the datagram to;
+    /// Swift routes through the matching per-peer `NWConnection`
+    /// in `UdpFlowContext.peerConnections`, lazy-opening one when
+    /// no entry covers this peer yet. `nil` is the safety valve
+    /// for paths without attribution.
+    let onSendToEgress: (Data, RamaUdpPeer?) -> Void
 
-    init(onSendToEgress: @escaping (Data) -> Void) {
+    init(onSendToEgress: @escaping (Data, RamaUdpPeer?) -> Void) {
         self.onSendToEgress = onSendToEgress
     }
 }
@@ -149,6 +168,51 @@ private func dataFromView(_ view: RamaBytesView) -> Data {
         return Data()
     }
     return Data(bytes: ptr, count: Int(view.len))
+}
+
+/// Decode a Rust→Swift `RamaUdpPeerView` into a `RamaUdpPeer?`.
+///
+/// Returns `nil` when `present == false`, when `host_utf8` is null
+/// or empty, or when the bytes don't form valid UTF-8. The Rust
+/// side guarantees UTF-8 for all peers it emits, so a failure here
+/// is treated the same as `present == false` (no attribution).
+private func peerFromView(_ view: RamaUdpPeerView) -> RamaUdpPeer? {
+    guard view.present, let ptr = view.host_utf8, view.host_utf8_len > 0 else {
+        return nil
+    }
+    let bytes = UnsafeBufferPointer(start: ptr, count: Int(view.host_utf8_len))
+    guard let host = String(bytes: bytes, encoding: .utf8) else { return nil }
+    return RamaUdpPeer(host: host, port: view.port)
+}
+
+/// Run `body` with a `RamaUdpPeerView` borrowed from `peer`.
+///
+/// The view's `host_utf8` pointer is valid for the duration of the
+/// call; the Rust side parses the UTF-8 bytes synchronously, so the
+/// scratch buffer can live on the stack of `body`.
+///
+/// `peer == nil` runs `body` with an absent view (matches the FFI
+/// "no attribution" semantics on the Rust side).
+private func withUdpPeerView<R>(
+    _ peer: RamaUdpPeer?,
+    _ body: (RamaUdpPeerView) -> R
+) -> R {
+    guard let peer else {
+        return body(
+            RamaUdpPeerView(present: false, host_utf8: nil, host_utf8_len: 0, port: 0)
+        )
+    }
+    var hostBytes = Array(peer.host.utf8)
+    return hostBytes.withUnsafeMutableBufferPointer { buf in
+        body(
+            RamaUdpPeerView(
+                present: true,
+                host_utf8: UnsafePointer(buf.baseAddress),
+                host_utf8_len: buf.count,
+                port: peer.port
+            )
+        )
+    }
 }
 
 private func dataFromOwnedBytes(_ bytes: RamaBytesOwned) -> Data {
@@ -263,15 +327,15 @@ private let ramaTcpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPoint
 
 private let ramaUdpOnServerDatagramCallback:
     @convention(c) (
-        UnsafeMutableRawPointer?, RamaBytesView
-    ) -> Void = { context, view in
+        UnsafeMutableRawPointer?, RamaBytesView, RamaUdpPeerView
+    ) -> Void = { context, view, peerView in
         guard let context else { return }
         let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
         let data = dataFromView(view)
         // RFC 768: zero-length UDP datagrams are valid; forward
         // unchanged. The matching filter on TCP (`onServerBytes`)
         // is correct because an empty TCP read is a non-event.
-        box.onServerDatagram(data)
+        box.onServerDatagram(data, peerFromView(peerView))
     }
 
 private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
@@ -315,13 +379,14 @@ private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawP
     }
 
 private let ramaUdpOnSendToEgressCallback:
-    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView) -> Void = { context, view in
+    @convention(c) (UnsafeMutableRawPointer?, RamaBytesView, RamaUdpPeerView)
+    -> Void = { context, view, peerView in
         guard let context else { return }
         let box = Unmanaged<UdpEgressCallbackBox>.fromOpaque(context).takeUnretainedValue()
         let data = dataFromView(view)
         // See `ramaUdpOnServerDatagramCallback`: RFC 768 admits
         // zero-length UDP datagrams. Forward unchanged.
-        box.onSendToEgress(data)
+        box.onSendToEgress(data, peerFromView(peerView))
     }
 
 final class RamaTransparentProxyEngineHandle {
@@ -519,7 +584,7 @@ final class RamaTransparentProxyEngineHandle {
 
     func newUdpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
-        onServerDatagram: @escaping (Data) -> Void,
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyUdpSessionDecision {
@@ -794,7 +859,12 @@ final class RamaUdpSessionHandle {
         egressBox?.release()
     }
 
-    func onClientDatagram(_ data: Data) {
+    /// Deliver one client→service datagram with the peer the app
+    /// addressed it to. The peer is what Swift's egress side uses to
+    /// route to the matching per-peer `NWConnection`. Pass `nil`
+    /// when the kernel did not provide an endpoint (rare; production
+    /// always has one).
+    func onClientDatagram(_ data: Data, peer: RamaUdpPeer?) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
@@ -807,7 +877,9 @@ final class RamaUdpSessionHandle {
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
             let view = RamaBytesView(ptr: base, len: Int(data.count))
-            rama_transparent_proxy_udp_session_on_client_datagram(s, view)
+            withUdpPeerView(peer) { peerView in
+                rama_transparent_proxy_udp_session_on_client_datagram(s, view, peerView)
+            }
         }
     }
 
@@ -843,9 +915,11 @@ final class RamaUdpSessionHandle {
     /// `_session_activate` rejects double-activation) and the new
     /// callbacks would never fire. Logged + ignored on repeat.
     ///
-    /// - Parameter onSendToEgress: Called by Rust when the service has a datagram
-    ///   to deliver via the egress NWConnection.
-    func activate(onSendToEgress: @escaping (Data) -> Void) {
+    /// - Parameter onSendToEgress: Called by Rust when the service
+    ///   has a datagram to deliver. The peer is the destination the
+    ///   originating app addressed the datagram to; Swift routes
+    ///   through the matching per-peer `NWConnection`.
+    func activate(onSendToEgress: @escaping (Data, RamaUdpPeer?) -> Void) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
@@ -868,7 +942,11 @@ final class RamaUdpSessionHandle {
     }
 
     /// Deliver one datagram from the egress `NWConnection` to the Rust session.
-    func onEgressDatagram(_ data: Data) {
+    /// Deliver one egress→service datagram with the peer the reply
+    /// came from. The peer is the bound endpoint of the per-peer
+    /// `NWConnection` that received it; Rust uses it later as the
+    /// `sentBy` argument to `flow.writeDatagrams`.
+    func onEgressDatagram(_ data: Data, peer: RamaUdpPeer?) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
@@ -879,7 +957,9 @@ final class RamaUdpSessionHandle {
         data.withUnsafeBytes { raw in
             let base = raw.bindMemory(to: UInt8.self).baseAddress
             let view = RamaBytesView(ptr: base, len: data.count)
-            rama_transparent_proxy_udp_session_on_egress_datagram(s, view)
+            withUdpPeerView(peer) { peerView in
+                rama_transparent_proxy_udp_session_on_egress_datagram(s, view, peerView)
+            }
         }
     }
 

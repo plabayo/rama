@@ -70,8 +70,8 @@ final class UdpReadPumpTests: XCTestCase {
 
     private func makeInterceptedSession(
         _ engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data) -> Void = { _ in },
-        onSendToEgress: @escaping (Data) -> Void = { _ in }
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in },
+        onSendToEgress: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in }
     ) -> RamaUdpSessionHandle {
         let meta = RamaTransparentProxyFlowMetaBridge(
             protocolRaw: 2,
@@ -102,7 +102,7 @@ final class UdpReadPumpTests: XCTestCase {
         defer { engine.stop(reason: 0) }
 
         let delivered = expectation(description: "server datagram delivered")
-        let session = makeInterceptedSession(engine, onServerDatagram: { data in
+        let session = makeInterceptedSession(engine, onServerDatagram: { data, _ in
             if data == Data("udp-payload".utf8) {
                 delivered.fulfill()
             }
@@ -169,7 +169,7 @@ final class UdpReadPumpTests: XCTestCase {
         let noTerminate = expectation(description: "terminate not called")
         noTerminate.isInverted = true
 
-        let session = makeInterceptedSession(engine, onServerDatagram: { _ in
+        let session = makeInterceptedSession(engine, onServerDatagram: { _, _ in
             noDelivery.fulfill()
         })
         let connection = MockUdpConnection()

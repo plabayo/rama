@@ -28,6 +28,9 @@ fn udp_bridge_delivers_server_datagram() {
                 |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
                     let BridgeIo(mut ingress, _egress) = bridge;
                     if let Some(datagram) = ingress.recv().await {
+                        // Echo back — Datagram carries peer; for the
+                        // echo path we reuse the same Datagram so the
+                        // reply is correlated to the originating peer.
                         ingress.send(datagram);
                     }
                     Ok(())
@@ -43,9 +46,9 @@ fn udp_bridge_delivers_server_datagram() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::local_ipv4(5353)),
-        move |bytes| {
+        move |datagram: crate::Datagram| {
             let mut lock = got_clone.lock();
-            lock.extend_from_slice(&bytes);
+            lock.extend_from_slice(&datagram.payload);
             _ = notify_tx.send(());
         },
         || {},
@@ -55,7 +58,7 @@ fn udp_bridge_delivers_server_datagram() {
     };
 
     session.activate(|_| {});
-    session.on_client_datagram(b"ping");
+    session.on_client_datagram(b"ping", None);
 
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
@@ -112,7 +115,7 @@ fn udp_egress_drops_datagrams_when_service_does_not_drain() {
     // dropped at `try_send` — the call must not panic, must not
     // block, and must not affect the engine's continued operation.
     for i in 0..32 {
-        session.on_egress_datagram(format!("dgram {i}").as_bytes());
+        session.on_egress_datagram(format!("dgram {i}").as_bytes(), None);
     }
     session.on_client_close();
     engine.stop(0);
@@ -156,7 +159,7 @@ fn udp_session_requests_client_read_demand() {
     };
 
     session.activate(|_| {});
-    session.on_client_datagram(b"x");
+    session.on_client_datagram(b"x", None);
 
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
     engine.stop(0);
@@ -193,7 +196,7 @@ fn udp_zero_length_datagram_from_client_reaches_service() {
                             // filter on `is_empty()` here — that's the
                             // exact mistake the framework had.
                             while let Some(datagram) = ingress.recv().await {
-                                received.lock().push(datagram.len());
+                                received.lock().push(datagram.payload.len());
                                 _ = notify_tx.send(());
                             }
                             Ok::<_, std::convert::Infallible>(())
@@ -219,8 +222,8 @@ fn udp_zero_length_datagram_from_client_reaches_service() {
     };
 
     session.activate(|_| {});
-    session.on_client_datagram(b"");
-    session.on_client_datagram(b"payload");
+    session.on_client_datagram(b"", None);
+    session.on_client_datagram(b"payload", None);
 
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
@@ -262,7 +265,7 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
                         async move {
                             let BridgeIo(_ingress, mut egress) = bridge;
                             while let Some(datagram) = egress.recv().await {
-                                received.lock().push(datagram.len());
+                                received.lock().push(datagram.payload.len());
                                 _ = notify_tx.send(());
                             }
                             Ok::<_, std::convert::Infallible>(())
@@ -288,8 +291,8 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
     };
 
     session.activate(|_| {});
-    session.on_egress_datagram(b"");
-    session.on_egress_datagram(b"payload");
+    session.on_egress_datagram(b"", None);
+    session.on_egress_datagram(b"payload", None);
 
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
     _ = notify_rx.recv_timeout(Duration::from_secs(1));
