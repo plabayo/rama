@@ -1266,10 +1266,18 @@ final class UdpClientWritePump: @unchecked Sendable {
         // the cache or the engine's UDP max-flow-lifetime closes
         // the flow. UDP is lossy by design; dropping the orphan
         // is the correct trade-off.
+        //
+        // The cache-nil check is loop-invariant — `sentByEndpoint`
+        // is mutated only by `setSentByEndpoint`, which runs on
+        // the same serial queue and therefore cannot interleave.
+        // Hoist it out so the inner loop is one branch instead of
+        // two on the dominant (cache-present) path.
         var droppedOrphans = 0
-        while let head = pending.first(), head.1 == nil && sentByEndpoint == nil {
-            _ = pending.popFront()
-            droppedOrphans += 1
+        if sentByEndpoint == nil {
+            while let head = pending.first(), head.1 == nil {
+                _ = pending.popFront()
+                droppedOrphans += 1
+            }
         }
         if droppedOrphans > 0 && !unresolvedEndpointLogged {
             unresolvedEndpointLogged = true

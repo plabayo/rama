@@ -217,22 +217,32 @@ impl UdpPeerScratch {
         // is the canonical textual form (numeric IPv4, RFC 5952
         // IPv6) — and crucially, `Ipv6Addr::Display` does not
         // include the scope id, which matches the contract here.
-        let len = {
+        let len_result: Option<usize> = {
             use std::io::Write as _;
             let mut cursor = std::io::Cursor::new(&mut buf[..]);
             // `write!` only fails on capacity; we treat any error
             // as "fall back to absent" rather than truncate a
-            // partial address.
+            // partial address. (Unreachable in practice — 64 bytes
+            // comfortably exceeds the longest `IpAddr::Display`
+            // form, which is 39 chars for fully-expanded IPv6 —
+            // but kept as belt-and-suspenders for future-proofing.)
             if write!(&mut cursor, "{}", addr.ip()).is_err() {
-                return Self {
-                    buf: [0u8; 64],
-                    len: 0,
-                    port: 0,
-                    scope_id: 0,
-                    present: false,
-                };
+                None
+            } else {
+                Some(cursor.position() as usize)
             }
-            cursor.position() as usize
+        };
+        let Some(len) = len_result else {
+            // Re-use `buf` even though its contents may be partial
+            // garbage — `present: false` keeps any reader from
+            // touching it.
+            return Self {
+                buf,
+                len: 0,
+                port: 0,
+                scope_id: 0,
+                present: false,
+            };
         };
         let scope_id = match addr {
             std::net::SocketAddr::V6(v6) => v6.scope_id(),
