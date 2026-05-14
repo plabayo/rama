@@ -34,7 +34,7 @@ use std::{
 };
 
 mod http;
-pub(crate) mod proto;
+pub mod proto;
 mod transform;
 
 pub use http::HttpExporter;
