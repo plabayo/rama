@@ -624,3 +624,78 @@ fn udp_large_datagram_near_max_payload_roundtrips() {
         "large datagram must round-trip without truncation"
     );
 }
+
+/// Contract: when a service sends a `Datagram` whose peer is an
+/// IPv6 `SocketAddrV6` with a non-zero `scope_id` (link-local
+/// addressing — `fe80::1%en0` style), the engine's
+/// `on_server_datagram` callback must observe the *same* scope
+/// identifier. The FFI marshaling layer carries the scope id in
+/// a dedicated `u32` field; this test pins the end-to-end path
+/// inside the engine (no FFI boundary crossed, but the path
+/// exercises the same SocketAddr that the FFI will round-trip
+/// elsewhere).
+#[test]
+fn udp_send_preserves_ipv6_scope_id_through_engine_callback() {
+    use std::net::{Ipv6Addr, SocketAddrV6};
+
+    let observed = Arc::new(Mutex::new(Vec::<Option<std::net::SocketAddr>>::new()));
+    let observed_clone = observed.clone();
+    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+
+    let scoped_peer = std::net::SocketAddr::V6(SocketAddrV6::new(
+        Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
+        5353,
+        0,
+        4, // non-zero zone id
+    ));
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let scoped_peer = scoped_peer;
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |flow: crate::UdpFlow| async move {
+                    flow.send(crate::Datagram::new(
+                        rama_core::bytes::Bytes::from_static(b"scoped"),
+                        scoped_peer,
+                    ));
+                    Ok::<_, std::convert::Infallible>(())
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        move |datagram: crate::Datagram| {
+            observed_clone.lock().push(datagram.peer);
+            _ = notify_tx.send(());
+        },
+        || {},
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate();
+    _ = notify_rx.recv_timeout(Duration::from_secs(1));
+    engine.stop(0);
+
+    let got = observed.lock().clone();
+    assert_eq!(got.len(), 1, "exactly one datagram expected; got {got:?}");
+    let Some(peer) = got[0] else {
+        panic!("expected Some peer, got None");
+    };
+    assert_eq!(peer, scoped_peer);
+    match peer {
+        std::net::SocketAddr::V6(v6) => {
+            assert_eq!(v6.scope_id(), 4, "scope id must survive the engine path");
+        }
+        std::net::SocketAddr::V4(_) => panic!("expected V6"),
+    }
+}

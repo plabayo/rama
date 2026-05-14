@@ -346,7 +346,8 @@ typedef struct {
 
 // ── Egress (NWConnection) options ────────────────────────────────────────────
 
-/// NWParameters-level settings shared between TCP and UDP egress NWConnections.
+/// NWParameters-level settings applied to TCP egress NWConnections.
+/// (UDP egress is service-owned in Rust and does not consume these.)
 ///
 /// service_class values:
 ///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice

@@ -762,18 +762,31 @@ final class TransparentProxyCore: @unchecked Sendable {
                             // `flow.readDatagrams` supplies a parallel
                             // array; fall back to whatever the kernel
                             // returned for entries past the end.
-                            let endpoint = endpoints.flatMap { eps -> NWHostEndpoint? in
-                                let pick = index < eps.count ? eps[index] : eps.first
-                                return pick as? NWHostEndpoint
+                            // Carry the kernel-supplied `NWEndpoint`
+                            // unfiltered; `ramaUdpPeer(from:)` does
+                            // the narrowing-to-NWHostEndpoint and
+                            // logs once if an unexpected subclass
+                            // ever appears. Keeping the cast here
+                            // would short-circuit that defensive
+                            // log and silently drop attribution.
+                            // Let Swift infer the element type from
+                            // `endpoints: [NWEndpoint]?` (NetworkExtension's
+                            // legacy class); writing it explicitly conflicts
+                            // with the modern `Network.NWEndpoint` enum
+                            // imported elsewhere in this file.
+                            let endpoint = endpoints.flatMap { eps in
+                                index < eps.count ? eps[index] : eps.first
                             }
                             let peer = endpoint.flatMap(ramaUdpPeer(from:))
                             // Update the writer pump's cached
                             // "latest peer" too — it's the fallback
                             // for callers (tests, early bootstrap)
                             // that don't supply an explicit `sentBy`
-                            // in `enqueue`.
-                            if let endpoint {
-                                ctx.writer?.setSentByEndpoint(endpoint)
+                            // in `enqueue`. Skip non-NWHostEndpoint
+                            // for the fallback path — `flow.writeDatagrams`
+                            // ultimately wants `NWHostEndpoint`.
+                            if let host = endpoint as? NWHostEndpoint {
+                                ctx.writer?.setSentByEndpoint(host)
                             }
                             session.onClientDatagram(datagram, peer: peer)
                         }
