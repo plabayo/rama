@@ -406,11 +406,16 @@ pub(crate) async fn udp_roundtrip(
     // Build a peer view tagged with `remote_addr`. The engine's send
     // pump uses this as the `send_to` destination.
     let peer_host = remote_addr.ip().to_string().into_bytes();
+    let scope_id = match remote_addr {
+        std::net::SocketAddr::V6(v6) => v6.scope_id(),
+        std::net::SocketAddr::V4(_) => 0,
+    };
     let peer_view = bindings::RamaUdpPeerView {
         present: true,
         host_utf8: peer_host.as_ptr().cast(),
         host_utf8_len: peer_host.len(),
         port: remote_addr.port(),
+        scope_id,
     };
     unsafe {
         bindings::rama_transparent_proxy_udp_session_on_client_datagram(

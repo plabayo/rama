@@ -304,6 +304,14 @@ typedef struct {
 /// NWConnection's bound endpoint is also an IP. `host_utf8` is NOT
 /// required to be NUL-terminated.
 ///
+/// `scope_id` carries the IPv6 zone identifier (interface index, as
+/// returned by `if_nametoindex(3)`) for link-local addresses like
+/// `fe80::1%en0`. `0` means "no scope". The textual `host_utf8` MUST
+/// NOT carry the `%zone` suffix — Swift converts the kernel-supplied
+/// `"fe80::1%en0"` to the numeric index on the way in, and Rust
+/// converts the numeric index back to an interface name on the way
+/// out. Scoping is meaningless for IPv4 and must be `0` there.
+///
 /// Borrowed for the duration of the call; the Swift side may stage
 /// the host bytes on the stack of the closure that issues the C call,
 /// and the Rust side does the same in reverse.
@@ -312,6 +320,7 @@ typedef struct {
     const uint8_t* host_utf8;
     size_t host_utf8_len;
     uint16_t port;
+    uint32_t scope_id;
 } RamaUdpPeerView;
 
 typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);

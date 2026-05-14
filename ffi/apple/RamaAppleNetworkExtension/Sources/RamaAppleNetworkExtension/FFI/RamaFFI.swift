@@ -97,12 +97,22 @@ final class TcpSessionCallbackBox {
 }
 
 /// Per-datagram peer at the FFI boundary. Carries the textual host
-/// (in production: a numeric IP literal) and the UDP port. The Swift
-/// core translates to and from `NWEndpoint`; the FFI layer stays
-/// free of the `Network` import.
+/// (in production: a numeric IP literal *without* a `%zone` suffix)
+/// and the UDP port. `scopeId` is the IPv6 zone identifier
+/// (interface index, as returned by `if_nametoindex(3)`); `0` means
+/// "no scope" and is always the case for IPv4. The Swift core
+/// translates to and from `NWEndpoint`; the FFI layer stays free of
+/// the `Network` import.
 struct RamaUdpPeer: Hashable {
     let host: String
     let port: UInt16
+    let scopeId: UInt32
+
+    init(host: String, port: UInt16, scopeId: UInt32 = 0) {
+        self.host = host
+        self.port = port
+        self.scopeId = scopeId
+    }
 }
 
 final class UdpSessionCallbackBox {
@@ -167,7 +177,7 @@ private func peerFromView(_ view: RamaUdpPeerView) -> RamaUdpPeer? {
     }
     let bytes = UnsafeBufferPointer(start: ptr, count: Int(view.host_utf8_len))
     guard let host = String(bytes: bytes, encoding: .utf8) else { return nil }
-    return RamaUdpPeer(host: host, port: view.port)
+    return RamaUdpPeer(host: host, port: view.port, scopeId: view.scope_id)
 }
 
 /// Run `body` with a `RamaUdpPeerView` borrowed from `peer`.
@@ -184,7 +194,9 @@ private func withUdpPeerView<R>(
 ) -> R {
     guard let peer else {
         return body(
-            RamaUdpPeerView(present: false, host_utf8: nil, host_utf8_len: 0, port: 0)
+            RamaUdpPeerView(
+                present: false, host_utf8: nil, host_utf8_len: 0, port: 0, scope_id: 0
+            )
         )
     }
     var hostBytes = Array(peer.host.utf8)
@@ -194,7 +206,8 @@ private func withUdpPeerView<R>(
                 present: true,
                 host_utf8: UnsafePointer(buf.baseAddress),
                 host_utf8_len: buf.count,
-                port: peer.port
+                port: peer.port,
+                scope_id: peer.scopeId
             )
         )
     }

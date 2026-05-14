@@ -116,11 +116,16 @@ pub struct UdpPeerView {
     /// `true` when host/port are valid for this datagram.
     pub present: bool,
     /// Textual host (UTF-8). Not required to be NUL-terminated.
+    /// The textual form does NOT carry a `%zone` suffix — scoping
+    /// rides in `scope_id` so a numeric round-trip is exact.
     pub host_utf8: *const u8,
     /// Length of `host_utf8`.
     pub host_utf8_len: usize,
     /// UDP port, host byte order.
     pub port: u16,
+    /// IPv6 zone identifier (interface index, `0` = none). Always
+    /// `0` for IPv4. See [`std::net::SocketAddrV6::scope_id`].
+    pub scope_id: u32,
 }
 
 impl UdpPeerView {
@@ -133,6 +138,7 @@ impl UdpPeerView {
             host_utf8: std::ptr::null(),
             host_utf8_len: 0,
             port: 0,
+            scope_id: 0,
         }
     }
 
@@ -140,7 +146,8 @@ impl UdpPeerView {
     ///
     /// Returns `None` when the view is absent, when `host_utf8` is
     /// null/empty, when the bytes aren't valid UTF-8, or when the
-    /// host is not an IP literal.
+    /// host is not an IP literal. For IPv6, `scope_id` is applied
+    /// to the resulting `SocketAddrV6`; for IPv4 it is ignored.
     ///
     /// # Safety
     ///
@@ -154,7 +161,17 @@ impl UdpPeerView {
         let bytes = unsafe { std::slice::from_raw_parts(self.host_utf8, self.host_utf8_len) };
         let host_str = std::str::from_utf8(bytes).ok()?;
         let ip: std::net::IpAddr = host_str.parse().ok()?;
-        Some(std::net::SocketAddr::new(ip, self.port))
+        Some(match ip {
+            std::net::IpAddr::V4(v4) => {
+                std::net::SocketAddr::V4(std::net::SocketAddrV4::new(v4, self.port))
+            }
+            std::net::IpAddr::V6(v6) => std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                v6,
+                self.port,
+                0, // flowinfo unused
+                self.scope_id,
+            )),
+        })
     }
 }
 
@@ -173,12 +190,16 @@ pub struct UdpPeerScratch {
     buf: [u8; 64],
     len: usize,
     port: u16,
+    scope_id: u32,
     present: bool,
 }
 
 impl UdpPeerScratch {
     /// Build a scratch from `Option<SocketAddr>`. `None` yields a
-    /// scratch whose `as_view()` is absent.
+    /// scratch whose `as_view()` is absent. For IPv6 link-local
+    /// inputs, the `SocketAddrV6::scope_id` is carried alongside
+    /// the textual IP — the textual form itself does NOT include
+    /// the `%zone` suffix (Swift handles index↔name conversion).
     #[must_use]
     pub fn new(peer: Option<std::net::SocketAddr>) -> Self {
         let mut buf = [0u8; 64];
@@ -187,13 +208,15 @@ impl UdpPeerScratch {
                 buf,
                 len: 0,
                 port: 0,
+                scope_id: 0,
                 present: false,
             };
         };
         // Write the IP literal into `buf`. Using `std::io::Write`
         // on a slice avoids any allocation; the IP `Display` impl
         // is the canonical textual form (numeric IPv4, RFC 5952
-        // IPv6).
+        // IPv6) — and crucially, `Ipv6Addr::Display` does not
+        // include the scope id, which matches the contract here.
         let len = {
             use std::io::Write as _;
             let mut cursor = std::io::Cursor::new(&mut buf[..]);
@@ -205,15 +228,21 @@ impl UdpPeerScratch {
                     buf: [0u8; 64],
                     len: 0,
                     port: 0,
+                    scope_id: 0,
                     present: false,
                 };
             }
             cursor.position() as usize
         };
+        let scope_id = match addr {
+            std::net::SocketAddr::V6(v6) => v6.scope_id(),
+            std::net::SocketAddr::V4(_) => 0,
+        };
         Self {
             buf,
             len,
             port: addr.port(),
+            scope_id,
             present: true,
         }
     }
@@ -230,6 +259,96 @@ impl UdpPeerScratch {
             host_utf8: self.buf.as_ptr(),
             host_utf8_len: self.len,
             port: self.port,
+            scope_id: self.scope_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod udp_peer_scope_id_roundtrip {
+    //! Pins the FFI round-trip of `SocketAddrV6::scope_id`. Without
+    //! these tests a regression that silently drops the zone
+    //! identifier (e.g. `addr.ip()` instead of an explicit
+    //! `scope_id` field) would only manifest at runtime for
+    //! IPv6 link-local UDP — and only on hardware with multiple
+    //! interfaces — which is exactly the class of bug we keep
+    //! shipping if we don't pin it.
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+    /// `addr → UdpPeerScratch → UdpPeerView → SocketAddr` must be
+    /// the identity for IPv6 link-local with a non-zero scope id.
+    #[test]
+    fn ipv6_link_local_scope_id_roundtrips() {
+        let original = SocketAddr::V6(SocketAddrV6::new(
+            "fe80::1".parse().unwrap(),
+            5353,
+            0,
+            4, // arbitrary non-zero interface index
+        ));
+        let scratch = UdpPeerScratch::new(Some(original));
+        let view = scratch.as_view();
+        assert_eq!(view.scope_id, 4);
+        // SAFETY: view borrows from scratch which is still alive.
+        let got = unsafe { view.into_socket_addr() }.unwrap();
+        assert_eq!(got, original);
+        match got {
+            SocketAddr::V6(v6) => assert_eq!(v6.scope_id(), 4),
+            SocketAddr::V4(_) => panic!("expected V6"),
+        }
+    }
+
+    /// IPv4 must always emit `scope_id = 0` and a `SocketAddrV4`
+    /// after the round-trip (no accidental promotion to V6).
+    #[test]
+    fn ipv4_emits_zero_scope_id() {
+        let original = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5353));
+        let scratch = UdpPeerScratch::new(Some(original));
+        let view = scratch.as_view();
+        assert_eq!(view.scope_id, 0);
+        let got = unsafe { view.into_socket_addr() }.unwrap();
+        assert_eq!(got, original);
+        assert!(matches!(got, SocketAddr::V4(_)));
+    }
+
+    /// IPv6 unicast without a scope id round-trips with
+    /// `scope_id = 0` and unscoped equality.
+    #[test]
+    fn ipv6_unicast_no_scope_roundtrips() {
+        let original = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 5353, 0, 0));
+        let scratch = UdpPeerScratch::new(Some(original));
+        let view = scratch.as_view();
+        assert_eq!(view.scope_id, 0);
+        let got = unsafe { view.into_socket_addr() }.unwrap();
+        assert_eq!(got, original);
+    }
+
+    /// `None` round-trips to `None` regardless of any other field
+    /// state.
+    #[test]
+    fn absent_peer_roundtrips_to_none() {
+        let scratch = UdpPeerScratch::new(None);
+        let view = scratch.as_view();
+        assert!(!view.present);
+        let got = unsafe { view.into_socket_addr() };
+        assert!(got.is_none());
+    }
+
+    /// The textual IPv6 form on the wire must NOT carry a `%zone`
+    /// suffix — scoping rides in `scope_id`. Pin the contract so a
+    /// well-meaning refactor that adopts `Display` on `SocketAddrV6`
+    /// (which includes scope) is caught.
+    #[test]
+    fn ipv6_textual_form_does_not_include_zone_suffix() {
+        let original = SocketAddr::V6(SocketAddrV6::new("fe80::1".parse().unwrap(), 5353, 0, 7));
+        let scratch = UdpPeerScratch::new(Some(original));
+        let view = scratch.as_view();
+        let bytes = unsafe { std::slice::from_raw_parts(view.host_utf8, view.host_utf8_len) };
+        let host = std::str::from_utf8(bytes).unwrap();
+        assert!(
+            !host.contains('%'),
+            "host_utf8 must not include zone suffix; got {host}"
+        );
+        assert_eq!(host, "fe80::1");
     }
 }
