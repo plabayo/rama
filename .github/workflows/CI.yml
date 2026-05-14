@@ -639,6 +639,17 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+    env:
+      # cargo-fuzz builds with `-Zsanitizer=address`, which is
+      # incompatible with statically linked libc. The host's
+      # toolchain can pick up `+crt-static` from a recent image
+      # default, so disable it explicitly here. rustc emits exactly
+      # this fix in the error message when the combination fires.
+      # Also keep `--cfg tokio_unstable` here because setting
+      # RUSTFLAGS via env overrides the workspace's
+      # `.cargo/config.toml` rustflags entirely (rather than
+      # appending).
+      RUSTFLAGS: "--cfg tokio_unstable -C target-feature=-crt-static"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2

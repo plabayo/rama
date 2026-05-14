@@ -152,7 +152,6 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         linger_close_timeout: Some(Duration::from_millis(12_345)),
         egress_eof_grace: Some(Duration::from_millis(6_789)),
     };
-    let custom_for_handler = custom.clone();
 
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
@@ -169,7 +168,7 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         tcp_egress_options: None,
         udp_egress_options: None,
     }
-    .with_tcp_egress_options(move |_meta| Some(custom_for_handler.clone()));
+    .with_tcp_egress_options(move |_meta| Some(custom.clone()));
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(session) = engine.new_tcp_session(
@@ -205,7 +204,6 @@ fn udp_egress_options_override_flows_from_handler_to_session() {
         parameters: NwEgressParameters::default(),
         connect_timeout: Some(Duration::from_millis(4_321)),
     };
-    let custom_for_handler = custom.clone();
 
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
@@ -222,7 +220,7 @@ fn udp_egress_options_override_flows_from_handler_to_session() {
         tcp_egress_options: None,
         udp_egress_options: None,
     }
-    .with_udp_egress_options(move |_meta| Some(custom_for_handler.clone()));
+    .with_udp_egress_options(move |_meta| Some(custom.clone()));
     let engine = build_engine(handler);
 
     let SessionFlowAction::Intercept(session) = engine.new_udp_session(

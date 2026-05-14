@@ -57,27 +57,26 @@ enum PeerBehavior {
 async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
     let listener = TcpListener::bind(addr).await.expect("bind peer listener");
     loop {
-        let (mut socket, _) = match listener.accept().await {
-            Ok(v) => v,
-            Err(_) => return,
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
         };
         tokio::spawn(async move {
             match behavior {
                 PeerBehavior::EchoAndClose => {
                     let mut buf = vec![0u8; 8 * 1024];
-                    if let Ok(n) = socket.read(&mut buf).await {
-                        if n > 0 {
-                            _ = socket.write_all(&buf[..n]).await;
-                        }
+                    if let Ok(n) = socket.read(&mut buf).await
+                        && n > 0
+                    {
+                        _ = socket.write_all(&buf[..n]).await;
                     }
                     _ = socket.shutdown().await;
                 }
                 PeerBehavior::EchoThenHalfClose => {
                     let mut buf = vec![0u8; 8 * 1024];
-                    if let Ok(n) = socket.read(&mut buf).await {
-                        if n > 0 {
-                            _ = socket.write_all(&buf[..n]).await;
-                        }
+                    if let Ok(n) = socket.read(&mut buf).await
+                        && n > 0
+                    {
+                        _ = socket.write_all(&buf[..n]).await;
                     }
                     // Half-close the write side — read side stays
                     // open. This is the failure shape the
@@ -89,8 +88,10 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     let (mut r, _w) = socket.split();
                     // `_w` dropped here sends FIN; keep `r` alive
                     // to keep the peer half-open until the test
-                    // tears down.
-                    let _ = r.read(&mut [0u8; 8]).await;
+                    // tears down. Read result intentionally
+                    // discarded — the read existing is what holds
+                    // the read-side open.
+                    drop(r.read(&mut [0u8; 8]).await);
                 }
                 PeerBehavior::AcceptAndPark => {
                     // Mirror of a wedged server loop — accept, do
@@ -101,10 +102,10 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                 }
                 PeerBehavior::EchoThenAbort => {
                     let mut buf = vec![0u8; 8 * 1024];
-                    if let Ok(n) = socket.read(&mut buf).await {
-                        if n > 0 {
-                            _ = socket.write_all(&buf[..n]).await;
-                        }
+                    if let Ok(n) = socket.read(&mut buf).await
+                        && n > 0
+                    {
+                        _ = socket.write_all(&buf[..n]).await;
                     }
                     // Drop without a clean shutdown — closer to a
                     // mid-stream RST than a graceful close.
@@ -141,16 +142,17 @@ fn run_one(behavior: PeerBehavior) {
                     // Connect to the loopback peer — this is real
                     // kernel-mediated I/O, unlike every other test
                     // module that uses an in-memory duplex.
-                    let mut upstream = match TcpStream::connect(addr).await {
-                        Ok(s) => s,
-                        Err(_) => return Ok(()),
+                    let Ok(mut upstream) = TcpStream::connect(addr).await else {
+                        return Ok(());
                     };
                     // Forward bytes between the client-facing
                     // ingress (a `TcpFlow`) and the real upstream
                     // socket. `copy_bidirectional` returns when
                     // either side closes; the bridge then unwinds
-                    // through its normal close path.
-                    let _ = tokio::io::copy_bidirectional(&mut ingress, &mut upstream).await;
+                    // through its normal close path. The byte count
+                    // is intentionally discarded — the test cares
+                    // about the close-path shape, not throughput.
+                    drop(tokio::io::copy_bidirectional(&mut ingress, &mut upstream).await);
                     Ok(())
                 },
             )

@@ -75,13 +75,13 @@ enum Action {
 }
 
 impl Action {
-    const ALL: [Action; 6] = [
-        Action::OnClientBytes,
-        Action::OnEgressBytes,
-        Action::OnClientEof,
-        Action::OnEgressEof,
-        Action::SignalServerDrain,
-        Action::SignalEgressDrain,
+    const ALL: [Self; 6] = [
+        Self::OnClientBytes,
+        Self::OnEgressBytes,
+        Self::OnClientEof,
+        Self::OnEgressEof,
+        Self::SignalServerDrain,
+        Self::SignalEgressDrain,
     ];
 }
 
@@ -114,8 +114,11 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
     };
     let engine = build_engine(handler);
 
-    let server_bytes_seen_cb = server_bytes_seen.clone();
-    let demand_count_cb = demand_count.clone();
+    // `server_bytes_seen` / `demand_count` are not referenced after this
+    // point — the test reads the channel result, not the counters — so
+    // move into the closures directly instead of cloning the Arcs.
+    let server_bytes_seen_cb = server_bytes_seen;
+    let demand_count_cb = demand_count;
     let closed_tx_cb = closed_tx;
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
