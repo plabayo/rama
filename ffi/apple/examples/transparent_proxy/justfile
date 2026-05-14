@@ -113,14 +113,6 @@ clippy-tproxy-ffi-e2e:
 [working-directory: './tproxy_ffi_e2e']
 cleanup-tproxy-ffi-e2e:
     pkill -f 'transparent_proxy/tproxy_ffi_e2e/target/.*/deps/e2e-' >/dev/null 2>&1 || true
-    # Clear accumulated dial9 trace state from prior runs. Each test
-    # leaks its `EngineHandle` (the `Drop` impl is intentionally a
-    # no-op in the test harness), so the dial9 traces directory
-    # grows without bound across runs; once it's large enough,
-    # engine init starts failing with "ffi engine allocation must
-    # succeed" because dial9 can't open another trace file. Clearing
-    # it before each run keeps the suite hermetic.
-    rm -rf "${TMPDIR:-/tmp}/rama_tproxy_ffi_e2e/dial9-traces" 2>/dev/null || true
 
 [working-directory: './tproxy_ffi_e2e']
 run-tproxy-ffi-e2e:

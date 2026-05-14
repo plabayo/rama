@@ -71,7 +71,48 @@ impl EngineHandle {
 }
 
 impl Drop for EngineHandle {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // The earlier no-op `drop` leaked every test's engine —
+        // dial9 trace files stayed open, the engine's tokio
+        // runtime threads + their per-flow file descriptors
+        // stayed alive — and after ~33 tests the process ran out
+        // of FDs (EMFILE), making every subsequent
+        // `rama_transparent_proxy_engine_new_with_config` return
+        // null with `ffi engine allocation must succeed`.
+        //
+        // `_stop` is the right teardown FFI (it consumes the
+        // pointer, signals cooperative shutdown, and drops the
+        // engine's internal tokio runtime). But `_stop` is
+        // blocking and drops a tokio runtime — calling it from
+        // within another tokio runtime's worker thread (where
+        // tests' Arc<EngineHandle> typically gets its final
+        // strong-count zero) trips tokio's "cannot drop runtime
+        // in async context" guard with a non-unwinding panic
+        // that aborts the test binary.
+        //
+        // Off-load to a dedicated OS thread and join. The join
+        // blocks the calling thread (test thread, which IS in
+        // tokio) but does NOT itself drop a tokio runtime in
+        // tokio context — that drop now happens on the spawned
+        // thread which has no tokio attribution. Brief block at
+        // test teardown is acceptable; serial_test serializes
+        // the suite anyway.
+        let raw = std::mem::replace(&mut self.raw, std::ptr::null_mut());
+        if raw.is_null() {
+            return;
+        }
+        let raw_addr = raw as usize;
+        let _ = std::thread::Builder::new()
+            .name("rama-e2e-engine-stop".to_owned())
+            .spawn(move || {
+                let raw = raw_addr as *mut bindings::RamaTransparentProxyEngine;
+                unsafe {
+                    bindings::rama_transparent_proxy_engine_stop(raw, 0);
+                }
+            })
+            .expect("spawn engine-stop thread")
+            .join();
+    }
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
