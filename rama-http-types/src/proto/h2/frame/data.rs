@@ -32,10 +32,10 @@ impl<T> Data<T> {
     /// ```
     /// use rama_http_types::proto::h2::frame::{Data, Error, StreamId};
     /// assert!(matches!(
-    ///     Data::new(StreamId::zero(), &[][..]),
+    ///     Data::<&[u8]>::new(StreamId::zero(), &[]),
     ///     Err(Error::InvalidStreamId),
     /// ));
-    /// assert!(Data::new(StreamId::from(1), &[][..]).is_ok());
+    /// assert!(Data::<&[u8]>::new(StreamId::from(1), &[]).is_ok());
     /// ```
     pub fn new(stream_id: StreamId, payload: T) -> Result<Self, Error> {
         if stream_id.is_zero() {
