@@ -158,10 +158,17 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
 
     /// Pop and invoke the oldest pending receive completion. Returns
     /// `false` when no receive is outstanding.
+    ///
+    /// `isComplete` is intentionally NOT defaulted: Apple's contract
+    /// for this flag differs between stream and datagram protocols
+    /// (per-datagram on UDP, end-of-stream on TCP) and a "safe-looking"
+    /// default lets the wrong assumption sneak into a test silently.
+    /// Every call site must be explicit so the contract under test
+    /// stays visible at the call site.
     @discardableResult
     func completePendingReceive(
         data: Data? = nil,
-        isComplete: Bool = false,
+        isComplete: Bool,
         error: NWError? = nil
     ) -> Bool {
         lock.lock()

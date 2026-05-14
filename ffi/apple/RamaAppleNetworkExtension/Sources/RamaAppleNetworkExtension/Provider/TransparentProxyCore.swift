@@ -495,6 +495,25 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 self?.removeTcpFlow(flowId)
                                 return
                             }
+                            // The egress NWConnection or session may
+                            // have been torn down between this
+                            // flow.open call and its completion (a
+                            // post-ready `.failed` / `.waiting` →
+                            // `tearDownPostReady`, or an external
+                            // engine stop). Each individual cleanup
+                            // step in those paths is async, so by the
+                            // time we observe `ctx.connection == nil`
+                            // it's the canonical signal that the
+                            // flow's state machine has moved on and
+                            // this success branch is stale. Walking
+                            // it would arm fresh pumps and reads
+                            // against torn-down state.
+                            guard let ctx, ctx.connection != nil else {
+                                self?.logTrace(
+                                    "flow.open completion observed teardown; dropping"
+                                )
+                                return
+                            }
                             self?.logTrace("flow.open ok (tcp, egress pre-connected)")
                             writer.markOpened()
                             readPump.start()
@@ -544,7 +563,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 logger: { [weak self] message in self?.logFlowMessage(message) },
                                 onTerminal: terminal.dispatch
                             )
-                            ctx?.clientReadPump = flowReadPump
+                            ctx.clientReadPump = flowReadPump
                             flowReadPump.requestRead()
                         }
                     }
@@ -896,10 +915,28 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 self?.removeUdpFlow(flowId)
                                 return
                             }
+                            // Same teardown-race guard as the TCP
+                            // path: post-ready `.failed`/`.waiting`
+                            // → `terminate` runs its cleanup
+                            // asynchronously, so the flow.open
+                            // completion can still fire after
+                            // teardown. `ctx.connection == nil` is
+                            // the canonical signal that the state
+                            // machine moved on; starting the read
+                            // pump and re-issuing flow.readDatagrams
+                            // here would arm work against a
+                            // cancelled NWConnection and a flow that
+                            // has already been close-erred.
+                            guard let ctx, ctx.connection != nil else {
+                                self?.logTrace(
+                                    "udp flow.open completion observed teardown; dropping"
+                                )
+                                return
+                            }
                             self?.logTrace("flow.open ok (udp, egress pre-connected)")
-                            ctx?.writer?.markOpened()
+                            ctx.writer?.markOpened()
                             readPump.start()
-                            ctx?.requestRead?()
+                            ctx.requestRead?()
                         }
                     }
 

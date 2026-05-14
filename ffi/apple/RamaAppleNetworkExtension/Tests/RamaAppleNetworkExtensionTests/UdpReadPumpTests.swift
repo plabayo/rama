@@ -26,7 +26,14 @@ final class MockUdpConnection: UdpConnectionReadable {
         return completions.count
     }
 
-    func completeReceive(data: Data?, isComplete: Bool = false, error: NWError? = nil) {
+    /// `isComplete` is intentionally required (no default) because
+    /// Apple's contract differs between stream and datagram protocols
+    /// (per-datagram on UDP, end-of-stream on TCP). A permissive
+    /// default of `false` is what hid the
+    /// "first-datagram-tears-the-pump-down" bug; every caller must
+    /// pass it explicitly so the contract under test is visible at
+    /// the call site.
+    func completeReceive(data: Data?, isComplete: Bool, error: NWError? = nil) {
         lock.lock()
         guard !completions.isEmpty else {
             lock.unlock()
@@ -114,11 +121,20 @@ final class UdpReadPumpTests: XCTestCase {
         }
         XCTAssertGreaterThan(connection.pendingReceiveCount, 0)
 
-        connection.completeReceive(data: Data("udp-payload".utf8))
+        // Apple sets `isComplete = true` on every received datagram —
+        // it's the datagram boundary, not an EOF — so the call has to
+        // be explicit. `UdpReadPumpDatagramSemanticsTests` covers the
+        // wider "many datagrams flow through" contract.
+        connection.completeReceive(data: Data("udp-payload".utf8), isComplete: true)
         wait(for: [delivered], timeout: 1.0)
     }
 
-    func testReceiveCompletionTriggersTerminate() {
+    /// Termination is gated on `error != nil`, not on `isComplete`.
+    /// Previously this test asserted the opposite — that an
+    /// `isComplete: true` completion with no error terminates — which
+    /// silently encoded the bug fixed in this PR. See
+    /// `UdpReadPumpDatagramSemanticsTests` for the positive cases.
+    func testReceiveErrorTriggersTerminate() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
 
@@ -130,7 +146,7 @@ final class UdpReadPumpTests: XCTestCase {
             session: session,
             queue: makeQueue(),
             onTerminate: { error in
-                XCTAssertNil(error)
+                XCTAssertNotNil(error)
                 terminated.fulfill()
             }
         )
@@ -139,7 +155,7 @@ final class UdpReadPumpTests: XCTestCase {
         for _ in 0..<100 where connection.pendingReceiveCount == 0 {
             Thread.sleep(forTimeInterval: 0.005)
         }
-        connection.completeReceive(data: nil, isComplete: true)
+        connection.completeReceive(data: nil, isComplete: false, error: .posix(.ECANCELED))
 
         wait(for: [terminated], timeout: 1.0)
     }

@@ -1655,9 +1655,16 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
 
     fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
         guard connection.state == .ready else { return }
+        // `.finalMessage` + `isComplete: true` is the documented way
+        // to trigger a TCP half-close (FIN) on a `NWConnection`. Using
+        // `.defaultMessage` only marks the logical message complete and
+        // leaves the stream open — the peer would never observe a
+        // half-close and the linger watchdog would have to escalate to
+        // a force-cancel. See
+        // <https://developer.apple.com/documentation/network/nwconnection/contentcontext/finalmessage>.
         connection.send(
             content: nil,
-            contentContext: .defaultMessage,
+            contentContext: .finalMessage,
             isComplete: true,
             completion: .contentProcessed({ _ in })
         )
@@ -1720,14 +1727,21 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 
     private func scheduleRead() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_535) {
-            [weak self] data, _, isComplete, error in
+            [weak self] data, _, _, error in
             guard let self else { return }
             self.queue.async {
                 guard !self.closed else { return }
                 if let data, !data.isEmpty {
                     self.session.onEgressDatagram(data)
                 }
-                if isComplete || error != nil {
+                // For UDP, `isComplete` is set on every successful
+                // receive — it marks the datagram boundary, not the
+                // end of the stream. Apple docs:
+                // <https://developer.apple.com/documentation/network/nw_connection_receive_completion_t>.
+                // Treating it as terminal would tear the flow down
+                // after the very first datagram. Only an actual
+                // error (cancel, ECONNRESET, etc.) terminates.
+                if let error {
                     self.closed = true
                     self.onTerminate(error)
                     return

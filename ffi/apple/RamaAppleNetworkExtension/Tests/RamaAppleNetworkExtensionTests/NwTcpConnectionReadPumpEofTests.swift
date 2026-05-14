@@ -128,7 +128,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
 
         // Read error path — same backstop applies.
         let err = NWError.posix(.ECONNRESET)
-        mock.completePendingReceive(error: err)
+        mock.completePendingReceive(isComplete: false, error: err)
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0)
 
@@ -199,7 +199,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         // touching the session, so this path tests "non-terminal
         // receive" without depending on the unactivated-session's
         // `onEgressBytes` return value.
-        mock.completePendingReceive()
+        mock.completePendingReceive(isComplete: false)
         waitForQueueDrain(queue)
 
         Thread.sleep(forTimeInterval: 0.45)

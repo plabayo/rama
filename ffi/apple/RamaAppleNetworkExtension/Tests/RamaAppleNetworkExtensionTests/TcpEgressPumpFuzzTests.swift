@@ -260,11 +260,11 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
         case .completePendingSend:
             _ = mock.completePendingSend()
         case .completePendingReceiveData:
-            _ = mock.completePendingReceive(data: Data([0xAB]))
+            _ = mock.completePendingReceive(data: Data([0xAB]), isComplete: false)
         case .completePendingReceiveEof:
             _ = mock.completePendingReceive(isComplete: true)
         case .completePendingReceiveError:
-            _ = mock.completePendingReceive(error: NWError.posix(.ECONNRESET))
+            _ = mock.completePendingReceive(isComplete: false, error: NWError.posix(.ECONNRESET))
         case .transitionWaiting:
             mock.transition(to: .waiting(NWError.posix(.ENETDOWN)))
         case .transitionReady:
