@@ -8,6 +8,7 @@ env:
   RUST_TOOLCHAIN_BETA: beta
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
 
 on:
   push:
@@ -34,13 +35,14 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          cache-bin: false
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -74,14 +76,15 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          cache-bin: false
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets --all-features
@@ -116,18 +119,19 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
           components: clippy, rustfmt
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          cache-bin: false
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
@@ -145,13 +149,14 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy-e2e
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          cache-bin: false
       - name: Install Apple Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install just
@@ -173,12 +178,14 @@ jobs:
       - uses: actions/checkout@v6
       # ASan needs nightly for `-Z sanitizer=address` and a matching
       # `rust-src` so the sanitizer-built std actually compiles.
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
+          toolchain: nightly
           components: rust-src
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
+          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run transparent proxy FFI stress tests under AddressSanitizer
@@ -194,13 +201,14 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-ne-swift-ffi
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
@@ -215,13 +223,14 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-xpc
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run Apple XPC QA checks
@@ -234,14 +243,15 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-dial9
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          cache-bin: false
       - name: Install just
         run: cargo install just
       - name: Run dial9 QA checks
@@ -254,13 +264,14 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-fastcgi-php
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          cache-bin: false
       - name: Install php-fpm and jq
         run: |
           sudo apt-get update
@@ -290,14 +301,15 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          cache-bin: false
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@v2
@@ -415,13 +427,14 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
+          cache-bin: false
       - run: rustup target add ${{ matrix.target }}
       - name: Configure Android toolchain env
         if: endsWith(matrix.thing, '-android')
@@ -473,16 +486,17 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
+          cache-bin: false
       - name: Baseline tests without tokio_unstable
         env:
           RUSTFLAGS: -D warnings
@@ -501,7 +515,9 @@ jobs:
             cargo nextest run --all-features -p rama-utils
         # Extra: Cargo Hack
       - name: install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
+        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-hack
       - name: cargo hack check without dial9
         env:
           RUSTFLAGS: -D warnings
@@ -516,10 +532,11 @@ jobs:
         with:
           rust-version: ${{env.RUST_TOOLCHAIN}}
         # Extra: sort dependencies (Cargo)
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-sort
       - name: cargo sort (dependencies)
-        run: |
-          cargo install cargo-sort 2>/dev/null || true
-          cargo sort --workspace --grouped --check
+        run: cargo sort --workspace --grouped --check
 
   test-rust-e2e:
     strategy:
@@ -539,17 +556,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          cache-bin: false
       - name: Run tests (--ignored)
         run: |
           cargo nextest run --all-features --workspace --run-ignored=only
@@ -571,17 +589,18 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
         if: startsWith(matrix.os, 'windows')
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          cache-bin: false
       - name: Run tests in release mode (--ignored)
         run: |
           cargo nextest run --all-features --release --workspace --run-ignored=only
@@ -596,13 +615,14 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          cache-bin: false
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run autobahn ws server test-suite
@@ -621,12 +641,13 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
       - name: Install cargo-fuzz
-        run: |
-          cargo install cargo-fuzz 2>/dev/null || true
+        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-fuzz
       - name: fuzz — ua_parse
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
@@ -646,7 +667,7 @@ jobs:
       - precheck-docs
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - name: h2spec
