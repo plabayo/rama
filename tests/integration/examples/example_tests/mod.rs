@@ -114,6 +114,8 @@ mod tls_sni_proxy_mitm;
 mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
+#[cfg(all(feature = "udp", feature = "tcp"))]
+mod udp_over_tcp;
 #[cfg(feature = "http-full")]
 mod ws_chat_server;
 #[cfg(feature = "http-full")]

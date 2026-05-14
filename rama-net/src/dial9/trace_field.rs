@@ -1,9 +1,6 @@
+use crate::address::{Domain, Host};
 #[cfg(feature = "tls")]
 use crate::tls::{ApplicationProtocol, ProtocolVersion};
-use crate::{
-    address::{Domain, Host},
-    proxy::BridgeCloseReason,
-};
 use dial9_trace_format::{
     EventEncoder, TraceField,
     types::{FieldType, FieldValueRef},
@@ -46,48 +43,6 @@ impl TraceField for Host {
     fn decode_ref<'a>(val: &FieldValueRef<'a>) -> Option<Self::Ref<'a>> {
         match val {
             FieldValueRef::String(s) => Some(s),
-            _ => None,
-        }
-    }
-}
-
-impl TraceField for BridgeCloseReason {
-    type Ref<'a> = Self;
-
-    fn field_type() -> FieldType {
-        FieldType::U8
-    }
-
-    fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
-        let code = match self {
-            Self::Shutdown => 1,
-            Self::IdleTimeout => 2,
-            Self::PeerEofLeft => 3,
-            Self::PeerEofRight => 4,
-            Self::ReadErrorLeft => 5,
-            Self::ReadErrorRight => 6,
-            Self::WriteErrorLeft => 7,
-            Self::WriteErrorRight => 8,
-            Self::PeekTimeout => 9,
-            Self::HandlerDeadline => 10,
-            Self::PausedTimeout => 11,
-        };
-        enc.write_u8(code)
-    }
-
-    fn decode_ref<'a>(val: &FieldValueRef<'a>) -> Option<Self::Ref<'a>> {
-        match val {
-            FieldValueRef::Varint(1) => Some(Self::Shutdown),
-            FieldValueRef::Varint(2) => Some(Self::IdleTimeout),
-            FieldValueRef::Varint(3) => Some(Self::PeerEofLeft),
-            FieldValueRef::Varint(4) => Some(Self::PeerEofRight),
-            FieldValueRef::Varint(5) => Some(Self::ReadErrorLeft),
-            FieldValueRef::Varint(6) => Some(Self::ReadErrorRight),
-            FieldValueRef::Varint(7) => Some(Self::WriteErrorLeft),
-            FieldValueRef::Varint(8) => Some(Self::WriteErrorRight),
-            FieldValueRef::Varint(9) => Some(Self::PeekTimeout),
-            FieldValueRef::Varint(10) => Some(Self::HandlerDeadline),
-            FieldValueRef::Varint(11) => Some(Self::PausedTimeout),
             _ => None,
         }
     }

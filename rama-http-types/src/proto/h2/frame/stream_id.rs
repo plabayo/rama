@@ -1,3 +1,4 @@
+use super::Error;
 use serde::{Deserialize, Serialize};
 
 /// A stream identifier, as described in [Section 5.1.1] of RFC 7540.
@@ -25,10 +26,44 @@ impl StreamId {
     /// The maximum allowed stream ID.
     pub const MAX: Self = Self(u32::MAX >> 1);
 
-    /// Parse the stream ID
+    /// Construct a `StreamId` from a u32, silently masking off the reserved
+    /// high bit (matching wire-decode semantics — RFC 9113 §5.1.1 mandates
+    /// the high bit is reserved and MUST be ignored on receipt).
+    ///
+    /// Use [`StreamId::checked`] when you want explicit validation that
+    /// the reserved bit is unset.
     #[inline]
     #[must_use]
-    pub fn parse(buf: &[u8]) -> (Self, bool) {
+    pub const fn new(raw: u32) -> Self {
+        Self(raw & !STREAM_ID_MASK)
+    }
+
+    /// Construct a `StreamId` from a u32, validating that the reserved
+    /// high bit (RFC 9113 §5.1.1) is unset. Returns
+    /// [`Error::ReservedStreamIdBit`] otherwise.
+    #[inline]
+    pub const fn checked(raw: u32) -> Result<Self, Error> {
+        if raw & STREAM_ID_MASK != 0 {
+            return Err(Error::ReservedStreamIdBit);
+        }
+        Ok(Self(raw))
+    }
+
+    /// Parse a stream id from the first 4 bytes of `buf`.
+    ///
+    /// Returns the parsed id plus a flag indicating whether the reserved
+    /// high bit was set on the wire (caller-defined semantics; for
+    /// PRIORITY this means the exclusive bit).
+    ///
+    /// Errors with [`Error::ShortBuffer`] if `buf.len() < 4`.
+    #[inline]
+    pub fn parse(buf: &[u8]) -> Result<(Self, bool), Error> {
+        if buf.len() < 4 {
+            return Err(Error::ShortBuffer {
+                needed: 4,
+                got: buf.len(),
+            });
+        }
         let mut ubuf = [0; 4];
         ubuf.copy_from_slice(&buf[0..4]);
         let unpacked = u32::from_be_bytes(ubuf);
@@ -36,7 +71,7 @@ impl StreamId {
 
         // Now clear the most significant bit, as that is reserved and MUST be
         // ignored when received.
-        (Self(unpacked & !STREAM_ID_MASK), flag)
+        Ok((Self(unpacked & !STREAM_ID_MASK), flag))
     }
 
     /// Returns true if this stream ID corresponds to a stream that
@@ -82,9 +117,13 @@ impl StreamId {
 }
 
 impl From<u32> for StreamId {
+    /// Infallible conversion that silently masks off the reserved high bit,
+    /// matching wire-decode semantics (RFC 9113 §5.1.1 mandates ignoring it
+    /// on receipt). Use [`StreamId::checked`] when you want explicit
+    /// validation that the bit was unset.
+    #[inline]
     fn from(src: u32) -> Self {
-        assert_eq!(src & STREAM_ID_MASK, 0, "invalid stream ID -- MSB is set");
-        Self(src)
+        Self::new(src)
     }
 }
 
@@ -116,5 +155,41 @@ impl<'de> Deserialize<'de> for StreamId {
     {
         let n = u32::deserialize(deserializer)?;
         Ok(Self(n))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_returns_short_buffer_when_too_small() {
+        assert!(matches!(
+            StreamId::parse(&[0, 0, 0]),
+            Err(Error::ShortBuffer { needed: 4, got: 3 }),
+        ));
+    }
+
+    #[test]
+    fn parse_strips_reserved_high_bit_on_wire() {
+        // High bit set => reported as the flag, masked off from the value.
+        let (id, flag) = StreamId::parse(&[0x80, 0x00, 0x00, 0x01]).unwrap();
+        assert_eq!(u32::from(id), 1);
+        assert!(flag);
+    }
+
+    #[test]
+    fn from_masks_reserved_high_bit() {
+        let id = StreamId::from(STREAM_ID_MASK | 7);
+        assert_eq!(u32::from(id), 7);
+    }
+
+    #[test]
+    fn checked_errors_when_high_bit_set() {
+        assert!(matches!(
+            StreamId::checked(STREAM_ID_MASK | 1),
+            Err(Error::ReservedStreamIdBit),
+        ));
+        assert_eq!(u32::from(StreamId::checked(42).unwrap()), 42);
     }
 }
