@@ -47,9 +47,7 @@ pub(super) fn load_or_create() -> Result<(X509, PKey<Private>), BoxError> {
             );
             match decrypt_pair(&se_key, &cert_blob, &key_blob) {
                 Ok((cert, key)) => {
-                    tracing::info!(
-                        "tls: loaded MITM CA from SE-encrypted system keychain entries"
-                    );
+                    tracing::info!("tls: loaded MITM CA from SE-encrypted system keychain entries");
                     Ok((cert, key))
                 }
                 Err(err) => {
@@ -68,7 +66,8 @@ pub(super) fn load_or_create() -> Result<(X509, PKey<Private>), BoxError> {
                 se_blob_present = se_blob.is_some(),
                 cert_blob_present = cert_blob.is_some(),
                 key_blob_present = key_blob.is_some(),
-                cert_blob_looks_plaintext = cert_blob.as_deref().is_some_and(|v| is_pem_plaintext(v)),
+                cert_blob_looks_plaintext =
+                    cert_blob.as_deref().is_some_and(|v| is_pem_plaintext(v)),
                 key_blob_looks_plaintext = key_blob.as_deref().is_some_and(|v| is_pem_plaintext(v)),
                 "tls: incomplete MITM CA state for Secure Enclave path; WIPING and \
                  regenerating from scratch (this is expected on first SE-enabled boot \

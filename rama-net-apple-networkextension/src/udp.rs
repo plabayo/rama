@@ -11,13 +11,13 @@ use tokio::sync::mpsc;
 ///
 /// `peer` is the *other end* of the wire relative to the proxy:
 ///
-/// * For datagrams **flowing toward the wire** (`UdpFlow::recv`,
-///   `NwUdpSocket::send`) it is the destination — the peer the
-///   originating app wanted this datagram delivered to.
-/// * For datagrams **flowing back from the wire** (`UdpFlow::send`,
-///   `NwUdpSocket::recv`) it is the source — the peer the reply
-///   came from, which then becomes the `sentBy` endpoint when the
-///   transparent proxy delivers the datagram back to the kernel via
+/// * For datagrams **flowing toward the wire** (`UdpFlow::recv`)
+///   it is the destination — the peer the originating app wanted
+///   this datagram delivered to.
+/// * For datagrams **flowing back from the wire** (`UdpFlow::send`)
+///   it is the source — the peer the reply came from, which then
+///   becomes the `sentBy` endpoint when the transparent proxy
+///   delivers the datagram back to the kernel via
 ///   `NEAppProxyUDPFlow.writeDatagrams(_:sentBy:)`.
 ///
 /// UDP is stateless and the kernel exposes per-datagram source /

@@ -61,13 +61,13 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
-/// End-to-end UDP loopback: client sends a datagram, the engine's
-/// Rust-owned egress socket sends it via `send_to`, a real loopback
-/// UDP "server" replies, and the reply is received by the service
-/// through `egress.recv()`. Exercises the actual `udp_egress.rs`
-/// send + recv pumps and the per-datagram peer attribution.
+/// End-to-end UDP loopback: client sends a datagram, the service
+/// (owning egress) sends it via `send_to`, a real loopback UDP
+/// "server" replies, and the reply is delivered back through
+/// `flow.send`. Exercises the engine ingress path and per-datagram
+/// peer attribution end-to-end.
 #[test]
-fn udp_egress_loopback_multi_peer() {
+fn udp_loopback_multi_peer_service_owned_egress() {
     use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 
     // Two stand-in "remote" servers on loopback. Each echoes with a

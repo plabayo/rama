@@ -22,10 +22,10 @@ pub(super) struct TestHandler {
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestTcpService> + Send + Sync>,
     pub(super) udp_matcher:
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestUdpService> + Send + Sync>,
-    // Optional overrides for the egress-options trait methods. Default
+    // Optional override for the TCP egress-options trait method. Default
     // `None` keeps existing test sites compiling without their having
-    // to know these fields exist; tests that need to drive a non-default
-    // option set use `with_tcp_egress_options` / `with_udp_egress_options`.
+    // to know this field exists; tests that need to drive a non-default
+    // option set use `with_tcp_egress_options`.
     pub(super) tcp_egress_options: Option<
         Arc<
             dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>

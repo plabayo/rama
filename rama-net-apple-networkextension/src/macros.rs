@@ -720,10 +720,11 @@ macro_rules! __transparent_proxy_ffi_emit {
 
         /// Activate a UDP session.
         ///
-        /// The Rust engine owns the egress UDP socket (one unconnected
-        /// BSD socket per flow); Swift no longer needs to supply an
-        /// egress sink. See `udp_egress.rs` in the engine for the
-        /// rationale.
+        /// Hands the prepared ingress `UdpFlow` to the waiting service
+        /// task; Swift does not own any egress for UDP. Egress (socket
+        /// open / pool / per-datagram routing) is entirely the
+        /// service's responsibility — see the `match_udp_flow` doc in
+        /// `TransparentProxyHandler` for the contract.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_activate(
             session: *mut RamaTransparentProxyUdpSession,

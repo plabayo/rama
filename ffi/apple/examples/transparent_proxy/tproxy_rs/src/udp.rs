@@ -4,76 +4,90 @@ use rama::{
     Service,
     error::BoxError,
     extensions::ExtensionsRef as _,
-    io::BridgeIo,
     net::{
-        apple::networkextension::{NwUdpSocket, UdpFlow, tproxy::TransparentProxyServiceContext},
+        apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
         proxy::ProxyTarget,
     },
     service::service_fn,
     telemetry::tracing,
 };
+use tokio::net::UdpSocket;
 
 pub(super) async fn try_new_service(
     _: TransparentProxyServiceContext,
-) -> Result<
-    impl Service<BridgeIo<UdpFlow, NwUdpSocket>, Output = (), Error = Infallible>,
-    BoxError,
-> {
+) -> Result<impl Service<UdpFlow, Output = (), Error = Infallible>, BoxError> {
     Ok(service_fn(service))
 }
 
 /// UDP flow handler used by the transparent proxy engine.
 ///
-/// The egress `NwUdpSocket` is pre-connected by Swift via `NWConnection`.
-/// This service simply forwards datagrams between the intercepted flow and the
-/// egress socket until either side closes.
-async fn service(bridge: BridgeIo<UdpFlow, NwUdpSocket>) -> Result<(), Infallible> {
-    let BridgeIo(mut ingress, mut egress) = bridge;
-
+/// The engine hands the service the ingress flow only; egress is the
+/// service's responsibility. This example opens one [`UdpSocket`] per
+/// flow connected to the originating app's target peer, and pumps
+/// datagrams between ingress and egress until either side goes quiet.
+///
+/// Real deployments may pool sockets across flows and use `send_to` /
+/// `recv_from` to dispatch by per-datagram peer.
+async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
     let Some(ProxyTarget(target_addr)) = ingress.extensions().get_ref().cloned() else {
         tracing::error!("tproxy udp missing target endpoint, draining flow");
         while ingress.recv().await.is_some() {}
         return Ok(());
     };
 
-    tracing::info!(
-        remote = %target_addr,
-        "tproxy udp forwarding started (pre-connected egress)"
-    );
+    let egress = match UdpSocket::bind("0.0.0.0:0").await {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!(%err, "tproxy udp failed to bind egress socket");
+            while ingress.recv().await.is_some() {}
+            return Ok(());
+        }
+    };
+    if let Err(err) = egress.connect(target_addr.to_string()).await {
+        tracing::error!(%err, remote = %target_addr, "tproxy udp failed to connect egress socket");
+        while ingress.recv().await.is_some() {}
+        return Ok(());
+    }
+    let egress_peer = match egress.peer_addr() {
+        Ok(addr) => addr,
+        Err(err) => {
+            tracing::error!(%err, "tproxy udp failed to read egress peer address");
+            while ingress.recv().await.is_some() {}
+            return Ok(());
+        }
+    };
+
+    tracing::info!(remote = %target_addr, peer = %egress_peer, "tproxy udp forwarding started");
 
     let mut up_packets: u64 = 0;
     let mut down_packets: u64 = 0;
     let mut up_bytes: u64 = 0;
     let mut down_bytes: u64 = 0;
+    let mut buf = vec![0u8; 64 * 1024];
 
     loop {
         tokio::select! {
             maybe_datagram = ingress.recv() => {
-                let Some(datagram) = maybe_datagram else {
-                    break;
-                };
-                // Zero-length UDP datagrams are valid (RFC 768) — forward
-                // unchanged. A real proxy that wants to drop them can do
-                // so by policy; the example does not impose one. The
-                // datagram's `peer` field is the destination the
-                // originating app addressed this datagram to; forwarding
-                // the whole struct preserves multi-peer fidelity (the
-                // Swift side routes by `peer` to the matching egress
-                // NWConnection).
+                let Some(datagram) = maybe_datagram else { break };
                 up_packets += 1;
                 up_bytes += datagram.payload.len() as u64;
-                egress.send(datagram);
-            }
-            maybe_datagram = egress.recv() => {
-                let Some(datagram) = maybe_datagram else {
+                if let Err(err) = egress.send(&datagram.payload).await {
+                    tracing::warn!(%err, "tproxy udp egress send failed");
                     break;
+                }
+            }
+            recv = egress.recv(&mut buf) => {
+                let n = match recv {
+                    Ok(n) => n,
+                    Err(err) => {
+                        tracing::warn!(%err, "tproxy udp egress recv failed");
+                        break;
+                    }
                 };
-                // `datagram.peer` is the source the reply came from;
-                // forwarding it makes `flow.writeDatagrams(_:sentBy:)`
-                // tag the kernel-bound write with the correct peer.
                 down_packets += 1;
-                down_bytes += datagram.payload.len() as u64;
-                ingress.send(datagram);
+                down_bytes += n as u64;
+                let payload = rama::bytes::Bytes::copy_from_slice(&buf[..n]);
+                ingress.send(Datagram::new(payload, egress_peer));
             }
         }
     }

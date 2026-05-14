@@ -818,13 +818,13 @@ final class TransparentProxyCore: @unchecked Sendable {
 
         // ── Phase 2: open the flow and hand control to Rust ──
         //
-        // Egress now lives entirely on the Rust side: one unconnected
-        // tokio `UdpSocket` per flow, `send_to(peer)` per datagram,
-        // `recv_from` tagging each reply with its source. The pre-
-        // ready NWConnection state machine that previously gated
-        // `flow.open` is gone — see `udp_egress.rs` in the engine and
-        // issue #894 for the rationale. As soon as Rust says "intercept"
-        // we open the flow and arm the session.
+        // Egress lives on the Rust side, owned by the handler's
+        // service: the service opens its own socket(s) (tokio
+        // `UdpSocket`, a pool, rama-udp, whatever fits the workload),
+        // routes by per-datagram peer, and writes replies back via
+        // `flow.send`. The pre-ready NWConnection state machine that
+        // once gated `flow.open` is gone — as soon as Rust says
+        // "intercept" we open the flow and arm the session.
         //
         // Trade-off: a downstream `NEAppProxyProvider` no longer sees
         // the egress flow as an `NEAppProxyFlow` carrying the original
