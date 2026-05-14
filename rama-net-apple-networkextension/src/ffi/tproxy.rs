@@ -165,8 +165,9 @@ pub struct TransparentProxyConfig {
     pub tunnel_remote_address_utf8_len: usize,
     pub rules: *const TransparentProxyNetworkRule,
     pub rules_len: usize,
-    /// Per-flow TCP write-pump back-pressure cap in bytes. `0` means "use the
-    /// Swift-side built-in default". See
+    /// Per-flow TCP write-pump back-pressure cap in bytes. Authoritative
+    /// on the Swift side — the value emitted here is the value the pump
+    /// uses. See
     /// [`tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
     pub tcp_write_pump_max_pending_bytes: usize,
 }

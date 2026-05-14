@@ -209,7 +209,9 @@ typedef struct {
     /// Number of rules at `rules`.
     size_t rules_len;
     /// Per-flow TCP write-pump back-pressure cap in bytes.
-    /// 0 means "use the Swift-side built-in default (1 MiB)".
+    /// Authoritative on the Swift side — the value emitted here is the
+    /// value the pump uses. Default is 256 KiB; there is no
+    /// "0 means unset" path.
     size_t tcp_write_pump_max_pending_bytes;
 } RamaTransparentProxyConfig;
 

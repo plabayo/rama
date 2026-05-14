@@ -777,8 +777,10 @@ private final class TcpWritePumpCore: @unchecked Sendable {
     weak var delegate: TcpWritePumpCoreDelegate?
 
     // Queue-only mutable state — never read/written outside a block
-    // executing on `queue`.
-    private var pending: [Data] = []
+    // executing on `queue`. `ChunkQueue` replaces `[Data]` so the
+    // hot-path dequeue and the retry push-back are amortised O(1)
+    // instead of O(n) on every drain step.
+    private var pending: ChunkQueue<Data> = ChunkQueue()
     private var writing = false
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
@@ -810,7 +812,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
             s.pendingBytes = 0
         }
         return { [self] in
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
             self.retrying = nil
         }
     }
@@ -867,7 +869,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
             // already zeroed the counter, and subtracting again would push
             // it negative.
             guard !self.state.withLock({ $0.closed }) else { return }
-            self.pending.append(data)
+            self.pending.pushBack(data)
             self.flush()
         }
         return .accepted
@@ -884,7 +886,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         }
         if alreadyClosed { return }
         lifecycle = .draining
-        pending.removeAll(keepingCapacity: false)
+        pending.removeAll()
         retrying = nil
         delegate?.pumpCore(self, didTerminateWith: error)
     }
@@ -897,7 +899,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         }
 
         writing = true
-        let chunk = pending.removeFirst()
+        guard let chunk = pending.popFront() else { return }
 
         let fireDrain: Bool = state.withLock { s in
             s.pendingBytes -= chunk.count
@@ -931,7 +933,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
                             currentDelayMs = writeRetryInitialDelayMs
                             deadline = now + .milliseconds(writeRetryHardDeadlineMs)
                         }
-                        self.pending.insert(chunk, at: 0)
+                        self.pending.pushFront(chunk)
                         self.state.withLock { $0.pendingBytes += chunk.count }
                         self.retrying = WriteRetry(
                             delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
@@ -1106,7 +1108,10 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// `sentByEndpoint`): a multi-peer read batch is still collapsed
     /// to its first endpoint at the read site, so queued replies
     /// produced from that batch carry only that single endpoint.
-    private var pending: [(Data, NWEndpoint?)] = []
+    // `ChunkQueue` replaces `[(Data, NWEndpoint?)]` so dequeue is
+    // amortised O(1) instead of O(n) on every drain step (UDP pumps
+    // can queue up to `udpWritePumpMaxPending` entries under burst).
+    private var pending: ChunkQueue<(Data, NWEndpoint?)> = ChunkQueue()
     /// Lifecycle phase — replaces the former `writing`, `closed`, and
     /// `opened` boolean triple.
     private var phase: UdpWritePumpPhase = .pending
@@ -1155,7 +1160,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         queue.async {
             guard self.phase != .closed else { return }
             self.phase = .closed
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
             self.onTerminalError(error)
         }
     }
@@ -1201,7 +1206,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             // does not pick up a later peer change at flush time.
             // Pre-first-read replies have nil here and resolve at
             // flush time once `sentByEndpoint` is known.
-            self.pending.append((data, self.sentByEndpoint))
+            self.pending.pushBack((data, self.sentByEndpoint))
             let depth = self.pending.count
             if depth > self.pendingCountHwm {
                 self.pendingCountHwm = depth
@@ -1220,7 +1225,7 @@ final class UdpClientWritePump: @unchecked Sendable {
     func close() {
         queue.async {
             self.phase = .closed
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
         }
     }
 
@@ -1230,12 +1235,16 @@ final class UdpClientWritePump: @unchecked Sendable {
         // Resolve the endpoint: prefer the one captured at enqueue
         // time; fall back to the latest known peer for entries that
         // arrived before any `setSentByEndpoint` call.
-        guard let endpoint = pending[0].1 ?? sentByEndpoint else {
+        guard let head = pending.first(),
+            let endpoint = head.1 ?? sentByEndpoint
+        else {
             return
         }
 
         phase = .writing
-        let chunk = pending.removeFirst().0
+        // Safe: `first()` returned non-nil, no other thread mutates
+        // `pending` (single-queue confinement).
+        let chunk = pending.popFront()!.0
         // `[weak self]` for the same retain-cycle reason as
         // `TcpClientReadPump`'s `flow.readData` capture: the flow
         // (kernel or mock) stores the completion until it fires,
@@ -1256,7 +1265,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                         )
                     )
                     self.phase = .closed
-                    self.pending.removeAll(keepingCapacity: false)
+                    self.pending.removeAll()
                     self.onTerminalError(error)
                     return
                 }
@@ -1790,7 +1799,14 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 
 
 
-final class TcpFlowContext {
+/// `@unchecked Sendable` because every mutable field is read or written
+/// only from a block executing on the flow's dedicated serial
+/// `flowQueue`. The type system cannot see this invariant; the
+/// annotation makes it explicit so the per-flow closures that capture
+/// the context (flow.open / connection.receive completions, etc.) stay
+/// Swift-6-clean instead of forcing those closures to drop their
+/// `@Sendable` requirement.
+final class TcpFlowContext: @unchecked Sendable {
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
     // standing up a real NWConnection.
@@ -1810,7 +1826,9 @@ final class TcpFlowContext {
     }
 }
 
-final class UdpFlowContext {
+/// See `TcpFlowContext` for the `@unchecked Sendable` rationale —
+/// same queue-confinement invariant applies on the UDP side.
+final class UdpFlowContext: @unchecked Sendable {
     init() {
     }
 
@@ -1890,6 +1908,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         guard let startup = engine.config() else {
             core.logError("failed to get transparent proxy config from rust")
+            // Apple does NOT call `stopProxy` to clean up after a failed
+            // `startProxy`, so any state we attached above must be torn
+            // down locally before we surface the error — otherwise the
+            // engine and the 60s flow-count telemetry timer leak until
+            // the next provider lifecycle.
+            core.detachEngine(reason: 0)
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
                 code: 2,
@@ -1908,13 +1932,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
-        if startup.tcpWritePumpMaxPendingBytes > 0 {
-            writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
-            writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-            core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
-        } else {
-            core.logInfo("tcp write pump cap using built-in default \(writePumpMaxPendingBytes) bytes")
-        }
+        // The engine's value is authoritative — the previous "0 means
+        // unset" path was dead code (the default is non-zero), so the
+        // Swift initial value of `writePumpMaxPendingBytes` was never
+        // used in practice and the documented per-flow cap silently
+        // drifted from what the comments described.
+        writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
+        writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
+        core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
         let settings = NETransparentProxyNetworkSettings(
             tunnelRemoteAddress: startup.tunnelRemoteAddress
@@ -1938,6 +1963,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         setTunnelNetworkSettings(settings) { [core] error in
             if let error {
                 core.logError("setTunnelNetworkSettings error: \(error)")
+                // Same reason as the `engine.config()` failure path:
+                // Apple won't compensate via `stopProxy`, so we must
+                // tear down the engine + telemetry timer locally.
+                core.detachEngine(reason: 0)
                 completionHandler(error)
                 return
             }

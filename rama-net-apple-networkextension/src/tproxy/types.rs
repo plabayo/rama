@@ -452,13 +452,19 @@ pub struct TransparentProxyConfig {
     tunnel_remote_address: ArcStr,
     rules: Vec<TransparentProxyNetworkRule>,
     /// Per-flow TCP write-pump back-pressure cap in bytes. The Swift pump
-    /// enqueues bytes up to this limit; once exceeded it signals `.paused` to
-    /// the Rust bridge so the ingress side stops reading until the queue drains
-    /// below the cap. Defaults to 1 MiB (1,048,576 bytes).
+    /// enqueues bytes up to this limit; once exceeded it signals `.paused`
+    /// to the Rust bridge so the ingress side stops reading until the queue
+    /// drains below the cap. Defaults to 256 KiB (262,144 bytes) — two
+    /// pumps per flow ⇒ 512 KiB worst-case write-side per flow, sized for
+    /// the common many-concurrent-flows / modest-per-flow-throughput shape.
     ///
     /// Lowering this value reduces peak per-flow memory at the cost of
     /// slightly more frequent pause/resume cycles; raising it helps absorb
     /// bursty producers (e.g. h2 window-sized bursts) without pausing.
+    ///
+    /// The Swift pump treats this as authoritative — there is no
+    /// "0 means unset" path. The value the engine emits is the value the
+    /// pump uses.
     tcp_write_pump_max_pending_bytes: usize,
 }
 
@@ -469,7 +475,11 @@ impl TransparentProxyConfig {
         Self {
             tunnel_remote_address: ArcStr::from("127.0.0.1"),
             rules: vec![TransparentProxyNetworkRule::any()],
-            tcp_write_pump_max_pending_bytes: 1024 * 1024,
+            // Matches `RamaTransparentProxyProvider.writePumpMaxPendingBytes`
+            // on the Swift side — kept in lockstep so the Swift fallback
+            // isn't dead code and the documented per-flow cap is what's
+            // actually applied at runtime.
+            tcp_write_pump_max_pending_bytes: 256 * 1024,
         }
     }
 
@@ -490,8 +500,8 @@ impl TransparentProxyConfig {
 
     /// Per-flow TCP write-pump back-pressure cap in bytes.
     ///
-    /// Returns `0` when the field was not explicitly set (Swift falls back to
-    /// its built-in default). See the field doc on
+    /// Authoritative on Swift: the value returned here is the value the
+    /// pump uses. The default is 256 KiB. See the field doc on
     /// [`TransparentProxyConfig`] for the full contract.
     #[must_use]
     pub fn tcp_write_pump_max_pending_bytes(&self) -> usize {
@@ -528,6 +538,36 @@ impl TransparentProxyConfig {
 impl Default for TransparentProxyConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod transparent_proxy_config_tests {
+    use super::*;
+
+    /// Pin the wire-side contract that Swift consumes: the default
+    /// returned to Swift must match the documented Swift-side default
+    /// (256 KiB / two pumps per flow ⇒ 512 KiB worst-case write-side
+    /// per flow), so the Swift fallback isn't dead code.
+    #[test]
+    fn default_tcp_write_pump_max_pending_bytes_is_256_kib() {
+        let cfg = TransparentProxyConfig::new();
+        assert_eq!(
+            cfg.tcp_write_pump_max_pending_bytes(),
+            256 * 1024,
+            "Swift Provider defaults `writePumpMaxPendingBytes` to 256 KiB \
+             and overrides it from this value; if the two drift, the \
+             intended per-flow cap silently turns into something else."
+        );
+    }
+
+    /// The setter must round-trip whatever bytes value the caller chose,
+    /// including small ones — there is no "0 means unset" sentinel any
+    /// more; the value the engine returns is the value the pump uses.
+    #[test]
+    fn tcp_write_pump_max_pending_bytes_round_trips() {
+        let cfg = TransparentProxyConfig::new().with_tcp_write_pump_max_pending_bytes(17);
+        assert_eq!(cfg.tcp_write_pump_max_pending_bytes(), 17);
     }
 }
 

@@ -301,4 +301,53 @@ final class CoreEdgeCaseTests: XCTestCase {
         // pattern catches any obvious double-cancel crash or leak
         // that would surface here.
     }
+
+    /// Mirrors the shape of a `startProxy` failure after `attachEngine`:
+    /// the provider gets as far as attaching the engine, hits a later
+    /// failure (e.g. `engine.config()` returns nil, or
+    /// `setTunnelNetworkSettings` errors), and must locally detach so
+    /// the engine + flow-count telemetry timer don't leak — Apple's
+    /// runtime does NOT compensate via `stopProxy` after a failed
+    /// `startProxy`. The fix in `RamaTransparentProxyProvider.swift`
+    /// adds `core.detachEngine(reason: 0)` on each failure branch
+    /// after attach; this test pins that the resulting state machine
+    /// is usable again (the provider can be re-instantiated and
+    /// re-attached cleanly) and that handleAppMessage falls through
+    /// to nil in the failed/detached window.
+    func testFailedStartupShapeDetachThenReattachIsClean() {
+        let core = TransparentProxyCore()
+
+        // Step 1: attach the engine, as `startProxy` does immediately
+        // after engine creation.
+        core.attachEngine(makeEngine())
+        XCTAssertEqual(
+            core.tcpFlowCount, 0,
+            "freshly attached engine should have zero flows registered"
+        )
+
+        // Step 2: simulate a later-step startup failure by calling
+        // `detachEngine` before any flows are handed in — what the
+        // failure paths in `startProxy` now do.
+        core.detachEngine(reason: 0)
+
+        // After cleanup, handleAppMessage must short-circuit (no
+        // engine attached) and not crash.
+        XCTAssertNil(
+            core.handleAppMessage(Data("ping".utf8)),
+            "handleAppMessage after failed-startup teardown must return nil"
+        )
+
+        // Step 3: re-attach. The flow-count timer was cancelled and
+        // the engine pointer cleared, so a fresh engine attaches
+        // cleanly — no timer collision, no leftover registration
+        // maps. If `detachEngine` had failed to release state, this
+        // re-attach would surface as a double-timer schedule or a
+        // dangling Rust runtime.
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        XCTAssertEqual(
+            core.tcpFlowCount, 0,
+            "re-attached engine should have a clean registration map"
+        )
+    }
 }
