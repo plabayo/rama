@@ -438,6 +438,100 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
     engine.stop(0);
 }
 
+/// Closed-from-the-receiver-side: distinct from `on_client_close`
+/// (which drops the sender). Here the *service task* drops its
+/// `UdpFlow` — which drops the embedded `mpsc::Receiver` — so the
+/// session's `client_tx` is still `Some` but `tx.is_closed()` is
+/// true. The contract is: closed → no demand.
+///
+/// Note on coverage: in steady-state observation this test cannot
+/// disambiguate the buggy ordering (`if capacity==0` first) from
+/// the correct one (`if is_closed` first), because tokio drains
+/// buffered items synchronously on receiver-drop, restoring
+/// `capacity()` to the configured bound. The misordered code's
+/// reachable failure window is the in-progress receiver-drop
+/// itself (capacity not yet restored, channel marked closed). The
+/// test still pins the externally-observable contract ("post-
+/// receiver-drop = no demand") and would catch any *new* path
+/// that fired demand against a structurally-done session — e.g.
+/// a future change that swapped both checks for a single
+/// `try_send-only` form would still need to respect this.
+#[test]
+fn udp_on_client_datagram_no_demand_after_receiver_dropped() {
+    let (service_exited_tx, service_exited_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let exit_tx = service_exited_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                // Service consumes the flow (dropping its receiver
+                // half) and exits. The drop closes the ingress
+                // channel from the receiver side.
+                service: service_fn(move |flow: crate::UdpFlow| {
+                    let exit_tx = exit_tx.clone();
+                    async move {
+                        drop(flow);
+                        _ = exit_tx.send(());
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let demand = Arc::new(AtomicUsize::new(0));
+    let demand_cb = demand.clone();
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_bytes| {},
+        move || {
+            demand_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+
+    // Wait for the service task to have exited (and thus the
+    // receiver to have been dropped). Without this, the test would
+    // race against the runtime's scheduling.
+    service_exited_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service task must exit");
+
+    // Give the runtime a moment to fully tear the channel down
+    // (drop propagation through the bridge).
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Now push a datagram. The session's `client_tx` is still
+    // `Some`, but the channel is closed because the receiver was
+    // dropped when the service consumed and dropped its `UdpFlow`.
+    // Demand MUST NOT fire — the session is structurally done.
+    session.on_client_datagram(b"after-receiver-dropped", None);
+
+    // Small slack window for any spurious dispatch.
+    std::thread::sleep(Duration::from_millis(25));
+
+    assert_eq!(
+        demand.load(Ordering::Relaxed),
+        0,
+        "closed channel must not trigger on_client_read_demand; \
+         the session is gone, no point asking Swift to read more"
+    );
+
+    session.on_client_close();
+    engine.stop(0);
+}
+
 /// Each `on_server_bytes` invocation blocks the bridge task that
 /// called it until the user closure returns. If the dispatcher
 /// embeds a synchronous wait on a Swift dispatch queue inside that

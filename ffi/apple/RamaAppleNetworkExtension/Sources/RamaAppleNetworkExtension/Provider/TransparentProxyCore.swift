@@ -200,13 +200,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync { self.udpContexts.count }
     }
 
-    /// Test-only accessor for the writer pump bound to a flow.
-    /// Returns `nil` if the flow is not registered (or never had
-    /// a writer attached). Used by per-flow unit tests that need
-    /// to inspect cache state mutated by the read loop.
-    func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
-        stateQueue.sync { self.udpContexts[ObjectIdentifier(flow)]?.writer }
-    }
+    #if DEBUG
+        /// Test-only accessor for the writer pump bound to a flow.
+        /// Returns `nil` if the flow is not registered (or never
+        /// had a writer attached). Used by per-flow unit tests
+        /// that need to inspect cache state mutated by the read
+        /// loop. Gated on `#if DEBUG` so production builds carry
+        /// no test-only surface on `TransparentProxyCore`.
+        func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
+            stateQueue.sync { self.udpContexts[ObjectIdentifier(flow)]?.writer }
+        }
+    #endif
 
     // MARK: - Logging helpers
 
