@@ -108,17 +108,37 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
                     break;
                 }
             }
-            (n, peer) = recv_from_optional(egress_v4.as_ref(), &mut buf_v4), if egress_v4.is_some() => {
-                let payload = rama::bytes::Bytes::copy_from_slice(&buf_v4[..n]);
-                down_packets += 1;
-                down_bytes += n as u64;
-                ingress.send(Datagram::new(payload, peer));
+            res = recv_from_optional(egress_v4.as_ref(), &mut buf_v4), if egress_v4.is_some() => {
+                match res {
+                    Ok((n, peer)) => {
+                        let payload = rama::bytes::Bytes::copy_from_slice(&buf_v4[..n]);
+                        down_packets += 1;
+                        down_bytes += n as u64;
+                        ingress.send(Datagram::new(payload, peer));
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, family = "v4", "tproxy udp egress recv_from failed; tearing socket down");
+                        // Drop the socket so the next loop iteration
+                        // stops polling it — otherwise the broken
+                        // socket re-errors on every iteration and
+                        // spams the log without making progress.
+                        egress_v4 = None;
+                    }
+                }
             }
-            (n, peer) = recv_from_optional(egress_v6.as_ref(), &mut buf_v6), if egress_v6.is_some() => {
-                let payload = rama::bytes::Bytes::copy_from_slice(&buf_v6[..n]);
-                down_packets += 1;
-                down_bytes += n as u64;
-                ingress.send(Datagram::new(payload, peer));
+            res = recv_from_optional(egress_v6.as_ref(), &mut buf_v6), if egress_v6.is_some() => {
+                match res {
+                    Ok((n, peer)) => {
+                        let payload = rama::bytes::Bytes::copy_from_slice(&buf_v6[..n]);
+                        down_packets += 1;
+                        down_bytes += n as u64;
+                        ingress.send(Datagram::new(payload, peer));
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, family = "v6", "tproxy udp egress recv_from failed; tearing socket down");
+                        egress_v6 = None;
+                    }
+                }
             }
         }
     }
@@ -154,24 +174,17 @@ async fn ensure_bound<'s>(
 }
 
 /// `recv_from` wrapper that lets the `select!` branch guard cleanly
-/// short-circuit when the socket is `None`. The branch's `if`
-/// guard ensures this is only polled with `Some`.
+/// short-circuit when the socket is `None`. The branch's `if` guard
+/// ensures this is only polled with `Some`. Errors propagate to the
+/// caller so it can tear down the broken socket — otherwise a hard
+/// error (interface down, etc.) would spam the log on every
+/// `select!` cycle.
 async fn recv_from_optional(
     socket: Option<&UdpSocket>,
     buf: &mut [u8],
-) -> (usize, SocketAddr) {
+) -> std::io::Result<(usize, SocketAddr)> {
     match socket {
-        Some(s) => match s.recv_from(buf).await {
-            Ok(v) => v,
-            Err(err) => {
-                tracing::warn!(%err, "tproxy udp egress recv_from failed");
-                // Pending forever — the next iteration of the outer
-                // `select!` will fall through to ingress and the
-                // flow will tear down naturally. Returning a fake
-                // result would mis-attribute a datagram.
-                std::future::pending::<(usize, SocketAddr)>().await
-            }
-        },
+        Some(s) => s.recv_from(buf).await,
         None => std::future::pending().await,
     }
 }
