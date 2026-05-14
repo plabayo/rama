@@ -72,6 +72,8 @@ pub use self::upgrade::Upgrade;
 pub use self::user_agent::UserAgent;
 pub use self::vary::Vary;
 //pub use self::warning::Warning;
+pub use self::x_content_type_options::XContentTypeOptions;
+pub use self::x_frame_options::XFrameOptions;
 
 #[cfg(test)]
 fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
@@ -196,3 +198,5 @@ mod upgrade;
 mod user_agent;
 mod vary;
 //mod warning;
+mod x_content_type_options;
+mod x_frame_options;
