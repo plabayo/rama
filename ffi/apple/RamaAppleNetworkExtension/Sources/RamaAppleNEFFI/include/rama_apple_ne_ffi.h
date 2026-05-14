@@ -300,9 +300,9 @@ typedef struct {
 /// this datagram (rare; usually a test or a kernel-callback edge case).
 /// When `present = true`, `host_utf8` is the textual host — in
 /// production this is a numeric IP literal because the kernel's
-/// `flow.readDatagrams` returns resolved IPs and the per-peer
-/// NWConnection's bound endpoint is also an IP. `host_utf8` is NOT
-/// required to be NUL-terminated.
+/// `flow.readDatagrams` returns resolved IPs and Rust's
+/// unconnected `tokio::net::UdpSocket::recv_from` also returns
+/// resolved IPs. `host_utf8` is NOT required to be NUL-terminated.
 ///
 /// `scope_id` carries the IPv6 zone identifier (interface index, as
 /// returned by `if_nametoindex(3)`) for link-local addresses like

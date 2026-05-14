@@ -1137,6 +1137,19 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// `log show`. The flag clears whenever a write finally
     /// progresses, so flapping is logged once per stall episode.
     private var unresolvedEndpointLogged = false
+    /// Test-only instrumentation. Counts every `setSentByEndpoint`
+    /// invocation that supplies a non-nil endpoint; the read-loop
+    /// in `TransparentProxyCore.handleUdpFlow` is its only caller
+    /// in production. Used by `UdpReadEndpointMismatchTests` to
+    /// assert "the read loop attributed exactly N datagrams" — a
+    /// stale fabrication path would touch this counter once per
+    /// datagram even on mismatched endpoint arrays, the strict-
+    /// paired path touches it only for matched indices.
+    internal private(set) var testSentByEndpointSetCount: Int = 0
+    /// Companion: the last endpoint observed by `setSentByEndpoint`.
+    /// Useful when a test needs to confirm WHICH endpoint, not just
+    /// HOW MANY.
+    internal private(set) var testLastSentByEndpoint: NWEndpoint?
 
     init(
         flow: any UdpFlowWritable,
@@ -1174,6 +1187,8 @@ final class UdpClientWritePump: @unchecked Sendable {
                 self.flushLocked()
                 return
             }
+            self.testSentByEndpointSetCount += 1
+            self.testLastSentByEndpoint = endpoint
             self.sentByEndpoint = endpoint
             self.flushLocked()
         }

@@ -333,7 +333,8 @@ pub struct TransparentProxyUdpSessionCallbacks {
 // ── Egress (NWConnection) options ─────────────────────────────────────────────
 
 /// C representation of `NwEgressParameters` — NWParameters-level settings
-/// shared between TCP and UDP egress `NWConnection`s.
+/// applied to TCP egress `NWConnection`s. (UDP egress is service-owned
+/// in Rust and does not consume these.)
 ///
 /// Discriminant values for service_class:
 ///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice

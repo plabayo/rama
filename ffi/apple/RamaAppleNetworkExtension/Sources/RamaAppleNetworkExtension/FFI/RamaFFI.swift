@@ -120,9 +120,12 @@ struct RamaUdpPeer: Hashable {
 
 final class UdpSessionCallbackBox {
     /// Rust→Swift datagram. `peer` is the source the reply came
-    /// from; the per-peer NWConnection's bound endpoint. Swift uses
-    /// `peer` as the `sentBy` argument to `flow.writeDatagrams`.
-    /// `nil` is the safety valve for paths without attribution.
+    /// from — the kernel-style endpoint that Rust's unconnected
+    /// `tokio::net::UdpSocket::recv_from` returned for this
+    /// datagram. Swift uses `peer` as the `sentBy` argument to
+    /// `flow.writeDatagrams`, which preserves per-datagram peer
+    /// attribution all the way back to the kernel. `nil` is the
+    /// safety valve for paths without attribution.
     let onServerDatagram: (Data, RamaUdpPeer?) -> Void
     let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void

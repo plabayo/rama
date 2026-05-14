@@ -13,14 +13,16 @@ import XCTest
 /// surplus indices — that is *active misattribution* on a
 /// multi-peer flow (every reply past the first endpoint would be
 /// tagged with the first peer and routed to it). The current code
-/// strictly pairs by index; surplus datagrams get `peer = nil`
-/// (treated as "no attribution" downstream, which the writer
-/// pump's orphan-drain handles).
+/// strictly pairs by index; surplus datagrams get `peer = nil`.
 ///
-/// We drive the mismatch directly through `MockUdpFlow`, which
-/// lets the test fire any `(datagrams, endpoints, error)` shape
-/// the test wants — including ones the real kernel "shouldn't"
-/// produce. The contract is what we test, not the kernel.
+/// Assertion strategy: the read loop calls
+/// `writer.setSentByEndpoint(...)` exactly once per matched
+/// (datagram, endpoint) pair; the writer pump exposes a
+/// test-only invocation counter (`testSentByEndpointSetCount`)
+/// and the last value (`testLastSentByEndpoint`). A regression
+/// of the `eps.first` fabrication path would bump the counter
+/// once per *datagram* (including unmatched ones), so the
+/// counter is a direct disambiguator.
 final class UdpReadEndpointMismatchTests: XCTestCase {
 
     override class func setUp() {
@@ -80,20 +82,9 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
     }
 
-    /// 3 datagrams + 1 endpoint: only datagrams[0] gets the
-    /// endpoint; datagrams[1] and datagrams[2] must NOT be
-    /// re-tagged with endpoints[0]. The test inspects the writer
-    /// pump's cached `sentByEndpoint` after the read completes —
-    /// if the bug were present, that cache would be updated three
-    /// times to the same endpoint (one per datagram in the
-    /// fabrication path); with the fix, only the first datagram
-    /// updates it.
-    ///
-    /// Direct datagram observability via the Rust callback would
-    /// require an FFI hook with peer reporting; the writer-cache
-    /// path is the same single peer-storage location and is
-    /// sufficient to pin "the fabrication path no longer runs".
-    func testEndpointMismatchSurplusDatagramsHaveNoPeer() {
+    /// 3 datagrams + 1 endpoint: exactly one cache update. The
+    /// fabrication bug would update the cache 3 times.
+    func testEndpointMismatch3Datagrams1EndpointTouchesCacheOnce() {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
@@ -102,39 +93,34 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         waitFor("flow.open") { flow.openWasInvoked }
         flow.completeOpen(error: nil)
         waitFor("read pump") { flow.pendingReadCount > 0 }
+        guard let writer = fx.core.testInspectUdpWriter(for: flow) else {
+            XCTFail("writer not registered for flow")
+            return
+        }
+        XCTAssertEqual(writer.testSentByEndpointSetCount, 0, "baseline")
 
-        // Three datagrams, one endpoint. The fabrication bug would
-        // call `setSentByEndpoint(endpoints[0])` three times; the
-        // strict-paired-only path calls it exactly once.
         let datagrams: [Data] = [
             Data("first".utf8),
             Data("second".utf8),
             Data("third".utf8),
         ]
-        let endpoints: [NWEndpoint] = [
-            NWHostEndpoint(hostname: "10.0.0.1", port: "5000")
-        ]
-        flow.completePendingRead(datagrams: datagrams, endpoints: endpoints, error: nil)
+        let firstEndpoint = NWHostEndpoint(hostname: "10.0.0.1", port: "5001")
+        flow.completePendingRead(datagrams: datagrams, endpoints: [firstEndpoint], error: nil)
+        waitFor("next read pump issued (proves loop completed)") { flow.pendingReadCount > 0 }
 
-        // Allow the per-flow queue to drain — the read completion
-        // runs on `flowQueue`, which is internal; a short sleep is
-        // adequate here because the work it does is a few sync
-        // mutations + bridge sends. Followed by waiting for the
-        // next read to be issued (which only happens AFTER the
-        // current completion finishes processing all entries).
-        waitFor("next read pump issued (proves all 3 datagrams processed)") {
-            flow.pendingReadCount > 0
-        }
-
-        // The flow should still be alive — the mismatch is a
-        // degraded-attribution event, not a teardown event.
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
+        XCTAssertEqual(
+            writer.testSentByEndpointSetCount, 1,
+            "exactly one attribution: only datagrams[0] is paired with endpoints[0]"
+        )
+        XCTAssertEqual(
+            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1",
+            "the one cached endpoint must be endpoints[0], not a fabrication"
+        )
     }
 
-    /// All three datagrams attributed (3 datagrams, 3 endpoints).
-    /// Baseline: the strict-paired path must still attribute every
-    /// datagram correctly.
-    func testEndpointArrayMatchedAttributesAll() {
+    /// 3 datagrams + 3 endpoints: cache updated 3 times (once per
+    /// matched pair), final value is endpoints.last.
+    func testEndpointArrayMatched3DatagramsTouchesCacheThrice() {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
@@ -143,6 +129,10 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         waitFor("flow.open") { flow.openWasInvoked }
         flow.completeOpen(error: nil)
         waitFor("read pump") { flow.pendingReadCount > 0 }
+        guard let writer = fx.core.testInspectUdpWriter(for: flow) else {
+            XCTFail("writer not registered for flow")
+            return
+        }
 
         let datagrams: [Data] = [
             Data("a".utf8), Data("b".utf8), Data("c".utf8),
@@ -153,17 +143,21 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
             NWHostEndpoint(hostname: "10.0.0.3", port: "5003"),
         ]
         flow.completePendingRead(datagrams: datagrams, endpoints: endpoints, error: nil)
+        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
 
-        waitFor("next read pump issued (proves batch was fully consumed)") {
-            flow.pendingReadCount > 0
-        }
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
+        XCTAssertEqual(
+            writer.testSentByEndpointSetCount, 3,
+            "every datagram has a paired endpoint, so cache is updated 3 times"
+        )
+        XCTAssertEqual(
+            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.3",
+            "FIFO ordering: the last update must be the last endpoint"
+        )
     }
 
-    /// `endpoints = nil` (older kernel surfaces, or any pre-batch
-    /// readDatagrams variant) — every datagram gets `peer = nil`,
-    /// and the flow still runs.
-    func testEndpointArrayMissingAllDatagramsHaveNoPeer() {
+    /// `endpoints = nil`: no cache updates at all, even though
+    /// datagrams are present and the flow keeps running.
+    func testEndpointArrayMissingTouchesCacheZeroTimes() {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
@@ -172,21 +166,24 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         waitFor("flow.open") { flow.openWasInvoked }
         flow.completeOpen(error: nil)
         waitFor("read pump") { flow.pendingReadCount > 0 }
-
-        let datagrams: [Data] = [Data("only".utf8)]
-        flow.completePendingRead(datagrams: datagrams, endpoints: nil, error: nil)
-
-        waitFor("next read pump issued") {
-            flow.pendingReadCount > 0
+        guard let writer = fx.core.testInspectUdpWriter(for: flow) else {
+            XCTFail("writer not registered for flow")
+            return
         }
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
+
+        flow.completePendingRead(datagrams: [Data("only".utf8)], endpoints: nil, error: nil)
+        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
+
+        XCTAssertEqual(
+            writer.testSentByEndpointSetCount, 0,
+            "no endpoint array means no attribution and no cache touch"
+        )
+        XCTAssertNil(writer.testLastSentByEndpoint)
     }
 
-    /// More endpoints than datagrams: surplus endpoints are
-    /// simply unused; every datagram still gets its paired
-    /// endpoint. (This direction can't misattribute, but pin it
-    /// so a future refactor doesn't accidentally over-index.)
-    func testEndpointArrayLongerThanDatagramsIsHarmless() {
+    /// 1 datagram + 2 endpoints: surplus endpoints are ignored;
+    /// cache touched exactly once with endpoints[0].
+    func testEndpointArrayLongerThanDatagramsAttributesOnlyMatched() {
         let fx = makeFixture()
         defer { tearDown(fx) }
 
@@ -195,6 +192,10 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         waitFor("flow.open") { flow.openWasInvoked }
         flow.completeOpen(error: nil)
         waitFor("read pump") { flow.pendingReadCount > 0 }
+        guard let writer = fx.core.testInspectUdpWriter(for: flow) else {
+            XCTFail("writer not registered for flow")
+            return
+        }
 
         let datagrams: [Data] = [Data("only".utf8)]
         let endpoints: [NWEndpoint] = [
@@ -202,10 +203,14 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
             NWHostEndpoint(hostname: "10.0.0.2", port: "5002"),
         ]
         flow.completePendingRead(datagrams: datagrams, endpoints: endpoints, error: nil)
+        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
 
-        waitFor("next read pump issued") {
-            flow.pendingReadCount > 0
-        }
-        XCTAssertEqual(fx.core.udpFlowCount, 1)
+        XCTAssertEqual(
+            writer.testSentByEndpointSetCount, 1,
+            "only datagrams[0] is paired; surplus endpoints contribute nothing"
+        )
+        XCTAssertEqual(
+            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1"
+        )
     }
 }
