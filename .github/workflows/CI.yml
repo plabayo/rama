@@ -16,33 +16,24 @@ on:
       - main
   pull_request: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   precheck-rust:
-    strategy:
-      matrix:
-        toolchain:
-          - 1.93.0 # MSRV
-          - stable
-          - beta
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
-        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
-          toolchain: ${{ matrix.toolchain }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: ./.github/actions/rust-cache
         with:
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}
-          cache-bin: false
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -80,17 +71,42 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}
-          cache-bin: false
       - name: clippy
         run: |
           cargo clippy --workspace --all-targets --all-features
       - name: rustfmt
         run: |
           cargo fmt --all --check
+
+  doc-rust:
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/setup-nasm@v1
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          key: ${{ matrix.os }}-${{ env.RUST_TOOLCHAIN }}-doc
       - name: doc
         run: |
           cargo doc --all-features --no-deps --workspace --exclude rama-cli --exclude rama-net-apple-xpc
@@ -127,17 +143,19 @@ jobs:
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-          cache-bin: false
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
         run: cargo nextest run --all-features --examples --workspace --no-tests=pass
+      - name: Run ignored tests
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
+        run: cargo nextest run --all-features --workspace --run-ignored=only
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
@@ -152,11 +170,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-transparent-proxy-e2e
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-          cache-bin: false
       - name: Install Apple Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install just
@@ -182,10 +199,9 @@ jobs:
         with:
           toolchain: nightly
           components: rust-src
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
-          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run transparent proxy FFI stress tests under AddressSanitizer
@@ -204,11 +220,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-ne-swift-ffi
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
@@ -226,11 +241,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: macos-latest-${{ env.RUST_TOOLCHAIN }}-apple-xpc
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-          cache-bin: false
       - name: Install just
         run: brew install just
       - name: Run Apple XPC QA checks
@@ -247,13 +261,13 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-dial9
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-          cache-bin: false
-      - name: Install just
-        run: cargo install just
       - name: Run dial9 QA checks
         run: just qa-dial9
 
@@ -267,18 +281,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: just
+      - uses: ./.github/actions/rust-cache
         with:
           key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-fastcgi-php
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
-          cache-bin: false
       - name: Install php-fpm and jq
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             php-fpm php-cli jq curl
-      - name: Install just
-        run: cargo install just
       - name: Run rama-fastcgi-php end-to-end examples
         run: just test-fastcgi-php
 
@@ -305,18 +319,18 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-${{ matrix.target }}
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-          cache-bin: false
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
         uses: mlugg/setup-zig@v2
         with:
           version: 0.13.0
-      - name: Install cargo-zigbuild
-        run: cargo install cargo-zigbuild --locked
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-zigbuild
       - name: Build Workspace
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
@@ -430,11 +444,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.rust }}"
           key: ${{ matrix.os }}-${{ matrix.rust }}-${{ matrix.target }}
-          cache-bin: false
       - run: rustup target add ${{ matrix.target }}
       - name: Configure Android toolchain env
         if: endsWith(matrix.thing, '-android')
@@ -479,7 +492,31 @@ jobs:
         run: |
           cargo build --target ${{ matrix.target }} --tests --all-features
 
-  test-rust-extra:
+  test-baseline-no-tokio-unstable:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: nextest
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-baseline-no-tokio-unstable
+      - name: Baseline tests without tokio_unstable
+        run: |
+          cargo nextest run --workspace
+          cargo test --doc --workspace
+
+  test-loom:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
@@ -492,61 +529,39 @@ jobs:
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}
-          cache-bin: false
-      - name: Baseline tests without tokio_unstable
-        env:
-          RUSTFLAGS: -D warnings
-        run: |
-          cargo nextest run --workspace
-          cargo test --doc --workspace
-      - name: install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes protobuf-compiler
-          protoc --version
-        # Extra: Loom Tests
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-loom
       - name: Run Loom tests (rama-utils)
         run: |
           RUSTFLAGS="--cfg loom -Dwarnings" \
             cargo nextest run --all-features -p rama-utils
-        # Extra: Cargo Hack
-      - name: install cargo-hack
-        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+
+  cargo-hack-base:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
-          tool: cargo-hack
-      - name: cargo hack check without dial9
-        env:
-          RUSTFLAGS: -D warnings
-        run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
-      - name: cargo hack check with dial9
-        env:
-          RUSTFLAGS: -D warnings --cfg tokio_unstable
-        run: cargo hack check --each-feature --no-dev-deps --workspace
-        # Extra: Cargo Deny
-      - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          rust-version: ${{env.RUST_TOOLCHAIN}}
-        # Extra: sort dependencies (Cargo)
+          toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
-          tool: cargo-sort
-      - name: cargo sort (dependencies)
-        run: cargo sort --workspace --grouped --check
+          tool: cargo-hack
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-base
+      - name: cargo hack check without dial9
+        run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
 
-  test-rust-e2e:
-    strategy:
-      matrix:
-        toolchain:
-          - stable
-        os:
-          - ubuntu-latest
-          - macos-latest
-    runs-on: ${{ matrix.os }}
+  cargo-hack-dial9:
+    runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
@@ -554,23 +569,43 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
-        if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
-          toolchain: ${{ matrix.toolchain }}
-          components: clippy, rustfmt
+          toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
-          tool: nextest
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+          tool: cargo-hack
+      - uses: ./.github/actions/rust-cache
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}
-          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-          cache-bin: false
-      - name: Run tests (--ignored)
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-dial9
+      - name: install protoc
         run: |
-          cargo nextest run --all-features --workspace --run-ignored=only
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          protoc --version
+      - name: cargo hack check with dial9
+        run: cargo hack check --each-feature --no-dev-deps --workspace
+
+  meta-lints:
+    runs-on: ubuntu-latest
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: ${{env.RUST_TOOLCHAIN}}
+      - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-sort
+      - name: cargo sort (dependencies)
+        run: cargo sort --workspace --grouped --check
 
   test-rust-e2e-release:
     strategy:
@@ -596,11 +631,10 @@ jobs:
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: nextest
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
-          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}-release
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
-          cache-bin: false
       - name: Run tests in release mode (--ignored)
         run: |
           cargo nextest run --all-features --release --workspace --run-ignored=only
@@ -618,11 +652,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
-          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}
+          key: ubuntu-latest-${{ env.RUST_TOOLCHAIN }}-autobahn
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          cache-bin: false
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run autobahn ws server test-suite
@@ -665,6 +698,10 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
           targets: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-nightly-fuzz
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
@@ -712,6 +749,7 @@ jobs:
     needs:
       - precheck-rust-tier2
       - check-rust
+      - doc-rust
       - test-rust-base
       - test-ffi-apple-example-transparent-proxy-e2e
       - test-ffi-apple-example-transparent-proxy-e2e-asan
@@ -719,8 +757,11 @@ jobs:
       - test-fastcgi-php
       - test-rust-linux-musl
       - test-rama-apple-xpc
-      - test-rust-extra
-      - test-rust-e2e
+      - test-baseline-no-tokio-unstable
+      - test-loom
+      - cargo-hack-base
+      - cargo-hack-dial9
+      - meta-lints
       - test-rust-e2e-release
       - test-ws-autobahn
       - fuzz-rust
