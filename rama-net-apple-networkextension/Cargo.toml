@@ -19,6 +19,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 default-target = "x86_64-apple-darwin"
 targets = ["x86_64-apple-darwin"]
 
+[package.metadata.cargo-machete]
+ignored = ["bindgen", "cc"]
+
 [features]
 default = []
 # Optional [dial9] runtime telemetry support.
