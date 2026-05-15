@@ -46,14 +46,11 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
     //
     // The env var is opt-out (`=true` / `=1` disables); leaving
     // it unset preserves the default-on behaviour for production.
-    match std::env::var("RAMA_TPROXY_DIAL9_DISABLED").ok().as_deref() {
-        Some("true") | Some("1") => {
-            tracing::debug!(
-                "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
-            );
-            return factory;
-        }
-        _ => {}
+    if let Some("true" | "1") = std::env::var("RAMA_TPROXY_DIAL9_DISABLED").ok().as_deref() {
+        tracing::debug!(
+            "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
+        );
+        return factory;
     }
 
     let Some(storage) = super::utils::storage_dir() else {
