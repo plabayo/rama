@@ -2134,7 +2134,6 @@ dependencies = [
  "bindgen",
  "bytes",
  "cc",
- "libc",
  "rama",
  "serde_json",
  "serial_test",

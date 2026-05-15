@@ -61,13 +61,12 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
     // `ulimit -n` 256 the suite trips EMFILE around test 38 with
     // `Too many open files (os error 24)` from
     // `TransparentProxyEngineBuilder::create async runtime`.
-    // `setrlimit` raises the soft limit up to the hard limit;
-    // macOS's `kern.maxfilesperproc` is typically ~245760, so
-    // 8192 is comfortably within range on any default-configured
-    // host. Failures are best-effort: if the hard limit is also
-    // capped, we just inherit it and the user sees the original
-    // EMFILE.
-    raise_fd_limit_best_effort(8192);
+    // `rama::unix::raise_nofile` bumps the soft limit up to the
+    // hard limit; macOS's `kern.maxfilesperproc` is typically
+    // ~245760, so 8192 is comfortably within range on any
+    // default-configured host. Best-effort: if the hard limit is
+    // also capped, we inherit it.
+    let _ = rama::unix::utils::raise_nofile(8192);
 
     let storage_bytes = storage_dir.to_string_lossy().into_owned().into_bytes();
     let cfg = bindings::RamaTransparentProxyInitConfig {
@@ -80,29 +79,6 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
     assert!(ok, "ffi initialize should succeed");
 }
 
-#[cfg(unix)]
-fn raise_fd_limit_best_effort(target_soft: u64) {
-    // SAFETY: getrlimit/setrlimit have stable POSIX signatures;
-    // we pass valid pointers to a `libc::rlimit` we own. Errors
-    // are surfaced as a non-zero return and swallowed (best-effort).
-    unsafe {
-        let mut rl: libc::rlimit = std::mem::zeroed();
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut rl) != 0 {
-            return;
-        }
-        let hard = rl.rlim_max;
-        // Bump up to the hard limit; refuse to lower if already higher.
-        let desired = target_soft.min(hard as u64) as libc::rlim_t;
-        if rl.rlim_cur >= desired {
-            return;
-        }
-        rl.rlim_cur = desired;
-        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &rl);
-    }
-}
-
-#[cfg(not(unix))]
-fn raise_fd_limit_best_effort(_target_soft: u64) {}
 
 pub(crate) struct EngineHandle {
     pub(crate) raw: *mut bindings::RamaTransparentProxyEngine,
