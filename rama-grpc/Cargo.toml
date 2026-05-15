@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = ["protobuf", "vendor-protoc"]
-full = ["protobuf", "transport", "compression"]
+full = ["protobuf", "transport", "compression", "vendor-protoc"]
 protobuf = ["dep:prost", "dep:prost-types", "rama-grpc-build/protobuf"]
 vendor-protoc = ["rama-grpc-build/vendor-protoc"]
 transport = ["dep:rama-http-core"]

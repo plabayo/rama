@@ -557,6 +557,11 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-cargo-hack-base
+      - name: install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+          protoc --version
       - name: cargo hack check without dial9
         run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
 
