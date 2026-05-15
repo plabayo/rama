@@ -32,6 +32,30 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFactory {
     let factory = DefaultTransparentProxyAsyncRuntimeFactory::new();
 
+    // Opt-out escape hatch. Production wants dial9 enabled by
+    // default (when storage_dir is set); the e2e test harness
+    // wants it disabled because it creates ~50 engines per suite
+    // and dial9's writer task doesn't observe the engine's
+    // shutdown signal — when each engine's tokio runtime drops,
+    // dial9's task is still running, tokio's drop waits briefly
+    // then detaches the runtime threads, leaking their FDs.
+    // After ~38 engines on a 256-FD `ulimit` host (the macOS
+    // default), `TransparentProxyEngineBuilder::create async
+    // runtime` returns `Too many open files (os error 24)` and
+    // the rest of the suite cascades.
+    //
+    // The env var is opt-out (`=true` / `=1` disables); leaving
+    // it unset preserves the default-on behaviour for production.
+    match std::env::var("RAMA_TPROXY_DIAL9_DISABLED").ok().as_deref() {
+        Some("true") | Some("1") => {
+            tracing::debug!(
+                "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
+            );
+            return factory;
+        }
+        _ => {}
+    }
+
     let Some(storage) = super::utils::storage_dir() else {
         tracing::debug!(
             "rama-tproxy dial9: no storage dir provided; running with plain tokio runtime",
