@@ -599,10 +599,17 @@ fn log_record_into(record: &SdkLogRecord) -> ProtoLogRecord {
         })
         .unwrap_or_default();
 
+    let mut dropped_attributes_count = 0;
     let attributes = record
         .attributes_iter()
         .filter_map(|(key, value)| {
-            let value = log_any_value_into(value)?;
+            let value = match log_any_value_into(value) {
+                Some(value) => value,
+                None => {
+                    dropped_attributes_count += 1;
+                    return None;
+                }
+            };
             Some(KeyValue {
                 key: key.as_str().to_owned(),
                 value: Some(value),
@@ -627,7 +634,7 @@ fn log_record_into(record: &SdkLogRecord) -> ProtoLogRecord {
             .unwrap_or_default(),
         body: record.body().and_then(log_any_value_into),
         attributes,
-        dropped_attributes_count: 0,
+        dropped_attributes_count,
         flags,
         trace_id,
         span_id,
