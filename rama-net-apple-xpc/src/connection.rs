@@ -658,7 +658,7 @@ fn connection_error_description(
         // SAFETY: `copied` was returned by `xpc_connection_copy_invalidation_reason`
         // (which malloc's the buffer per Apple's <xpc/connection.h>); the contract
         // requires the caller to `free` it. No other code holds the pointer.
-        unsafe { libc_free(copied.cast::<c_void>()) };
+        unsafe { libc_free(copied.cast_mut().cast::<c_void>()) };
         return Some(value);
     }
 
