@@ -4,16 +4,19 @@
 //! vendored proto types.
 
 use super::proto::{
-    self, AnyValue, ArrayValue, ExponentialHistogramDataPoint, ExportMetricsServiceRequest,
-    ExportTraceServiceRequest, HistogramDataPoint,
-    InstrumentationScope as ProtoInstrumentationScope, KeyValue, NumberDataPoint, ProtoExemplar,
-    ProtoExponentialHistogram, ProtoGauge, ProtoHistogram, ProtoMetric, ProtoResource,
-    ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceSpans, ScopeSpans, Span, Status,
+    self, AnyValue, ArrayValue, ExponentialHistogramDataPoint, ExportLogsServiceRequest,
+    ExportMetricsServiceRequest, ExportTraceServiceRequest, HistogramDataPoint,
+    InstrumentationScope as ProtoInstrumentationScope, KeyValue, KeyValueList, NumberDataPoint,
+    ProtoExemplar, ProtoExponentialHistogram, ProtoGauge, ProtoHistogram, ProtoLogRecord,
+    ProtoMetric, ProtoResource, ProtoResourceMetrics, ProtoScopeMetrics, ProtoSum, ResourceLogs,
+    ResourceSpans, ScopeLogs, ScopeSpans, Span, Status,
 };
 use rama_core::telemetry::opentelemetry::{
-    self, Array, Value,
+    self, Array, InstrumentationScope as SdkInstrumentationScope, Value,
+    logs::AnyValue as LogAnyValue,
     sdk::{
         Resource,
+        logs::{LogBatch, SdkLogRecord},
         metrics::{
             Temporality,
             data::{
@@ -138,6 +141,21 @@ fn instrumentation_scope_into(
         version: scope.version().map(ToOwned::to_owned).unwrap_or_default(),
         attributes: attributes_from_iter(scope.attributes().cloned()),
         ..Default::default()
+    }
+}
+
+fn log_instrumentation_scope_into(
+    scope: &opentelemetry::InstrumentationScope,
+    target: Option<&str>,
+) -> ProtoInstrumentationScope {
+    match target {
+        // OTLP logs do not have a separate target field, so target becomes
+        // the exported scope name when present.
+        Some(target) => ProtoInstrumentationScope {
+            name: target.to_owned(),
+            ..Default::default()
+        },
+        None => instrumentation_scope_into(scope),
     }
 }
 
@@ -535,6 +553,142 @@ fn exp_histogram_into<T: Numeric>(hist: &SdkExponentialHistogram<T>) -> ProtoExp
     }
 }
 
+fn log_any_value_into(value: &LogAnyValue) -> Option<AnyValue> {
+    use proto::any_value::Value as ProtoVal;
+    let value = match value {
+        LogAnyValue::Int(v) => ProtoVal::IntValue(*v),
+        LogAnyValue::Double(v) => ProtoVal::DoubleValue(*v),
+        LogAnyValue::String(v) => ProtoVal::StringValue(v.to_string()),
+        LogAnyValue::Boolean(v) => ProtoVal::BoolValue(*v),
+        LogAnyValue::Bytes(v) => ProtoVal::BytesValue(v.as_slice().to_vec()),
+        LogAnyValue::ListAny(list) => ProtoVal::ArrayValue(ArrayValue {
+            values: list.iter().filter_map(log_any_value_into).collect(),
+        }),
+        LogAnyValue::Map(map) => ProtoVal::KvlistValue(KeyValueList {
+            values: map
+                .iter()
+                .filter_map(|(k, v)| {
+                    let value = log_any_value_into(v)?;
+                    Some(KeyValue {
+                        key: k.as_str().to_owned(),
+                        value: Some(value),
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+        }),
+        other => {
+            tracing::debug!("dropping unsupported otel log AnyValue variant: {other:?}");
+            return None;
+        }
+    };
+    Some(AnyValue { value: Some(value) })
+}
+
+fn log_record_into(record: &SdkLogRecord) -> ProtoLogRecord {
+    let (trace_id, span_id, flags) = record
+        .trace_context()
+        .map(|ctx| {
+            (
+                ctx.trace_id.to_bytes().to_vec(),
+                ctx.span_id.to_bytes().to_vec(),
+                ctx.trace_flags
+                    .map(|f| f.to_u8() as u32)
+                    .unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+
+    let mut dropped_attributes_count = 0;
+    let attributes = record
+        .attributes_iter()
+        .filter_map(|(key, value)| {
+            let Some(value) = log_any_value_into(value) else {
+                dropped_attributes_count += 1;
+                return None;
+            };
+
+            Some(KeyValue {
+                key: key.as_str().to_owned(),
+                value: Some(value),
+                ..Default::default()
+            })
+        })
+        .collect();
+
+    ProtoLogRecord {
+        time_unix_nano: record.timestamp().map(to_nanos).unwrap_or_default(),
+        observed_time_unix_nano: record
+            .observed_timestamp()
+            .map(to_nanos)
+            .unwrap_or_default(),
+        severity_number: record
+            .severity_number()
+            .map(|s| s as i32)
+            .unwrap_or_default(),
+        severity_text: record
+            .severity_text()
+            .map(ToOwned::to_owned)
+            .unwrap_or_default(),
+        body: record.body().and_then(log_any_value_into),
+        attributes,
+        dropped_attributes_count,
+        flags,
+        trace_id,
+        span_id,
+        event_name: record
+            .event_name()
+            .map(ToOwned::to_owned)
+            .unwrap_or_default(),
+    }
+}
+
+/// Group a batch of log records into `ResourceLogs` by instrumentation scope.
+pub(crate) fn group_logs_by_resource_and_scope(
+    batch: &LogBatch<'_>,
+    resource: &ResourceAttributesWithSchema,
+) -> Vec<ResourceLogs> {
+    let mut scope_map: HashMap<(&SdkInstrumentationScope, Option<&str>), Vec<ProtoLogRecord>> =
+        HashMap::new();
+    for (record, scope) in batch.iter() {
+        scope_map
+            .entry((scope, record.target().map(|target| target.as_ref())))
+            .or_default()
+            .push(log_record_into(record));
+    }
+
+    let scope_logs = scope_map
+        .into_iter()
+        .map(|((scope, target), log_records)| ScopeLogs {
+            scope: Some(log_instrumentation_scope_into(scope, target)),
+            schema_url: scope
+                .schema_url()
+                .map(ToOwned::to_owned)
+                .unwrap_or_default(),
+            log_records,
+        })
+        .collect();
+
+    vec![ResourceLogs {
+        resource: Some(ProtoResource {
+            attributes: resource.attributes.clone(),
+            dropped_attributes_count: 0,
+            ..Default::default()
+        }),
+        scope_logs,
+        schema_url: resource.schema_url.clone().unwrap_or_default(),
+    }]
+}
+
+pub(crate) fn log_batch_to_request(
+    batch: &LogBatch<'_>,
+    resource: &ResourceAttributesWithSchema,
+) -> ExportLogsServiceRequest {
+    ExportLogsServiceRequest {
+        resource_logs: group_logs_by_resource_and_scope(batch, resource),
+    }
+}
+
 fn exemplar_into<T: Numeric>(ex: &SdkExemplar<T>) -> ProtoExemplar {
     ProtoExemplar {
         filtered_attributes: ex
@@ -550,9 +704,34 @@ fn exemplar_into<T: Numeric>(ex: &SdkExemplar<T>) -> ProtoExemplar {
 
 #[cfg(test)]
 mod tests {
-    use super::{attributes_from_iter, key_value_from, saturating_u64_to_i64, temporality_into};
+    use super::{
+        ResourceAttributesWithSchema, attributes_from_iter, group_logs_by_resource_and_scope,
+        key_value_from, saturating_u64_to_i64, temporality_into,
+    };
     use crate::service::opentelemetry::proto;
-    use rama_core::telemetry::opentelemetry::{self, sdk::metrics::Temporality};
+    use rama_core::telemetry::opentelemetry::{
+        self, InstrumentationScope,
+        logs::{LogRecord as _, Logger as _, LoggerProvider as _},
+        sdk::{
+            Resource,
+            logs::{SdkLogRecord, SdkLoggerProvider},
+            metrics::Temporality,
+        },
+    };
+
+    fn create_test_log_data(
+        instrumentation_name: &str,
+        target: Option<&str>,
+    ) -> (SdkLogRecord, InstrumentationScope) {
+        let logger = SdkLoggerProvider::builder().build().logger("test");
+        let mut record = logger.create_log_record();
+        if let Some(target) = target {
+            record.set_target(target.to_owned());
+        }
+        let instrumentation =
+            InstrumentationScope::builder(instrumentation_name.to_owned()).build();
+        (record, instrumentation)
+    }
 
     #[test]
     fn attributes_keep_supported_values() {
@@ -601,5 +780,49 @@ mod tests {
             temporality_into(Temporality::LowMemory),
             proto::AggregationTemporality::Cumulative as i32
         );
+    }
+
+    #[test]
+    fn logs_use_target_as_exported_scope_name() {
+        let resource = Resource::builder().build();
+        let (log_record, instrumentation) = create_test_log_data("lib", Some("my_target"));
+        let logs = [(&log_record, &instrumentation)];
+        let batch = opentelemetry::sdk::logs::LogBatch::new(&logs);
+
+        let grouped = group_logs_by_resource_and_scope(
+            &batch,
+            &ResourceAttributesWithSchema::from(&resource),
+        );
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].scope_logs.len(), 1);
+        assert_eq!(
+            grouped[0].scope_logs[0]
+                .scope
+                .as_ref()
+                .expect("scope should be present")
+                .name,
+            "my_target"
+        );
+    }
+
+    #[test]
+    fn logs_with_different_targets_do_not_merge() {
+        let resource = Resource::builder().build();
+        let (log_record1, instrumentation1) = create_test_log_data("lib", Some("target_a"));
+        let (log_record2, instrumentation2) = create_test_log_data("lib", Some("target_b"));
+        let logs = [
+            (&log_record1, &instrumentation1),
+            (&log_record2, &instrumentation2),
+        ];
+        let batch = opentelemetry::sdk::logs::LogBatch::new(&logs);
+
+        let grouped = group_logs_by_resource_and_scope(
+            &batch,
+            &ResourceAttributesWithSchema::from(&resource),
+        );
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].scope_logs.len(), 2);
     }
 }
