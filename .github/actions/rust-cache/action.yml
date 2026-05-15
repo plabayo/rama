@@ -1,0 +1,38 @@
+name: Rust cache
+description: Swatinem/rust-cache wrapped with retry on Windows (both restore and save legs are flaky there due to tar issues).
+
+inputs:
+  key:
+    description: Cache key suffix
+    required: true
+  env-vars:
+    description: Extra env vars to include in the cache key (space-separated names)
+    required: false
+    default: ""
+  save-if:
+    description: Conditional save (forwarded to rust-cache)
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Rust cache (Windows, with retry)
+      if: runner.os == 'Windows'
+      uses: Wandalen/wretry.action@v3
+      with:
+        action: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        attempt_limit: 3
+        attempt_delay: 5000
+        with: |
+          key: ${{ inputs.key }}
+          env-vars: ${{ inputs.env-vars }}
+          save-if: ${{ inputs.save-if }}
+
+    - name: Rust cache
+      if: runner.os != 'Windows'
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      with:
+        key: ${{ inputs.key }}
+        env-vars: ${{ inputs.env-vars }}
+        save-if: ${{ inputs.save-if }}
