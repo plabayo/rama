@@ -650,26 +650,36 @@ jobs:
       # `.cargo/config.toml` rustflags entirely (rather than
       # appending).
       RUSTFLAGS: "--cfg tokio_unstable -C target-feature=-crt-static"
+      # `cargo-fuzz` uses the host triple by default. A recent
+      # ubuntu-latest image flipped that to
+      # `x86_64-unknown-linux-musl`, which isn't installed by
+      # `dtolnay/rust-toolchain` and fails the build with
+      # "can't find crate for std" / "the
+      # x86_64-unknown-linux-musl target may not be installed".
+      # Pin to gnu explicitly so the job doesn't depend on
+      # whatever the runner's default is on any given day.
+      RAMA_FUZZ_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+          targets: x86_64-unknown-linux-gnu
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
         with:
           tool: cargo-fuzz
       - name: fuzz — ua_parse
         run: |
-          cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
+          cargo +nightly fuzz run ua_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
       - name: fuzz — http_header_x_robots_tag
         run: |
-          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
+          cargo +nightly fuzz run http_header_x_robots_tag --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
       - name: fuzz — h2
         run: |
-          cargo +nightly fuzz run h2_client -- -max_total_time=30
-          cargo +nightly fuzz run h2_e2e -- -max_total_time=30
-          cargo +nightly fuzz run h2_hpack -- -max_total_time=30
+          cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+          cargo +nightly fuzz run h2_e2e --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+          cargo +nightly fuzz run h2_hpack --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
 
   test-spec-h2:
     runs-on: ubuntu-latest
