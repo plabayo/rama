@@ -92,11 +92,7 @@ struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
     concurrency_limiter: Arc<concurrency::ConcurrencyLimiter>,
     tcp_mitm_service: tcp::DemoTcpMitmService,
-    udp_service: rama::service::BoxService<
-        rama::io::BridgeIo<apple_ne::UdpFlow, apple_ne::NwUdpSocket>,
-        (),
-        Infallible,
-    >,
+    udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -269,17 +265,12 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         _exec: rama::rt::Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<
-            impl rama::Service<
-                rama::io::BridgeIo<apple_ne::UdpFlow, apple_ne::NwUdpSocket>,
-                Output = (),
-                Error = Infallible,
-            >,
-        >,
+        Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
-        // Pass through DNS (port 53), the NE sandbox cannot bind raw UDP sockets,
-        // so DNS forwarding fails with EPERM. Let DNS go directly.
+        // Pass through DNS (port 53) — letting the system resolver
+        // hit the wire directly avoids a circular dependency between
+        // the proxy service and the resolver it might itself use.
         if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
             return std::future::ready(FlowAction::Passthrough);
         }
@@ -302,8 +293,9 @@ apple_ne::transparent_proxy_ffi! {
     // 3s decision deadline) are applied automatically. Opt out via
     // `.without_tcp_idle_timeout()` / `.without_udp_max_flow_lifetime()`.
     engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory)
-        // Optional dial9 runtime telemetry. Off unless
-        // RAMA_TPROXY_DIAL9_ENABLED=true is set in the extension's
-        // environment. See `src/dial9.rs` and the example README.
+        // dial9 runtime telemetry. Enabled when the FFI init handed
+        // us a storage directory (the production code path); falls
+        // back to a plain tokio runtime when no storage dir is
+        // wired through. See `src/dial9.rs` and the example README.
         .with_runtime_factory(crate::dial9::make_runtime_factory()),
 }

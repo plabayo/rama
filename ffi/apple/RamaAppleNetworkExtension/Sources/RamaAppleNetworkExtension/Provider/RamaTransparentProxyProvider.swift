@@ -3,6 +3,54 @@ import Foundation
 import NetworkExtension
 import RamaAppleNEFFI
 
+// MARK: - Closure-capture rules (DO NOT REMOVE THIS COMMENT BLOCK)
+//
+// Every closure that is *stored* by a long-lived owner — meaning the
+// closure outlives the call site that constructed it — MUST capture
+// the receiver weakly. The owners that store closures in this file:
+//
+//   * `TcpFlowLike` / `UdpFlowLike` implementations (real or mock)
+//     hold `readData`, `writeData`, `readDatagrams`, `writeDatagrams`,
+//     and `open` completion handlers in their internal callback
+//     queues until either the kernel fires them or the flow itself
+//     is destroyed.
+//   * `NwConnectionLike` implementations hold `receive`, `send`,
+//     and `stateUpdateHandler` closures the same way.
+//   * The Rust engine's `TcpSessionCallbackBox` /
+//     `UdpSessionCallbackBox` hold `onServerBytes`,
+//     `onServerClosed`, `onClientReadDemand`, `onServerDatagram`,
+//     `onCloseEgress` closures for the lifetime of the session
+//     handle.
+//   * `DispatchSource.makeTimerSource` and `DispatchWorkItem` hold
+//     their handler closure until cancel or fire.
+//   * `TcpWritePumpCore.doWrite`, `.onDrained`, `.onDrainedClose`,
+//     and `.logHwm` are stored on the core for its entire lifetime.
+//
+// For every such closure, the pattern is:
+//
+//   x.someAsyncCall { [weak self] args in
+//       guard let self else { return }
+//       self.queue.async { [weak self] in
+//           guard let self else { return }
+//           …
+//       }
+//   }
+//
+// Both the outer closure AND any nested `queue.async` block inside
+// it need `[weak self]`. Once you have `guard let self`, the captured
+// `self` inside that scope is strong; an inner async block re-captures
+// it strongly unless you write `[weak self]` again.
+//
+// Cautionary example: a single missing `[weak self]` on
+// `TcpClientReadPump.requestReadLocked`'s `flow.readData` callback
+// produced the cycle `pump → flow (let) → kernel callback queue →
+// closure → pump`. ARC can't see it; code review missed it for
+// months in production. The retain cycle leaked every intercepted
+// flow's per-flow context graph until the kernel-side flow state
+// machine wrapped up, which under stuck-peer conditions never
+// happened promptly. Please keep the closure-capture rule above
+// in mind when adding any new async surface.
+
 enum FlowLogLevel {
     case trace
     case debug
@@ -193,10 +241,15 @@ let writeRetryHardDeadlineMs: Int = 5_000
 /// holding the full chunk-count budget). A byte budget is constant
 /// regardless of chunk size.
 ///
-/// Default 1 MiB. May be overridden once at engine startup from
-/// `RamaTransparentProxyConfig.tcp_write_pump_max_pending_bytes` before
-/// any pump is created, so the write here is not concurrent with reads.
-nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 1 * 1024 * 1024
+/// Default 256 KiB, two pumps per flow = 512 KiB worst-case per flow on
+/// the write side. Smaller than it sounds: any actively backpressured flow
+/// uses far less because Swift hands us chunks of 4–16 KiB on a typical
+/// kernel read, so the pump pauses well before the byte cap. Handlers
+/// that proxy bulk transfers with rare backpressure can raise this via
+/// `RamaTransparentProxyConfig.tcp_write_pump_max_pending_bytes` for the
+/// flows that benefit; the global default is sized for the common case
+/// (many concurrent flows, modest per-flow throughput).
+nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 256 * 1024
 
 /// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
 /// definition, so the pump prefers dropping the newest datagram on
@@ -217,6 +270,39 @@ nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPending
 /// Queue-depth at which the UDP write pump emits a high-water trace
 /// log — same 50 % heuristic as the TCP byte threshold.
 private let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
+
+/// Default wall-clock cap on how long the egress NWConnection lingers
+/// after the local side has sent its FIN before Swift force-cancels
+/// it. Applied when `RamaTcpEgressConnectOptions.has_linger_close_ms`
+/// is `false`; an explicit Rust-side `NwTcpConnectOptions.linger_close_timeout`
+/// overrides. 5 seconds is generous enough for any healthy peer to
+/// FIN-ACK and short enough that 200 slow-closing flows cap at a few
+/// hundred concurrent FIN_WAIT_1 sockets rather than accumulating.
+let defaultLingerCloseMs: UInt32 = 5_000
+
+/// Default grace window between the egress read pump observing peer
+/// EOF / read error and the backstop `connection.cancel()` firing.
+/// Applied when `RamaTcpEgressConnectOptions.has_egress_eof_grace_ms`
+/// is `false`. 2 seconds is enough headroom for the clean teardown
+/// path (`on_server_closed` → `closeWhenDrained` → cancel) to
+/// complete on the common case, while still bounding cleanup when
+/// the originating app has stopped reading.
+let defaultEgressEofGraceMs: UInt32 = 2_000
+
+/// Default tolerance window for a post-ready `NWConnection` sitting
+/// in `.waiting(_)`. `.waiting` after `.ready` means Network.framework
+/// has lost the underlying path (network change, peer unreachable,
+/// NECP path update) and is holding the connection in a recoverable
+/// state. Briefly is fine — Wi-Fi roams routinely cause sub-second
+/// `.waiting` blips. Sitting in `.waiting` for many seconds means the
+/// path will not come back on its own and the connection is
+/// effectively dead. After this window the state handler treats it
+/// as failed and tears the flow down.
+///
+/// `var` for tests that need a short tolerance to keep runtime
+/// bounded — same pattern as `writePumpMaxPendingBytes`. Production
+/// code paths read; tests override before invoking the lifecycle.
+nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
@@ -263,7 +349,7 @@ private struct WriteRetry {
 
 /// Queue-confined state for a UDP flow's read side.  Replaces
 /// `closed: Bool`, `readPending: Bool`, and `demandPending: Bool`.
-private enum UdpFlowReadState {
+enum UdpFlowReadState {
     /// No read in flight, no pending demand.
     case idle
     /// A `readDatagrams` call is in flight.
@@ -275,7 +361,7 @@ private enum UdpFlowReadState {
     case closed
 }
 
-private func blockedFlowError() -> NSError {
+func blockedFlowError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
         code: AppProxyFlowErrorCode.refused.rawValue,
@@ -287,7 +373,7 @@ private func blockedFlowError() -> NSError {
     )
 }
 
-private func tcpUpstreamUnavailableError() -> NSError {
+func tcpUpstreamUnavailableError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
         code: AppProxyFlowErrorCode.refused.rawValue,
@@ -417,9 +503,20 @@ final class TcpClientReadPump: @unchecked Sendable {
         }
 
         phase = .reading
-        self.flow.readData { data, error in
-            self.queue.async {
-                guard self.phase != .closed else { return }
+        // `[weak self]` breaks the otherwise-fatal retain cycle:
+        //   pump → flow (let) → kernel/mocked read-callback queue → this closure → pump.
+        // `NEAppProxyTCPFlow` holds the completion handler in its
+        // internal callback queue until the flow itself is destroyed,
+        // so without the weak capture the pump (and through its
+        // strongly-held `flow` field, the flow object too) lives
+        // until the flow's kernel-side state machine wraps up — long
+        // past the per-flow context's logical lifetime. The same
+        // shape leaks `NEAppProxyUDPFlow` callbacks (see UDP read
+        // path).
+        self.flow.readData { [weak self] data, error in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self, self.phase != .closed else { return }
                 self.phase = .open
 
                 if let error {
@@ -483,7 +580,7 @@ final class TcpClientReadPump: @unchecked Sendable {
 /// disconnect vs. an actionable failure. Codes come from
 /// `NEAppProxyFlow.h`; disconnect-like outcomes log at `trace` so
 /// they don't drown out genuine provider faults.
-private func classifyFlowCallbackError(
+func classifyFlowCallbackError(
     _ error: Error,
     operation: String,
     isClosing: Bool = false
@@ -556,6 +653,76 @@ protocol TcpFlowWritable: AnyObject {
 }
 extension NEAppProxyTCPFlow: TcpFlowWritable {}
 
+/// Full surface the per-flow TCP state machine needs from a flow:
+/// the read + write halves (`TcpFlowReadable` + `TcpFlowWritable`),
+/// plus the lifecycle methods `open` / `closeReadWithError` /
+/// `closeWriteWithError`, plus a hook for applying NEFlowMetaData
+/// onto egress NWParameters. Apple's `NEAppProxyTCPFlow` conforms
+/// trivially; tests pass a `MockTcpFlow` that captures every call
+/// for assertion. Existence of this protocol is what lets
+/// `TransparentProxyCore.handleTcpFlow` be generic over flow type
+/// — and therefore unit-testable end-to-end without a live system
+/// extension.
+protocol TcpFlowLike: TcpFlowReadable, TcpFlowWritable, AnyObject {
+    func open(
+        withLocalEndpoint localEndpoint: NWHostEndpoint?,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+    func closeReadWithError(_ error: Error?)
+    func closeWriteWithError(_ error: Error?)
+    /// Stamp the intercepted flow's NEFlowMetaData (source app identifier,
+    /// audit token, …) onto the supplied egress `NWParameters`. Real
+    /// `NEAppProxyTCPFlow` calls into `applyFlowMetadata` here; tests
+    /// supply a no-op.
+    func applyMetadata(to params: NWParameters)
+}
+
+extension NEAppProxyTCPFlow: TcpFlowLike {
+    func applyMetadata(to params: NWParameters) {
+        applyFlowMetadata(self, params)
+    }
+}
+
+/// Async-read surface the UDP read pump needs. Mirror of
+/// `TcpFlowReadable` for the datagram path. `[NWEndpoint]?` tracks
+/// the per-datagram source so `sentBy:` on a corresponding write
+/// echoes back to the same peer.
+protocol UdpFlowReadable: AnyObject {
+    func readDatagrams(
+        completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
+    )
+}
+extension NEAppProxyUDPFlow: UdpFlowReadable {}
+
+/// Async-write surface the UDP writer pump needs.
+protocol UdpFlowWritable: AnyObject {
+    func writeDatagrams(
+        _ datagrams: [Data],
+        sentBy remoteEndpoints: [NWEndpoint],
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+}
+extension NEAppProxyUDPFlow: UdpFlowWritable {}
+
+/// Full surface the per-flow UDP state machine needs from a flow.
+/// Symmetric to `TcpFlowLike`: read + write halves plus the
+/// open/close lifecycle and the metadata stamping hook.
+protocol UdpFlowLike: UdpFlowReadable, UdpFlowWritable, AnyObject {
+    func open(
+        withLocalEndpoint localEndpoint: NWHostEndpoint?,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    )
+    func closeReadWithError(_ error: Error?)
+    func closeWriteWithError(_ error: Error?)
+    func applyMetadata(to params: NWParameters)
+}
+
+extension NEAppProxyUDPFlow: UdpFlowLike {
+    func applyMetadata(to params: NWParameters) {
+        applyFlowMetadata(self, params)
+    }
+}
+
 /// Cross-thread state of `TcpClientWritePump`. Reachable only via
 /// `Locked.withLock` so the closed-flag / byte-budget / drain-signal
 /// triple is always read and updated as one consistent snapshot.
@@ -610,8 +777,10 @@ private final class TcpWritePumpCore: @unchecked Sendable {
     weak var delegate: TcpWritePumpCoreDelegate?
 
     // Queue-only mutable state — never read/written outside a block
-    // executing on `queue`.
-    private var pending: [Data] = []
+    // executing on `queue`. `ChunkQueue` replaces `[Data]` so the
+    // hot-path dequeue and the retry push-back are amortised O(1)
+    // instead of O(n) on every drain step.
+    private var pending: ChunkQueue<Data> = ChunkQueue()
     private var writing = false
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
@@ -643,7 +812,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
             s.pendingBytes = 0
         }
         return { [self] in
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
             self.retrying = nil
         }
     }
@@ -700,7 +869,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
             // already zeroed the counter, and subtracting again would push
             // it negative.
             guard !self.state.withLock({ $0.closed }) else { return }
-            self.pending.append(data)
+            self.pending.pushBack(data)
             self.flush()
         }
         return .accepted
@@ -717,7 +886,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         }
         if alreadyClosed { return }
         lifecycle = .draining
-        pending.removeAll(keepingCapacity: false)
+        pending.removeAll()
         retrying = nil
         delegate?.pumpCore(self, didTerminateWith: error)
     }
@@ -730,7 +899,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         }
 
         writing = true
-        let chunk = pending.removeFirst()
+        guard let chunk = pending.popFront() else { return }
 
         let fireDrain: Bool = state.withLock { s in
             s.pendingBytes -= chunk.count
@@ -764,7 +933,7 @@ private final class TcpWritePumpCore: @unchecked Sendable {
                             currentDelayMs = writeRetryInitialDelayMs
                             deadline = now + .milliseconds(writeRetryHardDeadlineMs)
                         }
-                        self.pending.insert(chunk, at: 0)
+                        self.pending.pushFront(chunk)
                         self.state.withLock { $0.pendingBytes += chunk.count }
                         self.retrying = WriteRetry(
                             delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
@@ -833,6 +1002,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         self.core = core
         core.delegate = self
     }
+
 
     func markOpened() {
         core.queue.async { [weak self] in
@@ -920,8 +1090,10 @@ private enum UdpWritePumpPhase {
     case closed
 }
 
-private final class UdpClientWritePump {
-    private let flow: NEAppProxyUDPFlow
+final class UdpClientWritePump: @unchecked Sendable {
+    // Held behind the protocol so tests can drive the pump with a
+    // capture-mock; production passes a concrete NEAppProxyUDPFlow.
+    private let flow: any UdpFlowWritable
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
     private let queue: DispatchQueue
@@ -932,11 +1104,15 @@ private final class UdpClientWritePump {
     /// uses the peer that was current when the reply was produced
     /// even if a later `setSentByEndpoint` call has shifted the
     /// active peer in the meantime — fixes a queue-vs-peer-change
-    /// race, but does NOT change the single-peer assumption (see
-    /// `sentByEndpoint`): a multi-peer read batch is still collapsed
-    /// to its first endpoint at the read site, so queued replies
-    /// produced from that batch carry only that single endpoint.
-    private var pending: [(Data, NWEndpoint?)] = []
+    /// race. Combined with the engine's per-datagram peer
+    /// threading (`Datagram::peer` carried through Rust both ways),
+    /// the pump fully supports multi-peer UDP flows: each reply
+    /// is written to its own peer, not collapsed to a flow-wide
+    /// "current" peer.
+    // `ChunkQueue` replaces `[(Data, NWEndpoint?)]` so dequeue is
+    // amortised O(1) instead of O(n) on every drain step (UDP pumps
+    // can queue up to `udpWritePumpMaxPending` entries under burst).
+    private var pending: ChunkQueue<(Data, NWEndpoint?)> = ChunkQueue()
     /// Lifecycle phase — replaces the former `writing`, `closed`, and
     /// `opened` boolean triple.
     private var phase: UdpWritePumpPhase = .pending
@@ -945,23 +1121,46 @@ private final class UdpClientWritePump {
     /// exactly once per pump lifetime.
     private var pendingCountHwm: Int = 0
     /// Most-recently-seen source endpoint from `readDatagrams`.
-    /// Used as the `sentBy` endpoint when writing datagrams back.
-    ///
-    /// **Single-peer assumption.** This implementation maintains one
-    /// egress `NWConnection` per intercepted flow, established to the
-    /// peer in `NEAppProxyUDPFlow.metaData.remoteEndpoint`. Apps that
-    /// `sendto()` multiple peers from the same UDP socket are not
-    /// faithfully proxied — outbound traffic is forwarded to the
-    /// initial peer regardless of the destination the app intended,
-    /// and replies are tagged with the most-recently-observed peer
-    /// rather than per-peer correlated. We log a one-time warn when
-    /// a multi-peer signal is detected (a `setSentByEndpoint` call
-    /// with an endpoint different from the current one).
+    /// Used only as a *fallback* `sentBy` endpoint for callers that
+    /// `enqueue` without an explicit peer (e.g. early bootstrap
+    /// before any client read has surfaced an endpoint, or tests).
+    /// Healthy multi-peer flows carry per-datagram peers through
+    /// the engine and each `enqueue` supplies its own `sentBy`, so
+    /// this field is rarely consulted in production.
     private var sentByEndpoint: NWEndpoint?
-    private var multiPeerLogged = false
+    /// Sticky flag that fires a debug log exactly once when
+    /// `flushLocked` cannot make progress because neither the
+    /// per-datagram `sentBy` nor the cached `sentByEndpoint` is
+    /// known. Without this the pump silently stalls until either
+    /// a future datagram arrives with a peer or the engine's
+    /// UDP max-lifetime backstop closes the flow — invisible in
+    /// `log show`. The flag clears whenever a write finally
+    /// progresses, so flapping is logged once per stall episode.
+    private var unresolvedEndpointLogged = false
+    #if DEBUG
+        /// Test-only instrumentation. Counts every
+        /// `setSentByEndpoint` invocation that supplies a non-nil
+        /// endpoint; the read-loop in
+        /// `TransparentProxyCore.handleUdpFlow` is its only caller
+        /// in production. Used by `UdpReadEndpointMismatchTests` to
+        /// assert "the read loop attributed exactly N datagrams" —
+        /// a stale fabrication path would touch this counter once
+        /// per datagram even on mismatched endpoint arrays, the
+        /// strict-paired path touches it only for matched indices.
+        ///
+        /// Gated on `#if DEBUG` so production Release builds carry
+        /// neither the field storage (24 bytes / flow) nor the
+        /// per-datagram ARC retain on `NWEndpoint`. Tests run in
+        /// Debug; the gating is invisible to them.
+        internal private(set) var testSentByEndpointSetCount: Int = 0
+        /// Companion: the last endpoint observed by
+        /// `setSentByEndpoint`. Useful when a test needs to
+        /// confirm WHICH endpoint, not just HOW MANY.
+        internal private(set) var testLastSentByEndpoint: NWEndpoint?
+    #endif
 
     init(
-        flow: NEAppProxyUDPFlow,
+        flow: any UdpFlowWritable,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void
@@ -971,6 +1170,7 @@ private final class UdpClientWritePump {
         self.logger = logger
         self.onTerminalError = onTerminalError
     }
+
 
     func markOpened() {
         queue.async {
@@ -984,7 +1184,7 @@ private final class UdpClientWritePump {
         queue.async {
             guard self.phase != .closed else { return }
             self.phase = .closed
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
             self.onTerminalError(error)
         }
     }
@@ -995,21 +1195,25 @@ private final class UdpClientWritePump {
                 self.flushLocked()
                 return
             }
-            if let prev = self.sentByEndpoint, prev != endpoint, !self.multiPeerLogged {
-                self.multiPeerLogged = true
-                RamaTransparentProxyEngineHandle.log(
-                    level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
-                    message:
-                        "udp flow observed multiple peer endpoints (\(prev) → \(endpoint)); replies will be best-effort routed to the most-recent peer per datagram (single-peer assumption violated)"
-                )
-            }
+            #if DEBUG
+                self.testSentByEndpointSetCount += 1
+                self.testLastSentByEndpoint = endpoint
+            #endif
             self.sentByEndpoint = endpoint
             self.flushLocked()
         }
     }
 
-    func enqueue(_ data: Data) {
-        guard !data.isEmpty else { return }
+    /// Enqueue a reply datagram. `sentBy` is the peer the reply came
+    /// from — surfaced from `Datagram.peer` on the Rust side and
+    /// threaded through here so the kernel-bound write tags the
+    /// correct source. `nil` falls back to the latest known peer
+    /// captured via `setSentByEndpoint` (used by tests and very
+    /// early bootstrap before the first per-peer read).
+    func enqueue(_ data: Data, sentBy: NWEndpoint? = nil) {
+        // RFC 768 admits zero-length UDP datagrams. Forward them
+        // unchanged — filtering belongs in the service layer, not in
+        // the transport plumbing.
         queue.async {
             if self.phase == .closed { return }
             // Drop-on-full: UDP is lossy. Indefinite buffering would
@@ -1024,11 +1228,11 @@ private final class UdpClientWritePump {
                 )
                 return
             }
-            // Capture the endpoint at enqueue time so a queued reply
-            // does not pick up a later peer change at flush time.
-            // Pre-first-read replies have nil here and resolve at
-            // flush time once `sentByEndpoint` is known.
-            self.pending.append((data, self.sentByEndpoint))
+            // Capture the endpoint at enqueue time. Prefer the
+            // per-datagram peer (multi-peer correctness); fall back
+            // to the cached `sentByEndpoint` for callers that haven't
+            // been peer-aware-ified yet (tests, early bootstrap).
+            self.pending.pushBack((data, sentBy ?? self.sentByEndpoint))
             let depth = self.pending.count
             if depth > self.pendingCountHwm {
                 self.pendingCountHwm = depth
@@ -1047,24 +1251,71 @@ private final class UdpClientWritePump {
     func close() {
         queue.async {
             self.phase = .closed
-            self.pending.removeAll(keepingCapacity: false)
+            self.pending.removeAll()
         }
     }
 
     private func flushLocked() {
         guard phase == .idle, !pending.isEmpty else { return }
 
-        // Resolve the endpoint: prefer the one captured at enqueue
-        // time; fall back to the latest known peer for entries that
-        // arrived before any `setSentByEndpoint` call.
-        guard let endpoint = pending[0].1 ?? sentByEndpoint else {
+        // Drain any leading orphan entries — a queued reply with
+        // no captured `sentBy` and no usable `sentByEndpoint`
+        // fallback has no kernel-acceptable peer. Holding it would
+        // head-of-line block every later (attributed) reply in the
+        // FIFO until either a future `setSentByEndpoint` populates
+        // the cache or the engine's UDP max-flow-lifetime closes
+        // the flow. UDP is lossy by design; dropping the orphan
+        // is the correct trade-off.
+        //
+        // The cache-nil check is loop-invariant — `sentByEndpoint`
+        // is mutated only by `setSentByEndpoint`, which runs on
+        // the same serial queue and therefore cannot interleave.
+        // Hoist it out so the inner loop is one branch instead of
+        // two on the dominant (cache-present) path.
+        var droppedOrphans = 0
+        if sentByEndpoint == nil {
+            while let head = pending.first(), head.1 == nil {
+                _ = pending.popFront()
+                droppedOrphans += 1
+            }
+        }
+        if droppedOrphans > 0 && !unresolvedEndpointLogged {
+            unresolvedEndpointLogged = true
+            logger(
+                FlowLogMessage(
+                    level: .debug,
+                    text:
+                        "udp write pump dropped \(droppedOrphans) orphan datagram(s): no per-datagram peer and no cached endpoint. Subsequent drops in this episode will not be logged."
+                )
+            )
+        }
+        guard let head = pending.first() else { return }
+        // `head.1 ?? sentByEndpoint` is now guaranteed non-nil for
+        // the head because the orphan-drain above already removed
+        // any leading entry where both were nil. If `head.1` is
+        // nil here, `sentByEndpoint` must be non-nil.
+        guard let endpoint = head.1 ?? sentByEndpoint else {
+            // Defensive: should be unreachable after the orphan drain.
+            // Keep as a safety net.
             return
         }
+        unresolvedEndpointLogged = false
 
         phase = .writing
-        let chunk = pending.removeFirst().0
-        self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { error in
-            self.queue.async {
+        // Safe: `first()` returned non-nil, no other thread mutates
+        // `pending` (single-queue confinement).
+        let chunk = pending.popFront()!.0
+        // `[weak self]` for the same retain-cycle reason as
+        // `TcpClientReadPump`'s `flow.readData` capture: the flow
+        // (kernel or mock) stores the completion until it fires,
+        // and the pump's `let flow` field strongly holds the flow.
+        // Without the weak capture the pump is pinned until the
+        // completion fires; under load + slow shutdown the chain
+        // accumulates.
+        self.flow.writeDatagrams([chunk], sentBy: [endpoint]) { [weak self] error in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self else { return }
                 if let error {
                     self.logger(
                         classifyFlowCallbackError(
@@ -1074,7 +1325,7 @@ private final class UdpClientWritePump {
                         )
                     )
                     self.phase = .closed
-                    self.pending.removeAll(keepingCapacity: false)
+                    self.pending.removeAll()
                     self.onTerminalError(error)
                     return
                 }
@@ -1097,17 +1348,8 @@ private final class UdpClientWritePump {
 /// enforces the timeout via a millisecond-precision DispatchWorkItem
 /// (see `handleTcpFlow`), so we have a single canonical timeout
 /// instead of two with mismatched precision.
-private func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
+func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
-    if let opts {
-        applyNwEgressParameters(opts.parameters, to: params)
-    }
-    return params
-}
-
-/// Creates UDP `NWParameters` from optional Rust-supplied egress options.
-private func makeUdpNwParameters(_ opts: RamaUdpEgressConnectOptions?) -> NWParameters {
-    let params = NWParameters.udp
     if let opts {
         applyNwEgressParameters(opts.parameters, to: params)
     }
@@ -1214,12 +1456,21 @@ private func nwInterfaceType(_ raw: UInt8) -> NWInterface.InterfaceType {
 /// per-flow egress channel is full, and we stop scheduling further
 /// `connection.receive` calls until the matching `onEgressReadDemand`
 /// callback flips `paused` back to `false` via `resume()`.
-private final class NwTcpConnectionReadPump {
-    private let connection: NWConnection
+final class NwTcpConnectionReadPump {
+    private let connection: any NwConnectionLike
     /// `weak` for the same retain-cycle / ownership reasons as
     /// [`TcpClientReadPump.session`].
     private weak var session: RamaTcpSessionHandle?
     private let queue: DispatchQueue
+    /// Grace window between observing peer EOF / error and force-
+    /// cancelling the underlying connection. The clean teardown path
+    /// (`on_server_closed` → cancel) depends on the originating app
+    /// being able to drain; the grace gives the clean path a chance to
+    /// run before the backstop fires.
+    private let eofGraceDeadline: DispatchTimeInterval
+    /// Scheduled EOF-cancel work, retained so we can invalidate it
+    /// when the clean path beats us to the cancel.
+    private var eofWork: DispatchWorkItem?
     /// Lifecycle phase — replaces the former `closed`, `paused`, and
     /// `receiving` boolean triple.  The `receiving` → `.reading` mapping
     /// also prevents `Network.framework`'s unsupported concurrent-receive
@@ -1230,11 +1481,18 @@ private final class NwTcpConnectionReadPump {
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
 
-    init(connection: NWConnection, session: RamaTcpSessionHandle, queue: DispatchQueue) {
+    init(
+        connection: any NwConnectionLike,
+        session: RamaTcpSessionHandle,
+        queue: DispatchQueue,
+        eofGraceDeadline: DispatchTimeInterval
+    ) {
         self.connection = connection
         self.session = session
         self.queue = queue
+        self.eofGraceDeadline = eofGraceDeadline
     }
+
 
     func start() {
         queue.async { self.scheduleReadLocked() }
@@ -1318,6 +1576,27 @@ private final class NwTcpConnectionReadPump {
                 if isComplete || error != nil {
                     self.phase = .closed
                     self.session?.onEgressEof()
+                    // The clean teardown path runs `on_egress_eof` →
+                    // bridge exits → `on_server_closed` → Swift
+                    // cancels the connection. That path depends on
+                    // the originating app's write pump being able to
+                    // drain its queued response bytes. If the app
+                    // stopped reading (process exit, browser tab
+                    // closed) the drain never completes and the
+                    // clean path stalls. Schedule a fallback cancel
+                    // so the NWConnection registration is released
+                    // within a bounded window regardless of app
+                    // behavior. `cancel()` is idempotent — if the
+                    // clean path reaches it first, the work item is
+                    // invalidated by `cancel()` below or the call
+                    // becomes a no-op.
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self else { return }
+                        self.connection.cancel()
+                        self.eofWork = nil
+                    }
+                    self.eofWork = work
+                    self.queue.asyncAfter(deadline: .now() + self.eofGraceDeadline, execute: work)
                     return
                 }
                 self.scheduleReadLocked()
@@ -1326,7 +1605,16 @@ private final class NwTcpConnectionReadPump {
     }
 
     func cancel() {
-        queue.async { [self] in phase = .closed }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.phase = .closed
+            // External cancel pre-empts the EOF backstop: the work
+            // item's only job is to ensure cancel reaches the
+            // connection if no other path does, and that no-longer-
+            // applies once an outer teardown has fired.
+            self.eofWork?.cancel()
+            self.eofWork = nil
+        }
     }
 }
 
@@ -1337,18 +1625,52 @@ private final class NwTcpConnectionReadPump {
 /// signal half-close to the remote.
 /// See `TcpClientReadPump` for the `@unchecked Sendable`
 /// rationale — same lock + queue confinement applies here.
-private final class NwTcpConnectionWritePump: @unchecked Sendable {
-    private let connection: NWConnection
+///
+/// Internal (not private) so unit tests can construct one against a
+/// `MockNwConnection` and exercise the linger-cancel watchdog and the
+/// drain → FIN sequence directly. Tests are the only out-of-file
+/// consumers; production code still constructs this only from
+/// `handleTcpFlow`.
+final class NwTcpConnectionWritePump: @unchecked Sendable {
+    private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
+    /// Wall-clock cap on how long the egress NWConnection lingers after
+    /// the local side has sent its FIN (an empty `send` with
+    /// `isComplete: true`) before this pump force-cancels the
+    /// connection. A peer that fails to send its own FIN-ACK would
+    /// otherwise keep the kernel socket in FIN_WAIT_1 and the macOS
+    /// NECP flow registration alive — accumulating leaked
+    /// registrations is what makes new `nw_connection_start` calls
+    /// linearly slower on the workloop queue.
+    private let lingerCloseDeadline: DispatchTimeInterval
+    /// Scheduled linger-cancel work, retained so we can invalidate it
+    /// when the connection closes naturally before the deadline (or
+    /// when the pump is externally cancelled).
+    private var lingerWork: DispatchWorkItem?
 
-    init(connection: NWConnection, queue: DispatchQueue, onDrained: @escaping () -> Void) {
+    init(
+        connection: any NwConnectionLike,
+        queue: DispatchQueue,
+        lingerCloseDeadline: DispatchTimeInterval,
+        onDrained: @escaping () -> Void
+    ) {
         self.connection = connection
+        self.lingerCloseDeadline = lingerCloseDeadline
         let core = TcpWritePumpCore(
             queue: queue,
             initialLifecycle: .open,
             onDrained: onDrained,
             doWrite: { data, completion in
-                connection.send(content: data, completion: .contentProcessed(completion))
+                // `isComplete: true` matches `NWConnection.send`'s own
+                // default for TCP; the value is a no-op for stream
+                // transports but is set explicitly here because the
+                // injectable protocol surface has no default arguments.
+                connection.send(
+                    content: data,
+                    contentContext: .defaultMessage,
+                    isComplete: true,
+                    completion: .contentProcessed(completion)
+                )
             },
             logHwm: { hwm in
                 RamaTransparentProxyEngineHandle.log(
@@ -1360,6 +1682,7 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
         self.core = core
         core.delegate = self
     }
+
 
     /// Same status contract as `TcpClientWritePump.enqueue`.
     @discardableResult
@@ -1374,7 +1697,15 @@ private final class NwTcpConnectionWritePump: @unchecked Sendable {
 
     func cancel() {
         let coreCleanup = core.prepareCancel()
-        core.queue.async { coreCleanup() }
+        core.queue.async { [weak self] in
+            coreCleanup()
+            // External cancel makes any outstanding linger watchdog
+            // moot — its only job is to force-cancel a connection
+            // whose peer never closed, and that path has now been
+            // pre-empted.
+            self?.lingerWork?.cancel()
+            self?.lingerWork = nil
+        }
     }
 }
 
@@ -1386,70 +1717,33 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
 
     fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
         guard connection.state == .ready else { return }
-        connection.send(content: nil, isComplete: true, completion: .contentProcessed({ _ in }))
-    }
-}
-
-/// Minimal receive surface the UDP read pump needs. Abstracts
-/// `NWConnection` so tests can drive the pump without a real
-/// network socket.
-protocol UdpConnectionReadable: AnyObject {
-    func receive(
-        minimumIncompleteLength: Int,
-        maximumLength: Int,
-        completion: @escaping @Sendable (Data?, NWConnection.ContentContext?, Bool, NWError?) -> Void
-    )
-}
-
-extension NWConnection: UdpConnectionReadable {}
-
-/// Reads datagrams from a `NWConnection` in a loop and delivers them to a Rust UDP session.
-final class NwUdpConnectionReadPump: @unchecked Sendable {
-    private let connection: any UdpConnectionReadable
-    private let session: RamaUdpSessionHandle
-    private let queue: DispatchQueue
-    private var closed = false
-    // Wires read-side EOF/error into the flow's `terminate` so a
-    // half-open flow doesn't sit until `udp_max_flow_lifetime` reaps it.
-    private let onTerminate: (Error?) -> Void
-
-    init(
-        connection: any UdpConnectionReadable,
-        session: RamaUdpSessionHandle,
-        queue: DispatchQueue,
-        onTerminate: @escaping (Error?) -> Void
-    ) {
-        self.connection = connection
-        self.session = session
-        self.queue = queue
-        self.onTerminate = onTerminate
-    }
-
-    func start() {
-        scheduleRead()
-    }
-
-    private func scheduleRead() {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_535) {
-            [weak self] data, _, isComplete, error in
+        // `.finalMessage` + `isComplete: true` is the documented way
+        // to trigger a TCP half-close (FIN) on a `NWConnection`. Using
+        // `.defaultMessage` only marks the logical message complete and
+        // leaves the stream open — the peer would never observe a
+        // half-close and the linger watchdog would have to escalate to
+        // a force-cancel. See
+        // <https://developer.apple.com/documentation/network/nwconnection/contentcontext/finalmessage>.
+        connection.send(
+            content: nil,
+            contentContext: .finalMessage,
+            isComplete: true,
+            completion: .contentProcessed({ _ in })
+        )
+        // The FIN is queued. Schedule the linger watchdog so the
+        // NWConnection registration is released even if the peer
+        // never replies with its own FIN. `cancel()` is idempotent —
+        // if a natural close path (state handler, read-pump EOF
+        // backstop, external pump cancel) gets there first, this
+        // work item is cancelled before firing or the cancel call
+        // becomes a no-op.
+        let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.queue.async {
-                guard !self.closed else { return }
-                if let data, !data.isEmpty {
-                    self.session.onEgressDatagram(data)
-                }
-                if isComplete || error != nil {
-                    self.closed = true
-                    self.onTerminate(error)
-                    return
-                }
-                self.scheduleRead()
-            }
+            self.connection.cancel()
+            self.lingerWork = nil
         }
-    }
-
-    func cancel() {
-        queue.async { [self] in closed = true }
+        lingerWork = work
+        core.queue.asyncAfter(deadline: .now() + lingerCloseDeadline, execute: work)
     }
 }
 
@@ -1468,11 +1762,33 @@ final class NwUdpConnectionReadPump: @unchecked Sendable {
 ///
 /// Swift weak references are thread-safe for both load and store on modern
 /// runtimes, so no extra locking is required here.
-private final class TcpFlowContext {
+/// Atomic live-instance counter; flipped on by tests via
+/// `TcpFlowContext.diagnosticCountersEnabled = true` to surface ARC
+/// leaks of the per-flow context graph. Off by default so production
+/// callers don't take an atomic on every flow alloc.
+
+
+
+
+
+
+
+
+/// `@unchecked Sendable` because every mutable field is read or written
+/// only from a block executing on the flow's dedicated serial
+/// `flowQueue`. The type system cannot see this invariant; the
+/// annotation makes it explicit so the per-flow closures that capture
+/// the context (flow.open / connection.receive completions, etc.) stay
+/// Swift-6-clean instead of forcing those closures to drop their
+/// `@Sendable` requirement.
+final class TcpFlowContext: @unchecked Sendable {
+    // Connection is held behind the injectable protocol so unit tests
+    // can drive the per-flow state machine via a mock instead of
+    // standing up a real NWConnection.
     weak var session: RamaTcpSessionHandle?
     /// Egress NWConnection, reachable from late callbacks that must
     /// still be able to `cancel()` the flow.
-    var connection: NWConnection?
+    var connection: (any NwConnectionLike)?
     /// Read pumps reachable from the Rust → Swift demand callbacks.
     var clientReadPump: TcpClientReadPump?
     var egressReadPump: NwTcpConnectionReadPump?
@@ -1480,65 +1796,48 @@ private final class TcpFlowContext {
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
     var egressWritePump: NwTcpConnectionWritePump?
+
+    init() {
+    }
 }
 
-private final class UdpFlowContext {
+/// See `TcpFlowContext` for the `@unchecked Sendable` rationale —
+/// same queue-confinement invariant applies on the UDP side.
+///
+/// UDP egress lives entirely in Rust now (one unconnected
+/// `tokio::net::UdpSocket` per intercepted flow); there is no
+/// `NWConnection` or egress read pump to retain on the Swift side.
+final class UdpFlowContext: @unchecked Sendable {
+    init() {
+    }
+
     weak var session: RamaUdpSessionHandle?
-    var connection: NWConnection?
-    /// Per-flow pumps + closures, owned by the provider's state map
-    /// until the flow is removed.
-    var egressReadPump: NwUdpConnectionReadPump?
+    /// Writer pump for client-bound replies; per-datagram `sentBy`
+    /// endpoint is set from Rust's per-datagram peer attribution.
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
     var terminate: ((Error?) -> Void)?
     /// Read-side lifecycle — replaces the former `closed: Bool`,
     /// `readPending: Bool`, and `demandPending: Bool` triple.
     var readState: UdpFlowReadState = .idle
+    /// Sticky one-shot flag: when `flow.readDatagrams` returns
+    /// parallel arrays whose lengths do not match, we log once
+    /// per flow instead of spamming. Subsequent mismatches still
+    /// take the strict-paired-only code path (surplus datagrams
+    /// get `peer = nil`).
+    var endpointMismatchLogged: Bool = false
 }
 
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
-    private var engine: RamaTransparentProxyEngineHandle?
-    private let stateQueue = DispatchQueue(label: "rama.tproxy.state")
-    private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
-    private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
-    private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
-
-    private func registerTcpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaTcpSessionHandle,
-        context: TcpFlowContext
-    ) {
-        stateQueue.sync {
-            self.tcpSessions[flowId] = session
-            self.tcpContexts[flowId] = context
-        }
-    }
-
-    private func registerUdpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaUdpSessionHandle,
-        context: UdpFlowContext
-    ) {
-        stateQueue.sync {
-            self.udpSessions[flowId] = session
-            self.udpContexts[flowId] = context
-        }
-    }
-
-    private func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.tcpSessions.removeValue(forKey: flowId)
-            self.tcpContexts.removeValue(forKey: flowId)
-        }
-    }
-
-    private func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.udpSessions.removeValue(forKey: flowId)
-            self.udpContexts.removeValue(forKey: flowId)
-        }
-    }
+    /// The Apple-framework-free state machine, engine handle, and
+    /// per-flow registration maps live here. This subclass exists
+    /// only because the system extension runtime requires a
+    /// `NETransparentProxyProvider` to instantiate; every override
+    /// below is a thin delegation onto the core (plus the
+    /// Apple-framework calls that can't move out of the subclass,
+    /// like `setTunnelNetworkSettings` and the metadata extraction
+    /// from `NEFlowMetaData`).
+    let core = TransparentProxyCore()
 
     public override func startProxy(
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
@@ -1563,18 +1862,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             completionHandler(error)
             return
         }
-        logInfo("extension startProxy")
+        core.logInfo("extension startProxy")
 
         let engineConfigJson = Self.engineConfigJson(
             protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
             startOptions: options
         )
         if let engineConfigJson {
-            self.logInfo("engine config json bytes=\(engineConfigJson.count)")
+            core.logInfo("engine config json bytes=\(engineConfigJson.count)")
         }
         guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
         else {
-            self.logError("engine creation error")
+            core.logError("engine creation error")
             completionHandler(
                 NSError(
                     domain: "org.ramaproxy.example.tproxy.engine",
@@ -1586,11 +1885,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
             return
         }
-        self.engine = engine
-        self.logInfo("engine created")
+        core.attachEngine(engine)
+        core.logInfo("engine created")
 
-        guard let startup = self.engine?.config() else {
-            logError("failed to get transparent proxy config from rust")
+        guard let startup = engine.config() else {
+            core.logError("failed to get transparent proxy config from rust")
+            // Apple does NOT call `stopProxy` to clean up after a failed
+            // `startProxy`, so any state we attached above must be torn
+            // down locally before we surface the error — otherwise the
+            // engine and the 60s flow-count telemetry timer leak until
+            // the next provider lifecycle.
+            core.detachEngine(reason: 0)
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
                 code: 2,
@@ -1609,13 +1914,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
-        if startup.tcpWritePumpMaxPendingBytes > 0 {
-            writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
-            writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-            logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
-        } else {
-            logInfo("tcp write pump cap using built-in default \(writePumpMaxPendingBytes) bytes")
-        }
+        // The engine's value is authoritative — the previous "0 means
+        // unset" path was dead code (the default is non-zero), so the
+        // Swift initial value of `writePumpMaxPendingBytes` was never
+        // used in practice and the documented per-flow cap silently
+        // drifted from what the comments described.
+        writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
+        writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
+        core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
         let settings = NETransparentProxyNetworkSettings(
             tunnelRemoteAddress: startup.tunnelRemoteAddress
@@ -1624,26 +1930,29 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         for (idx, rule) in startup.rules.enumerated() {
             if let built = Self.makeNetworkRule(rule) {
                 builtRules.append(built)
-                logInfo(
+                core.logInfo(
                     "include rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
                 )
             } else {
-                logError(
+                core.logError(
                     "invalid rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
                 )
             }
         }
         settings.includedNetworkRules = builtRules
-        logInfo("included network rules count=\(builtRules.count)")
+        core.logInfo("included network rules count=\(builtRules.count)")
 
-        setTunnelNetworkSettings(settings) { error in
+        setTunnelNetworkSettings(settings) { [core] error in
             if let error {
-                self.logError("setTunnelNetworkSettings error: \(error)")
+                core.logError("setTunnelNetworkSettings error: \(error)")
+                // Same reason as the `engine.config()` failure path:
+                // Apple won't compensate via `stopProxy`, so we must
+                // tear down the engine + telemetry timer locally.
+                core.detachEngine(reason: 0)
                 completionHandler(error)
                 return
             }
-
-            self.logInfo("setTunnelNetworkSettings ok")
+            core.logInfo("setTunnelNetworkSettings ok")
             completionHandler(nil)
         }
     }
@@ -1651,15 +1960,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
-        logInfo("extension stopProxy reason=\(reason.rawValue)")
-        self.engine?.stop(reason: Int32(reason.rawValue))
-        self.engine = nil
-        stateQueue.sync {
-            self.tcpSessions.removeAll(keepingCapacity: false)
-            self.tcpContexts.removeAll(keepingCapacity: false)
-            self.udpSessions.removeAll(keepingCapacity: false)
-            self.udpContexts.removeAll(keepingCapacity: false)
-        }
+        core.logInfo("extension stopProxy reason=\(reason.rawValue)")
+        core.detachEngine(reason: Int32(reason.rawValue))
         completionHandler()
     }
 
@@ -1667,566 +1969,31 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         _ messageData: Data,
         completionHandler: ((Data?) -> Void)? = nil
     ) {
-        logDebug("handleAppMessage bytes=\(messageData.count)")
-
-        guard let engine else {
-            logDebug("handleAppMessage ignored because engine is unavailable")
-            completionHandler?(nil)
-            return
-        }
-
-        completionHandler?(engine.handleAppMessage(messageData))
+        completionHandler?(core.handleAppMessage(messageData))
     }
 
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
+        // The adapter has one Apple-specific job here: extract the
+        // NEFlowMetaData snapshot (and, for UDP, the local / remote
+        // NEAppProxyUDPFlow endpoints) before handing the flow to the
+        // core. Once the metadata is a plain struct the core's
+        // per-flow handler is generic over `TcpFlowLike` /
+        // `UdpFlowLike`, so the same code path is reused verbatim by
+        // unit tests that pass in a mock flow.
         if let tcp = flow as? NEAppProxyTCPFlow {
             let meta = Self.tcpMeta(flow: tcp)
-            return handleTcpFlow(tcp, meta: meta)
+            return core.handleTcpFlow(tcp, meta: meta)
         }
-
         if let udp = flow as? NEAppProxyUDPFlow {
-            return handleUdpFlow(udp)
+            let meta = Self.udpMeta(
+                flow: udp,
+                remoteEndpoint: Self.udpRemoteEndpoint(flow: udp),
+                localEndpoint: Self.udpLocalEndpoint(flow: udp)
+            )
+            return core.handleUdpFlow(udp, meta: meta)
         }
-
-        logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
+        core.logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
         return false
-    }
-
-    private func handleTcpFlow(_ flow: NEAppProxyTCPFlow, meta: RamaTransparentProxyFlowMetaBridge)
-        -> Bool
-    {
-        let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(
-            label: "rama.tproxy.tcp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
-            qos: .utility)
-        let ctx = TcpFlowContext()
-
-        let writer = TcpClientWritePump(
-            flow: flow,
-            queue: flowQueue,
-            logger: { [weak self] message in
-                self?.logFlowMessage(message)
-            },
-            onTerminalError: { [weak self, weak ctx] error in
-                // [weak ctx] keeps the writer's onTerminalError closure
-                // from pinning the per-flow context graph alive after
-                // the session is removed.
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                ctx?.connection?.cancel()
-                ctx?.session?.cancel()
-                self?.removeTcpFlow(flowId)
-            },
-            onDrained: { [weak ctx] in
-                ctx?.session?.signalServerDrain()
-            }
-        )
-        ctx.clientWritePump = writer
-
-        let decision =
-            engine?.newTcpSession(
-                meta: meta,
-                onServerBytes: { [weak ctx] data in
-                    // Reach the writer through ctx so the Rust callback
-                    // box can't keep the writer alive past dispatcher
-                    // teardown. `.closed` tells the Rust bridge to stop
-                    // producing.
-                    ctx?.clientWritePump?.enqueue(data) ?? .closed
-                },
-                onClientReadDemand: { [weak ctx] in
-                    // Rust → Swift: the per-flow ingress channel has space
-                    // again, so we may resume `flow.readData`. Hop onto the
-                    // flow's queue before touching `ctx`, since this fires
-                    // from a Rust worker thread.
-                    flowQueue.async { [weak ctx] in
-                        ctx?.clientReadPump?.resume()
-                    }
-                },
-                onServerClosed: { [weak self, weak ctx] in
-                    ctx?.clientWritePump?.closeWhenDrained { wasOpened in
-                        if wasOpened {
-                            flow.closeReadWithError(nil)
-                            flow.closeWriteWithError(nil)
-                        } else {
-                            let error = tcpUpstreamUnavailableError()
-                            flow.closeReadWithError(error)
-                            flow.closeWriteWithError(error)
-                        }
-                        ctx?.connection?.cancel()
-                        self?.removeTcpFlow(flowId)
-                    }
-                }
-            ) ?? .passthrough
-
-        let session: RamaTcpSessionHandle
-        switch decision {
-        case .intercept(let createdSession):
-            session = createdSession
-        case .passthrough:
-            logDebug("handleNewFlow tcp bypassed by rust flow policy")
-            return false
-        case .blocked:
-            logInfo("handleNewFlow tcp blocked by rust flow policy")
-            blockFlow(flow)
-            return true
-        }
-
-        ctx.session = session
-        // Publish the flow state before any callback that may observe it can fire.
-        registerTcpFlow(flowId, session: session, context: ctx)
-
-        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
-        guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
-            logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
-            session.cancel()
-            removeTcpFlow(flowId)
-            return true
-        }
-
-        let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-        let nwParams = makeTcpNwParameters(egressOpts)
-
-        // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
-        // audit token, …) onto the egress NWParameters when the handler asks
-        // for it (default true). Downstream NEAppProxyProviders that
-        // intercept our egress see the original app rather than this
-        // extension. Must run before the NWConnection is constructed from
-        // these params.
-        if egressOpts?.parameters.preserve_original_meta_data ?? true {
-            applyFlowMetadata(flow, nwParams)
-        }
-
-        guard let connection = makeNwConnection(
-            host: remoteHost, port: meta.remotePort, using: nwParams)
-        else {
-            logDebug(
-                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session"
-            )
-            session.cancel()
-            removeTcpFlow(flowId)
-            return true
-        }
-        ctx.connection = connection
-
-        // Track whether the egress connection succeeded before flow.open was called.
-        var egressReady = false
-
-        // Timeout: cancel if NWConnection doesn't reach .ready in time.
-        let timeoutMs = Int(connectTimeoutMs)
-        let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
-            guard !egressReady else { return }
-            self?.logDebug("egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)")
-            ctx?.connection?.cancel()
-            ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
-        }
-        flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
-
-        connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, let connection = ctx.connection else { return }
-                switch state {
-                case .ready:
-                    guard !egressReady else { return }
-                    egressReady = true
-                    timeoutWork.cancel()
-
-                    let writePump = NwTcpConnectionWritePump(
-                        connection: connection,
-                        queue: flowQueue,
-                        onDrained: { [weak ctx] in
-                            ctx?.session?.signalEgressDrain()
-                        }
-                    )
-                    ctx.egressWritePump = writePump
-                    let readPump = NwTcpConnectionReadPump(
-                        connection: connection, session: session, queue: flowQueue)
-                    ctx.egressReadPump = readPump
-
-                    session.activate(
-                        onWriteToEgress: { [weak ctx] data in
-                            ctx?.egressWritePump?.enqueue(data) ?? .closed
-                        },
-                        onEgressReadDemand: { [weak ctx] in
-                            flowQueue.async { [weak ctx] in
-                                ctx?.egressReadPump?.resume()
-                            }
-                        },
-                        onCloseEgress: { [weak ctx] in
-                            ctx?.egressWritePump?.closeWhenDrained()
-                        }
-                    )
-
-                    flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
-                        flowQueue.async {
-                            if let error {
-                                self?.logDebug("flow.open error after egress ready: \(error)")
-                                connection.cancel()
-                                ctx?.connection = nil
-                                readPump.cancel()
-                                ctx?.egressReadPump = nil
-                                ctx?.egressWritePump?.cancel()
-                                ctx?.egressWritePump = nil
-                                ctx?.clientWritePump?.cancel()
-                                ctx?.clientWritePump = nil
-                                session.cancel()
-                                self?.removeTcpFlow(flowId)
-                                return
-                            }
-                            self?.logTrace("flow.open ok (tcp, egress pre-connected)")
-                            writer.markOpened()
-                            readPump.start()
-
-                            // Natural-EOF and hard-error paths
-                            // intentionally diverge — see
-                            // `TcpReadTerminal`. The natural-EOF
-                            // path defers write-side teardown to
-                            // the writer pump's drain so queued
-                            // response bytes reach the originating
-                            // app; closing the write side or
-                            // calling `session.cancel()` here
-                            // would truncate them. Weak captures
-                            // keep this closure graph from pinning
-                            // the per-flow context alive.
-                            let terminal = TcpReadTerminal(
-                                onNaturalEof: {
-                                    [weak self, weak readPump, weak session] in
-                                    self?.logTrace(
-                                        "tcp natural EOF: deferring teardown to closeWhenDrained"
-                                    )
-                                    flow.closeReadWithError(nil)
-                                    readPump?.cancel()
-                                    session?.onClientEof()
-                                },
-                                onHardError: {
-                                    [weak self, weak ctx, weak readPump, weak session] err in
-                                    flow.closeReadWithError(err)
-                                    flow.closeWriteWithError(err)
-                                    ctx?.connection?.cancel()
-                                    ctx?.connection = nil
-                                    readPump?.cancel()
-                                    ctx?.clientWritePump?.cancel()
-                                    ctx?.egressWritePump?.cancel()
-                                    session?.cancel()
-                                    ctx?.clientReadPump = nil
-                                    ctx?.egressReadPump = nil
-                                    ctx?.clientWritePump = nil
-                                    ctx?.egressWritePump = nil
-                                    self?.removeTcpFlow(flowId)
-                                }
-                            )
-                            let flowReadPump = TcpClientReadPump(
-                                flow: flow,
-                                session: session,
-                                queue: flowQueue,
-                                logger: { [weak self] message in self?.logFlowMessage(message) },
-                                onTerminal: terminal.dispatch
-                            )
-                            ctx?.clientReadPump = flowReadPump
-                            flowReadPump.requestRead()
-                        }
-                    }
-
-                case .failed(let error):
-                    guard !egressReady else { return }
-                    timeoutWork.cancel()
-                    self?.logDebug(
-                        "egress NWConnection failed before flow opened: \(String(describing: error))"
-                    )
-                    // Explicit cancel() releases the kernel NECP flow slot.
-                    connection.cancel()
-                    session.cancel()
-                    self?.removeTcpFlow(flowId)
-
-                default:
-                    break
-                }
-            }
-        }
-
-        connection.start(queue: flowQueue)
-        return true
-    }
-
-    private func handleUdpFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
-        let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(
-            label: "rama.tproxy.udp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
-            qos: .utility)
-        let ctx = UdpFlowContext()
-
-        ctx.terminate = { [weak self, weak ctx] error in
-            // Re-`[weak ctx]` at the nested closure boundary; see
-            // `requestRead` for why.
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, ctx.readState != .closed else { return }
-                ctx.readState = .closed
-                ctx.egressReadPump?.cancel()
-                ctx.egressReadPump = nil
-                ctx.writer?.close()
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                ctx.connection?.cancel()
-                ctx.connection = nil
-                ctx.session?.onClientClose()
-                self?.removeUdpFlow(flowId)
-            }
-        }
-
-        ctx.writer = UdpClientWritePump(
-            flow: flow,
-            queue: flowQueue,
-            logger: { [weak self] message in
-                self?.logFlowMessage(message)
-            },
-            onTerminalError: { [weak ctx] error in
-                // Route through `[weak ctx]` so this closure (held
-                // by the writer) does not strong-capture `terminate`
-                // — terminate transitively reaches the writer via
-                // `ctx.writer`, so a strong link in either direction
-                // would close a writer ↔ terminate cycle.
-                ctx?.terminate?(error)
-            }
-        )
-
-        let bootMeta = Self.udpMeta(
-            flow: flow,
-            remoteEndpoint: Self.udpRemoteEndpoint(flow: flow),
-            localEndpoint: Self.udpLocalEndpoint(flow: flow)
-        )
-
-        ctx.requestRead = { [weak self, weak ctx] in
-            // Re-`[weak ctx]` at every nested-closure boundary.
-            // A `guard let ctx` here would make `ctx` strong for
-            // every closure further down, re-introducing a strong
-            // capture path back through this chain.
-            flowQueue.async { [weak ctx] in
-                guard let ctx, ctx.readState != .closed else { return }
-                // If a read is already in flight (or demand is already
-                // queued), record / keep the demand flag and return —
-                // the completion handler will re-trigger.  The check
-                // covers both .reading and .readingWithDemand so that
-                // a third rapid demand does not issue a concurrent
-                // second readDatagrams call while the first is still
-                // in flight.
-                if ctx.readState == .reading || ctx.readState == .readingWithDemand {
-                    ctx.readState = .readingWithDemand
-                    return
-                }
-                ctx.readState = .reading
-                flow.readDatagrams { [weak self, weak ctx] datagrams, endpoints, error in
-                    flowQueue.async { [weak ctx] in
-                        guard let ctx, ctx.readState != .closed else { return }
-                        let hadPendingDemand = ctx.readState == .readingWithDemand
-                        ctx.readState = .idle
-                        if let error {
-                            self?.logFlowMessage(
-                                classifyFlowCallbackError(error, operation: "udp flow.read")
-                            )
-                            ctx.terminate?(error)
-                            return
-                        }
-
-                        guard let datagrams, !datagrams.isEmpty else {
-                            self?.logTrace("flow.readDatagrams eof")
-                            ctx.terminate?(nil)
-                            return
-                        }
-
-                        // Per-batch endpoint extraction. A multi-
-                        // endpoint batch (rare; sendto() to multiple
-                        // peers on an unconnected UDP socket) gets
-                        // collapsed because the egress side has one
-                        // NWConnection per flow; within-batch peer
-                        // variation is logged so operators see the
-                        // single-peer assumption being violated.
-                        let endpoint = endpoints?.first
-                        if let endpoints, endpoints.count > 1,
-                            !endpoints.dropFirst().allSatisfy({ $0 == endpoints[0] })
-                        {
-                            self?.logDebug(
-                                "udp flow.readDatagrams returned mixed peer endpoints in one batch (\(endpoints.count) entries); single-peer assumption violated"
-                            )
-                        }
-                        ctx.writer?.setSentByEndpoint(endpoint)
-
-                        guard let session = ctx.session else {
-                            self?.logDebug(
-                                "udp flow read received but session no longer active; closing flow"
-                            )
-                            ctx.terminate?(nil)
-                            return
-                        }
-
-                        for datagram in datagrams where !datagram.isEmpty {
-                            session.onClientDatagram(datagram)
-                        }
-
-                        if hadPendingDemand {
-                            ctx.requestRead?()
-                        }
-                    }
-                }
-            }
-        }
-
-        let decision = engine?.newUdpSession(
-            meta: bootMeta,
-            // Rust-held closures route through `[weak ctx]` so the
-            // callback box (Rust) does not strong-pin the per-flow
-            // pumps. The box is dropped on `_session_free`, so once
-            // `removeUdpFlow` releases the session-handle these
-            // closures stop firing — no late-arrival hazard.
-            onServerDatagram: { [weak ctx] data in ctx?.writer?.enqueue(data) },
-            onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
-            onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
-        ) ?? .passthrough
-
-        let session: RamaUdpSessionHandle
-        switch decision {
-        case .intercept(let createdSession):
-            session = createdSession
-        case .passthrough:
-            logDebug("handleNewFlow udp bypassed by rust flow policy")
-            return false
-        case .blocked:
-            logInfo("handleNewFlow udp blocked by rust flow policy")
-            blockFlow(flow)
-            return true
-        }
-
-        ctx.session = session
-        // Publish the flow state before any callback that may observe it can fire.
-        registerUdpFlow(flowId, session: session, context: ctx)
-
-        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
-        guard let remoteHost = bootMeta.remoteHost, bootMeta.remotePort > 0 else {
-            logDebug("handleUdpFlow: missing remote endpoint; cancelling session")
-            session.onClientClose()
-            removeUdpFlow(flowId)
-            return true
-        }
-
-        let egressOpts = session.getEgressConnectOptions()
-        let nwParams = makeUdpNwParameters(egressOpts)
-        let connectTimeoutMs: UInt32 = egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-
-        // See TCP path for rationale; same metadata-propagation behavior.
-        if egressOpts?.parameters.preserve_original_meta_data ?? true {
-            applyFlowMetadata(flow, nwParams)
-        }
-
-        guard let connection = makeNwConnection(
-            host: remoteHost, port: bootMeta.remotePort, using: nwParams)
-        else {
-            logDebug(
-                "handleUdpFlow: invalid remote port \(bootMeta.remotePort); cancelling session"
-            )
-            session.onClientClose()
-            removeUdpFlow(flowId)
-            return true
-        }
-        ctx.connection = connection
-
-        var egressReady = false
-
-        // Wall-clock cap on the NWConnection.stateUpdateHandler reaching
-        // `.ready`. Configurable via `NwUdpConnectOptions.connect_timeout`;
-        // default 30s when the handler does not override.
-        let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
-            guard !egressReady else { return }
-            self?.logDebug(
-                "egress NWConnection timed out for udp flow remote=\(remoteHost):\(bootMeta.remotePort)"
-            )
-            ctx?.connection?.cancel()
-            ctx?.connection = nil
-            ctx?.session?.onClientClose()
-            self?.removeUdpFlow(flowId)
-        }
-        flowQueue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: timeoutWork)
-
-        connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, let connection = ctx.connection else { return }
-                switch state {
-                case .ready:
-                    guard !egressReady else { return }
-                    egressReady = true
-                    timeoutWork.cancel()
-
-                    let readPump = NwUdpConnectionReadPump(
-                        connection: connection,
-                        session: session,
-                        queue: flowQueue,
-                        // Same anti-cycle pattern as the writer's
-                        // `onTerminalError`: weak forwarder so the
-                        // read pump doesn't strong-pin `terminate`.
-                        onTerminate: { [weak ctx] error in ctx?.terminate?(error) }
-                    )
-                    ctx.egressReadPump = readPump
-
-                    session.activate(onSendToEgress: { [weak ctx] data in
-                        // Surface send failures: the completion
-                        // closure runs on NWConnection's scheduler,
-                        // hop back onto `flowQueue` so `terminate`
-                        // sees flow-scoped state single-threaded.
-                        connection.send(
-                            content: data,
-                            completion: .contentProcessed({ error in
-                                if let error {
-                                    flowQueue.async { ctx?.terminate?(error) }
-                                }
-                            })
-                        )
-                    })
-
-                    flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
-                        flowQueue.async {
-                            if let error {
-                                self?.logDebug("udp flow.open error after egress ready: \(error)")
-                                connection.cancel()
-                                readPump.cancel()
-                                ctx?.egressReadPump = nil
-                                ctx?.connection = nil
-                                session.onClientClose()
-                                self?.removeUdpFlow(flowId)
-                                return
-                            }
-                            self?.logTrace("flow.open ok (udp, egress pre-connected)")
-                            ctx?.writer?.markOpened()
-                            readPump.start()
-                            ctx?.requestRead?()
-                        }
-                    }
-
-                case .failed(let error):
-                    guard !egressReady else { return }
-                    timeoutWork.cancel()
-                    self?.logDebug(
-                        "egress NWConnection failed before udp flow opened: \(String(describing: error))"
-                    )
-                    // See TCP path: explicit cancel() returns the kernel flow slot.
-                    connection.cancel()
-                    ctx.connection = nil
-                    session.onClientClose()
-                    self?.removeUdpFlow(flowId)
-
-                default:
-                    break
-                }
-            }
-        }
-
-        connection.start(queue: flowQueue)
-        return true
-    }
-
-    private func blockFlow(_ flow: NEAppProxyFlow) {
-        let error = blockedFlowError()
-        flow.closeReadWithError(error)
-        flow.closeWriteWithError(error)
     }
 
     private static func makeNetworkRule(_ rule: RamaTransparentProxyRuleBridge)
@@ -2279,18 +2046,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         if let explicitPrefix { return Int(explicitPrefix) }
         guard let networkText else { return nil }
         return inferredHostPrefix(networkText)
-    }
-
-    private static func inferredHostPrefix(_ text: String) -> Int? {
-        var v4 = in_addr()
-        if text.withCString({ inet_pton(AF_INET, $0, &v4) }) == 1 {
-            return 32
-        }
-        var v6 = in6_addr()
-        if text.withCString({ inet_pton(AF_INET6, $0, &v6) }) == 1 {
-            return 128
-        }
-        return nil
     }
 
     private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {
@@ -2538,82 +2293,6 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return parsed
     }
 
-    private static func parseEndpointString(_ raw: String) -> (host: String, port: UInt16)? {
-        // IPv6 endpoint descriptions may be formatted as:
-        // - 2a02:...:1.53
-        // - [2a02:...:1]:53
-        // while IPv4/domain typically use host:port.
-
-        if raw.hasPrefix("["), let closeIdx = raw.lastIndex(of: "]") {
-            let host = String(raw[raw.index(after: raw.startIndex)..<closeIdx])
-            let tail = raw[raw.index(after: closeIdx)...]
-            if tail.first == ":" {
-                let portText = String(tail.dropFirst())
-                if let port = UInt16(portText), !host.isEmpty {
-                    return (host, port)
-                }
-            }
-        }
-
-        if let idx = raw.lastIndex(of: ":") {
-            let hostPart = String(raw[..<idx]).trimmingCharacters(
-                in: CharacterSet(charactersIn: "[]"))
-            let portPart = String(raw[raw.index(after: idx)...])
-            if let port = UInt16(portPart), !hostPart.isEmpty {
-                return (hostPart, port)
-            }
-        }
-
-        if let idx = raw.lastIndex(of: ".") {
-            let hostPart = String(raw[..<idx]).trimmingCharacters(
-                in: CharacterSet(charactersIn: "[]"))
-            let portPart = String(raw[raw.index(after: idx)...])
-            if hostPart.contains(":"), let port = UInt16(portPart), !hostPart.isEmpty {
-                return (hostPart, port)
-            }
-        }
-
-        return nil
-    }
-
-    private func logTrace(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-            message: message
-        )
-    }
-
-    private func logDebug(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: message
-        )
-    }
-
-    private func logInfo(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_INFO.rawValue),
-            message: message
-        )
-    }
-
-    private func logError(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
-            message: message
-        )
-    }
-
-    private func logFlowMessage(_ message: FlowLogMessage) {
-        switch message.level {
-        case .trace:
-            logTrace(message.text)
-        case .debug:
-            logDebug(message.text)
-        case .error:
-            logError(message.text)
-        }
-    }
 }
 
 extension RamaTransparentProxyProvider {

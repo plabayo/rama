@@ -96,7 +96,10 @@ pub(crate) fn install_root_ca() -> Result<Vec<u8>, BoxError> {
     tracing::info!("tls: install_root_ca requested");
     let (cert, _key) = load_or_create_mitm_ca(None, None)?;
     let der = cert.to_der().context("encode MITM CA cert to DER")?;
-    tracing::debug!(der_len = der.len(), "tls: installing MITM CA into System Keychain");
+    tracing::debug!(
+        der_len = der.len(),
+        "tls: installing MITM CA into System Keychain"
+    );
     system_keychain::install_system_ca(&der).context("install_system_ca failed")?;
     tracing::info!("tls: MITM CA cert added to System Keychain (trust handled by container)");
     Ok(der)
@@ -120,7 +123,10 @@ pub(crate) fn rotate_root_ca() -> Result<RotatedCa, BoxError> {
     tracing::info!("tls: rotate_root_ca requested");
 
     let previous_der = match try_load_existing_mitm_ca()? {
-        Some((cert, _)) => Some(cert.to_der().context("encode previous MITM CA cert to DER")?),
+        Some((cert, _)) => Some(
+            cert.to_der()
+                .context("encode previous MITM CA cert to DER")?,
+        ),
         None => None,
     };
 
@@ -135,7 +141,9 @@ pub(crate) fn rotate_root_ca() -> Result<RotatedCa, BoxError> {
         plaintext_fallback::generate_and_store()?
     };
 
-    let der = cert.to_der().context("encode rotated MITM CA cert to DER")?;
+    let der = cert
+        .to_der()
+        .context("encode rotated MITM CA cert to DER")?;
 
     // Best-effort System Keychain item swap. Either side may be absent
     // (e.g. user never clicked Install) — we don't fail the rotation
@@ -155,7 +163,12 @@ pub(crate) fn rotate_root_ca() -> Result<RotatedCa, BoxError> {
         "tls: MITM CA rotated"
     );
 
-    Ok(RotatedCa { cert, key, der, previous_der })
+    Ok(RotatedCa {
+        cert,
+        key,
+        der,
+        previous_der,
+    })
 }
 
 /// Inverse of [`install_root_ca`]: delete the current MITM CA from the
@@ -173,7 +186,10 @@ pub(crate) fn uninstall_root_ca() -> Result<Option<Vec<u8>>, BoxError> {
         return Ok(None);
     };
     let der = cert.to_der().context("encode MITM CA cert to DER")?;
-    tracing::debug!(der_len = der.len(), "tls: removing MITM CA from System Keychain");
+    tracing::debug!(
+        der_len = der.len(),
+        "tls: removing MITM CA from System Keychain"
+    );
     system_keychain::uninstall_system_ca(&der).context("uninstall_system_ca failed")?;
     tracing::info!("tls: MITM CA cert removed from System Keychain (trust handled by container)");
     Ok(Some(der))

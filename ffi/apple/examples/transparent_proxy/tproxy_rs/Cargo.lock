@@ -2018,6 +2018,7 @@ dependencies = [
  "asynk-strim",
  "bytes",
  "dial9-tokio-telemetry",
+ "dial9-trace-format",
  "futures",
  "parking_lot",
  "pin-project-lite",

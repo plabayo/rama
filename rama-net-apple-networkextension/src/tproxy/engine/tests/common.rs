@@ -13,8 +13,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 pub(super) type TestTcpService =
     BoxService<rama_core::io::BridgeIo<crate::TcpFlow, crate::NwTcpStream>, (), Infallible>;
-pub(super) type TestUdpService =
-    BoxService<rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>, (), Infallible>;
+pub(super) type TestUdpService = BoxService<crate::UdpFlow, (), Infallible>;
 
 #[derive(Clone)]
 pub(super) struct TestHandler {
@@ -23,6 +22,17 @@ pub(super) struct TestHandler {
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestTcpService> + Send + Sync>,
     pub(super) udp_matcher:
         Arc<dyn Fn(TransparentProxyFlowMeta) -> FlowAction<TestUdpService> + Send + Sync>,
+    // Optional override for the TCP egress-options trait method. Default
+    // `None` keeps existing test sites compiling without their having
+    // to know this field exists; tests that need to drive a non-default
+    // option set use `with_tcp_egress_options`.
+    pub(super) tcp_egress_options: Option<
+        Arc<
+            dyn Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
+                + Send
+                + Sync,
+        >,
+    >,
 }
 
 impl TestHandler {
@@ -31,7 +41,19 @@ impl TestHandler {
             app_message_handler: Arc::new(|_| None),
             tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
             udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+            tcp_egress_options: None,
         }
+    }
+
+    pub(super) fn with_tcp_egress_options(
+        mut self,
+        f: impl Fn(&TransparentProxyFlowMeta) -> Option<crate::tproxy::NwTcpConnectOptions>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.tcp_egress_options = Some(Arc::new(f));
+        self
     }
 }
 
@@ -71,16 +93,17 @@ impl TransparentProxyHandler for TestHandler {
         _exec: Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<
-            impl Service<
-                rama_core::io::BridgeIo<crate::UdpFlow, crate::NwUdpSocket>,
-                Output = (),
-                Error = Infallible,
-            >,
-        >,
+        Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
         std::future::ready((self.udp_matcher)(meta))
+    }
+
+    fn egress_tcp_connect_options(
+        &self,
+        meta: &TransparentProxyFlowMeta,
+    ) -> Option<crate::tproxy::NwTcpConnectOptions> {
+        self.tcp_egress_options.as_ref().and_then(|f| f(meta))
     }
 }
 
@@ -112,6 +135,7 @@ impl TransparentProxyAsyncRuntimeFactory for TestRuntimeFactory {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_time()
+            .enable_io()
             .build()?;
         Ok(TransparentProxyAsyncRuntime::from_tokio(rt))
     }

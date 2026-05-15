@@ -37,6 +37,37 @@ pub(crate) fn test_storage_dir() -> PathBuf {
 }
 
 pub(crate) fn initialize_ffi(storage_dir: &Path) {
+    // Opt out of dial9 telemetry for the e2e suite. dial9's writer
+    // task doesn't observe the engine's shutdown signal, so each
+    // engine's tokio runtime drop leaks its worker-thread FDs;
+    // production keeps dial9 on by default and this only affects
+    // the test harness. Done at FFI init time so the env var is
+    // visible to every engine the example library subsequently
+    // constructs.
+    //
+    // SAFETY: `set_var` is unsound across threads only if another
+    // thread reads the env concurrently. `initialize_ffi` is
+    // called once from the test setup under a `OnceLock`, before
+    // any engine exists, so no concurrent reader can race.
+    unsafe {
+        std::env::set_var("RAMA_TPROXY_DIAL9_DISABLED", "true");
+    }
+
+    // Raise the per-process soft FD limit. The e2e suite spins up
+    // ~50 fresh transparent-proxy engines (each with its own
+    // multi-thread tokio runtime, plus 6 spawned servers per test)
+    // and the engine drop doesn't synchronously close every FD
+    // before the next test starts. On the macOS-default
+    // `ulimit -n` 256 the suite trips EMFILE around test 38 with
+    // `Too many open files (os error 24)` from
+    // `TransparentProxyEngineBuilder::create async runtime`.
+    // `rama::unix::raise_nofile` bumps the soft limit up to the
+    // hard limit; macOS's `kern.maxfilesperproc` is typically
+    // ~245760, so 8192 is comfortably within range on any
+    // default-configured host. Best-effort: if the hard limit is
+    // also capped, we inherit it.
+    let _ = rama::unix::utils::raise_nofile(8192);
+
     let storage_bytes = storage_dir.to_string_lossy().into_owned().into_bytes();
     let cfg = bindings::RamaTransparentProxyInitConfig {
         storage_dir_utf8: storage_bytes.as_ptr().cast(),
@@ -47,6 +78,7 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
     let ok = unsafe { bindings::rama_transparent_proxy_initialize(&cfg) };
     assert!(ok, "ffi initialize should succeed");
 }
+
 
 pub(crate) struct EngineHandle {
     pub(crate) raw: *mut bindings::RamaTransparentProxyEngine,
@@ -71,7 +103,48 @@ impl EngineHandle {
 }
 
 impl Drop for EngineHandle {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        // The earlier no-op `drop` leaked every test's engine —
+        // dial9 trace files stayed open, the engine's tokio
+        // runtime threads + their per-flow file descriptors
+        // stayed alive — and after ~33 tests the process ran out
+        // of FDs (EMFILE), making every subsequent
+        // `rama_transparent_proxy_engine_new_with_config` return
+        // null with `ffi engine allocation must succeed`.
+        //
+        // `_stop` is the right teardown FFI (it consumes the
+        // pointer, signals cooperative shutdown, and drops the
+        // engine's internal tokio runtime). But `_stop` is
+        // blocking and drops a tokio runtime — calling it from
+        // within another tokio runtime's worker thread (where
+        // tests' Arc<EngineHandle> typically gets its final
+        // strong-count zero) trips tokio's "cannot drop runtime
+        // in async context" guard with a non-unwinding panic
+        // that aborts the test binary.
+        //
+        // Off-load to a dedicated OS thread and join. The join
+        // blocks the calling thread (test thread, which IS in
+        // tokio) but does NOT itself drop a tokio runtime in
+        // tokio context — that drop now happens on the spawned
+        // thread which has no tokio attribution. Brief block at
+        // test teardown is acceptable; serial_test serializes
+        // the suite anyway.
+        let raw = std::mem::replace(&mut self.raw, std::ptr::null_mut());
+        if raw.is_null() {
+            return;
+        }
+        let raw_addr = raw as usize;
+        let _ = std::thread::Builder::new()
+            .name("rama-e2e-engine-stop".to_owned())
+            .spawn(move || {
+                let raw = raw_addr as *mut bindings::RamaTransparentProxyEngine;
+                unsafe {
+                    bindings::rama_transparent_proxy_engine_stop(raw, 0);
+                }
+            })
+            .expect("spawn engine-stop thread")
+            .join();
+    }
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
