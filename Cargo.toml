@@ -94,7 +94,7 @@ arc-swap = "1.9"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
-aws-lc-rs = { version = "1.16", features = ["bindgen"] }
+aws-lc-rs = { version = "1.17", features = ["bindgen"] }
 aws-lc-sys = { version = "0.39", features = ["bindgen"] }
 base64 = "0.22"
 bb8 = "0.9"
@@ -112,7 +112,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.8"
+dial9-tokio-telemetry = "0.3.9"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
