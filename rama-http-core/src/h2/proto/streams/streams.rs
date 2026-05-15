@@ -1223,8 +1223,15 @@ impl<B> StreamRef<B> {
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
-            // Create the data frame
-            let mut frame = frame::Data::new(stream.id, data);
+            // Create the data frame. `stream.id` is server/client-allocated
+            // and is guaranteed non-zero by the time we reach send_data,
+            // so the `InvalidStreamId` arm cannot fire here.
+            #[allow(
+                clippy::expect_used,
+                reason = "internal stream ids are non-zero by construction"
+            )]
+            let mut frame =
+                frame::Data::new(stream.id, data).expect("internal stream id is non-zero");
             frame.set_end_stream(end_stream);
 
             // Send the data frame

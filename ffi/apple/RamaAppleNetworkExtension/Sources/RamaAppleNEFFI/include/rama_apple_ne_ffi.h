@@ -209,7 +209,9 @@ typedef struct {
     /// Number of rules at `rules`.
     size_t rules_len;
     /// Per-flow TCP write-pump back-pressure cap in bytes.
-    /// 0 means "use the Swift-side built-in default (1 MiB)".
+    /// Authoritative on the Swift side — the value emitted here is the
+    /// value the pump uses. Default is 256 KiB; there is no
+    /// "0 means unset" path.
     size_t tcp_write_pump_max_pending_bytes;
 } RamaTransparentProxyConfig;
 
@@ -292,7 +294,36 @@ typedef struct {
     RamaTcpClientReadDemandFn on_client_read_demand;
 } RamaTransparentProxyTcpSessionCallbacks;
 
-typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes);
+/// Per-datagram peer endpoint passed across the FFI in both directions.
+///
+/// `present = false` means the caller has no endpoint attribution for
+/// this datagram (rare; usually a test or a kernel-callback edge case).
+/// When `present = true`, `host_utf8` is the textual host — in
+/// production this is a numeric IP literal because the kernel's
+/// `flow.readDatagrams` returns resolved IPs and Rust's
+/// unconnected `tokio::net::UdpSocket::recv_from` also returns
+/// resolved IPs. `host_utf8` is NOT required to be NUL-terminated.
+///
+/// `scope_id` carries the IPv6 zone identifier (interface index, as
+/// returned by `if_nametoindex(3)`) for link-local addresses like
+/// `fe80::1%en0`. `0` means "no scope". The textual `host_utf8` MUST
+/// NOT carry the `%zone` suffix — Swift converts the kernel-supplied
+/// `"fe80::1%en0"` to the numeric index on the way in, and Rust
+/// converts the numeric index back to an interface name on the way
+/// out. Scoping is meaningless for IPv4 and must be `0` there.
+///
+/// Borrowed for the duration of the call; the Swift side may stage
+/// the host bytes on the stack of the closure that issues the C call,
+/// and the Rust side does the same in reverse.
+typedef struct {
+    bool present;
+    const uint8_t* host_utf8;
+    size_t host_utf8_len;
+    uint16_t port;
+    uint32_t scope_id;
+} RamaUdpPeerView;
+
+typedef void (*RamaUdpServerDatagramFn)(void* context, RamaBytesView bytes, RamaUdpPeerView peer);
 typedef void (*RamaUdpClientReadDemandFn)(void* context);
 typedef void (*RamaUdpServerClosedFn)(void* context);
 
@@ -315,7 +346,8 @@ typedef struct {
 
 // ── Egress (NWConnection) options ────────────────────────────────────────────
 
-/// NWParameters-level settings shared between TCP and UDP egress NWConnections.
+/// NWParameters-level settings applied to TCP egress NWConnections.
+/// (UDP egress is service-owned in Rust and does not consume these.)
 ///
 /// service_class values:
 ///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice
@@ -358,19 +390,26 @@ typedef struct {
     bool has_connect_timeout_ms;
     /// TCP connection timeout in milliseconds (maps to NWProtocolTCP.Options.connectionTimeout).
     uint32_t connect_timeout_ms;
-} RamaTcpEgressConnectOptions;
-
-/// Options for the egress NWConnection on UDP flows.
-typedef struct {
-    RamaNwEgressParameters parameters;
-    /// Whether `connect_timeout_ms` carries a meaningful value;
+    /// Whether `linger_close_ms` carries a meaningful value;
     /// `false` ⇒ Swift uses its built-in default.
-    bool has_connect_timeout_ms;
-    /// Wall-clock cap (ms) on the egress NWConnection reaching `.ready`.
-    /// UDP has no real handshake — this bounds the local DNS /
-    /// Network.framework preparation phase.
-    uint32_t connect_timeout_ms;
-} RamaUdpEgressConnectOptions;
+    bool has_linger_close_ms;
+    /// Wall-clock cap (ms) on how long the egress NWConnection lingers
+    /// after the local side has sent its FIN before Swift force-cancels
+    /// the connection. Without this watchdog a peer that fails to send
+    /// its own FIN-ACK keeps the socket pinned in FIN_WAIT_1 and the
+    /// macOS NECP flow registration alive, which compounds with new
+    /// flow starts into the path-evaluator slowdown.
+    uint32_t linger_close_ms;
+    /// Whether `egress_eof_grace_ms` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_egress_eof_grace_ms;
+    /// Grace window (ms) between the egress read pump observing peer
+    /// EOF (or a read error) and the Swift side force-cancelling the
+    /// connection. Protects the path where the clean teardown
+    /// (`on_server_closed` → cancel) stalls because the originating
+    /// app stopped reading from its NEAppProxyFlow.
+    uint32_t egress_eof_grace_ms;
+} RamaTcpEgressConnectOptions;
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
 /// `NwTcpConnectionWritePump` is full. Swift MUST call
@@ -404,18 +443,6 @@ typedef struct {
     /// return and this callback firing.
     RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
-
-typedef void (*RamaUdpEgressSendFn)(void* context, RamaBytesView bytes);
-
-/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
-///
-/// `context` lifetime / threading contract: see the matching contract on
-/// `RamaTransparentProxyTcpSessionCallbacks` above.
-typedef struct {
-    /// Opaque user context passed back to callbacks. See lifetime contract above.
-    void* context;
-    RamaUdpEgressSendFn on_send_to_egress;
-} RamaTransparentProxyUdpEgressCallbacks;
 
 // Logging
 
@@ -599,40 +626,27 @@ void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* ses
 
 /// Deliver one client->server UDP datagram into Rust session.
 ///
-/// `bytes` is borrowed for duration of the call.
+/// `bytes` and `peer` are borrowed for duration of the call.
+/// `peer.present = false` is allowed and is treated as "no peer
+/// attribution"; in production every kernel-delivered datagram comes
+/// with an endpoint.
 void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaTransparentProxyUdpSession* session,
-    RamaBytesView bytes
+    RamaBytesView bytes,
+    RamaUdpPeerView peer
 );
 
 /// Signal UDP flow closure from client side.
 void rama_transparent_proxy_udp_session_on_client_close(RamaTransparentProxyUdpSession* session);
 
-/// Query handler-supplied egress connect options for a UDP session.
+/// Activate a UDP session.
 ///
-/// Fills `out_options` and returns `true` when the handler provided custom
-/// options. Returns `false` when Swift should use default NWParameters.
-bool rama_transparent_proxy_udp_session_get_egress_connect_options(
-    RamaTransparentProxyUdpSession* session,
-    RamaUdpEgressConnectOptions* out_options
-);
-
-/// Activate a UDP session after the egress NWConnection is ready.
-///
-/// `callbacks.on_send_to_egress` is called by Rust to deliver datagrams to
-/// the egress NWConnection.
+/// UDP egress is the handler's responsibility (one or more sockets,
+/// pooled or per-flow, opened however the handler's service wants
+/// using rama-udp / `tokio::net::UdpSocket` / anything else).
+/// Subsequent calls are ignored.
 void rama_transparent_proxy_udp_session_activate(
-    RamaTransparentProxyUdpSession* session,
-    RamaTransparentProxyUdpEgressCallbacks callbacks
-);
-
-/// Deliver one datagram from the egress NWConnection to the Rust UDP session.
-///
-/// Called by Swift when NWConnection.receive delivers a datagram from the remote.
-/// `bytes` is borrowed for the duration of the call.
-void rama_transparent_proxy_udp_session_on_egress_datagram(
-    RamaTransparentProxyUdpSession* session,
-    RamaBytesView bytes
+    RamaTransparentProxyUdpSession* session
 );
 
 // RAII

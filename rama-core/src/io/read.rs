@@ -8,6 +8,32 @@ use tokio::io::{self, AsyncBufRead, AsyncRead, ReadBuf};
 
 use crate::bytes::{Buf, Bytes};
 
+/// Read and discard exactly `n` bytes from `reader`.
+///
+/// Equivalent to `reader.read_exact(&mut vec![0u8; n])` but does not allocate
+/// a buffer sized to `n`; it pipes the bytes through [`tokio::io::sink`] via
+/// a `take` adaptor, reusing a small internal scratch buffer instead.
+///
+/// Returns an `UnexpectedEof` error if the reader yields fewer than `n` bytes
+/// before EOF.
+pub async fn discard<R>(reader: &mut R, n: u64) -> io::Result<()>
+where
+    R: AsyncRead + Unpin,
+{
+    if n == 0 {
+        return Ok(());
+    }
+    let mut limited = tokio::io::AsyncReadExt::take(reader, n);
+    let copied = tokio::io::copy(&mut limited, &mut tokio::io::sink()).await?;
+    if copied < n {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "io::discard: reader EOF before requested byte count was consumed",
+        ));
+    }
+    Ok(())
+}
+
 pin_project! {
     /// Reader for reading from a heap-allocated bytes buffer.
     #[derive(Debug, Clone)]
@@ -346,6 +372,35 @@ mod test {
     use super::*;
 
     use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn test_discard_consumes_exact_bytes() {
+        let mut reader = Cursor::new(b"abcdefghij".to_vec());
+        discard(&mut reader, 4).await.unwrap();
+        let mut rest = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut rest)
+            .await
+            .unwrap();
+        assert_eq!(rest, b"efghij");
+    }
+
+    #[tokio::test]
+    async fn test_discard_zero_is_noop() {
+        let mut reader = Cursor::new(b"abc".to_vec());
+        discard(&mut reader, 0).await.unwrap();
+        let mut rest = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut reader, &mut rest)
+            .await
+            .unwrap();
+        assert_eq!(rest, b"abc");
+    }
+
+    #[tokio::test]
+    async fn test_discard_eof_before_n_errors() {
+        let mut reader = Cursor::new(b"abc".to_vec());
+        let err = discard(&mut reader, 10).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
 
     async fn test_multi_read_async<const N: usize>(
         mut stream: impl AsyncRead + Unpin,

@@ -533,7 +533,7 @@ impl PushPromise {
             return Err(Error::MalformedMessage);
         }
 
-        let (promised_id, _) = StreamId::parse(&src[..4]);
+        let (promised_id, _) = StreamId::parse(&src[..4])?;
         // Drop promised_id bytes
         src.advance(4);
 

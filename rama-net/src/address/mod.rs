@@ -13,7 +13,7 @@ mod host;
 #[doc(inline)]
 pub use host::Host;
 
-mod domain;
+pub mod domain;
 #[doc(inline)]
 pub use domain::{AsDomainRef, Domain, IntoDomain};
 
@@ -46,4 +46,4 @@ pub use domain_address::DomainAddress;
 
 mod domain_trie;
 #[doc(inline)]
-pub use domain_trie::{DomainParentMatch, DomainTrie};
+pub use domain_trie::{DomainMatch, DomainTrie, MatchKind};

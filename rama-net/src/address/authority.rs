@@ -487,29 +487,12 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
         if first_part.contains(':') {
-            // ipv6
-            if first_part.starts_with('[') || first_part.ends_with(']') {
-                let value = first_part
-                    .strip_prefix('[')
-                    .and_then(|value| value.strip_suffix(']'))
-                    .context("strip brackets from authority ipv6 host w/ trailing port")?;
-                host = Host::Address(IpAddr::V6(
-                    value
-                        .parse::<Ipv6Addr>()
-                        .context("parse authority host as Ipv6 w/ trailing port")?,
-                ));
-
-                port = Some(
-                    s[last_colon + 1..]
-                        .parse()
-                        .context("parse authority port string as u16")?,
-                );
-            } else {
-                host = Host::Address(IpAddr::V6(
-                    s.parse::<Ipv6Addr>()
-                        .context("parse authority host as ipv6 w/o trailing port")?,
-                ));
-            };
+            // ipv6 (bare or bracketed, possibly with trailing port)
+            let (addr, parsed_port) =
+                crate::address::parse_utils::parse_bracketed_ipv6_with_port(s, last_colon)
+                    .context("authority: parse ipv6 host")?;
+            host = Host::Address(IpAddr::V6(addr));
+            port = parsed_port;
         } else {
             port = Some(
                 s[last_colon + 1..]

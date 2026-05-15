@@ -4,7 +4,10 @@ use crate::core::{
     ec::{EcGroup, EcKey},
     nid::Nid,
     pkey::Id,
-    x509::X509NameBuilder,
+    x509::{
+        X509NameBuilder,
+        extension::{BasicConstraints, KeyUsage},
+    },
 };
 use rama_net::{address::Domain, tls::server::SelfSignedData};
 
@@ -212,6 +215,290 @@ fn mirror_copies_extensions_and_regenerates_key_ids() {
     let mirror_akid = ext_by_nid(mirrored_cert.as_ref(), Nid::AUTHORITY_KEY_IDENTIFIER);
     assert_eq!(source_akid.len(), 1);
     assert_eq!(mirror_akid.len(), 1);
+}
+
+fn build_source_with_ski_only(
+    ca_cert: &X509,
+    ca_privkey: &PKey<Private>,
+    common_name: &str,
+) -> Result<(X509, PKey<Private>), BoxError> {
+    let rsa = Rsa::generate(2048).context("generate source rsa")?;
+    let privkey = PKey::from_rsa(rsa).context("source pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("source name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("source cn")?;
+    let x509_name = x509_name.build();
+
+    let mut cert_builder = X509::builder().context("source builder")?;
+    cert_builder.set_version(2).context("source version")?;
+    let serial_number = {
+        let mut serial = BigNum::new().context("source serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("source serial rand")?;
+        serial.to_asn1_integer().context("source serial asn1")?
+    };
+    cert_builder
+        .set_serial_number(&serial_number)
+        .context("source serial")?;
+    cert_builder
+        .set_subject_name(&x509_name)
+        .context("source subject")?;
+    cert_builder
+        .set_issuer_name(ca_cert.subject_name())
+        .context("source issuer")?;
+    cert_builder.set_pubkey(&privkey).context("source pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("source nb")?;
+    cert_builder
+        .set_not_before(&not_before)
+        .context("source set nb")?;
+    let not_after = Asn1Time::days_from_now(30).context("source na")?;
+    cert_builder
+        .set_not_after(&not_after)
+        .context("source set na")?;
+
+    let san = SubjectAlternativeName::new()
+        .dns(common_name)
+        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .context("source san")?;
+    cert_builder
+        .append_extension(san.as_ref())
+        .context("append source san")?;
+
+    let ski = SubjectKeyIdentifier::new()
+        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .context("source ski")?;
+    cert_builder
+        .append_extension(ski.as_ref())
+        .context("append source ski")?;
+
+    cert_builder
+        .sign(ca_privkey, MessageDigest::sha256())
+        .context("sign source")?;
+
+    Ok((cert_builder.build(), privkey))
+}
+
+fn build_ca_without_ski(common_name: &str) -> Result<(X509, PKey<Private>), BoxError> {
+    let rsa = Rsa::generate(2048).context("ca rsa")?;
+    let privkey = PKey::from_rsa(rsa).context("ca pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("ca name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("ca cn")?;
+    let x509_name = x509_name.build();
+
+    let mut ca_cert_builder = X509::builder().context("ca builder")?;
+    ca_cert_builder.set_version(2).context("ca version")?;
+    let serial_number = {
+        let mut serial = BigNum::new().context("ca serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("ca serial rand")?;
+        serial.to_asn1_integer().context("ca serial asn1")?
+    };
+    ca_cert_builder
+        .set_serial_number(&serial_number)
+        .context("ca serial")?;
+    ca_cert_builder
+        .set_subject_name(&x509_name)
+        .context("ca subject")?;
+    ca_cert_builder
+        .set_issuer_name(&x509_name)
+        .context("ca issuer")?;
+    ca_cert_builder.set_pubkey(&privkey).context("ca pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("ca nb")?;
+    ca_cert_builder
+        .set_not_before(&not_before)
+        .context("ca set nb")?;
+    let not_after = Asn1Time::days_from_now(365).context("ca na")?;
+    ca_cert_builder
+        .set_not_after(&not_after)
+        .context("ca set na")?;
+
+    ca_cert_builder
+        .append_extension(
+            BasicConstraints::new()
+                .critical()
+                .ca()
+                .build()
+                .context("ca basic constraints")?
+                .as_ref(),
+        )
+        .context("append ca bc")?;
+    ca_cert_builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .key_cert_sign()
+                .crl_sign()
+                .build()
+                .context("ca key usage")?
+                .as_ref(),
+        )
+        .context("append ca ku")?;
+
+    ca_cert_builder
+        .sign(&privkey, MessageDigest::sha256())
+        .context("sign ca")?;
+
+    Ok((ca_cert_builder.build(), privkey))
+}
+
+#[test]
+fn mirror_aki_keyid_matches_ca_ski() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+    let source_data = sample_data("source.rama.test");
+    let (source_cert, _) =
+        self_signed_server_auth_gen_cert(&source_data, &ca_cert, &ca_key).expect("source cert");
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert");
+
+    let ca_ski = ca_cert.subject_key_id().expect("ca has ski");
+    let mirror_aki = mirrored_cert.authority_key_id().expect("mirror has aki");
+    assert_eq!(mirror_aki.as_slice(), ca_ski.as_slice());
+}
+
+#[test]
+fn mirror_omits_aki_when_source_has_no_aki() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    let (source_cert, _) =
+        build_source_with_ski_only(&ca_cert, &ca_key, "ski-only.rama.test").expect("source cert");
+    assert!(source_cert.subject_key_id().is_some());
+    assert!(source_cert.authority_key_id().is_none());
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert");
+
+    assert!(mirrored_cert.subject_key_id().is_some());
+    assert!(mirrored_cert.authority_key_id().is_none());
+}
+
+#[test]
+fn mirror_omits_ski_and_aki_when_source_has_neither() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    let rsa = Rsa::generate(2048).expect("source rsa");
+    let source_pkey = PKey::from_rsa(rsa).expect("source pkey");
+    let source_cert = build_self_signed_source_with_pkey(&source_pkey, "no-keyid.rama.test")
+        .expect("source cert");
+    assert!(source_cert.subject_key_id().is_none());
+    assert!(source_cert.authority_key_id().is_none());
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert");
+
+    assert!(mirrored_cert.subject_key_id().is_none());
+    assert!(mirrored_cert.authority_key_id().is_none());
+}
+
+#[test]
+fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
+    let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
+    assert!(ca_cert.subject_key_id().is_none());
+
+    // Source cert (self-signed) with both SKI and AKI present, so mirror re-emits both. The
+    // CA-lacks-SKI fallback must populate AKI keyIdentifier via SHA-1 of the CA pubkey BIT
+    // STRING (RFC 5280 §4.2.1.2 method 1), not skip the extension.
+    let rsa = Rsa::generate(2048).expect("source rsa");
+    let source_pkey = PKey::from_rsa(rsa).expect("source pkey");
+    let mut x509_name = X509NameBuilder::new().expect("source name builder");
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, "with-keyid-source.rama.test")
+        .expect("source cn");
+    let x509_name = x509_name.build();
+    let mut cert_builder = X509::builder().expect("source builder");
+    cert_builder.set_version(2).expect("source version");
+    let serial = {
+        let mut serial = BigNum::new().expect("source serial bn");
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .expect("source serial rand");
+        serial.to_asn1_integer().expect("source serial asn1")
+    };
+    cert_builder
+        .set_serial_number(&serial)
+        .expect("source serial");
+    cert_builder
+        .set_subject_name(&x509_name)
+        .expect("source subject");
+    cert_builder
+        .set_issuer_name(&x509_name)
+        .expect("source issuer");
+    cert_builder
+        .set_pubkey(&source_pkey)
+        .expect("source pubkey");
+    cert_builder
+        .set_not_before(&Asn1Time::days_from_now(0).expect("source nb"))
+        .expect("source set nb");
+    cert_builder
+        .set_not_after(&Asn1Time::days_from_now(30).expect("source na"))
+        .expect("source set na");
+    let ski = SubjectKeyIdentifier::new()
+        .build(&cert_builder.x509v3_context(None, None))
+        .expect("source ski");
+    cert_builder
+        .append_extension(ski.as_ref())
+        .expect("append source ski");
+    let aki = AuthorityKeyIdentifier::new()
+        .keyid(true)
+        .build(&cert_builder.x509v3_context(None, None))
+        .expect("source aki");
+    cert_builder
+        .append_extension(aki.as_ref())
+        .expect("append source aki");
+    cert_builder
+        .sign(&source_pkey, MessageDigest::sha256())
+        .expect("sign source");
+    let source_cert = cert_builder.build();
+    assert!(source_cert.subject_key_id().is_some());
+    assert!(source_cert.authority_key_id().is_some());
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert succeeds despite CA lacking SKI");
+
+    assert!(mirrored_cert.subject_key_id().is_some());
+
+    let mirror_aki = mirrored_cert
+        .authority_key_id()
+        .expect("mirror has derived AKI");
+    let expected = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .expect("CA pubkey sha1");
+    assert_eq!(expected.len(), 20);
+    assert_eq!(mirror_aki.as_slice(), &expected[..]);
+}
+
+#[test]
+fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
+    let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
+    assert!(ca_cert.subject_key_id().is_none());
+
+    let leaf_data = sample_data("leaf.rama.test");
+    let (leaf_cert, _) =
+        self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
+
+    assert!(leaf_cert.subject_key_id().is_some());
+
+    let leaf_aki = leaf_cert.authority_key_id().expect("leaf has derived AKI");
+    let expected = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .expect("CA pubkey sha1");
+    assert_eq!(leaf_aki.as_slice(), &expected[..]);
+
+    assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
 }
 
 #[test]

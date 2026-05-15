@@ -136,6 +136,21 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
   shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
   supporting load balancers that support the proagation of client IP address.
 
+### FastCGI
+
+- [`fastcgi_reverse_proxy.rs`](./fastcgi_reverse_proxy.rs) -
+  An HTTP reverse proxy that translates incoming HTTP requests into FastCGI requests
+  and forwards them to a FastCGI backend application server (embedded in the same binary
+  for demonstration). Shows `FastCgiServer` on the backend and `FastCgiClient` on the proxy side.
+- [`gateway/fastcgi-php/gateway`](./gateway/fastcgi-php/gateway/main.rs) —
+  rama terminates HTTPS (rustls self-signed) and forwards every request to
+  php-fpm over **TCP**.
+- [`gateway/fastcgi-php/migration`](./gateway/fastcgi-php/migration/main.rs) —
+  rama serves `/api/health` and `/api/version` natively in Rust; everything
+  else falls back to php-fpm over a **Unix socket**. The PHP app implements
+  the Rust-served routes too, with a payload tag `"source":"php"` that the
+  tests assert is never observed — proving the migration boundary.
+
 ## TLS and Security
 
 - [`https_web_service_with_hsts.rs`](./https_web_service_with_hsts.rs) - HTTP Strict Transport Security (HSTS) example
@@ -181,6 +196,9 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
 - [`tcp_nd_json.rs`](./tcp_nd_json.rs) - TCP listener serving a ndjson (Newline Delimited JSON) stream of data
 - [`udp_codec.rs`](./udp_codec.rs) - UDP codec implementation
+- [`udp_over_tcp.rs`](./udp_over_tcp.rs) - Tunnel UDP datagrams over a single TCP connection
+  (inspired by [Jon Gjengset's `udp-over-tcp`](https://github.com/jonhoo/udp-over-tcp));
+  demonstrates `ConnectedUdpFramed` + `StreamForwardService`
 - [`unix_socket.rs`](./unix_socket.rs) - Unix socket server (listener) demonstration of accepting and handling incoming streams
 - [`unix_socket_http.rs`](./unix_socket_http.rs) - Serving HTTP over a unix socket, which is a fast and easy local-first solution
 - [`unix_datagram_codec.rs`](./unix_datagram_codec.rs) - Unix datagram, frame demonstration via bytes codec

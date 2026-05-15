@@ -12,6 +12,7 @@ name: Deploy mdBook site to Pages
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
   # rustdoc env shared by every doc job. Each job appends nothing platform-
   # specific; the platform comes from `--target` (or native target for
   # ubuntu/macos/windows-latest runners).
@@ -43,10 +44,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: doc-linux
+          cache-bin: false
       - name: cargo doc (linux)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -61,10 +65,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: doc-macos
+          cache-bin: false
       - name: cargo doc (macos)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -80,10 +87,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: doc-windows
+          cache-bin: false
       - name: cargo doc (windows)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -103,12 +113,14 @@ jobs:
       TARGET_TRIPLE: aarch64-linux-android
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
+          toolchain: nightly
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: doc-android
+          cache-bin: false
       - name: Configure Android toolchain env
         shell: bash
         run: |
@@ -158,12 +170,14 @@ jobs:
       IPHONEOS_DEPLOYMENT_TARGET: 17.5
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
+          toolchain: nightly
           targets: aarch64-apple-ios
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           key: doc-ios
+          cache-bin: false
       - name: cargo doc (ios)
         run: cargo +nightly doc --all-features --no-deps -p rama --target $TARGET_TRIPLE
         env:
@@ -183,7 +197,9 @@ jobs:
       MDBOOK_GRAPHVIZ_VERSION: 0.3.1
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
       - name: Install Graphviz
         run: sudo apt-get install -y graphviz
       - name: Install mdBook

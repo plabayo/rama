@@ -32,6 +32,9 @@ use crate::{
 };
 
 mod types;
+mod uuid;
+
+pub use uuid::XpcUuid;
 
 /// Serialize a Rust value into an [`XpcMessage`].
 ///

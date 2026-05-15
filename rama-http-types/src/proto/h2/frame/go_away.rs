@@ -48,7 +48,7 @@ impl GoAway {
             return Err(Error::BadFrameSize);
         }
 
-        let (last_stream_id, _) = StreamId::parse(&payload[..4]);
+        let (last_stream_id, _) = StreamId::parse(&payload[..4])?;
         let error_code = unpack_octets_as_u32(payload, 4);
         let debug_data = Bytes::copy_from_slice(&payload[8..]);
 

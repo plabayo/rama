@@ -36,6 +36,7 @@ fn tcp_bridge_delivers_server_bytes() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -78,6 +79,7 @@ fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -152,6 +154,7 @@ fn tcp_cancel_after_activate_suppresses_close_callback_to_prevent_uaf() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -243,6 +246,7 @@ fn tcp_on_client_eof_drains_response_and_fires_close() {
             }
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -301,6 +305,7 @@ fn tcp_on_client_bytes_signals_paused_when_ingress_channel_full() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_tcp_channel_capacity(handler, 2);
 
@@ -358,6 +363,7 @@ fn tcp_demand_callback_fires_after_ingress_channel_drains() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_tcp_channel_capacity(handler, 2);
 
@@ -409,6 +415,7 @@ fn tcp_bridge_write_failure_closes_ingress_channel() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_tcp_channel_capacity(handler, 2);
 
@@ -458,6 +465,7 @@ fn tcp_on_bytes_signals_closed_after_session_cancel() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -510,6 +518,7 @@ fn tcp_bridge_idle_timeout_unwinds_session() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_tcp_idle_timeout(handler, Duration::from_millis(100));
 
@@ -559,6 +568,7 @@ fn tcp_bridge_observes_per_flow_shutdown_via_session_cancel() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 

@@ -1,0 +1,43 @@
+[package]
+name = "rama-fastcgi"
+description = "FastCGI support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+keywords = ["io", "async", "fastcgi", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["transport"]
+http = ["dep:rama-http-types", "dep:tokio-util", "rama-net/http"]
+transport = ["dep:rama-tcp", "dep:rama-unix"]
+
+[dependencies]
+rama-core = { workspace = true }
+rama-http-types = { workspace = true, optional = true }
+rama-net = { workspace = true }
+rama-tcp = { workspace = true, optional = true }
+rama-utils = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true, optional = true, features = ["io"] }
+
+[target.'cfg(target_family = "unix")'.dependencies]
+rama-unix = { workspace = true, optional = true }
+
+[dev-dependencies]
+parking_lot = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

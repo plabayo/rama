@@ -1,5 +1,7 @@
 mod utils;
 
+#[cfg(all(feature = "fastcgi", feature = "http-full"))]
+mod fastcgi_reverse_proxy;
 #[cfg(all(feature = "haproxy", feature = "http-full"))]
 mod haproxy_client_ip;
 #[cfg(feature = "http-full")]
@@ -112,6 +114,8 @@ mod tls_sni_proxy_mitm;
 mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
+#[cfg(all(feature = "udp", feature = "tcp"))]
+mod udp_over_tcp;
 #[cfg(feature = "http-full")]
 mod ws_chat_server;
 #[cfg(feature = "http-full")]

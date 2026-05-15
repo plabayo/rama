@@ -90,7 +90,12 @@ impl XpcEndpoint {
     /// correct choice for in-process tests and ephemeral services that hand out their endpoint
     /// out-of-band (e.g. embedded in a bootstrap message).
     ///
-    /// An anonymous channel accepts exactly one client connection via the returned endpoint.
+    /// The returned [`XpcConnection`] is a *listener-style* anonymous endpoint. Each peer
+    /// that holds the endpoint and calls [`Self::into_connection`] arrives as an
+    /// [`XpcEvent::Connection`](crate::XpcEvent::Connection) on the server's
+    /// [`XpcConnection::recv`] stream. Anonymous endpoints can be handed out to multiple
+    /// peers; clone the endpoint and pass it to each peer that should be able to connect.
+    /// Cancel the listener when no further peers should be accepted.
     ///
     /// `queue_label` is an optional GCD dispatch-queue label for the server connection's event
     /// handler. Pass `None` for an anonymous queue.

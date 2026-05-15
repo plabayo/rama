@@ -14,19 +14,29 @@ pub struct SubdomainTrieMatcher {
 
 impl SubdomainTrieMatcher {
     /// Create a new [`SubdomainTrieMatcher`].
+    ///
+    /// Every input domain is registered as a **subtree** entry — it matches
+    /// the apex itself plus every descendant. Inputs already in wildcard
+    /// form (`"*.foo.bar"`) pass through; bare inputs (`"foo.bar"`) are
+    /// promoted to `*.foo.bar` first. Inputs that can't be made into a
+    /// valid wildcard (e.g. exceeding the length cap) are silently skipped.
     pub fn new<I, S>(domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsDomainRef,
     {
         let mut trie = DomainTrie::new();
-        trie.insert_domain_iter(domains, ());
+        for d in domains {
+            if let Ok(w) = d.to_wildcard() {
+                trie.insert_domain(w, ());
+            }
+        }
         Self { trie }
     }
 
     // Returns true if a domain is a subdomain of any domain lineage in this [`SubdomainTrieMatcher`].
     pub fn is_match(&self, domain: impl AsDomainRef) -> bool {
-        self.trie.is_match_parent(domain)
+        self.trie.is_match(domain)
     }
 }
 

@@ -40,6 +40,7 @@ members = [
     "rama-crypto",
     "rama-dns",
     "rama-error",
+    "rama-fastcgi",
     "rama-grpc",
     "rama-grpc-build",
     "rama-haproxy",
@@ -93,7 +94,7 @@ arc-swap = "1.9"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
-aws-lc-rs = { version = "1.16", features = ["bindgen"] }
+aws-lc-rs = { version = "1.17", features = ["bindgen"] }
 aws-lc-sys = { version = "0.39", features = ["bindgen"] }
 base64 = "0.22"
 bb8 = "0.9"
@@ -111,7 +112,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.8"
+dial9-tokio-telemetry = "0.3.9"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
@@ -168,12 +169,13 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = ".", default-features = false }
-rama-boring = { version = "0.6.0", default-features = false }
-rama-boring-tokio = { version = "0.6.0", default-features = false }
+rama-boring = { version = "0.6.1", default-features = false }
+rama-boring-tokio = { version = "0.6.1", default-features = false }
 rama-core = { version = "0.3.0-rc1", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns", default-features = false }
 rama-error = { version = "0.3.0-rc1", path = "./rama-error", default-features = false }
+rama-fastcgi = { version = "0.3.0-rc1", path = "./rama-fastcgi", default-features = false }
 rama-grpc = { version = "0.3.0-rc1", path = "./rama-grpc", default-features = false }
 rama-grpc-build = { version = "0.3.0-rc1", path = "./rama-grpc-build", default-features = false }
 rama-haproxy = { version = "0.3.0-rc1", path = "./rama-haproxy", default-features = false }
@@ -416,6 +418,7 @@ http = [
     "rama-tls-boring?/ua",
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
+    "rama-fastcgi?/http",
 ]
 http-full = [
     "http",
@@ -434,6 +437,7 @@ multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
+fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
 ua = ["dep:rama-ua"]
 ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
@@ -479,6 +483,7 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
+rama-fastcgi = { workspace = true, optional = true }
 rama-grpc = { workspace = true, optional = true, features = ["protobuf", "vendor-protoc"] }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
@@ -805,6 +810,10 @@ name = "udp_codec"
 required-features = ["udp"]
 
 [[example]]
+name = "udp_over_tcp"
+required-features = ["udp", "tcp"]
+
+[[example]]
 name = "tls_boring_dynamic_certs"
 required-features = ["boring", "http-full"]
 
@@ -823,6 +832,20 @@ required-features = ["boring", "haproxy", "http-full"]
 [[example]]
 name = "tls_rustls_termination"
 required-features = ["rustls", "aws-lc", "haproxy", "http-full"]
+
+[[example]]
+name = "fastcgi_reverse_proxy"
+required-features = ["http-full", "fastcgi"]
+
+[[example]]
+name = "fastcgi_php_gateway"
+path = "examples/gateway/fastcgi-php/gateway/main.rs"
+required-features = ["http-full", "fastcgi", "rustls", "aws-lc"]
+
+[[example]]
+name = "fastcgi_php_migration"
+path = "examples/gateway/fastcgi-php/migration/main.rs"
+required-features = ["http-full", "fastcgi"]
 
 [[example]]
 name = "socks5_connect_proxy"

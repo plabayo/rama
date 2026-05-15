@@ -1,5 +1,5 @@
 use crate::core::{
-    asn1::Asn1Time,
+    asn1::{Asn1Object, Asn1Time},
     bn::{BigNum, MsbOption},
     dsa::Dsa,
     ec::{EcGroup, EcKey},
@@ -9,7 +9,7 @@ use crate::core::{
     rand::rand_bytes,
     rsa::Rsa,
     x509::{
-        X509, X509NameBuilder, X509Ref,
+        X509, X509Extension, X509NameBuilder, X509Ref,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
@@ -17,6 +17,31 @@ use rama_boring::x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeNam
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_net::{address::Domain, tls::server::SelfSignedData};
+
+/// Build an `AuthorityKeyIdentifier` extension whose `keyIdentifier` is derived from
+/// the CA's public key per RFC 5280 §4.2.1.2 method (1): SHA-1 of the SubjectPublicKey
+/// BIT STRING contents. Used as a fallback when the CA certificate carries no SKI extension.
+fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxError> {
+    let digest = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .context("compute SHA-1 of CA SubjectPublicKey BIT STRING")?;
+    let keyid: &[u8] = &digest[..];
+    debug_assert_eq!(keyid.len(), 20, "SHA-1 digest must be 20 bytes");
+
+    // AuthorityKeyIdentifier ::= SEQUENCE { [0] IMPLICIT OCTET STRING keyIdentifier }
+    let mut payload = Vec::with_capacity(4 + keyid.len());
+    payload.push(0x30); // SEQUENCE
+    payload.push((2 + keyid.len()) as u8);
+    payload.push(0x80); // [0] IMPLICIT OCTET STRING
+    payload.push(keyid.len() as u8);
+    payload.extend_from_slice(keyid);
+
+    // 2.5.29.35 = id-ce-authorityKeyIdentifier
+    let aki_oid =
+        Asn1Object::from_str("2.5.29.35").context("construct AuthorityKeyIdentifier OID object")?;
+    X509Extension::from_der_payload(aki_oid.as_ref(), false, &payload)
+        .context("build AuthorityKeyIdentifier extension from raw DER payload")
+}
 
 /// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
 ///
@@ -129,14 +154,21 @@ pub fn self_signed_server_auth_gen_cert(
         .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
-    let auth_key_identifier = AuthorityKeyIdentifier::new()
-        .keyid(false)
-        .issuer(false)
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build auth key id")?;
-    cert_builder
-        .append_extension(auth_key_identifier.as_ref())
-        .context("x509 cert builder: set auth key id extension")?;
+    if ca_cert.subject_key_id().is_some() {
+        let auth_key_identifier = AuthorityKeyIdentifier::new()
+            .keyid(false)
+            .issuer(false)
+            .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+            .context("x509 cert builder: build auth key id")?;
+        cert_builder
+            .append_extension(auth_key_identifier.as_ref())
+            .context("x509 cert builder: set auth key id extension")?;
+    } else {
+        let auth_key_identifier = aki_from_ca_pubkey_keyid(ca_cert)?;
+        cert_builder
+            .append_extension(auth_key_identifier.as_ref())
+            .context("x509 cert builder: set derived auth key id extension")?;
+    }
 
     cert_builder
         .sign(ca_privkey, MessageDigest::sha256())
@@ -244,12 +276,15 @@ pub fn self_signed_server_auth_mirror_cert(
         .set_not_after(source_cert.not_after())
         .context("x509 cert builder: mirror source not-after")?;
 
+    let source_had_ski = source_cert.subject_key_id().is_some();
+    let source_had_aki = source_cert.authority_key_id().is_some();
+
     for source_ext in source_cert.extensions() {
         let ext_nid = source_ext.object().nid();
         if ext_nid == Nid::SUBJECT_KEY_IDENTIFIER || ext_nid == Nid::AUTHORITY_KEY_IDENTIFIER {
             tracing::trace!(
                 ?ext_nid,
-                "skip source key identifier extension (will regenerate)"
+                "skip source key identifier extension (will regenerate if applicable)"
             );
             continue;
         }
@@ -263,21 +298,32 @@ pub fn self_signed_server_auth_mirror_cert(
             .context("x509 cert builder: append mirrored source extension")?;
     }
 
-    let subject_key_identifier = SubjectKeyIdentifier::new()
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build mirrored subject key identifier")?;
-    cert_builder
-        .append_extension(subject_key_identifier.as_ref())
-        .context("x509 cert builder: append mirrored subject key identifier")?;
+    if source_had_ski {
+        let subject_key_identifier = SubjectKeyIdentifier::new()
+            .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+            .context("x509 cert builder: build mirrored subject key identifier")?;
+        cert_builder
+            .append_extension(subject_key_identifier.as_ref())
+            .context("x509 cert builder: append mirrored subject key identifier")?;
+    }
 
-    let auth_key_identifier = AuthorityKeyIdentifier::new()
-        .keyid(false)
-        .issuer(false)
-        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
-        .context("x509 cert builder: build mirrored authority key identifier")?;
-    cert_builder
-        .append_extension(auth_key_identifier.as_ref())
-        .context("x509 cert builder: append mirrored authority key identifier")?;
+    if source_had_aki {
+        if ca_cert.subject_key_id().is_some() {
+            let auth_key_identifier = AuthorityKeyIdentifier::new()
+                .keyid(false)
+                .issuer(false)
+                .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+                .context("x509 cert builder: build mirrored authority key identifier")?;
+            cert_builder
+                .append_extension(auth_key_identifier.as_ref())
+                .context("x509 cert builder: append mirrored authority key identifier")?;
+        } else {
+            let auth_key_identifier = aki_from_ca_pubkey_keyid(ca_cert)?;
+            cert_builder
+                .append_extension(auth_key_identifier.as_ref())
+                .context("x509 cert builder: append derived mirrored authority key identifier")?;
+        }
+    }
 
     cert_builder
         .sign(ca_privkey, MessageDigest::sha256())

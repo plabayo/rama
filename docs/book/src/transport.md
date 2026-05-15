@@ -88,6 +88,11 @@ Rama doesn’t just support networking—it *is* networking, from transport to a
 - UDP:
   - [/examples/udp_codec.rs](https://github.com/plabayo/rama/blob/main/examples/udp_codec.rs):
     an example which leverages `BytesCodec` to create a UDP client and server which speak a custom protocol
+  - [/examples/udp_over_tcp.rs](https://github.com/plabayo/rama/blob/main/examples/udp_over_tcp.rs):
+    tunnels UDP datagrams over a single TCP connection (with `u16` length-prefix framing on the TCP side),
+    useful for reaching a UDP service from a TCP-only network. Inspired by Jon Gjengset's
+    [`udp-over-tcp`](https://github.com/jonhoo/udp-over-tcp); demonstrates `ConnectedUdpFramed`
+    + `StreamForwardService`
 - Unix:
   - [/examples/unix_socket.rs](https://github.com/plabayo/rama/blob/main/examples/unix_socket.rs):
     a minimal example of a unix socket listener

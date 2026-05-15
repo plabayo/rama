@@ -24,6 +24,9 @@ sort:
     @command -v cargo-sort >/dev/null || cargo install cargo-sort --locked
     cargo sort --workspace --grouped
 
+sort-check *ARGS:
+    cargo sort --workspace --check {{ARGS}}
+
 lint: fmt sort
 
 deny:
@@ -115,7 +118,7 @@ test-loom:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     RUSTFLAGS="--cfg loom -Dwarnings" cargo nextest run --all-features -p rama-utils
 
-qq: fmt-check check clippy doc extra-checks
+qq: sort-check fmt-check check clippy doc extra-checks
 
 qa: qq test test-doc deny
 
@@ -132,6 +135,19 @@ qa-dial9:
     cargo check -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+
+# Interactive: boot the fastcgi-php gateway demo (HTTPS → FastCGI/TCP → php-fpm)
+# and leave it running until Ctrl-C so you can curl / browse it.
+example-fastcgi-php-gateway:
+    ./examples/gateway/fastcgi-php/gateway/run.sh run
+
+# Interactive: boot the fastcgi-php migration demo (HTTP → router → FastCGI/Unix → php-fpm).
+example-fastcgi-php-migration:
+    ./examples/gateway/fastcgi-php/migration/run.sh run
+
+# CI/test: boot both, run jq assertions, tear down.
+test-fastcgi-php:
+    ./examples/gateway/fastcgi-php/test.sh test
 
 qa-crate CRATE:
     just fmt-check-crate {{CRATE}}

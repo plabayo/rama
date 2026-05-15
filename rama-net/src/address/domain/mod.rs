@@ -1,8 +1,24 @@
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
-use rama_utils::str::smol_str::{SmolStr, format_smolstr};
-use std::{cmp::Ordering, fmt, iter::repeat};
+use rama_utils::str::smol_str::SmolStr;
+use std::{cmp::Ordering, fmt};
 
 use super::Host;
+
+mod label;
+#[doc(inline)]
+pub use label::{Label, LabelError};
+
+mod labels;
+#[doc(inline)]
+pub use labels::{DomainLabelIter, DomainLabels, SuffixIter};
+
+mod builder;
+#[doc(inline)]
+pub use builder::{DomainBuilder, PushError};
+
+// (DomainParseError is defined in this module — see below.)
+
+/// Maximum byte length of a fully-qualified domain name (RFC 1035).
+pub const MAX_NAME_LEN: usize = 253;
 
 /// A domain.
 ///
@@ -78,10 +94,14 @@ impl Domain {
         self.0.ends_with('.')
     }
 
-    /// Returns `true` if this domain is a wildcard domain.
+    /// Returns `true` if this domain is a wildcard domain (i.e. its leftmost
+    /// label is `"*"`).
+    ///
+    /// Label-based — agrees with [`Self::as_wildcard_parent`] for inputs like
+    /// `".*.example.com"` where a leading FQDN dot precedes the wildcard.
     #[must_use]
     pub fn is_wildcard(&self) -> bool {
-        self.0.starts_with("*.")
+        self.labels().next().is_some_and(Label::is_wildcard)
     }
 
     /// Returns `true` if this domain is Top-Level [`Domain`] (TLD).
@@ -139,70 +159,99 @@ impl Domain {
             .unwrap_or_default()
     }
 
-    /// Returns the parent of this wildcard domain,
-    /// in case it is indeed a wildcast domain,
-    /// otherwise `None` is returned.
+    /// Returns the parent of this wildcard domain, or `None` if `self` is not
+    /// a wildcard.
     ///
-    /// Use [`Self::is_wildcard`] if you just wish to check
-    /// it is is a wildcard domain, as it is cheaper to use.
+    /// Equivalent to [`DomainLabels::parent`] when [`Self::is_wildcard`].
+    /// Use [`Self::is_wildcard`] alone if you only need the predicate; it
+    /// doesn't allocate.
     #[must_use]
     pub fn as_wildcard_parent(&self) -> Option<Self> {
-        self.0.strip_prefix("*.").map(|s| Self(s.into()))
+        let mut it = self.labels();
+        let first = it.next()?;
+        if !first.is_wildcard() {
+            return None;
+        }
+        // Use the trait's `parent`-style rebuild via the builder so the result
+        // is a properly-validated Domain (no string slicing).
+        let mut b = DomainBuilder::new();
+        b.push_labels(it).ok()?;
+        b.finish().ok()
     }
 
     /// Try to create a subdomain from the current [`Domain`] with the given
-    /// subdomain prefixed to it
-    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, BoxError> {
-        let sub = format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
-        if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
-        }
-        Ok(Self(sub))
+    /// subdomain prefixed to it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if any segment of `sub` is not a valid label or
+    /// the combined name would exceed [`MAX_NAME_LEN`].
+    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, PushError> {
+        let mut b = DomainBuilder::new();
+        b.push_label_segments(sub.domain_as_str())?;
+        b.append(self)?;
+        b.finish()
     }
 
     /// Promote this [`Domain`] to a wildcard.
     ///
     /// E.g. turn `example.com` in `*.example.com`.
     ///
-    /// This can fail, e.g. because the domain becomes too long.
-    pub fn try_as_wildcard(&self) -> Result<Self, BoxError> {
-        let sub = format_smolstr!("*.{}", self.0);
-        if !is_valid_name(sub.as_bytes()) {
-            return Err(OpaqueError::from_static_str("invalid subdomain").into_box_error());
-        }
-        Ok(Self(sub))
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the resulting name would exceed
+    /// [`MAX_NAME_LEN`].
+    pub fn try_as_wildcard(&self) -> Result<Self, PushError> {
+        let mut b = DomainBuilder::new();
+        b.push_label("*")?;
+        b.append(self)?;
+        b.finish()
     }
 
     /// Try to strip the subdomain (prefix) from the current domain.
+    ///
+    /// `prefix` is matched label-by-label, case-insensitively. Returns
+    /// `Some(remainder)` if every label of `prefix` matches the corresponding
+    /// leftmost label of `self` and at least one label remains; otherwise
+    /// `None`.
+    ///
+    /// # Behavior note
+    ///
+    /// Prior to the move to label-based matching, this performed a raw
+    /// case-sensitive string `strip_prefix`. The current implementation is
+    /// label-aware and case-insensitive, which is consistent with the rest
+    /// of the type (Eq/Hash/Ord are also case-insensitive).
     pub fn strip_sub(&self, prefix: impl AsDomainRef) -> Option<Self> {
-        self.0
-            .strip_prefix(prefix.domain_as_str())
-            .and_then(|s| s.trim_start_matches('.').parse().ok())
+        let prefix_str = prefix.domain_as_str();
+        let mut self_labels = self.labels();
+        // Walk the prefix label-by-label.
+        for prefix_seg in dotted_segments(prefix_str) {
+            let self_label = self_labels.next()?;
+            if !self_label.as_str().eq_ignore_ascii_case(prefix_seg) {
+                return None;
+            }
+        }
+        // Build from the remaining labels directly — no intermediate Vec.
+        let mut b = DomainBuilder::new();
+        b.push_labels(&mut self_labels).ok()?;
+        // At least one label must remain (otherwise the whole domain was
+        // stripped and no valid sub-domain is left).
+        if b.is_empty() {
+            return None;
+        }
+        b.finish().ok()
     }
 
-    /// Returns `true` if this [`Domain`] is a parent of the other.
+    /// Returns `true` if `self` is a sub-domain of (or equal to) `other`.
     ///
-    /// Note that a [`Domain`] is a sub of itself.
+    /// Pure delegation to [`DomainLabels::is_subdomain_of`]; kept as an
+    /// inherent method for source-compat.
     #[must_use]
     pub fn is_sub_of(&self, other: &Self) -> bool {
-        let a = self.as_ref().trim_matches('.');
-        let b = other.as_ref().trim_matches('.');
-        match a.len().cmp(&b.len()) {
-            Ordering::Equal => a.eq_ignore_ascii_case(b),
-            Ordering::Greater => {
-                let n = a.len() - b.len();
-                let dot_char = a.chars().nth(n - 1);
-                let host_parent = &a[n..];
-                dot_char == Some('.') && b.eq_ignore_ascii_case(host_parent)
-            }
-            Ordering::Less => false,
-        }
+        <Self as DomainLabels>::is_subdomain_of(self, other)
     }
 
-    #[inline]
-    /// Returns `true` if this [`Domain`] is a subdomain of the other.
-    ///
-    /// Note that a [`Domain`] is a sub of itself.
+    /// Returns `true` if `self` is a parent of (or equal to) `other`.
     #[must_use]
     pub fn is_parent_of(&self, other: &Self) -> bool {
         other.is_sub_of(self)
@@ -272,11 +321,12 @@ impl Domain {
 
 impl std::hash::Hash for Domain {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let this = self.as_ref();
-        let this = this.strip_prefix('.').unwrap_or(this);
-        for b in this.bytes() {
-            let b = b.to_ascii_lowercase();
-            b.hash(state);
+        // Delegate to per-label hashing so the impl is consistent with
+        // PartialEq/Ord (both derived from label iteration). Label::hash is
+        // length-prefixed + ASCII-case-folded, so leading/trailing FQDN dots
+        // (normalized away by `labels()`) and case differences vanish.
+        for label in self.labels() {
+            label.hash(state);
         }
     }
 }
@@ -294,74 +344,232 @@ impl fmt::Display for Domain {
 }
 
 impl std::str::FromStr for Domain {
-    type Err = BoxError;
+    type Err = DomainParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::try_from(s.to_owned())
+        validate_domain_str(s)?;
+        Ok(Self(SmolStr::new(s)))
     }
 }
 
 impl TryFrom<String> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        if is_valid_name(name.as_bytes()) {
-            Ok(Self(SmolStr::new(name)))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
-        }
+        validate_domain_str(&name)?;
+        Ok(Self(SmolStr::new(name)))
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Domain {
+    type Error = DomainParseError;
+
+    fn try_from(name: &'a str) -> Result<Self, Self::Error> {
+        validate_domain_str(name)?;
+        Ok(Self(SmolStr::new(name)))
     }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
-        if is_valid_name(name) {
-            Ok(Self(SmolStr::new(
-                std::str::from_utf8(name).context("convert domain bytes to utf-8 string")?,
-            )))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
-        }
+        let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
+        validate_domain_str(s)?;
+        Ok(Self(SmolStr::new(s)))
     }
 }
 
 impl TryFrom<Vec<u8>> for Domain {
-    type Error = BoxError;
+    type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        if is_valid_name(name.as_slice()) {
-            Ok(Self(SmolStr::new(
-                String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
-            )))
-        } else {
-            Err(OpaqueError::from_static_str("invalid domain").into_box_error())
+        let s = String::from_utf8(name).map_err(|e| DomainParseError::non_utf8(e.utf8_error()))?;
+        validate_domain_str(&s)?;
+        Ok(Self(SmolStr::new(s)))
+    }
+}
+
+/// Error returned when parsing a string or byte sequence into a [`Domain`]
+/// fails.
+///
+/// Public newtype around a private enum so the variant set can evolve without
+/// breaking pattern-matching callers. Convert into a boxed error via
+/// `BoxError::from(err)` for the common composition case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainParseError(DomainParseErrorKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DomainParseErrorKind {
+    Empty,
+    TooLong { len: usize },
+    NonUtf8 { source: std::str::Utf8Error },
+    Label { at: usize, error: LabelError },
+    BadWildcard { at: usize },
+}
+
+impl DomainParseError {
+    #[inline]
+    fn empty() -> Self {
+        Self(DomainParseErrorKind::Empty)
+    }
+    #[inline]
+    fn too_long(len: usize) -> Self {
+        Self(DomainParseErrorKind::TooLong { len })
+    }
+    #[inline]
+    fn non_utf8(source: std::str::Utf8Error) -> Self {
+        Self(DomainParseErrorKind::NonUtf8 { source })
+    }
+    #[inline]
+    fn label(at: usize, error: LabelError) -> Self {
+        Self(DomainParseErrorKind::Label { at, error })
+    }
+    #[inline]
+    fn bad_wildcard(at: usize) -> Self {
+        Self(DomainParseErrorKind::BadWildcard { at })
+    }
+}
+
+impl fmt::Display for DomainParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            DomainParseErrorKind::Empty => f.write_str("empty domain"),
+            DomainParseErrorKind::TooLong { len } => {
+                write!(f, "domain is {len} bytes long, max is {MAX_NAME_LEN}")
+            }
+            DomainParseErrorKind::NonUtf8 { source } => {
+                write!(f, "domain bytes are not valid UTF-8: {source}")
+            }
+            DomainParseErrorKind::Label { at, error } => {
+                write!(f, "invalid label at index {at}: {error}")
+            }
+            DomainParseErrorKind::BadWildcard { at } => write!(
+                f,
+                "'*' wildcard label is only valid at index 0, found at index {at}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DomainParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.0 {
+            DomainParseErrorKind::Label { error, .. } => Some(error),
+            DomainParseErrorKind::NonUtf8 { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Validate a `&str` as a presentation-format domain.
+///
+/// Single source of truth for the runtime parse path (`FromStr` / `TryFrom`).
+/// Mirrors the const `is_valid_name` used by `from_static`, but reports
+/// position info via [`DomainParseError`].
+///
+/// # Accepted shapes
+///
+/// - bare: `"example.com"`, `"localhost"`
+/// - FQDN: `"example.com."` (trailing dot)
+/// - leading-dot: `".example.com"` (matches behaviour of the const path)
+/// - wildcard: `"*.example.com"`
+/// - leading-dot wildcard: `".*.example.com"` (the leading FQDN dot is
+///   stripped before label-walking; equivalent to `"*.example.com"`)
+///
+/// The bare wildcard label `"*"` is rejected (it must prefix at least one
+/// further label), and `"*"` is only valid as the leftmost label.
+fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
+    if s.is_empty() {
+        return Err(DomainParseError::empty());
+    }
+    if s.len() > MAX_NAME_LEN {
+        return Err(DomainParseError::too_long(s.len()));
+    }
+
+    // Normalize leading/trailing FQDN dots away for label walking. Each is
+    // optional and at most one.
+    let trimmed = s.strip_prefix('.').unwrap_or(s);
+    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    if trimmed.is_empty() {
+        return Err(DomainParseError::empty());
+    }
+
+    let mut parts = trimmed.split('.');
+    let mut idx = 0usize;
+    let mut last_part: Option<&str> = None;
+    for part in &mut parts {
+        label::validate_label_bytes(part.as_bytes())
+            .map_err(|e| DomainParseError::label(idx, e))?;
+        // Wildcard label is only valid as the leftmost.
+        if part == "*" && idx != 0 {
+            return Err(DomainParseError::bad_wildcard(idx));
+        }
+        last_part = Some(part);
+        idx += 1;
+    }
+    // A bare wildcard ("*" alone) is not a valid domain — it must prefix at
+    // least one further label.
+    if idx == 1 && last_part == Some("*") {
+        return Err(DomainParseError::bad_wildcard(0));
+    }
+    Ok(())
+}
+
+/// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
+///
+/// Single helper: split `s` into label-shaped `&str` segments, dropping
+/// leading/trailing FQDN dots and any empty segments.
+///
+/// This is the str-side counterpart to [`DomainLabels::labels`] and is the
+/// shared source of truth for every `Domain`↔`str` comparison/hash impl.
+/// Unlike `labels()`, it makes no validity claims about each segment — the
+/// caller doesn't have to know whether `s` is a real domain.
+fn dotted_segments(s: &str) -> impl DoubleEndedIterator<Item = &str> + Clone {
+    let s = s.strip_prefix('.').unwrap_or(s);
+    let s = s.strip_suffix('.').unwrap_or(s);
+    s.split('.').filter(|x| !x.is_empty())
+}
+
+/// Compare two label-shaped segment iterators ASCII-case-insensitively.
+///
+/// Lazily flattens both sides to `(segment_index, byte)` pairs where every
+/// "segment break" comes first in `Ord` (so `"a"` < `"aa"`, mirroring stdlib
+/// string ordering on the same underlying bytes). Single source of truth via
+/// [`label::cmp_ignore_ascii_case`] for the inner per-segment compare.
+fn cmp_segments<'a>(
+    mut a: impl Iterator<Item = &'a str>,
+    mut b: impl Iterator<Item = &'a str>,
+) -> Ordering {
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(x), Some(y)) => match label::cmp_ignore_ascii_case(x, y) {
+                Ordering::Equal => {}
+                non_eq => return non_eq,
+            },
+        }
+    }
+}
+
+/// Equal-by-segments, ASCII-case-insensitive.
+fn eq_segments<'a>(
+    mut a: impl Iterator<Item = &'a str>,
+    mut b: impl Iterator<Item = &'a str>,
+) -> bool {
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) if x.eq_ignore_ascii_case(y) => {}
+            _ => return false,
         }
     }
 }
 
 fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
-    let a = a.as_ref();
-    let a = a.strip_prefix('.').unwrap_or(a);
-    let a = a.bytes().map(Some).chain(repeat(None));
-
-    let b = b.as_ref();
-    let b = b.strip_prefix('.').unwrap_or(b);
-    let b = b.bytes().map(Some).chain(repeat(None));
-
-    a.zip(b)
-        .find_map(|(a, b)| match (a, b) {
-            (Some(a), Some(b)) => match a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()) {
-                Ordering::Greater => Some(Ordering::Greater),
-                Ordering::Less => Some(Ordering::Less),
-                Ordering::Equal => None,
-            },
-            (Some(_), None) => Some(Ordering::Greater),
-            (None, Some(_)) => Some(Ordering::Less),
-            (None, None) => Some(Ordering::Equal),
-        })
-        .unwrap_or(Ordering::Equal)
+    cmp_segments(dotted_segments(a.as_ref()), dotted_segments(b.as_ref()))
 }
 
 impl PartialOrd<Self> for Domain {
@@ -372,7 +580,13 @@ impl PartialOrd<Self> for Domain {
 
 impl Ord for Domain {
     fn cmp(&self, other: &Self) -> Ordering {
-        cmp_domain(self, other)
+        // Same primitive as `cmp_domain(self, other)`. Both feed into
+        // `cmp_segments`; the Domain side just exposes its labels via the
+        // structural iterator rather than re-splitting the buffer.
+        cmp_segments(
+            self.labels().map(Label::as_str),
+            other.labels().map(Label::as_str),
+        )
     }
 }
 
@@ -416,18 +630,15 @@ impl PartialOrd<Domain> for String {
 }
 
 fn partial_eq_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> bool {
-    let a = a.as_ref();
-    let a = a.strip_prefix('.').unwrap_or(a);
-
-    let b = b.as_ref();
-    let b = b.strip_prefix('.').unwrap_or(b);
-
-    a.eq_ignore_ascii_case(b)
+    eq_segments(dotted_segments(a.as_ref()), dotted_segments(b.as_ref()))
 }
 
 impl PartialEq<Self> for Domain {
     fn eq(&self, other: &Self) -> bool {
-        partial_eq_domain(self, other)
+        eq_segments(
+            self.labels().map(Label::as_str),
+            other.labels().map(Label::as_str),
+        )
     }
 }
 
@@ -493,10 +704,10 @@ impl<'de> serde::Deserialize<'de> for Domain {
 
 impl Domain {
     /// The maximum length of a domain label.
-    const MAX_LABEL_LEN: usize = 63;
+    const MAX_LABEL_LEN: usize = Label::MAX_LEN;
 
     /// The maximum length of a domain name.
-    const MAX_NAME_LEN: usize = 253;
+    const MAX_NAME_LEN: usize = MAX_NAME_LEN;
 }
 
 const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
@@ -581,6 +792,51 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
         self.domain_as_str()
             .strip_prefix("*.")
             .and_then(|s| s.parse().ok())
+    }
+
+    /// Return an owned [`Domain`].
+    ///
+    /// For `&'static str` inputs this validates and panics on invalid input
+    /// (matching [`Domain::from_static`]); for [`Domain`] it clones cheaply.
+    fn to_domain(&self) -> Domain {
+        // Safety: domain_as_str is contractually a validated domain string.
+        unsafe { Domain::from_maybe_borrowed_unchecked(self.domain_as_str()) }
+    }
+
+    /// Return this value in wildcard form (`*.x`).
+    ///
+    /// If `self` is already a wildcard, an owned copy is returned as-is.
+    /// Otherwise this is equivalent to `self.to_domain().try_as_wildcard()`
+    /// — i.e. `x` becomes `*.x` (with the usual length cap).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the resulting name would exceed
+    /// [`MAX_NAME_LEN`].
+    ///
+    /// # Panics
+    ///
+    /// Inherited from [`Self::to_domain`]: for `&'static str` inputs this
+    /// panics on invalid domain syntax (matching [`Domain::from_static`]).
+    fn to_wildcard(&self) -> Result<Domain, PushError> {
+        let d = self.to_domain();
+        if d.is_wildcard() {
+            Ok(d)
+        } else {
+            d.try_as_wildcard()
+        }
+    }
+
+    /// If `self` is already in wildcard form, return it as an owned
+    /// [`Domain`]; otherwise return `None`.
+    ///
+    /// Unlike [`Self::to_wildcard`], this does **not** transform bare inputs
+    /// into the wildcard form — use it when you want to know "was this
+    /// input already a wildcard?" without doing any conversion.
+    fn as_wildcard(&self) -> Option<Domain> {
+        let s = self.domain_as_str();
+        let trimmed = s.strip_prefix('.').unwrap_or(s);
+        trimmed.starts_with("*.").then(|| self.to_domain())
     }
 }
 
@@ -852,12 +1108,21 @@ mod tests {
             ("www.example.com", "www", Some("example.com")),
             ("example.com", "www", None),
             ("www.www.example.com", "www", Some("www.example.com")),
+            // Multi-label prefix.
+            ("a.b.example.com", "a.b", Some("example.com")),
+            ("a.b.example.com", "a.x", None),
+            // Stripping the entire domain returns None (no labels remain).
+            ("example.com", "example.com", None),
+            // Case-insensitive matching (behavior change in this PR; aligns
+            // with Eq/Hash/Ord, which are also case-insensitive).
+            ("WWW.example.com", "www", Some("example.com")),
+            ("www.example.com", "WWW", Some("example.com")),
         ];
         for (sub_raw, prefix, expected_output) in test_cases.into_iter() {
             let sub = Domain::from_static(sub_raw);
             let result = sub.strip_sub(prefix);
             let expected_result = expected_output.map(Domain::from_static);
-            assert_eq!(expected_result, result);
+            assert_eq!(expected_result, result, "sub={sub_raw} prefix={prefix}");
         }
     }
 
@@ -885,6 +1150,11 @@ mod tests {
             (".example.com", ".example.com"),
             (".example.com", "example.com"),
             ("example.com", ".example.com"),
+            // FQDN trailing dot normalized away
+            ("example.com", "example.com."),
+            ("example.com.", "example.com"),
+            (".example.com.", "example.com"),
+            (".example.com", "example.com."),
         ];
         for (a, b) in test_cases.into_iter() {
             assert_eq!(Domain::from_static(a), b);
@@ -937,7 +1207,6 @@ mod tests {
     fn is_not_equal() {
         let test_cases = vec![
             ("example.com", "localhost"),
-            ("example.com", "example.com."),
             ("example.com", "example.co"),
             ("example.com", "examine.com"),
             ("example.com", "example.com.us"),
@@ -961,7 +1230,9 @@ mod tests {
             (".example.com", "example.com", Ordering::Equal),
             ("example.com", ".example.com", Ordering::Equal),
             ("example.com", "localhost", Ordering::Less),
-            ("example.com", "example.com.", Ordering::Less),
+            // FQDN trailing dot normalized away
+            ("example.com", "example.com.", Ordering::Equal),
+            ("example.com.", "example.com", Ordering::Equal),
             ("example.com", "example.co", Ordering::Greater),
             ("example.com", "examine.com", Ordering::Greater),
             ("example.com", "example.com.us", Ordering::Less),
@@ -1004,11 +1275,76 @@ mod tests {
         assert!(m.contains_key(&Domain::from_static("EXAMPLE.COM")));
         assert!(m.contains_key(&Domain::from_static(".example.com")));
         assert!(m.contains_key(&Domain::from_static(".example.COM")));
+        // FQDN trailing dot normalized away — same key
+        assert!(m.contains_key(&Domain::from_static("example.com.")));
+        assert!(m.contains_key(&Domain::from_static(".example.com.")));
 
         assert!(!m.contains_key(&Domain::from_static("www.example.com")));
         assert!(!m.contains_key(&Domain::from_static("examine.com")));
-        assert!(!m.contains_key(&Domain::from_static("example.com.")));
         assert!(!m.contains_key(&Domain::from_static("example.co")));
         assert!(!m.contains_key(&Domain::from_static("example.commerce")));
+    }
+
+    #[test]
+    fn parse_error_variant_empty() {
+        let err = Domain::try_from(String::new()).unwrap_err();
+        assert_eq!(format!("{err}"), "empty domain");
+        // also for purely-dot input — trims to empty
+        let err = Domain::try_from(".".to_owned()).unwrap_err();
+        assert_eq!(format!("{err}"), "empty domain");
+    }
+
+    #[test]
+    fn parse_error_variant_too_long() {
+        let too_long = "a".repeat(MAX_NAME_LEN + 1);
+        let err = Domain::try_from(too_long).unwrap_err();
+        assert!(format!("{err}").contains("max is 253"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_error_variant_label_at_index() {
+        // empty middle label → idx 1
+        let err = Domain::try_from("a..b".to_owned()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("index 1"), "msg: {msg}");
+        // a label-level Error is exposed via source()
+        let src = std::error::Error::source(&err);
+        assert!(src.is_some(), "label error should be source-chained");
+    }
+
+    #[test]
+    fn parse_error_variant_bad_wildcard() {
+        // wildcard not at index 0
+        let err = Domain::try_from("foo.*.com".to_owned()).unwrap_err();
+        assert!(
+            format!("{err}").contains("wildcard"),
+            "expected wildcard mention: {err}"
+        );
+        // bare wildcard
+        let err = Domain::try_from("*".to_owned()).unwrap_err();
+        assert!(
+            format!("{err}").contains("wildcard"),
+            "expected wildcard mention: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_variant_non_utf8() {
+        // 0xff is invalid UTF-8 as a starting byte
+        let bytes: Vec<u8> = vec![0xff, b'x', b'.', b'c', b'o', b'm'];
+        let err = <Domain as TryFrom<Vec<u8>>>::try_from(bytes.clone()).unwrap_err();
+        assert!(format!("{err}").contains("UTF-8"), "got: {err}");
+        let err = <Domain as TryFrom<&[u8]>>::try_from(bytes.as_slice()).unwrap_err();
+        assert!(format!("{err}").contains("UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_error_converts_to_box_error_via_questionmark() {
+        fn use_questionmark(s: &str) -> Result<Domain, rama_core::error::BoxError> {
+            let d: Domain = s.parse()?;
+            Ok(d)
+        }
+        use_questionmark("example.com").unwrap();
+        use_questionmark("").unwrap_err();
     }
 }

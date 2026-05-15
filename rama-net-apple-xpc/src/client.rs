@@ -2,7 +2,7 @@ use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
 
 use crate::{
-    connection::XpcConnection,
+    connection::{DEFAULT_MAX_PENDING_EVENTS, XpcConnection},
     error::XpcError,
     ffi::{XPC_CONNECTION_MACH_SERVICE_PRIVILEGED, xpc_connection_create_mach_service},
     object::OwnedXpcObject,
@@ -22,6 +22,7 @@ pub struct XpcClientConfig {
     privileged: bool,
     target_queue_label: Option<ArcStr>,
     peer_requirement: Option<PeerSecurityRequirement>,
+    max_pending_events: usize,
 }
 
 impl XpcClientConfig {
@@ -34,6 +35,7 @@ impl XpcClientConfig {
             privileged: false,
             target_queue_label: None,
             peer_requirement: None,
+            max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
         }
     }
 
@@ -69,6 +71,19 @@ impl XpcClientConfig {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of unread events that may queue inside the connection's
+        /// internal channel before new events are dropped (with a warn-level log).
+        ///
+        /// Defaults to
+        /// [`DEFAULT_MAX_PENDING_EVENTS`](crate::connection::DEFAULT_MAX_PENDING_EVENTS).
+        /// Values of `0` are clamped to `1`.
+        pub fn max_pending_events(mut self, capacity: usize) -> Self {
+            self.max_pending_events = capacity.max(1);
+            self
+        }
+    }
 }
 
 impl XpcConnection {
@@ -83,6 +98,7 @@ impl XpcConnection {
             privileged,
             target_queue_label,
             peer_requirement,
+            max_pending_events,
         } = config;
         tracing::debug!(
             service = %service_name,
@@ -108,6 +124,6 @@ impl XpcConnection {
             requirement.apply(connection.raw as _)?;
         }
 
-        Self::from_owned_peer(connection)
+        Self::from_owned_peer_with_capacity(connection, max_pending_events, max_pending_events)
     }
 }
