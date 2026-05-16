@@ -8,7 +8,7 @@ pub use id::UserId;
 
 pub mod credentials;
 #[doc(inline)]
-pub use credentials::{Basic, Bearer, ProxyCredential};
+pub use credentials::{Basic, Bearer, ProxyCredential, RawToken};
 
 pub mod authority;
 pub mod layer;

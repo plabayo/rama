@@ -9,7 +9,7 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_net::user::{Basic, Bearer, UserId};
+use rama_net::user::{Basic, Bearer, RawToken, UserId};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
@@ -90,6 +90,13 @@ impl<C: Credentials> HeaderDecode for Authorization<C> {
         values
             .next()
             .and_then(|val| {
+                // Scheme-less credential types (e.g. `RawToken`) declare an
+                // empty `SCHEME` and treat the whole header value as the
+                // token. Skip the `<scheme> SP …` prefix check entirely so
+                // those types don't have to lie about their shape.
+                if C::SCHEME.is_empty() {
+                    return C::decode(val).map(Authorization);
+                }
                 let slice = val.as_bytes();
                 if slice.len() > C::SCHEME.len()
                     && slice[C::SCHEME.len()] == b' '
@@ -109,6 +116,9 @@ impl<C: Credentials> HeaderEncode for Authorization<C> {
         values.extend(self.0.encode().map(|mut value| {
             value.set_sensitive(true);
             debug_assert!(
+                // Scheme-less credentials (empty `SCHEME`) encode as a bare
+                // token with no prefix; `starts_with` on an empty slice
+                // is trivially true, so the assertion below covers them.
                 value.as_bytes().starts_with(C::SCHEME.as_bytes()),
                 "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
                 C::SCHEME,
@@ -238,6 +248,33 @@ impl Credentials for Bearer {
         HeaderValue::try_from(format!("{} {}", Self::SCHEME, self.token()))
             .inspect_err(|err| {
                 tracing::debug!("failed to encode bearer auth as header value: {err}");
+            })
+            .ok()
+    }
+}
+
+impl Credentials for RawToken {
+    /// Scheme-less: the entire `Authorization` header value is the token,
+    /// with no leading `Bearer ` / `Basic ` prefix.
+    const SCHEME: &'static str = "";
+
+    fn decode(value: &HeaderValue) -> Option<Self> {
+        let s = std::str::from_utf8(value.as_bytes())
+            .inspect_err(|err| {
+                tracing::trace!("RawToken credentials failed to decode: {err:?}");
+            })
+            .ok()?;
+        Self::try_from(s.to_owned())
+            .inspect_err(|err| {
+                tracing::trace!("RawToken credentials failed to decode: {err}");
+            })
+            .ok()
+    }
+
+    fn encode(&self) -> Option<HeaderValue> {
+        HeaderValue::try_from(self.token().to_owned())
+            .inspect_err(|err| {
+                tracing::debug!("failed to encode raw token as header value: {err}");
             })
             .ok()
     }
@@ -423,6 +460,38 @@ mod tests {
     fn bearer_decode_extra_whitespaces() {
         let auth: Authorization<Bearer> = test_decode(&["Bearer   fpKL54jvWmEGVoRdCNjG"]).unwrap();
         assert_eq!(auth.0.token().as_bytes(), b"fpKL54jvWmEGVoRdCNjG");
+    }
+
+    /// Regression: `RawToken` is a scheme-less credential — the header
+    /// value is the token, no `Bearer ` / `Basic ` prefix. This pins both
+    /// the encoded form (bare token) and the empty-scheme escape hatch in
+    /// `Authorization::decode`.
+    #[test]
+    fn regression_authorization_raw_token_roundtrip() {
+        use rama_net::user::RawToken;
+
+        let token = RawToken::try_from("fpKL54jvWmEGVoRdCNjG").unwrap();
+        let auth = Authorization::new(token.clone());
+
+        // Encode: header value is the bare token, no scheme prefix.
+        let headers = test_encode(auth);
+        assert_eq!(headers["authorization"], "fpKL54jvWmEGVoRdCNjG");
+
+        // Decode: the same bare value round-trips back.
+        let decoded: Authorization<RawToken> = test_decode(&["fpKL54jvWmEGVoRdCNjG"]).unwrap();
+        assert_eq!(decoded.0, token);
+    }
+
+    /// Regression: a `RawToken` header may contain characters that
+    /// `Bearer` rejects (`,`, `:`, `=`, SP) because real-world API keys
+    /// do.
+    #[test]
+    fn regression_authorization_raw_token_accepts_loose_alphabet() {
+        use rama_net::user::RawToken;
+
+        let decoded: Authorization<RawToken> =
+            test_decode(&["sk-live_abc=xyz,scope:read"]).unwrap();
+        assert_eq!(decoded.0.token(), "sk-live_abc=xyz,scope:read");
     }
 }
 
