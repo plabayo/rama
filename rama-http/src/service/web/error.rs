@@ -1,29 +1,26 @@
-/*!
-This module contains machinery to allow converting any type-erased [`Error`] into [`Response`]
-dynamically, using error downcasting
-
-Its primary use case is to retrieve a custom [`Response`] after an error has been wrapped with
-a type-erasing error container, like BoxError
-
-Example how to implement it for an error
-```rust,ignore
-#[derive(Clone)]
-struct CustomError;
-
-impl Error for CustomError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(DowncastResponseError::new(self))
-    }
-}
-
-impl IntoResponse for CustomError {
-    fn into_response(self) -> Response {
-        StatusCode::IM_A_TEAPOT.into_response()
-    }
-}
-```
-*/
-
+//! This module contains machinery to allow converting any type-erased [`Error`] into [`Response`]
+//! dynamically, using error downcasting
+//!
+//! Its primary use case is to retrieve a custom [`Response`] after an error has been wrapped with
+//! a type-erasing error container, like BoxError
+//!
+//! Example how to implement it for an error
+//! ```rust,ignore
+//! #[derive(Clone)]
+//! struct CustomError;
+//!
+//! impl Error for CustomError {
+//!     fn source(&self) -> Option<&(dyn Error + 'static)> {
+//!         Some(DowncastResponseError::new(self))
+//!     }
+//! }
+//!
+//! impl IntoResponse for CustomError {
+//!     fn into_response(self) -> Response {
+//!         StatusCode::IM_A_TEAPOT.into_response()
+//!     }
+//! }
+//! ```
 use std::{error::Error, fmt};
 
 use rama_http_types::Response;

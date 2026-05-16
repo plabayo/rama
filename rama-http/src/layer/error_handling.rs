@@ -56,6 +56,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
 use std::error::Error;
+use std::marker::PhantomData;
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.
 #[derive(Debug, Clone)]
@@ -177,7 +178,7 @@ pub struct AsRefKind;
 /// If there is no [`DowncastResponseError`] in the error chain, it returns INTERNAL_SERVER_ERROR
 pub struct DowncastErrorHandler<S, K> {
     inner: S,
-    _kind: K,
+    _kind: PhantomData<fn(K) -> K>,
 }
 
 impl<S, I> Service<I> for DowncastErrorHandler<S, ImplErrorKind>
@@ -189,16 +190,11 @@ where
     type Error = Infallible;
 
     async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
-        Ok(self.inner.serve(input).await.map_or_else(
-            |err| {
-                if let Some(resp) = DowncastResponseError::try_as_response(&err) {
-                    resp
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                }
-            },
-            IntoResponse::into_response,
-        ))
+        Ok(match self.inner.serve(input).await {
+            Ok(resp) => resp.into_response(),
+            Err(err) => DowncastResponseError::try_as_response(&err)
+                .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        })
     }
 }
 
@@ -211,16 +207,11 @@ where
     type Error = Infallible;
 
     async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
-        Ok(self.inner.serve(input).await.map_or_else(
-            |err| {
-                if let Some(resp) = DowncastResponseError::try_as_response(err.as_ref()) {
-                    resp
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                }
-            },
-            IntoResponse::into_response,
-        ))
+        Ok(match self.inner.serve(input).await {
+            Ok(resp) => resp.into_response(),
+            Err(err) => DowncastResponseError::try_as_response(err.as_ref())
+                .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        })
     }
 }
 
@@ -228,7 +219,7 @@ where
 ///
 /// See [`DowncastErrorHandler`] for additional documentation
 #[derive(Debug, Default, Clone)]
-pub struct DowncastErrorHandlerLayer<M>(M);
+pub struct DowncastErrorHandlerLayer<K>(PhantomData<fn(K) -> K>);
 
 impl DowncastErrorHandlerLayer<()> {
     /// Creates [`DowncastErrorHandlerLayer`] for errors implementing [`AsRef<dyn Error + Send + Sync>`]

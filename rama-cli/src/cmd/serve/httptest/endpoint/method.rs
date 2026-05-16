@@ -1,9 +1,12 @@
-use rama::http::{Method, Response, StatusCode, service::web::response::IntoResponse};
+use rama::http::service::web::response::ErrorResponse;
+use rama::http::{Method, StatusCode};
 
-pub(in crate::cmd::serve::httptest) async fn handler(method: Method) -> Response {
+pub(in crate::cmd::serve::httptest) async fn handler(
+    method: Method,
+) -> Result<String, ErrorResponse> {
     if method == Method::CONNECT {
         // CONNECT requests are not allowed to have response payload
-        return StatusCode::BAD_REQUEST.into_response();
+        return Err(StatusCode::BAD_REQUEST.into());
     }
-    method.to_string().into_response()
+    Ok(method.to_string())
 }

@@ -440,7 +440,7 @@ where
         let endpoint = Endpoint {
             matcher,
             service: DefaultLayer::default()
-                .layer(service.into_endpoint_service_with_state(self.state.clone()))
+                .into_layer(service.into_endpoint_service_with_state(self.state.clone()))
                 .boxed(),
         };
         self.endpoints.push(Arc::new(endpoint));
@@ -456,7 +456,7 @@ where
         let endpoint = Endpoint {
             matcher,
             service: DefaultLayer::default()
-                .layer(service.into_endpoint_service_with_state(self.state.clone()))
+                .into_layer(service.into_endpoint_service_with_state(self.state.clone()))
                 .boxed(),
         };
         self.endpoints.push(Arc::new(endpoint));
@@ -471,7 +471,7 @@ where
         I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         self.not_found = DefaultLayer::default()
-            .layer(service.into_endpoint_service_with_state(self.state.clone()))
+            .into_layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
         self
     }
@@ -483,7 +483,7 @@ where
         I::Service: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
     {
         self.not_found = DefaultLayer::default()
-            .layer(service.into_endpoint_service_with_state(self.state.clone()))
+            .into_layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
         self
     }

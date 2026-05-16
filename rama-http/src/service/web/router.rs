@@ -40,6 +40,10 @@ use crate::{
     },
 };
 
+/// Default endpoint layer for the router.
+/// It converts Output and Error types of endpoints using [`IntoResponse`] trait,
+/// same as [`ErrorHandlerLayer`], except it returns [`RouterError`] instead of [`Infallible`]
+/// to fit default Router.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct DefaultLayer;
