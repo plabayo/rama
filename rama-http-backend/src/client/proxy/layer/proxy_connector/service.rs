@@ -205,7 +205,8 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?
+            .with_extensions(conn.extensions().clone().fork());
 
         if let Some(version) = self.version {
             connector.set_version(version);

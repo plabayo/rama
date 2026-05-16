@@ -4,7 +4,7 @@
 
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
@@ -58,7 +58,18 @@ impl InnerHttpProxyConnector {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Add a header to the request.
+        /// Set the extensions for the connector.
+        pub(super) fn extensions(
+            mut self,
+            exts: Extensions,
+        ) -> Self {
+            self.req.set_extensions_mut(exts);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Add an extension to the request.
         pub(super) fn extension(
             mut self,
             value: impl Extension,
