@@ -68,7 +68,10 @@ impl Ja4 {
         if cipher_suites.is_empty() {
             return Err(Ja4ComputeError::EmptyCipherSuites);
         }
-        cipher_suites.sort_unstable_by_key(|k| format!("{k:04x}"));
+        // Sort by the raw u16. JA4 hexes each id as 4 lowercase hex digits;
+        // zero-padded fixed-width hex sorts identically to the integer it
+        // represents, so we avoid the per-comparison `format!` allocation.
+        cipher_suites.sort_unstable_by_key(|k| u16::from(*k));
 
         let mut extensions = None;
         let mut alpn = None;
@@ -113,7 +116,9 @@ impl Ja4 {
         }
 
         if let Some(extensions) = extensions.as_mut() {
-            extensions.sort_unstable_by_key(|k| format!("{k:04x}"));
+            // See comment on `cipher_suites.sort_unstable_by_key` above —
+            // zero-padded hex sorts identically to the underlying u16.
+            extensions.sort_unstable_by_key(|k| u16::from(*k));
         }
 
         Ok(Self {

@@ -483,7 +483,18 @@ fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
     if s.is_empty() {
         return Err(DomainParseError::empty());
     }
-    if s.len() > MAX_NAME_LEN {
+    // RFC 1035 §2.3.4: the wire-format max is 255 octets and the
+    // presentation-form max is 253 octets *exclusive* of the optional
+    // trailing FQDN dot. Counting the dot would reject otherwise legal
+    // FQDN-form input like `example.com.` of length 254.
+    //
+    // Regression: `tests::regression_domain_fqdn_trailing_dot_length`.
+    let effective_len = if s.ends_with('.') {
+        s.len() - 1
+    } else {
+        s.len()
+    };
+    if effective_len > MAX_NAME_LEN {
         return Err(DomainParseError::too_long(s.len()));
     }
 
@@ -1299,6 +1310,31 @@ mod tests {
         let too_long = "a".repeat(MAX_NAME_LEN + 1);
         let err = Domain::try_from(too_long).unwrap_err();
         assert!(format!("{err}").contains("max is 253"), "got: {err}");
+    }
+
+    /// Regression: RFC 1035 §2.3.4 caps the presentation-form length at 253
+    /// octets *exclusive* of the optional trailing FQDN dot. Previously the
+    /// length check compared `s.len()` directly to 253, which rejected
+    /// legitimate FQDN-form input like `a...a.` of length 254.
+    #[test]
+    fn regression_domain_fqdn_trailing_dot_length() {
+        // Build a 253-octet presentation-form domain: four labels (63, 63,
+        // 62, 62) joined by three dots → 63+63+62+62+3 = 253 octets.
+        let l63 = "a".repeat(63);
+        let l62 = "a".repeat(62);
+        let prefix = format!("{l63}.{l63}.{l62}.{l62}");
+        assert_eq!(prefix.len(), 253);
+        // No trailing dot: still accepted.
+        Domain::try_from(prefix.clone()).unwrap();
+        // With trailing dot (FQDN form), total bytes = 254, still accepted.
+        let fqdn = format!("{prefix}.");
+        assert_eq!(fqdn.len(), 254);
+        Domain::try_from(fqdn)
+            .expect("FQDN with trailing dot should be accepted at 254 octets total");
+        // But 254 effective octets (no trailing dot) is rejected.
+        let too_long = format!("{prefix}c");
+        assert_eq!(too_long.len(), 254);
+        Domain::try_from(too_long).unwrap_err();
     }
 
     #[test]

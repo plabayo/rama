@@ -434,13 +434,18 @@ fn parse_tls_extension_certificate_compression_content(
 }
 
 fn parse_protocol_name_list(mut i: &[u8]) -> IResult<&[u8], Vec<ApplicationProtocol>> {
+    // The loop consumes `i` until it is empty, so `i` at the end of the loop
+    // is the actual (empty) residual — return it verbatim. The original
+    // version hard-coded `Ok((&[], v))`, which masked any future bug in the
+    // loop's accounting and was inconsistent with the rest of the parser
+    // (other helpers surface the unconsumed tail).
     let mut v = vec![];
     while !i.is_empty() {
         let (n, alpn) = map_parser(length_data(be_u8), parse_protocol_name).parse(i)?;
         v.push(alpn);
         i = n;
     }
-    Ok((&[], v))
+    Ok((i, v))
 }
 
 fn parse_protocol_name(i: &[u8]) -> IResult<&[u8], ApplicationProtocol> {
