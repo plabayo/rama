@@ -58,6 +58,7 @@ pub mod redirect;
 pub use redirect::Redirect;
 
 pub mod sse;
+
 pub use sse::Sse;
 
 /// An [`IntoResponse`]-based result type that uses [`ErrorResponse`] as the error type.
@@ -137,18 +138,6 @@ pub use sse::Sse;
 /// ```
 pub type Result<T, E = ErrorResponse> = std::result::Result<T, E>;
 
-impl<T> IntoResponse for Result<T>
-where
-    T: IntoResponse,
-{
-    fn into_response(self) -> Response {
-        match self {
-            Ok(ok) => ok.into_response(),
-            Err(err) => err.0,
-        }
-    }
-}
-
 /// An [`IntoResponse`]-based error type
 ///
 /// See [`Result`] for more details.
@@ -161,5 +150,11 @@ where
 {
     fn from(value: T) -> Self {
         Self(value.into_response())
+    }
+}
+
+impl ErrorResponse {
+    pub fn into_response(self) -> Response {
+        self.0
     }
 }

@@ -25,6 +25,7 @@ use rama::{
     Layer,
     extensions::{Extension, ExtensionsRef},
     http::{
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::{
@@ -33,6 +34,7 @@ use rama::{
         },
     },
     layer::AddInputExtensionLayer,
+    layer::ArcLayer,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -45,7 +47,7 @@ use rama::{
 };
 
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::sync::broadcast;
 
 #[tokio::main]
@@ -62,10 +64,10 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(Router::new().with_get("/", Html(INDEX)).with_get(
+        let router = Router::new().with_get("/", Html(INDEX)).with_get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
-                async |mut ws: ServerWebSocket| {
+                async |mut ws: ServerWebSocket| -> Result<_, Infallible> {
                     let state = ws.extensions().get_ref::<State>().unwrap().clone();
                     let mut handler = WsHandler {
                         nickname: None,
@@ -123,7 +125,10 @@ async fn main() {
                     }
                 },
             )),
-        )));
+        );
+
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone()))
+            .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(router));
         info!("open mini web chat @ http://127.0.0.1:62033");
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama')");
 

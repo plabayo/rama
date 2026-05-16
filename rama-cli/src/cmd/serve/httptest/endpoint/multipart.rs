@@ -2,6 +2,7 @@ use rama::{
     Layer as _, Service,
     http::{
         Request, Response,
+        layer::error_handling::ErrorHandlerLayer,
         service::web::{
             IntoEndpointService,
             extract::multipart::{Multipart, MultipartConfig},
@@ -60,7 +61,12 @@ const PER_FIELD_LIMIT: u64 = kib_u64(256);
 /// `413 Payload Too Large`.
 pub(in crate::cmd::serve::httptest) fn post_service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
-    AddInputExtensionLayer::new(MultipartConfig::new().with_default_field_limit(PER_FIELD_LIMIT))
+    (
+        AddInputExtensionLayer::new(
+            MultipartConfig::new().with_default_field_limit(PER_FIELD_LIMIT),
+        ),
+        ErrorHandlerLayer::new(),
+    )
         .into_layer(post_handler.into_endpoint_service())
 }
 

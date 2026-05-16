@@ -52,8 +52,13 @@ use rama::{
     error::{BoxError, ErrorExt, extra::OpaqueError},
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
-    http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
+    http::{
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
+        server::HttpServer,
+        service::web::Router,
+    },
     io::Io,
+    layer::ArcLayer,
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
@@ -71,7 +76,7 @@ use rama::{
 
 // everything else is provided by the standard library, community crates or tokio
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -191,11 +196,18 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: 
         TcpListener::bind_address(socket_address, Executor::graceful(guard.clone()))
             .await
             .expect("bind TCP Listener for web server")
-            .serve(TlsAcceptorLayer::new(acceptor_data).into_layer(
-                HttpServer::auto(Executor::graceful(guard)).service(Arc::new(
-                    TraceLayer::new_for_http().into_layer(Router::new().with_get("/", name)),
-                )),
-            ))
+            .serve(
+                TlsAcceptorLayer::new(acceptor_data).into_layer(
+                    HttpServer::auto(Executor::graceful(guard)).service(
+                        (
+                            ArcLayer::new(),
+                            TraceLayer::new_for_http(),
+                            ErrorHandlerLayer::new(),
+                        )
+                            .into_layer(Router::new().with_get("/", name)),
+                    ),
+                ),
+            )
             .instrument(tracing::debug_span!(
                 "tcp::serve(https)",
                 server.service.name = %name,

@@ -3,14 +3,14 @@ use std::convert::Infallible;
 use rama::{
     Service,
     http::{
-        Request, Response,
-        service::web::{StaticService, response::Html},
+        Request, Response, layer::into_response::IntoResponseService, service::web::response::Html,
     },
+    service::StaticOutput,
 };
 
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
-    StaticService::new(Html(
+    IntoResponseService::new(StaticOutput::new(Html(
         r#"
         <!DOCTYPE html>
         <html lang="en">
@@ -206,5 +206,5 @@ pub(in crate::cmd::serve::httptest) fn service()
         </body>
         </html>
     "#,
-    ))
+    )))
 }

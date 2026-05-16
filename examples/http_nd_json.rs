@@ -30,13 +30,14 @@ use rama::{
     http::{
         Body,
         headers::ContentType,
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
             response::{Headers, IntoResponse},
         },
     },
+    layer::ArcLayer,
     net::address::SocketAddress,
     rt::Executor,
     stream::json::JsonWriteStream,
@@ -49,7 +50,7 @@ use rama::{
 };
 
 use serde::Serialize;
-use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Duration};
+use std::{borrow::Cow, convert::Infallible, time::Duration};
 
 async fn api_json_events_endpoint() -> impl IntoResponse {
     (
@@ -107,9 +108,12 @@ async fn main() {
     );
 
     graceful.spawn_task(async {
-        let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
-            Router::new().with_get("/orders", api_json_events_endpoint),
-        ));
+        let app = (
+            ArcLayer::new(),
+            TraceLayer::new_for_http(),
+            ErrorHandlerLayer::new(),
+        )
+            .into_layer(Router::new().with_get("/orders", api_json_events_endpoint));
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 

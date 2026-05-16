@@ -46,11 +46,18 @@
 //! # }
 //! ```
 
-use crate::service::web::response::IntoResponse;
+use crate::service::web::{
+    error::DowncastResponseError,
+    response::{ErrorResponse, IntoResponse},
+};
 use crate::{Request, Response};
+use http::StatusCode;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
+use std::error::Error;
+use std::fmt;
+use std::marker::PhantomData;
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.
 #[derive(Debug, Clone)]
@@ -124,7 +131,7 @@ impl<S> ErrorHandler<S> {
 
 impl<S, Body> Service<Request<Body>> for ErrorHandler<S, ()>
 where
-    S: Service<Request<Body>, Output: IntoResponse, Error: IntoResponse>,
+    S: Service<Request<Body>, Output: IntoResponse, Error: Into<ErrorResponse>>,
     Body: Send + 'static,
 {
     type Output = Response;
@@ -133,7 +140,7 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
-            Err(error) => Ok(error.into_response()),
+            Err(error) => Ok(error.into().into_response()),
         }
     }
 }
@@ -152,6 +159,116 @@ where
         match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok((self.error_mapper)(error).into_response()),
+        }
+    }
+}
+
+/// Marker type for [`DowncastErrorHandler`] representing errors implementing [`Error`] trait
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct ImplErrorKind;
+
+/// Marker type for [`DowncastErrorHandler`] representing errors
+/// implementing [`AsRef<dyn Error + Send + Sync>`]
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct AsRefKind;
+
+/// [`Service`] that tries to downcast an Error into [`Response`] using [`DowncastResponseError`]
+///
+/// If there is no [`DowncastResponseError`] in the error chain, it returns INTERNAL_SERVER_ERROR
+pub struct DowncastErrorHandler<S, K> {
+    inner: S,
+    _kind: PhantomData<fn(K) -> K>,
+}
+
+impl<S: fmt::Debug, K: fmt::Debug + Default> fmt::Debug for DowncastErrorHandler<S, K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DowncastErrorHandler")
+            .field("inner", &self.inner)
+            .field("kind", &K::default())
+            .finish()
+    }
+}
+
+impl<S, I> Service<I> for DowncastErrorHandler<S, ImplErrorKind>
+where
+    S: Service<I, Output: IntoResponse, Error: Error + 'static>,
+    I: Send + 'static,
+{
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
+        Ok(match self.inner.serve(input).await {
+            Ok(resp) => resp.into_response(),
+            Err(err) => DowncastResponseError::try_as_response(&err)
+                .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        })
+    }
+}
+
+impl<S, I> Service<I> for DowncastErrorHandler<S, AsRefKind>
+where
+    S: Service<I, Output: IntoResponse, Error: AsRef<dyn Error + Send + Sync>>,
+    I: Send + 'static,
+{
+    type Output = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, input: I) -> Result<Self::Output, Self::Error> {
+        Ok(match self.inner.serve(input).await {
+            Ok(resp) => resp.into_response(),
+            Err(err) => DowncastResponseError::try_as_response(err.as_ref())
+                .unwrap_or_else(|| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        })
+    }
+}
+
+/// [`Layer`] that tries to downcast an Error into [`Response`] using [`DowncastResponseError`]
+///
+/// See [`DowncastErrorHandler`] for additional documentation
+#[derive(Clone)]
+pub struct DowncastErrorHandlerLayer<K>(PhantomData<fn(K) -> K>);
+
+impl<K> Default for DowncastErrorHandlerLayer<K> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<K: fmt::Debug + Default> fmt::Debug for DowncastErrorHandlerLayer<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DowncastErrorHandlerLayer")
+            .field("kind", &K::default())
+            .finish()
+    }
+}
+
+impl DowncastErrorHandlerLayer<()> {
+    /// Creates [`DowncastErrorHandlerLayer`] for errors implementing [`AsRef<dyn Error + Send + Sync>`]
+    pub fn as_ref() -> DowncastErrorHandlerLayer<AsRefKind> {
+        Default::default()
+    }
+
+    /// Creates [`DowncastErrorHandlerLayer`] for errors implementing [`Error`]
+    pub fn impl_error() -> DowncastErrorHandlerLayer<ImplErrorKind> {
+        Default::default()
+    }
+
+    /// Creates [`DowncastErrorHandlerLayer`] by inferring Error kind from context
+    pub fn auto<K>() -> DowncastErrorHandlerLayer<K> {
+        Default::default()
+    }
+}
+
+impl<S, K> Layer<S> for DowncastErrorHandlerLayer<K> {
+    type Service = DowncastErrorHandler<S, K>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        DowncastErrorHandler {
+            inner,
+            _kind: self.0,
         }
     }
 }

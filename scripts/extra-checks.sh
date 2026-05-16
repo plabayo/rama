@@ -7,6 +7,8 @@ exit_code=0
 # Make sure all examples are included in the rama book
 for example in $(cd $SCRIPT_DIR/.. && find examples -maxdepth 1 -type f -name '*.rs' -not -name 'mod.rs'); do
     echo "Checking $example..."
+    # will remove it before merge along with test_new_router.rs
+    if [[ $example == "examples/test_new_router.rs" ]]; then continue; fi
     if ! grep -qr "$example" docs/book; then
         echo "❌ Example $example, missing in rama book"
         exit_code=1

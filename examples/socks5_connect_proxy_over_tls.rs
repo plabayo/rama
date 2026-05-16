@@ -29,9 +29,10 @@ use rama::{
     Layer as _, Service,
     extensions::{Egress, ExtensionsRef},
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnectorLayer, server::HttpServer,
-        service::web::Router,
+        Body, BodyExtractExt, Request, client::HttpConnectorLayer,
+        layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
     },
+    layer::ArcLayer,
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -55,8 +56,6 @@ use rama::{
         server::{TlsAcceptorData, TlsAcceptorService},
     },
 };
-
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -171,7 +170,8 @@ async fn spawn_http_server() -> SocketAddress {
         .into();
 
     let app = Router::new().with_get("/ping", "pong");
-    let server = HttpServer::default().service(Arc::new(app));
+    let server =
+        HttpServer::default().service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     tokio::spawn(tcp_service.serve(server));
 

@@ -80,19 +80,6 @@ impl IntoResponse for BoxError {
     }
 }
 
-impl<T, E> IntoResponse for Result<T, E>
-where
-    T: IntoResponse,
-    E: IntoResponse,
-{
-    fn into_response(self) -> Response {
-        match self {
-            Ok(value) => value.into_response(),
-            Err(err) => err.into_response(),
-        }
-    }
-}
-
 impl<B> IntoResponse for Response<B>
 where
     B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,

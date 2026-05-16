@@ -14,13 +14,12 @@ use crate::{
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::set_header::SetResponseHeaderLayer,
         layer::{
-            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer,
+            forwarded::GetForwardedHeaderLayer, into_response::IntoResponseService,
+            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
         },
         server::HttpServer,
         service::{
             fs::{DirectoryServeMode, ServeDir, ServeFile},
-            web::StaticService,
             web::response::{Html, IntoResponse},
         },
     },
@@ -29,6 +28,7 @@ use crate::{
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    service::StaticOutput,
     tcp::TcpStream,
     telemetry::tracing,
     ua::layer::classifier::UserAgentClassifierLayer,
@@ -314,8 +314,8 @@ where
         };
 
         let serve_service = match &self.content_path {
-            None => Either3::A(StaticService::new(Html(include_str!(
-                "../../../docs/index.html"
+            None => Either3::A(IntoResponseService::new(StaticOutput::new(Html(
+                include_str!("../../../docs/index.html"),
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
             Some(path) if path.is_dir() => {
@@ -343,5 +343,5 @@ where
     }
 }
 
-type ServeStaticHtml = StaticService<Html<&'static str>>;
+type ServeStaticHtml = IntoResponseService<StaticOutput<Html<&'static str>>>;
 type ServeService = Either3<ServeStaticHtml, ServeFile, ServeDir>;

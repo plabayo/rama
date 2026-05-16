@@ -41,7 +41,10 @@ use rama::{
     http::{
         InfiniteReader,
         headers::ContentType,
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
+        },
         server::HttpServer,
         service::web::{
             Router,
@@ -52,7 +55,7 @@ use rama::{
             },
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{ArcLayer, ConsumeErrLayer},
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
@@ -91,13 +94,15 @@ async fn main() {
         .with_get("/internal/clients.csv", infinite_resource);
 
     let exec = Executor::graceful(graceful.guard());
-    let app = HttpServer::auto(exec).service(Arc::new(
+    let app = HttpServer::auto(exec).service(
         (
+            ArcLayer::new(),
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
+            ErrorHandlerLayer::new(),
         )
             .into_layer(router),
-    ));
+    );
 
     let tcp_svc = (
         ConsumeErrLayer::default(),

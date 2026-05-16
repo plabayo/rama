@@ -37,8 +37,10 @@ use rama::{
     http::{
         Method,
         headers::exotic::XClacksOverhead,
-        layer::set_header::SetResponseHeaderLayer,
-        layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
+        layer::{
+            error_handling::ErrorHandlerLayer, match_redirect::UriMatchRedirectLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+        },
         server::HttpServer,
         service::web::{
             Router,
@@ -140,6 +142,7 @@ async fn main() {
             // and instead either preserve or drop the query parameter
             UriMatchReplaceRule::try_new("*/greet\\?lang=*", "$1/lang/$2").unwrap(),
         ]),
+        ErrorHandlerLayer::new(),
     );
 
     graceful.spawn_task_fn(async |guard| {
