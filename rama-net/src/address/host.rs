@@ -116,7 +116,12 @@ impl PartialEq<str> for Host {
     fn eq(&self, other: &str) -> bool {
         match self {
             Self::Name(domain) => domain.as_str() == other,
-            Self::Address(ip) => ip.to_string() == other,
+            // Compare via address parsing rather than `ip.to_string()`, so
+            // we avoid allocating a `String` on every comparison *and*
+            // canonicalize the right-hand side (e.g. `"::1"` and
+            // `"0:0:0:0:0:0:0:1"` are equal, `"127.0.0.001"` is not equal
+            // to `127.0.0.1` because std rejects leading-zero octets).
+            Self::Address(ip) => other.parse::<IpAddr>().is_ok_and(|parsed| parsed == *ip),
         }
     }
 }
@@ -621,5 +626,28 @@ mod tests {
         // And a non-empty domain is never a subdomain of an IP host (empty parent).
         let d_host = Host::Name(Domain::from_static("example.com"));
         assert!(!d_host.is_subdomain_of(&h));
+    }
+
+    /// Regression: IPv6 zone-ids (RFC 6874 `fe80::1%eth0`) must never be
+    /// accepted via the `Host` entry points. Today the rejection comes for
+    /// free because `std::net::Ipv6Addr::from_str` refuses any `%` and
+    /// `Domain` validation refuses `%` too, but this test pins that
+    /// behaviour so any future "graceful zone-id allow" patch trips a
+    /// failing test instead of silently letting RFC 6874 scoped addresses
+    /// traverse a proxy.
+    #[test]
+    fn regression_host_rejects_ipv6_zone_id() {
+        for input in [
+            "fe80::1%eth0",
+            "fe80::1%25eth0",
+            "[fe80::1%eth0]",
+            "[fe80::1%25eth0]",
+            "::1%0",
+        ] {
+            assert!(
+                Host::try_from(input).is_err(),
+                "host should reject zone-id input {input:?}",
+            );
+        }
     }
 }

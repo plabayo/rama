@@ -475,10 +475,17 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
         );
     }
 
+    // Split on the *last* `@`. RFC 3986 §3.2 defines
+    // `authority = [ userinfo "@" ] host [ ":" port ]`, and §3.2.1's
+    // `userinfo` ABNF permits `@` inside a percent-encoded run. Splitting
+    // on the first `@` would mis-parse e.g. `user@name:pass@host:80` as
+    // userinfo=`user`, host=`name:pass@host`, which then fails as a
+    // domain. Curl, browsers and the Rust `url` crate all use the last
+    // `@`; we match that.
     let mut user_info = None;
-    if let Some((user_info_s, rest)) = s.split_once('@') {
-        user_info = Some(Basic::try_from(user_info_s)?);
-        s = rest;
+    if let Some(idx) = s.rfind('@') {
+        user_info = Some(Basic::try_from(&s[..idx])?);
+        s = &s[idx + 1..];
     }
 
     let host;
@@ -851,6 +858,39 @@ mod tests {
             let msg = format!("parsing '{s}'");
             let authority: Authority = s.parse().expect(&msg);
             assert_eq!(authority.to_string(), expected, "{msg}");
+        }
+    }
+
+    /// Regression: when an authority contains multiple `@`, the userinfo
+    /// section runs up to the *last* `@` (RFC 3986 §3.2 / §3.2.1).
+    /// Splitting on the first `@` mis-parsed `user@name:pass@host:80` as
+    /// userinfo=`user`, host=`name:pass@host` and rejected it.
+    #[test]
+    fn regression_authority_userinfo_splits_on_last_at() {
+        let auth = Authority::try_from("user@name:pass@example.com:80").unwrap();
+        assert_eq!(auth.address.host, "example.com");
+        assert_eq!(auth.address.port, Some(80));
+        let basic = auth.user_info.as_ref().expect("userinfo present");
+        assert_eq!(basic.username(), "user@name");
+        assert_eq!(basic.password(), Some("pass"));
+    }
+
+    /// Regression: RFC 6874 IPv6 zone-ids must never be accepted in an
+    /// authority position. See `host::tests::regression_host_rejects_ipv6_zone_id`
+    /// for the rationale; this guards the higher-level `Authority` entry
+    /// points so a future change to lower-level parsing can't silently
+    /// re-allow them.
+    #[test]
+    fn regression_authority_rejects_ipv6_zone_id() {
+        for input in [
+            "[fe80::1%eth0]:80",
+            "[fe80::1%25eth0]:80",
+            "user@[fe80::1%eth0]:80",
+        ] {
+            assert!(
+                Authority::try_from(input).is_err(),
+                "authority should reject zone-id input {input:?}",
+            );
         }
     }
 }

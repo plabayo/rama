@@ -6,7 +6,7 @@ use rama_core::{extensions::ExtensionsRef, telemetry::tracing};
 use rama_http_headers::{Authorization, HeaderMapExt, authorization::Credentials};
 use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, header};
 use rama_net::user::{
-    Basic, Bearer, UserId,
+    Basic, Bearer, RawToken, UserId,
     authority::{AuthorizeResult, Authorizer, StaticAuthorizer},
 };
 
@@ -33,6 +33,12 @@ impl From<Basic> for HttpAuthorizer<StaticAuthorizer<Basic>, Basic> {
 
 impl From<Bearer> for HttpAuthorizer<StaticAuthorizer<Bearer>, Bearer> {
     fn from(value: Bearer) -> Self {
+        Self::new(StaticAuthorizer::new(value))
+    }
+}
+
+impl From<RawToken> for HttpAuthorizer<StaticAuthorizer<RawToken>, RawToken> {
+    fn from(value: RawToken) -> Self {
         Self::new(StaticAuthorizer::new(value))
     }
 }
@@ -110,10 +116,16 @@ where
             tracing::trace!("input credentials were not authorized: {err:?}");
             let mut res = Response::new(Body::empty());
             *res.status_mut() = StatusCode::UNAUTHORIZED;
-            res.headers_mut().insert(
-                header::WWW_AUTHENTICATE,
-                HeaderValue::from_static(C::SCHEME),
-            );
+            // Scheme-less credentials (`RawToken`) have no meaningful
+            // `WWW-Authenticate` challenge to advertise — RFC 7235 §4.1
+            // requires the value to be at least a `<scheme>`, so we omit
+            // the header rather than emit an empty one.
+            if !C::SCHEME.is_empty() {
+                res.headers_mut().insert(
+                    header::WWW_AUTHENTICATE,
+                    HeaderValue::from_static(C::SCHEME),
+                );
+            }
             res
         });
 
