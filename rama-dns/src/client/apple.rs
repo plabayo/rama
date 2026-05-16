@@ -147,6 +147,24 @@ where
 
         tracing::debug!(?timeout, rrtype, %domain, "dns::apple: query");
 
+        // SAFETY (drop order, callback lifetime):
+        //
+        // The DNS-SD daemon invokes `query_record_callback` with the `state`
+        // pointer below as its context. The callback is **only** dispatched
+        // from inside `DNSServiceProcessResult` (called by this stream while
+        // the socket is readable). When the stream is dropped, locals here
+        // unwind in reverse declaration order:
+        //
+        //   1. `service_ref: ServiceRef` (declared below) drops first and its
+        //      `Drop` impl calls `DNSServiceRefDeallocate`, which Apple
+        //      documents as synchronously canceling any pending callbacks
+        //      for this `DNSServiceRef`.
+        //   2. `state: Box<QueryState<T, P>>` drops afterwards, by which
+        //      point no further callbacks can fire.
+        //
+        // Do **not** reorder these declarations: the boxed state must outlive
+        // the `ServiceRef` for the context pointer to remain valid for as long
+        // as the daemon may dispatch into it.
         let mut state = Box::new(QueryState {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
