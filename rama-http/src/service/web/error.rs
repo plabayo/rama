@@ -21,6 +21,7 @@
 //!     }
 //! }
 //! ```
+
 use std::{error::Error, fmt};
 
 use rama_http_types::Response;

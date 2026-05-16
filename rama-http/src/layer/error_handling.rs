@@ -163,13 +163,13 @@ where
 }
 
 /// Marker type for [`DowncastErrorHandler`] representing errors implementing [`Error`] trait
-#[derive(Default, Clone, Copy)]
+#[derive(Default)]
 #[non_exhaustive]
 pub struct ImplErrorKind;
 
 /// Marker type for [`DowncastErrorHandler`] representing errors
 /// implementing [`AsRef<dyn Error + Send + Sync>`]
-#[derive(Default, Clone, Copy)]
+#[derive(Default)]
 #[non_exhaustive]
 pub struct AsRefKind;
 
@@ -218,8 +218,14 @@ where
 /// [`Layer`] that tries to downcast an Error into [`Response`] using [`DowncastResponseError`]
 ///
 /// See [`DowncastErrorHandler`] for additional documentation
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct DowncastErrorHandlerLayer<K>(PhantomData<fn(K) -> K>);
+
+impl<K> Default for DowncastErrorHandlerLayer<K> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
 
 impl DowncastErrorHandlerLayer<()> {
     /// Creates [`DowncastErrorHandlerLayer`] for errors implementing [`AsRef<dyn Error + Send + Sync>`]
@@ -233,12 +239,12 @@ impl DowncastErrorHandlerLayer<()> {
     }
 
     /// Creates [`DowncastErrorHandlerLayer`] by inferring Error kind from context
-    pub fn auto<M: Default>() -> DowncastErrorHandlerLayer<M> {
+    pub fn auto<K>() -> DowncastErrorHandlerLayer<K> {
         Default::default()
     }
 }
 
-impl<S, K: Copy> Layer<S> for DowncastErrorHandlerLayer<K> {
+impl<S, K> Layer<S> for DowncastErrorHandlerLayer<K> {
     type Service = DowncastErrorHandler<S, K>;
 
     fn layer(&self, inner: S) -> Self::Service {
