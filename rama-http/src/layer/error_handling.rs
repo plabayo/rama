@@ -56,6 +56,7 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::convert::Infallible;
 use std::error::Error;
+use std::fmt;
 use std::marker::PhantomData;
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.
@@ -163,13 +164,13 @@ where
 }
 
 /// Marker type for [`DowncastErrorHandler`] representing errors implementing [`Error`] trait
-#[derive(Default)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct ImplErrorKind;
 
 /// Marker type for [`DowncastErrorHandler`] representing errors
 /// implementing [`AsRef<dyn Error + Send + Sync>`]
-#[derive(Default)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct AsRefKind;
 
@@ -179,6 +180,15 @@ pub struct AsRefKind;
 pub struct DowncastErrorHandler<S, K> {
     inner: S,
     _kind: PhantomData<fn(K) -> K>,
+}
+
+impl<S: fmt::Debug, K: fmt::Debug + Default> fmt::Debug for DowncastErrorHandler<S, K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DowncastErrorHandler")
+            .field("inner", &self.inner)
+            .field("kind", &K::default())
+            .finish()
+    }
 }
 
 impl<S, I> Service<I> for DowncastErrorHandler<S, ImplErrorKind>
@@ -218,12 +228,20 @@ where
 /// [`Layer`] that tries to downcast an Error into [`Response`] using [`DowncastResponseError`]
 ///
 /// See [`DowncastErrorHandler`] for additional documentation
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DowncastErrorHandlerLayer<K>(PhantomData<fn(K) -> K>);
 
 impl<K> Default for DowncastErrorHandlerLayer<K> {
     fn default() -> Self {
         Self(PhantomData)
+    }
+}
+
+impl<K: fmt::Debug + Default> fmt::Debug for DowncastErrorHandlerLayer<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DowncastErrorHandlerLayer")
+            .field("kind", &K::default())
+            .finish()
     }
 }
 
