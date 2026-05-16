@@ -23,6 +23,23 @@
 //! other resolver, and combine resolvers with the chain / tuple / variant
 //! adapters under [`client`].
 //!
+//! ### Picking a resolver for high-QPS workloads
+//!
+//! On Apple platforms (`AppleDnsResolver`, via `DNSServiceQueryRecord` +
+//! `AsyncFd`) and Windows (`WindowsDnsResolver`, via `DnsQueryEx` with a
+//! completion callback on the system thread pool), the native resolvers
+//! are fully asynchronous and scale naturally — no tokio blocking-pool
+//! traffic.
+//!
+//! `LinuxDnsResolver` (via `res_nquery` / `getaddrinfo`) and
+//! [`client::TokioDnsResolver`] (via `getaddrinfo`) are different: each
+//! lookup occupies a tokio blocking-pool thread for the duration of the
+//! libc call. Under sustained high-concurrency DNS load (typical for
+//! forward proxies) that pool can become a bottleneck. For such
+//! workloads prefer the pure-Rust `client::HickoryDnsResolver` (gated
+//! behind the `hickory` feature), which speaks DNS directly over async
+//! UDP/TCP and gives finer control over caching and upstream selection.
+//!
 //! ## Global DNS resolver
 //!
 //! Rama uses a process-wide shared DNS resolver by default. If nothing is
