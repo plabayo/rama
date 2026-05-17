@@ -34,6 +34,7 @@ rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 tokio-test = { workspace = true }
 
 [lints]

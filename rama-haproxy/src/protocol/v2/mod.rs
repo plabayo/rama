@@ -1,17 +1,22 @@
 //! Version 2 of the HAProxy protocol (binary version).
 //!
-//! See <https://haproxy.org/download/1.8/doc/proxy-protocol.txt>
+//! See the vendored specification at
+//! `rama-haproxy/specifications/proxy-protocol.txt`, section 2.2
+//! (upstream: <https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt>).
 
 mod builder;
 mod error;
 mod model;
 
+mod crc32c;
+pub(crate) use crc32c::Crc32cHasher;
+
 pub use crate::protocol::ip::{IPv4, IPv6};
 pub use builder::{Builder, WriteToHeader, Writer};
 pub use error::ParseError;
 pub use model::{
-    AddressFamily, Addresses, Command, Header, PROTOCOL_PREFIX, Protocol, Type, TypeLengthValue,
-    TypeLengthValues, Unix, Version,
+    AddressFamily, Addresses, Command, Crc32cStatus, Header, PROTOCOL_PREFIX, Protocol, Type,
+    TypeLengthValue, TypeLengthValues, Unix, Version,
 };
 use model::{MINIMUM_LENGTH, MINIMUM_TLV_LENGTH};
 use std::borrow::Cow;
