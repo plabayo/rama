@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::str;
 
 use serde::Deserialize;
+use serde::de::Error as _;
 use serde_json::error::Result as JsonResult;
 
 use super::config::{EmptyLineHandling, ParseConfig};
@@ -21,6 +22,9 @@ pub(super) struct NdjsonEngine<T> {
     in_queue: Vec<u8>,
     out_queue: VecDeque<JsonResult<T>>,
     config: ParseConfig,
+    /// Set when an oversized line was detected mid-stream. Bytes are dropped until the next
+    /// newline; once that newline arrives the engine resumes normal operation.
+    skipping_oversized_line: bool,
 }
 
 impl<T> NdjsonEngine<T> {
@@ -37,6 +41,7 @@ impl<T> NdjsonEngine<T> {
             in_queue: Vec::new(),
             out_queue: VecDeque::new(),
             config,
+            skipping_oversized_line: false,
         }
     }
 
@@ -51,6 +56,12 @@ impl<T> NdjsonEngine<T> {
 
 fn is_blank(string: &str) -> bool {
     string.chars().all(char::is_whitespace)
+}
+
+fn oversized_line_error(max: usize) -> serde_json::Error {
+    serde_json::Error::custom(format_args!(
+        "ndjson line exceeded configured max_line_bytes ({max}); resynchronising to next newline",
+    ))
 }
 
 fn parse_line<T>(bytes: &[u8], empty_line_handling: EmptyLineHandling) -> Option<JsonResult<T>>
@@ -79,14 +90,26 @@ where
     /// is prepended to the given data in case a newline is encountered.
     pub(super) fn input(&mut self, data: impl AsRef<[u8]>) {
         let mut data = data.as_ref();
+        let max_line_bytes = self.config.max_line_bytes.map(std::num::NonZeroUsize::get);
 
-        while let Some(newline_idx) = data
-            .iter()
-            .enumerate()
-            .find(|&(_, item)| item == &NEW_LINE)
-            .map(|(index, _)| index)
-        {
+        while let Some(newline_idx) = data.iter().position(|item| *item == NEW_LINE) {
             let data_until_split = &data[..newline_idx];
+
+            if self.skipping_oversized_line {
+                // The previous oversized line ends here; drop these bytes and resume.
+                self.skipping_oversized_line = false;
+                data = &data[(newline_idx + 1)..];
+                continue;
+            }
+
+            if let Some(max) = max_line_bytes
+                && self.in_queue.len().saturating_add(data_until_split.len()) > max
+            {
+                self.in_queue.clear();
+                self.out_queue.push_back(Err(oversized_line_error(max)));
+                data = &data[(newline_idx + 1)..];
+                continue;
+            }
 
             let next_item_bytes = if self.in_queue.is_empty() {
                 data_until_split
@@ -101,6 +124,20 @@ where
 
             self.in_queue.clear();
             data = &data[(newline_idx + 1)..];
+        }
+
+        if self.skipping_oversized_line {
+            // Still searching for a newline; drop trailing bytes.
+            return;
+        }
+
+        if let Some(max) = max_line_bytes
+            && self.in_queue.len().saturating_add(data.len()) > max
+        {
+            self.in_queue.clear();
+            self.out_queue.push_back(Err(oversized_line_error(max)));
+            self.skipping_oversized_line = true;
+            return;
         }
 
         self.in_queue.extend_from_slice(data);
@@ -123,6 +160,13 @@ where
     /// validation in place to check that [NdjsonEngine::input] is not called afterwards. Doing this
     /// anyway may lead to unexpected behavior, as JSON-lines may be partially discarded.
     pub(super) fn finalize(&mut self) {
+        if self.skipping_oversized_line {
+            // The oversized-line error has already been emitted; discard any tail bytes
+            // and reset so the engine is reusable.
+            self.in_queue.clear();
+            self.skipping_oversized_line = false;
+            return;
+        }
         if self.config.parse_rest {
             let empty_line_handling = match self.config.empty_line_handling {
                 EmptyLineHandling::ParseAlways => EmptyLineHandling::IgnoreEmpty,
@@ -523,6 +567,69 @@ mod tests {
         engine.finalize();
 
         assert!(collect_output(engine).is_empty());
+    }
+
+    #[test]
+    fn max_line_bytes_emits_error_and_recovers_on_next_line() {
+        let max = std::num::NonZeroUsize::new(8).unwrap();
+        let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
+
+        // First line clearly exceeds 8 bytes — should error and resync.
+        engine.input("{\"key\":1,\"value\":2}\n{\"key\":3,\"value\":4}\n");
+
+        let mut result = collect_output(engine).into_iter();
+        result.next().unwrap().unwrap_err();
+        // Second line also exceeds; another error follows.
+        result.next().unwrap().unwrap_err();
+        assert!(result.next().is_none());
+    }
+
+    #[test]
+    fn max_line_bytes_allows_lines_under_limit() {
+        let max = std::num::NonZeroUsize::new(64).unwrap();
+        let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
+
+        engine.input("{\"key\":1,\"value\":2}\n");
+
+        let mut result = collect_output(engine).into_iter();
+        assert_eq!(
+            result.next().unwrap().unwrap(),
+            TestStruct { key: 1, value: 2 }
+        );
+        assert!(result.next().is_none());
+    }
+
+    #[test]
+    fn max_line_bytes_resyncs_across_chunked_input() {
+        let max = std::num::NonZeroUsize::new(4).unwrap();
+        let mut engine = configured_engine(|config| config.with_max_line_bytes(max));
+
+        // Chunked oversized line followed by a small valid line.
+        engine.input("{\"key\"");
+        engine.input(":1,\"val");
+        engine.input("ue\":2}\n");
+        // Now under the limit on its own; but parsing requires the value to be valid JSON.
+        // With max=4 it'll also exceed; use a value that fits exactly: "1\n".
+        engine.input("1\n");
+
+        let mut result = collect_output(engine).into_iter();
+        // First emit is the oversized error.
+        result.next().unwrap().unwrap_err();
+        // Second emit decodes the small line — fails type coercion to TestStruct.
+        result.next().unwrap().unwrap_err();
+        assert!(result.next().is_none());
+    }
+
+    #[test]
+    fn default_empty_line_handling_is_ignore_empty() {
+        // rama-default: empty lines should be gracefully ignored, not raise an error.
+        let mut engine: NdjsonEngine<TestStruct> = NdjsonEngine::new();
+
+        engine.input("{\"key\":1,\"value\":2}\n\n{\"key\":3,\"value\":4}\n");
+
+        let results = collect_output(engine);
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(2, results.len());
     }
 
     #[test]

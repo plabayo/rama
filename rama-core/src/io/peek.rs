@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use tokio::{
@@ -30,9 +31,12 @@ pub struct PeekOutput<D> {
 /// - the optional timeout elapses;
 /// - the internal read-attempt budget is exhausted.
 ///
-/// The attempt budget is capped at `max(buffer.len() / 4, 1) + 1` reads. This keeps
+/// The attempt budget defaults to `max(buffer.len() / 4, 1) + 1` reads. This keeps
 /// peeking bounded even for slow or fragmented inputs, but it also means this
-/// function can return partial data before the buffer is full.
+/// function can return partial data before the buffer is full. For protocol
+/// sniffing on small buffers (e.g. a 5-byte TLS-record buffer), the buffer-derived
+/// default can be too small under TCP fragmentation; prefer
+/// [`peek_input_until_with_options`] and pass an explicit `max_attempts`.
 pub fn peek_input_until<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
@@ -50,11 +54,51 @@ where
 ///
 /// It is assumed that the offst is within the buffer boundaries,
 /// but it will be clamped to the `buffer.len()` regardless.
-pub async fn peek_input_until_with_offset<R, O, P>(
+///
+/// Uses the buffer-derived attempt budget; see [`peek_input_until_with_options`]
+/// when you need an explicit budget.
+#[inline]
+pub fn peek_input_until_with_offset<R, O, P>(
     reader: &mut R,
     buffer: &mut [u8],
     offset: usize,
     timeout: Option<Duration>,
+    predicate: P,
+) -> impl Future<Output = PeekOutput<O>>
+where
+    R: AsyncRead + Unpin,
+    P: Fn(&[u8]) -> Option<O>,
+{
+    let default_budget =
+        NonZeroUsize::new(buffer.len().saturating_div(4).max(1) + 1).unwrap_or(NonZeroUsize::MIN);
+    peek_input_until_with_options(
+        reader,
+        buffer,
+        offset,
+        timeout,
+        Some(default_budget),
+        predicate,
+    )
+}
+
+/// Same as [`peek_input_until`] but with explicit control over the starting offset
+/// and the read-attempt budget.
+///
+/// `max_attempts`:
+/// - `Some(n)` — stop after `n` read attempts even if the predicate did not match.
+/// - `None` — no attempt cap; rely on the reader's EOF and the optional `timeout`.
+///
+/// The default budget used by [`peek_input_until`] and [`peek_input_until_with_offset`]
+/// is derived from the buffer length (`max(buffer.len() / 4, 1) + 1`), which is a
+/// reasonable fallback for sizable buffers but can be too tight for small protocol-
+/// sniffing buffers under TCP fragmentation. Prefer this function with an explicit
+/// budget when reading from untrusted/proxied peers.
+pub async fn peek_input_until_with_options<R, O, P>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    offset: usize,
+    timeout: Option<Duration>,
+    max_attempts: Option<NonZeroUsize>,
     predicate: P,
 ) -> PeekOutput<O>
 where
@@ -71,9 +115,9 @@ where
     }
 
     let peek_deadline = timeout.map(|d| Instant::now() + d);
+    let attempt_cap = max_attempts.map(NonZeroUsize::get).unwrap_or(usize::MAX);
 
-    let max_attempts = buffer.len().saturating_div(4).max(1) + 1;
-    for _ in 0..max_attempts {
+    for _ in 0..attempt_cap {
         let read_fut = reader.read(&mut buffer[output.peek_size..]);
 
         let n = match peek_deadline {
@@ -268,6 +312,53 @@ mod tests {
         assert!(output.data.is_none());
         assert_eq!(output.peek_size, 2);
         assert_eq!(&buffer[..output.peek_size], b"he");
+    }
+
+    #[tokio::test]
+    async fn explicit_max_attempts_overrides_buffer_derived_budget() {
+        // Buffer-derived budget for an 8-byte buffer is 3 attempts; this reader
+        // would normally exhaust the budget before "hel" is seen. With an explicit
+        // max_attempts of 5 the predicate matches.
+        let mut reader = tokio_test::io::Builder::new()
+            .read(b"h")
+            .read(b"e")
+            .read(b"l")
+            .build();
+        let mut buffer = [0_u8; 8];
+
+        let output = peek_input_until_with_options(
+            &mut reader,
+            &mut buffer,
+            0,
+            None,
+            NonZeroUsize::new(5),
+            |buf| (buf == b"hel").then_some(()),
+        )
+        .await;
+
+        assert_eq!(output.data, Some(()));
+        assert_eq!(output.peek_size, 3);
+    }
+
+    #[tokio::test]
+    async fn explicit_max_attempts_none_means_no_cap() {
+        let mut reader = tokio_test::io::Builder::new()
+            .read(b"h")
+            .read(b"e")
+            .read(b"l")
+            .read(b"l")
+            .read(b"o")
+            .build();
+        let mut buffer = [0_u8; 8];
+
+        let output =
+            peek_input_until_with_options(&mut reader, &mut buffer, 0, None, None, |buf| {
+                (buf == b"hello").then_some(buf.len())
+            })
+            .await;
+
+        assert_eq!(output.data, Some(5));
+        assert_eq!(output.peek_size, 5);
     }
 
     struct TwoPhaseReader {

@@ -8,6 +8,11 @@ use std::convert::Infallible;
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
+///
+/// Strict mode: any [`UsernameLabelState::Ignored`] label is fatal, since
+/// username labels are operator-composed configuration and an unknown label
+/// most likely indicates a misconfiguration that should fail loudly. Use
+/// [`parse_username_lossy`] when you want unknown labels to be silently skipped.
 #[inline]
 pub fn parse_username<P>(
     ext: &Extensions,
@@ -20,13 +25,59 @@ where
     parse_username_with_separator(ext, parser, username_ref, DEFAULT_USERNAME_LABEL_SEPARATOR)
 }
 
+/// Like [`parse_username`] but silently skips [`UsernameLabelState::Ignored`]
+/// labels instead of erroring. [`UsernameLabelState::Abort`] is still fatal.
+#[inline]
+pub fn parse_username_lossy<P>(
+    ext: &Extensions,
+    parser: P,
+    username_ref: impl AsRef<str>,
+) -> Result<String, BoxError>
+where
+    P: UsernameLabelParser<Error: Into<BoxError>>,
+{
+    parse_username_with_separator_lossy(ext, parser, username_ref, DEFAULT_USERNAME_LABEL_SEPARATOR)
+}
+
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
+///
+/// See [`parse_username`] for the semantics; use
+/// [`parse_username_with_separator_lossy`] to skip ignored labels.
+#[inline]
 pub fn parse_username_with_separator<P>(
+    ext: &Extensions,
+    parser: P,
+    username_ref: impl AsRef<str>,
+    separator: char,
+) -> Result<String, BoxError>
+where
+    P: UsernameLabelParser<Error: Into<BoxError>>,
+{
+    parse_username_inner(ext, parser, username_ref, separator, false)
+}
+
+/// Like [`parse_username_with_separator`] but silently skips
+/// [`UsernameLabelState::Ignored`] labels instead of erroring.
+#[inline]
+pub fn parse_username_with_separator_lossy<P>(
+    ext: &Extensions,
+    parser: P,
+    username_ref: impl AsRef<str>,
+    separator: char,
+) -> Result<String, BoxError>
+where
+    P: UsernameLabelParser<Error: Into<BoxError>>,
+{
+    parse_username_inner(ext, parser, username_ref, separator, true)
+}
+
+fn parse_username_inner<P>(
     ext: &Extensions,
     mut parser: P,
     username_ref: impl AsRef<str>,
     separator: char,
+    lossy: bool,
 ) -> Result<String, BoxError>
 where
     P: UsernameLabelParser<Error: Into<BoxError>>,
@@ -49,9 +100,13 @@ where
         match parser.parse_label(label) {
             UsernameLabelState::Used => (), // optimistic smiley
             UsernameLabelState::Ignored => {
-                return Err(OpaqueError::from_static_str("ignored username label")
-                    .context_field("index", index)
-                    .context_str_field("label", label));
+                if lossy {
+                    tracing::debug!(index, label, "parse_username: skipping ignored label");
+                } else {
+                    return Err(OpaqueError::from_static_str("ignored username label")
+                        .context_field("index", index)
+                        .context_str_field("label", label));
+                }
             }
             UsernameLabelState::Abort => {
                 return Err(OpaqueError::from_static_str("invalid username label")
@@ -432,6 +487,27 @@ mod test {
         );
 
         assert!(ext.get_ref::<UsernameLabels>().is_none());
+    }
+
+    #[test]
+    fn test_parse_username_lossy_skips_ignored_labels() {
+        let ext = Extensions::default();
+
+        // Strict (default) errors on the ignored label.
+        parse_username(&ext, UsernameNoLabelParser, "username-foo").unwrap_err();
+
+        // Lossy variant skips the ignored label and returns the username.
+        let ext = Extensions::default();
+        let result = parse_username_lossy(&ext, UsernameNoLabelParser, "username-foo").unwrap();
+        assert_eq!(result, "username");
+    }
+
+    #[test]
+    fn test_parse_username_lossy_still_aborts() {
+        let ext = Extensions::default();
+
+        // Even in the lossy variant, an `Abort` is always fatal.
+        parse_username_lossy(&ext, UsernameLabelAbortParser, "username-foo").unwrap_err();
     }
 
     #[test]
