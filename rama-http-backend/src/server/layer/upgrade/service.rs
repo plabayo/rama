@@ -120,7 +120,12 @@ where
                     self.exec.spawn_task(
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
-                                Ok(upgraded) => {
+                                Ok(mut upgraded) => {
+                                    // Without this these tests fail
+                                    // cli::cli_tests::serve_echo::test_http_echo
+                                    // cli::cli_tests::serve_echo::test_https_echo
+                                    upgraded.set_extensions(req.extensions().fork());
+
                                     _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {

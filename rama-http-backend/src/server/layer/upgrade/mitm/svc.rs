@@ -3,6 +3,7 @@ use std::convert::Infallible;
 use rama_core::{
     Service, bytes,
     error::BoxError,
+    extensions::ExtensionsRef,
     io::BridgeIo,
     matcher::service::{ServiceMatch, ServiceMatcher},
     rt::Executor,
@@ -72,7 +73,8 @@ where
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
-            let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
+            let req_extensions = req.extensions().fork();
+            let  on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
 
             let relay_upgrade_span = tracing::trace_root_span!(
                 "upgrade::mitm_relay::serve",
@@ -109,6 +111,7 @@ where
                     "HttpUpgradeMitmRelay: upgrade MITM relay res match made... spawning relay task..."
                 );
 
+                let resp_extensions = res.extensions().fork();
                 let on_upgrade_egress = rama_http::io::upgrade::handle_upgrade(&res);
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
@@ -117,7 +120,7 @@ where
                         "HttpUpgradeMitmRelay: spawned task active"
                     );
 
-                    let (ingress_stream, egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
+                    let (mut ingress_stream, mut egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
                         Ok(streams) => streams,
                         Err(err) => {
                             tracing::debug!("HttpUpgradeMitmRelay: relay task: one or both sides filed to upgrade: {err}");
@@ -125,6 +128,9 @@ where
                         }
                     };
 
+                    
+                    // ingress_stream.set_extensions(req_extensions);
+                    // egress_stream.set_extensions(resp_extensions);
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"

@@ -696,7 +696,9 @@ where
                 exec.into_spawn_task(
                     async move {
                         match upgrade::handle_upgrade(&req).await {
-                            Ok(upgraded) => {
+                            Ok(mut upgraded) => {
+                                // upgraded.set_extensions(req.extensions().fork());
+
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {
                                     let mut ws_cfg = None;

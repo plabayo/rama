@@ -922,10 +922,12 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             "websocket handshake http response is valid",
         );
 
-        let stream = rama_http::io::upgrade::handle_upgrade(&self.response)
+        let mut stream = rama_http::io::upgrade::handle_upgrade(&self.response)
             .await
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?;
+
+        // stream.set_extensions(self.response.extensions().fork());
 
         let (parts, _) = self.response.into_parts();
 

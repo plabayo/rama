@@ -5,7 +5,15 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 # not opt into the `dial9` feature; the workspace `.cargo/config.toml`
 # carries the same flag for raw `cargo` invocations. We set it via env
 # here because justfile's `export RUSTFLAGS` overrides cargo's config.
-export RUSTFLAGS := "-D warnings --cfg tokio_unstable"
+#
+# Set `ALLOW_WARNINGS=true` for local iteration to drop `-D warnings`
+# so in-progress code with unused imports / dead code still builds.
+export RUSTFLAGS := \
+    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "--cfg tokio_unstable" \
+    } else { \
+        "-D warnings --cfg tokio_unstable" \
+    }
 export RUST_LOG := "debug"
 
 fmt *ARGS:
