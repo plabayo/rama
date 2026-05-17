@@ -172,7 +172,7 @@ impl<const N: usize> StackReader<N> {
     /// Returns true if there are any more bytes to consume
     #[must_use]
     pub fn has_remaining(&self) -> bool {
-        self.remaining() == 0
+        self.remaining() > 0
     }
 }
 

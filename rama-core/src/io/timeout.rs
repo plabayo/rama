@@ -38,11 +38,14 @@ impl TimeoutState {
 
     #[inline]
     fn set_timeout(&mut self, timeout: Option<Duration>) {
-        debug_assert!(
-            !self.active,
-            "set_timeout is only expected before a timeout becomes active"
-        );
         self.timeout = timeout;
+        // Force the next `poll_check` to re-arm the inner `Sleep` with the new value.
+        // We cannot call `Sleep::reset` here because `cur` is structurally pinned, but
+        // clearing `active` is sufficient: `poll_check` re-initialises the deadline the
+        // next time it observes `!active`. Without this clear, a previously-armed timer
+        // would silently shadow the new timeout in release builds (the old code only
+        // tripped a `debug_assert!`).
+        self.active = false;
     }
 
     #[inline]

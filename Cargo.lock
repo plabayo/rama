@@ -3974,6 +3974,7 @@ dependencies = [
  "ahash",
  "const_format",
  "loom",
+ "memchr",
  "parking_lot",
  "pin-project-lite",
  "quickcheck",
@@ -3985,6 +3986,7 @@ dependencies = [
  "smallvec",
  "smol_str",
  "tokio",
+ "tracing",
  "trybuild",
  "wildcard",
 ]
