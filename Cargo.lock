@@ -3559,6 +3559,7 @@ dependencies = [
 name = "rama-haproxy"
 version = "0.3.0-rc1"
 dependencies = [
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",

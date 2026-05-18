@@ -1,6 +1,8 @@
 //! Version 1 of the HAProxy protocol (text version).
 //!
-//! See <https://haproxy.org/download/1.8/doc/proxy-protocol.txt>
+//! See the vendored specification at
+//! `rama-haproxy/specifications/proxy-protocol.txt`, section 2.1
+//! (upstream: <https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt>).
 
 mod error;
 mod model;
@@ -147,7 +149,16 @@ impl<'a> TryFrom<&'a str> for Header<'a> {
 
     fn try_from(input: &'a str) -> Result<Self, Self::Error> {
         let length = match input.find(CARRIAGE_RETURN) {
-            Some(suffix) => suffix + PROTOCOL_SUFFIX.len(),
+            Some(suffix) => {
+                let end = suffix + PROTOCOL_SUFFIX.len();
+                if end > input.len() {
+                    // we found `\r` but the following `\n` is not yet available:
+                    // signal the caller this is a partial header rather than panicking
+                    // on an out-of-bounds slice.
+                    return Err(ParseError::Partial);
+                }
+                end
+            }
             None if input.len() >= MAX_LENGTH => return Err(ParseError::HeaderTooLong),
             None => input.len(),
         };
@@ -161,7 +172,16 @@ impl<'a> TryFrom<&'a [u8]> for Header<'a> {
 
     fn try_from(input: &'a [u8]) -> Result<Self, Self::Error> {
         let length = match input.iter().position(|&c| CARRIAGE_RETURN == (c as char)) {
-            Some(suffix) => suffix + PROTOCOL_SUFFIX.len(),
+            Some(suffix) => {
+                let end = suffix + PROTOCOL_SUFFIX.len();
+                if end > input.len() {
+                    // we found `\r` but the following `\n` is not yet available:
+                    // signal the caller this is a partial header rather than panicking
+                    // on an out-of-bounds slice.
+                    return Err(ParseError::Partial.into());
+                }
+                end
+            }
             None if input.len() >= MAX_LENGTH => return Err(ParseError::HeaderTooLong.into()),
             None => input.len(),
         };
@@ -688,6 +708,25 @@ mod tests {
         assert_eq!(
             Header::try_from(text.as_bytes()),
             Err(ParseError::InvalidSuffix.into())
+        );
+    }
+
+    #[test]
+    fn parse_trailing_cr_only_str() {
+        // Regression: previously this caused an out-of-bounds slice panic.
+        let text = "PROXY TCP4 127.0.0.1 192.168.1.1 80 443\r";
+
+        assert_eq!(Header::try_from(text), Err(ParseError::Partial));
+    }
+
+    #[test]
+    fn parse_trailing_cr_only_bytes() {
+        // Regression: previously this caused an out-of-bounds slice panic.
+        let bytes = b"PROXY TCP4 127.0.0.1 192.168.1.1 80 443\r";
+
+        assert_eq!(
+            Header::try_from(&bytes[..]),
+            Err(ParseError::Partial.into())
         );
     }
 

@@ -1,6 +1,10 @@
 //! rama HaProxy support
 //!
-//! <https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt>
+//! Implements the HAProxy PROXY protocol versions 1 (text) and 2 (binary).
+//!
+//! The canonical specification document is vendored under
+//! `rama-haproxy/specifications/proxy-protocol.txt`
+//! (upstream: <https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt>).
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!
