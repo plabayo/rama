@@ -171,6 +171,23 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         .parse::<HeaderValue>()
         .context("parse header value")?;
 
+    // --- defence-in-depth response headers ---
+    //
+    // Even though the FP HTML pipeline now goes through the `html!`
+    // macros (which escape all interpolated content), we layer on a
+    // strict Content-Security-Policy plus the usual hardening headers
+    // so any future regression or third-party reverse-proxy injection
+    // is contained. We widen the strict-self baseline by:
+    //   * allowing the banner image hosted on raw.githubusercontent.com
+    //     and the favicon's inline `data:` SVG, and
+    //   * permitting the same-origin WebSocket on `/api/ws` (the bare
+    //     `'self'` keyword is scheme-aware in CSP3 and covers `ws:` /
+    //     `wss:` to the same origin, so no scheme wildcard is needed).
+    let fp_csp = rama::cli::service::http_security::rama_html_csp()
+        .with_connect_src(rama::http::headers::SourceList::self_origin());
+    let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+        rama::cli::service::http_security::defence_in_depth_layer(fp_csp);
+
     let middlewares = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
@@ -181,44 +198,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
         ),
-        // --- defence-in-depth response headers ---
-        //
-        // Even though the FP HTML pipeline now goes through the `html!`
-        // macros (which escape all interpolated content), we layer on a
-        // strict Content-Security-Policy plus the usual hardening headers
-        // so any future regression or third-party reverse-proxy injection
-        // is contained. The CSP allows exactly:
-        //   * self-hosted CSS (`/assets/style.css`),
-        //   * self-hosted JS (`/assets/script.js`),
-        //   * the favicon's inline `data:` SVG and the banner image hosted
-        //     on raw.githubusercontent.com,
-        //   * same-origin XHR + WebSocket for the fingerprint APIs.
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("content-security-policy"),
-            HeaderValue::from_static(
-                "default-src 'self'; \
-                 script-src 'self'; \
-                 style-src 'self'; \
-                 img-src 'self' data: https://raw.githubusercontent.com; \
-                 font-src 'self'; \
-                 connect-src 'self' ws: wss:; \
-                 form-action 'self'; \
-                 base-uri 'self'; \
-                 frame-ancestors 'none'",
-            ),
-        ),
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("x-content-type-options"),
-            HeaderValue::from_static("nosniff"),
-        ),
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("referrer-policy"),
-            HeaderValue::from_static("no-referrer"),
-        ),
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("x-frame-options"),
-            HeaderValue::from_static("DENY"),
-        ),
+        csp_layer,
+        nosniff_layer,
+        referrer_layer,
+        frame_layer,
         StorageAuthLayer::new(&state),
         SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("accept-ch"),

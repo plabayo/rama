@@ -422,10 +422,26 @@ impl<M> IpServiceBuilder<M> {
             maybe_tls_accept_layer,
         );
 
+        // Defence-in-depth response headers for the HTML page (txt/json
+        // responses also get them — they're benign there and means
+        // any future widening of HTML emission is already covered).
+        // The page loads `/style/ip.css` and `/script/ip.js` from the
+        // same origin, no inline scripts/styles, no external requests:
+        // the strict-self baseline (banner image whitelisted in the
+        // shared helper) covers it.
+        let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+            crate::cli::service::http_security::defence_in_depth_layer(
+                crate::cli::service::http_security::rama_html_csp(),
+            );
+
         let http_service = (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            csp_layer,
+            nosniff_layer,
+            referrer_layer,
+            frame_layer,
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]
             hsts_layer,

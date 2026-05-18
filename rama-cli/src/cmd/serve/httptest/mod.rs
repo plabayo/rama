@@ -65,6 +65,16 @@ pub struct CliCommandHttpTest {
 
 /// run the rama http test service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(), BoxError> {
+    // Defence-in-depth response headers. The HTML index page now serves
+    // its CSS from `/style/index.css`, the test endpoints emit either
+    // streamed HTML with no scripts or JSON / octet-stream bodies, and
+    // none of them open WebSockets — so the strict-self baseline (with
+    // the rama-banner image host whitelisted) covers every shape.
+    let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+        rama::cli::service::http_security::defence_in_depth_layer(
+            rama::cli::service::http_security::rama_html_csp(),
+        );
+
     let middlewares = (
         TraceLayer::new_for_http(),
         CatchPanicLayer::new(),
@@ -74,6 +84,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
         ),
+        csp_layer,
+        nosniff_layer,
+        referrer_layer,
+        frame_layer,
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
     );
 
