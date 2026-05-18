@@ -2103,6 +2103,7 @@ name = "rama-utils"
 version = "0.3.0-rc1"
 dependencies = [
  "const_format",
+ "memchr",
  "parking_lot",
  "pin-project-lite",
  "rama-macros",
@@ -2111,6 +2112,7 @@ dependencies = [
  "smallvec",
  "smol_str",
  "tokio",
+ "tracing",
  "wildcard",
 ]
 

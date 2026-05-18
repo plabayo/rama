@@ -566,9 +566,9 @@ dependencies = [
 
 [[package]]
 name = "dial9-tokio-telemetry"
-version = "0.3.9"
+version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9bc5e50c103d4916a4a1b95784d9cc515d96bb2d093c8ea37c2cc0d85d92dd"
+checksum = "45521f70d67ff82b19ffddb55c7f039ee24c44a172aeb03ec2142f1808ae8562"
 dependencies = [
  "arc-swap",
  "bon",
@@ -2456,6 +2456,7 @@ name = "rama-utils"
 version = "0.3.0-rc1"
 dependencies = [
  "const_format",
+ "memchr",
  "parking_lot",
  "pin-project-lite",
  "rama-macros",
@@ -2464,6 +2465,7 @@ dependencies = [
  "smallvec",
  "smol_str",
  "tokio",
+ "tracing",
  "wildcard",
 ]
 
