@@ -313,13 +313,6 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-// Re-bind the crate under its public name so that proc-macros emitting
-// absolute paths like `::rama::http::...` (notably the `html!` family from
-// `rama-http-macros`) resolve correctly when expanded *inside* this crate
-// (e.g. from `cli::service::ip`'s inline HTML page). Outside callers see
-// `::rama` via Cargo's dependency graph anyway.
-extern crate self as rama;
-
 #[doc(inline)]
 pub use ::rama_core::{
     Layer, Service, ServiceInput, bytes, combinators, conversion, error, extensions, futures,
