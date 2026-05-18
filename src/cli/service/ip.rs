@@ -25,7 +25,7 @@ use crate::{
         },
         mime,
         server::HttpServer,
-        service::web::response::{Html, IntoResponse, Json, Redirect},
+        service::web::response::{IntoResponse, Json, Redirect},
     },
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
@@ -208,7 +208,7 @@ impl Service<Request> for HttpIpService {
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
-                HttpBodyContentFormat::Html => format_html_page(ip).into_response(),
+                HttpBodyContentFormat::Html => render_html_page(ip).into_response(),
                 HttpBodyContentFormat::Json => Json(serde_json::json!({
                     "ip": ip,
                 }))
@@ -451,8 +451,87 @@ pub mod mode {
     pub struct Transport;
 }
 
-fn format_html_page(ip: IpAddr) -> Html<String> {
-    Html(format!(
-        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> *, *::before, *::after {{ box-sizing: border-box; }} :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:2.8rem; }} .card{{ text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:0.8rem; margin-bottom:1.1rem; }} .logo, .logo a, .logo a:hover {{ color:var(--green); font-weight:700; font-size:2rem; letter-spacing:0.4rem; }} .logo a {{ text-decoration: none; }} .logo a:hover {{ text-decoration: underline; }} .subtitle{{ font-size:1.1rem; margin:0.3rem 0 2rem 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:0.8rem; padding:2rem; box-shadow:0 0.3rem 2rem rgba(0,0,0,0.7), inset 0 0.05rem 0 rgba(255,255,255,0.02); border:0.1rem solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:0.6rem; padding:1rem 1.1rem; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:1.1rem; color:#fff139; margin:0.6rem auto 1.1rem auto; word-break:break-all; border:0.05rem solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:1rem; margin-bottom:0.9rem; }} .controls{{display:flex;gap:0.8rem;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:0.8rem 1.1rem; border-radius:0.6rem; font-weight:700; border:0.1rem solid rgba(69,210,58,0.9); cursor:pointer; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 0.4rem 1.2rem rgba(69,210,58,0.08); }} .note{{font-size:0.95rem;color:#9aa; margin-top:1rem;}} .small{{font-size:0.9rem;color:#808080;margin-top:0.7rem}} </style> </head> <body> <div class="card"> <div class="logo"> <div>🦙</div> <div><a href="https://ramaproxy.org">ラマ</a></div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div><div id="ip" class="ip"> <code>{ip}</code> </div> <div class="controls"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">📋 Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
-    ))
+fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoResponse {
+    use crate::http::html::*;
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "utf-8"),
+            meta!(
+                name = "viewport",
+                content = "width=device-width,initial-scale=1"
+            ),
+            link!(
+                rel = "icon",
+                href = PreEscaped(
+                    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>\
+                     <text y='0.9em' font-size='90'>🦙</text></svg>"
+                ),
+            ),
+            title!("Rama IP"),
+            style!(PreEscaped(IP_STYLE)),
+        ),
+        body!(div!(
+            class = "card",
+            div!(
+                class = "logo",
+                div!("🦙"),
+                div!(a!(href = "https://ramaproxy.org", "ラマ")),
+            ),
+            div!(
+                class = "panel",
+                role = "region",
+                "aria-label" = "ip panel",
+                div!(class = "muted", "Your public ip"),
+                div!(id = "ip", class = "ip", code!(ip.to_string())),
+                div!(
+                    class = "controls",
+                    button!(
+                        id = "copyBtn",
+                        class = "primary",
+                        title = "Copy ip to clipboard",
+                        "📋 Copy IP",
+                    ),
+                ),
+            ),
+            script!(PreEscaped(IP_SCRIPT)),
+        )),
+    )
+}
+
+/// Page styling for the IP-echo HTML response.
+const IP_STYLE: &str = include_str!("ip.css");
+
+/// Inline copy-to-clipboard JS. Trusted (compile-time literal).
+const IP_SCRIPT: &str = include_str!("ip.js");
+
+#[cfg(test)]
+mod render_html_page_tests {
+    use super::*;
+    use crate::http::html::IntoHtml as _;
+    use std::net::Ipv4Addr;
+
+    /// The IP value flows through `html!`'s escape pipeline, so even if a
+    /// future `IpAddr::Display` impl produced HTML-special chars they would
+    /// be neutralised. Verify the rendered page contains the expected IP
+    /// inside `<code>…</code>` and that the page chrome is well-formed.
+    #[test]
+    fn render_html_page_embeds_ip_safely() {
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
+        assert!(out.contains("<title>Rama IP</title>"));
+        assert!(out.contains(r#"<div id="ip" class="ip"><code>127.0.0.1</code></div>"#));
+        // Copy button is wired by selector ID in the inline script.
+        assert!(out.contains(r#"id="copyBtn""#));
+    }
+
+    /// The aria-label attribute uses the `"aria-label" = …` syntax (since
+    /// `aria-label` is not a Rust ident). Pin the rendered output.
+    #[test]
+    fn render_html_page_emits_aria_label() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(out.contains(r#"aria-label="ip panel""#));
+    }
 }

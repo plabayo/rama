@@ -398,6 +398,7 @@ cli = [
     "dep:serde_html_form",
     "dep:tokio",
     "http",
+    "html",
 ]
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]

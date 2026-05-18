@@ -418,7 +418,7 @@ impl RamaService {
             .command()
             .stderr(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .args(args)
+            .args(args.clone())
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -427,7 +427,7 @@ impl RamaService {
             .unwrap();
 
         let output = child.wait_with_output()?;
-        assert!(output.status.success());
+        assert!(output.status.success(), "args: {args:?}");
         let mut s = String::from_utf8(output.stderr)?;
         s.push_str(&String::from_utf8(output.stdout)?);
         Ok(s)

@@ -2,7 +2,7 @@
 
 The code for rama-fp lives in rama-cli:
 
-[/rama-cli/src/cmd/fp](../rama-cli/src/cmd/fp)
+[/rama-cli/src/cmd/serve/fp](../rama-cli/src/cmd/serve/fp)
 
 ### Developer instructions
 
