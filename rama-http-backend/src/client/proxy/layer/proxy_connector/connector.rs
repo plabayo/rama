@@ -4,7 +4,7 @@
 
 use super::HttpProxyError;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
@@ -27,7 +27,10 @@ pub(super) struct InnerHttpProxyConnector {
 
 impl InnerHttpProxyConnector {
     /// Create a new [`InnerHttpProxyConnector`] with the given authority.
-    pub(super) fn new(authority: HostWithOptPort) -> Result<Self, BoxError> {
+    pub(super) fn new(
+        authority: HostWithOptPort,
+        req_extensions: Extensions,
+    ) -> Result<Self, BoxError> {
         let uri = authority.to_string();
 
         let req = Request::builder()
@@ -37,7 +40,8 @@ impl InnerHttpProxyConnector {
             .typed_header(Host::from(authority))
             .typed_header(UserAgent::rama())
             .body(Body::empty())
-            .context("build http request")?;
+            .context("build http request")?
+            .with_extensions(req_extensions);
 
         Ok(Self { req })
     }
@@ -53,17 +57,6 @@ impl InnerHttpProxyConnector {
         /// Add a header to the request.
         pub(super) fn header(mut self, name: HeaderName, value: HeaderValue) -> Self {
             self.req.headers_mut().insert(name, value);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add a header to the request.
-        pub(super) fn extension(
-            mut self,
-            value: impl Extension,
-        ) -> Self {
-            self.req.extensions().insert(value);
             self
         }
     }

@@ -205,7 +205,10 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        let mut connector = InnerHttpProxyConnector::new(
+            transport_ctx.authority.clone(),
+            input.extensions().clone(),
+        )?;
 
         if let Some(version) = self.version {
             connector.set_version(version);
@@ -231,7 +234,6 @@ where
                 }
                 map.push(name);
             }
-            connector.set_extension(map);
         }
 
         let (headers, conn) = connector
@@ -450,7 +452,7 @@ mod tests {
             }));
 
         let proxy_connector = (
-            HttpProxyConnectorLayer::optional(),
+            HttpProxyConnectorLayer::required(),
             MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
                 out.conn.extensions().insert(ConnMarker(42));
                 out
