@@ -1,12 +1,12 @@
 use std::convert::Infallible;
 
+use crate::{Request, Response};
 use rama_core::{
     extensions::ExtensionsRef,
     matcher::service::{ServiceMatch, ServiceMatcher},
     rt::Executor,
     telemetry::tracing,
 };
-use rama_http::{Request, Response};
 use rama_http_types::proxy::is_req_http_proxy_connect;
 use rama_net::{
     proxy::{IoForwardService, ProxyTarget},

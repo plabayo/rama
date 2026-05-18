@@ -1,6 +1,6 @@
 use rama_core::{Layer, rt::Executor};
 
-use crate::server::layer::upgrade::mitm::HttpUpgradeMitmRelay;
+use super::HttpUpgradeMitmRelay;
 
 #[derive(Debug, Clone)]
 /// Layer used to create the middleware [`HttpUpgradeMitmRelay`] service.

@@ -8,7 +8,7 @@ use std::{
 use rama_core::{
     Service,
     error::{BoxError, ErrorContext},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
@@ -21,6 +21,7 @@ use rama_http::{
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
     },
     io::upgrade,
+    layer::upgrade::UpgradeResponse,
     proto::h2::ext::Protocol,
     request,
     service::web::response::{self, Headers, IntoResponse},
@@ -397,10 +398,12 @@ impl<Body> Service<Request<Body>> for WebSocketAcceptor
 where
     Body: Send + 'static,
 {
-    type Output = (Response, Request<Body>);
+    type Output = UpgradeResponse<Request<Body>, Response>;
     type Error = Response;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        let extensions = Extensions::default();
+
         match validate_http_client_request(&req) {
             Ok(request_data) => {
                 let accepted_protocol = match (
@@ -518,7 +521,7 @@ where
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
                         tracing::trace!("inject accepted ws protocol in cfg: {p:?}");
-                        req.extensions().insert(p.clone());
+                        extensions.insert(p.clone());
                         Some(p.into_header())
                     }
                     None => None,
@@ -527,7 +530,7 @@ where
                 let extensions_header = match accepted_extension {
                     Some(ext) => {
                         tracing::trace!("inject accepted ws extension in cfg: {ext:?}");
-                        req.extensions().insert(ext.clone());
+                        extensions.insert(ext.clone());
                         Some(ext.into_header())
                     }
                     None => None,
@@ -556,7 +559,12 @@ where
                         if let Some(extensions) = extensions_header {
                             response.headers_mut().typed_insert(extensions);
                         }
-                        Ok((response, req))
+
+                        Ok(UpgradeResponse {
+                            response,
+                            request: req,
+                            extensions,
+                        })
                     }
                     Version::HTTP_2 => {
                         let mut response = StatusCode::OK.into_response();
@@ -567,7 +575,12 @@ where
                         if let Some(extensions) = extensions_header {
                             response.headers_mut().typed_insert(extensions);
                         }
-                        Ok((response, req))
+
+                        Ok(UpgradeResponse {
+                            response,
+                            request: req,
+                            extensions,
+                        })
                     }
                     version => {
                         tracing::debug!(
@@ -672,7 +685,11 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         match self.acceptor.serve(req).await {
-            Ok((resp, req)) => {
+            Ok(UpgradeResponse {
+                response: resp,
+                request: req,
+                extensions,
+            }) => {
                 #[cfg(not(feature = "compression"))]
                 if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get_ref() {
                     tracing::error!(
@@ -696,8 +713,8 @@ where
                 exec.into_spawn_task(
                     async move {
                         match upgrade::handle_upgrade(&req).await {
-                            Ok(mut upgraded) => {
-                                // upgraded.set_extensions(req.extensions().fork());
+                            Ok(upgraded) => {
+                                upgraded.extensions().extend(&extensions);
 
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {
@@ -879,7 +896,11 @@ mod tests {
         acceptor: &WebSocketAcceptor,
         expected_accepted_protocol: Option<AcceptedWebSocketProtocol>,
     ) {
-        let (resp, req) = acceptor.serve(request).await.unwrap();
+        let UpgradeResponse {
+            response: resp,
+            request: req,
+            extensions: _,
+        } = acceptor.serve(request).await.unwrap();
         match req.version() {
             Version::HTTP_10 | Version::HTTP_11 => {
                 assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
