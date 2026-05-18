@@ -1,0 +1,43 @@
+body {
+    font-family: system-ui, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+main {
+    min-height: 100vh;
+    display: grid;
+    justify-items: center;
+}
+
+ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    width: min(560px, 92vw);
+}
+
+li {
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    margin: 10px 0;
+}
+
+.hint {
+    opacity: 0.7;
+    font-size: 14px;
+    margin-top: 10px;
+    text-align: center;
+}
+
+label {
+    display: inline-flex;
+    gap: 8px;
+    cursor: pointer;
+}
+
+input:checked + label {
+    text-decoration: line-through;
+    opacity: 0.6;
+}

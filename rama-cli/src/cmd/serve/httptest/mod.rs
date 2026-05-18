@@ -93,6 +93,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
 
     let router = Router::new()
         .with_get("/", endpoint::index::service())
+        .with_get("/style/index.css", endpoint::index::STYLE_CSS)
         .with_get("/bytes", endpoint::bytes::service())
         .with_match_route(
             "/method",
@@ -113,6 +114,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             endpoint::response_stream_compression::service(),
         )
         .with_get("/sse", endpoint::sse::service())
+        .with_get("/style/sse.css", endpoint::sse::STYLE_CSS)
+        .with_get("/script/sse.js", endpoint::sse::SCRIPT_JS)
         .with_get("/multipart", endpoint::multipart::get_form)
         .with_post("/multipart", endpoint::multipart::post_service())
         .with_post("/octet-stream", endpoint::octet_stream::service())

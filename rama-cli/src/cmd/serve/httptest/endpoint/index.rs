@@ -5,7 +5,10 @@ use rama::{
     http::{
         Request, Response,
         html::*,
-        service::web::{IntoEndpointService, response::IntoResponse},
+        service::web::{
+            IntoEndpointService,
+            response::{Css, IntoResponse},
+        },
     },
     service::service_fn,
 };
@@ -14,6 +17,12 @@ pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     service_fn(async || Ok::<_, Infallible>(render_index().into_response())).into_endpoint_service()
 }
+
+/// CSS sidecar for [`service`]. Mounted at `/style/index.css` so the
+/// `style-src 'self'` directive of the defence-in-depth CSP can keep
+/// blocking inline `<style>` blocks.
+pub(in crate::cmd::serve::httptest) const STYLE_CSS: Css<&'static str> =
+    Css(include_str!("index.css"));
 
 fn render_index() -> impl IntoHtml + IntoResponse {
     html!(
@@ -49,7 +58,11 @@ fn render_index() -> impl IntoHtml + IntoResponse {
                 content =
                     "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg"
             ),
-            style!(PreEscaped(INDEX_STYLE)),
+            link!(
+                rel = "stylesheet",
+                r#type = "text/css",
+                href = "/style/index.css"
+            ),
         ),
         body!(main!(
             h1!(
@@ -199,8 +212,6 @@ fn index_list() -> impl IntoHtml {
     )
 }
 
-const INDEX_STYLE: &str = include_str!("index.css");
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +226,23 @@ mod tests {
         assert!(out.contains("Rama Public Http(s) Tests"));
         assert!(out.contains(r#"<a href="/multipart">Multipart Form Upload</a>"#));
         assert!(out.contains(r#"<a href="/bytes?size=1048576&amp;chunk=16384&amp;delay_ms=0">"#));
+    }
+
+    /// Regression guard against the bug audited 2026-05-18: the index
+    /// page must reference the CSS via `<link>` rather than inlining a
+    /// `<style>` block, because the strict CSP applied by the surrounding
+    /// service (`style-src 'self'`) would otherwise block the inline
+    /// stylesheet at the browser.
+    #[test]
+    fn render_index_uses_external_stylesheet() {
+        let out = render_index().into_string();
+        assert!(
+            !out.contains("<style>") && !out.contains("<style "),
+            "index page must not embed inline <style>; CSP blocks it"
+        );
+        assert!(
+            out.contains(r#"<link rel="stylesheet" type="text/css" href="/style/index.css">"#),
+            "index page must link to /style/index.css",
+        );
     }
 }

@@ -13,6 +13,7 @@ use crate::{
     combinators::Either,
     combinators::Either7,
     error::BoxError,
+    error::{ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response, StatusCode,
@@ -25,7 +26,7 @@ use crate::{
         },
         mime,
         server::HttpServer,
-        service::web::response::{IntoResponse, Json, Redirect},
+        service::web::response::{Css, IntoResponse, Json, Redirect, Script},
     },
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
@@ -56,8 +57,7 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-use rama_core::error::{ErrorExt as _, extra::OpaqueError};
-use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone)]
@@ -181,20 +181,17 @@ impl IpServiceBuilder<mode::Http> {
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// The inner http ip-service used by the [`IpServiceBuilder`].
+/// The inner http ip-service used by the [`IpServiceBuilder`]. Mounted at
+/// `/` by the surrounding [`crate::http::service::web::Router`] in
+/// [`IpServiceBuilder::build_http`]; the asset sidecars are sibling
+/// routes on the same router.
 struct HttpIpService;
 
 impl Service<Request> for HttpIpService {
     type Output = Response;
-    type Error = BoxError;
+    type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let norm_req_path = req.uri().path().trim_matches('/');
-        if !norm_req_path.is_empty() {
-            tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
-            return Ok(Redirect::permanent("/").into_response());
-        }
-
         let peer_ip = req
             .extensions()
             .get_ref::<Forwarded>()
@@ -218,6 +215,15 @@ impl Service<Request> for HttpIpService {
         })
     }
 }
+
+/// Sidecar stylesheet for the HTML page. Served as a separate route so
+/// the defence-in-depth CSP can keep `style-src 'self'` (blocking
+/// inline `<style>`) without breaking the page.
+const IP_STYLE_CSS: &str = include_str!("ip.css");
+
+/// Sidecar clipboard-copy script. Served separately for the same
+/// reason as [`IP_STYLE_CSS`] (`script-src 'self'`).
+const IP_SCRIPT_JS: &str = include_str!("ip.js");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum HttpBodyContentFormat {
@@ -434,6 +440,15 @@ impl<M> IpServiceBuilder<M> {
                 crate::cli::service::http_security::rama_html_csp(),
             );
 
+        // Route the IP echo + its asset sidecars through a Router so we
+        // get clean method-aware matching (anything outside the three
+        // known routes redirects to `/`).
+        let router = crate::http::service::web::Router::new()
+            .with_get("/", HttpIpService)
+            .with_get("/style/ip.css", Css(IP_STYLE_CSS))
+            .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
+            .with_not_found(async || Redirect::permanent("/"));
+
         let http_service = (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
@@ -447,8 +462,12 @@ impl<M> IpServiceBuilder<M> {
             hsts_layer,
             http_forwarded_layer,
         )
-            .into_layer(HttpIpService);
+            .into_layer(router);
 
+        // Wrap in `Arc` because `Router` is not `Clone` and
+        // `HttpServer::service` requires a cloneable inner service so it
+        // can hand a copy to each connection's task.
+        let http_service = Arc::new(http_service);
         Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
     }
 }
@@ -485,7 +504,11 @@ fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoRespon
                 ),
             ),
             title!("Rama IP"),
-            style!(PreEscaped(IP_STYLE)),
+            link!(
+                rel = "stylesheet",
+                r#type = "text/css",
+                href = "/style/ip.css"
+            ),
         ),
         body!(div!(
             class = "card",
@@ -510,16 +533,10 @@ fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoRespon
                     ),
                 ),
             ),
-            script!(PreEscaped(IP_SCRIPT)),
+            script!(src = "/script/ip.js"),
         )),
     )
 }
-
-/// Page styling for the IP-echo HTML response.
-const IP_STYLE: &str = include_str!("ip.css");
-
-/// Inline copy-to-clipboard JS. Trusted (compile-time literal).
-const IP_SCRIPT: &str = include_str!("ip.js");
 
 #[cfg(test)]
 mod render_html_page_tests {
@@ -549,5 +566,34 @@ mod render_html_page_tests {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
         let out = render_html_page(ip).into_string();
         assert!(out.contains(r#"aria-label="ip panel""#));
+    }
+
+    /// Regression guard against the bug audited 2026-05-18: the IP page
+    /// must reference its CSS and JS via `<link>` / `<script src>`
+    /// because the surrounding service applies `style-src 'self'` and
+    /// `script-src 'self'` — an inline `<style>` or `<script>` block
+    /// would be blocked at the browser.
+    #[test]
+    fn render_html_page_uses_external_assets() {
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(
+            !out.contains("<style>") && !out.contains("<style "),
+            "IP page must not embed inline <style>; CSP blocks it"
+        );
+        // The renderer is allowed to emit a self-closing `<script src=...>`,
+        // but never an inline `<script>...JS...</script>` body.
+        assert!(
+            !out.contains("<script>"),
+            "IP page must not embed inline <script>; CSP blocks it"
+        );
+        assert!(
+            out.contains(r#"<link rel="stylesheet" type="text/css" href="/style/ip.css">"#),
+            "IP page must link to /style/ip.css",
+        );
+        assert!(
+            out.contains(r#"<script src="/script/ip.js">"#),
+            "IP page must source /script/ip.js",
+        );
     }
 }
