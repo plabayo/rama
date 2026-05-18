@@ -3,7 +3,7 @@ use rama_core::Service;
 use rama_core::bytes::BytesMut;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
-use rama_core::extensions::ChainableExtensions;
+// use rama_core::extensions::ChainableExtensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
@@ -60,9 +60,9 @@ where
             input: mut req,
         } = self.inner.connect(req).await.into_box_error()?;
 
-        let ext_chain = (&conn, &req);
-        let version = ext_chain
-            .get_ref::<TargetHttpVersion>()
+        let version = req
+            .extensions()
+            .clone_to_if_absent::<TargetHttpVersion>(conn.extensions())
             .map(|version| version.0);
 
         match (version, self.default_http_version) {

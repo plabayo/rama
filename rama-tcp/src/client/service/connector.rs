@@ -107,7 +107,7 @@ where
             .await
             .into_box_error()?;
 
-        if let Some(proxy) = input.extensions().get_ref::<ProxyAddress>() {
+        if let Some(proxy) = input.extensions().get_arc::<ProxyAddress>() {
             let (conn, addr) = crate::client::tcp_connect(
                 input.extensions(),
                 proxy.address.clone(),
@@ -117,6 +117,8 @@ where
             )
             .await
             .context("tcp connector: conncept to proxy")?;
+
+            conn.extensions().insert_arc(proxy);
 
             let socket_info = SocketInfo::new(
                 conn.local_addr()
@@ -133,18 +135,18 @@ where
             return Ok(EstablishedClientConnection { input, conn });
         }
 
-        if let Some(ConnectorTarget(target)) =
-            input.extensions().get_ref::<ConnectorTarget>().cloned()
-        {
+        if let Some(target) = input.extensions().get_arc::<ConnectorTarget>() {
             let (conn, addr) = crate::client::tcp_connect(
                 input.extensions(),
-                target,
+                target.0.clone(),
                 self.dns.clone(),
                 connector,
                 self.exec.clone(),
             )
             .await
             .context("tcp connector: conncept to connector target (overwrite?)")?;
+
+            conn.extensions().insert_arc(target);
 
             let socket_info = SocketInfo::new(
                 conn.local_addr()
