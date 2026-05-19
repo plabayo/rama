@@ -33,20 +33,17 @@ pub(crate) struct LazyUriRef {
     /// on demand).
     pub(crate) authority: Option<LazyAuthority>,
 
-    /// Byte range of the path within `bytes`. The path is always present
-    /// per RFC 3986 §3.3 (possibly the `path-empty` production), so this
-    /// is unconditional — an empty range models the empty path. Contrast
-    /// with `query` and `fragment` below, where the absence of the `?` /
-    /// `#` delimiter is itself semantically meaningful.
+    /// Path range. Always present (§3.3); empty range = empty path.
+    /// `/` is part of the path itself, not an outer delimiter — hence no `Option`.
     pub(crate) path: (u16, u16),
 
-    /// Byte range of the query within `bytes` (no leading `?`).
-    /// `None` ≠ `Some(empty)`: `https://x` and `https://x?` are distinct
-    /// URIs (the second carries an empty query) per RFC 3986 §3.4.
+    /// Query range (no leading `?`). `None` = no `?` on wire;
+    /// `Some(empty)` = `?` with empty content. Distinct URIs per §3.4
+    /// (load-bearing for SigV4, cache keys, proxy fidelity).
     pub(crate) query: Option<(u16, u16)>,
 
-    /// Byte range of the fragment within `bytes` (no leading `#`).
-    /// Same `None`-vs-empty distinction as `query`, per RFC 3986 §3.5.
+    /// Fragment range (no leading `#`). Same `None` vs `Some(empty)`
+    /// distinction as `query`, per §3.5.
     pub(crate) fragment: Option<(u16, u16)>,
 }
 
