@@ -91,19 +91,22 @@ pub mod util {
 /// atomic refcount bump on the inner `Arc`.
 #[derive(Debug, Clone)]
 pub struct Uri {
-    inner: UriInner,
+    pub(crate) inner: UriInner,
 }
 
 /// Internal representation.
 ///
 /// Per-variant `Arc`-boxing keeps `Uri` itself small (one pointer + tag) and
 /// makes the heap allocation match the actual variant's size.
+///
+/// `pub(crate)` so submodules (parser, tests, future M4 accessors) can
+/// pattern-match. Still not exposed publicly — `Uri` stays opaque.
 #[derive(Debug, Clone)]
 #[expect(
     dead_code,
-    reason = "M2 skeleton: variant payloads consumed by M3 (parser) and M5 (mutation)"
+    reason = "M3 (b): Owned variant payload constructed by tests/parser, read by M5 accessors; Lazy payload only read in tests"
 )]
-enum UriInner {
+pub(crate) enum UriInner {
     /// OPTIONS `*` request-target. No other components.
     Asterisk,
     /// Parsed-once form. Cheap clone, zero-copy reads.

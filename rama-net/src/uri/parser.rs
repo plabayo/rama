@@ -215,6 +215,8 @@ const fn is_sub_delim(b: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::UriInner;
+    use super::super::lazy::LazyUriRef;
     use super::*;
 
     fn parse_graceful(s: &str) -> Result<Uri, ParseError> {
@@ -225,75 +227,158 @@ mod tests {
         parse(Bytes::copy_from_slice(s.as_bytes()), ParserMode::Strict)
     }
 
+    /// Pull the LazyUriRef out of a Uri, panicking if the variant isn't Lazy.
+    /// Lets the rest of the tests work in terms of concrete component data.
+    fn lazy(u: &Uri) -> &LazyUriRef {
+        match &u.inner {
+            UriInner::Lazy(arc) => arc.as_ref(),
+            other => panic!("expected Lazy variant, got {other:?}"),
+        }
+    }
+
+    fn range_str(l: &LazyUriRef, r: Option<(u16, u16)>) -> Option<&str> {
+        r.map(|(s, e)| std::str::from_utf8(&l.bytes[s as usize..e as usize]).unwrap())
+    }
+
+    /// Asserts the lazy `u`'s scheme/authority/path/query/fragment match.
+    /// Path is required (RFC 3986 §3.3 — always present); query and
+    /// fragment are `Option<&str>` to distinguish `None` from `Some("")`.
+    fn assert_lazy(
+        u: &Uri,
+        expected_path: &str,
+        expected_query: Option<&str>,
+        expected_fragment: Option<&str>,
+    ) {
+        let l = lazy(u);
+        assert!(
+            l.scheme.is_none(),
+            "scheme: expected None, got {:?}",
+            l.scheme
+        );
+        assert!(
+            l.authority.is_none(),
+            "authority: expected None in origin-form"
+        );
+        let path = std::str::from_utf8(&l.bytes[l.path.0 as usize..l.path.1 as usize]).unwrap();
+        assert_eq!(path, expected_path, "path");
+        assert_eq!(range_str(l, l.query), expected_query, "query");
+        assert_eq!(range_str(l, l.fragment), expected_fragment, "fragment");
+    }
+
     // ----------------------------------------------------------------------
-    // Asterisk
+    // Asterisk (HTTP-specific, RFC 9112 §3.2.4)
     // ----------------------------------------------------------------------
 
     #[test]
     fn asterisk_only() {
         let u = parse_graceful("*").unwrap();
-        assert!(u.is_asterisk());
+        assert!(matches!(u.inner, UriInner::Asterisk));
     }
 
     #[test]
     fn asterisk_strict() {
         let u = parse_strict("*").unwrap();
-        assert!(u.is_asterisk());
+        assert!(matches!(u.inner, UriInner::Asterisk));
     }
 
     #[test]
-    fn asterisk_with_extra_bytes_is_not_asterisk() {
-        // `*foo` is not an asterisk-form — should NOT match.
-        let result = parse_graceful("*foo");
-        // (b) doesn't parse absolute-form yet; just verify it's not Asterisk.
-        if let Ok(u) = result {
-            assert!(!u.is_asterisk());
-        }
+    fn asterisk_only_matches_exactly() {
+        // `*foo` is NOT asterisk-form. (b) doesn't accept it yet;
+        // verify it returns the placeholder scheme error.
+        let r = parse_graceful("*foo");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Scheme))
+        ));
     }
 
     // ----------------------------------------------------------------------
-    // Origin-form basics
+    // Origin-form: assert exact component content
     // ----------------------------------------------------------------------
 
     #[test]
     fn origin_path_only() {
         let u = parse_graceful("/foo").unwrap();
-        assert!(!u.is_asterisk());
-    }
-
-    #[test]
-    fn origin_path_with_query() {
-        let u = parse_graceful("/foo?bar=baz").unwrap();
-        assert!(!u.is_asterisk());
-    }
-
-    #[test]
-    fn origin_path_with_fragment() {
-        let u = parse_graceful("/foo#section").unwrap();
-        assert!(!u.is_asterisk());
-    }
-
-    #[test]
-    fn origin_path_with_query_and_fragment() {
-        let u = parse_graceful("/foo?bar=baz#frag").unwrap();
-        assert!(!u.is_asterisk());
-    }
-
-    #[test]
-    fn origin_empty_query() {
-        // `/foo?` is distinct from `/foo` — Some(empty range) vs None.
-        let u = parse_graceful("/foo?").unwrap();
-        assert!(!u.is_asterisk());
+        assert_lazy(&u, "/foo", None, None);
     }
 
     #[test]
     fn origin_root_only() {
         let u = parse_graceful("/").unwrap();
-        assert!(!u.is_asterisk());
+        assert_lazy(&u, "/", None, None);
+    }
+
+    #[test]
+    fn origin_multi_segment_path() {
+        let u = parse_graceful("/a/b/c").unwrap();
+        assert_lazy(&u, "/a/b/c", None, None);
+    }
+
+    #[test]
+    fn origin_path_with_query() {
+        let u = parse_graceful("/foo?bar=baz").unwrap();
+        assert_lazy(&u, "/foo", Some("bar=baz"), None);
+    }
+
+    #[test]
+    fn origin_path_with_fragment() {
+        let u = parse_graceful("/foo#section").unwrap();
+        assert_lazy(&u, "/foo", None, Some("section"));
+    }
+
+    #[test]
+    fn origin_path_with_query_and_fragment() {
+        let u = parse_graceful("/foo?bar=baz#frag").unwrap();
+        assert_lazy(&u, "/foo", Some("bar=baz"), Some("frag"));
+    }
+
+    #[test]
+    fn origin_empty_query_distinct_from_none() {
+        let with = parse_graceful("/foo?").unwrap();
+        assert_lazy(&with, "/foo", Some(""), None);
+
+        let without = parse_graceful("/foo").unwrap();
+        assert_lazy(&without, "/foo", None, None);
+    }
+
+    #[test]
+    fn origin_empty_fragment_distinct_from_none() {
+        let with = parse_graceful("/foo#").unwrap();
+        assert_lazy(&with, "/foo", None, Some(""));
+
+        let without = parse_graceful("/foo").unwrap();
+        assert_lazy(&without, "/foo", None, None);
+    }
+
+    #[test]
+    fn origin_empty_query_and_empty_fragment() {
+        let u = parse_graceful("/foo?#").unwrap();
+        assert_lazy(&u, "/foo", Some(""), Some(""));
+    }
+
+    #[test]
+    fn origin_only_first_question_mark_ends_path() {
+        // RFC 3986 §3.4: only the first `?` ends the path; subsequent `?`
+        // are valid query bytes.
+        let u = parse_graceful("/foo?a=b?c=d").unwrap();
+        assert_lazy(&u, "/foo", Some("a=b?c=d"), None);
+    }
+
+    #[test]
+    fn origin_fragment_containing_question_mark() {
+        // `?` is a valid fragment byte.
+        let u = parse_graceful("/foo#frag?x").unwrap();
+        assert_lazy(&u, "/foo", None, Some("frag?x"));
+    }
+
+    #[test]
+    fn origin_hash_inside_query_starts_fragment() {
+        let u = parse_graceful("/p?q#f").unwrap();
+        assert_lazy(&u, "/p", Some("q"), Some("f"));
     }
 
     // ----------------------------------------------------------------------
-    // Unconditional rejections
+    // Unconditional rejections (both modes)
     // ----------------------------------------------------------------------
 
     #[test]
@@ -306,7 +391,7 @@ mod tests {
         let r = parse_graceful("/foo\r/bar");
         assert!(matches!(
             r,
-            Err(ParseError::ControlCharInUri { byte: b'\r', .. })
+            Err(ParseError::ControlCharInUri { at: 4, byte: b'\r' })
         ));
     }
 
@@ -315,7 +400,7 @@ mod tests {
         let r = parse_graceful("/foo\n/bar");
         assert!(matches!(
             r,
-            Err(ParseError::ControlCharInUri { byte: b'\n', .. })
+            Err(ParseError::ControlCharInUri { at: 4, byte: b'\n' })
         ));
     }
 
@@ -324,7 +409,7 @@ mod tests {
         let r = parse_graceful("/foo\0bar");
         assert!(matches!(
             r,
-            Err(ParseError::ControlCharInUri { byte: 0, .. })
+            Err(ParseError::ControlCharInUri { at: 4, byte: 0 })
         ));
     }
 
@@ -333,7 +418,7 @@ mod tests {
         let r = parse_graceful("/foo\tbar");
         assert!(matches!(
             r,
-            Err(ParseError::ControlCharInUri { byte: b'\t', .. })
+            Err(ParseError::ControlCharInUri { at: 4, byte: b'\t' })
         ));
     }
 
@@ -342,7 +427,25 @@ mod tests {
         let r = parse_graceful("/foo\x7Fbar");
         assert!(matches!(
             r,
-            Err(ParseError::ControlCharInUri { byte: 0x7F, .. })
+            Err(ParseError::ControlCharInUri { at: 4, byte: 0x7F })
+        ));
+    }
+
+    #[test]
+    fn rejects_control_char_in_query() {
+        let r = parse_graceful("/foo?bar\rbaz");
+        assert!(matches!(
+            r,
+            Err(ParseError::ControlCharInUri { at: 8, byte: b'\r' })
+        ));
+    }
+
+    #[test]
+    fn rejects_control_char_in_fragment() {
+        let r = parse_graceful("/foo#bar\nbaz");
+        assert!(matches!(
+            r,
+            Err(ParseError::ControlCharInUri { at: 8, byte: b'\n' })
         ));
     }
 
@@ -354,15 +457,16 @@ mod tests {
     }
 
     // ----------------------------------------------------------------------
-    // Graceful accepts more than strict
+    // Graceful vs strict
     // ----------------------------------------------------------------------
 
     #[test]
     fn graceful_accepts_unreserved_extras_in_path() {
-        // `{`, `}`, `|`, `^` are not in RFC 3986 pchar — graceful accepts,
-        // strict rejects.
+        // `{`, `}`, `|`, `^`, `<`, `>` are not in RFC 3986 pchar — graceful
+        // accepts (matching browsers and curl); strict rejects.
         for s in ["/path{x}", "/p|q", "/p^q", "/p<x>"] {
-            assert!(parse_graceful(s).is_ok(), "graceful should accept {s}");
+            let u = parse_graceful(s).unwrap();
+            assert_lazy(&u, s, None, None);
             assert!(
                 matches!(parse_strict(s), Err(ParseError::StrictViolation)),
                 "strict should reject {s}"
@@ -372,10 +476,17 @@ mod tests {
 
     #[test]
     fn strict_accepts_pchar_path() {
-        // Every byte here is in the pchar set.
-        for s in ["/foo", "/a/b/c", "/a-b.c_d~e", "/a%20b", "/foo?bar"] {
-            assert!(parse_strict(s).is_ok(), "strict should accept {s}");
-        }
+        let u = parse_strict("/a-b.c_d~e").unwrap();
+        assert_lazy(&u, "/a-b.c_d~e", None, None);
+
+        let u = parse_strict("/foo/bar/baz").unwrap();
+        assert_lazy(&u, "/foo/bar/baz", None, None);
+
+        let u = parse_strict("/a%20b").unwrap();
+        assert_lazy(&u, "/a%20b", None, None);
+
+        let u = parse_strict("/p?key=val").unwrap();
+        assert_lazy(&u, "/p", Some("key=val"), None);
     }
 
     #[test]
@@ -387,5 +498,17 @@ mod tests {
                 "got {r:?} for {s}"
             );
         }
+    }
+
+    #[test]
+    fn strict_rejects_bad_pct_in_query_and_fragment() {
+        assert!(matches!(
+            parse_strict("/p?bad%"),
+            Err(ParseError::InvalidPercentEncoding { .. })
+        ));
+        assert!(matches!(
+            parse_strict("/p#bad%"),
+            Err(ParseError::InvalidPercentEncoding { .. })
+        ));
     }
 }

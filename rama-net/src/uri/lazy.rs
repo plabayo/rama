@@ -16,9 +16,12 @@ use crate::address::Host;
 /// Parsed-once URI reference. Reads are zero-copy slices into `bytes`;
 /// mutation upgrades to [`OwnedUriRef`](super::owned::OwnedUriRef).
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "M2 skeleton: fields consumed by M3 (parser) and M4 (accessors)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "M3 (b): fields written by parser, read by tests and M4 accessors"
+    )
 )]
 pub(crate) struct LazyUriRef {
     /// The original input buffer. All component ranges below index into this.
