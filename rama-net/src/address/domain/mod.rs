@@ -1,4 +1,4 @@
-use rama_utils::str::smol_str::SmolStr;
+use rama_core::bytes::Bytes;
 use std::{cmp::Ordering, fmt};
 
 use super::Host;
@@ -26,8 +26,13 @@ pub const MAX_NAME_LEN: usize = 253;
 ///
 /// The validation of domains created by this type is very shallow.
 /// Proper validation is offloaded to other services such as DNS resolvers.
+///
+/// Storage is `Bytes` so that domain values can share allocations with the
+/// buffers they were parsed from (e.g. URI byte buffers) at zero copy cost.
+/// The validator only accepts ASCII bytes, so the contents are always valid
+/// UTF-8.
 #[derive(Debug, Clone)]
-pub struct Domain(SmolStr);
+pub struct Domain(Bytes);
 
 impl Domain {
     /// Creates a domain at compile time.
@@ -46,14 +51,19 @@ impl Domain {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
         }
-        Self(SmolStr::new_static(s))
+        Self(Bytes::from_static(s.as_bytes()))
     }
 
-    /// Safety: callee ensures that the given string is a valid domain,
-    /// this can be useful in cases where we store a string but which
-    /// came from a Domain originally.
-    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<SmolStr>) -> Self {
-        Self(s.into())
+    /// Safety: callee ensures that the given byte/string source is a valid
+    /// domain. Useful when we have a buffer that we know came from a Domain
+    /// originally (e.g. label-joining helpers, trie key reversal).
+    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<Bytes>) -> Self {
+        let bytes = s.into();
+        debug_assert!(
+            is_valid_name(&bytes),
+            "from_maybe_borrowed_unchecked called with invalid domain bytes"
+        );
+        Self(bytes)
     }
 
     /// Creates the example [`Domain].
@@ -91,7 +101,7 @@ impl Domain {
     /// Returns `true` if this domain is a Fully Qualified Domain Name.
     #[must_use]
     pub fn is_fqdn(&self) -> bool {
-        self.0.ends_with('.')
+        self.0.last() == Some(&b'.')
     }
 
     /// Returns `true` if this domain is a wildcard domain (i.e. its leftmost
@@ -126,7 +136,7 @@ impl Domain {
     #[must_use]
     pub fn is_tld(&self) -> bool {
         self.suffix()
-            .map(|s| cmp_domain(&self.0, s).is_eq())
+            .map(|s| cmp_domain(self.as_str(), s).is_eq())
             .unwrap_or_default()
     }
 
@@ -151,7 +161,7 @@ impl Domain {
     #[must_use]
     pub fn is_sld(&self) -> bool {
         self.suffix()
-            .and_then(|s| self.0.strip_suffix(s))
+            .and_then(|s| self.as_str().strip_suffix(s))
             .map(|s| {
                 let s = s.trim_matches('.');
                 !(s.is_empty() || s.contains('.'))
@@ -308,14 +318,9 @@ impl Domain {
     /// Gets the domain name as reference.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.as_ref()
-    }
-
-    /// Returns the domain name inner value.
-    ///
-    /// Should not be exposed in the public rama API.
-    pub(crate) fn into_inner(self) -> SmolStr {
-        self.0
+        // Safety: the validator only accepts ASCII bytes, so the contents
+        // are always valid UTF-8.
+        unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
 }
 
@@ -333,13 +338,13 @@ impl std::hash::Hash for Domain {
 
 impl AsRef<str> for Domain {
     fn as_ref(&self) -> &str {
-        self.0.as_str()
+        self.as_str()
     }
 }
 
 impl fmt::Display for Domain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        f.write_str(self.as_str())
     }
 }
 
@@ -348,7 +353,7 @@ impl std::str::FromStr for Domain {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         validate_domain_str(s)?;
-        Ok(Self(SmolStr::new(s)))
+        Ok(Self(Bytes::copy_from_slice(s.as_bytes())))
     }
 }
 
@@ -357,7 +362,7 @@ impl TryFrom<String> for Domain {
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
         validate_domain_str(&name)?;
-        Ok(Self(SmolStr::new(name)))
+        Ok(Self(Bytes::from(name.into_bytes())))
     }
 }
 
@@ -366,7 +371,7 @@ impl<'a> TryFrom<&'a str> for Domain {
 
     fn try_from(name: &'a str) -> Result<Self, Self::Error> {
         validate_domain_str(name)?;
-        Ok(Self(SmolStr::new(name)))
+        Ok(Self(Bytes::copy_from_slice(name.as_bytes())))
     }
 }
 
@@ -376,7 +381,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
         validate_domain_str(s)?;
-        Ok(Self(SmolStr::new(s)))
+        Ok(Self(Bytes::copy_from_slice(name)))
     }
 }
 
@@ -384,9 +389,9 @@ impl TryFrom<Vec<u8>> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        let s = String::from_utf8(name).map_err(|e| DomainParseError::non_utf8(e.utf8_error()))?;
-        validate_domain_str(&s)?;
-        Ok(Self(SmolStr::new(s)))
+        let s = std::str::from_utf8(&name).map_err(DomainParseError::non_utf8)?;
+        validate_domain_str(s)?;
+        Ok(Self(Bytes::from(name)))
     }
 }
 
@@ -699,7 +704,7 @@ impl serde::Serialize for Domain {
     where
         S: serde::Serializer,
     {
-        self.0.serialize(serializer)
+        self.as_str().serialize(serializer)
     }
 }
 
@@ -811,7 +816,11 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
     /// (matching [`Domain::from_static`]); for [`Domain`] it clones cheaply.
     fn to_domain(&self) -> Domain {
         // Safety: domain_as_str is contractually a validated domain string.
-        unsafe { Domain::from_maybe_borrowed_unchecked(self.domain_as_str()) }
+        unsafe {
+            Domain::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(
+                self.domain_as_str().as_bytes(),
+            ))
+        }
     }
 
     /// Return this value in wildcard form (`*.x`).

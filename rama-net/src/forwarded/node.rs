@@ -1,6 +1,7 @@
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
 use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
+use rama_utils::str::smol_str::SmolStr;
 use std::{
     fmt,
     net::{IpAddr, Ipv6Addr, SocketAddr},
@@ -185,7 +186,7 @@ impl From<(Domain, Option<u16>)> for NodeId {
         Self {
             // NOTE: this assumes all domains are valid obf nodes,
             // which should be ok given the validation rules for domains are more strict!
-            name: NodeName::Obf(ObfNode::from_inner(domain.into_inner())),
+            name: NodeName::Obf(ObfNode::from_inner(SmolStr::from(domain.as_str()))),
             port: port.map(NodePort::Num),
         }
     }
