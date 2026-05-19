@@ -191,26 +191,52 @@ fn check_pct_encoded(bytes: &[u8], i: usize) -> Result<(), ParseError> {
     }
 }
 
-/// True if `b` is in the strict RFC 3986 path byte set
-/// (`pchar` ∪ `/` ∪ literal `%`).
+// --- Byte-set lookup tables (single-load hot path) -------------------------
+//
+// `matches!` over ~20 alternatives gets compiled to a chain of compares or
+// a bitmap, depending on LLVM heuristics — fine but not deterministic. The
+// strict validator runs once per byte of every parsed URI, so we precompute
+// `[bool; 256]` tables: one byte load, no branches, no surprises.
+
+/// Build a `[bool; 256]` membership table at compile time, with the ASCII
+/// alphanumeric range pre-marked plus every byte in `extras`.
+const fn build_byte_table(extras: &[u8]) -> [bool; 256] {
+    let mut t = [false; 256];
+    let mut i: usize = 0;
+    while i < 256 {
+        let b = i as u8;
+        if b.is_ascii_alphanumeric() {
+            t[i] = true;
+        }
+        i += 1;
+    }
+    let mut j = 0;
+    while j < extras.len() {
+        t[extras[j] as usize] = true;
+        j += 1;
+    }
+    t
+}
+
+/// Strict RFC 3986 path byte set: pchar ∪ `/`. pchar = unreserved /
+/// pct-encoded / sub-delims / `:` / `@`. `%` is allowed as the lead byte
+/// of a percent-escape (the `%XX` triple is checked separately).
+const PATH_BYTE_SET: [bool; 256] = build_byte_table(
+    // unreserved extras + sub-delims + pchar extras + path delimiter + `%`
+    b"-._~!$&'()*+,;=:@/%",
+);
+
+/// Strict RFC 3986 query / fragment byte set: pchar ∪ `/` ∪ `?`.
+const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_byte_table(b"-._~!$&'()*+,;=:@/%?");
+
+#[inline(always)]
 const fn is_path_byte(b: u8) -> bool {
-    is_unreserved(b) || is_sub_delim(b) || matches!(b, b':' | b'@' | b'/' | b'%')
+    PATH_BYTE_SET[b as usize]
 }
 
-/// True if `b` is in the strict RFC 3986 query / fragment byte set.
+#[inline(always)]
 const fn is_query_fragment_byte(b: u8) -> bool {
-    is_path_byte(b) || b == b'?'
-}
-
-const fn is_unreserved(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
-}
-
-const fn is_sub_delim(b: u8) -> bool {
-    matches!(
-        b,
-        b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
-    )
+    QUERY_FRAGMENT_BYTE_SET[b as usize]
 }
 
 #[cfg(test)]
