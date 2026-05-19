@@ -6,7 +6,7 @@
 //!   valid [`Uri`](super::Uri). Carries enough information to point at *what*
 //!   went wrong (offset, component) for diagnostics.
 //! - [`UriError`] — surfaced when an operation on an already-parsed Uri
-//!   cannot be applied (e.g. setting an invalid path, encoding bound checks).
+//!   cannot be applied (e.g. setting an invalid path).
 //!
 //! Both are ordinary enums (no `#[non_exhaustive]`): adding a variant is a
 //! breaking change, which rama accepts at major-bump time.
@@ -22,57 +22,43 @@ use std::fmt;
 /// the variants below that can fire even from `parse`.
 ///
 /// `Uri::parse_strict` (lands in M3) additionally rejects everything outside
-/// RFC 3986.
+/// RFC 3986 with [`ParseError::StrictViolation`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// The input was empty.
     Empty,
+
+    /// A URI component is structurally invalid: bad delimiter placement,
+    /// disallowed character, empty where forbidden, etc. The wrapped
+    /// [`Component`] identifies which one. More specific failure modes
+    /// (control chars, percent-encoding, etc.) have their own variants
+    /// below.
+    InvalidComponent(Component),
 
     /// A `\0`, `\r`, `\n`, `\t`, or other ASCII control character was found
     /// inside a URI component. Always rejected — these are header-injection
     /// and request-smuggling vectors.
     ControlCharInUri { at: usize, byte: u8 },
 
-    /// The input contained a non-ASCII byte outside an IDN-eligible host
-    /// position, or contained a non-ASCII host with the `idna` feature
-    /// disabled.
-    NonAsciiOutsideHost { at: usize },
-
-    /// The scheme component was malformed or contained disallowed characters.
-    InvalidScheme,
-
-    /// The authority component was malformed.
-    InvalidAuthority,
-
-    /// A userinfo subcomponent was malformed.
-    InvalidUserInfo,
-
-    /// The host subcomponent was malformed (e.g. mismatched brackets, empty
-    /// host, invalid IDN form).
-    InvalidHost,
-
-    /// The port subcomponent was not a valid `1..=65535` decimal.
-    InvalidPort,
-
-    /// The path component contained disallowed bytes.
-    InvalidPath,
-
-    /// The query component contained disallowed bytes.
-    InvalidQuery,
-
-    /// The fragment component contained disallowed bytes.
-    InvalidFragment,
-
-    /// A percent-encoded escape was malformed (`%` not followed by two hex
-    /// digits, or the resulting byte is itself disallowed in the component).
+    /// A percent-encoded escape was malformed — `%` not followed by two hex
+    /// digits, or (after decoding) the resulting byte is itself disallowed
+    /// in the component where it appeared.
     InvalidPercentEncoding { at: usize },
+
+    /// The input contained a non-ASCII byte outside an IDN-eligible host
+    /// position.
+    NonAsciiOutsideHost { at: usize },
 
     /// An IPv6 literal carried a zone identifier (`%25en0` on the wire).
     /// Not currently supported — see module-level docs for the path forward.
     IPv6ZoneNotSupported,
 
-    /// IDNA processing rejected the host, or non-ASCII host bytes were
-    /// supplied without the `idna` feature enabled.
+    /// Non-ASCII host bytes were supplied without the `idna` feature
+    /// enabled. Only present when the `idna` feature is **off** — when it
+    /// is on, non-ASCII hosts are processed and either succeed or surface
+    /// as [`ParseError::InvalidComponent(Component::Host)`].
+    #[cfg(not(feature = "idna"))]
+    #[cfg_attr(docsrs, doc(cfg(not(feature = "idna"))))]
     IdnaNotEnabled,
 
     /// Strict-mode-only rejection: input parsed under graceful rules but
@@ -87,8 +73,12 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => f.write_str("uri is empty"),
+            Self::InvalidComponent(c) => write!(f, "invalid {c} component"),
             Self::ControlCharInUri { at, byte } => {
                 write!(f, "control character 0x{byte:02X} at byte {at}")
+            }
+            Self::InvalidPercentEncoding { at } => {
+                write!(f, "invalid percent-encoded escape at byte {at}")
             }
             Self::NonAsciiOutsideHost { at } => {
                 write!(
@@ -96,20 +86,10 @@ impl fmt::Display for ParseError {
                     "non-ASCII byte at {at} outside an IDN-eligible host position"
                 )
             }
-            Self::InvalidScheme => f.write_str("invalid scheme"),
-            Self::InvalidAuthority => f.write_str("invalid authority"),
-            Self::InvalidUserInfo => f.write_str("invalid userinfo"),
-            Self::InvalidHost => f.write_str("invalid host"),
-            Self::InvalidPort => f.write_str("invalid port"),
-            Self::InvalidPath => f.write_str("invalid path"),
-            Self::InvalidQuery => f.write_str("invalid query"),
-            Self::InvalidFragment => f.write_str("invalid fragment"),
-            Self::InvalidPercentEncoding { at } => {
-                write!(f, "invalid percent-encoded escape at byte {at}")
-            }
             Self::IPv6ZoneNotSupported => f.write_str(
                 "IPv6 zone identifiers are not currently supported in uri host literals",
             ),
+            #[cfg(not(feature = "idna"))]
             Self::IdnaNotEnabled => {
                 f.write_str("non-ASCII host requires the `idna` feature to be enabled")
             }
@@ -123,18 +103,20 @@ impl std::error::Error for ParseError {}
 
 /// Reasons an operation on an already-parsed [`Uri`](super::Uri) can fail.
 ///
-/// Distinct from [`ParseError`] because the failure mode for *mutation*
-/// (e.g. trying to set an invalid path) is different from the failure mode
-/// for *parsing* (e.g. structural rejection). Both share semantic territory
-/// — invalid bytes are still invalid bytes — but the diagnostics callers want
-/// differ.
+/// Distinct from [`ParseError`] because mutation has different diagnostic
+/// needs from parsing — when a setter fails, callers want to know which
+/// component they were touching, even if the underlying cause didn't tag
+/// it (e.g. a control-char rejection during `set_path` is more useful as
+/// `InvalidComponent { component: Path, cause: ControlCharInUri }` than
+/// as a bare `ControlCharInUri`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UriError {
-    /// A setter received an input that fails component validation.
+    /// A setter received an input that fails component validation. The
+    /// `cause` is the underlying parse-level failure.
     InvalidComponent {
-        /// Which component was being set.
+        /// Which component the setter targeted.
         component: Component,
-        /// Underlying parse-level cause if available.
+        /// Underlying parse-level cause.
         cause: ParseError,
     },
 
@@ -144,10 +126,15 @@ pub enum UriError {
     AsteriskOperation,
 }
 
-/// Which URI component a [`UriError`] refers to.
+/// Which URI component a [`ParseError`] or [`UriError`] refers to.
+///
+/// `Authority` is the umbrella for `UserInfo` + `Host` + `Port`; a parse
+/// failure inside a sub-component is reported against the sub-component,
+/// not against `Authority` itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Component {
     Scheme,
+    Authority,
     UserInfo,
     Host,
     Port,
@@ -160,6 +147,7 @@ impl fmt::Display for Component {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Scheme => "scheme",
+            Self::Authority => "authority",
             Self::UserInfo => "userinfo",
             Self::Host => "host",
             Self::Port => "port",

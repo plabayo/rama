@@ -27,6 +27,16 @@ targets = [
 [features]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
+# IDNA (internationalized domain names) support for the `uri` module.
+#
+# Off by default. Without it, non-ASCII hostnames are rejected at parse
+# (see [`rama_net::uri::ParseError::IdnaNotEnabled`]). When on, hosts go
+# through UTS #46 / Punycode round-tripping. Pulls a non-trivial
+# Unicode-table dependency — keep off if your traffic is ASCII-only.
+#
+# Wired up in M7 of the rama-net::uri rollout; for now it's only used by
+# the parse-error variant gating.
+idna = []
 tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.

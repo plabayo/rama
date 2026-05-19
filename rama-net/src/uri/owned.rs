@@ -22,8 +22,16 @@ use super::{Fragment, Query};
 pub(crate) struct OwnedUriRef {
     pub(crate) scheme: Option<Protocol>,
     pub(crate) authority: Option<Authority>,
-    /// Path bytes. Empty `BytesMut` means an empty path.
+    /// Path bytes. Always present per RFC 3986 §3.3 — an empty `BytesMut`
+    /// models the empty path (`path-empty` production). No `Option`
+    /// because there's no wire signal that distinguishes "no path" from
+    /// "empty path".
     pub(crate) path: BytesMut,
+    /// `None` = no `?` delimiter on the wire; `Some(empty)` = `?` with no
+    /// content. The two are distinct URIs per RFC 3986 §3.4 and must
+    /// round-trip differently.
     pub(crate) query: Option<Query>,
+    /// `None` vs `Some(empty)` distinction analogous to `query`, per
+    /// RFC 3986 §3.5.
     pub(crate) fragment: Option<Fragment>,
 }
