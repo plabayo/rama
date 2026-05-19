@@ -11,11 +11,11 @@ pub mod ip;
 
 mod host;
 #[doc(inline)]
-pub use host::Host;
+pub use host::{Host, HostRef};
 
 pub mod domain;
 #[doc(inline)]
-pub use domain::{AsDomainRef, Domain, IntoDomain};
+pub use domain::{AsDomainRef, Domain, DomainRef, IntoDomain};
 
 mod host_with_port;
 #[doc(inline)]

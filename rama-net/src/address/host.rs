@@ -112,6 +112,42 @@ impl Host {
     pub const EXAMPLE_NAME: Self = Self::Name(Domain::from_static("example.com"));
 }
 
+/// Borrowed view of a [`Host`].
+///
+/// Either a [`DomainRef`](super::domain::DomainRef) borrowing into the source
+/// buffer or an [`IpAddr`] (which is `Copy` and so always carried by value).
+///
+/// Useful anywhere a borrowed host view makes sense — URI host components,
+/// header-parse temporaries, DNS lookups against a non-owning buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRef<'a> {
+    /// A DNS-style name.
+    Name(super::domain::DomainRef<'a>),
+    /// A literal IPv4 or IPv6 address.
+    Address(IpAddr),
+}
+
+impl HostRef<'_> {
+    /// Returns an owned [`Host`] containing a copy of the underlying bytes
+    /// (or, for the IP variants, a copy of the address value).
+    #[must_use]
+    pub fn to_owned(&self) -> Host {
+        match *self {
+            Self::Name(d) => Host::Name(d.to_owned()),
+            Self::Address(ip) => Host::Address(ip),
+        }
+    }
+}
+
+impl<'a> From<&'a Host> for HostRef<'a> {
+    fn from(h: &'a Host) -> Self {
+        match h {
+            Host::Name(d) => Self::Name(d.into()),
+            Host::Address(ip) => Self::Address(*ip),
+        }
+    }
+}
+
 impl PartialEq<str> for Host {
     fn eq(&self, other: &str) -> bool {
         match self {

@@ -28,10 +28,13 @@
 //! ## What lives where
 //!
 //! - [`Uri`] (this file) — the opaque public type
-//! - Borrowed views: [`HostRef`], [`DomainRef`], [`PathRef`], [`QueryRef`],
-//!   [`FragmentRef`]
-//! - Owned mutable component types: [`Query`], [`Fragment`]
+//! - URI-component borrowed views: [`PathRef`], [`QueryRef`], [`FragmentRef`]
+//! - URI-component owned mutable types: [`Query`], [`Fragment`]
 //! - Errors: [`ParseError`], [`UriError`]
+//!
+//! Host-related borrowed views live with their owned counterparts in
+//! [`crate::address`] (`HostRef`, `DomainRef`) — they have utility beyond
+//! URIs (e.g. header parsing, DNS scanners).
 //!
 //! The `Scheme` for a `Uri` is the existing [`Protocol`](crate::Protocol);
 //! the authority is the existing [`Authority`](crate::address::Authority);
@@ -43,10 +46,6 @@ use std::sync::Arc;
 mod error;
 #[doc(inline)]
 pub use error::{Component, ParseError, UriError};
-
-mod host;
-#[doc(inline)]
-pub use host::{DomainRef, HostRef};
 
 mod path;
 #[doc(inline)]

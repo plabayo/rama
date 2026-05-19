@@ -324,6 +324,54 @@ impl Domain {
     }
 }
 
+/// Borrowed view into a domain-name byte slice.
+///
+/// The slice is contractually a validated [`Domain`] in presentation form
+/// (ASCII A-label) — invariants are enforced wherever `DomainRef` is
+/// constructed. Methods always treat the bytes as ASCII (and therefore
+/// valid UTF-8).
+///
+/// Useful for any context where you want a borrowed domain view without
+/// committing to an owned [`Domain`] allocation — e.g. iterating zero-copy
+/// slices out of a parent buffer, or pattern-matching against a transient
+/// header value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainRef<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> DomainRef<'a> {
+    /// Returns the raw bytes (always ASCII).
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Returns the domain as a `&str`. ASCII bytes are valid UTF-8 by
+    /// construction.
+    #[must_use]
+    pub fn as_str(&self) -> &'a str {
+        // Safety: `DomainRef` is only ever constructed from a validated
+        // Domain buffer.
+        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
+    /// Returns an owned [`Domain`] by copying the underlying bytes.
+    #[must_use]
+    pub fn to_owned(&self) -> Domain {
+        let bytes = Bytes::copy_from_slice(self.bytes);
+        // Safety: `DomainRef`'s contents are a validated `Domain` in
+        // presentation form.
+        unsafe { Domain::from_maybe_borrowed_unchecked(bytes) }
+    }
+}
+
+impl<'a> From<&'a Domain> for DomainRef<'a> {
+    fn from(d: &'a Domain) -> Self {
+        Self { bytes: &d.0 }
+    }
+}
+
 impl std::hash::Hash for Domain {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Delegate to per-label hashing so the impl is consistent with
