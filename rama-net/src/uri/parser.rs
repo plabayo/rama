@@ -111,7 +111,7 @@ fn parse_origin_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> 
         let b = bytes[i];
 
         // Control chars: always fatal.
-        if b < 0x20 || b == 0x7F {
+        if is_control_byte(b) {
             return Err(ParseError::ControlCharInUri { at: i, byte: b });
         }
 
@@ -193,22 +193,23 @@ fn check_pct_encoded(bytes: &[u8], i: usize) -> Result<(), ParseError> {
 
 // --- Byte-set lookup tables (single-load hot path) -------------------------
 //
-// `matches!` over ~20 alternatives gets compiled to a chain of compares or
-// a bitmap, depending on LLVM heuristics — fine but not deterministic. The
-// strict validator runs once per byte of every parsed URI, so we precompute
-// `[bool; 256]` tables: one byte load, no branches, no surprises.
+// `matches!` and `b < 0x20 || b == 0x7F` compile to compare-chains whose
+// shape is up to LLVM. The hot loop runs these on every byte of every
+// parsed URI, so we precompute `[bool; 256]` tables: one byte load per
+// check, no branches, no surprises across compiler versions.
 
 /// Build a `[bool; 256]` membership table at compile time, with the ASCII
 /// alphanumeric range pre-marked plus every byte in `extras`.
-const fn build_byte_table(extras: &[u8]) -> [bool; 256] {
+const fn build_byte_table(alphanumeric_seed: bool, extras: &[u8]) -> [bool; 256] {
     let mut t = [false; 256];
-    let mut i: usize = 0;
-    while i < 256 {
-        let b = i as u8;
-        if b.is_ascii_alphanumeric() {
-            t[i] = true;
+    if alphanumeric_seed {
+        let mut i: usize = 0;
+        while i < 256 {
+            if (i as u8).is_ascii_alphanumeric() {
+                t[i] = true;
+            }
+            i += 1;
         }
-        i += 1;
     }
     let mut j = 0;
     while j < extras.len() {
@@ -218,16 +219,34 @@ const fn build_byte_table(extras: &[u8]) -> [bool; 256] {
     t
 }
 
+/// `b < 0x20 || b == 0x7F` as a single load.
+const CONTROL_BYTE_SET: [bool; 256] = {
+    let mut t = [false; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = true;
+        i += 1;
+    }
+    t[0x7F] = true;
+    t
+};
+
 /// Strict RFC 3986 path byte set: pchar ∪ `/`. pchar = unreserved /
 /// pct-encoded / sub-delims / `:` / `@`. `%` is allowed as the lead byte
 /// of a percent-escape (the `%XX` triple is checked separately).
 const PATH_BYTE_SET: [bool; 256] = build_byte_table(
+    true,
     // unreserved extras + sub-delims + pchar extras + path delimiter + `%`
     b"-._~!$&'()*+,;=:@/%",
 );
 
 /// Strict RFC 3986 query / fragment byte set: pchar ∪ `/` ∪ `?`.
-const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_byte_table(b"-._~!$&'()*+,;=:@/%?");
+const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_byte_table(true, b"-._~!$&'()*+,;=:@/%?");
+
+#[inline(always)]
+const fn is_control_byte(b: u8) -> bool {
+    CONTROL_BYTE_SET[b as usize]
+}
 
 #[inline(always)]
 const fn is_path_byte(b: u8) -> bool {
