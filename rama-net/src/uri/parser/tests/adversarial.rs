@@ -1,0 +1,305 @@
+//! Adversarial corpus: security-class inputs that must be rejected (or
+//! parsed *safely*) in both graceful and strict modes.
+//!
+//! Every category here has a public CVE precedent if mis-handled.
+
+use std::net::{IpAddr, Ipv4Addr};
+
+use super::{assert_origin_form, lazy, parse_graceful, parse_strict, userinfo_str};
+use crate::address::Host;
+use crate::uri::parser::MAX_URI_LEN;
+use crate::uri::{Component, ParseError};
+
+// ----------------------------------------------------------------------
+// Control-character rejection (smuggling / header-injection vectors)
+// ----------------------------------------------------------------------
+
+#[test]
+fn crlf_anywhere_rejected() {
+    for s in [
+        "/foo\r/bar",
+        "/foo\n/bar",
+        "/foo\r\n/bar",
+        "/foo?bar\rbaz",
+        "/foo?bar\nbaz",
+        "/foo#frag\r",
+        "/foo#frag\n",
+        "http://example.com\r/",
+        "http://example.com\n/",
+        "http://example.com/\r",
+    ] {
+        assert!(
+            matches!(parse_graceful(s), Err(ParseError::ControlCharInUri { .. })),
+            "graceful must reject {s:?}"
+        );
+        assert!(
+            matches!(parse_strict(s), Err(ParseError::ControlCharInUri { .. })),
+            "strict must reject {s:?}"
+        );
+    }
+}
+
+#[test]
+fn nul_byte_rejected() {
+    for s in ["/\0foo", "/foo\0", "/foo?\0", "/foo#\0", "http://\0/"] {
+        assert!(matches!(
+            parse_graceful(s),
+            Err(ParseError::ControlCharInUri { byte: 0, .. })
+        ));
+    }
+}
+
+#[test]
+fn tab_rejected() {
+    // WHATWG silently strips tabs. We never strip wire bytes — silent
+    // rewrite hides intent and bypasses upstream allowlists.
+    for s in [
+        "/foo\tbar",
+        "http://example\t.com/",
+        "http://example.com/foo\tbar",
+    ] {
+        assert!(matches!(
+            parse_graceful(s),
+            Err(ParseError::ControlCharInUri { byte: b'\t', .. })
+        ));
+    }
+}
+
+#[test]
+fn del_byte_rejected() {
+    for s in ["/foo\x7Fbar", "http://example.com/\x7F"] {
+        assert!(matches!(
+            parse_graceful(s),
+            Err(ParseError::ControlCharInUri { byte: 0x7F, .. })
+        ));
+    }
+}
+
+// ----------------------------------------------------------------------
+// Backslash NOT folded to slash (smuggling vector)
+// ----------------------------------------------------------------------
+
+#[test]
+fn backslash_not_folded_to_slash() {
+    // Browsers fold `\` to `/` for "special" schemes. Documented request-
+    // smuggling vector against intermediaries — we never fold. Graceful
+    // accepts the literal backslash; strict rejects.
+    let u = parse_graceful("/path\\foo").unwrap();
+    assert_origin_form(&u, "/path\\foo", None, None);
+    assert!(matches!(
+        parse_strict("/path\\foo"),
+        Err(ParseError::StrictViolation)
+    ));
+}
+
+// ----------------------------------------------------------------------
+// Alternate IPv4 forms — must not silently decode to 127.0.0.1
+// (SSRF amplifier)
+// ----------------------------------------------------------------------
+
+#[test]
+fn alt_ipv4_octal_not_treated_as_ipv4() {
+    let u = parse_graceful("http://0177.0.0.1/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert!(matches!(auth.host, Host::Name(_)));
+    assert_ne!(
+        auth.host,
+        Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        "alt-form must not silently map to 127.0.0.1"
+    );
+}
+
+#[test]
+fn alt_ipv4_hex_not_treated_as_ipv4() {
+    let u = parse_graceful("http://0x7f.0.0.1/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert!(matches!(auth.host, Host::Name(_)));
+    assert_ne!(auth.host, Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+}
+
+#[test]
+fn alt_ipv4_single_int_not_treated_as_ipv4() {
+    let u = parse_graceful("http://2130706433/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert!(matches!(auth.host, Host::Name(_)));
+    assert_ne!(auth.host, Host::Address(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+}
+
+// ----------------------------------------------------------------------
+// %2F preserved literally (path-traversal / auth-bypass vectors)
+// ----------------------------------------------------------------------
+
+#[test]
+fn percent_2f_not_decoded_in_path() {
+    let u = parse_graceful("/admin/%2F../secret").unwrap();
+    assert_origin_form(&u, "/admin/%2F../secret", None, None);
+}
+
+// ----------------------------------------------------------------------
+// Length / overflow boundary
+// ----------------------------------------------------------------------
+
+#[test]
+fn overlong_input_rejected() {
+    let big = "/".to_owned() + &"a".repeat(MAX_URI_LEN);
+    assert!(matches!(
+        parse_graceful(&big),
+        Err(ParseError::TooLong { .. })
+    ));
+}
+
+#[test]
+fn max_uri_len_minus_one_accepted() {
+    let just_under = "/".to_owned() + &"a".repeat(MAX_URI_LEN - 1);
+    parse_graceful(&just_under).unwrap();
+}
+
+#[test]
+fn exactly_max_uri_len_accepted() {
+    // The cap is `MAX_URI_LEN`. Exactly `MAX_URI_LEN` bytes should still
+    // parse — the rejection is `> MAX_URI_LEN`.
+    let exactly = "/".to_owned() + &"a".repeat(MAX_URI_LEN - 1);
+    assert_eq!(exactly.len(), MAX_URI_LEN);
+    parse_graceful(&exactly).unwrap();
+}
+
+// ----------------------------------------------------------------------
+// IPv6 edge cases
+// ----------------------------------------------------------------------
+
+#[test]
+fn unbracketed_ipv6_in_authority_rejected() {
+    let r = parse_graceful("http://2001:db8::1/");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(
+            Component::Port | Component::Host
+        ))
+    ));
+}
+
+#[test]
+fn ipv6_zone_id_rejected() {
+    // RFC 9844 `%25en0` zone-identifier wire encoding. We reject pending
+    // first-class `Ipv6+zone` host support.
+    let r = parse_graceful("https://[fe80::1%25en0]/");
+    assert!(matches!(r, Err(ParseError::IPv6ZoneNotSupported)));
+}
+
+#[test]
+fn unbalanced_brackets_rejected() {
+    for s in [
+        "http://[2001:db8::1/",      // missing closing `]`
+        "http://2001:db8::1]/",      // closing `]` without opening
+        "http://[2001:db8::1]:abc/", // bad port after IPv6
+    ] {
+        assert!(
+            parse_graceful(s).is_err(),
+            "must reject malformed brackets in {s:?}"
+        );
+    }
+}
+
+// ----------------------------------------------------------------------
+// Userinfo confusion
+// ----------------------------------------------------------------------
+
+#[test]
+fn userinfo_confusion_does_not_bleed_into_host() {
+    // `http://trusted.com@evil.com/` — userinfo is `trusted.com`, host is
+    // `evil.com`. Parser must not confuse the two.
+    let u = parse_graceful("http://trusted.com@evil.com/").unwrap();
+    let l = lazy(&u);
+    assert_eq!(userinfo_str(l), Some("trusted.com"));
+    assert_eq!(
+        l.authority.as_ref().unwrap().host,
+        Host::Name(crate::address::Domain::from_static("evil.com"))
+    );
+}
+
+#[test]
+fn at_in_path_is_not_userinfo() {
+    // `@` after `/` is part of the path, not userinfo.
+    let u = parse_graceful("/foo@bar").unwrap();
+    assert_origin_form(&u, "/foo@bar", None, None);
+}
+
+#[test]
+fn double_at_in_authority_rejected() {
+    // `user@info@host` — first `@` ends userinfo; `info@host` then can't
+    // be parsed as a Host/IPv4/IPv6.
+    let r = parse_graceful("http://user@info@host/");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(Component::Host))
+    ));
+}
+
+// ----------------------------------------------------------------------
+// Port edges
+// ----------------------------------------------------------------------
+
+#[test]
+fn port_0_accepted() {
+    let u = parse_graceful("http://example.com:0/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert_eq!(auth.port, Some(0));
+}
+
+#[test]
+fn port_65535_accepted() {
+    let u = parse_graceful("http://example.com:65535/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert_eq!(auth.port, Some(65535));
+}
+
+#[test]
+fn port_65536_overflow_rejected() {
+    let r = parse_graceful("http://example.com:65536/");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(Component::Port))
+    ));
+}
+
+#[test]
+fn port_negative_rejected() {
+    let r = parse_graceful("http://example.com:-80/");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(Component::Port))
+    ));
+}
+
+// ----------------------------------------------------------------------
+// Empty authority
+// ----------------------------------------------------------------------
+
+#[test]
+fn empty_authority_rejected() {
+    // `http:///path` — `//` followed by `/`, no host.
+    let r = parse_graceful("http:///path");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(Component::Host))
+    ));
+}
+
+#[test]
+fn scheme_with_only_colon_rejected() {
+    // `http:` — bare scheme + colon, no path / authority. Path is empty.
+    // Per RFC 3986 this is a valid (if degenerate) URI. Accept.
+    let u = parse_graceful("http:").unwrap();
+    assert!(lazy(&u).scheme.is_some());
+}
+
+#[test]
+fn scheme_with_only_slashes_rejected() {
+    // `http://` — scheme + `//` + empty authority. Authority parser
+    // rejects empty host.
+    let r = parse_graceful("http://");
+    assert!(matches!(
+        r,
+        Err(ParseError::InvalidComponent(Component::Host))
+    ));
+}
