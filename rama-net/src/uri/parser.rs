@@ -198,18 +198,17 @@ fn check_pct_encoded(bytes: &[u8], i: usize) -> Result<(), ParseError> {
 // parsed URI, so we precompute `[bool; 256]` tables: one byte load per
 // check, no branches, no surprises across compiler versions.
 
-/// Build a `[bool; 256]` membership table at compile time, with the ASCII
-/// alphanumeric range pre-marked plus every byte in `extras`.
-const fn build_byte_table(alphanumeric_seed: bool, extras: &[u8]) -> [bool; 256] {
+/// Build a `[bool; 256]` membership table at compile time: ASCII
+/// alphanumerics plus every byte in `extras`. (Sets that don't include
+/// alphanumerics — e.g. the control-byte set — build their table inline.)
+const fn build_alphanum_byte_table(extras: &[u8]) -> [bool; 256] {
     let mut t = [false; 256];
-    if alphanumeric_seed {
-        let mut i: usize = 0;
-        while i < 256 {
-            if (i as u8).is_ascii_alphanumeric() {
-                t[i] = true;
-            }
-            i += 1;
+    let mut i: usize = 0;
+    while i < 256 {
+        if (i as u8).is_ascii_alphanumeric() {
+            t[i] = true;
         }
+        i += 1;
     }
     let mut j = 0;
     while j < extras.len() {
@@ -234,14 +233,13 @@ const CONTROL_BYTE_SET: [bool; 256] = {
 /// Strict RFC 3986 path byte set: pchar ∪ `/`. pchar = unreserved /
 /// pct-encoded / sub-delims / `:` / `@`. `%` is allowed as the lead byte
 /// of a percent-escape (the `%XX` triple is checked separately).
-const PATH_BYTE_SET: [bool; 256] = build_byte_table(
-    true,
+const PATH_BYTE_SET: [bool; 256] = build_alphanum_byte_table(
     // unreserved extras + sub-delims + pchar extras + path delimiter + `%`
     b"-._~!$&'()*+,;=:@/%",
 );
 
 /// Strict RFC 3986 query / fragment byte set: pchar ∪ `/` ∪ `?`.
-const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_byte_table(true, b"-._~!$&'()*+,;=:@/%?");
+const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_alphanum_byte_table(b"-._~!$&'()*+,;=:@/%?");
 
 #[inline(always)]
 const fn is_control_byte(b: u8) -> bool {
