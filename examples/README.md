@@ -33,6 +33,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 - [`http_octet_stream.rs`](./http_octet_stream.rs) - Binary data responses with file downloads
 - [`http_multipart.rs`](./http_multipart.rs) - `multipart/form-data` upload handling
+- [`http_advanced_router.rs`](./http_advanced_router.rs) - Advanced http router composition examples
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
