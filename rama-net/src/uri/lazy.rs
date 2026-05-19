@@ -52,9 +52,12 @@ pub(crate) struct LazyUriRef {
 
 /// Parsed-once authority for [`LazyUriRef`].
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "M2 skeleton: fields consumed by M3 (parser) and M4 (accessors)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "M3 (c): fields written by parser, read by tests and M4 accessors"
+    )
 )]
 pub(crate) struct LazyAuthority {
     /// Byte range of userinfo (sans `@`) within the parent buffer, if any.

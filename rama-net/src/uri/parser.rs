@@ -33,9 +33,14 @@
 //! Authority-form, absolute-form, and the host parser arrive in sub-commit
 //! (c).
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use rama_core::bytes::Bytes;
 
-use super::lazy::LazyUriRef;
+use crate::Protocol;
+use crate::address::{Domain, Host};
+
+use super::lazy::{LazyAuthority, LazyUriRef};
 use super::{Component, ParseError, Uri};
 
 /// Maximum input length the parser accepts.
@@ -70,84 +75,123 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
         return Ok(Uri::from_asterisk());
     }
 
-    // Dispatch by leading byte. `/` is unambiguous: only origin-form starts
-    // with it. Each form-specific parser does its own single-pass walk
-    // and is responsible for control-char detection within its bytes.
+    // Origin-form: starts with `/`. No scheme, no authority.
     if bytes[0] == b'/' {
-        parse_origin_form(bytes, mode)
-    } else {
-        // TODO(M3-c): absolute-form (`scheme:…`) and authority-form
-        // (`host:port`). Until then anything not starting with `/` is
-        // reported as a scheme-component failure.
-        Err(ParseError::InvalidComponent(Component::Scheme))
+        let scan = scan_path_query_fragment(&bytes, 0, mode)?;
+        return Ok(Uri::from_lazy(LazyUriRef {
+            scheme: None,
+            authority: None,
+            path: (0, scan.path_end),
+            query: scan.query,
+            fragment: scan.fragment,
+            bytes,
+        }));
     }
+
+    // Absolute-form: `scheme ":" hier-part [ "?" query ] [ "#" fragment ]`
+    // (RFC 3986 §3). hier-part is either `//authority path-abempty` or an
+    // opaque path-absolute / path-rootless (e.g. `urn:isbn:0`, `mailto:a@b`).
+    if let Some(colon) = find_scheme_end(&bytes) {
+        let scheme_str = bytes_to_str(&bytes[..colon]);
+        let Ok(scheme) = Protocol::try_from(scheme_str) else {
+            return Err(ParseError::InvalidComponent(Component::Scheme));
+        };
+
+        let after_colon = colon + 1;
+        let (authority, hier_start) = parse_optional_authority(&bytes, after_colon, mode)?;
+        let scan = scan_path_query_fragment(&bytes, hier_start, mode)?;
+
+        return Ok(Uri::from_lazy(LazyUriRef {
+            scheme: Some(scheme),
+            authority,
+            path: (hier_start as u16, scan.path_end),
+            query: scan.query,
+            fragment: scan.fragment,
+            bytes,
+        }));
+    }
+
+    // Anything else (relative refs with path-noscheme, HTTP authority-form
+    // `host:port`, etc.) is not yet supported.
+    Err(ParseError::InvalidComponent(Component::Scheme))
 }
 
-/// Parse an origin-form request-target: `path [ "?" query ] [ "#" fragment ]`.
-///
-/// `bytes[0] == b'/'` is the caller's responsibility.
-///
-/// Single-pass: walks the buffer once, simultaneously detecting control
-/// chars, locating the `?`/`#` delimiters, and (in strict mode) validating
-/// each byte against the active component's grammar.
-fn parse_origin_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
+// --- Path / Query / Fragment scan (shared by origin-form and absolute-form)
+//
+// Single-pass walk from `start` to end of `bytes`:
+// - reject control chars (always fatal)
+// - track section transitions on `?` and `#`
+// - in strict mode, validate per-section byte set + percent-escapes
+
+#[derive(Debug)]
+struct PathQueryFragment {
+    path_end: u16,
+    query: Option<(u16, u16)>,
+    fragment: Option<(u16, u16)>,
+}
+
+#[derive(Clone, Copy)]
+enum Section {
+    Path,
+    Query,
+    Fragment,
+}
+
+fn scan_path_query_fragment(
+    bytes: &Bytes,
+    start: usize,
+    mode: ParserMode,
+) -> Result<PathQueryFragment, ParseError> {
     let len = bytes.len();
     let strict = mode == ParserMode::Strict;
-
-    // Section tracking. `Section::Path` until `?` or `#` is seen, then
-    // either Query or Fragment.
-    enum Section {
-        Path,
-        Query,
-        Fragment,
-    }
     let mut section = Section::Path;
     let mut path_end = len;
     let mut query_start: Option<usize> = None;
     let mut fragment_start: Option<usize> = None;
 
-    let mut i = 0;
+    let mut i = start;
     while i < len {
         let b = bytes[i];
-
-        // Control chars: always fatal.
         if is_control_byte(b) {
             return Err(ParseError::ControlCharInUri { at: i, byte: b });
         }
 
-        // Section transitions.
-        match section {
-            Section::Path => {
-                if b == b'?' {
+        // Section transitions
+        let transitioned = match section {
+            Section::Path => match b {
+                b'?' => {
                     path_end = i;
                     query_start = Some(i + 1);
                     section = Section::Query;
-                    i += 1;
-                    continue;
+                    true
                 }
-                if b == b'#' {
+                b'#' => {
                     path_end = i;
                     fragment_start = Some(i + 1);
                     section = Section::Fragment;
-                    i += 1;
-                    continue;
+                    true
                 }
-            }
+                _ => false,
+            },
             Section::Query => {
                 if b == b'#' {
                     fragment_start = Some(i + 1);
                     section = Section::Fragment;
-                    i += 1;
-                    continue;
+                    true
+                } else {
+                    false
                 }
             }
-            Section::Fragment => {}
+            Section::Fragment => false,
+        };
+        if transitioned {
+            i += 1;
+            continue;
         }
 
-        // Strict-mode byte-set check + percent-encoding validation.
         if strict {
             if b == b'%' {
-                check_pct_encoded(&bytes, i)?;
+                check_pct_encoded(bytes, i)?;
                 i += 3;
                 continue;
             }
@@ -162,22 +206,209 @@ fn parse_origin_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> 
         i += 1;
     }
 
-    // Materialize query/fragment ranges. `fragment_start` (if set) marks
-    // the byte after `#`; the query (if any) ends at `fragment_start - 1`.
     let query_range = query_start.map(|qs| {
         let qe = fragment_start.map_or(len, |fs| fs - 1);
         (qs as u16, qe as u16)
     });
     let fragment_range = fragment_start.map(|fs| (fs as u16, len as u16));
 
-    Ok(Uri::from_lazy(LazyUriRef {
-        bytes,
-        scheme: None,
-        authority: None,
-        path: (0, path_end as u16),
+    Ok(PathQueryFragment {
+        path_end: path_end as u16,
         query: query_range,
         fragment: fragment_range,
-    }))
+    })
+}
+
+// --- Scheme parsing --------------------------------------------------------
+
+/// If `bytes` starts with `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` followed
+/// by `:`, return the byte index of the `:`. Otherwise `None`.
+fn find_scheme_end(bytes: &[u8]) -> Option<usize> {
+    let first = *bytes.first()?;
+    if !is_scheme_first_byte(first) {
+        return None;
+    }
+    let mut i = 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b':' {
+            return Some(i);
+        }
+        if !is_scheme_rest_byte(b) {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+
+// --- Authority parsing -----------------------------------------------------
+
+/// If `bytes[start..]` begins with `//`, parse an authority and return
+/// `(Some(LazyAuthority), end_of_authority_offset)`. Otherwise return
+/// `(None, start)` — the absolute URI is opaque-path form.
+fn parse_optional_authority(
+    bytes: &Bytes,
+    start: usize,
+    mode: ParserMode,
+) -> Result<(Option<LazyAuthority>, usize), ParseError> {
+    if bytes.len() >= start + 2 && bytes[start] == b'/' && bytes[start + 1] == b'/' {
+        let auth_start = start + 2;
+        // Authority ends at the first `/`, `?`, `#`, or end of input.
+        let auth_end = bytes[auth_start..]
+            .iter()
+            .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+            .map_or(bytes.len(), |p| p + auth_start);
+        let auth = parse_authority(bytes, auth_start, auth_end, mode)?;
+        Ok((Some(auth), auth_end))
+    } else {
+        Ok((None, start))
+    }
+}
+
+/// Parse the bytes `[start, end)` of the parent buffer as an RFC 3986 §3.2
+/// authority: `[ userinfo "@" ] host [ ":" port ]`.
+fn parse_authority(
+    bytes: &Bytes,
+    start: usize,
+    end: usize,
+    _mode: ParserMode,
+) -> Result<LazyAuthority, ParseError> {
+    // Reject control chars inside the authority.
+    let mut k = start;
+    while k < end {
+        let b = bytes[k];
+        if is_control_byte(b) {
+            return Err(ParseError::ControlCharInUri { at: k, byte: b });
+        }
+        k += 1;
+    }
+
+    // Userinfo terminates at the first `@`. Userinfo bytes must not contain
+    // `@` literally (per ABNF — `@` is not in the userinfo set), so the
+    // *first* `@` is unambiguously the terminator.
+    let userinfo_range = bytes[start..end]
+        .iter()
+        .position(|&b| b == b'@')
+        .map(|rel| (start as u16, (start + rel) as u16));
+    let host_start = userinfo_range.map_or(start, |(_, e)| (e as usize) + 1);
+
+    // Parse host + optional port from bytes[host_start..end].
+    let host_view = &bytes[host_start..end];
+    let (host, port) = parse_host_and_port(bytes, host_start, host_view, end)?;
+
+    Ok(LazyAuthority {
+        userinfo_range,
+        host,
+        port,
+    })
+}
+
+/// Parse the host and optional port. `parent` is the full URI buffer (used
+/// for zero-copy slicing of Domain bytes); `host_start` is the absolute
+/// offset; `view` is `&parent[host_start..end]`; `end` is the absolute
+/// end-of-authority offset.
+fn parse_host_and_port(
+    parent: &Bytes,
+    host_start: usize,
+    view: &[u8],
+    end: usize,
+) -> Result<(Host, Option<u16>), ParseError> {
+    if view.is_empty() {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+
+    if view[0] == b'[' {
+        // Bracketed IPv6 literal.
+        let close_rel = view
+            .iter()
+            .position(|&b| b == b']')
+            .ok_or(ParseError::InvalidComponent(Component::Host))?;
+        let inside = &view[1..close_rel];
+        // RFC 9844 zone identifiers are wire-encoded as `%25en0`; the bare
+        // `%` byte is illegal in our policy. Reject before address parsing.
+        if inside.contains(&b'%') {
+            return Err(ParseError::IPv6ZoneNotSupported);
+        }
+        let Ok(s) = std::str::from_utf8(inside) else {
+            return Err(ParseError::InvalidComponent(Component::Host));
+        };
+        let Ok(addr) = s.parse::<Ipv6Addr>() else {
+            return Err(ParseError::InvalidComponent(Component::Host));
+        };
+        let host = Host::Address(IpAddr::V6(addr));
+
+        // After `]`, optional `:port`.
+        let after = &view[close_rel + 1..];
+        let port = match after {
+            [] => None,
+            [b':', rest @ ..] => Some(parse_port(rest)?),
+            _ => return Err(ParseError::InvalidComponent(Component::Authority)),
+        };
+        return Ok((host, port));
+    }
+
+    // Non-bracketed host: optionally followed by `:port`. The port separator
+    // is the rightmost `:` (there is at most one in non-bracketed form).
+    let (host_bytes_rel, port) = match view.iter().rposition(|&b| b == b':') {
+        Some(colon) => {
+            let port = parse_port(&view[colon + 1..])?;
+            (&view[..colon], Some(port))
+        }
+        None => (view, None),
+    };
+    if host_bytes_rel.is_empty() {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    let host_bytes_len = host_bytes_rel.len();
+
+    let Ok(host_str) = std::str::from_utf8(host_bytes_rel) else {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    };
+
+    let host = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
+        Host::Address(IpAddr::V4(v4))
+    } else {
+        // Treat as DNS name. Validate via Domain::try_from on a borrowed
+        // slice (validates ASCII/length), then construct the owned Domain
+        // zero-copy by slicing the parent Bytes.
+        if Domain::try_from(host_str).is_err() {
+            return Err(ParseError::InvalidComponent(Component::Host));
+        }
+        let domain_bytes = parent.slice(host_start..host_start + host_bytes_len);
+        // Safety: validated above.
+        let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
+        Host::Name(domain)
+    };
+
+    // `end` is unused on the non-bracketed path — bind to a no-op to silence
+    // unused-variable warnings without complicating the signature.
+    let _ = end;
+    Ok((host, port))
+}
+
+fn parse_port(bytes: &[u8]) -> Result<u16, ParseError> {
+    if bytes.is_empty() {
+        // Empty port (`host:`) — reject. RFC 3986 §3.2.3 permits the
+        // production but recommends producers omit; receivers diverge in
+        // the wild, so we pick the stricter side.
+        return Err(ParseError::InvalidComponent(Component::Port));
+    }
+    let Ok(s) = std::str::from_utf8(bytes) else {
+        return Err(ParseError::InvalidComponent(Component::Port));
+    };
+    let Ok(port) = s.parse::<u16>() else {
+        return Err(ParseError::InvalidComponent(Component::Port));
+    };
+    Ok(port)
+}
+
+/// `bytes` is assumed to be valid UTF-8 (caller is responsible). Used for
+/// scheme conversion, where the parser has already validated the byte set
+/// is a subset of ASCII.
+fn bytes_to_str(bytes: &[u8]) -> &str {
+    // Safety: scheme bytes are validated as ASCII alpha + digit + + - .
+    unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
 /// Verifies a `%XX` percent-escape at `i`. Caller has confirmed
@@ -246,6 +477,18 @@ const PATH_BYTE_SET: [bool; 256] = set_each(
 const QUERY_FRAGMENT_BYTE_SET: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:@/%?");
 
+/// RFC 3986 §3.1: a scheme's first byte must be ASCII alpha.
+const SCHEME_FIRST_BYTE_SET: [bool; 256] = set_ascii_alpha([false; 256]);
+
+/// RFC 3986 §3.1: a scheme's subsequent bytes are ALPHA / DIGIT / "+" / "-" / ".".
+const SCHEME_REST_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"+-.");
+
+/// ASCII alpha range A-Z and a-z (no digits). Used by the scheme-first table.
+const fn set_ascii_alpha(t: [bool; 256]) -> [bool; 256] {
+    let t = set_range(t, b'A', b'Z' + 1);
+    set_range(t, b'a', b'z' + 1)
+}
+
 #[inline(always)]
 const fn is_control_byte(b: u8) -> bool {
     CONTROL_BYTE_SET[b as usize]
@@ -259,6 +502,16 @@ const fn is_path_byte(b: u8) -> bool {
 #[inline(always)]
 const fn is_query_fragment_byte(b: u8) -> bool {
     QUERY_FRAGMENT_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+const fn is_scheme_first_byte(b: u8) -> bool {
+    SCHEME_FIRST_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+const fn is_scheme_rest_byte(b: u8) -> bool {
+    SCHEME_REST_BYTE_SET[b as usize]
 }
 
 #[cfg(test)]
@@ -291,6 +544,7 @@ mod tests {
     /// Asserts the lazy `u`'s scheme/authority/path/query/fragment match.
     /// Path is required (RFC 3986 §3.3 — always present); query and
     /// fragment are `Option<&str>` to distinguish `None` from `Some("")`.
+    /// Use this for origin-form (no scheme, no authority).
     fn assert_lazy(
         u: &Uri,
         expected_path: &str,
@@ -311,6 +565,10 @@ mod tests {
         assert_eq!(path, expected_path, "path");
         assert_eq!(range_str(l, l.query), expected_query, "query");
         assert_eq!(range_str(l, l.fragment), expected_fragment, "fragment");
+    }
+
+    fn path_str(l: &LazyUriRef) -> &str {
+        std::str::from_utf8(&l.bytes[l.path.0 as usize..l.path.1 as usize]).unwrap()
     }
 
     // ----------------------------------------------------------------------
@@ -557,6 +815,234 @@ mod tests {
         assert!(matches!(
             parse_strict("/p#bad%"),
             Err(ParseError::InvalidPercentEncoding { .. })
+        ));
+    }
+
+    // ----------------------------------------------------------------------
+    // Absolute-form: scheme + authority + path + query + fragment
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn absolute_http_basic() {
+        let u = parse_graceful("http://example.com/").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme, Some(Protocol::HTTP));
+        let auth = l.authority.as_ref().unwrap();
+        assert!(auth.userinfo_range.is_none());
+        assert_eq!(auth.host, Host::Name(Domain::from_static("example.com")));
+        assert_eq!(auth.port, None);
+        assert_eq!(path_str(l), "/");
+        assert!(l.query.is_none());
+        assert!(l.fragment.is_none());
+    }
+
+    #[test]
+    fn absolute_https_with_path_query_fragment() {
+        let u = parse_graceful("https://api.example.com/v1/users?id=42#bio").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme, Some(Protocol::HTTPS));
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(
+            auth.host,
+            Host::Name(Domain::from_static("api.example.com"))
+        );
+        assert_eq!(auth.port, None);
+        assert_eq!(path_str(l), "/v1/users");
+        assert_eq!(range_str(l, l.query), Some("id=42"));
+        assert_eq!(range_str(l, l.fragment), Some("bio"));
+    }
+
+    #[test]
+    fn absolute_with_port() {
+        let u = parse_graceful("http://example.com:8080/").unwrap();
+        let l = lazy(&u);
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(auth.host, Host::Name(Domain::from_static("example.com")));
+        assert_eq!(auth.port, Some(8080));
+        assert_eq!(path_str(l), "/");
+    }
+
+    #[test]
+    fn absolute_with_userinfo() {
+        let u = parse_graceful("http://user:pass@example.com/").unwrap();
+        let l = lazy(&u);
+        let auth = l.authority.as_ref().unwrap();
+        let (us, ue) = auth.userinfo_range.unwrap();
+        assert_eq!(
+            std::str::from_utf8(&l.bytes[us as usize..ue as usize]).unwrap(),
+            "user:pass"
+        );
+        assert_eq!(auth.host, Host::Name(Domain::from_static("example.com")));
+        assert_eq!(auth.port, None);
+    }
+
+    #[test]
+    fn absolute_with_empty_path() {
+        let u = parse_graceful("http://example.com").unwrap();
+        let l = lazy(&u);
+        assert_eq!(path_str(l), "");
+        assert!(l.authority.is_some());
+    }
+
+    // --- Non-HTTP schemes (proves we're protocol-neutral, not HTTP-only) --
+
+    #[test]
+    fn absolute_ws() {
+        let u = parse_graceful("ws://chat.example.com/socket").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme, Some(Protocol::WS));
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(
+            auth.host,
+            Host::Name(Domain::from_static("chat.example.com"))
+        );
+        assert_eq!(path_str(l), "/socket");
+    }
+
+    #[test]
+    fn absolute_ftp_with_port() {
+        let u = parse_graceful("ftp://ftp.example.org:2121/pub/").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("ftp"));
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(auth.port, Some(2121));
+        assert_eq!(path_str(l), "/pub/");
+    }
+
+    #[test]
+    fn absolute_file_empty_host_rejected() {
+        // `file:///etc/hosts` has an empty authority (`//` followed by `/`).
+        // Our parser rejects empty hosts. If we ever extend `Host` with a
+        // distinguished "no host" variant for the `file:` scheme, this test
+        // moves to a positive assertion.
+        let r = parse_graceful("file:///etc/hosts");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Host))
+        ));
+    }
+
+    #[test]
+    fn absolute_urn_opaque_path() {
+        // URN: no authority, opaque path-rootless. `urn:isbn:0451450523`.
+        let u = parse_graceful("urn:isbn:0451450523").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("urn"));
+        assert!(l.authority.is_none(), "urn: has no authority");
+        assert_eq!(path_str(l), "isbn:0451450523");
+    }
+
+    #[test]
+    fn absolute_mailto_opaque_path() {
+        let u = parse_graceful("mailto:user@example.com").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("mailto"));
+        assert!(l.authority.is_none());
+        assert_eq!(path_str(l), "user@example.com");
+    }
+
+    #[test]
+    fn absolute_data_opaque_path() {
+        let u = parse_graceful("data:text/plain,Hello").unwrap();
+        let l = lazy(&u);
+        assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("data"));
+        assert!(l.authority.is_none());
+        assert_eq!(path_str(l), "text/plain,Hello");
+    }
+
+    // --- IPv4 / IPv6 host literals ----------------------------------------
+
+    #[test]
+    fn absolute_ipv4_host() {
+        let u = parse_graceful("http://192.0.2.16:8080/").unwrap();
+        let l = lazy(&u);
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(
+            auth.host,
+            Host::Address(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 16)))
+        );
+        assert_eq!(auth.port, Some(8080));
+    }
+
+    #[test]
+    fn absolute_ipv6_host() {
+        let u = parse_graceful("https://[2001:db8::1]/p").unwrap();
+        let l = lazy(&u);
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(
+            auth.host,
+            Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()))
+        );
+        assert!(auth.port.is_none());
+        assert_eq!(path_str(l), "/p");
+    }
+
+    #[test]
+    fn absolute_ipv6_host_with_port() {
+        let u = parse_graceful("https://[2001:db8::1]:8443/p").unwrap();
+        let l = lazy(&u);
+        let auth = l.authority.as_ref().unwrap();
+        assert_eq!(
+            auth.host,
+            Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()))
+        );
+        assert_eq!(auth.port, Some(8443));
+    }
+
+    #[test]
+    fn rejects_ipv6_zone_id() {
+        // `[fe80::1%25en0]` — wire-encoded zone identifier. We reject these
+        // until we have an Ipv6+zone host type.
+        let r = parse_graceful("https://[fe80::1%25en0]/");
+        assert!(matches!(r, Err(ParseError::IPv6ZoneNotSupported)));
+    }
+
+    // --- Scheme / authority error paths -----------------------------------
+
+    #[test]
+    fn rejects_invalid_scheme_first_byte() {
+        // Scheme must start with ALPHA.
+        let r = parse_graceful("1http://example.com/");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Scheme))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_scheme_char() {
+        // `_` is not in the scheme byte set.
+        let r = parse_graceful("ht_tp://example.com/");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Scheme))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_port() {
+        let r = parse_graceful("http://example.com:/");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Port))
+        ));
+    }
+
+    #[test]
+    fn rejects_overflow_port() {
+        let r = parse_graceful("http://example.com:99999/");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Port))
+        ));
+    }
+
+    #[test]
+    fn rejects_non_numeric_port() {
+        let r = parse_graceful("http://example.com:abc/");
+        assert!(matches!(
+            r,
+            Err(ParseError::InvalidComponent(Component::Port))
         ));
     }
 }
