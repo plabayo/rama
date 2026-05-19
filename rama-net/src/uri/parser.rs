@@ -1,5 +1,10 @@
 //! Internal parser engine for [`crate::uri::Uri`].
 //!
+//! `Uri` is for *any* RFC 3986 URI — http(s), ws(s), ftp, mailto:, urn:,
+//! file:, custom schemes — not just HTTP. HTTP-specific shapes (e.g. the
+//! asterisk request-target from RFC 9112 §3.2.4) are called out in docs
+//! and tests, but the parser itself is protocol-neutral.
+//!
 //! Two modes, one engine:
 //!
 //! - **Graceful** (`Uri::parse`) — accepts what real wire traffic looks like
@@ -17,15 +22,16 @@
 //! - Inputs longer than [`MAX_URI_LEN`] (forced by 16-bit offsets in
 //!   [`LazyUriRef`])
 //!
+//! Per-form scanners detect control chars inline during their walk — no
+//! separate pre-pass.
+//!
 //! ## Scope of this file in M3 sub-commit (b)
 //!
-//! - Asterisk-form (`*`) detection
+//! - Asterisk-form (`*`) detection — HTTP-only per RFC 9112 §3.2.4
 //! - Origin-form (`/path?query#fragment`) parsing
-//! - Common pre-flight checks (length, control chars)
 //!
 //! Authority-form, absolute-form, and the host parser arrive in sub-commit
-//! (c). The strict path/query/fragment validators land here already (cheap
-//! to do alongside graceful).
+//! (c).
 
 use rama_core::bytes::Bytes;
 
@@ -56,87 +62,113 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    if let Some((at, byte)) = find_control_char(&bytes) {
-        return Err(ParseError::ControlCharInUri { at, byte });
-    }
 
-    // Asterisk-form: the whole input is the single byte `*`.
+    // Asterisk-form: the whole input is the single byte `*`. HTTP-specific
+    // (RFC 9112 §3.2.4); harmless for other protocols since it's just one
+    // variant.
     if bytes.as_ref() == b"*" {
         return Ok(Uri::from_asterisk());
     }
 
-    // Dispatch by request-target shape:
-    //
-    // - origin-form  → starts with `/`
-    // - absolute-form, authority-form → land in sub-commit (c)
-    //
-    // The "first byte == '/'" check is the same dispatch hyper / Go / curl
-    // do; it's unambiguous because no other request-target form starts
-    // with `/`.
+    // Dispatch by leading byte. `/` is unambiguous: only origin-form starts
+    // with it. Each form-specific parser does its own single-pass walk
+    // and is responsible for control-char detection within its bytes.
     if bytes[0] == b'/' {
         parse_origin_form(bytes, mode)
     } else {
-        // TODO(M3-c): absolute-form (`scheme://…`) and authority-form
+        // TODO(M3-c): absolute-form (`scheme:…`) and authority-form
         // (`host:port`). Until then anything not starting with `/` is
-        // reported as a scheme-component failure — once (c) lands this
-        // path is unreachable.
+        // reported as a scheme-component failure.
         Err(ParseError::InvalidComponent(Component::Scheme))
     }
-}
-
-/// Scan for any byte the parser unconditionally rejects (ASCII controls).
-fn find_control_char(bytes: &[u8]) -> Option<(usize, u8)> {
-    bytes.iter().enumerate().find_map(|(i, b)| {
-        if *b < 0x20 || *b == 0x7F {
-            Some((i, *b))
-        } else {
-            None
-        }
-    })
 }
 
 /// Parse an origin-form request-target: `path [ "?" query ] [ "#" fragment ]`.
 ///
 /// `bytes[0] == b'/'` is the caller's responsibility.
+///
+/// Single-pass: walks the buffer once, simultaneously detecting control
+/// chars, locating the `?`/`#` delimiters, and (in strict mode) validating
+/// each byte against the active component's grammar.
 fn parse_origin_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     let len = bytes.len();
+    let strict = mode == ParserMode::Strict;
 
-    // Find the first `?` or `#`. Whichever comes first ends the path; from
-    // there we may have query, fragment, or both.
+    // Section tracking. `Section::Path` until `?` or `#` is seen, then
+    // either Query or Fragment.
+    enum Section {
+        Path,
+        Query,
+        Fragment,
+    }
+    let mut section = Section::Path;
     let mut path_end = len;
-    let mut query_range: Option<(u16, u16)> = None;
-    let mut fragment_range: Option<(u16, u16)> = None;
+    let mut query_start: Option<usize> = None;
+    let mut fragment_start: Option<usize> = None;
 
-    if let Some(delim_pos) = bytes.iter().position(|&b| b == b'?' || b == b'#') {
-        path_end = delim_pos;
-        if bytes[delim_pos] == b'?' {
-            // After `?` is the query; a later `#` ends it and starts the fragment.
-            let q_start = delim_pos + 1;
-            let fragment_search_pos = bytes[q_start..]
-                .iter()
-                .position(|&b| b == b'#')
-                .map(|p| p + q_start);
-            if let Some(hash) = fragment_search_pos {
-                query_range = Some((q_start as u16, hash as u16));
-                fragment_range = Some((hash as u16 + 1, len as u16));
-            } else {
-                query_range = Some((q_start as u16, len as u16));
+    let mut i = 0;
+    while i < len {
+        let b = bytes[i];
+
+        // Control chars: always fatal.
+        if b < 0x20 || b == 0x7F {
+            return Err(ParseError::ControlCharInUri { at: i, byte: b });
+        }
+
+        // Section transitions.
+        match section {
+            Section::Path => {
+                if b == b'?' {
+                    path_end = i;
+                    query_start = Some(i + 1);
+                    section = Section::Query;
+                    i += 1;
+                    continue;
+                }
+                if b == b'#' {
+                    path_end = i;
+                    fragment_start = Some(i + 1);
+                    section = Section::Fragment;
+                    i += 1;
+                    continue;
+                }
             }
-        } else {
-            // `#` came first — no query, just fragment.
-            fragment_range = Some((delim_pos as u16 + 1, len as u16));
+            Section::Query => {
+                if b == b'#' {
+                    fragment_start = Some(i + 1);
+                    section = Section::Fragment;
+                    i += 1;
+                    continue;
+                }
+            }
+            Section::Fragment => {}
         }
+
+        // Strict-mode byte-set check + percent-encoding validation.
+        if strict {
+            if b == b'%' {
+                check_pct_encoded(&bytes, i)?;
+                i += 3;
+                continue;
+            }
+            let ok = match section {
+                Section::Path => is_path_byte(b),
+                Section::Query | Section::Fragment => is_query_fragment_byte(b),
+            };
+            if !ok {
+                return Err(ParseError::StrictViolation);
+            }
+        }
+        i += 1;
     }
 
-    if mode == ParserMode::Strict {
-        validate_pchar_path(&bytes[..path_end])?;
-        if let Some((s, e)) = query_range {
-            validate_query_fragment(&bytes[s as usize..e as usize])?;
-        }
-        if let Some((s, e)) = fragment_range {
-            validate_query_fragment(&bytes[s as usize..e as usize])?;
-        }
-    }
+    // Materialize query/fragment ranges. `fragment_start` (if set) marks
+    // the byte after `#`; the query (if any) ends at `fragment_start - 1`.
+    let query_range = query_start.map(|qs| {
+        let qe = fragment_start.map_or(len, |fs| fs - 1);
+        (qs as u16, qe as u16)
+    });
+    let fragment_range = fragment_start.map(|fs| (fs as u16, len as u16));
 
     Ok(Uri::from_lazy(LazyUriRef {
         bytes,
@@ -146,44 +178,6 @@ fn parse_origin_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> 
         query: query_range,
         fragment: fragment_range,
     }))
-}
-
-/// RFC 3986 §3.3 path validator: each byte must be a pchar (or `/` between
-/// segments). pchar = unreserved / pct-encoded / sub-delims / `:` / `@`.
-fn validate_pchar_path(bytes: &[u8]) -> Result<(), ParseError> {
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'%' {
-            check_pct_encoded(bytes, i)?;
-            i += 3;
-            continue;
-        }
-        if !is_path_byte(b) {
-            return Err(ParseError::StrictViolation);
-        }
-        i += 1;
-    }
-    Ok(())
-}
-
-/// RFC 3986 §3.4 / §3.5 query / fragment validator.
-/// Same set: pchar / `/` / `?`.
-fn validate_query_fragment(bytes: &[u8]) -> Result<(), ParseError> {
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'%' {
-            check_pct_encoded(bytes, i)?;
-            i += 3;
-            continue;
-        }
-        if !is_query_fragment_byte(b) {
-            return Err(ParseError::StrictViolation);
-        }
-        i += 1;
-    }
-    Ok(())
 }
 
 /// Verifies a `%XX` percent-escape at `i`. Caller has confirmed

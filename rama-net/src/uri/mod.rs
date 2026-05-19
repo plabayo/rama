@@ -1,11 +1,15 @@
 //! First-class URI support for rama.
 //!
-//! This module hosts a rama-native URI type designed to replace `http::Uri`
-//! across the rama tree. It is graceful by default, lossless on parse (no
-//! silent normalization), supports all four HTTP request-target forms
-//! (origin, absolute, authority, asterisk), preserves fragments, and lets
-//! you cheaply mutate components without the `into_parts → from_parts`
-//! dance.
+//! This module hosts the rama-native URI type. It works for **any RFC 3986
+//! URI** — http(s), ws(s), ftp, mailto:, urn:, file:, custom schemes — not
+//! just HTTP. HTTP-specific shapes (e.g. asterisk-form `*` from RFC 9112
+//! §3.2.4) are supported but called out as such.
+//!
+//! Graceful by default, lossless on parse (no silent normalization),
+//! supports all four HTTP request-target forms (origin, absolute,
+//! authority, asterisk) plus the broader RFC 3986 URI / URI-reference set,
+//! preserves fragments, and lets you cheaply mutate components without
+//! the `into_parts → from_parts` dance.
 //!
 //! # Design (skeleton — implementation arrives in M3–M9)
 //!
@@ -109,32 +113,31 @@ enum UriInner {
 }
 
 impl Uri {
-    /// Parse a URI from bytes. **Graceful**: accepts what browsers and curl
-    /// accept (e.g. unreserved chars outside RFC 3986's `pchar`, raw UTF-8
-    /// in path/query/fragment). Rejects: ASCII control bytes anywhere,
-    /// empty input, and inputs longer than the internal cap.
+    /// Parse a URI from a string. **Graceful**: accepts what browsers and
+    /// curl accept (e.g. unreserved chars outside RFC 3986's `pchar`, raw
+    /// UTF-8 in path/query/fragment). Rejects: ASCII control bytes
+    /// anywhere, empty input, and inputs longer than the internal cap.
     ///
-    /// Performs one allocation to copy `input` into a [`Bytes`]. Use
-    /// [`Uri::parse_bytes`] for the zero-copy path when you already hold a
-    /// `Bytes`.
-    pub fn parse<B: AsRef<[u8]>>(input: B) -> Result<Self, ParseError> {
-        Self::parse_bytes(Bytes::copy_from_slice(input.as_ref()))
+    /// Performs one allocation to copy the input into a [`Bytes`]. For
+    /// zero-copy parsing of an owned buffer use [`Uri::parse_bytes`] or
+    /// `TryFrom<{String, Vec<u8>, Bytes}>`.
+    pub fn parse(input: &str) -> Result<Self, ParseError> {
+        Self::parse_bytes(Bytes::copy_from_slice(input.as_bytes()))
     }
 
-    /// Parse a URI from bytes, RFC 3986 syntax only. Inputs that would parse
-    /// under [`Uri::parse`] but violate the strict grammar return
+    /// Parse a URI from a string, RFC 3986 syntax only. Inputs that would
+    /// parse under [`Uri::parse`] but violate the strict grammar return
     /// [`ParseError::StrictViolation`].
-    pub fn parse_strict<B: AsRef<[u8]>>(input: B) -> Result<Self, ParseError> {
-        Self::parse_bytes_strict(Bytes::copy_from_slice(input.as_ref()))
+    pub fn parse_strict(input: &str) -> Result<Self, ParseError> {
+        Self::parse_bytes_strict(Bytes::copy_from_slice(input.as_bytes()))
     }
 
-    /// Zero-copy variant of [`Uri::parse`] — keeps the supplied [`Bytes`]
-    /// as the backing buffer.
+    /// Zero-copy parse: keeps the supplied [`Bytes`] as the backing buffer.
     pub fn parse_bytes(bytes: Bytes) -> Result<Self, ParseError> {
         parser::parse(bytes, ParserMode::Graceful)
     }
 
-    /// Zero-copy variant of [`Uri::parse_strict`].
+    /// Zero-copy strict-mode parse.
     pub fn parse_bytes_strict(bytes: Bytes) -> Result<Self, ParseError> {
         parser::parse(bytes, ParserMode::Strict)
     }
@@ -181,13 +184,6 @@ impl TryFrom<&str> for Uri {
     type Error = ParseError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         Self::parse(s)
-    }
-}
-
-impl TryFrom<&[u8]> for Uri {
-    type Error = ParseError;
-    fn try_from(b: &[u8]) -> Result<Self, Self::Error> {
-        Self::parse(b)
     }
 }
 
