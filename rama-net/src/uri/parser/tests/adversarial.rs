@@ -187,6 +187,18 @@ fn ipv6_zone_id_rejected() {
 }
 
 #[test]
+fn eager_and_lazy_authority_paths_agree_on_ipv6_zone() {
+    // Both `Uri::parse` (lazy) and `Authority::try_from` (eager) route
+    // through the same `parse_utils::ipv6_bracket_has_zone` helper. They
+    // must agree on rejection.
+    use crate::address::Authority;
+    let auth_str = "[fe80::1%25en0]:8080";
+    let eager_err = Authority::try_from(auth_str).is_err();
+    let lazy_err = parse_graceful(&format!("http://{auth_str}/")).is_err();
+    assert!(eager_err && lazy_err, "both paths must reject IPv6 zone");
+}
+
+#[test]
 fn unbalanced_brackets_rejected() {
     for s in [
         "http://[2001:db8::1/",      // missing closing `]`
@@ -225,14 +237,20 @@ fn at_in_path_is_not_userinfo() {
 }
 
 #[test]
-fn double_at_in_authority_rejected() {
-    // `user@info@host` — first `@` ends userinfo; `info@host` then can't
-    // be parsed as a Host/IPv4/IPv6.
-    let r = parse_graceful("http://user@info@host/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Host))
-    ));
+fn double_at_in_authority_uses_last_at_split() {
+    // `user@info@host` — multiple `@` in authority. Curl, browsers, and
+    // the Rust `url` crate all split on the *last* `@`. We match that
+    // for real-world parity. The byte `@` is not in RFC 3986's userinfo
+    // grammar, so a strict-mode validator (M5+ work) would reject the
+    // remaining `@` in the userinfo bytes — but that's separate from
+    // the boundary choice.
+    let u = parse_graceful("http://user@info@host/").unwrap();
+    let l = lazy(&u);
+    assert_eq!(userinfo_str(l), Some("user@info"));
+    assert_eq!(
+        l.authority.as_ref().unwrap().host,
+        Host::Name(crate::address::Domain::from_static("host"))
+    );
 }
 
 // ----------------------------------------------------------------------

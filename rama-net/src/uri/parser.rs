@@ -274,7 +274,7 @@ fn parse_authority(
     bytes: &Bytes,
     start: usize,
     end: usize,
-    _mode: ParserMode,
+    mode: ParserMode,
 ) -> Result<LazyAuthority, ParseError> {
     // Reject control chars inside the authority.
     let mut k = start;
@@ -286,14 +286,20 @@ fn parse_authority(
         k += 1;
     }
 
-    // Userinfo terminates at the first `@`. Userinfo bytes must not contain
-    // `@` literally (per ABNF — `@` is not in the userinfo set), so the
-    // *first* `@` is unambiguously the terminator.
-    let userinfo_range = bytes[start..end]
-        .iter()
-        .position(|&b| b == b'@')
+    // Userinfo terminates at the *last* `@`. See
+    // [`crate::address::parse_utils::find_userinfo_split`] for the
+    // rationale (curl / browsers / `url` crate parity).
+    let userinfo_range = crate::address::parse_utils::find_userinfo_split(&bytes[start..end])
         .map(|rel| (start as u16, (start + rel) as u16));
     let host_start = userinfo_range.map_or(start, |(_, e)| (e as usize) + 1);
+
+    // Strict-mode userinfo grammar check (RFC 3986 §3.2.1). The
+    // last-`@` split is graceful — strict mode additionally validates
+    // every userinfo byte against `USERINFO_BYTE_SET`, which excludes
+    // raw `@` (it must be `%40`) and disallowed sub-delims.
+    if let (ParserMode::Strict, Some((s, e))) = (mode, userinfo_range) {
+        validate_userinfo_strict(&bytes[s as usize..e as usize])?;
+    }
 
     // Parse host + optional port from bytes[host_start..end].
     let host_view = &bytes[host_start..end];
@@ -304,6 +310,25 @@ fn parse_authority(
         host,
         port,
     })
+}
+
+/// RFC 3986 §3.2.1 userinfo grammar check. Each byte must be in
+/// [`USERINFO_BYTE_SET`]; `%XX` escapes must be well-formed hex pairs.
+fn validate_userinfo_strict(bytes: &[u8]) -> Result<(), ParseError> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            check_pct_encoded(bytes, i)?;
+            i += 3;
+            continue;
+        }
+        if !is_userinfo_byte(b) {
+            return Err(ParseError::StrictViolation);
+        }
+        i += 1;
+    }
+    Ok(())
 }
 
 /// Parse the host and optional port. `parent` is the full URI buffer (used
@@ -327,9 +352,7 @@ fn parse_host_and_port(
             .position(|&b| b == b']')
             .ok_or(ParseError::InvalidComponent(Component::Host))?;
         let inside = &view[1..close_rel];
-        // RFC 9844 zone identifiers are wire-encoded as `%25en0`; the bare
-        // `%` byte is illegal in our policy. Reject before address parsing.
-        if inside.contains(&b'%') {
+        if crate::address::parse_utils::ipv6_bracket_has_zone(inside) {
             return Err(ParseError::IPv6ZoneNotSupported);
         }
         let Ok(s) = std::str::from_utf8(inside) else {
@@ -390,19 +413,16 @@ fn parse_host_and_port(
 }
 
 fn parse_port(bytes: &[u8]) -> Result<u16, ParseError> {
+    // Empty port (`host:`) — reject. RFC 3986 §3.2.3 permits the
+    // production but recommends producers omit; receivers diverge in
+    // the wild, so we pick the stricter side. Note: `parse_port_bytes`
+    // also returns `None` for empty input, so this explicit branch is
+    // for documentation only — the behaviour is identical without it.
     if bytes.is_empty() {
-        // Empty port (`host:`) — reject. RFC 3986 §3.2.3 permits the
-        // production but recommends producers omit; receivers diverge in
-        // the wild, so we pick the stricter side.
         return Err(ParseError::InvalidComponent(Component::Port));
     }
-    let Ok(s) = std::str::from_utf8(bytes) else {
-        return Err(ParseError::InvalidComponent(Component::Port));
-    };
-    let Ok(port) = s.parse::<u16>() else {
-        return Err(ParseError::InvalidComponent(Component::Port));
-    };
-    Ok(port)
+    crate::address::parse_utils::parse_port_bytes(bytes)
+        .ok_or(ParseError::InvalidComponent(Component::Port))
 }
 
 /// `bytes` is assumed to be valid UTF-8 (caller is responsible). Used for
@@ -485,6 +505,14 @@ const SCHEME_FIRST_BYTE_SET: [bool; 256] = set_ascii_alpha([false; 256]);
 /// RFC 3986 §3.1: a scheme's subsequent bytes are ALPHA / DIGIT / "+" / "-" / ".".
 const SCHEME_REST_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"+-.");
 
+/// RFC 3986 §3.2.1: userinfo bytes are unreserved / pct-encoded / sub-delims /
+/// `:`. Note that `@` is **not** in the set — `@` is the userinfo terminator,
+/// so its raw presence inside the userinfo bytes (which can only happen if
+/// the *last*-`@` split logic finds an inner `@`) is a strict violation.
+/// Per RFC 3986, such an `@` MUST be percent-encoded as `%40`.
+const USERINFO_BYTE_SET: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:%");
+
 /// ASCII alpha range A-Z and a-z (no digits). Used by the scheme-first table.
 const fn set_ascii_alpha(t: [bool; 256]) -> [bool; 256] {
     let t = set_range(t, b'A', b'Z' + 1);
@@ -514,6 +542,11 @@ const fn is_scheme_first_byte(b: u8) -> bool {
 #[inline(always)]
 const fn is_scheme_rest_byte(b: u8) -> bool {
     SCHEME_REST_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+const fn is_userinfo_byte(b: u8) -> bool {
+    USERINFO_BYTE_SET[b as usize]
 }
 
 #[cfg(test)]

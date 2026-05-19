@@ -17,10 +17,56 @@ pub(crate) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
         let value = value
             .strip_prefix('[')
             .and_then(|value| value.strip_suffix(']'))?;
+        // Reject zone identifiers (RFC 9844) — `Ipv6Addr::parse` will fail
+        // on `%25en0`-style content anyway, but `ipv6_bracket_has_zone`
+        // makes the rejection explicit and consistent with the URI
+        // parser's typed error.
+        if ipv6_bracket_has_zone(value.as_bytes()) {
+            return None;
+        }
         Some(IpAddr::V6(value.parse::<Ipv6Addr>().ok()?))
     } else {
         value.parse::<IpAddr>().ok()
     }
+}
+
+// --- Shared byte-scanning helpers ----------------------------------------
+//
+// Used by both `Authority::try_from` (eager, BoxError-typed) and
+// `uri::parser` (lazy, typed `ParseError`). Each helper does only byte
+// inspection — no allocation, no opinions about error type. Callers
+// translate result to their preferred error.
+
+/// Returns the byte index of the **last** `@` in `bytes`, treating it as
+/// the userinfo / host boundary. The "last `@`" convention matches curl,
+/// browsers, and the Rust `url` crate — `user@name:pass@host:80` parses
+/// as userinfo=`user@name:pass`, host=`host`, port=80.
+///
+/// (Strict RFC 3986 §3.2.1 disallows raw `@` inside userinfo, so a
+/// strict-mode validator should additionally reject inputs where the
+/// userinfo byte slice still contains `@` after the split. The grammar
+/// requires it to be percent-encoded as `%40`.)
+#[inline]
+pub(crate) fn find_userinfo_split(bytes: &[u8]) -> Option<usize> {
+    bytes.iter().rposition(|&b| b == b'@')
+}
+
+/// Returns `true` if the bytes between IPv6 brackets contain a `%`,
+/// which indicates a zone identifier (RFC 9844 `%25en0` wire encoding).
+/// We don't currently support zone IDs in either parser — `std::net::Ipv6Addr`
+/// has no field for them.
+#[inline]
+pub(crate) fn ipv6_bracket_has_zone(inside_brackets: &[u8]) -> bool {
+    inside_brackets.contains(&b'%')
+}
+
+/// Parse `bytes` as a decimal `u16` (port). Returns `None` if `bytes` is
+/// empty, contains non-ASCII, isn't all digits, or overflows. Callers
+/// map `None` to their preferred error type.
+#[inline]
+pub(crate) fn parse_port_bytes(bytes: &[u8]) -> Option<u16> {
+    let s = std::str::from_utf8(bytes).ok()?;
+    s.parse::<u16>().ok()
 }
 
 /// Parse an IPv6 host that may be bracketed and may have a trailing port,
@@ -53,11 +99,20 @@ pub(crate) fn parse_bracketed_ipv6_with_port(
             .strip_prefix('[')
             .and_then(|value| value.strip_suffix(']'))
             .context("strip brackets from ipv6 host w/ trailing port")?;
+        // RFC 9844 zone identifiers (wire-encoded as `%25en0`) are not
+        // currently supported — they require an `Ipv6+zone` host shape
+        // we haven't built. Reject with a clear message rather than
+        // letting `Ipv6Addr::parse` fail opaquely on the `%`.
+        if ipv6_bracket_has_zone(value.as_bytes()) {
+            return Err(OpaqueError::from_static_str(
+                "ipv6 zone identifiers (RFC 9844) are not supported",
+            )
+            .into_box_error());
+        }
         let addr = value
             .parse::<Ipv6Addr>()
             .context("parse ipv6 host inside brackets")?;
-        let port = s[last_colon + 1..]
-            .parse::<u16>()
+        let port = parse_port_bytes(&s.as_bytes()[last_colon + 1..])
             .context("parse port string as u16")?;
         Ok((addr, Some(port)))
     } else {

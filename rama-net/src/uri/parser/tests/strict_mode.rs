@@ -161,3 +161,78 @@ fn percent_encoded_specials_preserved_in_query() {
     let u = parse_graceful("/p?q=%23anchor").unwrap();
     assert_origin_form(&u, "/p", Some("q=%23anchor"), None);
 }
+
+// ----------------------------------------------------------------------
+// Strict-mode userinfo grammar (RFC 3986 §3.2.1)
+//
+// userinfo = *( unreserved / pct-encoded / sub-delims / ":" )
+//
+// `@` is NOT in the set — it's the userinfo terminator. A raw `@` inside
+// the userinfo bytes (which only happens via the lenient last-`@` split
+// on inputs with multiple `@`s) is a strict violation. Per RFC, it MUST
+// be percent-encoded as `%40`.
+// ----------------------------------------------------------------------
+
+#[test]
+fn strict_accepts_valid_userinfo_chars() {
+    // Unreserved + sub-delims + `:` are all permitted.
+    for s in [
+        "http://user@example.com/",
+        "http://user:pass@example.com/",
+        "http://a-b.c_d~e@example.com/",
+        "http://us!er$tag@example.com/",
+        "http://u(s)e+r,1;2=3@example.com/",
+        "http://user%40info@example.com/", // %40 = encoded `@`
+    ] {
+        assert!(parse_strict(s).is_ok(), "strict should accept {s:?}");
+    }
+}
+
+#[test]
+fn strict_rejects_at_in_userinfo() {
+    // `user@info@host` — last-`@` split puts `user@info` in userinfo, but
+    // `@` is not in the userinfo grammar. Graceful accepts (real-world
+    // parity); strict rejects with StrictViolation.
+    let graceful = parse_graceful("http://user@info@example.com/").unwrap();
+    assert!(!graceful.is_asterisk()); // smoke: parses
+    assert!(matches!(
+        parse_strict("http://user@info@example.com/"),
+        Err(ParseError::StrictViolation)
+    ));
+}
+
+#[test]
+fn strict_rejects_non_userinfo_byte_classes() {
+    // `{`, `}`, `|`, `<`, `>`, `[`, `]` aren't in the userinfo grammar.
+    // Graceful accepts; strict rejects.
+    for s in [
+        "http://us{er}@example.com/",
+        "http://us|er@example.com/",
+        "http://us<er>@example.com/",
+    ] {
+        assert!(parse_graceful(s).is_ok(), "graceful should accept {s:?}");
+        assert!(
+            matches!(parse_strict(s), Err(ParseError::StrictViolation)),
+            "strict should reject {s:?}"
+        );
+    }
+}
+
+#[test]
+fn strict_rejects_bad_pct_in_userinfo() {
+    // `%` not followed by two hex digits inside the userinfo run.
+    for s in [
+        "http://user%@example.com/",
+        "http://user%z@example.com/",
+        "http://user%zz@example.com/",
+    ] {
+        assert!(
+            matches!(
+                parse_strict(s),
+                Err(ParseError::InvalidPercentEncoding { .. })
+            ),
+            "got {:?} for {s:?}",
+            parse_strict(s)
+        );
+    }
+}

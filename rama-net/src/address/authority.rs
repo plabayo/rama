@@ -475,15 +475,13 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
         );
     }
 
-    // Split on the *last* `@`. RFC 3986 §3.2 defines
-    // `authority = [ userinfo "@" ] host [ ":" port ]`, and §3.2.1's
-    // `userinfo` ABNF permits `@` inside a percent-encoded run. Splitting
-    // on the first `@` would mis-parse e.g. `user@name:pass@host:80` as
-    // userinfo=`user`, host=`name:pass@host`, which then fails as a
-    // domain. Curl, browsers and the Rust `url` crate all use the last
-    // `@`; we match that.
+    // Split on the *last* `@`. See [`super::parse_utils::find_userinfo_split`]
+    // for the rationale (curl / browsers / `url` crate parity, plus the
+    // observation that `@` is not in the strict RFC 3986 userinfo grammar
+    // and so a permissive consumer that wanted to use it MUST place it
+    // before the boundary, not after).
     let mut user_info = None;
-    if let Some(idx) = s.rfind('@') {
+    if let Some(idx) = crate::address::parse_utils::find_userinfo_split(s.as_bytes()) {
         user_info = Some(Basic::try_from(&s[..idx])?);
         s = &s[idx + 1..];
     }
@@ -502,8 +500,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             port = parsed_port;
         } else {
             port = Some(
-                s[last_colon + 1..]
-                    .parse()
+                crate::address::parse_utils::parse_port_bytes(&s.as_bytes()[last_colon + 1..])
                     .context("parse authority port string as u16")?,
             );
 
@@ -823,6 +820,12 @@ mod tests {
             ":foo@127.0.0.1:80",
             ":foo@:80",
             ":foo@:80",
+            // IPv6 zone identifiers (RFC 9844 `%25en0` wire form) — rejected
+            // by both eager and lazy paths with the same `parse_utils`
+            // helper.
+            "[fe80::1%25en0]",
+            "[fe80::1%25en0]:8080",
+            "user@[fe80::1%25en0]:8080",
         ] {
             let msg = format!("parsing '{s}'");
             assert!(s.parse::<Authority>().is_err(), "{msg}");
@@ -831,6 +834,19 @@ mod tests {
             assert!(Authority::try_from(s.as_bytes()).is_err(), "{msg}");
             assert!(Authority::try_from(s.as_bytes().to_vec()).is_err(), "{msg}");
         }
+    }
+
+    #[test]
+    fn ipv6_zone_rejection_has_clear_message() {
+        // The eager path now surfaces a specific message instead of letting
+        // `Ipv6Addr::parse` fail opaquely on `%25`. Consumers can match on
+        // the substring "zone identifiers" for diagnostics.
+        let err = Authority::try_from("[fe80::1%25en0]:8080").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("zone identifier") || msg.contains("zone identifiers"),
+            "expected zone-identifier message, got: {msg}"
+        );
     }
 
     #[test]
