@@ -198,48 +198,53 @@ fn check_pct_encoded(bytes: &[u8], i: usize) -> Result<(), ParseError> {
 // parsed URI, so we precompute `[bool; 256]` tables: one byte load per
 // check, no branches, no surprises across compiler versions.
 
-/// Build a `[bool; 256]` membership table at compile time: ASCII
-/// alphanumerics plus every byte in `extras`. (Sets that don't include
-/// alphanumerics — e.g. the control-byte set — build their table inline.)
-const fn build_alphanum_byte_table(extras: &[u8]) -> [bool; 256] {
-    let mut t = [false; 256];
-    let mut i: usize = 0;
-    while i < 256 {
-        if (i as u8).is_ascii_alphanumeric() {
-            t[i] = true;
-        }
+// --- Table-building primitives ---------------------------------------------
+
+/// Mark every byte in `[lo, hi_exclusive)` as `true`. const-evaluable.
+const fn set_range(mut t: [bool; 256], lo: u8, hi_exclusive: u8) -> [bool; 256] {
+    let mut i = lo;
+    while i < hi_exclusive {
+        t[i as usize] = true;
         i += 1;
     }
+    t
+}
+
+/// Mark every byte present in `bytes` as `true`. const-evaluable.
+const fn set_each(mut t: [bool; 256], bytes: &[u8]) -> [bool; 256] {
     let mut j = 0;
-    while j < extras.len() {
-        t[extras[j] as usize] = true;
+    while j < bytes.len() {
+        t[bytes[j] as usize] = true;
         j += 1;
     }
     t
 }
 
+/// Convenience: ASCII alphanumerics (`0-9 A-Z a-z`) — the unreserved
+/// alphabet that shows up in nearly every URI byte set.
+const fn set_ascii_alphanum(t: [bool; 256]) -> [bool; 256] {
+    let t = set_range(t, b'0', b'9' + 1);
+    let t = set_range(t, b'A', b'Z' + 1);
+    set_range(t, b'a', b'z' + 1)
+}
+
+// --- Concrete byte sets ----------------------------------------------------
+
 /// `b < 0x20 || b == 0x7F` as a single load.
-const CONTROL_BYTE_SET: [bool; 256] = {
-    let mut t = [false; 256];
-    let mut i = 0;
-    while i < 0x20 {
-        t[i] = true;
-        i += 1;
-    }
-    t[0x7F] = true;
-    t
-};
+const CONTROL_BYTE_SET: [bool; 256] = set_each(set_range([false; 256], 0, 0x20), &[0x7F]);
 
 /// Strict RFC 3986 path byte set: pchar ∪ `/`. pchar = unreserved /
 /// pct-encoded / sub-delims / `:` / `@`. `%` is allowed as the lead byte
 /// of a percent-escape (the `%XX` triple is checked separately).
-const PATH_BYTE_SET: [bool; 256] = build_alphanum_byte_table(
+const PATH_BYTE_SET: [bool; 256] = set_each(
+    set_ascii_alphanum([false; 256]),
     // unreserved extras + sub-delims + pchar extras + path delimiter + `%`
     b"-._~!$&'()*+,;=:@/%",
 );
 
 /// Strict RFC 3986 query / fragment byte set: pchar ∪ `/` ∪ `?`.
-const QUERY_FRAGMENT_BYTE_SET: [bool; 256] = build_alphanum_byte_table(b"-._~!$&'()*+,;=:@/%?");
+const QUERY_FRAGMENT_BYTE_SET: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:@/%?");
 
 #[inline(always)]
 const fn is_control_byte(b: u8) -> bool {
