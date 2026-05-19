@@ -1,0 +1,62 @@
+//! Lazy-form internals for a parsed [`Uri`](super::Uri).
+//!
+//! `LazyUriRef` is the cheap-to-clone "parsed once, never mutated" form. It
+//! holds the original bytes plus pre-parsed offsets and scalars. Borrowed
+//! reads project into the bytes; first mutation triggers an upgrade to
+//! [`OwnedUriRef`](super::owned::OwnedUriRef).
+//!
+//! Skeleton — fields are in place so M3 (parser) and M4 (accessors) can
+//! consume them. Methods land in those milestones.
+
+use rama_core::bytes::Bytes;
+
+use crate::Protocol;
+use crate::address::Host;
+
+/// Parsed-once URI reference. Reads are zero-copy slices into `bytes`;
+/// mutation upgrades to [`OwnedUriRef`](super::owned::OwnedUriRef).
+#[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "M2 skeleton: fields consumed by M3 (parser) and M4 (accessors)"
+)]
+pub(crate) struct LazyUriRef {
+    /// The original input buffer. All component ranges below index into this.
+    pub(crate) bytes: Bytes,
+
+    /// Pre-parsed scheme (cheap to keep — `Protocol` is small and is read on
+    /// almost every URI operation).
+    pub(crate) scheme: Option<Protocol>,
+
+    /// Optional authority. When present, carries pre-parsed host (incl. IP
+    /// values), pre-parsed port, plus the userinfo byte range (parsed lazily
+    /// on demand).
+    pub(crate) authority: Option<LazyAuthority>,
+
+    /// Byte range of the path within `bytes`. Empty range = empty path.
+    pub(crate) path: (u16, u16),
+
+    /// Byte range of the query within `bytes` (no leading `?`), if present.
+    pub(crate) query: Option<(u16, u16)>,
+
+    /// Byte range of the fragment within `bytes` (no leading `#`), if present.
+    pub(crate) fragment: Option<(u16, u16)>,
+}
+
+/// Parsed-once authority for [`LazyUriRef`].
+#[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "M2 skeleton: fields consumed by M3 (parser) and M4 (accessors)"
+)]
+pub(crate) struct LazyAuthority {
+    /// Byte range of userinfo (sans `@`) within the parent buffer, if any.
+    pub(crate) userinfo_range: Option<(u16, u16)>,
+
+    /// Pre-parsed host. Domain variants reference a zero-copy slice of the
+    /// parent `Bytes`; IP variants carry the address value directly.
+    pub(crate) host: Host,
+
+    /// Parsed port number, if present.
+    pub(crate) port: Option<u16>,
+}
