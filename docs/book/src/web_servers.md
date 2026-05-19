@@ -179,6 +179,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [/examples/http_service_fs.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_fs.rs): Static file serving
 - [/examples/http_service_include_dir.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_include_dir.rs): Embedded file serving
 - [/examples/http_user_agent_classifier.rs](https://github.com/plabayo/rama/tree/main/examples/http_user_agent_classifier.rs): Request classification
+- [/examples/http_advanced_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_advanced_router.rs): Advanced http router composition examples
 
 For a real-world example, check out the [rama cli `fp` source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/serve/fp), which implements a production web service for the Rama fingerprinting service.
 

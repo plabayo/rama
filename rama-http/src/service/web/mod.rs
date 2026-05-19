@@ -17,6 +17,6 @@ pub use k8s::{k8s_health, k8s_health_builder};
 
 pub mod error;
 
-mod router;
+pub mod router;
 #[doc(inline)]
-pub use router::{DefaultLayer, Router, RouterError};
+pub use router::Router;

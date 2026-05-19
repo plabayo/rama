@@ -17,8 +17,8 @@ use rama_http::{
     layer::error_handling::DowncastErrorHandlerLayer,
     matcher::HttpMatcher,
     service::web::{
-        RouterError, error::DowncastResponseError, extract::host::MissingHost,
-        response::IntoResponse,
+        error::DowncastResponseError, extract::host::MissingHost, response::IntoResponse,
+        router::RouterError,
     },
 };
 

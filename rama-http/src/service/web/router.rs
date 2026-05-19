@@ -111,6 +111,12 @@ impl<State, L, O, E> Router<State, L, O, E>
 where
     State: Send + Sync + Clone + 'static,
 {
+    /// Get reference to the state.
+    #[inline]
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
     /// Apply `layer` to every endpoint registered after this call.
     /// Routes registered before this call keep whatever layer was in effect at the time of registration.
     pub fn with_endpoint_layer<N>(self, layer: N) -> Router<State, N, O, E> {
@@ -341,14 +347,14 @@ where
     /// Note: this sub-router is configured with the same State this router has.
     #[must_use]
     #[inline]
-    pub fn with_sub_router_make_fn(
+    pub fn with_sub_router_make_fn<Layer>(
         mut self,
         prefix: impl AsRef<str>,
-        configure_router: impl FnOnce(Self) -> Self,
+        configure_router: impl FnOnce(Self) -> Router<State, Layer, O, E>,
     ) -> Self
     where
         L: Clone,
-        Self: Service<Request, Output = O, Error = E>,
+        Router<State, Layer, O, E>: Service<Request, Output = O, Error = E>,
     {
         self.set_sub_router_make_fn(prefix, configure_router);
         self
@@ -359,14 +365,14 @@ where
     /// The prefix is used to match the request path and strip it from the request URI.
     ///
     /// Note: this sub-router is configured with the same State this router has.
-    pub fn set_sub_router_make_fn(
+    pub fn set_sub_router_make_fn<Layer>(
         &mut self,
         prefix: impl AsRef<str>,
-        configure_router: impl FnOnce(Self) -> Self,
+        configure_router: impl FnOnce(Self) -> Router<State, Layer, O, E>,
     ) -> &mut Self
     where
         L: Clone,
-        Self: Service<Request, Output = O, Error = E>,
+        Router<State, Layer, O, E>: Service<Request, Output = O, Error = E>,
     {
         let router = Self {
             routes: MatchitRouter::new(),

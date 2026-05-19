@@ -201,6 +201,12 @@ impl<E> IntoErrLayer<E> {
     }
 }
 
+impl IntoErrLayer<()> {
+    pub fn into_box_error() -> IntoErrLayer<BoxError> {
+        Default::default()
+    }
+}
+
 impl<S, E> Layer<S> for IntoErrLayer<E> {
     type Service = IntoErr<S, E>;
 
