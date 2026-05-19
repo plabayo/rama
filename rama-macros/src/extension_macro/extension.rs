@@ -143,7 +143,7 @@ fn parse_tags(item: &DeriveInput) -> syn::Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_tags;
+    use super::{expand, parse_tags};
     use syn::parse_quote;
 
     #[test]
@@ -193,6 +193,110 @@ mod tests {
             err.to_string().contains("duplicate extension tag `http`"),
             "unexpected error: {err}"
         );
+    }
+
+    /// A `where`-clause on the deriving type must survive the expansion
+    /// untouched and appear on every emitted `impl` block — both the base
+    /// `Extension` impl and any `tags(...)`-driven marker-trait impls.
+    #[test]
+    fn expand_preserves_where_clause() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(tags(http))]
+            struct MyExt<T> where T: Clone {
+                inner: T,
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        // The base Extension impl appears with our where clause attached.
+        assert!(out.contains("Extension for MyExt < T >"));
+        assert!(out.contains("where T : Clone"));
+        // The tagged HttpExtension impl also gets the where clause —
+        // emitted twice (one per impl block).
+        assert!(out.contains("HttpExtension for MyExt < T >"));
+        assert_eq!(out.matches("where T : Clone").count(), 2);
+    }
+
+    /// Existing trait-bounds on a generic parameter must be preserved, with
+    /// our required `Any + Send + Sync + Debug + 'static` bounds appended.
+    /// Verify the user-supplied bound (`SomeTrait`) stays in the bound list.
+    #[test]
+    fn expand_appends_to_existing_bounds() {
+        let item: syn::DeriveInput = parse_quote! {
+            struct MyExt<T: SomeTrait + Sync> {
+                inner: T,
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        // The user's `SomeTrait` bound is preserved.
+        assert!(out.contains("SomeTrait"));
+        // And the required Extension bounds are appended.
+        assert!(out.contains(":: core :: any :: Any"));
+        assert!(out.contains(":: core :: marker :: Send"));
+        assert!(out.contains(":: core :: marker :: Sync"));
+        assert!(out.contains(":: core :: fmt :: Debug"));
+        assert!(out.contains("'static"));
+    }
+
+    /// Multiple generic type parameters must each receive the full set of
+    /// required Extension bounds independently, and the generated impl
+    /// blocks must list all of them in the order they were declared.
+    #[test]
+    fn expand_bounds_each_of_multiple_generics() {
+        let item: syn::DeriveInput = parse_quote! {
+            #[extension(tags(http, proxy))]
+            struct MyExt<A, B> {
+                a: A,
+                b: B,
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        // Each impl block lists both generics in order: `<A, B>`.
+        assert!(out.contains("for MyExt < A , B >"));
+        // The Extension trait + both tag-derived traits appear (3 impls).
+        assert_eq!(out.matches("for MyExt < A , B >").count(), 3);
+        // The bound block adds `Any + Send + Sync + Debug + 'static` to
+        // each of `A` and `B` — `impl_generics` is duplicated once per
+        // emitted `impl` block (3 here), so 2 generics × 3 impls = 6
+        // occurrences of `:: core :: any :: Any`.
+        assert_eq!(out.matches(":: core :: any :: Any").count(), 6);
+    }
+
+    /// Lifetime parameters are explicitly rejected — the resulting `'static`
+    /// bound that `Extension` requires would conflict with any non-`'static`
+    /// borrow. Confirm a clear error message is produced.
+    #[test]
+    fn expand_rejects_lifetime_parameter() {
+        let item: syn::DeriveInput = parse_quote! {
+            struct MyExt<'a> {
+                inner: &'a str,
+            }
+        };
+        let err = expand(item).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("doesn't support lifetime parameters"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Const generic parameters are not type generics, so they should pass
+    /// through without the macro trying to attach trait bounds to them
+    /// (which would be a syntax error).
+    #[test]
+    fn expand_passes_const_generics_through_unchanged() {
+        let item: syn::DeriveInput = parse_quote! {
+            struct MyExt<const N: usize> {
+                buf: [u8; N],
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        assert!(out.contains("for MyExt < N >"));
+        // No spurious trait bounds got hung off the const generic — i.e.
+        // we should NOT see Send/Sync/Debug being attached to `N`. The
+        // const generic syntax `const N : usize` does itself contain
+        // `N :`, so we look for the absence of the bound traits.
+        assert!(!out.contains(":: core :: marker :: Send"));
+        assert!(!out.contains(":: core :: fmt :: Debug"));
     }
 
     #[test]

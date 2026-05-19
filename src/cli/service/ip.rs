@@ -13,6 +13,7 @@ use crate::{
     combinators::Either,
     combinators::Either7,
     error::BoxError,
+    error::{ErrorExt as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response, StatusCode,
@@ -25,7 +26,7 @@ use crate::{
         },
         mime,
         server::HttpServer,
-        service::web::response::{Html, IntoResponse, Json, Redirect},
+        service::web::response::{Css, IntoResponse, Json, Redirect, Script},
     },
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
@@ -56,8 +57,7 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-use rama_core::error::{ErrorExt as _, extra::OpaqueError};
-use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone)]
@@ -181,20 +181,17 @@ impl IpServiceBuilder<mode::Http> {
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// The inner http ip-service used by the [`IpServiceBuilder`].
+/// The inner http ip-service used by the [`IpServiceBuilder`]. Mounted at
+/// `/` by the surrounding [`crate::http::service::web::Router`] in
+/// [`IpServiceBuilder::build_http`]; the asset sidecars are sibling
+/// routes on the same router.
 struct HttpIpService;
 
 impl Service<Request> for HttpIpService {
     type Output = Response;
-    type Error = BoxError;
+    type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let norm_req_path = req.uri().path().trim_matches('/');
-        if !norm_req_path.is_empty() {
-            tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
-            return Ok(Redirect::permanent("/").into_response());
-        }
-
         let peer_ip = req
             .extensions()
             .get_ref::<Forwarded>()
@@ -208,7 +205,7 @@ impl Service<Request> for HttpIpService {
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
-                HttpBodyContentFormat::Html => format_html_page(ip).into_response(),
+                HttpBodyContentFormat::Html => render_html_page(ip).into_response(),
                 HttpBodyContentFormat::Json => Json(serde_json::json!({
                     "ip": ip,
                 }))
@@ -218,6 +215,15 @@ impl Service<Request> for HttpIpService {
         })
     }
 }
+
+/// Sidecar stylesheet for the HTML page. Served as a separate route so
+/// the defence-in-depth CSP can keep `style-src 'self'` (blocking
+/// inline `<style>`) without breaking the page.
+const IP_STYLE_CSS: &str = include_str!("ip.css");
+
+/// Sidecar clipboard-copy script. Served separately for the same
+/// reason as [`IP_STYLE_CSS`] (`script-src 'self'`).
+const IP_SCRIPT_JS: &str = include_str!("ip.js");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum HttpBodyContentFormat {
@@ -422,17 +428,46 @@ impl<M> IpServiceBuilder<M> {
             maybe_tls_accept_layer,
         );
 
+        // Defence-in-depth response headers for the HTML page (txt/json
+        // responses also get them — they're benign there and means
+        // any future widening of HTML emission is already covered).
+        // The page loads `/style/ip.css` and `/script/ip.js` from the
+        // same origin, no inline scripts/styles, no external requests:
+        // the strict-self baseline (banner image whitelisted in the
+        // shared helper) covers it.
+        let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+            crate::cli::service::http_security::defence_in_depth_layer(
+                crate::cli::service::http_security::rama_html_csp(),
+            );
+
+        // Route the IP echo + its asset sidecars through a Router so we
+        // get clean method-aware matching (anything outside the three
+        // known routes redirects to `/`).
+        let router = crate::http::service::web::Router::new()
+            .with_get("/", HttpIpService)
+            .with_get("/style/ip.css", Css(IP_STYLE_CSS))
+            .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
+            .with_not_found(async || Redirect::permanent("/"));
+
         let http_service = (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            csp_layer,
+            nosniff_layer,
+            referrer_layer,
+            frame_layer,
             ConsumeErrLayer::default(),
             #[cfg(any(feature = "rustls", feature = "boring"))]
             hsts_layer,
             http_forwarded_layer,
         )
-            .into_layer(HttpIpService);
+            .into_layer(router);
 
+        // Wrap in `Arc` because `Router` is not `Clone` and
+        // `HttpServer::service` requires a cloneable inner service so it
+        // can hand a copy to each connection's task.
+        let http_service = Arc::new(http_service);
         Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
     }
 }
@@ -451,8 +486,114 @@ pub mod mode {
     pub struct Transport;
 }
 
-fn format_html_page(ip: IpAddr) -> Html<String> {
-    Html(format!(
-        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> *, *::before, *::after {{ box-sizing: border-box; }} :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:2.8rem; }} .card{{ text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:0.8rem; margin-bottom:1.1rem; }} .logo, .logo a, .logo a:hover {{ color:var(--green); font-weight:700; font-size:2rem; letter-spacing:0.4rem; }} .logo a {{ text-decoration: none; }} .logo a:hover {{ text-decoration: underline; }} .subtitle{{ font-size:1.1rem; margin:0.3rem 0 2rem 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:0.8rem; padding:2rem; box-shadow:0 0.3rem 2rem rgba(0,0,0,0.7), inset 0 0.05rem 0 rgba(255,255,255,0.02); border:0.1rem solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:0.6rem; padding:1rem 1.1rem; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:1.1rem; color:#fff139; margin:0.6rem auto 1.1rem auto; word-break:break-all; border:0.05rem solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:1rem; margin-bottom:0.9rem; }} .controls{{display:flex;gap:0.8rem;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:0.8rem 1.1rem; border-radius:0.6rem; font-weight:700; border:0.1rem solid rgba(69,210,58,0.9); cursor:pointer; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 0.4rem 1.2rem rgba(69,210,58,0.08); }} .note{{font-size:0.95rem;color:#9aa; margin-top:1rem;}} .small{{font-size:0.9rem;color:#808080;margin-top:0.7rem}} </style> </head> <body> <div class="card"> <div class="logo"> <div>🦙</div> <div><a href="https://ramaproxy.org">ラマ</a></div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div><div id="ip" class="ip"> <code>{ip}</code> </div> <div class="controls"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">📋 Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
-    ))
+fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoResponse {
+    use crate::http::html::*;
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "utf-8"),
+            meta!(
+                name = "viewport",
+                content = "width=device-width,initial-scale=1"
+            ),
+            link!(
+                rel = "icon",
+                href = PreEscaped(
+                    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>\
+                     <text y='0.9em' font-size='90'>🦙</text></svg>"
+                ),
+            ),
+            title!("Rama IP"),
+            link!(
+                rel = "stylesheet",
+                r#type = "text/css",
+                href = "/style/ip.css"
+            ),
+        ),
+        body!(div!(
+            class = "card",
+            div!(
+                class = "logo",
+                div!("🦙"),
+                div!(a!(href = "https://ramaproxy.org", "ラマ")),
+            ),
+            div!(
+                class = "panel",
+                role = "region",
+                "aria-label" = "ip panel",
+                div!(class = "muted", "Your public ip"),
+                div!(id = "ip", class = "ip", code!(ip.to_string())),
+                div!(
+                    class = "controls",
+                    button!(
+                        id = "copyBtn",
+                        class = "primary",
+                        title = "Copy ip to clipboard",
+                        "📋 Copy IP",
+                    ),
+                ),
+            ),
+            script!(src = "/script/ip.js"),
+        )),
+    )
+}
+
+#[cfg(test)]
+mod render_html_page_tests {
+    use super::*;
+    use crate::http::html::IntoHtml as _;
+    use std::net::Ipv4Addr;
+
+    /// The IP value flows through `html!`'s escape pipeline, so even if a
+    /// future `IpAddr::Display` impl produced HTML-special chars they would
+    /// be neutralised. Verify the rendered page contains the expected IP
+    /// inside `<code>…</code>` and that the page chrome is well-formed.
+    #[test]
+    fn render_html_page_embeds_ip_safely() {
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
+        assert!(out.contains("<title>Rama IP</title>"));
+        assert!(out.contains(r#"<div id="ip" class="ip"><code>127.0.0.1</code></div>"#));
+        // Copy button is wired by selector ID in the inline script.
+        assert!(out.contains(r#"id="copyBtn""#));
+    }
+
+    /// The aria-label attribute uses the `"aria-label" = …` syntax (since
+    /// `aria-label` is not a Rust ident). Pin the rendered output.
+    #[test]
+    fn render_html_page_emits_aria_label() {
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(out.contains(r#"aria-label="ip panel""#));
+    }
+
+    /// Regression guard against the bug audited 2026-05-18: the IP page
+    /// must reference its CSS and JS via `<link>` / `<script src>`
+    /// because the surrounding service applies `style-src 'self'` and
+    /// `script-src 'self'` — an inline `<style>` or `<script>` block
+    /// would be blocked at the browser.
+    #[test]
+    fn render_html_page_uses_external_assets() {
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let out = render_html_page(ip).into_string();
+        assert!(
+            !out.contains("<style>") && !out.contains("<style "),
+            "IP page must not embed inline <style>; CSP blocks it"
+        );
+        // The renderer is allowed to emit a self-closing `<script src=...>`,
+        // but never an inline `<script>...JS...</script>` body.
+        assert!(
+            !out.contains("<script>"),
+            "IP page must not embed inline <script>; CSP blocks it"
+        );
+        assert!(
+            out.contains(r#"<link rel="stylesheet" type="text/css" href="/style/ip.css">"#),
+            "IP page must link to /style/ip.css",
+        );
+        assert!(
+            out.contains(r#"<script src="/script/ip.js">"#),
+            "IP page must source /script/ip.js",
+        );
+    }
 }

@@ -65,6 +65,16 @@ pub struct CliCommandHttpTest {
 
 /// run the rama http test service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(), BoxError> {
+    // Defence-in-depth response headers. The HTML index page now serves
+    // its CSS from `/style/index.css`, the test endpoints emit either
+    // streamed HTML with no scripts or JSON / octet-stream bodies, and
+    // none of them open WebSockets — so the strict-self baseline (with
+    // the rama-banner image host whitelisted) covers every shape.
+    let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+        rama::cli::service::http_security::defence_in_depth_layer(
+            rama::cli::service::http_security::rama_html_csp(),
+        );
+
     let middlewares = (
         TraceLayer::new_for_http(),
         CatchPanicLayer::new(),
@@ -74,11 +84,16 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
         ),
+        csp_layer,
+        nosniff_layer,
+        referrer_layer,
+        frame_layer,
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
     );
 
     let router = Router::new()
         .with_get("/", endpoint::index::service())
+        .with_get("/style/index.css", endpoint::index::STYLE_CSS)
         .with_get("/bytes", endpoint::bytes::service())
         .with_match_route(
             "/method",
@@ -99,6 +114,8 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             endpoint::response_stream_compression::service(),
         )
         .with_get("/sse", endpoint::sse::service())
+        .with_get("/style/sse.css", endpoint::sse::STYLE_CSS)
+        .with_get("/script/sse.js", endpoint::sse::SCRIPT_JS)
         .with_get("/multipart", endpoint::multipart::get_form)
         .with_post("/multipart", endpoint::multipart::post_service())
         .with_post("/octet-stream", endpoint::octet_stream::service())

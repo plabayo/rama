@@ -84,6 +84,16 @@ Specifications enumerated by
 * [rfc6890.txt](./ip/rfc6890.txt) — IANA special-purpose address
   registries.
 
+### Fingerprinting
+
+The fingerprint algorithms implemented under
+[`src/fingerprint/`](../src/fingerprint) are not RFCs; they are
+third-party formats whose authoritative descriptions live in external
+repositories or whitepapers. We do not vendor these documents but link out.
+See [fingerprint/README.md](./fingerprint/README.md) for the
+full breakdown — JA3, JA4 / JA4H, Akamai HTTP/2, and PeetPrint —
+with per-spec implementation cross-references and license notes.
+
 ### Misc
 
 * [rfc863.txt](./misc/rfc863.txt) — Discard protocol. Implemented

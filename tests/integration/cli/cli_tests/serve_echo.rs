@@ -144,10 +144,10 @@ async fn test_http_data_inmemory_emits_content_length() {
     // Content-Length, not chunked, so middleware/peers see exact framing.
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve_echo(63105, utils::EchoMode::Http);
+    let _guard = utils::RamaService::serve_echo(63135, utils::EchoMode::Http);
 
     let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63105",
+        "http://127.0.0.1:63135",
         "-d",
         "name=John",
         "-d",
