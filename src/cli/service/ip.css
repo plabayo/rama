@@ -1,0 +1,115 @@
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+:root {
+    --bg: #000;
+    --panel: #0f0f0f;
+    --green: #45d23a;
+    --muted: #bfbfbf;
+}
+html,
+body {
+    height: 100%;
+    margin: 0;
+    font-family:
+        system-ui,
+        -apple-system,
+        Segoe UI,
+        Roboto,
+        "Helvetica Neue",
+        Arial;
+}
+body {
+    background: var(--bg);
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.8rem;
+}
+.card {
+    text-align: center;
+}
+.logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.8rem;
+    margin-bottom: 1.1rem;
+}
+.logo,
+.logo a,
+.logo a:hover {
+    color: var(--green);
+    font-weight: 700;
+    font-size: 2rem;
+    letter-spacing: 0.4rem;
+}
+.logo a {
+    text-decoration: none;
+}
+.logo a:hover {
+    text-decoration: underline;
+}
+.subtitle {
+    font-size: 1.1rem;
+    margin: 0.3rem 0 2rem 0;
+    color: var(--muted);
+}
+.panel {
+    background: linear-gradient(180deg, #0b0b0b 0%, #111 100%);
+    border-radius: 0.8rem;
+    padding: 2rem;
+    box-shadow:
+        0 0.3rem 2rem rgba(0, 0, 0, 0.7),
+        inset 0 0.05rem 0 rgba(255, 255, 255, 0.02);
+    border: 0.1rem solid rgba(69, 210, 58, 0.06);
+}
+.ip {
+    background: transparent;
+    border-radius: 0.6rem;
+    padding: 1rem 1.1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 1.1rem;
+    color: #fff139;
+    margin: 0.6rem auto 1.1rem auto;
+    word-break: break-all;
+    border: 0.05rem solid rgba(69, 210, 58, 0.12);
+}
+.muted {
+    color: var(--muted);
+    font-size: 1rem;
+    margin-bottom: 0.9rem;
+}
+.controls {
+    display: flex;
+    gap: 0.8rem;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+button {
+    background: transparent;
+    color: var(--green);
+    padding: 0.8rem 1.1rem;
+    border-radius: 0.6rem;
+    font-weight: 700;
+    border: 0.1rem solid rgba(69, 210, 58, 0.9);
+    cursor: pointer;
+}
+button.primary {
+    background: var(--green);
+    color: #032;
+    box-shadow: 0 0.4rem 1.2rem rgba(69, 210, 58, 0.08);
+}
+.note {
+    font-size: 0.95rem;
+    color: #9aa;
+    margin-top: 1rem;
+}
+.small {
+    font-size: 0.9rem;
+    color: #808080;
+    margin-top: 0.7rem;
+}

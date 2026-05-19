@@ -58,7 +58,7 @@ where
                     Poll::Ready(None)
                 } else {
                     Poll::Ready(Some(
-                        String::from_utf8(core::mem::take(this.buffer)).context("utf8 eror"),
+                        String::from_utf8(core::mem::take(this.buffer)).context("utf8 error"),
                     ))
                 }
             }

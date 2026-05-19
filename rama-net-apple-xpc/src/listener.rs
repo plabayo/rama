@@ -2,12 +2,12 @@ use std::{ffi::c_void, ptr};
 
 use rama_core::telemetry::tracing;
 use rama_utils::str::arcstr::ArcStr;
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::mpsc::{Receiver, channel, error::TrySendError};
 
 use block2::RcBlock;
 
 use crate::{
-    connection::XpcConnection,
+    connection::{DEFAULT_MAX_PENDING_EVENTS, XpcConnection},
     error::XpcError,
     ffi::{
         _xpc_type_connection, _xpc_type_error, XPC_CONNECTION_MACH_SERVICE_LISTENER,
@@ -18,6 +18,9 @@ use crate::{
     peer::PeerSecurityRequirement,
     util::{DispatchQueue, make_c_string},
 };
+
+/// Default capacity for the listener's accept (peer-connection) queue.
+pub const DEFAULT_MAX_PENDING_CONNECTIONS: usize = 1024;
 
 /// Configuration for a server-side XPC listener.
 ///
@@ -31,6 +34,8 @@ pub struct XpcListenerConfig {
     service_name: ArcStr,
     target_queue_label: Option<ArcStr>,
     peer_requirement: Option<PeerSecurityRequirement>,
+    max_pending_connections: usize,
+    peer_max_pending_events: usize,
 }
 
 impl XpcListenerConfig {
@@ -42,6 +47,8 @@ impl XpcListenerConfig {
             service_name: service_name.into(),
             target_queue_label: None,
             peer_requirement: None,
+            max_pending_connections: DEFAULT_MAX_PENDING_CONNECTIONS,
+            peer_max_pending_events: DEFAULT_MAX_PENDING_EVENTS,
         }
     }
 
@@ -65,6 +72,34 @@ impl XpcListenerConfig {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of unaccepted peer connections that may queue inside
+        /// [`XpcListener::accept`]'s internal channel before new arrivals are
+        /// dropped (with a warn-level log).
+        ///
+        /// Defaults to [`DEFAULT_MAX_PENDING_CONNECTIONS`]. Values of `0` are
+        /// clamped to `1`. Lower this for stricter back-pressure, raise it for
+        /// bursty workloads.
+        pub fn max_pending_connections(mut self, capacity: usize) -> Self {
+            self.max_pending_connections = capacity.max(1);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of unread events that may queue per accepted peer
+        /// connection before new events are dropped (with a warn-level log).
+        ///
+        /// Each peer connection produced by this listener inherits this capacity.
+        /// Defaults to
+        /// [`DEFAULT_MAX_PENDING_EVENTS`](crate::connection::DEFAULT_MAX_PENDING_EVENTS).
+        /// Values of `0` are clamped to `1`.
+        pub fn peer_max_pending_events(mut self, capacity: usize) -> Self {
+            self.peer_max_pending_events = capacity.max(1);
+            self
+        }
+    }
 }
 
 /// A server-side XPC listener that accepts incoming peer connections.
@@ -84,7 +119,7 @@ impl XpcListenerConfig {
 #[derive(Debug)]
 pub struct XpcListener {
     connection: OwnedXpcObject,
-    receiver: UnboundedReceiver<XpcConnection>,
+    receiver: Receiver<XpcConnection>,
 }
 
 impl XpcListener {
@@ -97,7 +132,11 @@ impl XpcListener {
             service_name,
             target_queue_label,
             peer_requirement,
+            max_pending_connections,
+            peer_max_pending_events,
         } = config;
+        let max_pending_connections = max_pending_connections.max(1);
+        let peer_max_pending_events = peer_max_pending_events.max(1);
         tracing::debug!(service = %service_name, "create xpc listener");
         let service_name = make_c_string(&service_name)?;
         let queue = DispatchQueue::new(target_queue_label.as_deref())?;
@@ -118,7 +157,7 @@ impl XpcListener {
             requirement.apply(connection.raw as _)?;
         }
 
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = channel(max_pending_connections);
         let raw_connection = connection.raw as _;
 
         let block = RcBlock::new(move |event: xpc_object_t| {
@@ -136,15 +175,35 @@ impl XpcListener {
                 return;
             };
 
-            if let Ok(peer_conn) = XpcConnection::from_owned_peer(peer) {
-                _ = sender.send(peer_conn);
+            match XpcConnection::from_owned_peer_with_capacity(
+                peer,
+                peer_max_pending_events,
+                peer_max_pending_events,
+            ) {
+                Ok(peer_conn) => {
+                    if let Err(TrySendError::Full(_)) = sender.try_send(peer_conn) {
+                        tracing::warn!(
+                            capacity = max_pending_connections,
+                            "xpc listener accept queue full; dropping incoming peer connection"
+                        );
+                    }
+                    // Ok and Closed are both no-ops.
+                }
+                Err(err) => {
+                    tracing::warn!(%err, "xpc listener: failed to wrap peer connection");
+                }
             }
         });
 
-        // SAFETY: raw_connection is a valid, non-null xpc_connection_t from OwnedXpcObject.
-        // RcBlock is a heap-allocated reference-counted Block; XPC retains it internally
-        // after xpc_connection_set_event_handler so it remains valid beyond this scope.
-        // xpc_connection_activate must be called exactly once to begin accepting connections.
+        // SAFETY: `raw_connection` is a valid, non-null xpc_connection_t held by
+        // `connection` (OwnedXpcObject) for the lifetime of this Self. The `RcBlock`
+        // lives on the heap and `RcBlock::as_ptr` is documented (block2 rc_block.rs)
+        // valid for at least as long as the RcBlock is alive; Apple's
+        // `xpc_connection_set_event_handler` is documented to `_Block_copy` the
+        // block, transferring an extra refcount to libxpc — so when the local
+        // `RcBlock` is dropped at end-of-scope, libxpc's copy keeps the block alive
+        // for as long as the connection accepts events. `xpc_connection_activate`
+        // must be called exactly once to begin accepting connections.
         #[expect(
             clippy::multiple_unsafe_ops_per_block,
             reason = "set-handler-then-activate is a single XPC listener-init sequence; the SAFETY comment above covers both calls"

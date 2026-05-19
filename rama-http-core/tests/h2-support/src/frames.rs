@@ -32,7 +32,7 @@ where
     B: AsRef<[u8]>,
 {
     let buf = Bytes::copy_from_slice(buf.as_ref());
-    Mock(frame::Data::new(id.into(), buf))
+    Mock(frame::Data::new(id.into(), buf).expect("test stream id is non-zero"))
 }
 
 pub fn push_promise<T1, T2>(id: T1, promised: T2) -> Mock<frame::PushPromise>

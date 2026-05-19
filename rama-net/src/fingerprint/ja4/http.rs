@@ -198,29 +198,39 @@ fn joined_cookie_names<'a, I>(cookie_pairs: I) -> String
 where
     I: IntoIterator<Item = &'a (String, Option<String>)>,
 {
-    cookie_pairs
-        .into_iter()
-        .map(|(name, _)| {
-            debug_assert!(!name.is_empty());
-            name.to_owned()
-        })
-        .join(",")
+    // Write into a single growing buffer; avoids one per-element `to_owned`
+    // allocation in the JA4H hot path.
+    let mut out = String::new();
+    for (name, _) in cookie_pairs {
+        debug_assert!(!name.is_empty());
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(name);
+    }
+    out
 }
 
 fn joined_cookie_pairs<'a, I>(cookie_pairs: I) -> String
 where
     I: IntoIterator<Item = &'a (String, Option<String>)>,
 {
-    cookie_pairs
-        .into_iter()
-        .map(|(name, value)| {
-            debug_assert!(!name.is_empty());
-            match value {
-                None => name.to_owned(),
-                Some(value) => format!("{name}={value}"),
-            }
-        })
-        .join(",")
+    // Same rationale as `joined_cookie_names` — we previously allocated a
+    // fresh `String` per cookie via `format!("{name}={value}")` before the
+    // final join. Now everything is appended into a single buffer.
+    let mut out = String::new();
+    for (name, value) in cookie_pairs {
+        debug_assert!(!name.is_empty());
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(name);
+        if let Some(value) = value {
+            out.push('=');
+            out.push_str(value);
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone)]

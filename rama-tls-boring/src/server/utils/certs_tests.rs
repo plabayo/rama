@@ -404,12 +404,13 @@ fn mirror_omits_ski_and_aki_when_source_has_neither() {
 }
 
 #[test]
-fn mirror_omits_aki_when_ca_has_no_ski() {
+fn mirror_derives_aki_keyid_when_ca_has_no_ski() {
     let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
-    // Source cert (self-signed) with both SKI and AKI present, so mirror would normally re-emit
-    // both. The CA-lacks-SKI guard must still kick in and suppress the AKI.
+    // Source cert (self-signed) with both SKI and AKI present, so mirror re-emits both. The
+    // CA-lacks-SKI fallback must populate AKI keyIdentifier via SHA-1 of the CA pubkey BIT
+    // STRING (RFC 5280 §4.2.1.2 method 1), not skip the extension.
     let rsa = Rsa::generate(2048).expect("source rsa");
     let source_pkey = PKey::from_rsa(rsa).expect("source pkey");
     let mut x509_name = X509NameBuilder::new().expect("source name builder");
@@ -469,11 +470,19 @@ fn mirror_omits_aki_when_ca_has_no_ski() {
             .expect("mirror cert succeeds despite CA lacking SKI");
 
     assert!(mirrored_cert.subject_key_id().is_some());
-    assert!(mirrored_cert.authority_key_id().is_none());
+
+    let mirror_aki = mirrored_cert
+        .authority_key_id()
+        .expect("mirror has derived AKI");
+    let expected = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .expect("CA pubkey sha1");
+    assert_eq!(expected.len(), 20);
+    assert_eq!(mirror_aki.as_slice(), &expected[..]);
 }
 
 #[test]
-fn gen_cert_omits_aki_when_ca_has_no_ski() {
+fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
     let (ca_cert, ca_key) = build_ca_without_ski("no-ski-ca.rama.test").expect("ca without ski");
     assert!(ca_cert.subject_key_id().is_none());
 
@@ -482,7 +491,13 @@ fn gen_cert_omits_aki_when_ca_has_no_ski() {
         self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
 
     assert!(leaf_cert.subject_key_id().is_some());
-    assert!(leaf_cert.authority_key_id().is_none());
+
+    let leaf_aki = leaf_cert.authority_key_id().expect("leaf has derived AKI");
+    let expected = ca_cert
+        .pubkey_digest(MessageDigest::sha1())
+        .expect("CA pubkey sha1");
+    assert_eq!(leaf_aki.as_slice(), &expected[..]);
+
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
 }
 

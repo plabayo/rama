@@ -16,6 +16,9 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+mod connected_framed;
+pub use connected_framed::ConnectedUdpFramed;
+
 mod socket;
 pub use socket::{
     UdpSocket, bind_udp_socket_with_connect, bind_udp_socket_with_connect_default_dns,

@@ -4,8 +4,9 @@ use rama::{
     http::{
         Request, Response,
         headers::{Accept, HeaderMapExt as _},
+        html::*,
         mime,
-        service::web::response::{Html, IntoResponse, Sse},
+        service::web::response::{Css, IntoResponse, Script, Sse},
         sse::{
             Event,
             server::{KeepAlive, KeepAliveStream},
@@ -26,7 +27,7 @@ pub(in crate::cmd::serve::httptest) fn service()
                 .map(|Accept(values)| values.iter().any(|item| item.value.subtype() == mime::HTML))
                 .unwrap_or_default()
             {
-                return Ok(html_web_page());
+                return Ok(render_html_page().into_response());
             } else {
                 Sse::new(KeepAliveStream::new(
                     KeepAlive::new(),
@@ -53,69 +54,83 @@ pub(in crate::cmd::serve::httptest) fn service()
     }))
 }
 
-fn html_web_page() -> Response {
-    Html(
-        r##"<!doctype html>
-<html lang="en">
-    <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Rama HTTP SSE Test</title>
-    <style>
-        body { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
-        main { min-height: 100vh; display: grid; justify-items: center; }
-        ul { list-style: none; padding: 0; margin: 0; width: min(560px, 92vw); }
-        li { padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; margin: 10px 0; }
-        .hint { opacity: 0.7; font-size: 14px; margin-top: 10px; text-align: center; }
-        label { display: inline-flex; gap: 8px; cursor: pointer; }
-        input:checked + label { text-decoration: line-through; opacity: 0.6; }
-    </style>
-    </head>
-    <body>
-    <main>
-        <div>
-        <h1>TODO:</h1>
-        <ul id="todos"></ul>
-        <div class="hint" id="status">Connecting…</div>
-        </div>
-    </main>
+/// CSS sidecar for the SSE HTML demo page. Separate response (mounted
+/// at `/style/sse.css` by the router) so the defence-in-depth CSP can
+/// keep `style-src 'self'` — blocking inline `<style>` — without
+/// breaking the demo.
+pub(in crate::cmd::serve::httptest) const STYLE_CSS: Css<&'static str> =
+    Css(include_str!("sse.css"));
 
-    <script>
-        let nextId = 0;
-        const list = document.getElementById("todos");
-        const statusEl = document.getElementById("status");
+/// JS sidecar for the SSE HTML demo page. Wires the `EventSource`
+/// subscription. Separate response (mounted at `/script/sse.js`) for
+/// the same reason as [`STYLE_CSS`] — `script-src 'self'` blocks
+/// inline `<script>` blocks.
+pub(in crate::cmd::serve::httptest) const SCRIPT_JS: Script<&'static str> =
+    Script(include_str!("sse.js"));
 
-        const es = new EventSource("/sse");
-
-        function addTodo(text) {
-          const li = document.createElement("li");
-
-          const id = "todo-" + nextId++;
-
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.id = id;
-
-          const label = document.createElement("label");
-          label.htmlFor = id;
-          label.textContent = text;
-
-          li.appendChild(checkbox);
-          li.appendChild(label);
-          list.appendChild(li);
-        }
-
-        es.onopen = () => { statusEl.textContent = "Connected"; };
-        es.onerror = () => { es.close(); statusEl.textContent = "Disconnected"; };
-
-        es.onmessage = (ev) => {
-            if (!ev.data) return;
-            addTodo(ev.data);
-        };
-    </script>
-    </body>
-</html>
-"##,
+fn render_html_page() -> impl IntoHtml + IntoResponse {
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "utf-8"),
+            meta!(
+                name = "viewport",
+                content = "width=device-width,initial-scale=1"
+            ),
+            title!("Rama HTTP SSE Test"),
+            link!(
+                rel = "stylesheet",
+                r#type = "text/css",
+                href = "/style/sse.css"
+            ),
+        ),
+        body!(
+            main!(div!(
+                h1!("TODO:"),
+                ul!(id = "todos"),
+                div!(class = "hint", id = "status", "Connecting…"),
+            )),
+            script!(src = "/script/sse.js"),
+        ),
     )
-    .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard against the bug audited 2026-05-18: the SSE
+    /// HTML fallback page must reference its CSS and JS via
+    /// `<link>` / `<script src>` because the surrounding service
+    /// applies `style-src 'self'` and `script-src 'self'`.
+    #[test]
+    fn render_html_page_uses_external_assets() {
+        let out = render_html_page().into_string();
+        assert!(
+            !out.contains("<style>") && !out.contains("<style "),
+            "SSE page must not embed inline <style>; CSP blocks it",
+        );
+        assert!(
+            !out.contains("<script>"),
+            "SSE page must not embed inline <script>; CSP blocks it",
+        );
+        assert!(
+            out.contains(r#"<link rel="stylesheet" type="text/css" href="/style/sse.css">"#),
+            "SSE page must link to /style/sse.css",
+        );
+        assert!(
+            out.contains(r#"<script src="/script/sse.js">"#),
+            "SSE page must source /script/sse.js",
+        );
+    }
+
+    #[test]
+    fn render_html_page_contains_expected_dom_anchors() {
+        let out = render_html_page().into_string();
+        assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
+        assert!(out.contains("<title>Rama HTTP SSE Test</title>"));
+        // The DOM IDs the JS bootstrap looks up.
+        assert!(out.contains(r#"id="todos""#));
+        assert!(out.contains(r#"id="status""#));
+    }
 }

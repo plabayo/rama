@@ -1,13 +1,18 @@
 import Foundation
+import Network
+import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
 
 /// Mock flow whose `write` and `readData` run through configurable
 /// handlers so tests can stage any sequence of responses and
-/// observe how the pumps react. Conforms to both write and read
-/// surfaces so the same fixture drives both pump tests.
-final class MockTcpFlow: TcpFlowWritable, TcpFlowReadable {
+/// observe how the pumps react. Conforms to `TcpFlowLike` so it can
+/// drive both the read / write pump tests *and* the full
+/// `TransparentProxyCore.handleTcpFlow` lifecycle tests — the
+/// latter calls `open`, `closeReadWithError`, `closeWriteWithError`,
+/// and `applyMetadata(to:)` in addition to the read / write surfaces.
+final class MockTcpFlow: TcpFlowLike {
     private let lock = NSLock()
     private var _writes: [Data] = []
     private var _writeCount = 0
@@ -22,6 +27,10 @@ final class MockTcpFlow: TcpFlowWritable, TcpFlowReadable {
     var pendingReadCompletions: [@Sendable (Data?, Error?) -> Void] {
         lock.lock(); defer { lock.unlock() }
         return _pendingReads
+    }
+    var pendingReadCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _pendingReads.count
     }
     private var _pendingReads: [@Sendable (Data?, Error?) -> Void] = []
 
@@ -71,6 +80,85 @@ final class MockTcpFlow: TcpFlowWritable, TcpFlowReadable {
             cb(data, error)
         }
     }
+
+    // MARK: - TcpFlowLike — lifecycle surface
+
+    private var _pendingOpenCompletion: (@Sendable (Error?) -> Void)?
+    private var _closeReadErrors: [Error?] = []
+    private var _closeWriteErrors: [Error?] = []
+    private var _applyMetadataCount: Int = 0
+    private var _openInvoked: Bool = false
+
+    func open(
+        withLocalEndpoint localEndpoint: NWHostEndpoint?,
+        completionHandler: @escaping @Sendable (Error?) -> Void
+    ) {
+        lock.lock()
+        _pendingOpenCompletion = completionHandler
+        _openInvoked = true
+        lock.unlock()
+    }
+
+    func closeReadWithError(_ error: Error?) {
+        lock.lock()
+        _closeReadErrors.append(error)
+        lock.unlock()
+    }
+
+    func closeWriteWithError(_ error: Error?) {
+        lock.lock()
+        _closeWriteErrors.append(error)
+        lock.unlock()
+    }
+
+    func applyMetadata(to params: NWParameters) {
+        lock.lock()
+        _applyMetadataCount += 1
+        lock.unlock()
+    }
+
+    // MARK: - Driving the lifecycle surface (test side)
+
+    /// Fire the `open` completion handler. Returns `false` when no
+    /// `open` is pending — usually a test bug.
+    @discardableResult
+    func completeOpen(error: Error? = nil) -> Bool {
+        lock.lock()
+        guard let cb = _pendingOpenCompletion else {
+            lock.unlock()
+            return false
+        }
+        _pendingOpenCompletion = nil
+        lock.unlock()
+        cb(error)
+        return true
+    }
+
+    var openWasInvoked: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _openInvoked
+    }
+
+    var closeReadCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _closeReadErrors.count
+    }
+
+    var closeWriteCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _closeWriteErrors.count
+    }
+
+    var applyMetadataCallCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _applyMetadataCount
+    }
+
+    var lastCloseReadError: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return _closeReadErrors.last ?? nil
+    }
+
 }
 
 private func transientENOBUFS() -> Error {

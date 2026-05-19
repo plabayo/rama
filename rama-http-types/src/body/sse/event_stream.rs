@@ -70,23 +70,39 @@ impl<T: EventDataRead> EventBuilder<T> {
         match line {
             RawEventLine::Field(field, val) => match *field {
                 "event" => {
-                    if let Some(val) = val {
-                        self.event.try_set_event(*val).context("set event value")?;
+                    // WHATWG: bare `event` (no value) sets the event-type buffer
+                    // to the empty string, which then dispatches as the default
+                    // `message` event. Modelling that as `None` so the dispatch
+                    // path treats it identically to "no event field present".
+                    if let Some(v) = val {
+                        self.event.try_set_event(*v).context("set event value")?;
+                    } else {
+                        self.event.event = None;
                     }
                 }
                 "data" => {
                     self.reader.read_line(val.unwrap_or(""))?;
                 }
                 "id" => {
-                    if let Some(val) = val
-                        && !val.contains('\u{0000}')
-                    {
-                        self.event.try_set_id(*val).context("set event id")?;
+                    // WHATWG: bare `id` (no value) sets the last-event-ID buffer
+                    // to the empty string; NUL in the id makes the field ignored.
+                    if let Some(v) = val {
+                        if !v.contains('\u{0000}') {
+                            self.event.try_set_id(*v).context("set event id")?;
+                        }
+                    } else {
+                        self.event.id = Some(SmolStr::default());
                     }
                 }
                 "retry" => {
-                    if let Some(val) = val.and_then(|v| v.parse::<u64>().ok()) {
-                        self.event.set_retry(val);
+                    // WHATWG: retry value MUST consist of only ASCII digits.
+                    // `u64::parse` would otherwise accept a leading `+`.
+                    if let Some(v) = *val
+                        && !v.is_empty()
+                        && v.bytes().all(|b| b.is_ascii_digit())
+                        && let Ok(ms) = v.parse::<u64>()
+                    {
+                        self.event.set_retry(ms);
                     }
                 }
                 _ => {
@@ -236,7 +252,13 @@ where
 
         match parse_event(this.buffer, this.builder) {
             Ok(Some(event)) => {
-                *this.last_event_id = event.id().map(SmolStr::new);
+                // WHATWG: the last-event-ID buffer persists across events; only
+                // overwrite it when the dispatched event actually had an id field
+                // (which, post-parse, manifests as `Some(_)` — empty string
+                // included; `None` means no id field was present).
+                if let Some(id) = event.id() {
+                    *this.last_event_id = Some(SmolStr::new(id));
+                }
                 return Poll::Ready(Some(Ok(event)));
             }
             Err(err) => return Poll::Ready(Some(Err(err))),
@@ -268,7 +290,13 @@ where
 
                     match parse_event(this.buffer, this.builder) {
                         Ok(Some(event)) => {
-                            *this.last_event_id = event.id().map(SmolStr::new);
+                            // WHATWG: the last-event-ID buffer persists across events; only
+                            // overwrite it when the dispatched event actually had an id field
+                            // (which, post-parse, manifests as `Some(_)` — empty string
+                            // included; `None` means no id field was present).
+                            if let Some(id) = event.id() {
+                                *this.last_event_id = Some(SmolStr::new(id));
+                            }
                             return Poll::Ready(Some(Ok(event)));
                         }
                         Err(err) => return Poll::Ready(Some(Err(err))),
@@ -717,7 +745,10 @@ data:  third event
                 vec![
                     event!(@, comment = "test stream",),
                     event!("first event".to_owned(), id = "1",),
-                    event!("second event".to_owned(),),
+                    // WHATWG: bare `id` (no value) sets the last-event-ID buffer
+                    // to the empty string, so the dispatched event carries
+                    // `id = ""` rather than `id = None`.
+                    event!("second event".to_owned(), id = "",),
                     event!(" third event".to_owned(),),
                 ],
             ),
@@ -749,5 +780,110 @@ data: test
             let output = stream.try_collect::<Vec<_>>().await.expect(&expect);
             assert_eq!(expected, output, "input: '{input:?}'; output: '{output:?}'");
         }
+    }
+
+    /// WHATWG: a bare `event` field (no value) sets the event-type buffer
+    /// to the empty string, which dispatches as the default `message` event
+    /// — _and_ overrides any earlier `event:` line within the same event.
+    #[tokio::test]
+    async fn empty_event_field_clears_event_name() {
+        let input = "event: ping\nevent\ndata: 42\n\n";
+        let stream = EventStream::new(stream::iter([Ok::<_, Infallible>(input)]));
+        let output = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(output, vec![event!("42".to_owned(),)]);
+    }
+
+    /// WHATWG: a bare `id` field (no value) sets the last-event-ID buffer
+    /// to the empty string; the dispatched event carries `id = ""`.
+    #[tokio::test]
+    async fn empty_id_field_sets_empty_last_event_id() {
+        let input = "id: prior\ndata: a\n\nid\ndata: b\n\n";
+        let mut stream = EventStream::new(stream::iter([Ok::<_, Infallible>(input)]));
+        let events: Vec<_> = (&mut stream).try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(
+            events,
+            vec![
+                event!("a".to_owned(), id = "prior",),
+                event!("b".to_owned(), id = "",),
+            ],
+        );
+        assert_eq!(stream.last_event_id(), Some(""));
+    }
+
+    /// WHATWG: an `id` containing U+0000 makes the entire field ignored.
+    #[tokio::test]
+    async fn id_with_nul_is_ignored() {
+        let input = "id: ok\ndata: a\n\nid: bad\u{0000}id\ndata: b\n\n";
+        let mut stream = EventStream::new(stream::iter([Ok::<_, Infallible>(input)]));
+        let events: Vec<_> = (&mut stream).try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(
+            events,
+            vec![
+                event!("a".to_owned(), id = "ok",),
+                // `id` line is ignored: the event has no id, but the
+                // last-event-ID buffer keeps the previous value.
+                event!("b".to_owned(),),
+            ],
+        );
+        assert_eq!(stream.last_event_id(), Some("ok"));
+    }
+
+    /// WHATWG: the last-event-ID buffer persists across events that don't
+    /// carry an explicit `id` field.
+    #[tokio::test]
+    async fn last_event_id_persists_across_events_without_id() {
+        let input = "id: seven\ndata: a\n\ndata: b\n\ndata: c\n\n";
+        let mut stream = EventStream::new(stream::iter([Ok::<_, Infallible>(input)]));
+        let events: Vec<_> = (&mut stream).try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(
+            events,
+            vec![
+                event!("a".to_owned(), id = "seven",),
+                event!("b".to_owned(),),
+                event!("c".to_owned(),),
+            ],
+        );
+        assert_eq!(stream.last_event_id(), Some("seven"));
+    }
+
+    /// WHATWG: the `retry` value MUST consist of only ASCII digits.
+    /// Rust's `u64::parse` accepts a leading `+`, which the spec disallows.
+    #[tokio::test]
+    async fn retry_only_accepts_ascii_digits() {
+        for (input, want_retry_ms) in [
+            ("retry: 1500\ndata: a\n\n", Some(1500_u64)),
+            ("retry: +5\ndata: a\n\n", None),
+            ("retry: -1\ndata: a\n\n", None),
+            ("retry: 5ms\ndata: a\n\n", None),
+            ("retry: abc\ndata: a\n\n", None),
+            ("retry:\ndata: a\n\n", None),
+        ] {
+            let stream = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(input)]));
+            let events: Vec<_> = stream.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(events.len(), 1, "input: {input:?}");
+            assert_eq!(
+                events[0].retry().map(|d| d.as_millis() as u64),
+                want_retry_ms,
+                "input: {input:?}",
+            );
+        }
+    }
+
+    /// JSON reader on an event without any `data:` line should surface
+    /// `Ok(None)` rather than erroring on `serde_json::from_str("")`.
+    #[tokio::test]
+    async fn json_reader_surfaces_none_when_no_data() {
+        // Two events: the first carries no data field at all.
+        let input = ": preamble\nid: 1\n\ndata: {\"v\":2}\nid: 2\n\n";
+        let stream = EventStream::<_, JsonEventData<serde_json::Value>>::new(stream::iter([Ok::<
+            _,
+            Infallible,
+        >(
+            input,
+        )]));
+        let events: Vec<_> = stream.try_collect::<Vec<_>>().await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].data().is_none());
+        assert_eq!(events[1].data().map(|d| d.0.clone()), Some(json!({"v": 2})),);
     }
 }

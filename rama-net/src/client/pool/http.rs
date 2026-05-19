@@ -1,5 +1,6 @@
 use super::{LruDropPool, PooledConnector, ReqToConnID};
-use crate::{Protocol, address::HostWithOptPort, http::RequestContext};
+use crate::address::ProxyAddress;
+use crate::{Protocol, address::HostWithOptPort, client::ConnectorTarget, http::RequestContext};
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_types::Request;
@@ -10,14 +11,28 @@ use std::time::Duration;
 /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
 pub struct BasicHttpConnIdentifier;
 
-pub type BasicHttpConId = (Protocol, HostWithOptPort);
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Connection Identifier which will match inputs that have the exact same
+/// protocol, authority, proxy address and connector target
+pub struct BasicHttpConId {
+    pub protocol: Protocol,
+    pub authority: HostWithOptPort,
+    pub proxy_address: Option<ProxyAddress>,
+    pub connector_target: Option<ConnectorTarget>,
+}
 
 impl super::ConnID for BasicHttpConId {
     #[cfg(feature = "opentelemetry")]
     fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
         [
-            rama_core::telemetry::opentelemetry::KeyValue::new("protocol", self.0.to_string()),
-            rama_core::telemetry::opentelemetry::KeyValue::new("authority", self.1.to_string()),
+            rama_core::telemetry::opentelemetry::KeyValue::new(
+                "protocol",
+                self.protocol.to_string(),
+            ),
+            rama_core::telemetry::opentelemetry::KeyValue::new(
+                "authority",
+                self.authority.to_string(),
+            ),
         ]
         .into_iter()
     }
@@ -32,7 +47,13 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
             protocol,
             authority,
         } = RequestContext::try_from(req)?;
-        Ok((protocol, authority))
+
+        Ok(BasicHttpConId {
+            protocol,
+            authority,
+            proxy_address: req.extensions().get_ref().cloned(),
+            connector_target: req.extensions().get_ref().cloned(),
+        })
     }
 }
 

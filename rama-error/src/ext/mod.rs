@@ -16,10 +16,10 @@ use crate::{
 ///
 /// See the [module level documentation](crate) for more information.
 pub trait ErrorContext: private::SealedErrorContext {
-    /// The resulting contexct type after adding context to the contained error.
+    /// The resulting context type after adding context to the contained error.
     type Context;
 
-    /// The resulting contexct type after turning the error into an opaque error
+    /// The resulting context type after turning the error into an opaque error
     type OpaqueContext;
 
     /// Return a err variant for [`Self::Context`] as [`BoxError`].
@@ -34,13 +34,13 @@ pub trait ErrorContext: private::SealedErrorContext {
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Add context to the contained error,
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn context_hex<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Add context to the contained error,
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn context_debug<M>(self, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
@@ -58,13 +58,13 @@ pub trait ErrorContext: private::SealedErrorContext {
         M: Into<String>;
 
     /// Add keyed context to the contained error
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Add keyed context to the contained error
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
     where
         M: fmt::Debug + Send + Sync + 'static;
@@ -76,14 +76,14 @@ pub trait ErrorContext: private::SealedErrorContext {
         F: FnOnce() -> C;
 
     /// Lazily add a context to the contained error, if it exists.
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn with_context_hex<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily add a context to the contained error, if it exists.
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn with_context_debug<C, F>(self, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -104,14 +104,14 @@ pub trait ErrorContext: private::SealedErrorContext {
         F: FnOnce() -> C;
 
     /// Lazily add keyed context to the contained error, if it exists
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily add keyed context to the contained error, if it exists
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -412,9 +412,9 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => {
-                Err(OpaqueError::from_static_str("Option is None").with_context_str_field(key, cb))
-            }
+            None => Err(OpaqueError::from_static_str("Option is None")
+                .context_debug_field("type", core::any::type_name::<Self>())
+                .with_context_str_field(key, cb)),
         }
     }
 
@@ -425,9 +425,9 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => {
-                Err(OpaqueError::from_static_str("Option is None").with_context_hex_field(key, cb))
-            }
+            None => Err(OpaqueError::from_static_str("Option is None")
+                .context_debug_field("type", core::any::type_name::<Self>())
+                .with_context_hex_field(key, cb)),
         }
     }
 
@@ -438,10 +438,9 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => {
-                Err(OpaqueError::from_static_str("Option is None")
-                    .with_context_debug_field(key, cb))
-            }
+            None => Err(OpaqueError::from_static_str("Option is None")
+                .context_debug_field("type", core::any::type_name::<Self>())
+                .with_context_debug_field(key, cb)),
         }
     }
 }
@@ -466,13 +465,13 @@ pub trait ErrorExt: private::SealedErrorExt {
         M: fmt::Debug + fmt::Display + Send + Sync + 'static;
 
     /// Wrap the error in a context,
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn context_hex<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Wrap the error in a context,
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn context_debug<M>(self, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
@@ -490,13 +489,13 @@ pub trait ErrorExt: private::SealedErrorExt {
         M: Into<String>;
 
     /// Wrap the error in a keyed context,
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn context_hex_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
 
     /// Wrap the error in a keyed context,
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn context_debug_field<M>(self, key: &'static str, value: M) -> BoxError
     where
         M: fmt::Debug + Send + Sync + 'static;
@@ -508,14 +507,14 @@ pub trait ErrorExt: private::SealedErrorExt {
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with a context,
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn with_context_hex<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with a context,
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn with_context_debug<C, F>(self, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -536,14 +535,14 @@ pub trait ErrorExt: private::SealedErrorExt {
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with keyed context
-    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and `[fmt::Display`].
+    /// using [`fmt::LowerHex`] as [`fmt::Debug`] and [`fmt::Display`].
     fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
         F: FnOnce() -> C;
 
     /// Lazily wrap the error with keyed context
-    /// using [`fmt::Debug`] as `[fmt::Display`].
+    /// using [`fmt::Debug`] as [`fmt::Display`].
     fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> BoxError
     where
         C: fmt::Debug + Send + Sync + 'static,
@@ -716,6 +715,11 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
 }
 
 mod private {
+    // These sealed traits document intent rather than enforce hard closure:
+    // because the blanket impls cover every type that satisfies the public
+    // trait bounds, any downstream type that meets those bounds will satisfy
+    // the seal too. The seal exists to discourage hand-rolled impls and to
+    // keep the surface listed in one place — not as an unbypassable boundary.
     pub trait SealedErrorContext {}
 
     impl<T, E> SealedErrorContext for Result<T, E> where E: Into<crate::BoxError> {}
@@ -910,6 +914,48 @@ mod tests {
         // Source chain still points to underlying error
         let src = err.source().expect("source exists");
         assert_eq!(src.to_string(), "boom");
+    }
+
+    #[test]
+    fn option_with_context_str_field_none_includes_type_debug_field() {
+        let opt: Option<i32> = None;
+        let err = opt
+            .with_context_str_field("k", || "v".to_owned())
+            .unwrap_err();
+        let s = format!("{err}");
+
+        assert!(s.starts_with("Option is None"), "got: {s:?}");
+        // The `type` debug field is attached on every Option<None> error path,
+        // including the lazy str/hex/debug field variants.
+        assert!(s.contains("type="), "got: {s:?}");
+        assert!(s.contains("Option<i32>"), "got: {s:?}");
+        assert!(s.contains(r#"k="v""#), "got: {s:?}");
+    }
+
+    #[test]
+    fn option_with_context_hex_field_none_includes_type_debug_field() {
+        let opt: Option<i32> = None;
+        let err = opt.with_context_hex_field("addr", || 0xfeu8).unwrap_err();
+        let s = format!("{err}");
+
+        assert!(s.starts_with("Option is None"), "got: {s:?}");
+        assert!(s.contains("type="), "got: {s:?}");
+        assert!(s.contains("Option<i32>"), "got: {s:?}");
+        assert!(s.contains("addr="), "got: {s:?}");
+    }
+
+    #[test]
+    fn option_with_context_debug_field_none_includes_type_debug_field() {
+        let opt: Option<i32> = None;
+        let err = opt
+            .with_context_debug_field("payload", || ("a", 1u32))
+            .unwrap_err();
+        let s = format!("{err}");
+
+        assert!(s.starts_with("Option is None"), "got: {s:?}");
+        assert!(s.contains("type="), "got: {s:?}");
+        assert!(s.contains("Option<i32>"), "got: {s:?}");
+        assert!(s.contains("payload="), "got: {s:?}");
     }
 
     #[test]

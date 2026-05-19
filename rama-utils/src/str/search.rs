@@ -40,9 +40,38 @@ where
     if n == 0 {
         return Some(0);
     }
+    if s.len() < n {
+        return None;
+    }
 
-    s.windows(n)
-        .position(|window| window.eq_ignore_ascii_case(sub))
+    let first = sub[0];
+    let first_lo = first.to_ascii_lowercase();
+    let first_up = first.to_ascii_uppercase();
+    let last_start = s.len() - n;
+
+    let mut start = 0;
+    loop {
+        let haystack = &s[start..];
+        let off = if first_lo == first_up {
+            memchr::memchr(first, haystack)
+        } else {
+            memchr::memchr2(first_lo, first_up, haystack)
+        };
+        let candidate = match off {
+            Some(off) => start + off,
+            None => return None,
+        };
+        if candidate > last_start {
+            return None;
+        }
+        if s[candidate..candidate + n].eq_ignore_ascii_case(sub) {
+            return Some(candidate);
+        }
+        start = candidate + 1;
+        if start > last_start {
+            return None;
+        }
+    }
 }
 
 /// Finds the first match of any substring from `sub_iter` within `s`,

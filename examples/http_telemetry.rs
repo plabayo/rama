@@ -58,10 +58,12 @@ use rama::{
     telemetry::{
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
-            collector::HttpExporter,
+            collector::OtelExporter,
+            logs::{LogRecord, Logger, LoggerProvider},
             metrics::UpDownCounter,
             sdk::{
                 Resource,
+                logs::SdkLoggerProvider,
                 metrics::{PeriodicReader, SdkMeterProvider},
             },
             semantic_conventions::{
@@ -80,25 +82,28 @@ use rama::{
 use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Extension)]
-struct Metrics {
+struct AppState {
     counter: UpDownCounter<i64>,
+    logger: <SdkLoggerProvider as LoggerProvider>::Logger,
 }
 
-impl Metrics {
-    fn new() -> Self {
-        let meter = opentelemetry::global::meter_with_scope(
-            InstrumentationScope::builder("example.http_telemetry")
-                .with_version(env!("CARGO_PKG_VERSION"))
-                .with_schema_url(semantic_conventions::SCHEMA_URL)
-                .with_attributes(vec![
-                    KeyValue::new(OS_NAME, std::env::consts::OS),
-                    KeyValue::new(HOST_ARCH, std::env::consts::ARCH),
-                ])
-                .build(),
-        );
+impl AppState {
+    fn new(logger_provider: &SdkLoggerProvider) -> Self {
+        let scope = InstrumentationScope::builder("example.http_telemetry")
+            .with_version(env!("CARGO_PKG_VERSION"))
+            .with_schema_url(semantic_conventions::SCHEMA_URL)
+            .with_attributes(vec![
+                KeyValue::new(OS_NAME, std::env::consts::OS),
+                KeyValue::new(HOST_ARCH, std::env::consts::ARCH),
+            ])
+            .build();
 
+        let meter = opentelemetry::global::meter_with_scope(scope.clone());
         let counter = meter.i64_up_down_counter("visitor_counter").build();
-        Self { counter }
+
+        let logger = logger_provider.logger_with_scope(scope);
+
+        Self { counter, logger }
     }
 }
 
@@ -114,12 +119,11 @@ async fn main() {
         )
         .init();
 
-    let exporter_http_svc = EasyHttpWebClient::default();
-    let meter_exporter = HttpExporter::new(exporter_http_svc)
+    let exporter = OtelExporter::new_http(EasyHttpWebClient::default())
         .with_endpoint(Uri::from_static("http://localhost:4318"))
         .with_timeout(Duration::from_secs(10));
 
-    let meter_reader = PeriodicReader::builder(meter_exporter)
+    let meter_reader = PeriodicReader::builder(exporter.clone())
         .with_interval(Duration::from_secs(3))
         .build();
 
@@ -129,14 +133,19 @@ async fn main() {
         .build();
 
     let meter = SdkMeterProvider::builder()
-        .with_resource(resource)
+        .with_resource(resource.clone())
         .with_reader(meter_reader)
         .build();
 
     opentelemetry::global::set_meter_provider(meter);
 
-    // state for our custom app metrics
-    let state = Arc::new(Metrics::new());
+    let logger_provider = SdkLoggerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+
+    // state for our custom app metrics + logger
+    let state = Arc::new(AppState::new(&logger_provider));
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -147,7 +156,14 @@ async fn main() {
         let http_service = HttpServer::auto(exec.clone()).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().with_get("/", async |ext: Extensions| {
-                    ext.get_ref::<Metrics>().unwrap().counter.add(1, &[]);
+                    let state = ext.get_ref::<AppState>().unwrap();
+                    state.counter.add(1, &[]);
+
+                    let mut record = state.logger.create_log_record();
+                    record.set_severity_text("INFO");
+                    record.set_body("visitor".into());
+                    state.logger.emit(record);
+
                     Html("<h1>Hello!</h1>")
                 }),
             ),

@@ -48,6 +48,12 @@ pub mod metrics {
     }
 }
 
+pub mod logs {
+    pub mod v1 {
+        include!(concat!(env!("OUT_DIR"), "/opentelemetry.proto.logs.v1.rs"));
+    }
+}
+
 pub mod collector {
     pub mod trace {
         pub mod v1 {
@@ -66,15 +72,26 @@ pub mod collector {
             ));
         }
     }
+
+    pub mod logs {
+        pub mod v1 {
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/opentelemetry.proto.collector.logs.v1.rs"
+            ));
+        }
+    }
 }
 
 // Re-export commonly used types at the module level for convenience.
 pub(crate) use self::{
     collector::{
+        logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse},
         metrics::v1::{ExportMetricsServiceRequest, ExportMetricsServiceResponse},
         trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse},
     },
-    common::v1::{AnyValue, ArrayValue, InstrumentationScope, KeyValue, any_value},
+    common::v1::{AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value},
+    logs::v1::{LogRecord as ProtoLogRecord, ResourceLogs, ScopeLogs},
     metrics::v1::{
         AggregationTemporality, Exemplar as ProtoExemplar,
         ExponentialHistogram as ProtoExponentialHistogram, ExponentialHistogramDataPoint,

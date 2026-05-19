@@ -526,4 +526,76 @@ mod tests {
             assert_eq!(element, expected, "input: {s}");
         }
     }
+
+    /// Regression: RFC 7230 §3.2.6 `quoted-string` allows `quoted-pair`
+    /// (`\` followed by one byte). The first parser version found the
+    /// closing `"` with a naive `position` scan, mis-parsing legal
+    /// values like `host="a\"b"` (split mid-value at the escaped quote).
+    #[test]
+    fn regression_forwarded_quoted_pair_rfc7230() {
+        // Escaped `"` inside an extension value must round-trip into the
+        // decoded value.
+        let el = ForwardedElement::try_from(r#"for=_a;ext="x\"y""#).unwrap();
+        let ext = el
+            .extensions
+            .as_ref()
+            .expect("extensions parsed")
+            .get("ext")
+            .expect("ext present");
+        assert_eq!(ext.value, r#"x"y"#);
+        assert!(ext.quoted);
+
+        // Escaped backslash.
+        let el = ForwardedElement::try_from(r#"for=_a;ext="x\\y""#).unwrap();
+        let ext = el.extensions.unwrap().remove("ext").unwrap();
+        assert_eq!(ext.value, r#"x\y"#);
+
+        // A trailing `\` with no escapable byte must error, not silently
+        // succeed (would otherwise be a `quoted-string missing trailer`).
+        ForwardedElement::try_from(r#"for=_a;ext="abc\"#).unwrap_err();
+    }
+
+    /// Regression: RFC 7230 §3.2.6 `qdtext` permits `obs-text` (0x80–0xFF).
+    /// The first parser version rejected the entire 0x80–0xFF range inside
+    /// quoted values via a `(32..127)` charset check, which made any
+    /// UTF-8 high-byte fail.
+    #[test]
+    fn regression_forwarded_obs_text_in_qdtext() {
+        // UTF-8 encoding of `é` (0xC3 0xA9) inside a quoted ext value.
+        let el = ForwardedElement::try_from("for=_a;ext=\"café\"").unwrap();
+        let ext = el.extensions.unwrap().remove("ext").unwrap();
+        assert_eq!(ext.value, "café");
+        // Token-form values stay strict (no obs-text outside quotes).
+        ForwardedElement::try_from("for=_a;ext=café").unwrap_err();
+    }
+
+    /// Regression: RFC 7230 OWS = `*( SP / HTAB )`. The first parser version
+    /// only trimmed SP, so any `\t` around `;`/`=`/list-separator caused a
+    /// parse error on otherwise legal Forwarded headers.
+    #[test]
+    fn regression_forwarded_ows_handles_htab() {
+        // HTAB after the `;` separator.
+        let el = ForwardedElement::try_from("for=_a;\tproto=http").unwrap();
+        assert_eq!(el.forwarded_proto(), Some(ForwardedProtocol::HTTP));
+        // HTAB padding around `=` and inside the list comma between elements.
+        let s = "for=_a;\tproto=http,\tfor=_b";
+        let (first, others) = parse_one_plus_forwarded_elements(s.as_bytes()).unwrap();
+        assert_eq!(first.forwarded_for().unwrap().to_string(), "_a");
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].forwarded_for().unwrap().to_string(), "_b");
+    }
+
+    /// Regression: a zone-id (RFC 6874) inside a Forwarded `for=` value
+    /// must never be accepted. The lower-level `Ipv6Addr` parser already
+    /// rejects `%`; this pins the rejection at the Forwarded entry point
+    /// so future changes can't silently re-allow it.
+    #[test]
+    fn regression_forwarded_rejects_ipv6_zone_id() {
+        for s in [r#"for="[fe80::1%eth0]""#, r#"for="[fe80::1%25eth0]:80""#] {
+            assert!(
+                ForwardedElement::try_from(s).is_err(),
+                "forwarded element should reject zone-id input {s:?}",
+            );
+        }
+    }
 }

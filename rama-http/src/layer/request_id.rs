@@ -389,10 +389,14 @@ fn make_nano_id() -> HeaderValue {
 
     let mut id = [0u8; ID_LEN];
 
-    let input: [u8; STEP] = rand::rng().random();
-
     let mut index = 0;
     loop {
+        // Draw fresh entropy on every pass. A single draw of STEP bytes yields
+        // ~16.5 accepted characters on average (each byte is accepted with
+        // probability ALPHABET_LEN / (MASK + 1) = 1/2), so roughly 95% of calls
+        // need a second pass. Re-using the same buffer would mirror the first
+        // pass into the tail of the id and slash effective entropy.
+        let input: [u8; STEP] = rand::rng().random();
         for byte in input {
             let byte = byte as usize & MASK;
 
@@ -549,5 +553,43 @@ mod tests {
         let mut res = svc.serve(req).await.unwrap();
         let id = res.headers_mut().remove("x-request-id").unwrap();
         assert_eq!(id.to_str().unwrap().chars().count(), 21);
+    }
+
+    /// Regression test for the entropy bug where a single 33-byte RNG draw
+    /// was reused across mask-rejection passes, mirroring the first pass'
+    /// accepted bytes into the tail of the id. Under the bug, for ~50% of ids
+    /// there exists `k` in `[11..=16]` such that `id[k..21] == id[0..21-k]`
+    /// (a mirror tail of length 5..10). After the fix that probability is
+    /// bounded by ~6 * 64^-5 ≈ 10^-8 per id, so over 2000 samples we expect
+    /// effectively zero hits. The narrow `k` range avoids short-mirror
+    /// coincidences (e.g. `k = 20` would compare only 1 byte, 1/64 by chance).
+    #[test]
+    fn nanoid_no_intra_id_mirror() {
+        fn has_mirror(id: &[u8]) -> bool {
+            (11..=16).any(|k| id[k..21] == id[0..21 - k])
+        }
+
+        use ahash::HashSet;
+        let samples = 2_000;
+        let mut mirrors = 0;
+        let mut ids: HashSet<Vec<u8>> = HashSet::default();
+        for _ in 0..samples {
+            let hv = make_nano_id();
+            let id = hv.as_bytes();
+            assert_eq!(id.len(), 21);
+            if has_mirror(id) {
+                mirrors += 1;
+            }
+            ids.insert(id.to_vec());
+        }
+        // Under the bug, essentially every id mirrors; allow a small slack
+        // (chance of a spurious match across k values is bounded by
+        // sum_{k=11..20} 64^-(21-k) which is well under 1 in 4096).
+        assert!(
+            mirrors < 5,
+            "{mirrors}/{samples} ids exhibit the entropy-bug mirror pattern",
+        );
+        // All ids distinct (collision probability is negligible at this scale).
+        assert_eq!(ids.len(), samples, "duplicate ids generated");
     }
 }

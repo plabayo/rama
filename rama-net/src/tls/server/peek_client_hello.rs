@@ -147,7 +147,12 @@ where
     )
     .await;
 
-    let new_peek_size = peek_size - TLS_HEADER_PEEK_LEN;
+    // `saturating_sub`: `peek_input_until_with_offset` is expected to return
+    // a `peek_size` greater than or equal to the offset we passed in
+    // (`TLS_HEADER_PEEK_LEN`), but treating the boundary defensively matches
+    // the convention used at line 110 above and avoids an arithmetic
+    // underflow if that contract is ever broken.
+    let new_peek_size = peek_size.saturating_sub(TLS_HEADER_PEEK_LEN);
     if new_peek_size != n {
         tracing::trace!(
             peek_size = new_peek_size,

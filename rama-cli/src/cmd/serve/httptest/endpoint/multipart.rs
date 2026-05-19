@@ -2,11 +2,12 @@ use rama::{
     Layer as _, Service,
     http::{
         Request, Response,
+        html::*,
         layer::error_handling::ErrorHandlerLayer,
         service::web::{
             IntoEndpointService,
             extract::multipart::{Multipart, MultipartConfig},
-            response::{Html, IntoResponse, Json, Result as ResponseResult},
+            response::{IntoResponse, Json, Result as ResponseResult},
         },
     },
     layer::add_extension::AddInputExtensionLayer,
@@ -15,22 +16,26 @@ use rama::{
 use serde::Serialize;
 use std::convert::Infallible;
 
-const HTML_FORM: &str = r##"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>multipart upload</title></head>
-<body>
-<h1>multipart/form-data upload</h1>
-<form action="/multipart" method="post" enctype="multipart/form-data">
-    <p><label>name: <input type="text" name="username"></label></p>
-    <p><label>file: <input type="file" name="attachment"></label></p>
-    <button type="submit">submit</button>
-</form>
-</body>
-</html>"##;
-
 /// `GET /multipart` — serves a small HTML form for browser interaction.
 pub(in crate::cmd::serve::httptest) async fn get_form() -> impl IntoResponse {
-    Html(HTML_FORM)
+    html!(
+        lang = "en",
+        head!(meta!(charset = "UTF-8"), title!("multipart upload")),
+        body!(
+            h1!("multipart/form-data upload"),
+            form!(
+                action = "/multipart",
+                method = "post",
+                enctype = "multipart/form-data",
+                p!(label!("name: ", input!(r#type = "text", name = "username"),)),
+                p!(label!(
+                    "file: ",
+                    input!(r#type = "file", name = "attachment"),
+                )),
+                button!(r#type = "submit", "submit"),
+            ),
+        ),
+    )
 }
 
 #[derive(Serialize)]

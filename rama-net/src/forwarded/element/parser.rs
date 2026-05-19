@@ -93,7 +93,17 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
         let key = parse_value(trim(&bytes[..separator_index]))?;
         bytes = trim_left(&bytes[separator_index + 1..]);
 
-        let (value, quoted) = if let Some(index) = bytes
+        // `unescaped` holds the decoded value only when the quoted form
+        // actually contained a `\`-escape (RFC 7230 §3.2.6 `quoted-pair`);
+        // otherwise we stay zero-copy and borrow straight from the input.
+        // `Option<Vec<u8>>::None` is a tag and does not allocate — the
+        // `Vec` is only materialized inside `scan_quoted_string` if it
+        // actually sees a backslash.
+        let mut unescaped: Option<Vec<u8>> = None;
+        let value_slice: &[u8];
+        let quoted: bool;
+
+        if let Some(index) = bytes
             .iter()
             .position(|b| *b == b'"' || *b == b';' || *b == b',')
         {
@@ -102,21 +112,18 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
                     if index != 0 {
                         return Err(OpaqueError::from_static_str("dangling quote string quote")
                             .context_field("quote_pos", index));
-                    } else {
-                        bytes = &bytes[1..];
-                        let trailer_quote_index =
-                            bytes.iter().position(|b| *b == b'"').ok_or_else(|| {
-                                OpaqueError::from_static_str("quote string missing trailer quote")
-                            })?;
-                        let value = &bytes[..trailer_quote_index];
-                        bytes = &bytes[trailer_quote_index + 1..];
-                        (value, true)
                     }
+                    bytes = &bytes[1..];
+                    let scan = scan_quoted_string(bytes)?;
+                    value_slice = &bytes[..scan.raw_len];
+                    bytes = &bytes[scan.consumed..];
+                    unescaped = scan.decoded;
+                    quoted = true;
                 }
                 b';' | b',' => {
-                    let value = &bytes[..index];
+                    value_slice = &bytes[..index];
                     bytes = &bytes[index..];
-                    (value, false)
+                    quoted = false;
                 }
                 _ => {
                     #[expect(
@@ -129,12 +136,17 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
                 }
             }
         } else {
-            let value = bytes;
+            value_slice = bytes;
             bytes = &bytes[bytes.len()..];
-            (value, false)
-        };
+            quoted = false;
+        }
 
-        let value = parse_value(value)?;
+        let value_bytes: &[u8] = unescaped.as_deref().unwrap_or(value_slice);
+        let value = if quoted {
+            parse_quoted_value(value_bytes)?
+        } else {
+            parse_value(value_bytes)?
+        };
 
         // as defined in <https://datatracker.ietf.org/doc/html/rfc7239#section-4>:
         //
@@ -205,9 +217,60 @@ fn parse_next_forwarded_element(mut bytes: &[u8]) -> Result<(ForwardedElement, &
     Ok((el, bytes))
 }
 
+/// Output of [`scan_quoted_string`].
+struct QuotedScan {
+    /// Number of bytes consumed up to and including the closing `"`.
+    consumed: usize,
+    /// Length of the raw slice (excluding the closing `"`).
+    raw_len: usize,
+    /// Decoded bytes — only populated when one or more `\`-escapes were
+    /// resolved. When `None` the raw slice (`&bytes[..raw_len]`) is the
+    /// already-correct value.
+    decoded: Option<Vec<u8>>,
+}
+
+/// Scan an RFC 7230 §3.2.6 `quoted-string` body (the bytes *after* the
+/// opening `"`), honoring `quoted-pair = "\" ( HTAB / SP / VCHAR / obs-text )`.
+///
+/// We are graceful: a trailing `\` before EOF is reported as a missing
+/// trailer quote rather than silently swallowed.
+//
+// Regression: `tests::regression_forwarded_quoted_pair_rfc7230`.
+fn scan_quoted_string(bytes: &[u8]) -> Result<QuotedScan, BoxError> {
+    let mut i = 0;
+    let mut decoded: Option<Vec<u8>> = None;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                return Ok(QuotedScan {
+                    consumed: i + 1,
+                    raw_len: i,
+                    decoded,
+                });
+            }
+            b'\\' => {
+                // quoted-pair: `\` followed by one byte.
+                if i + 1 >= bytes.len() {
+                    break;
+                }
+                let buf = decoded.get_or_insert_with(|| bytes[..i].to_vec());
+                buf.push(bytes[i + 1]);
+                i += 2;
+            }
+            other => {
+                if let Some(buf) = decoded.as_mut() {
+                    buf.push(other);
+                }
+                i += 1;
+            }
+        }
+    }
+    Err(OpaqueError::from_static_str("quote string missing trailer quote").into_box_error())
+}
+
 fn trim_left(b: &[u8]) -> &[u8] {
     let mut offset = 0;
-    while offset < b.len() && b[offset] == b' ' {
+    while offset < b.len() && matches!(b[offset], b' ' | b'\t') {
         offset += 1;
     }
     &b[offset..]
@@ -219,7 +282,7 @@ fn trim_right(b: &[u8]) -> &[u8] {
     }
 
     let mut offset = b.len();
-    while offset > 0 && b[offset - 1] == b' ' {
+    while offset > 0 && matches!(b[offset - 1], b' ' | b'\t') {
         offset -= 1;
     }
     &b[..offset]
@@ -229,6 +292,7 @@ fn trim(b: &[u8]) -> &[u8] {
     trim_right(trim_left(b))
 }
 
+/// Parse a `token`-form value: visible ASCII (`0x21..=0x7E`) only, no `"`.
 fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
     if slice.iter().any(|b| !(32..127).contains(b) || *b == b'"') {
         return Err(
@@ -236,4 +300,40 @@ fn parse_value(slice: &[u8]) -> Result<&str, BoxError> {
         );
     }
     std::str::from_utf8(slice).context("parse value as utf-8")
+}
+
+/// Parse a `quoted-string` body (post-unescape). RFC 7230 §3.2.6 defines
+/// `qdtext = HTAB / SP / %x21 / %x23-5B / %x5D-7E / obs-text` and
+/// `obs-text = %x80-FF`. We allow:
+///
+/// * HTAB (`0x09`) and SP (`0x20`)
+/// * VCHAR except `"` and `\` (those would have ended / opened a quoted-pair
+///   already, so seeing them post-decode would be a bug)
+/// * obs-text (`0x80..=0xFF`) — accepted gracefully, with the actual
+///   UTF-8 well-formedness check delegated to [`std::str::from_utf8`].
+//
+// Regression: `tests::regression_forwarded_obs_text_in_qdtext`.
+fn parse_quoted_value(slice: &[u8]) -> Result<&str, BoxError> {
+    // The slice here is either:
+    //   * the raw bytes between the surrounding `"`s (no quoted-pair was
+    //     present); in that case `"` cannot appear because the scan would
+    //     have terminated, and `\` cannot appear because the scan would
+    //     have started a quoted-pair branch — but we still validate for
+    //     defensive symmetry; or
+    //   * the post-unescape buffer, which legitimately may contain `"` and
+    //     `\` derived from `\"`/`\\` and must be passed through verbatim.
+    //
+    // We only reject CTL bytes other than HTAB (0x09), plus DEL (0x7F).
+    // obs-text (0x80–0xFF) is allowed per RFC 7230 §3.2.6; UTF-8
+    // well-formedness is enforced by `from_utf8`.
+    if let Some(idx) = slice
+        .iter()
+        .position(|b| matches!(*b, 0..=0x08 | 0x0a..=0x1f | 0x7f))
+    {
+        return Err(
+            OpaqueError::from_static_str("quoted value contains invalid control byte")
+                .context_field("byte_index", idx),
+        );
+    }
+    std::str::from_utf8(slice).context("parse quoted value as utf-8")
 }

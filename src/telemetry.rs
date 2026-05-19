@@ -13,7 +13,7 @@ pub mod opentelemetry {
     pub mod collector {
         //! OTLP exporter integrations supported by rama.
 
-        pub use ::rama_grpc::service::opentelemetry::{HttpExporter, OtelExporter as GrpcExporter};
+        pub use ::rama_grpc::service::opentelemetry::OtelExporter;
     }
 }
 

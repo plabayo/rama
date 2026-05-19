@@ -321,12 +321,13 @@ pub mod tproxy;
 pub mod system_keychain;
 
 mod nw_tcp_stream;
-mod nw_udp_socket;
 mod tcp;
 mod udp;
 
 pub use self::{
-    nw_tcp_stream::NwTcpStream, nw_udp_socket::NwUdpSocket, tcp::TcpFlow, udp::UdpFlow,
+    nw_tcp_stream::NwTcpStream,
+    tcp::TcpFlow,
+    udp::{Datagram, UdpFlow},
 };
 pub use crate::__transparent_proxy_ffi as transparent_proxy_ffi;
 

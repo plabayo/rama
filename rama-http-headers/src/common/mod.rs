@@ -32,6 +32,10 @@ pub use self::content_encoding::{ContentEncoding, ContentEncodingDirective};
 pub use self::content_length::ContentLength;
 pub use self::content_location::ContentLocation;
 pub use self::content_range::ContentRange;
+pub use self::content_security_policy::{
+    ContentSecurityPolicy, Directive, DirectiveName, HashAlgorithm, HostSource, HostSourcePort,
+    SourceExpression, SourceList,
+};
 pub use self::content_type::ContentType;
 pub use self::cookie::Cookie;
 pub use self::date::Date;
@@ -72,6 +76,8 @@ pub use self::upgrade::Upgrade;
 pub use self::user_agent::UserAgent;
 pub use self::vary::Vary;
 //pub use self::warning::Warning;
+pub use self::x_content_type_options::XContentTypeOptions;
+pub use self::x_frame_options::XFrameOptions;
 
 #[cfg(test)]
 fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
@@ -156,6 +162,7 @@ mod content_encoding;
 mod content_length;
 mod content_location;
 mod content_range;
+mod content_security_policy;
 mod content_type;
 mod cookie;
 mod date;
@@ -196,3 +203,5 @@ mod upgrade;
 mod user_agent;
 mod vary;
 //mod warning;
+mod x_content_type_options;
+mod x_frame_options;

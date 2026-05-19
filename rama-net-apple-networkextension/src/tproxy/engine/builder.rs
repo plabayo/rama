@@ -306,3 +306,29 @@ where
         })
     }
 }
+
+impl<F, R> TransparentProxyEngineBuilder<F, R> {
+    /// Backstop-default introspection for tests. The three backstops below
+    /// are the last lines of defense against a per-flow bridge that has
+    /// wedged outside of its `select!` arms — once any of them expires the
+    /// engine fires `on_server_closed` and the Swift side can `cancel()`
+    /// the registered NWConnection. Removing any default (back to `None`)
+    /// would let such a bridge live indefinitely, holding both the Rust
+    /// session and the macOS flow registration; the regression tests in
+    /// `lifecycle.rs` use these accessors to pin the defaults so a future
+    /// edit cannot silently drop them.
+    #[cfg(test)]
+    pub(super) fn current_tcp_idle_timeout(&self) -> Option<Duration> {
+        self.tcp_idle_timeout
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_udp_max_flow_lifetime(&self) -> Option<Duration> {
+        self.udp_max_flow_lifetime
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_tcp_paused_drain_max_wait(&self) -> Option<Duration> {
+        self.tcp_paused_drain_max_wait
+    }
+}

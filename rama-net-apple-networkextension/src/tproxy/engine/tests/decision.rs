@@ -44,6 +44,7 @@ fn tcp_session_can_be_blocked() {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Blocked),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     });
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
@@ -60,6 +61,7 @@ fn udp_session_can_be_blocked() {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Blocked),
+        tcp_egress_options: None,
     });
     let decision = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
@@ -113,9 +115,7 @@ impl TransparentProxyHandler for SlowMatchHandler {
         _exec: Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<
-            impl Service<BridgeIo<crate::UdpFlow, crate::NwUdpSocket>, Output = (), Error = Infallible>,
-        >,
+        Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
         let delay = self.delay;
@@ -123,14 +123,11 @@ impl TransparentProxyHandler for SlowMatchHandler {
             tokio::time::sleep(delay).await;
             FlowAction::<TestUdpService>::Intercept {
                 meta,
-                service: service_fn(
-                    |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                        let BridgeIo(flow, egress) = bridge;
-                        let _hold = (flow, egress);
-                        std::future::pending::<()>().await;
-                        Ok(())
-                    },
-                )
+                service: service_fn(|flow: crate::UdpFlow| async move {
+                    let _hold = flow;
+                    std::future::pending::<()>().await;
+                    Ok(())
+                })
                 .boxed(),
             }
         }
@@ -221,6 +218,7 @@ fn decision_deadline_does_not_fire_for_fast_handlers() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_decision_deadline(
         handler,

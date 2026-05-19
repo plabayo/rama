@@ -94,7 +94,12 @@ pub trait IntoHtml {
     }
 }
 
-/// HTML-escape `input` into `output` (`&`, `<`, `>`, `"`).
+/// HTML-escape `input` into `output` (`&`, `<`, `>`, `"`, `'`).
+///
+/// Escaping `'` as `&#x27;` is required so that interpolating untrusted
+/// strings into single-quoted attribute contexts (e.g. `<input value='…'>`)
+/// is safe. `&apos;` is intentionally not used because it is not part of
+/// HTML4 and some older agents do not recognize it.
 #[inline]
 pub fn escape_into(output: &mut String, input: &str) {
     for ch in input.chars() {
@@ -103,6 +108,7 @@ pub fn escape_into(output: &mut String, input: &str) {
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),
             '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#x27;"),
             _ => output.push(ch),
         }
     }

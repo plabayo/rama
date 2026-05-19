@@ -74,9 +74,17 @@ pub struct KeepAlive<T = String> {
 
 impl<T> KeepAlive<T> {
     /// Create a new `KeepAlive`.
+    ///
+    /// The default frame is a single empty comment, which serializes to
+    /// `:\n\n` on the wire — the canonical SSE keep-alive payload. A fully
+    /// empty `Event` would serialize to zero bytes and convey nothing to
+    /// the client (some HTTP/2 stacks also reject empty data frames).
     pub fn new() -> Self {
         Self {
-            event: Event::default(),
+            event: Event {
+                comments: Some(vec![SmolStr::default()]),
+                ..Event::default()
+            },
             max_interval: Duration::from_secs(15),
         }
     }
@@ -178,5 +186,20 @@ where
                 Poll::Ready(Some(Ok(event)))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_alive_default_frame_is_canonical_comment() {
+        // `:\n\n` is the canonical SSE keep-alive payload (a single empty
+        // comment line, terminated by the blank line that dispatches the
+        // event). Earlier versions emitted zero bytes here.
+        let keep_alive = KeepAlive::<String>::default();
+        let bytes = keep_alive.event.serialize().unwrap();
+        assert_eq!(&bytes[..], b": \n\n");
     }
 }

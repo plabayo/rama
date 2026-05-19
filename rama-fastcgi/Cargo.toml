@@ -38,7 +38,6 @@ rama-unix = { workspace = true, optional = true }
 [dev-dependencies]
 parking_lot = { workspace = true }
 tempfile = { workspace = true }
-tokio-test = { workspace = true }
 
 [lints]
 workspace = true

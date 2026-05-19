@@ -15,3 +15,18 @@ fn escape_into_appends_to_existing_buffer() {
     buf.push(']');
     assert_eq!(buf, "[a&lt;b]");
 }
+
+#[test]
+fn escape_single_quote_for_attribute_context() {
+    // Defends single-quoted attribute interpolation, e.g. <input value='…'>.
+    assert_eq!(escape("a'b"), "a&#x27;b");
+    assert_eq!(
+        escape("' onmouseover='alert(1)"),
+        "&#x27; onmouseover=&#x27;alert(1)"
+    );
+}
+
+#[test]
+fn escape_all_html_specials() {
+    assert_eq!(escape("&<>\"'"), "&amp;&lt;&gt;&quot;&#x27;");
+}

@@ -138,39 +138,46 @@ pub struct TypeLengthValues<'a> {
 /// A Type-Length-Value payload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeLengthValue<'a> {
-    /// The type of the `TypeLengthValue`.
-    pub kind: u8,
+    /// The type of the `TypeLengthValue`. Unknown wire kinds are preserved as
+    /// `Type::Unknown(u8)` for round-trip fidelity.
+    pub kind: Type,
     /// The value of the `TypeLengthValue`.
     pub value: Cow<'a, [u8]>,
 }
 
-/// Supported types for `TypeLengthValue` payloads.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Type {
-    /// The ALPN of the connection.
-    ALPN = 0x01,
-    /// The authority of the connection.
-    Authority,
-    /// The CRC32C checksum of the connection.
-    CRC32C,
-    /// NoOp
-    NoOp,
-    /// The Unique ID of the connection.
-    UniqueId,
-    /// The SSL information.
-    SSL = 0x20,
-    /// The SSL Version.
-    SSLVersion,
-    /// The SSL common name.
-    SSLCommonName,
-    /// The SSL cipher.
-    SSLCipher,
-    /// The SSL Signature Algorithm.
-    SSLSignatureAlgorithm,
-    /// The SSL Key Algorithm
-    SSLKeyAlgorithm,
-    /// The SSL Network Namespace.
-    NetworkNamespace = 0x30,
+rama_utils::macros::enums::enum_builder! {
+    /// Supported types for `TypeLengthValue` payloads.
+    ///
+    /// Unknown TLV kinds are preserved as `Type::Unknown(u8)` so that callers
+    /// can still inspect or forward vendor-specific TLVs (e.g. AWS VPC endpoint
+    /// 0xEA, Azure PRIVATELINK 0xEE, GCP PSC TLVs) without losing fidelity.
+    @U8
+    pub enum Type {
+        /// The ALPN of the connection.
+        ALPN => 0x01,
+        /// The authority of the connection (e.g. SNI host name).
+        Authority => 0x02,
+        /// The CRC32C checksum of the header.
+        CRC32C => 0x03,
+        /// `NoOp` — padding / alignment.
+        NoOp => 0x04,
+        /// The unique connection ID assigned by the upstream proxy.
+        UniqueId => 0x05,
+        /// SSL information block (carries sub-TLVs).
+        SSL => 0x20,
+        /// The SSL version.
+        SSLVersion => 0x21,
+        /// The SSL common name.
+        SSLCommonName => 0x22,
+        /// The SSL cipher.
+        SSLCipher => 0x23,
+        /// The SSL signature algorithm.
+        SSLSignatureAlgorithm => 0x24,
+        /// The SSL key algorithm.
+        SSLKeyAlgorithm => 0x25,
+        /// The Linux network namespace name.
+        NetworkNamespace => 0x30,
+    }
 }
 
 impl fmt::Display for Header<'_> {
@@ -257,6 +264,83 @@ impl Header<'_> {
     pub fn as_bytes(&self) -> &[u8] {
         self.header.as_ref()
     }
+
+    /// Outcome of the `PP2_TYPE_CRC32C` TLV verification.
+    ///
+    /// Distinct from a `bool` so callers can tell apart "no CRC TLV", "valid",
+    /// "invalid CRC value", and "we never reached a CRC TLV because the TLV
+    /// stream is broken". That last case must NOT be conflated with a bad
+    /// CRC: rejecting on it would mean a header without any CRC TLV gets
+    /// rejected as "CRC invalid" just because some other TLV is malformed.
+    #[must_use]
+    pub fn verify_crc32c(&self) -> Crc32cStatus {
+        // Reuse the public TLV iterator and track the absolute byte offset of
+        // each TLV's value field inside `self.header`. We need the offset to
+        // know which 4 bytes of the header to substitute with zeros during
+        // the CRC computation (per spec section 2.2.5).
+        //
+        // The computation is allocation-free: the CRC is streamed over the
+        // header in three pieces — bytes before the CRC value, four zero
+        // bytes (replacing the CRC field), and bytes after the CRC value.
+        let tlv_start = self.address_bytes_end();
+        let mut cursor = tlv_start;
+        for tlv in self.tlvs() {
+            let tlv = match tlv {
+                Ok(t) => t,
+                Err(e) => {
+                    rama_core::telemetry::tracing::debug!(
+                        error = %e,
+                        "haproxy v2: TLV stream malformed before CRC32C TLV could be located",
+                    );
+                    return Crc32cStatus::MalformedBeforeCrc;
+                }
+            };
+            let value_start = cursor + MINIMUM_TLV_LENGTH;
+            let value_end = value_start + tlv.value.len();
+            if tlv.kind == Type::CRC32C {
+                let Ok(value) = <&[u8; 4]>::try_from(tlv.value.as_ref()) else {
+                    rama_core::telemetry::tracing::debug!(
+                        len = tlv.value.len(),
+                        "haproxy v2: CRC32C TLV has unexpected value length (want 4)",
+                    );
+                    return Crc32cStatus::Invalid;
+                };
+                let expected = u32::from_be_bytes(*value);
+
+                // Stream the CRC over [..value_start] + [0,0,0,0] + [value_end..]
+                // without copying the header.
+                let mut hasher = super::Crc32cHasher::new();
+                hasher.update(&self.header[..value_start]);
+                hasher.update(&[0u8; 4]);
+                hasher.update(&self.header[value_end..]);
+                return if hasher.finalize() == expected {
+                    Crc32cStatus::Valid
+                } else {
+                    Crc32cStatus::Invalid
+                };
+            }
+            cursor = value_end;
+        }
+        Crc32cStatus::Absent
+    }
+}
+
+/// Result of [`Header::verify_crc32c`].
+///
+/// See the method docs for what each variant means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Crc32cStatus {
+    /// No `PP2_TYPE_CRC32C` TLV is present in this header.
+    Absent,
+    /// A CRC32C TLV is present and matches the recomputed value.
+    Valid,
+    /// A CRC32C TLV is present but its value does not match the recomputed
+    /// value, or its value length is not 4 bytes.
+    Invalid,
+    /// A CRC32C TLV may or may not be present — the TLV stream became
+    /// unparseable before we could decide. Callers should treat this as
+    /// "couldn't verify", not "verification failed".
+    MalformedBeforeCrc,
 }
 
 impl TypeLengthValues<'_> {
@@ -300,7 +384,7 @@ impl<'a> Iterator for TypeLengthValues<'a> {
         self.offset += tlv_length;
 
         Some(Ok(TypeLengthValue {
-            kind: tlv_type,
+            kind: Type::from(tlv_type),
             value: Cow::Borrowed(&remaining[MINIMUM_TLV_LENGTH..tlv_length]),
         }))
     }
@@ -447,7 +531,7 @@ impl BitOr<AddressFamily> for Protocol {
     }
 }
 
-impl<'a, T: Into<u8>> From<(T, &'a [u8])> for TypeLengthValue<'a> {
+impl<'a, T: Into<Type>> From<(T, &'a [u8])> for TypeLengthValue<'a> {
     fn from((kind, value): (T, &'a [u8])) -> Self {
         TypeLengthValue {
             kind: kind.into(),
@@ -468,7 +552,7 @@ impl<'a> TypeLengthValue<'a> {
 
     /// Creates a new instance of a `TypeLengthValue`, where the length is determine by the length of the byte slice.
     /// No check is done to ensure the byte slice's length fits in a `u16`.
-    pub fn new<T: Into<u8>>(kind: T, value: &'a [u8]) -> Self {
+    pub fn new<T: Into<Type>>(kind: T, value: &'a [u8]) -> Self {
         TypeLengthValue {
             kind: kind.into(),
             value: value.into(),
@@ -485,11 +569,5 @@ impl<'a> TypeLengthValue<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
-    }
-}
-
-impl From<Type> for u8 {
-    fn from(kind: Type) -> Self {
-        kind as Self
     }
 }

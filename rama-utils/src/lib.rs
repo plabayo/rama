@@ -40,6 +40,7 @@ pub mod backoff;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod time;
 
+pub mod bytes;
 pub mod collections;
 pub mod info;
 pub mod latency;

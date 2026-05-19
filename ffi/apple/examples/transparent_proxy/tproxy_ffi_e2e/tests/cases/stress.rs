@@ -221,13 +221,11 @@ async fn ffi_stress_mixed_concurrent_load_with_large_body() {
     ingress.shutdown().await;
 }
 
-/// 4 × 4 concurrent UDP roundtrips — regression for the `egressReadPump`
-/// ARC lifetime bug. Before `ctx.egressReadPump` was stored on
-/// `UdpFlowContext`, the `NwUdpConnectionReadPump` was deallocated
-/// immediately after the `.ready` handler completed, silently dropping
-/// every egress receive callback. Concurrent churn maximises the
-/// probability of one flow's pump being freed while another's
-/// `on_server_datagram` is in flight.
+/// 4 × 4 concurrent UDP roundtrips — covers per-datagram peer
+/// attribution and concurrent churn across multiple flows. Each task
+/// independently sends/receives via the engine, so any cross-flow
+/// state corruption (egress socket mix-up, mis-routed reply) surfaces
+/// as a mismatched payload.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_udp_concurrent_churn() {

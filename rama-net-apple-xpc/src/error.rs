@@ -19,6 +19,26 @@ pub enum XpcConnectionError {
     PeerRequirementFailed(Option<ArcStr>),
 }
 
+impl fmt::Display for XpcConnectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interrupted => f.write_str("xpc connection interrupted"),
+            Self::Invalidated(None) => f.write_str("xpc connection invalidated"),
+            Self::Invalidated(Some(reason)) => {
+                write!(f, "xpc connection invalidated: {reason}")
+            }
+            Self::PeerRequirementFailed(None) => {
+                f.write_str("xpc peer did not satisfy security requirement")
+            }
+            Self::PeerRequirementFailed(Some(reason)) => {
+                write!(f, "xpc peer did not satisfy security requirement: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for XpcConnectionError {}
+
 /// Errors returned by XPC operations.
 #[derive(Debug)]
 pub enum XpcError {
@@ -67,7 +87,7 @@ impl fmt::Display for XpcError {
             Self::ReplyCanceled => {
                 f.write_str("xpc reply callback dropped before delivering a response")
             }
-            Self::Connection(err) => write!(f, "{err:?}"),
+            Self::Connection(err) => write!(f, "xpc connection error: {err}"),
             Self::InvalidMessage(msg) => write!(f, "invalid xpc message structure: {msg}"),
             Self::SerializationFailed(msg) => write!(f, "xpc serialization failed: {msg}"),
             Self::DeserializationFailed(msg) => write!(f, "xpc deserialization failed: {msg}"),

@@ -14,7 +14,10 @@ use rama::{
     telemetry::tracing,
     tls::boring::{
         TlsStream,
-        proxy::{TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer},
+        proxy::{
+            HandshakeRelayClassification, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+            TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer,
+        },
     },
 };
 
@@ -184,17 +187,23 @@ where
                 client_hello,
             })
             .await
-            && err.is_handshake_relay_issue()
+            && matches!(
+                err.kind(),
+                TlsMitmRelayErrorKind::Handshake {
+                    classification: HandshakeRelayClassification::CertTrust,
+                    direction: TlsMitmRelayErrorDirection::Ingress,
+                }
+            )
         {
             if let Some(sni) = err.sni().cloned() {
                 tracing::debug!(
-                    "adding SNI ({sni}) exception for follow-up tls relay inputs due to Relay Cert Issue"
+                    "adding SNI ({sni}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
                 );
                 self.cache.insert(PolicyKey::Sni(sni), ());
             }
             if let Some(target) = err.proxy_target() {
                 tracing::debug!(
-                    "adding ProxyTarget ({target}) exception for follow-up tls relay inputs due to Relay Cert Issue"
+                    "adding ProxyTarget ({target}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
                 );
                 self.cache
                     .insert(PolicyKey::Target(target.host.clone()), ());

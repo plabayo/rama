@@ -97,11 +97,8 @@ macro_rules! __transparent_proxy_ffi_emit {
             $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacks;
         pub type RamaNwEgressParameters = $crate::ffi::tproxy::NwEgressParameters;
         pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
-        pub type RamaUdpEgressConnectOptions = $crate::ffi::tproxy::UdpEgressConnectOptions;
         pub type RamaTransparentProxyTcpEgressCallbacks =
             $crate::ffi::tproxy::TransparentProxyTcpEgressCallbacks;
-        pub type RamaTransparentProxyUdpEgressCallbacks =
-            $crate::ffi::tproxy::TransparentProxyUdpEgressCallbacks;
 
         #[repr(C)]
         pub struct RamaTransparentProxyTcpSessionResult {
@@ -459,23 +456,36 @@ macro_rules! __transparent_proxy_ffi_emit {
             let engine = unsafe { &*engine };
             let result = engine.new_udp_session(
                 typed_meta,
-                ::std::sync::Arc::new(move |bytes: &[u8]| {
-                    let Some(callback) = on_server_datagram else {
-                        return;
-                    };
-                    if bytes.is_empty() {
-                        return;
-                    }
-                    unsafe {
-                        callback(
-                            context as *mut ::std::ffi::c_void,
-                            $crate::ffi::BytesView {
-                                ptr: bytes.as_ptr(),
-                                len: bytes.len(),
-                            },
-                        );
-                    }
-                }),
+                ::std::sync::Arc::new(
+                    move |bytes: &[u8], peer: ::std::option::Option<::std::net::SocketAddr>| {
+                        let Some(callback) = on_server_datagram else {
+                            return;
+                        };
+                        // Do NOT short-circuit on `bytes.is_empty()`: a
+                        // zero-length UDP datagram is valid per RFC 768
+                        // (DTLS heartbeats, NAT-binding probes, keep-
+                        // alives rely on them). The analogous TCP filter
+                        // is correct because an empty TCP read carries
+                        // no semantic information.
+                        let peer_scratch = $crate::ffi::UdpPeerScratch::new(peer);
+                        unsafe {
+                            callback(
+                                context as *mut ::std::ffi::c_void,
+                                $crate::ffi::BytesView {
+                                    ptr: bytes.as_ptr(),
+                                    len: bytes.len(),
+                                },
+                                peer_scratch.as_view(),
+                            );
+                        }
+                        // `peer_scratch` is held to the end of the
+                        // closure block — `as_view()` borrows pointers
+                        // into it, so the C callback (line above) must
+                        // observe them while the scratch is still
+                        // live. Dropping at scope end is sufficient.
+                        let _ = &peer_scratch;
+                    },
+                ),
                 ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_client_read_demand {
                         unsafe { callback(context as *mut ::std::ffi::c_void) };
@@ -525,13 +535,17 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_datagram(
             session: *mut RamaTransparentProxyUdpSession,
             bytes: $crate::ffi::BytesView,
+            peer: $crate::ffi::UdpPeerView,
         ) {
             if session.is_null() {
                 return;
             }
 
+            // SAFETY: caller contract on `peer` matches `bytes` — both
+            // pointers are valid for the duration of this call.
+            let peer = unsafe { peer.into_socket_addr() };
             let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_client_datagram(slice) };
+            unsafe { (*session).on_client_datagram(slice, peer) };
         }
 
         #[unsafe(no_mangle)]
@@ -570,6 +584,16 @@ macro_rules! __transparent_proxy_ffi_emit {
                 has_connect_timeout_ms: opts.connect_timeout.is_some(),
                 connect_timeout_ms: opts
                     .connect_timeout
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0),
+                has_linger_close_ms: opts.linger_close_timeout.is_some(),
+                linger_close_ms: opts
+                    .linger_close_timeout
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0),
+                has_egress_eof_grace_ms: opts.egress_eof_grace.is_some(),
+                egress_eof_grace_ms: opts
+                    .egress_eof_grace
                     .map(|d| d.as_millis() as u32)
                     .unwrap_or(0),
             };
@@ -692,89 +716,23 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_egress_eof() };
         }
 
-        // ── UDP egress ──────────────────────────────────────────────────────────
+        // ── UDP session control ─────────────────────────────────────────────────
 
-        /// Query handler-supplied egress connect options for a UDP session.
+        /// Activate a UDP session.
         ///
-        /// Returns `true` and fills `out_options` when the handler provided custom
-        /// options. Returns `false` when Swift should use `NWParameters` defaults.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_get_egress_connect_options(
-            session: *mut RamaTransparentProxyUdpSession,
-            out_options: *mut RamaUdpEgressConnectOptions,
-        ) -> bool {
-            if session.is_null() || out_options.is_null() {
-                return false;
-            }
-
-            let session = unsafe { &*session };
-            let Some(opts) = session.egress_connect_options() else {
-                return false;
-            };
-
-            let connect_timeout_ms = opts
-                .connect_timeout
-                .and_then(|d| u32::try_from(d.as_millis()).ok());
-            let c_opts = RamaUdpEgressConnectOptions {
-                parameters: $crate::ffi::tproxy::NwEgressParameters::from_rust_type(&opts.parameters),
-                has_connect_timeout_ms: connect_timeout_ms.is_some(),
-                connect_timeout_ms: connect_timeout_ms.unwrap_or(0),
-            };
-            unsafe { *out_options = c_opts };
-            true
-        }
-
-        /// Activate a UDP session after the egress `NWConnection` is ready.
-        ///
-        /// `callbacks.on_send_to_egress` is called by Rust whenever the service
-        /// has a datagram to deliver to the egress NWConnection.
+        /// Hands the prepared ingress `UdpFlow` to the waiting service
+        /// task; Swift does not own any egress for UDP. Egress (socket
+        /// open / pool / per-datagram routing) is entirely the
+        /// service's responsibility — see the `match_udp_flow` doc in
+        /// `TransparentProxyHandler` for the contract.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_activate(
             session: *mut RamaTransparentProxyUdpSession,
-            callbacks: RamaTransparentProxyUdpEgressCallbacks,
         ) {
             if session.is_null() {
                 return;
             }
-
-            let context = callbacks.context as usize;
-            let on_send_to_egress = callbacks.on_send_to_egress;
-
-            unsafe {
-                (*session).activate(move |bytes: $crate::__private::Bytes| {
-                    let Some(callback) = on_send_to_egress else {
-                        return;
-                    };
-                    if bytes.is_empty() {
-                        return;
-                    }
-                    unsafe {
-                        callback(
-                            context as *mut ::std::ffi::c_void,
-                            $crate::ffi::BytesView {
-                                ptr: bytes.as_ptr(),
-                                len: bytes.len(),
-                            },
-                        );
-                    }
-                })
-            };
-        }
-
-        /// Deliver one datagram from the egress `NWConnection` into the Rust UDP session.
-        ///
-        /// Called by Swift when the NWConnection receives a datagram from the remote.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_egress_datagram(
-            session: *mut RamaTransparentProxyUdpSession,
-            bytes: $crate::ffi::BytesView,
-        ) {
-            if session.is_null() {
-                return;
-            }
-
-            let slice = unsafe { bytes.into_slice() };
-            unsafe { (*session).on_egress_datagram(slice) };
+            unsafe { (*session).activate() };
         }
 
         #[unsafe(no_mangle)]

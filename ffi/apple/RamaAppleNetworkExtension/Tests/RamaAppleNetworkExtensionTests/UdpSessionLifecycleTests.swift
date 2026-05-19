@@ -5,20 +5,20 @@ import XCTest
 
 /// Lifecycle regression tests for `RamaUdpSessionHandle`.
 ///
-/// The covered scenarios correspond to the bugfix commits on this branch:
+/// The Swift side no longer owns UDP egress (the Rust engine hands
+/// the ingress flow to the service, which opens its own egress
+/// socket); these tests cover the remaining Swift-side lifecycle
+/// invariants:
 ///
-/// 1. `egressReadPump` ARC lifetime — `NwUdpConnectionReadPump` was
-///    deallocated immediately after the `.ready` handler completed,
-///    silently dropping all egress receives.  The tests below exercise
-///    the activate → datagram → close lifecycle so a future regression
-///    surfaces here before reaching a heap-snapshot analysis.
+/// 1. `onClientClose` idempotency — the close path can be triggered
+///    from both the writer's error callback and the engine's terminal
+///    callback; double-calling must be a safe no-op.
 ///
-/// 2. `terminate` idempotency — the close path can be triggered from
-///    both the writer's error callback and the egress pump's terminal;
-///    double-calling must be a safe no-op.
+/// 2. Post-close guard paths — late `onClientDatagram` callbacks must
+///    not crash after `onClientClose`.
 ///
-/// 3. Post-close guard paths — late `onEgressDatagram` and
-///    `onClientDatagram` callbacks must not crash after `onClientClose`.
+/// 3. Activate → close tight loops — many short-lived flows must not
+///    leak or crash.
 final class UdpSessionLifecycleTests: XCTestCase {
     override class func setUp() {
         super.setUp()
@@ -38,10 +38,10 @@ final class UdpSessionLifecycleTests: XCTestCase {
 
     private func newInterceptedUdpSession(
         on engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data) -> Void = { _ in }
+        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in }
     ) -> RamaUdpSessionHandle {
         // Port 5000 (not 53): the demo handler treats DNS as passthrough
-        // because the NE sandbox cannot bind raw UDP sockets.
+        // to avoid a circular dependency with the system resolver.
         let meta = RamaTransparentProxyFlowMetaBridge(
             protocolRaw: 2,  // udp
             remoteHost: "example.com",
@@ -77,17 +77,6 @@ final class UdpSessionLifecycleTests: XCTestCase {
         session.onClientClose()  // second call must not crash
     }
 
-    /// A late `onEgressDatagram` arriving after `onClientClose` (e.g. an
-    /// NWConnection receive callback that fires after `terminate` ran and
-    /// nil'd the pump) must be silently dropped via the `cancelled` guard.
-    func testOnEgressDatagramAfterOnClientCloseIsNoop() {
-        let engine = makeEngine()
-        defer { engine.stop(reason: 0) }
-        let session = newInterceptedUdpSession(on: engine)
-        session.onClientClose()
-        session.onEgressDatagram(Data("late egress datagram".utf8))
-    }
-
     /// A late `onClientDatagram` arriving after `onClientClose` must be
     /// silently dropped — the same guard as the TCP `.closed` path.
     func testOnClientDatagramAfterOnClientCloseIsNoop() {
@@ -95,42 +84,35 @@ final class UdpSessionLifecycleTests: XCTestCase {
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
         session.onClientClose()
-        session.onClientDatagram(Data("late client datagram".utf8))
+        session.onClientDatagram(Data("late client datagram".utf8), peer: nil)
     }
 
-    /// Activate the egress send callback then immediately close the
-    /// session. Before the ARC fix, the `NwUdpConnectionReadPump` was
-    /// dropped right after `.ready` returned, so the `onTerminate`
-    /// closure would fire on a deallocated pump. The session-level
-    /// lifecycle (activate → close) exercises the store-then-cancel
-    /// path added by the fix.
+    /// Activate then immediately close the session — covers the
+    /// minimal lifecycle a real flow goes through when the originating
+    /// app drops it before any datagram is exchanged.
     func testActivateThenImmediateOnClientCloseDoesNotCrash() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _ in })
+        session.activate()
         session.onClientClose()
     }
 
-    /// Tight-loop activate + close. The ARC fix ensures each pump is
-    /// stored and cancelled cleanly; this pins that N iterations of
-    /// activate → close produce no crash, where N exceeds what a
-    /// single stack-allocated pump could survive.
+    /// Tight-loop activate + close. Pins that N iterations of
+    /// activate → close produce no crash and no per-flow leak.
     func testRapidActivateCloseChurnDoesNotCrash() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         for _ in 0..<64 {
             let session = newInterceptedUdpSession(on: engine)
-            session.activate(onSendToEgress: { _ in })
+            session.activate()
             session.onClientClose()
         }
     }
 
-    /// 4 × 16 concurrent activate + close cycles. The cancel-vs-callback
-    /// race window is microseconds wide; concurrent churn under ASan is
-    /// the only reliable way to observe the UAF that would have occurred
-    /// if the pump was dropped on the stack while an NWConnection receive
-    /// callback held a `[weak self]` back-reference.
+    /// 4 × 16 concurrent activate + close cycles. Concurrent churn
+    /// under ASan flushes out any cancel-vs-callback race in the
+    /// per-flow Swift-side lifecycle.
     func testConcurrentActivateCloseChurnIsSafe() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
@@ -142,7 +124,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
             DispatchQueue.global(qos: .userInitiated).async(group: group) {
                 for _ in 0..<perWorker {
                     let session = self.newInterceptedUdpSession(on: engine)
-                    session.activate(onSendToEgress: { _ in })
+                    session.activate()
                     session.onClientClose()
                 }
             }
@@ -153,14 +135,4 @@ final class UdpSessionLifecycleTests: XCTestCase {
         )
     }
 
-    /// `onEgressDatagram` with an empty payload must be silently dropped
-    /// without reaching the Rust FFI boundary — the guard at the top of
-    /// the method short-circuits before touching the session pointer.
-    func testOnEgressDatagramWithEmptyDataIsNoop() {
-        let engine = makeEngine()
-        defer { engine.stop(reason: 0) }
-        let session = newInterceptedUdpSession(on: engine)
-        session.activate(onSendToEgress: { _ in })
-        session.onEgressDatagram(Data())
-    }
 }

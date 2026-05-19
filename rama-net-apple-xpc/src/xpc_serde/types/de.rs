@@ -2,7 +2,10 @@ use serde::de::{Error as _, IntoDeserializer, Visitor};
 
 use crate::{
     XpcMessage,
-    xpc_serde::types::{err::DeError, map::MapDe, seq::SeqDe, variant::EnumDe},
+    xpc_serde::{
+        types::{err::DeError, map::MapDe, seq::SeqDe, variant::EnumDe},
+        uuid::XPC_UUID_NEWTYPE_NAME,
+    },
 };
 
 pub(crate) struct XpcDeserializer(pub(crate) XpcMessage);
@@ -169,9 +172,18 @@ impl<'de> serde::Deserializer<'de> for XpcDeserializer {
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _name: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
+        if name == XPC_UUID_NEWTYPE_NAME {
+            return match self.0 {
+                XpcMessage::Uuid(bytes) => visitor.visit_bytes(&bytes),
+                XpcMessage::Data(bytes) if bytes.len() == 16 => visitor.visit_byte_buf(bytes),
+                other => Err(DeError::custom(format!(
+                    "expected XPC Uuid for XpcUuid newtype, got {other:?}"
+                ))),
+            };
+        }
         visitor.visit_newtype_struct(self)
     }
 

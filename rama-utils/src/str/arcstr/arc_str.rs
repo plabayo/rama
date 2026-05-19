@@ -1004,9 +1004,21 @@ impl Clone for ArcStr {
                     .count_flag
                     .fetch_add(step, Ordering::Relaxed)
             });
-            // Protect against aggressive leaking of Arcs causing us to
-            // overflow. Technically, we could probably transition it to static
-            // here, but I haven't thought it through.
+            // Refcount saturation: if more than `RC_MAX` (~`usize::MAX/2`) live clones of
+            // this `ArcStr` exist, transition it into the "static" state by setting the
+            // flag bit. From that point on `Clone` and `Drop` early-return on `is_static`,
+            // so the backing `ThinInner` is **intentionally leaked** rather than aborting
+            // the process — rama is proxy-first and prefers staying up over crashing on a
+            // pathological refcount. Reaching this branch is effectively unreachable in
+            // practice (it requires ~`usize::MAX/2` live clones of a single ArcStr; on
+            // 64-bit that is ~2^62 — far beyond any realistic workload), and the upstream
+            // `arcstr` crate `abort()`s here instead. We emit a `tracing::error!` so the
+            // (vanishingly unlikely) event leaves a forensic trail.
+            //
+            // Note: this also means the `RC_MAX = MAX/2` headroom argument from upstream
+            // no longer guarantees that concurrent `fetch_add`s cannot wrap past
+            // `UINT_PART_MAX`; in practice the headroom is still astronomical and any
+            // workload that exhausts it has bigger problems than a memory leak.
             if n.uint_part() > RC_MAX && !n.flag_part() {
                 let val = PackedFlagUint::new_raw(true, 0).encoded_value();
                 unsafe {
@@ -1014,7 +1026,11 @@ impl Clone for ArcStr {
                         .count_flag
                         .fetch_or(val, Ordering::Release)
                 };
-                // abort();
+                tracing::error!(
+                    rc = n.uint_part(),
+                    rc_max = RC_MAX,
+                    "ArcStr refcount saturated; transitioning to static (leaking backing storage) instead of aborting",
+                );
             }
         }
         Self(self.0)

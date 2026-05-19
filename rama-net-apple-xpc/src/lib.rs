@@ -158,13 +158,16 @@ pub mod xpc_serde;
 
 pub use call::XpcCall;
 pub use client::XpcClientConfig;
-pub use connection::{ReceivedXpcMessage, XpcConnection, XpcEvent};
+pub use connection::{DEFAULT_MAX_PENDING_EVENTS, ReceivedXpcMessage, XpcConnection, XpcEvent};
 pub use connector::XpcConnector;
 pub use endpoint::XpcEndpoint;
 pub use error::{XpcConnectionError, XpcError};
-pub use listener::{XpcListener, XpcListenerConfig};
+pub use listener::{DEFAULT_MAX_PENDING_CONNECTIONS, XpcListener, XpcListenerConfig};
 pub use message::XpcMessage;
 pub use peer::PeerSecurityRequirement;
 pub use router::{XpcMessageRouter, extract_result};
 pub use server::XpcServer;
-pub use xpc_serde::{from_xpc_message, to_xpc_message};
+pub use xpc_serde::{XpcUuid, from_xpc_message, to_xpc_message};
+
+#[cfg(test)]
+mod integration_tests;

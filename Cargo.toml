@@ -94,7 +94,7 @@ arc-swap = "1.9"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
-aws-lc-rs = { version = "1.16", features = ["bindgen"] }
+aws-lc-rs = { version = "1.17", features = ["bindgen"] }
 aws-lc-sys = { version = "0.39", features = ["bindgen"] }
 base64 = "0.22"
 bb8 = "0.9"
@@ -112,7 +112,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.8"
+dial9-tokio-telemetry = "0.3.10"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
@@ -169,8 +169,8 @@ quickcheck_macros = "1.2"
 quote = "1.0"
 radix_trie = "0.3"
 rama = { version = "0.3.0-rc1", path = ".", default-features = false }
-rama-boring = { version = "0.6.0", default-features = false }
-rama-boring-tokio = { version = "0.6.0", default-features = false }
+rama-boring = { version = "0.6.2", default-features = false }
+rama-boring-tokio = { version = "0.6.2", default-features = false }
 rama-core = { version = "0.3.0-rc1", path = "./rama-core", default-features = false }
 rama-crypto = { version = "0.3.0-rc1", path = "./rama-crypto", default-features = false }
 rama-dns = { version = "0.3.0-rc1", path = "./rama-dns", default-features = false }
@@ -398,6 +398,7 @@ cli = [
     "dep:serde_html_form",
     "dep:tokio",
     "http",
+    "html",
 ]
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
@@ -812,6 +813,10 @@ required-features = ["tcp"]
 [[example]]
 name = "udp_codec"
 required-features = ["udp"]
+
+[[example]]
+name = "udp_over_tcp"
+required-features = ["udp", "tcp"]
 
 [[example]]
 name = "tls_boring_dynamic_certs"

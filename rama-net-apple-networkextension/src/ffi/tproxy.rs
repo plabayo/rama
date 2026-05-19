@@ -165,8 +165,9 @@ pub struct TransparentProxyConfig {
     pub tunnel_remote_address_utf8_len: usize,
     pub rules: *const TransparentProxyNetworkRule,
     pub rules_len: usize,
-    /// Per-flow TCP write-pump back-pressure cap in bytes. `0` means "use the
-    /// Swift-side built-in default". See
+    /// Per-flow TCP write-pump back-pressure cap in bytes. Authoritative
+    /// on the Swift side — the value emitted here is the value the pump
+    /// uses. See
     /// [`tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
     pub tcp_write_pump_max_pending_bytes: usize,
 }
@@ -313,10 +314,18 @@ pub struct TransparentProxyTcpSessionCallbacks {
 ///
 /// `context` lifetime / threading contract: see
 /// [`TransparentProxyTcpSessionCallbacks`] above. Same rules apply.
+///
+/// `on_server_datagram` receives each Rust→Swift datagram along
+/// with its peer — the source the reply arrived from, used as the
+/// `sentBy` endpoint when Swift writes back through
+/// `flow.writeDatagrams`. Peer may be marked absent
+/// (`UdpPeerView { present: false, .. }`) when the engine cannot
+/// supply attribution.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
-    pub on_server_datagram: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
+    pub on_server_datagram:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
@@ -324,7 +333,8 @@ pub struct TransparentProxyUdpSessionCallbacks {
 // ── Egress (NWConnection) options ─────────────────────────────────────────────
 
 /// C representation of `NwEgressParameters` — NWParameters-level settings
-/// shared between TCP and UDP egress `NWConnection`s.
+/// applied to TCP egress `NWConnection`s. (UDP egress is service-owned
+/// in Rust and does not consume these.)
 ///
 /// Discriminant values for service_class:
 ///   0=Default 1=Background 2=InteractiveVideo 3=InteractiveVoice
@@ -353,7 +363,8 @@ pub struct NwEgressParameters {
     pub prohibited_interface_types_mask: u8,
     /// When `true`, Swift calls `NEAppProxyFlow.setMetadata(_:)` to stamp the
     /// intercepted flow's `NEFlowMetaData` onto the egress `NWParameters`.
-    /// See `tproxy::types::NwEgressParameters::preserve_original_meta_data`.
+    ///
+    /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
 }
 
@@ -429,18 +440,23 @@ pub struct TcpEgressConnectOptions {
     pub has_connect_timeout_ms: bool,
     /// Connection timeout in milliseconds (maps to `NWProtocolTCP.Options.connectionTimeout`).
     pub connect_timeout_ms: u32,
-}
-
-/// C representation of egress options for UDP `NWConnection`s.
-#[repr(C)]
-pub struct UdpEgressConnectOptions {
-    pub parameters: NwEgressParameters,
-    /// Whether `connect_timeout_ms` carries a meaningful value.
+    /// Whether `linger_close_ms` carries a meaningful value.
     /// `false` ⇒ Swift uses its built-in default.
-    pub has_connect_timeout_ms: bool,
-    /// Wall-clock cap on the egress `NWConnection.stateUpdateHandler`
-    /// reaching `.ready`. See `tproxy::types::NwUdpConnectOptions::connect_timeout`.
-    pub connect_timeout_ms: u32,
+    pub has_linger_close_ms: bool,
+    /// Wall-clock cap (milliseconds) on how long the egress
+    /// `NWConnection` is allowed to linger after the local side has
+    /// sent its FIN before the Swift side force-cancels it.
+    ///
+    /// See [`crate::tproxy::NwTcpConnectOptions::linger_close_timeout`].
+    pub linger_close_ms: u32,
+    /// Whether `egress_eof_grace_ms` carries a meaningful value.
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_egress_eof_grace_ms: bool,
+    /// Grace window (milliseconds) between the egress read pump
+    /// observing peer EOF and the Swift side force-cancelling the
+    /// connection. See
+    /// [`crate::tproxy::NwTcpConnectOptions::egress_eof_grace`].
+    pub egress_eof_grace_ms: u32,
 }
 
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
@@ -467,17 +483,6 @@ pub struct TransparentProxyTcpEgressCallbacks {
     /// after [`crate::tproxy::TransparentProxyTcpSession::on_egress_bytes`] returned `Paused`.
     /// Swift must keep `connection.receive` paused until this fires.
     pub on_egress_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
-}
-
-/// Callbacks passed to `rama_transparent_proxy_udp_session_activate`.
-///
-/// `context` lifetime / threading contract: see
-/// [`TransparentProxyTcpSessionCallbacks`] above.
-#[repr(C)]
-pub struct TransparentProxyUdpEgressCallbacks {
-    pub context: *mut c_void,
-    /// Rust calls this to send one datagram to the egress NWConnection.
-    pub on_send_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView)>,
 }
 
 fn opt_string_as_utf8_array(value: Option<String>) -> (*const c_char, usize) {

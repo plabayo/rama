@@ -1,9 +1,15 @@
 use std::collections::BTreeMap;
 
+use serde::ser::Error as _;
+
 use crate::{
     XpcMessage,
-    xpc_serde::types::{
-        err::SerError, map::MapSer, record::StructVariantSer, seq::SeqSer, tuple::TupleVariantSer,
+    xpc_serde::{
+        types::{
+            err::SerError, map::MapSer, record::StructVariantSer, seq::SeqSer,
+            tuple::TupleVariantSer,
+        },
+        uuid::XPC_UUID_NEWTYPE_NAME,
     },
 };
 
@@ -107,9 +113,22 @@ impl serde::Serializer for XpcSerializer {
 
     fn serialize_newtype_struct<T: serde::Serialize + ?Sized>(
         self,
-        _name: &'static str,
+        name: &'static str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
+        if name == XPC_UUID_NEWTYPE_NAME {
+            // XpcUuid carries its bytes via an inner `serialize_bytes` call.
+            return match value.serialize(Self)? {
+                XpcMessage::Data(bytes) if bytes.len() == 16 => {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&bytes);
+                    Ok(XpcMessage::Uuid(arr))
+                }
+                other => Err(SerError::custom(format!(
+                    "XpcUuid newtype must serialize as exactly 16 bytes, got {other:?}"
+                ))),
+            };
+        }
         value.serialize(self)
     }
 

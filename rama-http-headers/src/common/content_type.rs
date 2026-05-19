@@ -211,6 +211,21 @@ impl ContentType {
         )
     }
 
+    /// A constructor to easily create a `Content-Type: application/manifest+json` header,
+    /// as defined by the [W3C Web App Manifest spec](https://www.w3.org/TR/appmanifest/#media-type-registration).
+    #[inline]
+    #[must_use]
+    pub fn manifest_json() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/manifest+json")
+                .expect("application/manifest+json to be a valid mime"),
+        )
+    }
+
     /// Reference to the internal [`Mime`].
     #[must_use]
     pub fn mime(&self) -> &Mime {
@@ -292,6 +307,19 @@ mod tests {
     #[test]
     fn ndjson_is_valid() {
         _ = ContentType::ndjson();
+    }
+
+    #[test]
+    fn manifest_json_is_valid() {
+        _ = ContentType::manifest_json();
+    }
+
+    #[test]
+    fn manifest_json_roundtrip() {
+        assert_eq!(
+            test_decode::<ContentType>(&["application/manifest+json"]),
+            Some(ContentType::manifest_json()),
+        );
     }
 
     #[test]

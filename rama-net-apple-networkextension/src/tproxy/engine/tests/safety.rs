@@ -34,6 +34,7 @@ fn tcp_cancel_serialises_against_inflight_user_callback() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -133,6 +134,7 @@ fn tcp_paused_wait_closes_within_max_wait_when_drain_never_fires() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_tcp_paused_drain_max_wait(handler, Duration::from_millis(150));
 
@@ -188,16 +190,15 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    // Never returns — the test verifies the timeout
-                    // wraps and aborts this future.
-                    std::future::pending::<()>().await;
-                    Ok(())
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                // Never returns — the test verifies the timeout
+                // wraps and aborts this future.
+                std::future::pending::<()>().await;
+                Ok(())
+            })
             .boxed(),
         }),
+        tcp_egress_options: None,
     };
     let engine = build_engine_with_udp_max_flow_lifetime(handler, Duration::from_millis(150));
 
@@ -215,7 +216,7 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     let deadline = Instant::now() + Duration::from_millis(750);
     while closed.load(Ordering::Relaxed) == 0 {
@@ -258,14 +259,13 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
             // worker-vs-test-thread race. Real services keep bridge
             // alive by actually using it; the test mimics that with
             // an explicit hold.
-            service: service_fn(
-                |bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    let _hold = bridge;
-                    std::future::pending::<Result<(), Infallible>>().await
-                },
-            )
+            service: service_fn(|bridge: crate::UdpFlow| async move {
+                let _hold = bridge;
+                std::future::pending::<Result<(), Infallible>>().await
+            })
             .boxed(),
         }),
+        tcp_egress_options: None,
     };
     // Tiny channel capacity so we hit Full quickly.
     let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
@@ -288,13 +288,13 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Push 8 datagrams. Channel capacity is 2 and the service never
     // reads, so 6 will hit `Full`. Demand must fire on every push.
     let pushed = 8usize;
     for i in 0..pushed {
-        session.on_client_datagram(format!("datagram {i}").as_bytes());
+        session.on_client_datagram(format!("datagram {i}").as_bytes(), None);
     }
 
     assert_eq!(
@@ -324,13 +324,12 @@ fn udp_on_client_close_runs_service_close_epilogue() {
             meta,
             // Service runs forever — the close path is what brings
             // the task down, not the service itself.
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    std::future::pending::<Result<(), Infallible>>().await
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                std::future::pending::<Result<(), Infallible>>().await
+            })
             .boxed(),
         }),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -343,7 +342,7 @@ fn udp_on_client_close_runs_service_close_epilogue() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Give activate's bridge_tx → service_task wiring a moment to
     // reach the select! before we close. Without this the service
@@ -385,14 +384,13 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            service: service_fn(
-                |_bridge: BridgeIo<crate::UdpFlow, crate::NwUdpSocket>| async move {
-                    std::future::pending::<()>().await;
-                    Ok(())
-                },
-            )
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            })
             .boxed(),
         }),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
@@ -417,18 +415,18 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| {});
+    session.activate();
 
     // Push a datagram; the demand sink should fire (and the bridge
     // should accept the datagram into the channel).
-    session.on_client_datagram(b"hello");
+    session.on_client_datagram(b"hello", None);
     // Tear down. After this returns, no further user callbacks fire.
     session.on_client_close();
     let demand_after_close = demand.load(Ordering::Relaxed);
 
     // Try to push another datagram after close. The session is closed,
     // so the user demand callback MUST NOT fire.
-    session.on_client_datagram(b"after-close");
+    session.on_client_datagram(b"after-close", None);
     std::thread::sleep(Duration::from_millis(25));
 
     assert_eq!(
@@ -437,6 +435,100 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
         "no user demand callback may fire after on_client_close()"
     );
 
+    engine.stop(0);
+}
+
+/// Closed-from-the-receiver-side: distinct from `on_client_close`
+/// (which drops the sender). Here the *service task* drops its
+/// `UdpFlow` — which drops the embedded `mpsc::Receiver` — so the
+/// session's `client_tx` is still `Some` but `tx.is_closed()` is
+/// true. The contract is: closed → no demand.
+///
+/// Note on coverage: in steady-state observation this test cannot
+/// disambiguate the buggy ordering (`if capacity==0` first) from
+/// the correct one (`if is_closed` first), because tokio drains
+/// buffered items synchronously on receiver-drop, restoring
+/// `capacity()` to the configured bound. The misordered code's
+/// reachable failure window is the in-progress receiver-drop
+/// itself (capacity not yet restored, channel marked closed). The
+/// test still pins the externally-observable contract ("post-
+/// receiver-drop = no demand") and would catch any *new* path
+/// that fired demand against a structurally-done session — e.g.
+/// a future change that swapped both checks for a single
+/// `try_send-only` form would still need to respect this.
+#[test]
+fn udp_on_client_datagram_no_demand_after_receiver_dropped() {
+    let (service_exited_tx, service_exited_rx) = std::sync::mpsc::channel::<()>();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let exit_tx = service_exited_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                // Service consumes the flow (dropping its receiver
+                // half) and exits. The drop closes the ingress
+                // channel from the receiver side.
+                service: service_fn(move |flow: crate::UdpFlow| {
+                    let exit_tx = exit_tx.clone();
+                    async move {
+                        drop(flow);
+                        _ = exit_tx.send(());
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+    };
+    let engine = build_engine(handler);
+
+    let demand = Arc::new(AtomicUsize::new(0));
+    let demand_cb = demand.clone();
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_bytes| {},
+        move || {
+            demand_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+
+    // Wait for the service task to have exited (and thus the
+    // receiver to have been dropped). Without this, the test would
+    // race against the runtime's scheduling.
+    service_exited_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service task must exit");
+
+    // Give the runtime a moment to fully tear the channel down
+    // (drop propagation through the bridge).
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Now push a datagram. The session's `client_tx` is still
+    // `Some`, but the channel is closed because the receiver was
+    // dropped when the service consumed and dropped its `UdpFlow`.
+    // Demand MUST NOT fire — the session is structurally done.
+    session.on_client_datagram(b"after-receiver-dropped", None);
+
+    // Small slack window for any spurious dispatch.
+    std::thread::sleep(Duration::from_millis(25));
+
+    assert_eq!(
+        demand.load(Ordering::Relaxed),
+        0,
+        "closed channel must not trigger on_client_read_demand; \
+         the session is gone, no point asking Swift to read more"
+    );
+
+    session.on_client_close();
     engine.stop(0);
 }
 
@@ -478,6 +570,7 @@ fn tcp_engine_stop_completes_when_on_server_bytes_callbacks_block() {
             .boxed(),
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
     };
     let engine = build_engine(handler);
 
