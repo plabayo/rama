@@ -47,6 +47,14 @@ pub struct QueryRef<'a> {
 }
 
 impl<'a> QueryRef<'a> {
+    /// Construct a [`QueryRef`] from a byte slice. `pub(crate)` — only
+    /// the parser / accessors should produce one.
+    #[must_use]
+    #[inline]
+    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
     /// Returns the raw bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {

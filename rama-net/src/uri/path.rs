@@ -17,6 +17,15 @@ pub struct PathRef<'a> {
 }
 
 impl<'a> PathRef<'a> {
+    /// Construct a [`PathRef`] from a byte slice. `pub(crate)` — only
+    /// the parser / accessors should produce one; external code goes
+    /// through [`Uri::path`](super::Uri::path).
+    #[must_use]
+    #[inline]
+    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
     /// Returns the raw on-the-wire path bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {

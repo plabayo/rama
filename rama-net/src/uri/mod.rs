@@ -104,10 +104,6 @@ pub struct Uri {
 /// `pub(crate)` so submodules (parser, tests, future M4 accessors) can
 /// pattern-match. Still not exposed publicly — `Uri` stays opaque.
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "M3 (b): Owned variant payload constructed by tests/parser, read by M5 accessors; Lazy payload only read in tests"
-)]
 pub(crate) enum UriInner {
     /// OPTIONS `*` request-target. No other components.
     Asterisk,
@@ -137,6 +133,75 @@ impl Uri {
     #[must_use]
     pub fn is_asterisk(&self) -> bool {
         matches!(self.inner, UriInner::Asterisk)
+    }
+
+    /// Returns the scheme component, or `None` if the URI has none
+    /// (origin-form URIs and the asterisk-form).
+    #[must_use]
+    pub fn scheme(&self) -> Option<&crate::Protocol> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => arc.scheme.as_ref(),
+            UriInner::Owned(arc) => arc.scheme.as_ref(),
+        }
+    }
+
+    /// Returns the path component, or `None` for the asterisk-form
+    /// (which has no path — the request-target *is* `*`).
+    ///
+    /// For every other form (origin, absolute with or without authority)
+    /// a path is always present per RFC 3986 §3.3 — possibly empty
+    /// (e.g. `http://example.com` has an empty path-abempty).
+    #[must_use]
+    pub fn path(&self) -> Option<PathRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => {
+                let (s, e) = arc.path;
+                Some(PathRef::new(&arc.bytes[s as usize..e as usize]))
+            }
+            UriInner::Owned(arc) => Some(PathRef::new(&arc.path)),
+        }
+    }
+
+    /// Returns the query component, or `None` if the URI has no `?`
+    /// delimiter on the wire.
+    ///
+    /// `Some(empty)` vs `None` matters — `?` followed by nothing is
+    /// distinct from no `?` at all (load-bearing for SigV4 / cache
+    /// keys / proxy fidelity).
+    #[must_use]
+    pub fn query(&self) -> Option<QueryRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => {
+                let (s, e) = arc.query?;
+                Some(QueryRef::new(&arc.bytes[s as usize..e as usize]))
+            }
+            UriInner::Owned(arc) => arc.query.as_ref().map(|q| QueryRef::new(q.as_bytes())),
+        }
+    }
+
+    /// Returns the fragment component, or `None` if the URI has no `#`
+    /// delimiter on the wire. Same `Some(empty)` vs `None` distinction
+    /// as [`query`](Self::query).
+    ///
+    /// Note: the wire writer for HTTP request-targets strips the
+    /// fragment per RFC 9110 §7.1. This accessor returns it for
+    /// inspection / logging / preservation purposes.
+    #[must_use]
+    pub fn fragment(&self) -> Option<FragmentRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => {
+                let (s, e) = arc.fragment?;
+                Some(FragmentRef::new(&arc.bytes[s as usize..e as usize]))
+            }
+            UriInner::Owned(arc) => arc
+                .fragment
+                .as_ref()
+                .map(|f| FragmentRef::new(f.as_bytes())),
+        }
     }
 
     /// Internal constructor for the asterisk variant.

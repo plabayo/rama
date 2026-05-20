@@ -21,6 +21,7 @@ use super::super::lazy::LazyUriRef;
 use crate::uri::{ParseError, Uri};
 
 pub(super) mod absolute_form;
+pub(super) mod accessors;
 pub(super) mod adversarial;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
