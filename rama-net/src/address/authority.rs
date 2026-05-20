@@ -1,5 +1,4 @@
-use crate::address::{HostWithOptPort, HostWithPort};
-use crate::user::Basic;
+use crate::address::{HostWithOptPort, HostWithPort, UserInfo};
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
 use rama_core::error::extra::OpaqueError;
@@ -12,7 +11,16 @@ use std::{
     net::{IpAddr, SocketAddr},
 };
 
-/// A [`Host`] with optionally a port and/or user-info ([`Basic`]).
+/// A [`Host`] with optionally a port and/or user-info ([`UserInfo`]).
+///
+/// `user_info` is the raw RFC 3986 §3.2.1 view (opaque bytes). For HTTP
+/// Basic-Auth interop call [`UserInfo::to_basic`] on it.
+///
+/// **Planned migration**: in a follow-up PR after the URI work, when
+/// rama's [`Basic`](crate::user::Basic) is relaxed to allow empty
+/// usernames (per RFC 7617 §2), the intent is to replace
+/// `Option<UserInfo>` here with `Option<Basic>`. See the
+/// [`crate::address::user_info`] module docs for the rationale.
 ///
 /// ## Examples
 ///
@@ -24,7 +32,7 @@ use std::{
 /// - joe:secret@example.com
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Authority {
-    pub user_info: Option<Basic>,
+    pub user_info: Option<UserInfo>,
     pub address: HostWithOptPort,
 }
 
@@ -39,10 +47,15 @@ impl Authority {
         }
     }
 
-    /// Creates a new [`Authority`] from a [`HostWithOptPort`] and user-info ([`Basic`]).
+    /// Creates a new [`Authority`] from a [`HostWithOptPort`] and user-info
+    /// ([`UserInfo`]).
+    ///
+    /// Not `const fn` — `UserInfo` wraps `Bytes` which has no const
+    /// constructor; use the builder ([`Self::with_user_info`]) plus
+    /// [`UserInfo::from_static_str`] for the const-friendly path.
     #[must_use]
     #[inline(always)]
-    pub const fn new_with_user_info(addr: HostWithOptPort, user_info: Basic) -> Self {
+    pub fn new_with_user_info(addr: HostWithOptPort, user_info: UserInfo) -> Self {
         Self {
             address: addr,
             user_info: Some(user_info),
@@ -282,8 +295,8 @@ impl Authority {
     }
 
     generate_set_and_with! {
-        /// (un)set user-info ([`Basic`]) of [`Authority`]
-        pub fn user_info(mut self, user_info: Option<Basic>) -> Self {
+        /// (un)set user-info ([`UserInfo`]) of [`Authority`]
+        pub fn user_info(mut self, user_info: Option<UserInfo>) -> Self {
             self.user_info = user_info;
             self
         }
@@ -429,12 +442,7 @@ impl From<DomainAddress> for Authority {
 impl fmt::Display for Authority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(ref user_info) = self.user_info {
-            let username = user_info.username();
-            if let Some(password) = user_info.password() {
-                write!(f, "{username}:{password}@")?;
-            } else {
-                write!(f, "{username}@")?;
-            }
+            write!(f, "{user_info}@")?;
         }
         self.address.fmt(f)
     }
@@ -482,7 +490,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     // before the boundary, not after).
     let mut user_info = None;
     if let Some(idx) = crate::address::parse_utils::find_userinfo_split(s.as_bytes()) {
-        user_info = Some(Basic::try_from(&s[..idx])?);
+        user_info = Some(UserInfo::try_from(&s[..idx])?);
         s = &s[idx + 1..];
     }
 
@@ -585,16 +593,13 @@ impl<'de> serde::Deserialize<'de> for Authority {
 
 #[cfg(test)]
 mod tests {
-    use crate::user::credentials::basic;
-    use rama_utils::str::non_empty_str;
-
     use super::*;
 
     #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(
         s: &str,
         authority: Authority,
-        user_info: Option<Basic>,
+        user_info: Option<UserInfo>,
         host: &str,
         port: Option<u16>,
     ) {
@@ -609,19 +614,12 @@ mod tests {
             ("example.com", (None, "example.com", None)),
             (
                 "user@example.com",
-                (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
-                    "example.com",
-                    None,
-                ),
+                (Some(UserInfo::from_static_str("user")), "example.com", None),
             ),
             (
                 "user:password@example.com",
                 (
-                    Some(Basic::new(
-                        non_empty_str!("user"),
-                        non_empty_str!("password"),
-                    )),
+                    Some(UserInfo::from_static_str("user:password")),
                     "example.com",
                     None,
                 ),
@@ -630,30 +628,27 @@ mod tests {
             (
                 "user@example.com:80",
                 (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
+                    Some(UserInfo::from_static_str("user")),
                     "example.com",
                     Some(80),
                 ),
             ),
             (
                 "user:secret@example.com:80",
-                (Some(basic!("user", "secret")), "example.com", Some(80)),
+                (
+                    Some(UserInfo::from_static_str("user:secret")),
+                    "example.com",
+                    Some(80),
+                ),
             ),
             (
                 "user@::1",
-                (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
-                    "::1",
-                    None,
-                ),
+                (Some(UserInfo::from_static_str("user")), "::1", None),
             ),
             (
                 "user:password@::1",
                 (
-                    Some(Basic::new(
-                        non_empty_str!("user"),
-                        non_empty_str!("password"),
-                    )),
+                    Some(UserInfo::from_static_str("user:password")),
                     "::1",
                     None,
                 ),
@@ -662,19 +657,12 @@ mod tests {
             ("[::1]:80", (None, "::1", Some(80))),
             (
                 "user@[::1]:80",
-                (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
-                    "::1",
-                    Some(80),
-                ),
+                (Some(UserInfo::from_static_str("user")), "::1", Some(80)),
             ),
             (
                 "user:password@[::1]:80",
                 (
-                    Some(Basic::new(
-                        non_empty_str!("user"),
-                        non_empty_str!("password"),
-                    )),
+                    Some(UserInfo::from_static_str("user:password")),
                     "::1",
                     Some(80),
                 ),
@@ -682,19 +670,12 @@ mod tests {
             ("127.0.0.1", (None, "127.0.0.1", None)),
             (
                 "user@127.0.0.1",
-                (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
-                    "127.0.0.1",
-                    None,
-                ),
+                (Some(UserInfo::from_static_str("user")), "127.0.0.1", None),
             ),
             (
                 "user:password@127.0.0.1",
                 (
-                    Some(Basic::new(
-                        non_empty_str!("user"),
-                        non_empty_str!("password"),
-                    )),
+                    Some(UserInfo::from_static_str("user:password")),
                     "127.0.0.1",
                     None,
                 ),
@@ -703,14 +684,18 @@ mod tests {
             (
                 "user@127.0.0.1:80",
                 (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
+                    Some(UserInfo::from_static_str("user")),
                     "127.0.0.1",
                     Some(80),
                 ),
             ),
             (
                 "user:secret@127.0.0.1:80",
-                (Some(basic!("user", "secret")), "127.0.0.1", Some(80)),
+                (
+                    Some(UserInfo::from_static_str("user:secret")),
+                    "127.0.0.1",
+                    Some(80),
+                ),
             ),
             (
                 "2001:db8:3333:4444:5555:6666:7777:8888",
@@ -719,7 +704,7 @@ mod tests {
             (
                 "user@2001:db8:3333:4444:5555:6666:7777:8888",
                 (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
+                    Some(UserInfo::from_static_str("user")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     None,
                 ),
@@ -727,7 +712,7 @@ mod tests {
             (
                 "user:secret@2001:db8:3333:4444:5555:6666:7777:8888",
                 (
-                    Some(basic!("user", "secret")),
+                    Some(UserInfo::from_static_str("user:secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     None,
                 ),
@@ -739,7 +724,7 @@ mod tests {
             (
                 "user@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
                 (
-                    Some(Basic::new_insecure(non_empty_str!("user"))),
+                    Some(UserInfo::from_static_str("user")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     Some(80),
                 ),
@@ -747,7 +732,7 @@ mod tests {
             (
                 "user:secret@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
                 (
-                    Some(basic!("user", "secret")),
+                    Some(UserInfo::from_static_str("user:secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     Some(80),
                 ),
@@ -813,12 +798,10 @@ mod tests {
             "example:com",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
-            ":foo@80",
-            ":foo@example.com",
-            ":foo@127.0.0.1",
-            ":foo@example.com:80",
-            ":foo@127.0.0.1:80",
-            ":foo@:80",
+            // `:foo@host` used to be invalid because Basic required a
+            // non-empty user. UserInfo is the raw RFC 3986 view — it
+            // accepts these — so only `:foo@:80` (empty host) remains
+            // invalid here.
             ":foo@:80",
             // IPv6 zone identifiers (RFC 9844 `%25en0` wire form) — rejected
             // by both eager and lazy paths with the same `parse_utils`
@@ -886,9 +869,10 @@ mod tests {
         let auth = Authority::try_from("user@name:pass@example.com:80").unwrap();
         assert_eq!(auth.address.host, "example.com");
         assert_eq!(auth.address.port, Some(80));
-        let basic = auth.user_info.as_ref().expect("userinfo present");
-        assert_eq!(basic.username(), "user@name");
-        assert_eq!(basic.password(), Some("pass"));
+        let ui = auth.user_info.as_ref().expect("userinfo present");
+        let (user, pass) = ui.split_user_password();
+        assert_eq!(user, b"user@name");
+        assert_eq!(pass, Some(&b"pass"[..]));
     }
 
     /// Regression: RFC 6874 IPv6 zone-ids must never be accepted in an

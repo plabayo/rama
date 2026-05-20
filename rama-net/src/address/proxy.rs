@@ -53,7 +53,13 @@ impl TryFrom<&str> for ProxyAddress {
         Ok(Self {
             protocol,
             address: HostWithPort::new(host, port),
-            credential: user_info.map(ProxyCredential::Basic),
+            // RFC 3986 userinfo → HTTP Basic-Auth credential. Drop the
+            // credential (rather than fail the parse) if it can't be
+            // expressed as Basic (e.g. empty user). The proxy will
+            // attempt unauthenticated.
+            credential: user_info
+                .and_then(|ui| ui.to_basic().ok())
+                .map(ProxyCredential::Basic),
         })
     }
 }

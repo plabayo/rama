@@ -29,6 +29,10 @@ mod authority;
 #[doc(inline)]
 pub use authority::Authority;
 
+mod user_info;
+#[doc(inline)]
+pub use user_info::{UserInfo, UserInfoRef};
+
 mod socket_address;
 #[doc(inline)]
 pub use socket_address::SocketAddress;
