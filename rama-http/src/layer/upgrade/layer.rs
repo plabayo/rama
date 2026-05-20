@@ -11,7 +11,7 @@ use std::{convert::Infallible, fmt, sync::Arc};
 ///
 /// See [`UpgradeService`] for more details.
 ///
-/// [`UpgradeService`]: crate::server::layer::upgrade::UpgradeService
+/// [`UpgradeService`]: crate::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     exec: Executor,
