@@ -3746,6 +3746,7 @@ dependencies = [
  "itertools 0.14.0",
  "libc",
  "md5",
+ "memchr",
  "nom 8.0.0",
  "parking_lot",
  "percent-encoding",

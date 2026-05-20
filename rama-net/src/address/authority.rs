@@ -20,7 +20,7 @@ use std::{
 /// rama's [`Basic`](crate::user::Basic) is relaxed to allow empty
 /// usernames (per RFC 7617 §2), the intent is to replace
 /// `Option<UserInfo>` here with `Option<Basic>`. See the
-/// [`crate::address::user_info`] module docs for the rationale.
+/// `user_info` module docs for the rationale.
 ///
 /// ## Examples
 ///

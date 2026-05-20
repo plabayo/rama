@@ -57,7 +57,7 @@ pub use input::IntoUriInput;
 
 mod path;
 #[doc(inline)]
-pub use path::PathRef;
+pub use path::{PathRef, PathSegment, PathSegments};
 
 mod query;
 #[doc(inline)]

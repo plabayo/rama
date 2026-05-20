@@ -25,6 +25,7 @@ pub(super) mod accessors;
 pub(super) mod adversarial;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
+pub(super) mod path_segments;
 pub(super) mod rfc3986_examples;
 pub(super) mod smoke;
 pub(super) mod strict_mode;

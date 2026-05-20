@@ -56,6 +56,7 @@ hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
 md5 = { workspace = true, optional = true }
+memchr = { workspace = true }
 nom = { workspace = true }
 parking_lot = { workspace = true }
 percent-encoding = { workspace = true }

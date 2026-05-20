@@ -4,9 +4,10 @@
 //! `http::Uri`, rama preserves fragments through parse/serialize round-trips,
 //! but the wire writer for HTTP request-targets *strips* the fragment per
 //! RFC 9110 §7.1 — fragments are not transmitted as client request-targets.
-//!
-//! Skeleton.
 
+use std::borrow::Cow;
+
+use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
 
 /// Owned fragment component (the part after `#`, sans the `#` itself).
@@ -22,11 +23,20 @@ impl Fragment {
         &self.bytes
     }
 
-    /// Returns the fragment as `&str`.
+    /// Returns the raw fragment as `&str` (no percent-decoding).
+    /// Parser-validated UTF-8.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub fn as_raw_str(&self) -> &str {
         // Safety: parser enforces UTF-8.
         unsafe { std::str::from_utf8_unchecked(&self.bytes) }
+    }
+
+    /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
+    /// are present; `Cow::Owned` otherwise. UTF-8 errors fall back to
+    /// U+FFFD.
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'_, str> {
+        percent_decode(&self.bytes).decode_utf8_lossy()
     }
 
     /// Borrowed view.
@@ -57,11 +67,20 @@ impl<'a> FragmentRef<'a> {
         self.bytes
     }
 
-    /// Returns the fragment as `&str`.
+    /// Returns the raw fragment as `&str` (no percent-decoding).
+    /// UTF-8 by parser invariant.
     #[must_use]
-    pub fn as_str(&self) -> &'a str {
+    pub fn as_raw_str(&self) -> &'a str {
         // Safety: parser enforces UTF-8.
         unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
+    /// Percent-decoded fragment. `Cow::Borrowed` when no `%XX` escapes
+    /// are present; `Cow::Owned` otherwise. UTF-8 errors fall back to
+    /// U+FFFD.
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'a, str> {
+        percent_decode(self.bytes).decode_utf8_lossy()
     }
 
     /// Returns an owned copy.

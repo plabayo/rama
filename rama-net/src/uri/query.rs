@@ -6,8 +6,11 @@
 //! in this module's neighbourhood (URL-query in this file in M4, and
 //! application/x-www-form-urlencoded in `super::form` later).
 //!
-//! Skeleton — iteration and mutation arrive in M4 / M5.
+//! Iteration (key=value pair access) arrives in M4 (e); mutation in M5.
 
+use std::borrow::Cow;
+
+use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
 
 /// Owned query component.
@@ -26,11 +29,20 @@ impl Query {
         &self.bytes
     }
 
-    /// Returns the raw query as a `&str` (guaranteed UTF-8 by the parser).
+    /// Returns the raw query as a `&str` (no percent-decoding).
+    /// Parser-validated UTF-8.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub fn as_raw_str(&self) -> &str {
         // Safety: parser enforces UTF-8.
         unsafe { std::str::from_utf8_unchecked(&self.bytes) }
+    }
+
+    /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
+    /// escapes are present; `Cow::Owned` otherwise. UTF-8 errors fall
+    /// back to U+FFFD (matches curl, browsers).
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'_, str> {
+        percent_decode(&self.bytes).decode_utf8_lossy()
     }
 
     /// Borrowed view.
@@ -61,11 +73,20 @@ impl<'a> QueryRef<'a> {
         self.bytes
     }
 
-    /// Returns the raw query as `&str` (UTF-8 by parser).
+    /// Returns the raw query as `&str` (no percent-decoding). UTF-8 by
+    /// parser invariant.
     #[must_use]
-    pub fn as_str(&self) -> &'a str {
+    pub fn as_raw_str(&self) -> &'a str {
         // Safety: parser enforces UTF-8.
         unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
+    /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
+    /// escapes are present; `Cow::Owned` otherwise. UTF-8 errors fall
+    /// back to U+FFFD.
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'a, str> {
+        percent_decode(self.bytes).decode_utf8_lossy()
     }
 
     /// Returns an owned copy.
