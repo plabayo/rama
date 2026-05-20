@@ -691,7 +691,7 @@ where
                 extensions,
             }) => {
                 #[cfg(not(feature = "compression"))]
-                if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get_ref() {
+                if let Some(Extension::PerMessageDeflate(_)) = extensions.get_ref() {
                     tracing::error!(
                         "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
                     );
@@ -722,7 +722,7 @@ where
 
                                     tracing::trace!("check if pmd settings have to be applied to WS cfg...");
 
-                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = req.extensions().get_ref() {
+                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = extensions.get_ref() {
                                         tracing::trace!(
                                             "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                                         );
@@ -899,7 +899,7 @@ mod tests {
         let UpgradeResponse {
             response: resp,
             request: req,
-            extensions: _,
+            extensions,
         } = acceptor.serve(request).await.unwrap();
         match req.version() {
             Version::HTTP_10 | Version::HTTP_11 => {
@@ -919,17 +919,13 @@ mod tests {
                 "request = {req:?}"
             );
             assert_eq!(
-                req.extensions().get_ref::<AcceptedWebSocketProtocol>(),
+                extensions.get_ref::<AcceptedWebSocketProtocol>(),
                 Some(&expected_accepted_protocol),
                 "request = {req:?}"
             );
         } else {
             assert!(accepted_protocol.is_none());
-            assert!(
-                req.extensions()
-                    .get_ref::<AcceptedWebSocketProtocol>()
-                    .is_none()
-            );
+            assert!(extensions.get_ref::<AcceptedWebSocketProtocol>().is_none());
         }
     }
 
