@@ -1,29 +1,26 @@
 //! `QueryRef::pairs()` — iteration over URI query `name[=value]` pairs.
-//!
-//! Splitting follows WHATWG URLSearchParams / `application/x-www-form-urlencoded`
-//! parse rules. See `QueryRef::pairs` rustdoc for the contract.
 
 use std::borrow::Cow;
 
 use super::parse_graceful;
 use crate::uri::Uri;
 
-/// Helper: parse `uri_str` and return its query pairs as `(name, value)`
-/// tuples using raw `&str` form (no decoding).
+/// Collect raw (no-decode) `(name, value)` tuples from `uri_str`'s query.
 fn raw_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
-    let u: Uri = parse_graceful(uri_str).unwrap();
-    u.query()
+    parse_graceful(uri_str)
+        .unwrap()
+        .query()
         .unwrap()
         .pairs()
         .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
         .collect()
 }
 
-/// Helper: parse `uri_str` and return its query pairs as form-decoded
-/// `(name, value)` tuples.
+/// Collect form-decoded `(name, value)` tuples from `uri_str`'s query.
 fn decoded_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
-    let u: Uri = parse_graceful(uri_str).unwrap();
-    u.query()
+    parse_graceful(uri_str)
+        .unwrap()
+        .query()
         .unwrap()
         .pairs()
         .map(|p| {
@@ -35,336 +32,71 @@ fn decoded_pairs(uri_str: &str) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
-// ----------------------------------------------------------------------
-// Basic shapes
-// ----------------------------------------------------------------------
-
-#[test]
-fn single_bare_key() {
-    // `?foo` — value None.
-    assert_eq!(raw_pairs("/p?foo"), vec![("foo".into(), None)]);
-}
-
-#[test]
-fn single_key_empty_value() {
-    // `?foo=` — value Some("").
-    assert_eq!(raw_pairs("/p?foo="), vec![("foo".into(), Some("".into()))]);
-}
-
-#[test]
-fn single_key_value() {
-    assert_eq!(
-        raw_pairs("/p?foo=bar"),
-        vec![("foo".into(), Some("bar".into()))]
-    );
-}
-
-#[test]
-fn two_pairs() {
-    assert_eq!(
-        raw_pairs("/p?foo=bar&baz=qux"),
-        vec![
-            ("foo".into(), Some("bar".into())),
-            ("baz".into(), Some("qux".into())),
-        ]
-    );
-}
-
-#[test]
-fn many_bare_keys() {
-    assert_eq!(
-        raw_pairs("/p?a&b&c"),
-        vec![("a".into(), None), ("b".into(), None), ("c".into(), None),]
-    );
-}
-
-#[test]
-fn mixed_bare_and_valued() {
-    assert_eq!(
-        raw_pairs("/p?a&b=2&c"),
-        vec![
-            ("a".into(), None),
-            ("b".into(), Some("2".into())),
-            ("c".into(), None),
-        ]
-    );
+/// Build the expected shape: `[("a", None), ("b", Some(""))]`-style literals
+/// expand to the heap-owned form `raw_pairs` returns.
+fn expected(pairs: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+    pairs
+        .iter()
+        .map(|(n, v)| ((*n).to_owned(), v.map(str::to_owned)))
+        .collect()
 }
 
 // ----------------------------------------------------------------------
-// Bare-key vs empty-value distinction
+// Splitting shapes (raw view) — covers basic shapes, bare-vs-empty,
+// empty-fragment drop, first-`=` only.
 // ----------------------------------------------------------------------
 
 #[test]
-fn bare_vs_empty_value_distinct() {
-    let bare = raw_pairs("/p?foo");
-    let empty = raw_pairs("/p?foo=");
-    assert_ne!(bare, empty);
-    assert_eq!(bare[0].1, None);
-    assert_eq!(empty[0].1, Some(String::new()));
+fn raw_pair_shapes() {
+    for (input, want) in [
+        // single pair shapes
+        ("/p?foo", &[("foo", None)][..]),
+        ("/p?foo=", &[("foo", Some(""))]),
+        ("/p?foo=bar", &[("foo", Some("bar"))]),
+        // multiple pairs
+        (
+            "/p?foo=bar&baz=qux",
+            &[("foo", Some("bar")), ("baz", Some("qux"))],
+        ),
+        ("/p?a&b&c", &[("a", None), ("b", None), ("c", None)]),
+        ("/p?a&b=2&c", &[("a", None), ("b", Some("2")), ("c", None)]),
+        // empty-fragment dropping (leading/trailing/internal `&`)
+        ("/p?&foo=bar", &[("foo", Some("bar"))]),
+        ("/p?foo=bar&", &[("foo", Some("bar"))]),
+        (
+            "/p?foo=bar&&baz=qux",
+            &[("foo", Some("bar")), ("baz", Some("qux"))],
+        ),
+        ("/p?&a=1&&b=2&", &[("a", Some("1")), ("b", Some("2"))]),
+        // first `=` only splitting
+        ("/p?a=b=c", &[("a", Some("b=c"))]),
+        ("/p?=value", &[("", Some("value"))]),
+        ("/p?=", &[("", Some(""))]),
+        // absolute-form sanity
+        (
+            "https://api.example.com/search?q=rust&page=2",
+            &[("q", Some("rust")), ("page", Some("2"))],
+        ),
+    ] {
+        assert_eq!(raw_pairs(input), expected(want), "input: {input:?}");
+    }
 }
 
 #[test]
-fn has_value_reflects_equals_presence() {
-    let u: Uri = parse_graceful("/p?bare&empty=&v=1").unwrap();
-    let pairs: Vec<_> = u.query().unwrap().pairs().collect();
-    assert_eq!(pairs.len(), 3);
-    assert!(!pairs[0].has_value()); // bare
-    assert!(pairs[1].has_value()); // empty=
-    assert!(pairs[2].has_value()); // v=1
-}
-
-// ----------------------------------------------------------------------
-// Empty-fragment dropping
-// ----------------------------------------------------------------------
-
-#[test]
-fn leading_ampersand_dropped() {
-    // `?&foo=bar` — leading empty fragment dropped.
-    assert_eq!(
-        raw_pairs("/p?&foo=bar"),
-        vec![("foo".into(), Some("bar".into()))]
-    );
-}
-
-#[test]
-fn trailing_ampersand_dropped() {
-    // `?foo=bar&` — trailing empty fragment dropped.
-    assert_eq!(
-        raw_pairs("/p?foo=bar&"),
-        vec![("foo".into(), Some("bar".into()))]
-    );
-}
-
-#[test]
-fn double_ampersand_dropped() {
-    // `?foo=bar&&baz=qux` — internal empty fragment dropped.
-    assert_eq!(
-        raw_pairs("/p?foo=bar&&baz=qux"),
-        vec![
-            ("foo".into(), Some("bar".into())),
-            ("baz".into(), Some("qux".into())),
-        ]
-    );
-}
-
-#[test]
-fn only_ampersands_yields_nothing() {
-    // `?&&&` — all empty.
-    let u: Uri = parse_graceful("/p?&&&").unwrap();
-    let pairs: Vec<_> = u.query().unwrap().pairs().collect();
-    assert!(pairs.is_empty());
-}
-
-#[test]
-fn empty_query_yields_nothing() {
-    // `?` — empty query, no pairs.
-    let u: Uri = parse_graceful("/p?").unwrap();
-    // The query bytes are empty; iterator returns nothing.
-    let pairs: Vec<_> = u.query().unwrap().pairs().collect();
-    assert!(pairs.is_empty());
-}
-
-// ----------------------------------------------------------------------
-// First-`=` only splitting
-// ----------------------------------------------------------------------
-
-#[test]
-fn split_on_first_equals_only() {
-    // `a=b=c` → name="a", value="b=c".
-    assert_eq!(
-        raw_pairs("/p?a=b=c"),
-        vec![("a".into(), Some("b=c".into()))]
-    );
-}
-
-#[test]
-fn empty_name_with_value() {
-    // `?=value` → name="", value=Some("value"). Unusual but legal.
-    assert_eq!(
-        raw_pairs("/p?=value"),
-        vec![("".into(), Some("value".into()))]
-    );
-}
-
-#[test]
-fn empty_name_empty_value() {
-    // `?=` → name="", value=Some("").
-    assert_eq!(raw_pairs("/p?="), vec![("".into(), Some("".into()))]);
-}
-
-// ----------------------------------------------------------------------
-// Percent + form decoding
-// ----------------------------------------------------------------------
-
-#[test]
-fn decoded_percent_in_value() {
-    assert_eq!(
-        decoded_pairs("/p?msg=hello%20world"),
-        vec![("msg".into(), Some("hello world".into()))]
-    );
-}
-
-#[test]
-fn decoded_plus_is_space() {
-    // Form convention: `+` → space.
-    assert_eq!(
-        decoded_pairs("/p?msg=hello+world"),
-        vec![("msg".into(), Some("hello world".into()))]
-    );
-}
-
-#[test]
-fn decoded_plus_and_percent_mixed() {
-    // `hello+wide%20world` → "hello wide world".
-    assert_eq!(
-        decoded_pairs("/p?msg=hello+wide%20world"),
-        vec![("msg".into(), Some("hello wide world".into()))]
-    );
-}
-
-#[test]
-fn decoded_plus_in_name() {
-    // `+` works in names too.
-    assert_eq!(
-        decoded_pairs("/p?with+space=v"),
-        vec![("with space".into(), Some("v".into()))]
-    );
-}
-
-#[test]
-fn decoded_utf8_value() {
-    // `%C3%A9` → `é`.
-    assert_eq!(
-        decoded_pairs("/p?city=caf%C3%A9"),
-        vec![("city".into(), Some("café".into()))]
-    );
-}
-
-#[test]
-fn decoded_invalid_utf8_uses_replacement_char() {
-    // `%FF` is not valid UTF-8 standalone — lossy decode → U+FFFD.
-    let u: Uri = parse_graceful("/p?x=%FF").unwrap();
-    let pair = u.query().unwrap().pairs().next().unwrap();
-    let decoded = pair.value_decoded().unwrap();
-    assert!(decoded.contains('\u{FFFD}'), "got {decoded:?}");
-}
-
-#[test]
-fn decoded_malformed_percent_passes_through() {
-    // `%ZZ` is not valid hex — the form-decoder emits the literal `%` and
-    // continues, matching the `percent_encoding` crate's behaviour. `Z`s
-    // pass through unchanged.
-    assert_eq!(
-        decoded_pairs("/p?x=a%ZZb"),
-        vec![("x".into(), Some("a%ZZb".into()))]
-    );
-}
-
-#[test]
-fn decoded_trailing_percent_passes_through() {
-    // Trailing `%` with no following chars — literal `%`.
-    assert_eq!(
-        decoded_pairs("/p?x=trail%"),
-        vec![("x".into(), Some("trail%".into()))]
-    );
-}
-
-#[test]
-fn decoded_percent_with_one_char_passes_through() {
-    // `%A` with only one char left — literal `%A`.
-    assert_eq!(
-        decoded_pairs("/p?x=trail%A"),
-        vec![("x".into(), Some("trail%A".into()))]
-    );
-}
-
-#[test]
-fn decoded_mixed_case_hex() {
-    // Both `%ab` and `%AB` work; `%C3%a9` (mixed) decodes to `é`.
-    assert_eq!(
-        decoded_pairs("/p?x=caf%C3%a9"),
-        vec![("x".into(), Some("café".into()))]
-    );
-}
-
-#[test]
-fn raw_does_not_decode_plus() {
-    // `_raw` view keeps `+` as `+`.
-    assert_eq!(
-        raw_pairs("/p?a=b+c"),
-        vec![("a".into(), Some("b+c".into()))]
-    );
-}
-
-#[test]
-fn raw_does_not_decode_percent() {
-    // `_raw` view keeps `%20` literal.
-    assert_eq!(
-        raw_pairs("/p?a=b%20c"),
-        vec![("a".into(), Some("b%20c".into()))]
-    );
-}
-
-// ----------------------------------------------------------------------
-// Cow::Borrowed vs Owned
-// ----------------------------------------------------------------------
-
-#[test]
-fn decoded_no_escape_borrows() {
-    // No `%` and no `+` → Cow::Borrowed for both name and value.
-    let u: Uri = parse_graceful("/p?foo=bar").unwrap();
-    let pair = u.query().unwrap().pairs().next().unwrap();
-    assert!(matches!(pair.name_decoded(), Cow::Borrowed(_)));
-    assert!(matches!(pair.value_decoded(), Some(Cow::Borrowed(_))));
-}
-
-#[test]
-fn decoded_with_percent_owns() {
-    let u: Uri = parse_graceful("/p?foo=hello%20world").unwrap();
-    let pair = u.query().unwrap().pairs().next().unwrap();
-    assert!(matches!(pair.value_decoded(), Some(Cow::Owned(_))));
-}
-
-#[test]
-fn decoded_with_plus_owns() {
-    // `+` triggers form-decoding allocation.
-    let u: Uri = parse_graceful("/p?foo=a+b").unwrap();
-    let pair = u.query().unwrap().pairs().next().unwrap();
-    assert!(matches!(pair.value_decoded(), Some(Cow::Owned(_))));
-}
-
-// ----------------------------------------------------------------------
-// Byte / Option accessors
-// ----------------------------------------------------------------------
-
-#[test]
-fn name_bytes_and_value_bytes() {
-    let u: Uri = parse_graceful("/p?foo=bar&baz").unwrap();
-    let pairs: Vec<_> = u.query().unwrap().pairs().collect();
-    assert_eq!(pairs[0].name_bytes(), b"foo");
-    assert_eq!(pairs[0].value_bytes(), Some(b"bar".as_ref()));
-    assert_eq!(pairs[1].name_bytes(), b"baz");
-    assert_eq!(pairs[1].value_bytes(), None);
-}
-
-// ----------------------------------------------------------------------
-// Iterator behaviour
-// ----------------------------------------------------------------------
-
-#[test]
-fn iterator_fused_after_exhaustion() {
-    let u: Uri = parse_graceful("/p?foo=bar").unwrap();
-    let mut it = u.query().unwrap().pairs();
-    assert!(it.next().is_some());
-    assert!(it.next().is_none());
-    // Fused — subsequent calls keep returning None.
-    assert!(it.next().is_none());
-    assert!(it.next().is_none());
+fn empty_or_all_separator_queries_yield_nothing() {
+    for input in ["/p?", "/p?&", "/p?&&", "/p?&&&"] {
+        let u: Uri = parse_graceful(input).unwrap();
+        assert_eq!(
+            u.query().unwrap().pairs().count(),
+            0,
+            "expected no pairs for {input:?}",
+        );
+    }
 }
 
 #[test]
 fn iterator_count_matches() {
-    for (uri, expected_count) in [
+    for (input, want) in [
         ("/p?foo", 1usize),
         ("/p?foo=bar", 1),
         ("/p?a&b&c", 3),
@@ -373,44 +105,119 @@ fn iterator_count_matches() {
         ("/p?", 0),
         ("/p?a&&b&", 2),
     ] {
-        let u: Uri = parse_graceful(uri).unwrap();
-        assert_eq!(
-            u.query().unwrap().pairs().count(),
-            expected_count,
-            "count mismatch for {uri:?}"
+        let u: Uri = parse_graceful(input).unwrap();
+        assert_eq!(u.query().unwrap().pairs().count(), want, "input: {input:?}",);
+    }
+}
+
+// ----------------------------------------------------------------------
+// Bare-vs-empty-value distinction
+// ----------------------------------------------------------------------
+
+#[test]
+fn has_value_reflects_equals_presence() {
+    let u: Uri = parse_graceful("/p?bare&empty=&v=1").unwrap();
+    let pairs: Vec<_> = u.query().unwrap().pairs().collect();
+    assert_eq!(pairs.len(), 3);
+    assert!(!pairs[0].has_value(), "?bare → no value");
+    assert!(pairs[1].has_value(), "?empty= → Some(\"\")");
+    assert!(pairs[2].has_value(), "?v=1 → Some(\"1\")");
+    assert_eq!(pairs[0].value_bytes(), None);
+    assert_eq!(pairs[1].value_bytes(), Some(b"".as_ref()));
+    assert_eq!(pairs[2].value_bytes(), Some(b"1".as_ref()));
+}
+
+// ----------------------------------------------------------------------
+// Form-decoding (`+` → space, `%XX` → byte) — covers basic decode,
+// utf-8, malformed pct passthrough, mixed-case hex, raw-doesn't-decode.
+// ----------------------------------------------------------------------
+
+#[test]
+fn form_decoding_shapes() {
+    for (input, want) in [
+        ("/p?msg=hello%20world", &[("msg", Some("hello world"))][..]),
+        ("/p?msg=hello+world", &[("msg", Some("hello world"))]),
+        (
+            "/p?msg=hello+wide%20world",
+            &[("msg", Some("hello wide world"))],
+        ),
+        ("/p?with+space=v", &[("with space", Some("v"))]),
+        ("/p?city=caf%C3%A9", &[("city", Some("café"))]),
+        // mixed-case hex
+        ("/p?x=caf%C3%a9", &[("x", Some("café"))]),
+        // malformed / trailing `%` → literal passthrough
+        ("/p?x=a%ZZb", &[("x", Some("a%ZZb"))]),
+        ("/p?x=trail%", &[("x", Some("trail%"))]),
+        ("/p?x=trail%A", &[("x", Some("trail%A"))]),
+    ] {
+        assert_eq!(decoded_pairs(input), expected(want), "input: {input:?}");
+    }
+}
+
+#[test]
+fn raw_view_keeps_plus_and_percent_literal() {
+    for (input, want) in [
+        ("/p?a=b+c", &[("a", Some("b+c"))][..]),
+        ("/p?a=b%20c", &[("a", Some("b%20c"))]),
+    ] {
+        assert_eq!(raw_pairs(input), expected(want), "input: {input:?}");
+    }
+}
+
+#[test]
+fn decoded_invalid_utf8_uses_replacement_char() {
+    // `%FF` standalone is not valid UTF-8; lossy decode emits U+FFFD.
+    let u: Uri = parse_graceful("/p?x=%FF").unwrap();
+    let pair = u.query().unwrap().pairs().next().unwrap();
+    let decoded = pair.value_decoded().unwrap();
+    assert!(decoded.contains('\u{FFFD}'), "got {decoded:?}");
+}
+
+// ----------------------------------------------------------------------
+// Cow::Borrowed vs Owned — verifies the documented zero-copy behaviour.
+// ----------------------------------------------------------------------
+
+#[test]
+fn decoded_borrows_when_no_escapes_else_owns() {
+    let u: Uri = parse_graceful("/p?foo=bar").unwrap();
+    let pair = u.query().unwrap().pairs().next().unwrap();
+    assert!(matches!(pair.name_decoded(), Cow::Borrowed(_)));
+    assert!(matches!(pair.value_decoded(), Some(Cow::Borrowed(_))));
+
+    for input in ["/p?foo=hello%20world", "/p?foo=a+b"] {
+        let u: Uri = parse_graceful(input).unwrap();
+        let pair = u.query().unwrap().pairs().next().unwrap();
+        assert!(
+            matches!(pair.value_decoded(), Some(Cow::Owned(_))),
+            "expected Cow::Owned for {input:?}",
         );
     }
 }
 
 // ----------------------------------------------------------------------
-// Absolute-form URIs
+// Iterator behaviour & owned/borrowed parity
 // ----------------------------------------------------------------------
 
 #[test]
-fn absolute_form_pairs() {
-    assert_eq!(
-        raw_pairs("https://api.example.com/search?q=rust&page=2"),
-        vec![
-            ("q".into(), Some("rust".into())),
-            ("page".into(), Some("2".into())),
-        ]
-    );
+fn iterator_fused_after_exhaustion() {
+    let u: Uri = parse_graceful("/p?foo=bar").unwrap();
+    let mut it = u.query().unwrap().pairs();
+    assert!(it.next().is_some());
+    assert!(it.next().is_none());
+    assert!(it.next().is_none());
+    assert!(it.next().is_none());
 }
-
-// ----------------------------------------------------------------------
-// Owned Query::pairs() pass-through
-// ----------------------------------------------------------------------
 
 #[test]
 fn owned_query_pairs_matches_ref() {
     let u: Uri = parse_graceful("/p?a=1&b=2").unwrap();
     let q_ref = u.query().unwrap();
-    let q_owned = q_ref.to_owned();
     let from_ref: Vec<_> = q_ref
         .pairs()
         .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
         .collect();
-    let from_owned: Vec<_> = q_owned
+    let from_owned: Vec<_> = q_ref
+        .to_owned()
         .pairs()
         .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
         .collect();

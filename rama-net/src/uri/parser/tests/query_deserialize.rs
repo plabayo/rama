@@ -1,9 +1,5 @@
 //! `QueryRef::deserialize` / `Query::deserialize` — serde-into-struct
 //! coverage via `serde_html_form`.
-//!
-//! Behavioural pins for the M4 (f) API: form-decoding semantics, bare-key
-//! handling, repeated keys → `Vec<T>`, borrowed vs owned deserialization,
-//! and error surfaces.
 
 use std::borrow::Cow;
 
@@ -36,7 +32,7 @@ fn into_simple_struct() {
 }
 
 #[test]
-fn into_optional_fields() {
+fn into_optional_fields_some_and_none() {
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct Params {
         foo: Option<String>,
@@ -76,51 +72,34 @@ fn into_hashmap() {
 }
 
 // ----------------------------------------------------------------------
-// Form-urlencoded decoding
+// Form-urlencoded decoding (`+` → space, `%XX` → byte, UTF-8)
 // ----------------------------------------------------------------------
 
 #[test]
-fn percent_decoding_via_serde() {
-    #[derive(Deserialize, Debug, PartialEq, Eq)]
+fn form_decoding_through_serde() {
+    #[derive(Deserialize)]
     struct Params {
         msg: String,
     }
-    let uri: Uri = parse_graceful("/p?msg=hello%20world").unwrap();
-    let got: Params = uri.query().unwrap().deserialize().unwrap();
-    assert_eq!(got.msg, "hello world");
-}
-
-#[test]
-fn plus_decoding_via_serde() {
-    // Form convention: `+` → space.
-    #[derive(Deserialize, Debug, PartialEq, Eq)]
-    struct Params {
-        msg: String,
+    for (input, want) in [
+        ("/p?msg=hello%20world", "hello world"),
+        ("/p?msg=hello+world", "hello world"),
+        ("/p?msg=hello+wide%20world", "hello wide world"),
+        ("/p?msg=caf%C3%A9", "café"),
+    ] {
+        let uri: Uri = parse_graceful(input).unwrap();
+        let got: Params = uri.query().unwrap().deserialize().unwrap();
+        assert_eq!(got.msg, want, "input: {input:?}");
     }
-    let uri: Uri = parse_graceful("/p?msg=hello+world").unwrap();
-    let got: Params = uri.query().unwrap().deserialize().unwrap();
-    assert_eq!(got.msg, "hello world");
-}
-
-#[test]
-fn utf8_via_serde() {
-    #[derive(Deserialize, Debug, PartialEq, Eq)]
-    struct Params {
-        city: String,
-    }
-    let uri: Uri = parse_graceful("/p?city=caf%C3%A9").unwrap();
-    let got: Params = uri.query().unwrap().deserialize().unwrap();
-    assert_eq!(got.city, "café");
 }
 
 // ----------------------------------------------------------------------
-// Borrowed deserialization — the documented edge from the rustdoc
+// Borrowed deserialization edge — `&'a str` only when escape-free,
+// `Cow<'a, str>` always succeeds.
 // ----------------------------------------------------------------------
 
 #[test]
 fn borrowed_str_field_zero_copy_when_no_escapes() {
-    // No `%` and no `+` in `foo=bar` — `&str` deserializes by borrowing
-    // straight from the query bytes.
     #[derive(Deserialize, Debug)]
     struct Params<'a> {
         foo: &'a str,
@@ -129,21 +108,14 @@ fn borrowed_str_field_zero_copy_when_no_escapes() {
     let query = uri.query().unwrap();
     let got: Params<'_> = query.deserialize().unwrap();
     assert_eq!(got.foo, "bar");
-    // Verify it really borrowed: pointer falls inside the query bytes.
+    // Pointer is inside the original query slice — verifies zero-copy.
     let query_bytes = query.as_bytes();
-    let foo_ptr = got.foo.as_ptr();
-    let q_start = query_bytes.as_ptr();
-    // Safety: just a pointer-arithmetic check, not dereferencing.
-    let offset = unsafe { foo_ptr.offset_from(q_start) };
-    assert!(
-        (0..query_bytes.len() as isize).contains(&offset),
-        "expected got.foo to borrow from the query slice (offset {offset})",
-    );
+    let offset = unsafe { got.foo.as_ptr().offset_from(query_bytes.as_ptr()) };
+    assert!((0..query_bytes.len() as isize).contains(&offset));
 }
 
 #[test]
 fn borrowed_str_field_fails_when_escapes_present() {
-    // `%20` requires decoding → can't borrow → `&str` deserialize fails.
     #[derive(Deserialize, Debug)]
     #[expect(
         dead_code,
@@ -152,50 +124,45 @@ fn borrowed_str_field_fails_when_escapes_present() {
     struct Params<'a> {
         foo: &'a str,
     }
-    let uri: Uri = parse_graceful("/p?foo=hello%20world").unwrap();
-    let result: Result<Params<'_>, _> = uri.query().unwrap().deserialize();
-    assert!(
-        result.is_err(),
-        "expected failure deserializing escaped value into &str"
-    );
+    for input in ["/p?foo=hello%20world", "/p?foo=hello+world"] {
+        let uri: Uri = parse_graceful(input).unwrap();
+        let result: Result<Params<'_>, _> = uri.query().unwrap().deserialize();
+        assert!(result.is_err(), "expected failure for {input:?}");
+    }
 }
 
 #[test]
-fn borrowed_cow_field_owns_on_escape() {
-    // `Cow<str>` succeeds in both cases: borrows when no escapes,
-    // owns when decoding was required.
+fn cow_field_borrows_or_owns_per_encoding() {
     #[derive(Deserialize, Debug)]
     struct Params<'a> {
         #[serde(borrow)]
         foo: Cow<'a, str>,
     }
-
     // No escapes → Borrowed.
-    let uri1: Uri = parse_graceful("/p?foo=bar").unwrap();
-    let g1: Params<'_> = uri1.query().unwrap().deserialize().unwrap();
-    assert_eq!(g1.foo, "bar");
-    assert!(matches!(g1.foo, Cow::Borrowed(_)));
+    let uri: Uri = parse_graceful("/p?foo=bar").unwrap();
+    let got: Params<'_> = uri.query().unwrap().deserialize().unwrap();
+    assert_eq!(got.foo, "bar");
+    assert!(matches!(got.foo, Cow::Borrowed(_)));
 
-    // Escaped → Owned.
-    let uri2: Uri = parse_graceful("/p?foo=hello%20world").unwrap();
-    let g2: Params<'_> = uri2.query().unwrap().deserialize().unwrap();
-    assert_eq!(g2.foo, "hello world");
-    assert!(matches!(g2.foo, Cow::Owned(_)));
-
-    // Plus → Owned (form convention).
-    let uri3: Uri = parse_graceful("/p?foo=hello+world").unwrap();
-    let g3: Params<'_> = uri3.query().unwrap().deserialize().unwrap();
-    assert_eq!(g3.foo, "hello world");
-    assert!(matches!(g3.foo, Cow::Owned(_)));
+    // `%XX` or `+` → Owned.
+    for input in ["/p?foo=hello%20world", "/p?foo=hello+world"] {
+        let uri: Uri = parse_graceful(input).unwrap();
+        let got: Params<'_> = uri.query().unwrap().deserialize().unwrap();
+        assert_eq!(got.foo, "hello world");
+        assert!(
+            matches!(got.foo, Cow::Owned(_)),
+            "expected Cow::Owned for {input:?}",
+        );
+    }
 }
 
 // ----------------------------------------------------------------------
-// Bare-key semantics — serde_html_form treats `?foo` as `foo=""`
+// Bare-key semantics — `serde_html_form` treats `?foo` as `foo=""`.
+// Documented divergence from `QueryPair { value: None }`.
 // ----------------------------------------------------------------------
 
 #[test]
 fn bare_key_treated_as_empty_string() {
-    // Documented divergence from QueryPair { value: None }.
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct Params {
         foo: String,
@@ -210,7 +177,7 @@ fn bare_key_treated_as_empty_string() {
 // ----------------------------------------------------------------------
 
 #[test]
-fn type_mismatch_errors() {
+fn deserialize_errors_chain_via_source() {
     #[derive(Deserialize, Debug)]
     #[expect(
         dead_code,
@@ -218,44 +185,35 @@ fn type_mismatch_errors() {
     )]
     struct Params {
         n: u32,
-    }
-    let uri: Uri = parse_graceful("/p?n=not_a_number").unwrap();
-    let result: Result<Params, _> = uri.query().unwrap().deserialize();
-    let err = result.expect_err("expected type-mismatch error");
-    // source() chains to the underlying serde_html_form error.
-    let source = std::error::Error::source(&err);
-    assert!(source.is_some(), "expected error.source() to expose inner");
-    // Display should mention "deserialize" so users can spot it in logs.
-    let display = format!("{err}");
-    assert!(
-        display.contains("deserialize"),
-        "Display should mention deserialize: {display:?}",
-    );
-}
-
-#[test]
-fn missing_required_field_errors() {
-    #[derive(Deserialize, Debug)]
-    #[expect(
-        dead_code,
-        reason = "field captured for the failed-deserialize assertion"
-    )]
-    struct Params {
         required: String,
     }
-    let uri: Uri = parse_graceful("/p?other=x").unwrap();
-    let result: Result<Params, _> = uri.query().unwrap().deserialize();
-    assert!(result.is_err(), "expected missing-field error");
+    for input in [
+        "/p?n=not_a_number&required=x", // type mismatch
+        "/p?n=1",                       // missing required field
+    ] {
+        let uri: Uri = parse_graceful(input).unwrap();
+        let err = uri
+            .query()
+            .unwrap()
+            .deserialize::<Params>()
+            .expect_err(&format!("expected error for {input:?}"));
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "expected error.source() for {input:?}",
+        );
+        assert!(
+            format!("{err}").contains("deserialize"),
+            "Display should mention deserialize for {input:?}",
+        );
+    }
 }
 
 // ----------------------------------------------------------------------
-// Empty / minimal queries
+// Empty query & owned-vs-borrowed parity
 // ----------------------------------------------------------------------
 
 #[test]
 fn empty_query_with_all_optional_fields() {
-    // Empty query (`?` with nothing) → all-optional struct deserializes
-    // to all-None.
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct Params {
         foo: Option<String>,
@@ -272,14 +230,8 @@ fn empty_query_with_all_optional_fields() {
     );
 }
 
-// ----------------------------------------------------------------------
-// Owned vs borrowed parity
-// ----------------------------------------------------------------------
-
 #[test]
 fn owned_query_deserialize_parity() {
-    // Query::deserialize and QueryRef::deserialize must produce the
-    // same value for the same input.
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct Params {
         a: String,
@@ -287,17 +239,16 @@ fn owned_query_deserialize_parity() {
     }
     let uri: Uri = parse_graceful("/p?a=hi&b=7").unwrap();
     let from_ref: Params = uri.query().unwrap().deserialize().unwrap();
-    let owned = uri.query().unwrap().to_owned();
-    let from_owned: Params = owned.deserialize().unwrap();
+    let from_owned: Params = uri.query().unwrap().to_owned().deserialize().unwrap();
     assert_eq!(from_ref, from_owned);
 }
 
 // ----------------------------------------------------------------------
-// Absolute-form URI (sanity that the call chain works end-to-end)
+// End-to-end: absolute-form URI with a representative filter shape.
 // ----------------------------------------------------------------------
 
 #[test]
-fn absolute_form_deserialize() {
+fn absolute_form_realistic_filter() {
     #[derive(Deserialize, Debug, PartialEq, Eq)]
     struct Filter {
         q: String,

@@ -1,15 +1,10 @@
 //! Query component types — owned [`Query`] and borrowed [`QueryRef`].
 //!
 //! Per RFC 3986 §3.4, the query is opaque bytes between `?` and `#`. The
-//! `key=value&…` shape is a *convention* (used by HTML forms and most APIs)
-//! but not part of the URI grammar. Two distinct serializers therefore live
-//! in this module's neighbourhood (URL-query in this file in M4, and
-//! application/x-www-form-urlencoded in `super::form` later).
-//!
-//! Pair iteration via [`QueryRef::pairs`] / [`Query::pairs`] landed in
-//! M4 (e); serde-into-struct deserialization via
-//! [`QueryRef::deserialize`] / [`Query::deserialize`] lands in M4 (f);
-//! mutation in M5.
+//! `key=value&…` shape is a convention (HTML forms, most APIs) — not part
+//! of the URI grammar. Use [`QueryRef::pairs`] to iterate name/value pairs
+//! and [`QueryRef::deserialize`] to read straight into a typed value with
+//! `application/x-www-form-urlencoded` semantics.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -64,16 +59,8 @@ impl Query {
         QueryPairs::new(&self.bytes)
     }
 
-    /// Deserialize the query string into a typed value via
-    /// `application/x-www-form-urlencoded` semantics.
-    ///
-    /// See [`QueryRef::deserialize`] for the full contract — the
-    /// borrowed view's docs cover the encoding rules, bare-key
-    /// handling, and the `Cow` / `&str` fallback semantics. This
-    /// method delegates to it.
-    ///
-    /// The deserialized value's lifetime is bound to `&self`, since
-    /// the owned [`Query`] storage isn't `'static`.
+    /// Deserialize the query into `T`. See [`QueryRef::deserialize`] for
+    /// the encoding and borrowing contract.
     pub fn deserialize<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'de>,
@@ -89,8 +76,6 @@ pub struct QueryRef<'a> {
 }
 
 impl<'a> QueryRef<'a> {
-    /// Construct a [`QueryRef`] from a byte slice. `pub(crate)` — only
-    /// the parser / accessors should produce one.
     #[must_use]
     #[inline]
     pub(crate) const fn new(bytes: &'a [u8]) -> Self {
@@ -127,80 +112,33 @@ impl<'a> QueryRef<'a> {
         }
     }
 
-    /// Iterator over `name[=value]` pairs in the query string.
+    /// Iterator over `name[=value]` pairs.
     ///
-    /// Splitting follows the WHATWG URL Standard's `URLSearchParams` /
-    /// `application/x-www-form-urlencoded` parse rules:
-    /// - split on `&`
-    /// - within each non-empty fragment, split on the *first* `=`
-    /// - empty fragments (leading/trailing/double `&`) are dropped
-    ///
-    /// Each [`QueryPair`] keeps the bare-key vs empty-value distinction
-    /// — `?foo` yields `value = None`, `?foo=` yields `value = Some("")`.
-    ///
-    /// Examples:
-    /// ```text
-    /// ""              -> []
-    /// "foo"           -> [(foo, None)]
-    /// "foo="          -> [(foo, Some(""))]
-    /// "foo=bar"       -> [(foo, Some("bar"))]
-    /// "a=1&b=2"       -> [(a, Some("1")), (b, Some("2"))]
-    /// "a&b=2&c"       -> [(a, None), (b, Some("2")), (c, None)]
-    /// "a=b=c"         -> [(a, Some("b=c"))]    // first `=` only
-    /// "&a=1&&b=2&"    -> [(a, Some("1")), (b, Some("2"))]   // empties dropped
-    /// ```
+    /// Follows WHATWG `URLSearchParams` / form-urlencoded splitting:
+    /// `&` delimits pairs, the first `=` in each pair delimits name from
+    /// value, empty fragments (`&&`, leading/trailing `&`) are dropped.
+    /// Each [`QueryPair`] keeps the bare-vs-empty-value distinction —
+    /// `?foo` → `value = None`, `?foo=` → `value = Some("")`.
     #[must_use]
     pub fn pairs(&self) -> QueryPairs<'a> {
         QueryPairs::new(self.bytes)
     }
 
-    /// Deserialize the query string into a typed value via
-    /// `application/x-www-form-urlencoded` semantics (powered by
-    /// [`serde_html_form`]).
+    /// Deserialize the query into `T` with `application/x-www-form-urlencoded`
+    /// semantics: `+` → space, `%XX` → byte, repeated keys collect into a
+    /// `Vec<_>` field.
     ///
-    /// ## Encoding
+    /// Bare keys (`?foo`) decode as `foo=""`, matching WHATWG
+    /// `URLSearchParams`. This diverges from [`pairs`](Self::pairs)
+    /// which keeps the bare-vs-empty distinction — use that iterator
+    /// if you need it.
     ///
-    /// Form convention applies: `+` decodes to space, `%XX` decodes to
-    /// the corresponding byte. This matches what
-    /// [`QueryPair::value_decoded`] does for the iterator path, so the
-    /// two views are consistent.
-    ///
-    /// ## Bare keys
-    ///
-    /// `serde_html_form` treats a bare key `?foo` as `foo=""` (empty
-    /// string value) — the same as WHATWG `URLSearchParams`. This
-    /// **diverges** from [`QueryPair::value_bytes`] which returns
-    /// `None` for bare keys to preserve the distinction. If you need
-    /// the distinction, use the [`pairs`](Self::pairs) iterator
-    /// instead.
-    ///
-    /// ## Repeated keys
-    ///
-    /// `?x=1&x=2&x=3` deserializes correctly into `Vec<T>`, mirroring
-    /// the form-data convention.
-    ///
-    /// ## Borrowed deserialization
-    ///
-    /// The target type's lifetime is `'a` — so a struct field of
-    /// `&'a str` or `Cow<'a, str>` can borrow directly from the
-    /// underlying query bytes when **no decoding is needed**.
-    ///
-    /// **However**, when the source value contains `%XX` or `+`,
-    /// `serde_html_form` must own the decoded result:
-    /// - `&'a str` fields → deserialize **fails** because the
-    ///   decoded value doesn't live in the source bytes
-    /// - `Cow<'a, str>` fields → succeed as `Cow::Owned`
-    /// - `String` fields → always succeed (always own)
-    ///
-    /// Reach for `Cow<'a, str>` (or `String`) on fields that might
-    /// receive escaped input; `&'a str` is safe only when you know
-    /// the value is escape-free.
-    ///
-    /// ## Errors
-    ///
-    /// Returns [`QueryDeserializeError`] on type mismatch, missing
-    /// required field, malformed UTF-8 in `%XX`-decoded output, or
-    /// the borrowed-deserialize fallback described above.
+    /// Fields can borrow from the query bytes: `&'a str` and
+    /// `Cow<'a, str>` skip the allocation when the source value has no
+    /// `+` / `%XX` to decode. When decoding *is* needed, `&'a str`
+    /// fails (the decoded bytes don't live in the input) while
+    /// `Cow<'a, str>` falls back to `Cow::Owned`. Prefer `Cow<'a, str>`
+    /// or `String` for fields that may contain escapes.
     pub fn deserialize<T>(&self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'a>,
@@ -209,7 +147,10 @@ impl<'a> QueryRef<'a> {
     }
 }
 
-/// Error returned by [`QueryRef::deserialize`] / [`Query::deserialize`].
+/// Returned by [`QueryRef::deserialize`] / [`Query::deserialize`] when the
+/// query string cannot be converted into the target type — type mismatch,
+/// missing required field, malformed encoding, or an escaped value being
+/// fed into a non-owning `&str` field.
 #[derive(Debug)]
 pub struct QueryDeserializeError(serde_html_form::de::Error);
 
@@ -225,15 +166,12 @@ impl std::error::Error for QueryDeserializeError {
     }
 }
 
-/// One `name[=value]` pair from a URI query string.
+/// One `name[=value]` pair from a URI query string. See [`QueryRef::pairs`]
+/// for the splitting rules.
 ///
-/// See [`QueryRef::pairs`] for the splitting rules.
-///
-/// Decoded views use the form-urlencoded convention: `+` decodes to space
-/// in addition to `%XX` → byte. That intentionally differs from
-/// [`QueryRef::as_decoded_str`] (whole-query pct-decode only) — pair-level
-/// access is where the form convention applies, since the `key=value&…`
-/// shape is itself form-urlencoded territory.
+/// Decoded views apply the form-urlencoded convention (`+` → space,
+/// `%XX` → byte) — distinct from [`QueryRef::as_decoded_str`] which only
+/// percent-decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryPair<'a> {
     name: &'a [u8],
@@ -361,21 +299,9 @@ impl std::iter::FusedIterator for QueryPairs<'_> {}
 
 /// Form-urlencoded decode: `+` → ` `, `%XX` → byte.
 ///
-/// Single-pass: `memchr2` finds the first `+` or `%` (SIMD-accelerated).
-/// If neither byte appears, the input is returned borrowed — zero
-/// allocations. Otherwise one `Vec<u8>` is allocated for the decoded
-/// output (output is never longer than input: `%XX` is 3 → 1, `+` is
-/// 1 → 1), then converted to `String` once.
-///
-/// We don't use `percent_encoding::percent_decode` here because it
-/// can't inject the `+` → space substitution mid-decode — composing
-/// the two would force an intermediate `Vec` (the rejected double
-/// allocation) or pull in `form_urlencoded::decode` which is
-/// `pub(crate)` in that crate.
-///
-/// Invalid `%XX` sequences (non-hex digits, trailing `%`) are passed
-/// through as a literal `%`, matching the `percent_encoding` crate.
-/// Invalid UTF-8 in the decoded result falls back to U+FFFD.
+/// Returns `Cow::Borrowed` when the input contains neither `+` nor `%`.
+/// Invalid `%XX` (non-hex or truncated) passes through as a literal `%`.
+/// Invalid UTF-8 in the decoded bytes falls back to U+FFFD.
 fn form_decode(input: &[u8]) -> Cow<'_, str> {
     // Fast path: nothing to decode.
     let Some(start) = memchr::memchr2(b'+', b'%', input) else {
@@ -421,20 +347,13 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
 }
 
 /// ASCII hex digit → 0..=15, `None` for non-hex bytes.
-///
-/// Uses the standard `wrapping_sub` hex-decode idiom: a single subtract
-/// then an unsigned-less-than check per branch, with a bit-5 fold to
-/// merge upper and lower case. Strictly fewer instructions than a
-/// range-match without paying for a rodata lookup table.
 #[inline]
 const fn hex_val(b: u8) -> Option<u8> {
-    // Digit fast-path: '0'..='9' → 0..=9.
     let d = b.wrapping_sub(b'0');
     if d < 10 {
         return Some(d);
     }
-    // Case-fold by setting bit 5 ('A' | 0x20 == 'a'); 'a'..='f' → 0..=5.
-    // Non-letter bytes wrap to large values and fail the < 6 check.
+    // Case-fold by setting bit 5: `'A' | 0x20 == 'a'`.
     let l = (b | 0x20).wrapping_sub(b'a');
     if l < 6 {
         return Some(l + 10);

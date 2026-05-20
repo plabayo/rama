@@ -53,8 +53,6 @@ pub struct FragmentRef<'a> {
 }
 
 impl<'a> FragmentRef<'a> {
-    /// Construct a [`FragmentRef`] from a byte slice. `pub(crate)` —
-    /// only the parser / accessors should produce one.
     #[must_use]
     #[inline]
     pub(crate) const fn new(bytes: &'a [u8]) -> Self {

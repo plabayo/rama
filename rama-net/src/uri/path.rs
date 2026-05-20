@@ -19,9 +19,6 @@ pub struct PathRef<'a> {
 }
 
 impl<'a> PathRef<'a> {
-    /// Construct a [`PathRef`] from a byte slice. `pub(crate)` — only
-    /// the parser / accessors should produce one; external code goes
-    /// through [`Uri::path`](super::Uri::path).
     #[must_use]
     #[inline]
     pub(crate) const fn new(bytes: &'a [u8]) -> Self {
@@ -50,40 +47,26 @@ impl<'a> PathRef<'a> {
 
     /// Iterator over path segments — the parts between `/` separators.
     ///
-    /// Behaviour matches `url::Url::path_segments` for predictability:
-    /// - empty path → empty iterator
-    /// - path starts with `/` → the leading `/` is a delimiter, not a
-    ///   segment, and is stripped before splitting
-    /// - trailing `/` → yields an empty segment at the end (preserves
-    ///   the distinction between `/foo` and `/foo/`)
-    /// - opaque paths (no leading `/`, e.g. `urn:isbn:0` → path
-    ///   `isbn:0`) split from the start
+    /// Matches `url::Url::path_segments`: an empty path yields no
+    /// segments, a leading `/` is the delimiter (not a segment), and a
+    /// trailing `/` yields a final empty segment (so `/foo` and `/foo/`
+    /// stay distinct). Opaque paths (no leading `/`, e.g. the path of
+    /// `data:text/plain`) split from the first byte.
     ///
-    /// Each [`PathSegment`] is the raw bytes; call [`PathSegment::as_decoded_str`]
-    /// for the percent-decoded form.
-    ///
-    /// Examples:
     /// ```text
-    /// ""          -> []
-    /// "/"         -> [""]
-    /// "/foo"      -> ["foo"]
-    /// "/foo/"     -> ["foo", ""]
-    /// "/foo/bar"  -> ["foo", "bar"]
-    /// "/a//b"     -> ["a", "", "b"]
-    /// "foo/bar"   -> ["foo", "bar"]
+    /// "/"        -> [""]
+    /// "/foo/"    -> ["foo", ""]
+    /// "/a//b"    -> ["a", "", "b"]
     /// ```
     #[must_use]
     pub fn segments(&self) -> PathSegments<'a> {
         if self.bytes.is_empty() {
             return PathSegments::empty();
         }
-        // Strip the leading `/` if present — it's the separator before
-        // the first segment, not part of it. After stripping, an
-        // empty remainder still yields one empty segment (the `/` case).
-        let (remaining, _had_leading_slash) = match self.bytes.split_first() {
-            Some((&b'/', rest)) => (rest, true),
-            _ => (self.bytes, false),
-        };
+        // Leading `/` is the delimiter before the first segment, not part
+        // of it. After stripping, an empty remainder still yields one
+        // empty segment — the `/` case.
+        let remaining = self.bytes.strip_prefix(b"/").unwrap_or(self.bytes);
         PathSegments {
             remaining,
             exhausted: false,
@@ -102,7 +85,6 @@ pub struct PathSegment<'a> {
 }
 
 impl<'a> PathSegment<'a> {
-    /// `pub(crate)` constructor — only [`PathSegments`] produces these.
     #[must_use]
     #[inline]
     pub(crate) const fn new(raw: &'a [u8]) -> Self {

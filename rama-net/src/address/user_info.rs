@@ -7,23 +7,6 @@
 //! raw [`Bytes`] for byte fidelity — convert to typed forms via
 //! [`UserInfo::split_user_password`] for the conventional split, or
 //! [`UserInfo::to_basic`] for HTTP Basic-Auth interop.
-//!
-//! ## Planned migration (post-M4)
-//!
-//! `UserInfo` exists because rama's [`Basic`](crate::user::Basic) type
-//! currently requires a non-empty username (`NonEmptyStr` invariant),
-//! but RFC 7617 §2 explicitly allows empty user-ids (`userid = *<TEXT>`).
-//! Once we relax `Basic` — empty user allowed, add a `BasicRef`
-//! borrowed view, possibly switch storage to raw [`Bytes`] — the
-//! intent is to **drop `UserInfo` and use `Basic` directly** in
-//! [`Authority::user_info`](crate::address::Authority) and
-//! [`Uri::userinfo`](crate::uri::Uri).
-//!
-//! That migration is intentionally deferred to a follow-up PR after the
-//! URI work lands. Reasons: relaxing `Basic` touches ~80 call sites
-//! across the workspace, breaks `basic!` macro const-ness, and risks
-//! behavioural regressions in the HTTP authentication paths — none of
-//! which we want entangled with the URI design.
 
 use rama_core::bytes::Bytes;
 

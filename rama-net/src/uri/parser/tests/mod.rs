@@ -16,6 +16,7 @@
 //! - [`path_segments`] — `PathRef::segments()` iterator
 //! - [`query_pairs`] — `QueryRef::pairs()` iterator
 //! - [`query_deserialize`] — `QueryRef::deserialize` / `Query::deserialize`
+//! - [`fragment`] — `FragmentRef` / `Fragment` views
 //!
 //! Shared helpers live in this file.
 
@@ -26,6 +27,7 @@ use crate::uri::{ParseError, Uri};
 pub(super) mod absolute_form;
 pub(super) mod accessors;
 pub(super) mod adversarial;
+pub(super) mod fragment;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
 pub(super) mod path_segments;

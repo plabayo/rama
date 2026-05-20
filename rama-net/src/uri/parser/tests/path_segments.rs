@@ -85,8 +85,8 @@ fn opaque_path_splits_from_start() {
 }
 
 #[test]
-fn opaque_path_with_slashes_still_splits() {
-    // Hypothetical opaque path with internal `/`.
+fn opaque_path_without_slashes() {
+    // mailto's path = "user@example.com" — no `/`, one segment.
     let u = parse_graceful("mailto:user@example.com").unwrap();
     let segs: Vec<_> = u
         .path()
@@ -94,8 +94,21 @@ fn opaque_path_with_slashes_still_splits() {
         .segments()
         .map(|s| s.as_raw_str().to_owned())
         .collect();
-    // mailto path = "user@example.com" — no `/`, one segment.
     assert_eq!(segs, vec!["user@example.com"]);
+}
+
+#[test]
+fn opaque_path_with_slashes_splits_from_start() {
+    // data:text/plain — opaque path "text/plain" with internal `/`.
+    // No leading `/` to strip; split happens from the first byte.
+    let u = parse_graceful("data:text/plain").unwrap();
+    let segs: Vec<_> = u
+        .path()
+        .unwrap()
+        .segments()
+        .map(|s| s.as_raw_str().to_owned())
+        .collect();
+    assert_eq!(segs, vec!["text", "plain"]);
 }
 
 #[test]
