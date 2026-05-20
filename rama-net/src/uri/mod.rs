@@ -47,11 +47,13 @@
 
 use std::sync::Arc;
 
-use rama_core::bytes::Bytes;
-
 mod error;
 #[doc(inline)]
 pub use error::{Component, ParseError, UriError};
+
+mod input;
+#[doc(inline)]
+pub use input::IntoUriInput;
 
 mod path;
 #[doc(inline)]
@@ -116,23 +118,19 @@ pub(crate) enum UriInner {
 }
 
 impl Uri {
-    /// Parse a URI from [`Bytes`] buffer. **Graceful**: accepts what browsers and
-    /// curl accept (e.g. unreserved chars outside RFC 3986's `pchar`, raw
-    /// UTF-8 in path/query/fragment). Rejects: ASCII control bytes
-    /// anywhere, empty input, and inputs longer than the internal cap.
-    ///
-    /// Performs one allocation to copy the input into a [`Bytes`]. For
-    /// zero-copy parsing of an owned buffer use [`Uri::parse_bytes`] or
-    /// `TryFrom<{String, Vec<u8>, Bytes}>`.
-    pub fn parse(bytes: Bytes) -> Result<Self, ParseError> {
-        parser::parse(bytes, ParserMode::Graceful)
+    /// Parse a URI. **Graceful**: accepts what browsers and curl accept
+    /// (e.g. unreserved chars outside RFC 3986's `pchar`, raw UTF-8 in
+    /// path/query/fragment). Rejects: ASCII control bytes anywhere,
+    /// empty input, and inputs longer than the internal cap.
+    pub fn parse<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse(input::into_uri_input(input), ParserMode::Graceful)
     }
 
-    /// Parse a URI from a [`Bytes`] buffer, RFC 3986 syntax only. Inputs that would
-    /// parse under [`Uri::parse`] but violate the strict grammar return
+    /// Parse a URI in RFC 3986 strict mode. Inputs that would parse
+    /// under [`Uri::parse`] but violate the strict grammar return
     /// [`ParseError::StrictViolation`].
-    pub fn parse_strict(bytes: Bytes) -> Result<Self, ParseError> {
-        parser::parse(bytes, ParserMode::Strict)
+    pub fn parse_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse(input::into_uri_input(input), ParserMode::Strict)
     }
 
     /// Returns `true` if this is the OPTIONS-`*` request-target.
@@ -166,39 +164,15 @@ impl Uri {
     }
 }
 
+// `FromStr` kept because it's the only way to satisfy `T: FromStr`
+// bounds (e.g. clap argument parsers). `TryFrom` impls are not — the
+// `IntoUriInput`-bound `Uri::parse` covers the same ground with one
+// function call and no `?`-ladder.
 impl std::str::FromStr for Uri {
     type Err = ParseError;
+
+    #[inline(always)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(Bytes::copy_from_slice(s.as_bytes()))
-    }
-}
-
-impl TryFrom<&str> for Uri {
-    type Error = ParseError;
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::parse(Bytes::copy_from_slice(s.as_bytes()))
-    }
-}
-
-impl TryFrom<String> for Uri {
-    type Error = ParseError;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        // `Bytes::from(String)` is zero-copy (adopts the allocation).
-        Self::parse(Bytes::from(s))
-    }
-}
-
-impl TryFrom<Vec<u8>> for Uri {
-    type Error = ParseError;
-    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
-        // `Bytes::from(Vec<u8>)` is zero-copy.
-        Self::parse(Bytes::from(v))
-    }
-}
-
-impl TryFrom<Bytes> for Uri {
-    type Error = ParseError;
-    fn try_from(b: Bytes) -> Result<Self, Self::Error> {
-        Self::parse(b)
+        Self::parse(s)
     }
 }

@@ -16,8 +16,6 @@
 //!
 //! Shared helpers live in this file.
 
-use rama_core::bytes::Bytes;
-
 use super::super::UriInner;
 use super::super::lazy::LazyUriRef;
 use crate::uri::{ParseError, Uri};
@@ -33,32 +31,33 @@ pub(super) mod whatwg_corpus;
 
 /// Parse in graceful mode via the public API.
 pub(super) fn parse_graceful(s: &str) -> Result<Uri, ParseError> {
-    Uri::parse(Bytes::copy_from_slice(s.as_bytes()))
+    Uri::parse(s)
 }
 
 /// Parse in strict mode via the public API.
 pub(super) fn parse_strict(s: &str) -> Result<Uri, ParseError> {
-    Uri::parse_strict(Bytes::copy_from_slice(s.as_bytes()))
+    Uri::parse_strict(s)
 }
 
-/// Parse from raw bytes (one copy into the parser's `Bytes` buffer). Used
-/// by smoke and corpus runners feeding arbitrary byte sequences.
+/// Parse from raw bytes. Used by smoke and corpus runners feeding
+/// arbitrary byte sequences (incl. non-UTF-8).
 pub(super) fn parse_graceful_bytes(b: &[u8]) -> Result<Uri, ParseError> {
-    Uri::parse(Bytes::copy_from_slice(b))
+    Uri::parse(b)
 }
 
 pub(super) fn parse_strict_bytes(b: &[u8]) -> Result<Uri, ParseError> {
-    Uri::parse_strict(Bytes::copy_from_slice(b))
+    Uri::parse_strict(b)
 }
 
-/// Zero-copy variants for inputs known at compile time. Saves the
-/// `copy_from_slice` overhead when the test data is a static literal.
+/// Zero-copy variants for inputs known at compile time. Wraps the
+/// static slice in [`Bytes::from_static`] before handing it to the
+/// parser — skips the `copy_from_slice` step that `&[u8]` triggers.
 pub(super) fn parse_graceful_static(b: &'static [u8]) -> Result<Uri, ParseError> {
-    Uri::parse(Bytes::from_static(b))
+    Uri::parse(rama_core::bytes::Bytes::from_static(b))
 }
 
 pub(super) fn parse_strict_static(b: &'static [u8]) -> Result<Uri, ParseError> {
-    Uri::parse_strict(Bytes::from_static(b))
+    Uri::parse_strict(rama_core::bytes::Bytes::from_static(b))
 }
 
 /// Pull the [`LazyUriRef`] out of a [`Uri`], panicking if the variant isn't

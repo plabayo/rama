@@ -13,12 +13,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use rama::bytes::Bytes;
 use rama::net::uri::Uri;
 
 fuzz_target!(|data: &[u8]| {
-    let buf = Bytes::copy_from_slice(data);
     // Both parsers must terminate cleanly (Ok or typed Err — no panic).
-    drop(Uri::parse_bytes(buf.clone()));
-    drop(Uri::parse_bytes_strict(buf));
+    // `Uri::parse` accepts `&[u8]` directly via the `IntoUriInput` trait.
+    drop(Uri::parse(data));
+    drop(Uri::parse_strict(data));
 });

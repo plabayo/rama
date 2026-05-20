@@ -18,7 +18,6 @@
 //! browser-quirk output would force us to either match it — bad — or
 //! maintain a parallel expected-output table for every relevant entry).
 
-use rama_core::bytes::Bytes;
 use serde_json::Value;
 
 use crate::uri::Uri;
@@ -104,14 +103,13 @@ fn whatwg_corpus_no_panic_either_mode() {
         };
 
         tested += 1;
-        let buf = Bytes::copy_from_slice(input.as_bytes());
 
         // The contract: neither parser may panic, segfault, or hang.
         // Either Ok or Err is acceptable.
-        if Uri::parse(buf.clone()).is_ok() {
+        if Uri::parse(input).is_ok() {
             graceful_ok += 1;
         }
-        if Uri::parse_strict(buf).is_ok() {
+        if Uri::parse_strict(input).is_ok() {
             strict_ok += 1;
         }
     }
@@ -132,9 +130,8 @@ fn whatwg_corpus_no_panic_either_mode() {
 fn policy_divergence_table_self_consistent() {
     for (input, diff) in POLICY_DIVERGENCES {
         // Each input must parse-or-error without panic in both modes.
-        let buf = Bytes::copy_from_slice(input.as_bytes());
-        drop(Uri::parse(buf.clone()));
-        drop(Uri::parse_strict(buf));
+        drop(Uri::parse(*input));
+        drop(Uri::parse_strict(*input));
         // The variant name surfaces via Debug if the entry is ever
         // surprising — keeps the table honest.
         drop(format!("{diff:?}"));
