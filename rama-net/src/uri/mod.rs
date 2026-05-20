@@ -329,3 +329,43 @@ impl std::str::FromStr for Uri {
         Self::parse(s)
     }
 }
+
+impl std::fmt::Display for Uri {
+    /// Writes the canonical URI string: `[scheme:][//authority][path][?query][#fragment]`.
+    /// `Lazy` URIs round-trip byte-for-byte through their source buffer; `Owned`
+    /// URIs reassemble from components.
+    ///
+    /// **Not the HTTP wire form.** This includes userinfo and fragment and
+    /// preserves the original port — none of which belong on an HTTP request
+    /// line or in HTTP/2 pseudo-headers. Use the dedicated `write_*_form`
+    /// helpers (landing with the relative-resolution work) when serializing
+    /// for HTTP. Logging a [`Uri`] via [`Display`](std::fmt::Display) may leak
+    /// userinfo — strip it explicitly if that matters for your call site.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.inner {
+            UriInner::Asterisk => f.write_str("*"),
+            UriInner::Lazy(arc) => {
+                // Safety: parser invariant — the source buffer is valid UTF-8
+                // (graceful mode) or ASCII (strict mode).
+                f.write_str(unsafe { std::str::from_utf8_unchecked(&arc.bytes) })
+            }
+            UriInner::Owned(arc) => {
+                if let Some(scheme) = &arc.scheme {
+                    write!(f, "{scheme}:")?;
+                }
+                if let Some(auth) = &arc.authority {
+                    write!(f, "//{auth}")?;
+                }
+                // Safety: parser invariant on the path bytes.
+                f.write_str(unsafe { std::str::from_utf8_unchecked(&arc.path) })?;
+                if let Some(query) = &arc.query {
+                    write!(f, "?{}", query.as_raw_str())?;
+                }
+                if let Some(fragment) = &arc.fragment {
+                    write!(f, "#{}", fragment.as_raw_str())?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
