@@ -33,32 +33,32 @@ pub(super) mod whatwg_corpus;
 
 /// Parse in graceful mode via the public API.
 pub(super) fn parse_graceful(s: &str) -> Result<Uri, ParseError> {
-    Uri::parse(s)
+    Uri::parse(Bytes::copy_from_slice(s.as_bytes()))
 }
 
 /// Parse in strict mode via the public API.
 pub(super) fn parse_strict(s: &str) -> Result<Uri, ParseError> {
-    Uri::parse_strict(s)
+    Uri::parse_strict(Bytes::copy_from_slice(s.as_bytes()))
 }
 
 /// Parse from raw bytes (one copy into the parser's `Bytes` buffer). Used
 /// by smoke and corpus runners feeding arbitrary byte sequences.
 pub(super) fn parse_graceful_bytes(b: &[u8]) -> Result<Uri, ParseError> {
-    Uri::parse_bytes(Bytes::copy_from_slice(b))
+    Uri::parse(Bytes::copy_from_slice(b))
 }
 
 pub(super) fn parse_strict_bytes(b: &[u8]) -> Result<Uri, ParseError> {
-    Uri::parse_bytes_strict(Bytes::copy_from_slice(b))
+    Uri::parse_strict(Bytes::copy_from_slice(b))
 }
 
 /// Zero-copy variants for inputs known at compile time. Saves the
 /// `copy_from_slice` overhead when the test data is a static literal.
 pub(super) fn parse_graceful_static(b: &'static [u8]) -> Result<Uri, ParseError> {
-    Uri::parse_bytes(Bytes::from_static(b))
+    Uri::parse(Bytes::from_static(b))
 }
 
 pub(super) fn parse_strict_static(b: &'static [u8]) -> Result<Uri, ParseError> {
-    Uri::parse_bytes_strict(Bytes::from_static(b))
+    Uri::parse_strict(Bytes::from_static(b))
 }
 
 /// Pull the [`LazyUriRef`] out of a [`Uri`], panicking if the variant isn't

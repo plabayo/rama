@@ -4,6 +4,8 @@
 //! looser real-wire envelope. These tests exercise the gap between them
 //! and confirm strict produces the typed error variants we expect.
 
+use rama_core::bytes::Bytes;
+
 use super::{assert_origin_form, parse_graceful, parse_strict};
 use crate::uri::ParseError;
 
@@ -40,10 +42,10 @@ fn graceful_accepts_high_byte_in_path() {
     // Raw non-ASCII byte in path. Graceful accepts (matches browser /
     // curl behaviour on the wire), strict rejects (outside pchar).
     let s = b"/p\xc3\xa9foo"; // UTF-8 "/péfoo"
-    let buf = rama_core::bytes::Bytes::copy_from_slice(s);
-    crate::uri::Uri::parse_bytes(buf.clone()).unwrap();
+    let buf = Bytes::copy_from_slice(s);
+    crate::uri::Uri::parse(buf.clone()).unwrap();
     assert!(matches!(
-        crate::uri::Uri::parse_bytes_strict(buf),
+        crate::uri::Uri::parse_strict(buf),
         Err(ParseError::StrictViolation)
     ));
 }

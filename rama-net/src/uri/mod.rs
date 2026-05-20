@@ -116,7 +116,7 @@ pub(crate) enum UriInner {
 }
 
 impl Uri {
-    /// Parse a URI from a string. **Graceful**: accepts what browsers and
+    /// Parse a URI from [`Bytes`] buffer. **Graceful**: accepts what browsers and
     /// curl accept (e.g. unreserved chars outside RFC 3986's `pchar`, raw
     /// UTF-8 in path/query/fragment). Rejects: ASCII control bytes
     /// anywhere, empty input, and inputs longer than the internal cap.
@@ -124,24 +124,14 @@ impl Uri {
     /// Performs one allocation to copy the input into a [`Bytes`]. For
     /// zero-copy parsing of an owned buffer use [`Uri::parse_bytes`] or
     /// `TryFrom<{String, Vec<u8>, Bytes}>`.
-    pub fn parse(input: &str) -> Result<Self, ParseError> {
-        Self::parse_bytes(Bytes::copy_from_slice(input.as_bytes()))
-    }
-
-    /// Parse a URI from a string, RFC 3986 syntax only. Inputs that would
-    /// parse under [`Uri::parse`] but violate the strict grammar return
-    /// [`ParseError::StrictViolation`].
-    pub fn parse_strict(input: &str) -> Result<Self, ParseError> {
-        Self::parse_bytes_strict(Bytes::copy_from_slice(input.as_bytes()))
-    }
-
-    /// Zero-copy parse: keeps the supplied [`Bytes`] as the backing buffer.
-    pub fn parse_bytes(bytes: Bytes) -> Result<Self, ParseError> {
+    pub fn parse(bytes: Bytes) -> Result<Self, ParseError> {
         parser::parse(bytes, ParserMode::Graceful)
     }
 
-    /// Zero-copy strict-mode parse.
-    pub fn parse_bytes_strict(bytes: Bytes) -> Result<Self, ParseError> {
+    /// Parse a URI from a [`Bytes`] buffer, RFC 3986 syntax only. Inputs that would
+    /// parse under [`Uri::parse`] but violate the strict grammar return
+    /// [`ParseError::StrictViolation`].
+    pub fn parse_strict(bytes: Bytes) -> Result<Self, ParseError> {
         parser::parse(bytes, ParserMode::Strict)
     }
 
@@ -179,14 +169,14 @@ impl Uri {
 impl std::str::FromStr for Uri {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s)
+        Self::parse(Bytes::copy_from_slice(s.as_bytes()))
     }
 }
 
 impl TryFrom<&str> for Uri {
     type Error = ParseError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::parse(s)
+        Self::parse(Bytes::copy_from_slice(s.as_bytes()))
     }
 }
 
@@ -194,7 +184,7 @@ impl TryFrom<String> for Uri {
     type Error = ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         // `Bytes::from(String)` is zero-copy (adopts the allocation).
-        Self::parse_bytes(Bytes::from(s))
+        Self::parse(Bytes::from(s))
     }
 }
 
@@ -202,13 +192,13 @@ impl TryFrom<Vec<u8>> for Uri {
     type Error = ParseError;
     fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
         // `Bytes::from(Vec<u8>)` is zero-copy.
-        Self::parse_bytes(Bytes::from(v))
+        Self::parse(Bytes::from(v))
     }
 }
 
 impl TryFrom<Bytes> for Uri {
     type Error = ParseError;
     fn try_from(b: Bytes) -> Result<Self, Self::Error> {
-        Self::parse_bytes(b)
+        Self::parse(b)
     }
 }

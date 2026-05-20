@@ -108,10 +108,10 @@ fn whatwg_corpus_no_panic_either_mode() {
 
         // The contract: neither parser may panic, segfault, or hang.
         // Either Ok or Err is acceptable.
-        if Uri::parse_bytes(buf.clone()).is_ok() {
+        if Uri::parse(buf.clone()).is_ok() {
             graceful_ok += 1;
         }
-        if Uri::parse_bytes_strict(buf).is_ok() {
+        if Uri::parse_strict(buf).is_ok() {
             strict_ok += 1;
         }
     }
@@ -133,8 +133,8 @@ fn policy_divergence_table_self_consistent() {
     for (input, diff) in POLICY_DIVERGENCES {
         // Each input must parse-or-error without panic in both modes.
         let buf = Bytes::copy_from_slice(input.as_bytes());
-        drop(Uri::parse_bytes(buf.clone()));
-        drop(Uri::parse_bytes_strict(buf));
+        drop(Uri::parse(buf.clone()));
+        drop(Uri::parse_strict(buf));
         // The variant name surfaces via Debug if the entry is ever
         // surprising — keeps the table honest.
         drop(format!("{diff:?}"));
