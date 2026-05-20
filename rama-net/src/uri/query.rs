@@ -6,10 +6,13 @@
 //! in this module's neighbourhood (URL-query in this file in M4, and
 //! application/x-www-form-urlencoded in `super::form` later).
 //!
-//! Pair iteration via [`QueryRef::pairs`] / [`Query::pairs`] lands in M4 (e);
+//! Pair iteration via [`QueryRef::pairs`] / [`Query::pairs`] landed in
+//! M4 (e); serde-into-struct deserialization via
+//! [`QueryRef::deserialize`] / [`Query::deserialize`] lands in M4 (f);
 //! mutation in M5.
 
 use std::borrow::Cow;
+use std::fmt;
 
 use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
@@ -59,6 +62,23 @@ impl Query {
     #[must_use]
     pub fn pairs(&self) -> QueryPairs<'_> {
         QueryPairs::new(&self.bytes)
+    }
+
+    /// Deserialize the query string into a typed value via
+    /// `application/x-www-form-urlencoded` semantics.
+    ///
+    /// See [`QueryRef::deserialize`] for the full contract — the
+    /// borrowed view's docs cover the encoding rules, bare-key
+    /// handling, and the `Cow` / `&str` fallback semantics. This
+    /// method delegates to it.
+    ///
+    /// The deserialized value's lifetime is bound to `&self`, since
+    /// the owned [`Query`] storage isn't `'static`.
+    pub fn deserialize<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
+    where
+        T: serde::de::Deserialize<'de>,
+    {
+        self.as_ref().deserialize::<T>()
     }
 }
 
@@ -132,6 +152,76 @@ impl<'a> QueryRef<'a> {
     #[must_use]
     pub fn pairs(&self) -> QueryPairs<'a> {
         QueryPairs::new(self.bytes)
+    }
+
+    /// Deserialize the query string into a typed value via
+    /// `application/x-www-form-urlencoded` semantics (powered by
+    /// [`serde_html_form`]).
+    ///
+    /// ## Encoding
+    ///
+    /// Form convention applies: `+` decodes to space, `%XX` decodes to
+    /// the corresponding byte. This matches what
+    /// [`QueryPair::value_decoded`] does for the iterator path, so the
+    /// two views are consistent.
+    ///
+    /// ## Bare keys
+    ///
+    /// `serde_html_form` treats a bare key `?foo` as `foo=""` (empty
+    /// string value) — the same as WHATWG `URLSearchParams`. This
+    /// **diverges** from [`QueryPair::value_bytes`] which returns
+    /// `None` for bare keys to preserve the distinction. If you need
+    /// the distinction, use the [`pairs`](Self::pairs) iterator
+    /// instead.
+    ///
+    /// ## Repeated keys
+    ///
+    /// `?x=1&x=2&x=3` deserializes correctly into `Vec<T>`, mirroring
+    /// the form-data convention.
+    ///
+    /// ## Borrowed deserialization
+    ///
+    /// The target type's lifetime is `'a` — so a struct field of
+    /// `&'a str` or `Cow<'a, str>` can borrow directly from the
+    /// underlying query bytes when **no decoding is needed**.
+    ///
+    /// **However**, when the source value contains `%XX` or `+`,
+    /// `serde_html_form` must own the decoded result:
+    /// - `&'a str` fields → deserialize **fails** because the
+    ///   decoded value doesn't live in the source bytes
+    /// - `Cow<'a, str>` fields → succeed as `Cow::Owned`
+    /// - `String` fields → always succeed (always own)
+    ///
+    /// Reach for `Cow<'a, str>` (or `String`) on fields that might
+    /// receive escaped input; `&'a str` is safe only when you know
+    /// the value is escape-free.
+    ///
+    /// ## Errors
+    ///
+    /// Returns [`QueryDeserializeError`] on type mismatch, missing
+    /// required field, malformed UTF-8 in `%XX`-decoded output, or
+    /// the borrowed-deserialize fallback described above.
+    pub fn deserialize<T>(&self) -> Result<T, QueryDeserializeError>
+    where
+        T: serde::de::Deserialize<'a>,
+    {
+        serde_html_form::from_str(self.as_raw_str()).map_err(QueryDeserializeError)
+    }
+}
+
+/// Error returned by [`QueryRef::deserialize`] / [`Query::deserialize`].
+#[derive(Debug)]
+pub struct QueryDeserializeError(serde_html_form::de::Error);
+
+impl fmt::Display for QueryDeserializeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to deserialize URI query: {}", self.0)
+    }
+}
+
+impl std::error::Error for QueryDeserializeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
     }
 }
 

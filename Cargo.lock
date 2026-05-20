@@ -3758,6 +3758,7 @@ dependencies = [
  "rama-macros",
  "rama-utils",
  "serde",
+ "serde_html_form",
  "serde_json",
  "sha2 0.10.9",
  "socket2",
