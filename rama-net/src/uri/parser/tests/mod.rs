@@ -13,6 +13,8 @@
 //! - [`whatwg_corpus`] — runs the WHATWG URL test corpus in
 //!   *crash-resistance* mode (Mode A) plus a hand-curated policy override
 //!   table for the security-relevant divergences (see module docs)
+//! - [`path_segments`] — `PathRef::segments()` iterator
+//! - [`query_pairs`] — `QueryRef::pairs()` iterator
 //!
 //! Shared helpers live in this file.
 
@@ -26,6 +28,7 @@ pub(super) mod adversarial;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
 pub(super) mod path_segments;
+pub(super) mod query_pairs;
 pub(super) mod rfc3986_examples;
 pub(super) mod smoke;
 pub(super) mod strict_mode;

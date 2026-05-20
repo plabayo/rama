@@ -52,7 +52,7 @@ bench = false
 
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["ua", "http"] }
+rama = { path = "../", features = ["ua", "http", "net"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]

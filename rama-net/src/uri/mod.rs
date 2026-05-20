@@ -61,7 +61,7 @@ pub use path::{PathRef, PathSegment, PathSegments};
 
 mod query;
 #[doc(inline)]
-pub use query::{Query, QueryRef};
+pub use query::{Query, QueryPair, QueryPairs, QueryRef};
 
 mod fragment;
 #[doc(inline)]
