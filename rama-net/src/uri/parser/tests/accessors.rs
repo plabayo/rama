@@ -1,5 +1,8 @@
+use std::net::{IpAddr, Ipv4Addr};
+
 use super::parse_graceful;
 use crate::Protocol;
+use crate::address::{Domain, Host, HostRef};
 
 // ----------------------------------------------------------------------
 // scheme()
@@ -223,4 +226,130 @@ fn asterisk_all_accessors_none() {
     assert!(u.path().is_none());
     assert!(u.query().is_none());
     assert!(u.fragment().is_none());
+}
+
+// ----------------------------------------------------------------------
+// host() / port() shortcuts
+// (Full authority() returning AuthorityRef lands in M4 (c) along with
+// the userinfo accessor — these are quick-access shortcuts useful even
+// without the full bundle.)
+// ----------------------------------------------------------------------
+
+#[test]
+fn host_asterisk_is_none() {
+    assert!(parse_graceful("*").unwrap().host().is_none());
+}
+
+#[test]
+fn host_origin_form_is_none() {
+    // Origin-form has no authority.
+    assert!(parse_graceful("/foo").unwrap().host().is_none());
+    assert!(parse_graceful("/p?q#f").unwrap().host().is_none());
+}
+
+#[test]
+fn host_opaque_path_is_none() {
+    // urn:, mailto:, data: etc. have a scheme but no authority.
+    for s in ["urn:isbn:0", "mailto:a@b", "data:text/plain,hi"] {
+        assert!(
+            parse_graceful(s).unwrap().host().is_none(),
+            "host should be None for {s:?}"
+        );
+    }
+}
+
+#[test]
+fn host_domain() {
+    let u = parse_graceful("http://example.com/").unwrap();
+    let h = u.host().unwrap();
+    assert_eq!(
+        h,
+        HostRef::from(&Host::Name(Domain::from_static("example.com")))
+    );
+}
+
+#[test]
+fn host_ipv4() {
+    let u = parse_graceful("http://192.0.2.16:8080/").unwrap();
+    let h = u.host().unwrap();
+    let expected_host = Host::Address(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 16)));
+    assert_eq!(h, HostRef::from(&expected_host));
+}
+
+#[test]
+fn host_ipv6() {
+    let u = parse_graceful("https://[2001:db8::1]/p").unwrap();
+    let h = u.host().unwrap();
+    let expected_host = Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()));
+    assert_eq!(h, HostRef::from(&expected_host));
+}
+
+#[test]
+fn port_asterisk_is_none() {
+    assert!(parse_graceful("*").unwrap().port().is_none());
+}
+
+#[test]
+fn port_origin_form_is_none() {
+    assert!(parse_graceful("/foo").unwrap().port().is_none());
+}
+
+#[test]
+fn port_opaque_path_is_none() {
+    assert!(parse_graceful("urn:isbn:0").unwrap().port().is_none());
+    assert!(parse_graceful("mailto:a@b").unwrap().port().is_none());
+}
+
+#[test]
+fn port_absent_when_authority_has_no_port() {
+    // `http://example.com/` — host but no `:port`.
+    assert!(
+        parse_graceful("http://example.com/")
+            .unwrap()
+            .port()
+            .is_none()
+    );
+}
+
+#[test]
+fn port_explicit() {
+    let u = parse_graceful("http://example.com:8080/").unwrap();
+    assert_eq!(u.port(), Some(8080));
+}
+
+#[test]
+fn port_default_not_substituted() {
+    // We deliberately do NOT substitute scheme defaults. `http://x/`
+    // returns None for port, not Some(80). Canonicalisation is a
+    // separate policy decision the caller makes.
+    assert!(
+        parse_graceful("http://example.com/")
+            .unwrap()
+            .port()
+            .is_none()
+    );
+    assert!(
+        parse_graceful("https://example.com/")
+            .unwrap()
+            .port()
+            .is_none()
+    );
+}
+
+#[test]
+fn port_zero() {
+    let u = parse_graceful("http://example.com:0/").unwrap();
+    assert_eq!(u.port(), Some(0));
+}
+
+#[test]
+fn port_max() {
+    let u = parse_graceful("http://example.com:65535/").unwrap();
+    assert_eq!(u.port(), Some(65535));
+}
+
+#[test]
+fn port_ipv6_authority() {
+    let u = parse_graceful("https://[2001:db8::1]:8443/").unwrap();
+    assert_eq!(u.port(), Some(8443));
 }

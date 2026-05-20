@@ -204,6 +204,37 @@ impl Uri {
         }
     }
 
+    /// Returns the authority's host, or `None` if the URI has no
+    /// authority (origin-form `/foo`, asterisk-form `*`, opaque-path
+    /// `urn:isbn:0`, etc.).
+    ///
+    /// This is a shortcut for accessing just the host component;
+    /// [`Uri::authority`](crate::uri::Uri) (lands with M4 (c)) gives
+    /// the full bundle.
+    #[must_use]
+    pub fn host(&self) -> Option<crate::address::HostRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => arc.authority.as_ref().map(|a| (&a.host).into()),
+            UriInner::Owned(arc) => arc.authority.as_ref().map(|a| (&a.address.host).into()),
+        }
+    }
+
+    /// Returns the authority's port, or `None` if the URI has no
+    /// authority OR the authority has no explicit port.
+    ///
+    /// We never substitute scheme default ports here — that's a
+    /// canonicalisation policy decision the caller makes (e.g.
+    /// `Protocol::default_port()` if the URI's scheme is known).
+    #[must_use]
+    pub fn port(&self) -> Option<u16> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => arc.authority.as_ref().and_then(|a| a.port),
+            UriInner::Owned(arc) => arc.authority.as_ref().and_then(|a| a.address.port),
+        }
+    }
+
     /// Internal constructor for the asterisk variant.
     #[must_use]
     pub(crate) fn from_asterisk() -> Self {

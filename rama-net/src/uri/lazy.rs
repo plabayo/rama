@@ -16,13 +16,6 @@ use crate::address::Host;
 /// Parsed-once URI reference. Reads are zero-copy slices into `bytes`;
 /// mutation upgrades to [`OwnedUriRef`](super::owned::OwnedUriRef).
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "M3 (b): fields written by parser, read by tests and M4 accessors"
-    )
-)]
 pub(crate) struct LazyUriRef {
     /// The original input buffer. All component ranges below index into this.
     pub(crate) bytes: Bytes,
@@ -51,12 +44,16 @@ pub(crate) struct LazyUriRef {
 }
 
 /// Parsed-once authority for [`LazyUriRef`].
+///
+/// `userinfo_range` is currently only read by test helpers — the
+/// public `Uri::userinfo()` accessor lands in M4 (c) along with the
+/// `UserInfoRef` borrowed view type.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "M3 (c): fields written by parser, read by tests and M4 accessors"
+        reason = "M4 (c) wires Uri::userinfo() which will consume userinfo_range"
     )
 )]
 pub(crate) struct LazyAuthority {

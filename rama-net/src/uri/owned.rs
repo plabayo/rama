@@ -15,10 +15,6 @@ use super::{Fragment, Query};
 
 /// Decomposed, individually mutable URI reference.
 #[derive(Debug, Clone, Default)]
-#[expect(
-    dead_code,
-    reason = "M2 skeleton: fields consumed by M5 (mutation API)"
-)]
 pub(crate) struct OwnedUriRef {
     pub(crate) scheme: Option<Protocol>,
     pub(crate) authority: Option<Authority>,
