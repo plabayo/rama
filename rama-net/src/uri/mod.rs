@@ -47,9 +47,15 @@
 
 use std::sync::Arc;
 
+use rama_core::bytes::BytesMut;
+
 mod error;
 #[doc(inline)]
 pub use error::{Component, ParseError, UriError};
+
+mod component_input;
+#[doc(inline)]
+pub use component_input::IntoUriComponent;
 
 mod input;
 #[doc(inline)]
@@ -87,9 +93,12 @@ pub mod util {
 
 /// First-class URI value.
 ///
-/// Opaque — fields are private. Construct via parsers (M3) or the
-/// builder (M5); inspect via typed accessors (M4); mutate via setters and
-/// RAII guards (M5).
+/// Opaque — fields are private. Construct via [`Uri::parse`] /
+/// [`Uri::parse_strict`]; inspect via typed accessors ([`scheme`](Self::scheme),
+/// [`path`](Self::path), [`query`](Self::query), [`fragment`](Self::fragment),
+/// [`host`](Self::host), [`port`](Self::port), [`userinfo`](Self::userinfo),
+/// [`authority`](Self::authority)); mutate via the `set_*` / `clear_*`
+/// methods.
 ///
 /// `Clone` is cheap: `Asterisk` is zero-cost, `Lazy` / `Owned` clone is one
 /// atomic refcount bump on the inner `Arc`.
@@ -307,12 +316,140 @@ impl Uri {
         }
     }
 
-    /// Internal constructor for the owned variant. Wired up by the builder
-    /// landing in M5.
-    #[expect(dead_code, reason = "M2 skeleton: consumed by M5 (builder)")]
-    pub(crate) fn from_owned(owned: OwnedUriRef) -> Self {
-        Self {
-            inner: UriInner::Owned(Arc::new(owned)),
+    // ---- Mutation -------------------------------------------------------
+
+    /// Promote to [`UriInner::Owned`] if needed and return mutable access
+    /// to the decomposed components. Cheap when already `Owned` and the
+    /// inner `Arc` is uniquely held.
+    fn to_mut(&mut self) -> &mut OwnedUriRef {
+        if !matches!(self.inner, UriInner::Owned(_)) {
+            let owned = self.as_owned_components();
+            self.inner = UriInner::Owned(Arc::new(owned));
+        }
+        match &mut self.inner {
+            UriInner::Owned(arc) => Arc::make_mut(arc),
+            // SAFETY: the preceding `if` block guarantees `self.inner` is the
+            // `Owned` variant. Borrowck can't see across the conditional
+            // assignment, so we have to tell it explicitly.
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }
+    }
+
+    /// Snapshot the current URI as an [`OwnedUriRef`]. Used by `to_mut`
+    /// to materialise components when promoting from Lazy / Asterisk.
+    fn as_owned_components(&self) -> OwnedUriRef {
+        match &self.inner {
+            UriInner::Asterisk => OwnedUriRef::default(),
+            UriInner::Lazy(arc) => {
+                let l = arc.as_ref();
+                let authority = l.authority.as_ref().map(|la| {
+                    let user_info = la.userinfo_range.map(|(s, e)| {
+                        crate::address::UserInfo::from_bytes_unchecked(
+                            l.bytes.slice(s as usize..e as usize),
+                        )
+                    });
+                    crate::address::Authority {
+                        user_info,
+                        address: crate::address::HostWithOptPort {
+                            host: la.host.clone(),
+                            port: la.port,
+                        },
+                    }
+                });
+                let slice = |(s, e): (u16, u16)| &l.bytes[s as usize..e as usize];
+                OwnedUriRef {
+                    scheme: l.scheme.clone(),
+                    authority,
+                    path: BytesMut::from(slice(l.path)),
+                    query: l.query.map(|r| Query {
+                        bytes: BytesMut::from(slice(r)),
+                    }),
+                    fragment: l.fragment.map(|r| Fragment {
+                        bytes: BytesMut::from(slice(r)),
+                    }),
+                }
+            }
+            UriInner::Owned(arc) => arc.as_ref().clone(),
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Replace the path. Rejects bytes containing `?`, `#`, or ASCII
+        /// control characters. Empty input is allowed — paths may be
+        /// empty per RFC 3986 §3.3.
+        pub fn path(mut self, path: impl IntoUriComponent) -> Result<Self, ParseError> {
+            parser::validate_path_bytes(path.as_uri_component_bytes())?;
+            self.to_mut().path = path.into_uri_component_bytes_mut();
+            Ok(self)
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the query. Leading `?` is implicit. Bytes must not
+        /// contain `#` or ASCII controls.
+        pub fn query(mut self, query: impl IntoUriComponent) -> Result<Self, ParseError> {
+            parser::validate_query_bytes(query.as_uri_component_bytes())?;
+            self.to_mut().query = Some(Query {
+                bytes: query.into_uri_component_bytes_mut(),
+            });
+            Ok(self)
+        }
+    }
+
+    /// Remove the query entirely (no `?` on the wire — distinct from
+    /// an empty-query `?` per §3.4).
+    pub fn unset_query(&mut self) -> &mut Self {
+        self.to_mut().query = None;
+        self
+    }
+
+    /// Consuming form of [`unset_query`](Self::unset_query).
+    #[must_use]
+    pub fn without_query(mut self) -> Self {
+        self.unset_query();
+        self
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the fragment. Leading `#` is implicit. Bytes must not
+        /// contain ASCII controls.
+        pub fn fragment(mut self, fragment: impl IntoUriComponent) -> Result<Self, ParseError> {
+            parser::validate_fragment_bytes(fragment.as_uri_component_bytes())?;
+            self.to_mut().fragment = Some(Fragment {
+                bytes: fragment.into_uri_component_bytes_mut(),
+            });
+            Ok(self)
+        }
+    }
+
+    /// Remove the fragment entirely (no `#` on the wire — distinct from
+    /// an empty-fragment `#` per §3.5).
+    pub fn unset_fragment(&mut self) -> &mut Self {
+        self.to_mut().fragment = None;
+        self
+    }
+
+    /// Consuming form of [`unset_fragment`](Self::unset_fragment).
+    #[must_use]
+    pub fn without_fragment(mut self) -> Self {
+        self.unset_fragment();
+        self
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set or remove the scheme. Removing yields a relative
+        /// reference — origin-form when the authority is also absent.
+        pub fn scheme(mut self, scheme: Option<crate::Protocol>) -> Self {
+            self.to_mut().scheme = scheme;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set or remove the authority (userinfo + host + port).
+        pub fn authority(mut self, authority: Option<crate::address::Authority>) -> Self {
+            self.to_mut().authority = authority;
+            self
         }
     }
 }

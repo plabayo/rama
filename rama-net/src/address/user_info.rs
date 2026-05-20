@@ -29,6 +29,14 @@ impl UserInfo {
         }
     }
 
+    /// Construct from already-validated bytes (parser invariant: UTF-8,
+    /// no `@` or control characters). Skips validation — only callable
+    /// from inside the crate.
+    #[must_use]
+    pub(crate) fn from_bytes_unchecked(bytes: Bytes) -> Self {
+        Self { bytes }
+    }
+
     /// Raw on-the-wire bytes (possibly pct-encoded — not decoded here).
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
