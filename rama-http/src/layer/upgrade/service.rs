@@ -3,11 +3,11 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
+use crate::opentelemetry::version_as_protocol_version;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
-use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt, sync::Arc};
@@ -20,10 +20,21 @@ pub struct UpgradeService<S, O> {
     exec: Executor,
 }
 
+#[derive(Clone, Debug)]
+pub struct UpgradeResponse<I, O> {
+    /// Response that should be returned
+    pub response: O,
+    /// Request that caused this upgrade
+    pub request: I,
+    /// Extensions which will be applied to the [`Upgraded`] io
+    /// if the upgrade was successful
+    pub extensions: Extensions,
+}
+
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
 pub struct UpgradeHandler<O> {
     matcher: Box<dyn Matcher<Request>>,
-    responder: BoxService<Request, (O, Request), O>,
+    responder: BoxService<Request, UpgradeResponse<Request, O>, O>,
     handler: BoxService<Upgraded, (), Infallible>,
     _phantom: std::marker::PhantomData<fn(O) -> ()>,
 }
@@ -33,7 +44,7 @@ impl<O> UpgradeHandler<O> {
     pub(crate) fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
-        R: Service<Request, Output = (O, Request), Error = O> + Clone,
+        R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Output = (), Error = Infallible> + Clone,
     {
         Self {
@@ -102,25 +113,30 @@ where
             req.extensions().extend(&ext);
 
             return match handler.responder.serve(req).await {
-                Ok((resp, req)) => {
+                Ok(UpgradeResponse {
+                    response,
+                    request,
+                    extensions,
+                }) => {
                     let handler = handler.handler.clone();
 
                     let span = tracing::trace_root_span!(
                         "upgrade::serve",
                         otel.kind = "server",
-                        http.request.method = %req.method().as_str(),
-                        url.full = %req.uri(),
-                        url.path = %req.uri().path(),
-                        url.query = req.uri().query().unwrap_or_default(),
-                        url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        http.request.method = %request.method().as_str(),
+                        url.full = %request.uri(),
+                        url.path = %request.uri().path(),
+                        url.query = request.uri().query().unwrap_or_default(),
+                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
                         network.protocol.name = "http",
-                        network.protocol.version = version_as_protocol_version(req.version()),
+                        network.protocol.version = version_as_protocol_version(request.version()),
                     );
 
                     self.exec.spawn_task(
                         async move {
-                            match rama_http::io::upgrade::handle_upgrade(&req).await {
+                            match crate::io::upgrade::handle_upgrade(request).await {
                                 Ok(upgraded) => {
+                                    upgraded.extensions().extend(&extensions);
                                     _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {
@@ -131,7 +147,7 @@ where
                         }
                         .instrument(span),
                     );
-                    Ok(resp)
+                    Ok(response)
                 }
                 Err(e) => Ok(e),
             };

@@ -670,7 +670,7 @@ impl<T> Request<T> {
     }
 
     generate_set_and_with! {
-        pub fn extensions_mut(mut self, extensions: Extensions) -> Self {
+        pub fn extensions(mut self, extensions: Extensions) -> Self {
             self.head.extensions = extensions;
             self
         }

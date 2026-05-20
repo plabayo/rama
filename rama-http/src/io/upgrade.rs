@@ -108,13 +108,6 @@ pub struct Parts<T> {
 /// - `http::Response<B>`
 /// - `&rama_http::Request<B>`
 /// - `&rama_http::Response<B>`
-///
-/// When the upgrade completes, the returned [`Upgraded`]s [`Extensions`] are reparented to the
-/// message that triggered it: `upgraded.parent = msg.fork()`. That gives the
-/// upgraded a fresh top-level storage of its own while keeping everything
-/// the message could see: both HTTP-level state on the message itself and
-/// connection-level state reachable through the message's `Ingress` / `Egress`
-/// wrappers
 pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
 ) -> impl Future<Output = Result<Upgraded, BoxError>> + 'static {
@@ -139,7 +132,7 @@ pub fn handle_upgrade<T: ExtensionsRef>(
             Ok(on_upgrade) => on_upgrade.await?,
             Err(err) => return Err(err),
         };
-        Ok(upgraded.with_extensions(msg_ext.fork()))
+        Ok(upgraded)
     }
 }
 

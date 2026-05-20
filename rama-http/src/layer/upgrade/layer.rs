@@ -1,4 +1,8 @@
-use super::{UpgradeService, Upgraded, service::UpgradeHandler};
+use crate::io::upgrade::Upgraded;
+
+use super::UpgradeResponse;
+
+use super::{UpgradeService, service::UpgradeHandler};
 use rama_core::{Layer, Service, matcher::Matcher, rt::Executor};
 use rama_http_types::Request;
 use std::{convert::Infallible, fmt, sync::Arc};
@@ -7,7 +11,7 @@ use std::{convert::Infallible, fmt, sync::Arc};
 ///
 /// See [`UpgradeService`] for more details.
 ///
-/// [`UpgradeService`]: crate::server::layer::upgrade::UpgradeService
+/// [`UpgradeService`]: crate::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<O> {
     handlers: Vec<Arc<UpgradeHandler<O>>>,
     exec: Executor,
@@ -18,7 +22,7 @@ impl<O> UpgradeLayer<O> {
     pub fn new<M, R, H>(exec: Executor, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
-        R: Service<Request, Output = (O, Request), Error = O> + Clone,
+        R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Output = (), Error = Infallible> + Clone,
     {
         Self {
@@ -32,7 +36,7 @@ impl<O> UpgradeLayer<O> {
     pub fn on<M, R, H>(mut self, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
-        R: Service<Request, Output = (O, Request), Error = O> + Clone,
+        R: Service<Request, Output = UpgradeResponse<Request, O>, Error = O> + Clone,
         H: Service<Upgraded, Output = (), Error = Infallible> + Clone,
     {
         self.handlers

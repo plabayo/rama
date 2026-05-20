@@ -509,6 +509,33 @@ impl Extensions {
     pub fn egress(&self) -> Option<&Egress<Self>> {
         self.get_ref::<Egress<Self>>()
     }
+
+    /// Clone an [`Extension`] from [`Extensions`] to another and get a `Arc` clone of it.
+    pub fn clone_to<T: Extension>(&self, target: &Self) -> Option<Arc<T>> {
+        let item = self.get_arc();
+        if let Some(item) = item.clone() {
+            target.insert_arc(item);
+        };
+
+        item
+    }
+
+    /// Clone an [`Extension`] from [`Extensions`] to another, if and only if the other
+    /// [`Extensions`] store does not already contain this [`Extension`] `T`.
+    ///
+    /// If the other [`Extensions`] store already contains it, we return [`Extension`] `T`
+    /// from the other store, otherwise we return the `T` that we transfered over.
+    ///
+    /// This is mainly used in connectors where [`Extension`]s that become part of the connection
+    /// should be transfer from the input to the connection.
+    pub fn clone_to_if_absent<T: Extension>(&self, target: &Self) -> Option<Arc<T>> {
+        let item = target.get_arc::<T>();
+        if item.is_some() {
+            return item;
+        }
+
+        self.clone_to(target)
+    }
 }
 
 impl fmt::Debug for Extensions {
@@ -757,36 +784,6 @@ macro_rules! impl_extensions_either {
 }
 
 crate::combinators::impl_either!(impl_extensions_either);
-
-pub trait ChainableExtensions {
-    fn contains<T: Extension>(&self) -> bool;
-    fn get_ref<T: Extension>(&self) -> Option<&T>;
-    fn get_arc<T: Extension>(&self) -> Option<Arc<T>>;
-}
-
-impl<S, T> ChainableExtensions for (S, T)
-where
-    S: ExtensionsRef,
-    T: ExtensionsRef,
-{
-    fn contains<I: Extension>(&self) -> bool {
-        self.0.extensions().contains::<I>() || self.1.extensions().contains::<I>()
-    }
-
-    fn get_ref<I: Extension>(&self) -> Option<&I> {
-        self.0
-            .extensions()
-            .get_ref::<I>()
-            .or_else(|| self.1.extensions().get_ref::<I>())
-    }
-
-    fn get_arc<I: Extension>(&self) -> Option<Arc<I>> {
-        self.0
-            .extensions()
-            .get_arc::<I>()
-            .or_else(|| self.1.extensions().get_arc::<I>())
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1079,57 +1076,6 @@ mod tests {
         );
         assert!(ext.downcast_ref::<RetryBudget>().is_none());
         assert!(ext.cloned_downcast::<RetryBudget>().is_none());
-    }
-
-    #[test]
-    fn chainable_extensions_queries_both_sources() {
-        let left = Extensions::new();
-        let right = Extensions::new();
-        left.insert(RetryBudget(1));
-        right.insert(ConnectionTimeoutMs(2));
-
-        let chain = (&left, &right);
-        assert!(chain.contains::<RetryBudget>());
-        assert!(chain.contains::<ConnectionTimeoutMs>());
-        assert!(!chain.contains::<HealthSignal>());
-        assert_eq!(chain.get_ref::<RetryBudget>(), Some(&RetryBudget(1)));
-        assert_eq!(
-            chain.get_ref::<ConnectionTimeoutMs>(),
-            Some(&ConnectionTimeoutMs(2))
-        );
-        assert!(chain.get_arc::<RetryBudget>().is_some());
-    }
-
-    #[test]
-    fn chainable_get_ref_prefers_first() {
-        let left = Extensions::new();
-        let right = Extensions::new();
-        left.insert(WorkerId(1));
-        right.insert(WorkerId(2));
-
-        let chain = (&left, &right);
-        assert_eq!(chain.get_ref::<WorkerId>(), Some(&WorkerId(1)));
-    }
-
-    #[test]
-    fn chainable_get_ref_falls_back_to_second() {
-        let left = Extensions::new();
-        let right = Extensions::new();
-        right.insert(WorkerId(2));
-
-        let chain = (&left, &right);
-        assert_eq!(chain.get_ref::<WorkerId>(), Some(&WorkerId(2)));
-    }
-
-    #[test]
-    fn chainable_get_arc_falls_back_to_second() {
-        let left = Extensions::new();
-        let right = Extensions::new();
-        right.insert(WorkerId(2));
-
-        let chain = (&left, &right);
-        let arc = chain.get_arc::<WorkerId>().unwrap();
-        assert_eq!(*arc, WorkerId(2));
     }
 
     #[test]

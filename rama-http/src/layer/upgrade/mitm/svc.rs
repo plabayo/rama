@@ -1,5 +1,9 @@
 use std::convert::Infallible;
 
+use crate::{
+    Body, Request, Response, StreamingBody, io::upgrade::Upgraded,
+    opentelemetry::version_as_protocol_version, service::web::response::IntoResponse,
+};
 use rama_core::{
     Service, bytes,
     error::BoxError,
@@ -7,10 +11,6 @@ use rama_core::{
     matcher::service::{ServiceMatch, ServiceMatcher},
     rt::Executor,
     telemetry::tracing::{self, Instrument as _},
-};
-use rama_http::{
-    Body, Request, Response, StreamingBody, io::upgrade::Upgraded,
-    opentelemetry::version_as_protocol_version, service::web::response::IntoResponse,
 };
 
 #[derive(Debug, Clone)]
@@ -72,7 +72,7 @@ where
         if let Some(res_svc_matcher) = maybe_res_svc_matcher {
             tracing::debug!("HttpUpgradeMitmRelay: upgrade MITM relay req match made...");
 
-            let on_upgrade_ingress = rama_http::io::upgrade::handle_upgrade(&req);
+            let on_upgrade_ingress = crate::io::upgrade::handle_upgrade(&req);
 
             let relay_upgrade_span = tracing::trace_root_span!(
                 "upgrade::mitm_relay::serve",
@@ -109,7 +109,7 @@ where
                     "HttpUpgradeMitmRelay: upgrade MITM relay res match made... spawning relay task..."
                 );
 
-                let on_upgrade_egress = rama_http::io::upgrade::handle_upgrade(&res);
+                let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
                 self.exec.spawn_task(async move {
@@ -124,7 +124,6 @@ where
                             return;
                         }
                     };
-
 
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"

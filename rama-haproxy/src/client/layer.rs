@@ -5,7 +5,7 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::{ChainableExtensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     io::Io,
 };
 use rama_net::{
@@ -283,20 +283,19 @@ where
         let EstablishedClientConnection { input, mut conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let src = {
-            let ext_chain = (&conn, &input);
-            ext_chain
-                .get_ref::<Forwarded>()
-                .and_then(|f| f.client_socket_addr())
-                .or_else(|| {
-                    ext_chain
-                        .get_ref::<SocketInfo>()
-                        .map(|info| info.peer_addr())
-                })
-                .ok_or_else(|| {
-                    OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
-                })?
-        };
+        let src = input
+            .extensions()
+            .clone_to_if_absent::<Forwarded>(conn.extensions())
+            .and_then(|f| f.client_socket_addr())
+            .or_else(|| {
+                input
+                    .extensions()
+                    .clone_to_if_absent::<SocketInfo>(conn.extensions())
+                    .map(|info| info.peer_addr())
+            })
+            .ok_or_else(|| {
+                OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
+            })?;
 
         let peer_addr = conn.peer_addr()?;
         let addresses = match (src.ip_addr, peer_addr.ip_addr) {
@@ -336,13 +335,14 @@ where
             self.inner.connect(input).await.into_box_error()?;
 
         let src = {
-            let ext_chain = (&conn, &input);
-            ext_chain
-                .get_ref::<Forwarded>()
+            input
+                .extensions()
+                .clone_to_if_absent::<Forwarded>(conn.extensions())
                 .and_then(|f| f.client_socket_addr())
                 .or_else(|| {
-                    ext_chain
-                        .get_ref::<SocketInfo>()
+                    input
+                        .extensions()
+                        .clone_to_if_absent::<SocketInfo>(conn.extensions())
                         .map(|info| info.peer_addr())
                 })
                 .ok_or_else(|| {
