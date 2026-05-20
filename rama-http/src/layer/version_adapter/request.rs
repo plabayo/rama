@@ -3,7 +3,6 @@ use rama_core::Service;
 use rama_core::bytes::BytesMut;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
-// use rama_core::extensions::ChainableExtensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
