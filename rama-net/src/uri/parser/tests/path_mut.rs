@@ -1,0 +1,210 @@
+//! `Uri::path_mut()` — RAII guard for incremental path mutation.
+
+use super::parse_graceful;
+use crate::uri::Uri;
+
+// ----------------------------------------------------------------------
+// push_segment — basic shapes
+// ----------------------------------------------------------------------
+
+#[test]
+fn push_segment_shapes() {
+    for (start, segment, want) in [
+        ("/", "x", "/x"),
+        ("/foo", "bar", "/foo/bar"),
+        ("/foo/", "bar", "/foo/bar"), // no double slash
+        ("/a/b", "c", "/a/b/c"),
+        ("https://example.com", "v1", "https://example.com/v1"),
+        ("https://example.com/", "v1", "https://example.com/v1"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        uri.path_mut().push_segment(segment);
+        assert_eq!(uri.to_string(), want, "start={start:?} seg={segment:?}");
+    }
+}
+
+#[test]
+fn push_segment_empty_path() {
+    let mut uri: Uri = parse_graceful("https://example.com/x").unwrap();
+    uri.set_path("");
+    assert_eq!(uri.to_string(), "https://example.com");
+    uri.path_mut().push_segment("v1");
+    assert_eq!(uri.to_string(), "https://example.com/v1");
+}
+
+#[test]
+fn push_segment_chained() {
+    let mut uri: Uri = parse_graceful("/").unwrap();
+    {
+        let mut g = uri.path_mut();
+        g.push_segment("api")
+            .push_segment("v2")
+            .push_segment("users");
+    }
+    assert_eq!(uri.to_string(), "/api/v2/users");
+}
+
+// ----------------------------------------------------------------------
+// push_segment — auto-encoding (RFC 3986 pchar enforcement)
+// ----------------------------------------------------------------------
+
+#[test]
+fn push_segment_encodes_structural_bytes() {
+    // `/`, `?`, `#` — would change URI structure if unescaped.
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut()
+        .push_segment("a/b")
+        .push_segment("a?b")
+        .push_segment("a#b");
+    assert_eq!(uri.to_string(), "/p/a%2Fb/a%3Fb/a%23b");
+}
+
+#[test]
+fn push_segment_encodes_control_bytes() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut().push_segment("a\nb").push_segment("a\0b");
+    assert_eq!(uri.to_string(), "/p/a%0Ab/a%00b");
+}
+
+#[test]
+fn push_segment_encodes_space_and_unreserved_punctuation() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    // Space and the printable-ASCII non-pchar bytes.
+    uri.path_mut()
+        .push_segment("hello world")
+        .push_segment("a\"b")
+        .push_segment("a<b>c")
+        .push_segment("a[b]")
+        .push_segment("a^b")
+        .push_segment("a|b")
+        .push_segment("a`b")
+        .push_segment("a{b}")
+        .push_segment("a\\b");
+    assert_eq!(
+        uri.to_string(),
+        "/p/hello%20world/a%22b/a%3Cb%3Ec/a%5Bb%5D/a%5Eb/a%7Cb/a%60b/a%7Bb%7D/a%5Cb",
+    );
+}
+
+#[test]
+fn push_segment_encodes_non_ascii_utf8() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut().push_segment("café");
+    assert_eq!(uri.to_string(), "/p/caf%C3%A9");
+}
+
+#[test]
+fn push_segment_encodes_percent_literal() {
+    // `%` itself is encoded to `%25` — pass decoded values, not
+    // pre-encoded ones. `%2F` in the input becomes `%252F` on the wire.
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut().push_segment("a%2Fb");
+    assert_eq!(uri.to_string(), "/p/a%252Fb");
+}
+
+#[test]
+fn push_segment_passes_pchar_through() {
+    // ALPHA, DIGIT, `-._~`, sub-delims `!$&'()*+,;=`, `:`, `@`
+    // are all legal in pchar position — must NOT be encoded.
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut()
+        .push_segment("AZaz09-._~")
+        .push_segment("!$&'()*+,;=")
+        .push_segment(":@");
+    assert_eq!(uri.to_string(), "/p/AZaz09-._~/!$&'()*+,;=/:@");
+}
+
+// ----------------------------------------------------------------------
+// pop_segment
+// ----------------------------------------------------------------------
+
+#[test]
+fn pop_segment_shapes() {
+    for (start, want_popped, want_remaining) in [
+        ("/foo/bar", Some("bar"), "/foo"),
+        ("/foo/", Some(""), "/foo"),
+        ("/foo", Some("foo"), ""),
+        ("/", Some(""), ""),
+        ("/a/b/c", Some("c"), "/a/b"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        let popped = uri.path_mut().pop_segment();
+        assert_eq!(
+            popped.as_deref(),
+            want_popped.map(str::as_bytes),
+            "start={start:?}",
+        );
+        assert_eq!(uri.path().unwrap().as_raw_str(), want_remaining);
+    }
+}
+
+#[test]
+fn pop_segment_empty_path_returns_none() {
+    let mut uri: Uri = parse_graceful("https://example.com/x").unwrap();
+    uri.set_path("");
+    assert!(uri.path_mut().pop_segment().is_none());
+}
+
+#[test]
+fn pop_segment_opaque_path_removes_all() {
+    let mut uri: Uri = parse_graceful("data:text/plain").unwrap();
+    let popped = uri.path_mut().pop_segment();
+    assert_eq!(popped.as_deref(), Some(b"plain".as_ref()));
+    assert_eq!(uri.path().unwrap().as_raw_str(), "text");
+
+    let popped = uri.path_mut().pop_segment();
+    assert_eq!(popped.as_deref(), Some(b"text".as_ref()));
+    assert_eq!(uri.path().unwrap().as_raw_str(), "");
+}
+
+// ----------------------------------------------------------------------
+// clear
+// ----------------------------------------------------------------------
+
+#[test]
+fn clear_path() {
+    let mut uri: Uri = parse_graceful("/a/b/c").unwrap();
+    uri.path_mut().clear();
+    assert_eq!(uri.to_string(), "");
+    assert!(uri.path_mut().pop_segment().is_none());
+}
+
+// ----------------------------------------------------------------------
+// Borrow + Debug
+// ----------------------------------------------------------------------
+
+#[test]
+fn as_bytes_and_as_path_ref() {
+    let mut uri: Uri = parse_graceful("/foo/bar").unwrap();
+    let g = uri.path_mut();
+    assert_eq!(g.as_bytes(), b"/foo/bar");
+    let segs: Vec<_> = g
+        .as_path_ref()
+        .segments()
+        .map(|s| s.as_raw_str().to_owned())
+        .collect();
+    assert_eq!(segs, vec!["foo", "bar"]);
+}
+
+#[test]
+fn debug_impl_shows_current_path() {
+    let mut uri: Uri = parse_graceful("/api/v1").unwrap();
+    let g = uri.path_mut();
+    let dbg = format!("{g:?}");
+    assert!(dbg.contains("/api/v1"), "got {dbg:?}");
+}
+
+// ----------------------------------------------------------------------
+// Push-then-pop round-trip — pop yields the raw encoded segment.
+// ----------------------------------------------------------------------
+
+#[test]
+fn push_then_pop_yields_encoded_form() {
+    let mut uri: Uri = parse_graceful("/api").unwrap();
+    let mut g = uri.path_mut();
+    g.push_segment("a/b"); // becomes a%2Fb on the wire
+    assert_eq!(g.as_bytes(), b"/api/a%2Fb");
+    let popped = g.pop_segment();
+    assert_eq!(popped.as_deref(), Some(b"a%2Fb".as_ref()));
+    assert_eq!(g.as_bytes(), b"/api");
+}

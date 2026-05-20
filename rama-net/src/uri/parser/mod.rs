@@ -55,6 +55,9 @@ mod byte_sets;
 mod path;
 mod scheme;
 
+/// Re-exported for the URI component setters' fast-path check.
+pub(in crate::uri) use byte_sets::{is_path_byte, is_query_fragment_byte};
+
 #[cfg(test)]
 mod tests;
 
@@ -150,45 +153,4 @@ pub(super) fn check_pct_encoded(bytes: &[u8], i: usize) -> Result<(), ParseError
         (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => Ok(()),
         _ => Err(ParseError::InvalidPercentEncoding { at: i }),
     }
-}
-
-/// Validate bytes intended for the path component of a [`Uri`](super::Uri).
-///
-/// Rejects ASCII control bytes, embedded `?` / `#` (the caller must use
-/// the dedicated query / fragment setters for those), and non-UTF-8.
-/// Graceful only — equivalent to what the parser accepts in path position.
-pub(in crate::uri) fn validate_path_bytes(bytes: &[u8]) -> Result<(), ParseError> {
-    validate_component_bytes(bytes, Component::Path, |b| b == b'?' || b == b'#')
-}
-
-/// Validate bytes intended for the query component.
-///
-/// Rejects ASCII control bytes, embedded `#`, and non-UTF-8.
-pub(in crate::uri) fn validate_query_bytes(bytes: &[u8]) -> Result<(), ParseError> {
-    validate_component_bytes(bytes, Component::Query, |b| b == b'#')
-}
-
-/// Validate bytes intended for the fragment component.
-///
-/// Rejects ASCII control bytes and non-UTF-8.
-pub(in crate::uri) fn validate_fragment_bytes(bytes: &[u8]) -> Result<(), ParseError> {
-    validate_component_bytes(bytes, Component::Fragment, |_| false)
-}
-
-fn validate_component_bytes(
-    bytes: &[u8],
-    component: Component,
-    is_disallowed_sep: impl Fn(u8) -> bool,
-) -> Result<(), ParseError> {
-    for (i, &b) in bytes.iter().enumerate() {
-        if byte_sets::is_control_byte(b) {
-            return Err(ParseError::ControlCharInUri { at: i, byte: b });
-        }
-        if is_disallowed_sep(b) {
-            return Err(ParseError::InvalidComponent(component));
-        }
-    }
-    // Graceful mode requires the bytes be valid UTF-8 (matches parser invariant).
-    std::str::from_utf8(bytes).map_err(|_e| ParseError::InvalidComponent(component))?;
-    Ok(())
 }

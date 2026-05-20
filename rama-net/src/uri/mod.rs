@@ -57,6 +57,8 @@ mod component_input;
 #[doc(inline)]
 pub use component_input::IntoUriComponent;
 
+mod encode;
+
 mod input;
 #[doc(inline)]
 pub use input::IntoUriInput;
@@ -64,6 +66,10 @@ pub use input::IntoUriInput;
 mod path;
 #[doc(inline)]
 pub use path::{PathRef, PathSegment, PathSegments};
+
+mod path_mut;
+#[doc(inline)]
+pub use path_mut::PathMut;
 
 mod query;
 #[doc(inline)]
@@ -374,25 +380,30 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Replace the path. Rejects bytes containing `?`, `#`, or ASCII
-        /// control characters. Empty input is allowed — paths may be
-        /// empty per RFC 3986 §3.3.
-        pub fn path(mut self, path: impl IntoUriComponent) -> Result<Self, ParseError> {
-            parser::validate_path_bytes(path.as_uri_component_bytes())?;
-            self.to_mut().path = path.into_uri_component_bytes_mut();
-            Ok(self)
+        /// Replace the path. Bytes outside RFC 3986 `pchar ∪ {'/'}` are
+        /// percent-encoded — pass raw (decoded) values, the library
+        /// serializes them correctly. Already-legal owned inputs move
+        /// without allocating.
+        pub fn path(mut self, path: impl IntoUriComponent) -> Self {
+            self.to_mut().path = encode::encode_path(path);
+            self
         }
     }
 
+    /// Returns a [`PathMut`] guard for incremental path mutation —
+    /// `push_segment`, `pop_segment`, `clear`.
+    pub fn path_mut(&mut self) -> PathMut<'_> {
+        PathMut::new(self.to_mut())
+    }
+
     rama_utils::macros::generate_set_and_with! {
-        /// Set the query. Leading `?` is implicit. Bytes must not
-        /// contain `#` or ASCII controls.
-        pub fn query(mut self, query: impl IntoUriComponent) -> Result<Self, ParseError> {
-            parser::validate_query_bytes(query.as_uri_component_bytes())?;
+        /// Set the query. Leading `?` is implicit. Bytes outside
+        /// `pchar ∪ {'/', '?'}` are percent-encoded (including `#`).
+        pub fn query(mut self, query: impl IntoUriComponent) -> Self {
             self.to_mut().query = Some(Query {
-                bytes: query.into_uri_component_bytes_mut(),
+                bytes: encode::encode_query(query),
             });
-            Ok(self)
+            self
         }
     }
 
@@ -411,14 +422,13 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the fragment. Leading `#` is implicit. Bytes must not
-        /// contain ASCII controls.
-        pub fn fragment(mut self, fragment: impl IntoUriComponent) -> Result<Self, ParseError> {
-            parser::validate_fragment_bytes(fragment.as_uri_component_bytes())?;
+        /// Set the fragment. Leading `#` is implicit. Bytes outside
+        /// `pchar ∪ {'/', '?'}` are percent-encoded.
+        pub fn fragment(mut self, fragment: impl IntoUriComponent) -> Self {
             self.to_mut().fragment = Some(Fragment {
-                bytes: fragment.into_uri_component_bytes_mut(),
+                bytes: encode::encode_fragment(fragment),
             });
-            Ok(self)
+            self
         }
     }
 

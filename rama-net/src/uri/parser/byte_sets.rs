@@ -82,12 +82,12 @@ pub(super) const fn is_control_byte(b: u8) -> bool {
 }
 
 #[inline(always)]
-pub(super) const fn is_path_byte(b: u8) -> bool {
+pub(in crate::uri) const fn is_path_byte(b: u8) -> bool {
     PATH_BYTE_SET[b as usize]
 }
 
 #[inline(always)]
-pub(super) const fn is_query_fragment_byte(b: u8) -> bool {
+pub(in crate::uri) const fn is_query_fragment_byte(b: u8) -> bool {
     QUERY_FRAGMENT_BYTE_SET[b as usize]
 }
 
