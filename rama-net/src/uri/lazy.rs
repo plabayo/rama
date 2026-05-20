@@ -44,18 +44,7 @@ pub(crate) struct LazyUriRef {
 }
 
 /// Parsed-once authority for [`LazyUriRef`].
-///
-/// `userinfo_range` is currently only read by test helpers — the
-/// public `Uri::userinfo()` accessor lands in M4 (c) along with the
-/// `UserInfoRef` borrowed view type.
 #[derive(Debug, Clone)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "M4 (c) wires Uri::userinfo() which will consume userinfo_range"
-    )
-)]
 pub(crate) struct LazyAuthority {
     /// Byte range of userinfo (sans `@`) within the parent buffer, if any.
     pub(crate) userinfo_range: Option<(u16, u16)>,

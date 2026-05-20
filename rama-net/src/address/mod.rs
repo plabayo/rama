@@ -27,7 +27,7 @@ pub use host_with_opt_port::HostWithOptPort;
 
 mod authority;
 #[doc(inline)]
-pub use authority::Authority;
+pub use authority::{Authority, AuthorityRef};
 
 mod user_info;
 #[doc(inline)]

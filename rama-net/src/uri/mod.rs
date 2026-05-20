@@ -75,6 +75,8 @@ use lazy::LazyUriRef;
 use owned::OwnedUriRef;
 use parser::ParserMode;
 
+use crate::address::{AuthorityRef, HostRef, UserInfoRef};
+
 /// Preserved utility submodule (re-exports the `percent_encoding` crate).
 ///
 /// Kept for source-compat with existing consumers via the
@@ -232,6 +234,61 @@ impl Uri {
             UriInner::Asterisk => None,
             UriInner::Lazy(arc) => arc.authority.as_ref().and_then(|a| a.port),
             UriInner::Owned(arc) => arc.authority.as_ref().and_then(|a| a.address.port),
+        }
+    }
+
+    /// Returns the userinfo component, or `None` if the URI has no
+    /// authority OR the authority has no `@`.
+    ///
+    /// `Some("")` (the `@host` form — empty userinfo before `@`) is
+    /// distinct from `None` (no `@` at all). Wire fidelity preserved.
+    #[must_use]
+    pub fn userinfo(&self) -> Option<crate::address::UserInfoRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => {
+                let auth = arc.authority.as_ref()?;
+                let (s, e) = auth.userinfo_range?;
+                Some(UserInfoRef::new(&arc.bytes[s as usize..e as usize]))
+            }
+            UriInner::Owned(arc) => arc
+                .authority
+                .as_ref()
+                .and_then(|a| a.user_info.as_ref())
+                .map(|ui| ui.as_ref()),
+        }
+    }
+
+    /// Returns the full authority component (host + port + userinfo)
+    /// as a borrowed view, or `None` if the URI has no authority
+    /// (origin-form, asterisk-form, opaque-path schemes).
+    ///
+    /// For just the host or just the port, [`Uri::host`] and
+    /// [`Uri::port`] are slightly cheaper shortcuts (no extra struct).
+    #[must_use]
+    pub fn authority(&self) -> Option<crate::address::AuthorityRef<'_>> {
+        match &self.inner {
+            UriInner::Asterisk => None,
+            UriInner::Lazy(arc) => {
+                let auth = arc.authority.as_ref()?;
+                let userinfo = auth
+                    .userinfo_range
+                    .map(|(s, e)| UserInfoRef::new(&arc.bytes[s as usize..e as usize]));
+                Some(AuthorityRef::new(
+                    userinfo,
+                    HostRef::from(&auth.host),
+                    auth.port,
+                ))
+            }
+            UriInner::Owned(arc) => {
+                let auth = arc.authority.as_ref()?;
+                let userinfo = auth.user_info.as_ref().map(|ui| ui.as_ref());
+                Some(AuthorityRef::new(
+                    userinfo,
+                    HostRef::from(&auth.address.host),
+                    auth.address.port,
+                ))
+            }
         }
     }
 

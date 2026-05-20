@@ -1,4 +1,4 @@
-use crate::address::{HostWithOptPort, HostWithPort, UserInfo};
+use crate::address::{HostRef, HostWithOptPort, HostWithPort, UserInfo, UserInfoRef};
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
 use rama_core::error::extra::OpaqueError;
@@ -568,6 +568,63 @@ impl TryFrom<&[u8]> for Authority {
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse authority from bytes")?;
         s.try_into()
+    }
+}
+
+/// Borrowed view of an [`Authority`] — userinfo + host + port, each
+/// borrowing into the underlying buffer. Mirrors the [`HostRef`] /
+/// [`DomainRef`](crate::address::DomainRef) /
+/// [`UserInfoRef`](super::UserInfoRef) pattern for the rest of the
+/// address types.
+///
+/// Constructed by [`Uri::authority`](crate::uri::Uri::authority) and
+/// — eventually — by [`Authority`]'s own borrow accessor.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthorityRef<'a> {
+    pub(crate) userinfo: Option<UserInfoRef<'a>>,
+    pub(crate) host: HostRef<'a>,
+    pub(crate) port: Option<u16>,
+}
+
+impl<'a> AuthorityRef<'a> {
+    /// `pub(crate)` constructor — only [`Uri::authority`] and
+    /// internal helpers should build one.
+    #[must_use]
+    #[inline]
+    pub(crate) const fn new(
+        userinfo: Option<UserInfoRef<'a>>,
+        host: HostRef<'a>,
+        port: Option<u16>,
+    ) -> Self {
+        Self {
+            userinfo,
+            host,
+            port,
+        }
+    }
+
+    /// Userinfo component, or `None` if the authority has no `@`
+    /// (RFC 3986 §3.2.1 userinfo is optional).
+    ///
+    /// `Some("")` (an empty userinfo before the `@`) is distinct from
+    /// `None` — preserved for wire fidelity.
+    #[must_use]
+    pub fn userinfo(&self) -> Option<UserInfoRef<'a>> {
+        self.userinfo
+    }
+
+    /// The host component. Always present — every well-formed
+    /// authority has a host.
+    #[must_use]
+    pub fn host(&self) -> HostRef<'a> {
+        self.host
+    }
+
+    /// The port, or `None` if the authority has no explicit `:port`.
+    /// Scheme default ports are NOT substituted here.
+    #[must_use]
+    pub fn port(&self) -> Option<u16> {
+        self.port
     }
 }
 

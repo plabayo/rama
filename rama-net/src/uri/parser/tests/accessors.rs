@@ -353,3 +353,182 @@ fn port_ipv6_authority() {
     let u = parse_graceful("https://[2001:db8::1]:8443/").unwrap();
     assert_eq!(u.port(), Some(8443));
 }
+
+// ----------------------------------------------------------------------
+// userinfo()
+//
+// Returns Option<UserInfoRef>. None when the URI has no authority, or
+// the authority has no `@`. Some("") (empty userinfo) is distinct from
+// None — the `@host` form.
+// ----------------------------------------------------------------------
+
+#[test]
+fn userinfo_asterisk_is_none() {
+    assert!(parse_graceful("*").unwrap().userinfo().is_none());
+}
+
+#[test]
+fn userinfo_origin_form_is_none() {
+    assert!(parse_graceful("/foo").unwrap().userinfo().is_none());
+}
+
+#[test]
+fn userinfo_opaque_path_is_none() {
+    // urn:, mailto: etc. have a scheme but no authority.
+    assert!(parse_graceful("urn:isbn:0").unwrap().userinfo().is_none());
+    assert!(parse_graceful("mailto:a@b").unwrap().userinfo().is_none());
+}
+
+#[test]
+fn userinfo_authority_without_at_is_none() {
+    // `http://example.com/` — authority but no `@`.
+    assert!(
+        parse_graceful("http://example.com/")
+            .unwrap()
+            .userinfo()
+            .is_none()
+    );
+}
+
+#[test]
+fn userinfo_user_only() {
+    let u = parse_graceful("http://alice@example.com/").unwrap();
+    assert_eq!(u.userinfo().unwrap().as_str(), "alice");
+}
+
+#[test]
+fn userinfo_user_password() {
+    let u = parse_graceful("http://alice:secret@example.com/").unwrap();
+    let ui = u.userinfo().unwrap();
+    assert_eq!(ui.as_str(), "alice:secret");
+    assert_eq!(
+        ui.split_user_password(),
+        (&b"alice"[..], Some(&b"secret"[..]))
+    );
+}
+
+#[test]
+fn userinfo_empty_at_host() {
+    // `http://@host/` — empty userinfo before `@`. Some("") vs None.
+    let u = parse_graceful("http://@example.com/").unwrap();
+    assert_eq!(u.userinfo().unwrap().as_str(), "");
+}
+
+#[test]
+fn userinfo_only_colon() {
+    // `:` alone in userinfo — empty user, empty password.
+    let u = parse_graceful("http://:@example.com/").unwrap();
+    let ui = u.userinfo().unwrap();
+    assert_eq!(ui.as_str(), ":");
+    assert_eq!(ui.split_user_password(), (&b""[..], Some(&b""[..])));
+}
+
+#[test]
+fn userinfo_with_last_at_split() {
+    // `user@info@host` — last-`@` split (M3-e behavior). userinfo is
+    // `user@info`, host is `host`.
+    let u = parse_graceful("http://user@info@example.com/").unwrap();
+    assert_eq!(u.userinfo().unwrap().as_str(), "user@info");
+}
+
+// ----------------------------------------------------------------------
+// authority()
+//
+// Returns Option<AuthorityRef>. Bundles host + port + userinfo as
+// borrowed views. None when the URI has no authority component.
+// ----------------------------------------------------------------------
+
+#[test]
+fn authority_asterisk_is_none() {
+    assert!(parse_graceful("*").unwrap().authority().is_none());
+}
+
+#[test]
+fn authority_origin_form_is_none() {
+    assert!(parse_graceful("/foo").unwrap().authority().is_none());
+}
+
+#[test]
+fn authority_opaque_path_is_none() {
+    assert!(parse_graceful("urn:isbn:0").unwrap().authority().is_none());
+    assert!(parse_graceful("mailto:a@b").unwrap().authority().is_none());
+}
+
+#[test]
+fn authority_host_only() {
+    let u = parse_graceful("http://example.com/").unwrap();
+    let a = u.authority().unwrap();
+    assert!(a.userinfo().is_none());
+    assert_eq!(
+        a.host(),
+        HostRef::from(&Host::Name(Domain::from_static("example.com")))
+    );
+    assert!(a.port().is_none());
+}
+
+#[test]
+fn authority_with_port() {
+    let u = parse_graceful("http://example.com:8080/").unwrap();
+    let a = u.authority().unwrap();
+    assert!(a.userinfo().is_none());
+    assert_eq!(a.port(), Some(8080));
+}
+
+#[test]
+fn authority_with_userinfo_no_port() {
+    let u = parse_graceful("http://alice:secret@example.com/").unwrap();
+    let a = u.authority().unwrap();
+    assert_eq!(a.userinfo().unwrap().as_str(), "alice:secret");
+    assert_eq!(
+        a.host(),
+        HostRef::from(&Host::Name(Domain::from_static("example.com")))
+    );
+    assert!(a.port().is_none());
+}
+
+#[test]
+fn authority_with_userinfo_and_port() {
+    let u = parse_graceful("https://api:tok@api.example.com:8443/v1").unwrap();
+    let a = u.authority().unwrap();
+    assert_eq!(a.userinfo().unwrap().as_str(), "api:tok");
+    assert_eq!(
+        a.host(),
+        HostRef::from(&Host::Name(Domain::from_static("api.example.com")))
+    );
+    assert_eq!(a.port(), Some(8443));
+}
+
+#[test]
+fn authority_ipv6_host() {
+    let u = parse_graceful("https://[2001:db8::1]:8443/").unwrap();
+    let a = u.authority().unwrap();
+    let expected_host = Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()));
+    assert_eq!(a.host(), HostRef::from(&expected_host));
+    assert_eq!(a.port(), Some(8443));
+}
+
+#[test]
+fn authority_empty_userinfo_distinct_from_none() {
+    let with = parse_graceful("http://@example.com/").unwrap();
+    assert_eq!(with.authority().unwrap().userinfo().unwrap().as_str(), "");
+
+    let without = parse_graceful("http://example.com/").unwrap();
+    assert!(without.authority().unwrap().userinfo().is_none());
+}
+
+#[test]
+fn host_port_shortcuts_match_authority() {
+    // Uri::host() / Uri::port() must agree with authority().host() /
+    // authority().port() — they're shortcuts over the same data.
+    for s in [
+        "http://example.com/",
+        "http://example.com:8080/",
+        "http://alice:secret@example.com:8080/",
+        "https://[2001:db8::1]:8443/p",
+    ] {
+        let u = parse_graceful(s).unwrap();
+        let a = u.authority().unwrap();
+        assert_eq!(u.host(), Some(a.host()), "host mismatch on {s:?}");
+        assert_eq!(u.port(), a.port(), "port mismatch on {s:?}");
+    }
+}
