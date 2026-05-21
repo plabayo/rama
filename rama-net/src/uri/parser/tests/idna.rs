@@ -138,6 +138,46 @@ mod with_idna {
         let d = Domain::try_from(String::from("münchen.de")).unwrap();
         assert_eq!(d.as_str(), "xn--mnchen-3ya.de");
     }
+
+    // -- Strict mode + IDN -------------------------------------------------
+    //
+    // RFC 3986 §3.2.2 host grammar is ASCII-only. UTS #46 normalisation
+    // is a graceful-mode convenience, not part of the spec — strict
+    // mode must reject non-ASCII host bytes even with the `idna`
+    // feature on. Callers wanting strict + IDN pre-encode to ACE.
+
+    #[test]
+    fn strict_rejects_non_ascii_host() {
+        use crate::uri::ParseError;
+        for non_ascii in [
+            "https://münchen.de/",
+            "https://日本.com/",
+            "https://MÜNCHEN.de/",
+            "https://api.üñiçödé.example/",
+        ] {
+            let r = crate::uri::Uri::parse_strict(non_ascii);
+            assert!(
+                matches!(r, Err(ParseError::StrictViolation)),
+                "strict must reject non-ASCII host {non_ascii:?}; got {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_accepts_already_ace_host() {
+        // Already-ACE-encoded host is pure ASCII; strict grammar is
+        // satisfied.
+        let u = crate::uri::Uri::parse_strict("https://xn--mnchen-3ya.de/").unwrap();
+        assert_eq!(u.host().unwrap().to_str(), "xn--mnchen-3ya.de");
+    }
+
+    #[test]
+    fn graceful_idn_unaffected_by_strict_tightening() {
+        // Graceful mode still IDN-normalises. Regression guard against
+        // accidentally applying the strict-mode rule everywhere.
+        let u = super::parse_graceful("https://münchen.de/").unwrap();
+        assert_eq!(u.host().unwrap().to_str(), "xn--mnchen-3ya.de");
+    }
 }
 
 // ----------------------------------------------------------------------

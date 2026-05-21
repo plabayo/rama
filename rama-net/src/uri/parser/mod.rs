@@ -308,44 +308,57 @@ pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
-/// Validate a single UTF-8 sequence starting at `bytes[i]`. Caller has
-/// verified `bytes[i] >= 0x80` (anything else is single-byte ASCII and
-/// trivially valid). Returns the sequence length on success (2, 3 or 4)
-/// or the offset of the first invalid byte on failure.
+/// Validate the UTF-8 sequence starting at `bytes[i]`. Caller has verified
+/// `bytes[i] >= 0x80`; anything else is single-byte ASCII and bypasses
+/// this function. Returns the sequence length on success (2, 3, or 4) or
+/// the offset of the first invalid byte on failure.
 ///
-/// Full Unicode-aware validation — rejects overlong encodings, surrogate
-/// code points (U+D800..=U+DFFF), and code points beyond U+10FFFF. The
-/// lead-byte → continuation-byte ranges below are the standard
-/// well-formed-UTF-8 constraints (RFC 3629 §4, Unicode 13.0 table 3-7).
+/// Full well-formed-UTF-8 validation (RFC 3629 §4, Unicode 13 Table 3-7):
+/// rejects overlong encodings, surrogate code points (U+D800..=U+DFFF),
+/// and code points beyond U+10FFFF. The four lead bytes with a *tighter*
+/// first-continuation-byte range — `E0` (overlong 3), `ED` (surrogates),
+/// `F0` (overlong 4), `F4` (>U+10FFFF) — are special-cased; the rest use
+/// the canonical `0x80..=0xBF` continuation range.
 ///
-/// Folded into the existing byte-walking loops so the all-ASCII fast
-/// path pays zero overhead — the `b >= 0x80` branch is the only entry.
+/// Perf notes:
+/// - `#[inline]` so the per-byte branch in the caller's loop folds in.
+/// - Slice the sequence once via `bytes.get(i..i+len)` so the inner
+///   continuation walk skips per-byte bounds checks.
+/// - Continuation-byte test is the bit-mask form `(b & 0xC0) == 0x80`,
+///   one op instead of two range compares.
+/// - All-ASCII inputs never enter this function — that fast path pays
+///   nothing.
+#[inline]
 pub(super) fn check_utf8_sequence(bytes: &[u8], i: usize) -> Result<usize, ParseError> {
     let b1 = bytes[i];
-    let (len, b2_lo, b2_hi) = match b1 {
-        0xC2..=0xDF => (2, 0x80, 0xBF),
-        0xE0 => (3, 0xA0, 0xBF), // overlong: 2-byte encoded as 3-byte
-        0xE1..=0xEC | 0xEE..=0xEF => (3, 0x80, 0xBF),
-        0xED => (3, 0x80, 0x9F), // U+D800..=U+DFFF surrogates
-        0xF0 => (4, 0x90, 0xBF), // overlong: 3-byte encoded as 4-byte
-        0xF1..=0xF3 => (4, 0x80, 0xBF),
-        0xF4 => (4, 0x80, 0x8F), // > U+10FFFF
+    let len: usize = match b1 {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
         _ => return Err(ParseError::NonUtf8 { at: i }),
     };
-    if i + len > bytes.len() {
+    let Some(seq) = bytes.get(i..i + len) else {
         return Err(ParseError::NonUtf8 { at: i });
-    }
-    let b2 = bytes[i + 1];
-    if b2 < b2_lo || b2 > b2_hi {
+    };
+    // First continuation byte: tighter range for the four edge-case
+    // leads, canonical bit-mask for the rest.
+    let b2 = seq[1];
+    let b2_ok = match b1 {
+        0xE0 => (0xA0..=0xBF).contains(&b2),
+        0xED => (0x80..=0x9F).contains(&b2),
+        0xF0 => (0x90..=0xBF).contains(&b2),
+        0xF4 => (0x80..=0x8F).contains(&b2),
+        _ => (b2 & 0xC0) == 0x80,
+    };
+    if !b2_ok {
         return Err(ParseError::NonUtf8 { at: i + 1 });
     }
-    let mut k = 2;
-    while k < len {
-        let b = bytes[i + k];
-        if !(0x80..=0xBF).contains(&b) {
-            return Err(ParseError::NonUtf8 { at: i + k });
+    // Remaining continuation bytes — slice-iter so LLVM doesn't emit
+    // per-iteration bounds checks (the slice length is known).
+    for (k, &b) in seq[2..].iter().enumerate() {
+        if (b & 0xC0) != 0x80 {
+            return Err(ParseError::NonUtf8 { at: i + 2 + k });
         }
-        k += 1;
     }
     Ok(len)
 }

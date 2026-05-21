@@ -223,3 +223,79 @@ fn owned_query_pairs_matches_ref() {
         .collect();
     assert_eq!(from_ref, from_owned);
 }
+
+// ----------------------------------------------------------------------
+// `eq_at` offset width — the cached `=` position inside a pair.
+//
+// The parser caps inputs at `MAX_URI_LEN` (u16-bounded), but the
+// mutation API has no such cap — `query_mut().push_pair(big_key, ...)`
+// can build a single pair larger than 65535 bytes. The eq offset must
+// span that range; `u16` truncated silently and reported the wrong
+// slice. The cache is now `u32`.
+// ----------------------------------------------------------------------
+
+#[test]
+fn eq_offset_handles_70k_byte_key() {
+    let key = "k".repeat(70_000);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_pair(key.as_str(), "v");
+    let pair = uri.query().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_bytes().len(), 70_000);
+    assert_eq!(pair.value_bytes().map(<[u8]>::len), Some(1));
+}
+
+#[test]
+fn eq_offset_handles_100k_byte_value() {
+    let value = "v".repeat(100_000);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_pair("k", value.as_str());
+    let pair = uri.query().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_bytes(), b"k");
+    assert_eq!(pair.value_bytes().map(<[u8]>::len), Some(100_000));
+}
+
+#[test]
+fn eq_offset_at_exact_u16_boundary() {
+    // 65535 bytes of key → `=` sits at offset 65535 = u16::MAX. `u16`
+    // wraps to 0; `u32` stores it cleanly.
+    let key = "k".repeat(65_535);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_pair(key.as_str(), "v");
+    let pair = uri.query().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_bytes().len(), 65_535);
+    assert_eq!(pair.value_bytes(), Some(&b"v"[..]));
+
+    // 65536 — one past the u16 cap.
+    let key = "k".repeat(65_536);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_pair(key.as_str(), "v");
+    let pair = uri.query().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_bytes().len(), 65_536);
+    assert_eq!(pair.value_bytes(), Some(&b"v"[..]));
+}
+
+#[test]
+fn bare_key_with_huge_size_has_no_value() {
+    // The `u16` → `u32` widening must not change semantics for bare
+    // keys (`eq_at = None` stays `None`).
+    let key = "k".repeat(70_000);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_key(key.as_str());
+    let pair = uri.query().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_bytes().len(), 70_000);
+    assert_eq!(pair.value_bytes(), None);
+    assert!(!pair.has_value());
+}
+
+#[test]
+fn huge_pair_via_pair_ref_iterator() {
+    // Borrowed `QueryPairRef` has its own `eq_at: u32` — exercise it.
+    let key = "k".repeat(70_000);
+    let mut uri = Uri::parse("https://example.com/").unwrap();
+    uri.query_mut().push_pair(key.as_str(), "vvvv");
+    let q = uri.query().unwrap();
+    let pair_ref = q.pairs().next().unwrap();
+    assert_eq!(pair_ref.name_bytes().len(), 70_000);
+    assert_eq!(pair_ref.value_bytes(), Some(&b"vvvv"[..]));
+    assert!(pair_ref.has_value());
+}

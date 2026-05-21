@@ -3,10 +3,13 @@
 //! Organized by category:
 //! - [`origin_form`] — request-target style `/path?q#f` (HTTP origin-form)
 //! - [`absolute_form`] — full URIs `scheme:hier-part`
+//! - [`authority_form`] — HTTP CONNECT `[userinfo@]host[:port]` shape
 //! - [`non_http_schemes`] — corpus of non-HTTP URIs (urn, mailto, ftp, ws,
 //!   git, ssh, redis, mongodb, coap, geo, magnet, custom)
 //! - [`rfc3986_examples`] — RFC 3986 §1.1.2 canonical examples
 //! - [`strict_mode`] — graceful-vs-strict difference coverage
+//! - [`utf8`] — well-formed-UTF-8 enforcement on graceful parses
+//! - [`host`] — host-component edge cases (pct-encoded reg-name, IPvFuture)
 //! - [`adversarial`] — security-class inputs (smuggling, SSRF, injection)
 //! - [`smoke`] — structured-input smoke tests (deterministic random, boundary
 //!   patterns) — every reachable byte must not crash either parser
@@ -17,6 +20,7 @@
 //! - [`query_pairs`] — `QueryRef::pairs()` iterator
 //! - [`query_deserialize`] — `QueryRef::deserialize` / `Query::deserialize`
 //! - [`fragment`] — `FragmentRef` / `Fragment` views
+//! - [`idna`] — IDN / UTS #46 host normalisation and strict-mode rejection
 //!
 //! Shared helpers live in this file.
 
@@ -27,9 +31,10 @@ use crate::uri::{ParseError, Uri};
 pub(super) mod absolute_form;
 pub(super) mod accessors;
 pub(super) mod adversarial;
-pub(super) mod audit;
+pub(super) mod authority_form;
 pub(super) mod display;
 pub(super) mod fragment;
+pub(super) mod host;
 pub(super) mod idna;
 pub(super) mod mutation;
 pub(super) mod non_http_schemes;
@@ -44,6 +49,7 @@ pub(super) mod resolve;
 pub(super) mod rfc3986_examples;
 pub(super) mod smoke;
 pub(super) mod strict_mode;
+pub(super) mod utf8;
 pub(super) mod whatwg_corpus;
 pub(super) mod wire;
 
