@@ -77,7 +77,7 @@ where
     P: Fn(&[u8], &mut dyn FnMut(T, u32)) -> Result<(), BoxError> + Send + 'static,
 {
     stream_fn(async move |mut yielder| {
-        tracing::debug!(?timeout, %domain, rrtype, "dns::linux: res_nquery");
+        tracing::debug!(?timeout, %domain, rrtype, "dns::linux: res_nsearch");
 
         let (tx, rx) = mpsc::channel(8);
         let join = tokio::task::spawn_blocking(move || {
@@ -114,9 +114,9 @@ where
                 Err(err) => {
                     tracing::debug!(
                         %err,
-                        "linux::res_nquery: item failed to resolve on time: return timeout error",
+                        "linux::res_nsearch: item failed to resolve on time: return timeout error",
                     );
-                    // `res_nquery` is a blocking libc call, so timing out here only stops
+                    // `res_nsearch` is a blocking libc call, so timing out here only stops
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder
@@ -132,14 +132,14 @@ where
             Ok(Err(err)) => {
                 yielder
                     .yield_item(Err(LinuxDnsResolverError::message(format!(
-                        "linux dns res_nquery task failed: {err}"
+                        "linux dns res_nsearch task failed: {err}"
                     ))
                     .into()))
                     .await;
             }
             Err(err) => {
                 tracing::debug!(
-                    "linux::res_nquery: lookup_record_stream error = {err} (report as timeout)"
+                    "linux::res_nsearch: lookup_record_stream error = {err} (report as timeout)"
                 );
                 yielder
                     .yield_item(Err(LinuxDnsResolverError::timeout(timeout).into()))
@@ -173,8 +173,13 @@ fn lookup_record_packet(
     // - `state` is initialized by `res_ninit`.
     // - `name` is a valid NUL-terminated DNS name.
     // - `buffer` is writable response storage.
+    //
+    // `res_nsearch` (vs `res_nquery`) walks the search list from
+    // `/etc/resolv.conf` and applies the `ndots` rule, so short / unqualified
+    // names resolve the same way `getaddrinfo` and hickory's system resolver
+    // would resolve them.
     let response_len = unsafe {
-        ffi::res_nquery(
+        ffi::res_nsearch(
             &mut state,
             name.as_ptr(),
             ffi::NS_C_IN as libc::c_int,
@@ -187,9 +192,9 @@ fn lookup_record_packet(
     if response_len < 0 {
         let h_errno = state.res_h_errno;
         if matches!(h_errno, 0 | ffi::HOST_NOT_FOUND | ffi::NO_DATA) {
-            tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nquery empty result");
+            tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nsearch empty result");
             // glibc copies the wire response into `buffer` before classifying
-            // the rcode and returning -1 (see `__libc_res_nquery` in
+            // the rcode and returning -1 (see `__libc_res_nsearch` in
             // `resolv/res_query.c`). The exact response length isn't surfaced,
             // but the parser walks via DNS header counts and bounds itself on
             // `packet.len()`, so handing over the full capacity is safe — any
@@ -200,14 +205,14 @@ fn lookup_record_packet(
             return Ok(Some(buffer));
         }
         return Err(LinuxDnsResolverError::message(format!(
-            "res_nquery failed (h_errno={h_errno})",
+            "res_nsearch failed (h_errno={h_errno})",
         ))
         .into());
     }
 
     if response_len as usize > buffer.len() {
         return Err(LinuxDnsResolverError::message(format!(
-            "res_nquery response exceeds buffer: required={response_len} capacity={}",
+            "res_nsearch response exceeds buffer: required={response_len} capacity={}",
             buffer.len()
         ))
         .into());
@@ -499,7 +504,7 @@ mod ffi {
     // GNU/Linux symbol mapping:
     // - `res_ninit` is exported as `__res_ninit`
     // - `res_nclose` is exported as `__res_nclose`
-    // - `res_nquery` is exported as `res_nquery`
+    // - `res_nsearch` is exported as `res_nsearch`
     //
     // Sources:
     // - https://codebrowser.dev/glibc/glibc/resolv/res_init.c.html
@@ -513,7 +518,7 @@ mod ffi {
         pub(super) fn res_ninit(state: *mut ResState) -> c_int;
         #[link_name = "__res_nclose"]
         pub(super) fn res_nclose(state: *mut ResState);
-        pub(super) fn res_nquery(
+        pub(super) fn res_nsearch(
             state: *mut ResState,
             dname: *const c_char,
             class: c_int,
@@ -535,7 +540,7 @@ mod ffi {
     unsafe extern "C" {
         pub(super) fn res_ninit(state: *mut ResState) -> c_int;
         pub(super) fn res_nclose(state: *mut ResState);
-        pub(super) fn res_nquery(
+        pub(super) fn res_nsearch(
             state: *mut ResState,
             dname: *const c_char,
             class: c_int,
@@ -636,7 +641,7 @@ mod soa_ttl_tests {
 
     #[test]
     fn tolerates_trailing_zeros_after_response() {
-        // Simulates `res_nquery` returning -1 with the wire response copied
+        // Simulates `res_nsearch` returning -1 with the wire response copied
         // into a larger zeroed buffer: the parser must terminate via header
         // counts, not run off into the padding.
         let mut packet = build_negative_response(120, 90);
