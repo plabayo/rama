@@ -45,10 +45,6 @@ pub enum ParseError {
     /// in the component where it appeared.
     InvalidPercentEncoding { at: usize },
 
-    /// The input contained a non-ASCII byte outside an IDN-eligible host
-    /// position.
-    NonAsciiOutsideHost { at: usize },
-
     /// An IPv6 literal carried a zone identifier (`%25en0` on the wire).
     /// Not currently supported — see module-level docs for the path forward.
     IPv6ZoneNotSupported,
@@ -79,12 +75,6 @@ impl fmt::Display for ParseError {
             }
             Self::InvalidPercentEncoding { at } => {
                 write!(f, "invalid percent-encoded escape at byte {at}")
-            }
-            Self::NonAsciiOutsideHost { at } => {
-                write!(
-                    f,
-                    "non-ASCII byte at {at} outside an IDN-eligible host position"
-                )
             }
             Self::IPv6ZoneNotSupported => f.write_str(
                 "IPv6 zone identifiers are not currently supported in uri host literals",

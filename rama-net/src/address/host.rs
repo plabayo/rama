@@ -87,6 +87,23 @@ impl Host {
             Self::Address(ip_addr) => ip_addr.to_string().into(),
         }
     }
+
+    /// Returns the Unicode (display) form of this host. For named hosts,
+    /// any `xn--` A-labels are inverse-encoded via UTS #46. IP addresses
+    /// are rendered to their standard textual form.
+    ///
+    /// Cheap when no conversion is needed — returns `Cow::Borrowed`
+    /// pointing at the domain bytes; allocates only for IP addresses or
+    /// IDN A-labels that actually require decoding.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Name(d) => d.as_unicode(),
+            Self::Address(ip) => ip.to_string().into(),
+        }
+    }
 }
 
 impl Host {
@@ -128,6 +145,29 @@ pub enum HostRef<'a> {
 }
 
 impl HostRef<'_> {
+    /// Returns this host as a string. Domain names are returned as
+    /// `Cow::Borrowed` (no allocation); IP addresses are formatted into
+    /// a fresh `String`.
+    #[must_use]
+    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Name(d) => d.as_str().into(),
+            Self::Address(ip) => ip.to_string().into(),
+        }
+    }
+
+    /// Returns the Unicode (display) form of this host. See
+    /// [`Host::as_unicode`] for the full contract.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Name(d) => d.as_unicode(),
+            Self::Address(ip) => ip.to_string().into(),
+        }
+    }
+
     /// Returns an owned [`Host`] containing a copy of the underlying bytes
     /// (or, for the IP variants, a copy of the address value).
     #[must_use]
@@ -565,7 +605,10 @@ mod tests {
             "[::",
             "::]",
             "@",
+            // Non-ASCII inputs are invalid only when the `idna` feature is off.
+            #[cfg(not(feature = "idna"))]
             "こんにちは",
+            #[cfg(not(feature = "idna"))]
             "こんにちは.com",
         ] {
             assert!(Host::try_from(str).is_err(), "parsing {str}");

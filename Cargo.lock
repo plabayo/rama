@@ -3742,6 +3742,7 @@ dependencies = [
  "dial9-trace-format",
  "flume",
  "hex",
+ "idna",
  "ipnet",
  "itertools 0.14.0",
  "itoa",

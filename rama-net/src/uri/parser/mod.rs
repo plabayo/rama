@@ -48,7 +48,7 @@
 use rama_core::bytes::Bytes;
 
 use super::lazy::LazyUriRef;
-use super::{Component, ParseError, Uri};
+use super::{Component, ParseError, Uri, UriInner};
 
 mod authority;
 mod byte_sets;
@@ -119,7 +119,7 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
         let (auth, hier_start) = authority::parse_optional_authority(&bytes, after_colon, mode)?;
         let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
 
-        return Ok(Uri::from_lazy(LazyUriRef {
+        return Ok(finalise(LazyUriRef {
             scheme: Some(scheme),
             authority: auth,
             path: (hier_start as u16, scan.path_end),
@@ -149,7 +149,7 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
 
     // Empty input → empty same-document reference.
     if bytes.is_empty() {
-        return Ok(Uri::from_lazy(LazyUriRef {
+        return Ok(finalise(LazyUriRef {
             scheme: None,
             authority: None,
             path: (0, 0),
@@ -173,7 +173,7 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
         let after_colon = colon + 1;
         let (auth, hier_start) = authority::parse_optional_authority(&bytes, after_colon, mode)?;
         let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
-        return Ok(Uri::from_lazy(LazyUriRef {
+        return Ok(finalise(LazyUriRef {
             scheme: Some(scheme),
             authority: auth,
             path: (hier_start as u16, scan.path_end),
@@ -191,7 +191,7 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     let (auth, hier_start) = authority::parse_optional_authority(&bytes, 0, mode)?;
     let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
 
-    Ok(Uri::from_lazy(LazyUriRef {
+    Ok(finalise(LazyUriRef {
         scheme: None,
         authority: auth,
         path: (hier_start as u16, scan.path_end),
@@ -199,6 +199,22 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
         fragment: scan.fragment,
         bytes,
     }))
+}
+
+/// Finalise a parsed [`LazyUriRef`] into a [`Uri`]. If the input contained
+/// non-ASCII bytes the host may have been IDN-normalised (ACE-encoded);
+/// the Lazy variant projects raw input bytes for [`Display`](std::fmt::Display),
+/// which would diverge from the typed host view. Promote to Owned in that
+/// case so the canonical display reassembles from the typed components.
+fn finalise(lazy: LazyUriRef) -> Uri {
+    if lazy.bytes.is_ascii() {
+        return Uri::from_lazy(lazy);
+    }
+    let uri = Uri::from_lazy(lazy);
+    let owned = uri.as_owned_components();
+    Uri {
+        inner: UriInner::Owned(std::sync::Arc::new(owned)),
+    }
 }
 
 // --- Small shared helpers used by sibling modules --------------------------

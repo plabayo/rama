@@ -27,16 +27,16 @@ targets = [
 [features]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
-# IDNA (internationalized domain names) support for the `uri` module.
+# IDNA (internationalized domain names) support.
 #
 # Off by default. Without it, non-ASCII hostnames are rejected at parse
-# (see [`rama_net::uri::ParseError::IdnaNotEnabled`]). When on, hosts go
-# through UTS #46 / Punycode round-tripping. Pulls a non-trivial
-# Unicode-table dependency — keep off if your traffic is ASCII-only.
-#
-# Wired up in M7 of the rama-net::uri rollout; for now it's only used by
-# the parse-error variant gating.
-idna = []
+# with [`DomainParseError`](crate::address::DomainParseError) / the
+# corresponding URI parse error variant. When on, hosts go through
+# UTS #46 / Punycode round-tripping — the ACE (`xn--…`) form is what
+# gets stored; the original Unicode form is recoverable via
+# [`as_unicode`](crate::address::Domain::as_unicode). Pulls a non-trivial
+# Unicode-table dependency; keep off if your traffic is ASCII-only.
+idna = ["dep:idna"]
 tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
@@ -53,6 +53,7 @@ dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
+idna = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
 itoa = { workspace = true }

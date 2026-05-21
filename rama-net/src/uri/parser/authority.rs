@@ -160,10 +160,9 @@ fn parse_host_and_port(
 
     let host = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
         Host::Address(IpAddr::V4(v4))
-    } else {
-        // Treat as DNS name. Validate via Domain::try_from on a borrowed
-        // slice (validates ASCII/length), then construct the owned Domain
-        // zero-copy by slicing the parent Bytes.
+    } else if host_bytes_rel.is_ascii() {
+        // ASCII fast-path: validate cheaply, then construct the Domain
+        // zero-copy by slicing the parent Bytes — no allocation.
         if Domain::try_from(host_str).is_err() {
             return Err(ParseError::InvalidComponent(Component::Host));
         }
@@ -171,6 +170,16 @@ fn parse_host_and_port(
         // Safety: validated above.
         let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
         Host::Name(domain)
+    } else {
+        // Non-ASCII: route through `Domain::try_from`, which handles IDN
+        // (UTS #46) under the `idna` feature. Map the not-enabled error
+        // to the URI-level variant so callers can distinguish.
+        match Domain::try_from(host_str) {
+            Ok(domain) => Host::Name(domain),
+            #[cfg(not(feature = "idna"))]
+            Err(e) if e.is_idna_not_enabled() => return Err(ParseError::IdnaNotEnabled),
+            Err(_) => return Err(ParseError::InvalidComponent(Component::Host)),
+        }
     };
 
     // `end` is unused on the non-bracketed path — bind to a no-op to silence

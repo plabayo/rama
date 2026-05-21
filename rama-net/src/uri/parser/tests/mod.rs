@@ -29,6 +29,7 @@ pub(super) mod accessors;
 pub(super) mod adversarial;
 pub(super) mod display;
 pub(super) mod fragment;
+pub(super) mod idna;
 pub(super) mod mutation;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;

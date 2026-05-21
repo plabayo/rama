@@ -322,6 +322,26 @@ impl Domain {
         // are always valid UTF-8.
         unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
+
+    /// Returns the Unicode (display) form of the domain.
+    ///
+    /// Domains with no `xn--` labels round-trip as `Cow::Borrowed` —
+    /// no allocation, no UTS #46 work. Domains containing IDN A-labels
+    /// are inverse-encoded via UTS #46 and returned as `Cow::Owned`.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+        let s = self.as_str();
+        // Fast-path: domains without an `xn--` A-label have no ACE
+        // labels to decode. `idna::domain_to_unicode` would still
+        // succeed, but it'd run UTS #46 over every label.
+        if memchr::memmem::find(s.as_bytes(), b"xn--").is_none() {
+            return std::borrow::Cow::Borrowed(s);
+        }
+        let (unicode, _result) = idna::domain_to_unicode(s);
+        std::borrow::Cow::Owned(unicode)
+    }
 }
 
 /// Borrowed view into a domain-name byte slice.
@@ -364,6 +384,20 @@ impl<'a> DomainRef<'a> {
         // presentation form.
         unsafe { Domain::from_maybe_borrowed_unchecked(bytes) }
     }
+
+    /// Returns the Unicode (display) form of the domain. See
+    /// [`Domain::as_unicode`] for the contract.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'a, str> {
+        let s = self.as_str();
+        if memchr::memmem::find(s.as_bytes(), b"xn--").is_none() {
+            return std::borrow::Cow::Borrowed(s);
+        }
+        let (unicode, _result) = idna::domain_to_unicode(s);
+        std::borrow::Cow::Owned(unicode)
+    }
 }
 
 impl<'a> From<&'a Domain> for DomainRef<'a> {
@@ -400,8 +434,7 @@ impl std::str::FromStr for Domain {
     type Err = DomainParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        validate_domain_str(s)?;
-        Ok(Self(Bytes::copy_from_slice(s.as_bytes())))
+        Self::try_from(s)
     }
 }
 
@@ -409,8 +442,14 @@ impl TryFrom<String> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        validate_domain_str(&name)?;
-        Ok(Self(Bytes::from(name.into_bytes())))
+        // Fast-path: already ASCII → reuse the input buffer.
+        if name.is_ascii() {
+            validate_domain_str(&name)?;
+            return Ok(Self(Bytes::from(name.into_bytes())));
+        }
+        let ace = idn_to_ascii(&name)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
     }
 }
 
@@ -418,8 +457,13 @@ impl<'a> TryFrom<&'a str> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: &'a str) -> Result<Self, Self::Error> {
-        validate_domain_str(name)?;
-        Ok(Self(Bytes::copy_from_slice(name.as_bytes())))
+        if name.is_ascii() {
+            validate_domain_str(name)?;
+            return Ok(Self(Bytes::copy_from_slice(name.as_bytes())));
+        }
+        let ace = idn_to_ascii(name)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
     }
 }
 
@@ -428,8 +472,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
-        validate_domain_str(s)?;
-        Ok(Self(Bytes::copy_from_slice(name)))
+        Self::try_from(s)
     }
 }
 
@@ -438,8 +481,32 @@ impl TryFrom<Vec<u8>> for Domain {
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(&name).map_err(DomainParseError::non_utf8)?;
-        validate_domain_str(s)?;
-        Ok(Self(Bytes::from(name)))
+        if s.is_ascii() {
+            validate_domain_str(s)?;
+            return Ok(Self(Bytes::from(name)));
+        }
+        let ace = idn_to_ascii(s)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
+    }
+}
+
+/// Convert a non-ASCII domain string to its ASCII-Compatible Encoding
+/// (ACE / Punycode) via UTS #46 non-transitional processing.
+///
+/// Caller MUST have already checked that `input` contains non-ASCII —
+/// this isn't a fast-path optimisation, it's the explicit IDN entry
+/// point. Returns an error if the `idna` feature is off, or if UTS #46
+/// rejects the input.
+fn idn_to_ascii(input: &str) -> Result<String, DomainParseError> {
+    #[cfg(feature = "idna")]
+    {
+        idna::domain_to_ascii(input).map_err(|_e| DomainParseError::idna_processing())
+    }
+    #[cfg(not(feature = "idna"))]
+    {
+        let _ = input;
+        Err(DomainParseError::idna_not_enabled())
     }
 }
 
@@ -455,10 +522,27 @@ pub struct DomainParseError(DomainParseErrorKind);
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DomainParseErrorKind {
     Empty,
-    TooLong { len: usize },
-    NonUtf8 { source: std::str::Utf8Error },
-    Label { at: usize, error: LabelError },
-    BadWildcard { at: usize },
+    TooLong {
+        len: usize,
+    },
+    NonUtf8 {
+        source: std::str::Utf8Error,
+    },
+    Label {
+        at: usize,
+        error: LabelError,
+    },
+    BadWildcard {
+        at: usize,
+    },
+    /// UTS #46 IDN processing rejected the input (e.g. disallowed
+    /// codepoints, bidi violations). Only produced when the `idna`
+    /// feature is on.
+    #[cfg(feature = "idna")]
+    IdnaProcessing,
+    /// Non-ASCII bytes were supplied but the `idna` feature is off.
+    #[cfg(not(feature = "idna"))]
+    IdnaNotEnabled,
 }
 
 impl DomainParseError {
@@ -482,6 +566,32 @@ impl DomainParseError {
     fn bad_wildcard(at: usize) -> Self {
         Self(DomainParseErrorKind::BadWildcard { at })
     }
+    #[cfg(feature = "idna")]
+    #[inline]
+    fn idna_processing() -> Self {
+        Self(DomainParseErrorKind::IdnaProcessing)
+    }
+    #[cfg(not(feature = "idna"))]
+    #[inline]
+    fn idna_not_enabled() -> Self {
+        Self(DomainParseErrorKind::IdnaNotEnabled)
+    }
+
+    /// `true` if the failure is the "input requires IDNA but the
+    /// `idna` feature is off" case. Lets callers (e.g. the URI parser)
+    /// surface a more specific top-level error. Always `false` when the
+    /// `idna` feature is enabled.
+    #[must_use]
+    pub fn is_idna_not_enabled(&self) -> bool {
+        #[cfg(not(feature = "idna"))]
+        {
+            matches!(self.0, DomainParseErrorKind::IdnaNotEnabled)
+        }
+        #[cfg(feature = "idna")]
+        {
+            false
+        }
+    }
 }
 
 impl fmt::Display for DomainParseError {
@@ -501,6 +611,14 @@ impl fmt::Display for DomainParseError {
                 f,
                 "'*' wildcard label is only valid at index 0, found at index {at}"
             ),
+            #[cfg(feature = "idna")]
+            DomainParseErrorKind::IdnaProcessing => {
+                f.write_str("IDN domain rejected by UTS #46 processing")
+            }
+            #[cfg(not(feature = "idna"))]
+            DomainParseErrorKind::IdnaNotEnabled => {
+                f.write_str("non-ASCII domain requires the `idna` feature")
+            }
         }
     }
 }
@@ -1080,8 +1198,13 @@ mod tests {
             "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",
             "example-thislabeliswaytoolongforbeingeversomethingwewishtocareabout.com",
+            // The following are invalid only when the `idna` feature is off
+            // (under it they're UTS #46-processed into valid ACE forms).
+            #[cfg(not(feature = "idna"))]
             "こんにちは",
+            #[cfg(not(feature = "idna"))]
             "こんにちは.com",
+            #[cfg(not(feature = "idna"))]
             "😀",
             "example..com",
             "example dot com",
