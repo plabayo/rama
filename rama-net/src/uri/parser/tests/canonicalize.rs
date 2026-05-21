@@ -222,7 +222,7 @@ fn parse_canonical_strict_combines_parse_strict_and_canonicalize() {
 #[test]
 fn parse_canonical_propagates_parse_error() {
     // Invalid input — parse fails, no canonicalize attempted.
-    assert!(Uri::parse_canonical("http://exa%0Dmple.com/").is_err());
+    Uri::parse_canonical("http://exa%0Dmple.com/").unwrap_err();
 }
 
 // ----------------------------------------------------------------------
@@ -232,7 +232,7 @@ fn parse_canonical_propagates_parse_error() {
 #[test]
 fn canonicalize_asterisk_is_no_op() {
     let uri = Uri::parse("*").unwrap();
-    let canonical = uri.clone().canonicalize();
+    let canonical = uri.canonicalize();
     assert_eq!(canonical.to_string(), "*");
     assert!(canonical.is_asterisk());
 }
@@ -334,7 +334,7 @@ fn try_set_host_rejects_invalid_input() {
     let mut uri = Uri::parse("http://old.example/").unwrap();
     // Spaces aren't valid in Host. Goes through Host::TryFrom<&str>
     // which tries IP first (fails) then Domain (fails) → Err.
-    assert!(uri.try_set_host("not a valid host").is_err());
+    uri.try_set_host("not a valid host").unwrap_err();
 }
 
 #[test]

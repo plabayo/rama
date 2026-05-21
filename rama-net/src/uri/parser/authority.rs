@@ -173,29 +173,26 @@ fn parse_host_and_port(
         let inside = &view[1..close_rel];
         let inside_start = host_start + 1;
 
-        let host = match inside.first() {
+        let host = if matches!(inside.first(), Some(b'v' | b'V')) {
             // RFC 3986 §3.2.2 `IPvFuture = "v" 1*HEXDIG "." 1*(...)`.
             // Preserved verbatim — no `vN` form is registered with
             // IANA, so there's nothing to decode. Bytes are stored
             // without the surrounding brackets.
-            Some(b'v' | b'V') => {
-                validate_ipvfuture(inside)?;
-                let body = parent.slice(inside_start..inside_start + inside.len());
-                Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, true))
-            }
+            validate_ipvfuture(inside)?;
+            let body = parent.slice(inside_start..inside_start + inside.len());
+            Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, true))
+        } else {
             // Standard IPv6.
-            _ => {
-                if parse_utils::ipv6_bracket_has_zone(inside) {
-                    return Err(ParseError::IPv6ZoneNotSupported);
-                }
-                let Ok(s) = std::str::from_utf8(inside) else {
-                    return Err(ParseError::InvalidComponent(Component::Host));
-                };
-                let Ok(addr) = s.parse::<Ipv6Addr>() else {
-                    return Err(ParseError::InvalidComponent(Component::Host));
-                };
-                Host::Address(IpAddr::V6(addr))
+            if parse_utils::ipv6_bracket_has_zone(inside) {
+                return Err(ParseError::IPv6ZoneNotSupported);
             }
+            let Ok(s) = std::str::from_utf8(inside) else {
+                return Err(ParseError::InvalidComponent(Component::Host));
+            };
+            let Ok(addr) = s.parse::<Ipv6Addr>() else {
+                return Err(ParseError::InvalidComponent(Component::Host));
+            };
+            Host::Address(IpAddr::V6(addr))
         };
 
         // After `]`, optional `:port`.

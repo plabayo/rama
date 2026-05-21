@@ -57,10 +57,10 @@ fn bare_host_without_port_accepted() {
 #[test]
 fn path_query_fragment_delimiters_rejected() {
     // Any of `/`, `?`, `#` means the caller has the wrong shape.
-    assert!(Uri::parse_authority_form("example.com:443/foo").is_err());
-    assert!(Uri::parse_authority_form("example.com:443?x=1").is_err());
-    assert!(Uri::parse_authority_form("example.com:443#frag").is_err());
-    assert!(Uri::parse_authority_form("https://example.com:443").is_err());
+    Uri::parse_authority_form("example.com:443/foo").unwrap_err();
+    Uri::parse_authority_form("example.com:443?x=1").unwrap_err();
+    Uri::parse_authority_form("example.com:443#frag").unwrap_err();
+    Uri::parse_authority_form("https://example.com:443").unwrap_err();
 }
 
 #[test]
@@ -73,9 +73,9 @@ fn empty_input_rejected() {
 
 #[test]
 fn invalid_port_rejected() {
-    assert!(Uri::parse_authority_form("example.com:99999").is_err());
-    assert!(Uri::parse_authority_form("example.com:abc").is_err());
-    assert!(Uri::parse_authority_form("example.com:").is_err());
+    Uri::parse_authority_form("example.com:99999").unwrap_err();
+    Uri::parse_authority_form("example.com:abc").unwrap_err();
+    Uri::parse_authority_form("example.com:").unwrap_err();
 }
 
 #[cfg(feature = "idna")]

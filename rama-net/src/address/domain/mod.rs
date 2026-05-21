@@ -1537,7 +1537,9 @@ mod tests {
             Domain::try_from(input)
                 .unwrap_or_else(|e| panic!("try_from({input:?}) rejected unexpectedly: {e}"));
             // `from_static` exercises `is_valid_name` — must agree.
-            let _ = Domain::from_static(input);
+            // `let _ =` would discard the must-use value; bind to a
+            // suppression name instead so clippy is happy.
+            let _domain = Domain::from_static(input);
         }
         // Mirror the URI-parser paths that originally hit the panic.
         let uri: crate::uri::Uri = "k://.A/".parse().unwrap();

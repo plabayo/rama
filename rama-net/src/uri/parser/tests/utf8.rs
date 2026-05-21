@@ -104,8 +104,8 @@ fn non_utf8_in_query_and_fragment_rejected() {
 fn non_utf8_in_userinfo_rejected() {
     // Userinfo in graceful mode previously had no validation — any
     // userinfo accessor then did `from_utf8_unchecked`. UB.
-    assert!(parse_graceful_bytes(b"http://\xff@example.com/").is_err());
-    assert!(parse_graceful_bytes(b"http://user:\xff@example.com/").is_err());
+    parse_graceful_bytes(b"http://\xff@example.com/").unwrap_err();
+    parse_graceful_bytes(b"http://user:\xff@example.com/").unwrap_err();
 }
 
 #[test]

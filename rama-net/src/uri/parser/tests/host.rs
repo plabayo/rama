@@ -76,17 +76,17 @@ fn sub_delim_reg_name_preserved() {
     let uri = parse_graceful("http://tag,with,commas/").unwrap();
     assert_eq!(uri.host().unwrap().to_str(), "tag,with,commas");
     let host = uninterpreted(&uri);
-    assert!(Domain::try_from(&host).is_err());
+    Domain::try_from(&host).unwrap_err();
 }
 
 #[test]
 fn malformed_pct_escape_rejected() {
     // `%X` truncated (no second hex digit).
-    assert!(parse_graceful("http://%6/").is_err());
+    parse_graceful("http://%6/").unwrap_err();
     // `%XY` non-hex.
-    assert!(parse_graceful("http://%6Z/").is_err());
+    parse_graceful("http://%6Z/").unwrap_err();
     // Bare `%` at end.
-    assert!(parse_graceful("http://example.com%/").is_err());
+    parse_graceful("http://example.com%/").unwrap_err();
 }
 
 #[test]
@@ -105,19 +105,19 @@ fn pct_decoded_control_byte_rejected_as_smuggling_vector() {
         ParseError::ControlCharInUri { byte: 0x0D, .. }
     ));
     // `%09` tab — same.
-    assert!(parse_graceful("http://exa%09ple.com/").is_err());
+    parse_graceful("http://exa%09ple.com/").unwrap_err();
 }
 
 #[test]
 fn illegal_ascii_chars_in_reg_name_rejected() {
     // `[` and `]` only appear inside IP-literal brackets. Mid-reg-name
     // is invalid.
-    assert!(parse_graceful("http://exa[ple.com/").is_err());
-    assert!(parse_graceful("http://exa]ple.com/").is_err());
+    parse_graceful("http://exa[ple.com/").unwrap_err();
+    parse_graceful("http://exa]ple.com/").unwrap_err();
     // Other gen-delims excluded from reg-name.
-    assert!(parse_graceful("http://exa<ple.com/").is_err());
-    assert!(parse_graceful("http://exa\"ple.com/").is_err());
-    assert!(parse_graceful("http://exa\\ple.com/").is_err());
+    parse_graceful("http://exa<ple.com/").unwrap_err();
+    parse_graceful("http://exa\"ple.com/").unwrap_err();
+    parse_graceful("http://exa\\ple.com/").unwrap_err();
 }
 
 // ----------------------------------------------------------------------
@@ -165,13 +165,13 @@ fn ipvfuture_domain_conversion_fails_with_typed_error() {
 #[test]
 fn ipvfuture_grammar_rejects_invalid_shapes() {
     // No hex digits.
-    assert!(parse_graceful("http://[v.foo]/").is_err());
+    parse_graceful("http://[v.foo]/").unwrap_err();
     // No `.` separator.
-    assert!(parse_graceful("http://[v1foo]/").is_err());
+    parse_graceful("http://[v1foo]/").unwrap_err();
     // Empty tail.
-    assert!(parse_graceful("http://[v1.]/").is_err());
+    parse_graceful("http://[v1.]/").unwrap_err();
     // Non-hex in version.
-    assert!(parse_graceful("http://[vZ.foo]/").is_err());
+    parse_graceful("http://[vZ.foo]/").unwrap_err();
 }
 
 #[test]

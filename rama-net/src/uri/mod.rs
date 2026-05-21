@@ -524,7 +524,7 @@ impl Uri {
     /// [`Uri`] with:
     ///
     /// - Host promoted from [`Host::Uninterpreted`](crate::address::Host)
-    ///   to typed [`Domain`](crate::address::Domain) / [`IpAddr`] when the
+    ///   to typed [`Domain`](crate::address::Domain) / [`IpAddr`](std::net::IpAddr) when the
     ///   bytes decode to one (`%6D` → `m`; pct-encoded UTF-8 → IDN→ACE
     ///   under the `idna` feature). Sub-delim reg-name and IPvFuture
     ///   stay `Uninterpreted` — no canonical typed form exists.
@@ -643,7 +643,7 @@ impl Uri {
     /// Set just the host, preserving any existing userinfo and port.
     ///
     /// Accepts any [`Into<Host>`] — [`Host`](crate::address::Host),
-    /// [`Domain`](crate::address::Domain), [`IpAddr`],
+    /// [`Domain`](crate::address::Domain), [`IpAddr`](std::net::IpAddr),
     /// [`Ipv4Addr`](std::net::Ipv4Addr), or
     /// [`Ipv6Addr`](std::net::Ipv6Addr). For inputs that need
     /// parsing (`&str` / `String`), use

@@ -29,8 +29,26 @@ use rama_core::bytes::Bytes;
 use super::Domain;
 use super::domain::DomainParseError;
 
-/// Reg-name / IP-literal host bytes preserved verbatim. See the
-/// [module documentation](self) for the design contract.
+/// Reg-name / IP-literal host bytes preserved verbatim.
+///
+/// Wire-fidelity is the design contract: this type is
+/// **construction-free from the public API** — only the URI parser
+/// builds it, by preserving bytes off the wire. Two grammar shapes
+/// land here, distinguished by [`is_bracketed`](Self::is_bracketed):
+///
+/// - **Non-bracketed `reg-name`**: bytes outside the strict DNS-label
+///   shape — pct-encoded segments (`exa%6Dple.com`), sub-delim
+///   characters (`tag,with,commas`), or raw non-ASCII UTF-8
+///   (`münchen.de` under graceful URI parsing / IRI).
+/// - **Bracketed IPvFuture literal** (`[vN.X]`): brackets are URI
+///   syntax, not host content; they're not stored, but
+///   [`Display`](std::fmt::Display) re-adds them.
+///
+/// Callers either keep an `UninterpretedHost` as-is (forwarding,
+/// logging) or convert into [`Domain`], [`IpAddr`](std::net::IpAddr),
+/// [`Ipv4Addr`](std::net::Ipv4Addr), or [`Ipv6Addr`](std::net::Ipv6Addr)
+/// via the `TryFrom` impls — which apply pct-decoding and (for
+/// `Domain`) UTS #46 IDN normalization on the way.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UninterpretedHost {
     /// `true` when the host came from a bracketed IP-literal (`[vN.X]`).
@@ -202,17 +220,17 @@ impl<'a> TryFrom<UninterpretedHostRef<'a>> for Domain {
     type Error = DomainParseError;
 
     /// Pct-decodes the bytes and, with the `idna` feature, applies UTS
-    /// #46 normalization to ACE. Returns
-    /// [`DomainParseError::bracketed_ip_literal`] for bracketed
-    /// IP-literal inputs — those are a different grammatical category
-    /// and have no domain interpretation.
+    /// #46 normalization to ACE. Returns a [`DomainParseError`] tagged
+    /// with the "bracketed IP-literal" kind for bracketed inputs —
+    /// IP-literals are a different grammatical category and have no
+    /// domain interpretation.
     fn try_from(host: UninterpretedHostRef<'a>) -> Result<Self, Self::Error> {
         if host.bracketed {
             return Err(DomainParseError::bracketed_ip_literal());
         }
         match host.as_unicode() {
-            Cow::Borrowed(s) => Domain::try_from(s),
-            Cow::Owned(s) => Domain::try_from(s),
+            Cow::Borrowed(s) => Self::try_from(s),
+            Cow::Owned(s) => Self::try_from(s),
         }
     }
 }
@@ -368,7 +386,7 @@ mod tests {
         // Sub-delim hosts (e.g. `tag,with,commas`) are RFC 3986-legal
         // reg-name but not DNS-label-shaped — Domain rejects.
         let h = reg(b"tag,with,commas");
-        assert!(Domain::try_from(&h).is_err());
+        Domain::try_from(&h).unwrap_err();
     }
 
     #[test]
@@ -412,15 +430,15 @@ mod tests {
     fn try_into_ip_addr_fails_for_ipvfuture() {
         // IPvFuture (bracketed) bytes don't parse as any IP variant.
         let h = bracketed(b"v1.fe80::a");
-        assert!(IpAddr::try_from(&h).is_err());
-        assert!(Ipv4Addr::try_from(&h).is_err());
-        assert!(Ipv6Addr::try_from(&h).is_err());
+        IpAddr::try_from(&h).unwrap_err();
+        Ipv4Addr::try_from(&h).unwrap_err();
+        Ipv6Addr::try_from(&h).unwrap_err();
     }
 
     #[test]
     fn try_into_ip_addr_fails_for_pure_reg_name() {
         let h = reg(b"example.com");
-        assert!(IpAddr::try_from(&h).is_err());
+        IpAddr::try_from(&h).unwrap_err();
     }
 
     // -- Owned-input TryFrom variants -------------------------------------
@@ -485,7 +503,7 @@ mod tests {
     fn ord_sorts_bracketed_after_reg_name() {
         // Derived Ord compares `bracketed` first, then `bytes`.
         // `false < true`, so reg-name comes before IP-literal.
-        let mut v = vec![bracketed(b"v1"), reg(b"zzz"), reg(b"aaa")];
+        let mut v = [bracketed(b"v1"), reg(b"zzz"), reg(b"aaa")];
         v.sort();
         assert_eq!(v[0].as_str(), "aaa");
         assert!(!v[0].is_bracketed());

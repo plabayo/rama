@@ -225,7 +225,7 @@ mod with_idna {
         assert_eq!(graceful.host().unwrap().to_str(), "münchen.de");
 
         let strict = crate::uri::Uri::parse_strict("https://münchen.de/");
-        assert!(strict.is_err());
+        strict.unwrap_err();
     }
 }
 
