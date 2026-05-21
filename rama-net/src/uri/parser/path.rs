@@ -12,7 +12,7 @@ use crate::uri::ParseError;
 
 use super::ParserMode;
 use super::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
-use super::check_pct_encoded;
+use super::{check_pct_encoded, check_utf8_sequence};
 
 /// Result of the path/query/fragment scan: where the path ends and what
 /// ranges (if any) the query and fragment occupy in the parent buffer.
@@ -47,6 +47,22 @@ pub(super) fn scan_path_query_fragment(
         let b = bytes[i];
         if is_control_byte(b) {
             return Err(ParseError::ControlCharInUri { at: i, byte: b });
+        }
+
+        // Non-ASCII byte: must be a well-formed UTF-8 sequence (the
+        // typed accessors derive `&str` via `from_utf8_unchecked`, so
+        // the bytes must in fact be UTF-8).
+        //
+        // Strict mode would reject any non-ASCII via the byte-set
+        // check below; we only run the UTF-8 path in graceful mode.
+        // Folding the check in-loop means the all-ASCII fast path
+        // pays zero overhead — only multi-byte sequences enter here.
+        if !strict && b >= 0x80 {
+            let seq_len = check_utf8_sequence(bytes, i)?;
+            // Section delimiters (`?`, `#`) are ASCII, so a multi-byte
+            // sequence can't be one — safe to skip ahead wholesale.
+            i += seq_len;
+            continue;
         }
 
         // Section transitions

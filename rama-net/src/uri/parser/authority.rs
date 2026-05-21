@@ -79,12 +79,29 @@ pub(super) fn parse_authority(
     end: usize,
     mode: ParserMode,
 ) -> Result<ParsedAuthority, ParseError> {
-    // Reject control chars inside the authority.
+    // Walk authority bytes. Two invariants per byte:
+    //   1. No control bytes (smuggling / header-injection vector).
+    //   2. In graceful mode, non-ASCII bytes must form well-formed
+    //      UTF-8 sequences — the `from_utf8_unchecked` derives in
+    //      every userinfo accessor would otherwise be UB. Strict
+    //      mode's byte-set check below rejects non-ASCII outright,
+    //      so the UTF-8 path is graceful-only.
+    //
+    // Host bytes are also walked here, but they're either ASCII (no
+    // UTF-8 work) or hand-validated downstream by
+    // [`parse_host_and_port`] which routes through `Domain::try_from`
+    // (full UTF-8 check via std). Running the check once here keeps
+    // the host UTF-8 invariant cheap to re-establish on access.
     let mut k = start;
     while k < end {
         let b = bytes[k];
         if is_control_byte(b) {
             return Err(ParseError::ControlCharInUri { at: k, byte: b });
+        }
+        if mode == ParserMode::Graceful && b >= 0x80 {
+            let seq_len = super::check_utf8_sequence(bytes, k)?;
+            k += seq_len;
+            continue;
         }
         k += 1;
     }

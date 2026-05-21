@@ -92,7 +92,6 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    validate_utf8(&bytes)?;
 
     // Asterisk-form: the whole input is the single byte `*`. HTTP-specific
     // (RFC 9112 §3.2.4); harmless for other protocols since it's just one
@@ -158,7 +157,6 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    validate_utf8(&bytes)?;
 
     // Reject anything that obviously isn't pure authority bytes — any
     // path/query/fragment delimiter means the caller handed us the
@@ -192,7 +190,6 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
-    validate_utf8(&bytes)?;
 
     // Empty input → empty same-document reference. No host means no IDN
     // possible — Lazy is always correct.
@@ -311,24 +308,46 @@ pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
     unsafe { std::str::from_utf8_unchecked(bytes) }
 }
 
-/// Top-level UTF-8 validation, runs once per parse. Cheap (single linear
-/// scan, SIMD-accelerated on modern hosts) and fixes the class of bug
-/// where graceful mode silently accepts non-UTF-8 bytes that the rest of
-/// the URI surface then derefs as `&str` via `from_utf8_unchecked`.
+/// Validate a single UTF-8 sequence starting at `bytes[i]`. Caller has
+/// verified `bytes[i] >= 0x80` (anything else is single-byte ASCII and
+/// trivially valid). Returns the sequence length on success (2, 3 or 4)
+/// or the offset of the first invalid byte on failure.
 ///
-/// Graceful mode keeps the spec-loose behaviour of accepting raw UTF-8
-/// in path / query / fragment, but the bytes must in fact *be* UTF-8.
-/// Strict mode's per-byte byte-set checks already restrict to ASCII,
-/// but the floor check still runs unconditionally so the `unsafe
-/// from_utf8_unchecked` calls scattered across the accessor surface
-/// remain sound under all modes.
-fn validate_utf8(bytes: &[u8]) -> Result<(), ParseError> {
-    match std::str::from_utf8(bytes) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(ParseError::NonUtf8 {
-            at: e.valid_up_to(),
-        }),
+/// Full Unicode-aware validation — rejects overlong encodings, surrogate
+/// code points (U+D800..=U+DFFF), and code points beyond U+10FFFF. The
+/// lead-byte → continuation-byte ranges below are the standard
+/// well-formed-UTF-8 constraints (RFC 3629 §4, Unicode 13.0 table 3-7).
+///
+/// Folded into the existing byte-walking loops so the all-ASCII fast
+/// path pays zero overhead — the `b >= 0x80` branch is the only entry.
+pub(super) fn check_utf8_sequence(bytes: &[u8], i: usize) -> Result<usize, ParseError> {
+    let b1 = bytes[i];
+    let (len, b2_lo, b2_hi) = match b1 {
+        0xC2..=0xDF => (2, 0x80, 0xBF),
+        0xE0 => (3, 0xA0, 0xBF), // overlong: 2-byte encoded as 3-byte
+        0xE1..=0xEC | 0xEE..=0xEF => (3, 0x80, 0xBF),
+        0xED => (3, 0x80, 0x9F), // U+D800..=U+DFFF surrogates
+        0xF0 => (4, 0x90, 0xBF), // overlong: 3-byte encoded as 4-byte
+        0xF1..=0xF3 => (4, 0x80, 0xBF),
+        0xF4 => (4, 0x80, 0x8F), // > U+10FFFF
+        _ => return Err(ParseError::NonUtf8 { at: i }),
+    };
+    if i + len > bytes.len() {
+        return Err(ParseError::NonUtf8 { at: i });
     }
+    let b2 = bytes[i + 1];
+    if b2 < b2_lo || b2 > b2_hi {
+        return Err(ParseError::NonUtf8 { at: i + 1 });
+    }
+    let mut k = 2;
+    while k < len {
+        let b = bytes[i + k];
+        if !(0x80..=0xBF).contains(&b) {
+            return Err(ParseError::NonUtf8 { at: i + k });
+        }
+        k += 1;
+    }
+    Ok(len)
 }
 
 /// Verifies a `%XX` percent-escape at `i`. Caller has confirmed
