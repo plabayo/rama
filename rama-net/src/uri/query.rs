@@ -214,8 +214,15 @@ impl std::error::Error for QueryDeserializeError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QueryPair {
     raw: Bytes,
-    /// Offset of `=` within `raw`, or `None` for a bare key.
-    eq_at: Option<u16>,
+    /// Byte offset of `=` within `raw`, or `None` for a bare key.
+    ///
+    /// `u32` because a single key=value pair built via the mutation API
+    /// can exceed `MAX_URI_LEN` (the parser-level 16-bit cap applies
+    /// only to parsed inputs, not to caller-built queries). `u16` would
+    /// silently truncate the offset for pairs whose key crosses 65535
+    /// bytes — caught by the `audit_query_pair_eq_offset_handles_large_pairs`
+    /// regression test.
+    eq_at: Option<u32>,
 }
 
 impl QueryPair {
@@ -225,7 +232,7 @@ impl QueryPair {
     #[inline]
     #[must_use]
     pub(crate) fn from_raw(raw: Bytes) -> Self {
-        let eq_at = memchr::memchr(b'=', &raw).map(|i| i as u16);
+        let eq_at = memchr::memchr(b'=', &raw).map(|i| i as u32);
         Self { raw, eq_at }
     }
 
@@ -298,8 +305,15 @@ impl QueryPair {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryPairRef<'a> {
     raw: &'a [u8],
-    /// Offset of `=` within `raw`, or `None` for a bare key.
-    eq_at: Option<u16>,
+    /// Byte offset of `=` within `raw`, or `None` for a bare key.
+    ///
+    /// `u32` because a single key=value pair built via the mutation API
+    /// can exceed `MAX_URI_LEN` (the parser-level 16-bit cap applies
+    /// only to parsed inputs, not to caller-built queries). `u16` would
+    /// silently truncate the offset for pairs whose key crosses 65535
+    /// bytes — caught by the `audit_query_pair_eq_offset_handles_large_pairs`
+    /// regression test.
+    eq_at: Option<u32>,
 }
 
 impl<'a> QueryPairRef<'a> {
@@ -307,7 +321,7 @@ impl<'a> QueryPairRef<'a> {
     #[inline]
     #[must_use]
     pub(crate) fn from_raw(raw: &'a [u8]) -> Self {
-        let eq_at = memchr::memchr(b'=', raw).map(|i| i as u16);
+        let eq_at = memchr::memchr(b'=', raw).map(|i| i as u32);
         Self { raw, eq_at }
     }
 

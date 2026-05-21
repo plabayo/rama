@@ -6,10 +6,21 @@
 //! §3.2.4) are supported but called out as such.
 //!
 //! Graceful by default, lossless on parse (no silent normalization),
-//! supports all four HTTP request-target forms (origin, absolute,
-//! authority, asterisk) plus the broader RFC 3986 URI / URI-reference set,
 //! preserves fragments, and lets you cheaply mutate components without
 //! the `into_parts → from_parts` dance.
+//!
+//! ## HTTP request-target forms (RFC 9112 §3.2)
+//!
+//! All four shapes are reachable, but not through a single auto-detecting
+//! entry point — the grammar is ambiguous (`host:port` parses validly
+//! as both authority-form and `scheme:opaque-path`), and the RFC 3986
+//! tie-break prefers the scheme reading. Callers handling HTTP request-
+//! targets pick the entry point that matches their context:
+//!
+//! - **origin-form** (`/path?query`) — [`Uri::parse`]
+//! - **absolute-form** (`scheme://...`) — [`Uri::parse`]
+//! - **authority-form** (`host:port`, for CONNECT) — [`Uri::parse_authority_form`]
+//! - **asterisk-form** (`*`, for OPTIONS) — [`Uri::parse`]
 //!
 //! # Design (skeleton — implementation arrives in M3–M9)
 //!
@@ -184,6 +195,33 @@ impl Uri {
     /// Strict variant of [`parse_reference`](Self::parse_reference).
     pub fn parse_reference_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
         parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Strict)
+    }
+
+    /// Parse the HTTP authority-form request-target —
+    /// `[userinfo@]host[:port]` only (RFC 9112 §3.2.3).
+    ///
+    /// This is the request-target shape used by the `CONNECT` method.
+    /// It must be a dedicated entry point because [`parse`](Self::parse)
+    /// cannot disambiguate it from `scheme:opaque-path` — e.g.
+    /// `example.com:443` is grammatically both `authority(example.com:443)`
+    /// and `scheme(example.com) + opaque-path(443)`, and RFC 3986 prefers
+    /// the scheme reading. HTTP proxies and clients handling CONNECT
+    /// **must** route those targets through this function instead.
+    ///
+    /// The returned [`Uri`] has no scheme, no path, no query, and no
+    /// fragment — only the authority components ([`host`](Self::host),
+    /// [`port`](Self::port), [`userinfo`](Self::userinfo)).
+    ///
+    /// Returns [`ParseError::InvalidComponent`] for inputs that contain
+    /// any of `/`, `?`, or `#` — those bytes indicate a non-authority
+    /// shape and the caller should use [`parse`](Self::parse) instead.
+    pub fn parse_authority_form<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse_authority_form(input::into_uri_input(input), ParserMode::Graceful)
+    }
+
+    /// Strict variant of [`parse_authority_form`](Self::parse_authority_form).
+    pub fn parse_authority_form_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
     }
 
     /// Returns `true` if this is the OPTIONS-`*` request-target.

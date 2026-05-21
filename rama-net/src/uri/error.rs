@@ -63,6 +63,18 @@ pub enum ParseError {
 
     /// The URI exceeded the maximum representable length.
     TooLong { len: usize },
+
+    /// Input bytes were not valid UTF-8.
+    ///
+    /// Graceful mode tolerates raw UTF-8 in path / query / fragment
+    /// (browsers and curl do too), but the bytes must still *be* valid
+    /// UTF-8 — every component accessor returns `&str`, and the
+    /// presence of a stray continuation byte or truncated multi-byte
+    /// sequence would otherwise be UB at access time.
+    ///
+    /// Always rejected. Strict mode rejects more aggressively (per-byte
+    /// ASCII grammar checks), but this is the floor.
+    NonUtf8 { at: usize },
 }
 
 impl fmt::Display for ParseError {
@@ -85,6 +97,9 @@ impl fmt::Display for ParseError {
             }
             Self::StrictViolation => f.write_str("input does not satisfy RFC 3986 strict syntax"),
             Self::TooLong { len } => write!(f, "uri is {len} bytes long, exceeds the maximum"),
+            Self::NonUtf8 { at } => {
+                write!(f, "invalid UTF-8 byte sequence starting at byte {at}")
+            }
         }
     }
 }

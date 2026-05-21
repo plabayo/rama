@@ -69,7 +69,11 @@ pub(super) fn parse_optional_authority(
 /// Parse the bytes `[start, end)` of the parent buffer as an RFC 3986 §3.2
 /// authority. Returns a [`ParsedAuthority`] whose variant signals whether
 /// the host required UTS #46 rewriting.
-fn parse_authority(
+///
+/// Exposed to the parser module so [`super::parse_authority_form`] can
+/// drive it directly for HTTP CONNECT's authority-form request-target,
+/// which is an authority *without* the leading `//`.
+pub(super) fn parse_authority(
     bytes: &Bytes,
     start: usize,
     end: usize,
@@ -102,7 +106,7 @@ fn parse_authority(
 
     // Parse host + optional port from bytes[host_start..end].
     let host_view = &bytes[host_start..end];
-    let (host, port, idn_encoded) = parse_host_and_port(bytes, host_start, host_view, end)?;
+    let (host, port, idn_encoded) = parse_host_and_port(bytes, host_start, host_view, end, mode)?;
 
     if idn_encoded {
         // Host bytes were rewritten by UTS #46 — Lazy projection would lie.
@@ -150,11 +154,17 @@ fn validate_userinfo_strict(bytes: &[u8]) -> Result<(), ParseError> {
 /// Returns `(host, port, idn_encoded)`. `idn_encoded` is `true` when the
 /// host was rewritten by UTS #46 (non-ASCII input → ACE form); the caller
 /// ([`parse_authority`]) uses it to pick the [`ParsedAuthority`] variant.
+///
+/// IDN normalisation runs only in graceful mode. Strict mode treats
+/// non-ASCII host bytes as a [`ParseError::StrictViolation`] per
+/// RFC 3986 §3.2.2 (the host grammar is ASCII-only — callers wanting
+/// IDN under strict must pre-encode to ACE).
 fn parse_host_and_port(
     parent: &Bytes,
     host_start: usize,
     view: &[u8],
     end: usize,
+    mode: ParserMode,
 ) -> Result<(Host, Option<u16>, bool), ParseError> {
     if view.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
@@ -218,10 +228,17 @@ fn parse_host_and_port(
         // Safety: validated above.
         let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
         (Host::Name(domain), false)
+    } else if mode == ParserMode::Strict {
+        // Strict mode is the RFC 3986 grammar; the host slot is ASCII-only
+        // (`unreserved / pct-encoded / sub-delims`). UTS #46 normalisation
+        // is a graceful-mode convenience, not part of the spec. Callers
+        // wanting strict + IDN must pre-encode to ACE.
+        return Err(ParseError::StrictViolation);
     } else {
-        // Non-ASCII: route through `Domain::try_from`, which handles IDN
-        // (UTS #46) under the `idna` feature. Map the not-enabled error
-        // to the URI-level variant so callers can distinguish.
+        // Graceful + non-ASCII: route through `Domain::try_from`, which
+        // handles IDN (UTS #46) under the `idna` feature. Map the
+        // not-enabled error to the URI-level variant so callers can
+        // distinguish.
         match Domain::try_from(host_str) {
             Ok(domain) => (Host::Name(domain), true),
             #[cfg(not(feature = "idna"))]

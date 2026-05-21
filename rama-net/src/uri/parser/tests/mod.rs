@@ -27,6 +27,7 @@ use crate::uri::{ParseError, Uri};
 pub(super) mod absolute_form;
 pub(super) mod accessors;
 pub(super) mod adversarial;
+pub(super) mod audit;
 pub(super) mod display;
 pub(super) mod fragment;
 pub(super) mod idna;

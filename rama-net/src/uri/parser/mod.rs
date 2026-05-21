@@ -25,15 +25,19 @@
 //! Per-form scanners detect control chars inline during their walk — no
 //! separate pre-pass.
 //!
-//! ## Forms currently parsed
+//! ## Forms parsed
 //!
-//! - Asterisk-form `*` — HTTP-only per RFC 9112 §3.2.4
-//! - Origin-form `/path?query#fragment`
+//! - Asterisk-form `*` — HTTP-only per RFC 9112 §3.2.4. Via [`parse`].
+//! - Origin-form `/path?query#fragment`. Via [`parse`].
 //! - Absolute-form `scheme:hier-part [ "?" query ] [ "#" fragment ]`, both
-//!   shapes: `scheme://authority/path` and opaque `scheme:opaque-path`
-//!
-//! Not yet supported: HTTP authority-form (`host:port` for CONNECT) and
-//! relative refs with path-noscheme.
+//!   shapes: `scheme://authority/path` and opaque `scheme:opaque-path`.
+//!   Via [`parse`].
+//! - Authority-form `[userinfo@]host[:port]` — HTTP CONNECT request-target
+//!   per RFC 9112 §3.2.3. Via the dedicated [`parse_authority_form`]
+//!   entry point, because the grammar is ambiguous with `scheme:opaque-path`
+//!   and RFC 3986 picks the scheme reading.
+//! - URI-reference grammar (relative refs, network-path, query-only,
+//!   fragment-only). Via [`parse_uri_reference`].
 //!
 //! ## File layout
 //!
@@ -88,6 +92,7 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
+    validate_utf8(&bytes)?;
 
     // Asterisk-form: the whole input is the single byte `*`. HTTP-specific
     // (RFC 9112 §3.2.4); harmless for other protocols since it's just one
@@ -133,10 +138,47 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
         ));
     }
 
-    // Anything else (relative refs with path-noscheme, HTTP authority-form
-    // `host:port`, etc.) is not accepted by [`parse`]. Callers that need
-    // to parse a relative URI-reference should use [`parse_uri_reference`].
+    // Anything else (relative refs with path-noscheme, the HTTP CONNECT
+    // authority-form `host:port`, etc.) is not accepted by [`parse`].
+    // Use [`parse_uri_reference`] for relative refs or
+    // [`parse_authority_form`] for HTTP CONNECT targets.
     Err(ParseError::InvalidComponent(Component::Scheme))
+}
+
+/// Parse an HTTP authority-form request-target — `[userinfo@]host[:port]`
+/// only. Used for the CONNECT method (RFC 9112 §3.2.3).
+///
+/// Distinct entry point because `[`parse`]` cannot disambiguate authority-
+/// form from `scheme:opaque-path` — `example.com:443` is grammatically
+/// valid as both, and RFC 3986 prefers the scheme reading.
+pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
+    if bytes.is_empty() {
+        return Err(ParseError::Empty);
+    }
+    if bytes.len() > MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: bytes.len() });
+    }
+    validate_utf8(&bytes)?;
+
+    // Reject anything that obviously isn't pure authority bytes — any
+    // path/query/fragment delimiter means the caller handed us the
+    // wrong shape and should have used [`parse`] instead.
+    if let Some(at) = bytes.iter().position(|&b| matches!(b, b'/' | b'?' | b'#')) {
+        let _ = at;
+        return Err(ParseError::InvalidComponent(Component::Authority));
+    }
+
+    let len = bytes.len();
+    let auth = authority::parse_authority(&bytes, 0, len, mode)?;
+    Ok(build_uri(
+        None,
+        Some(auth),
+        // Path is empty by construction — authority-form has no path.
+        (len as u16, len as u16),
+        None,
+        None,
+        bytes,
+    ))
 }
 
 /// Parse any RFC 3986 URI-reference — absolute URI or relative-ref.
@@ -150,6 +192,7 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     if bytes.len() > MAX_URI_LEN {
         return Err(ParseError::TooLong { len: bytes.len() });
     }
+    validate_utf8(&bytes)?;
 
     // Empty input → empty same-document reference. No host means no IDN
     // possible — Lazy is always correct.
@@ -266,6 +309,26 @@ fn build_uri(
 pub(super) fn bytes_to_str(bytes: &[u8]) -> &str {
     // Safety: scheme bytes are validated as ASCII alpha + digit + + - .
     unsafe { std::str::from_utf8_unchecked(bytes) }
+}
+
+/// Top-level UTF-8 validation, runs once per parse. Cheap (single linear
+/// scan, SIMD-accelerated on modern hosts) and fixes the class of bug
+/// where graceful mode silently accepts non-UTF-8 bytes that the rest of
+/// the URI surface then derefs as `&str` via `from_utf8_unchecked`.
+///
+/// Graceful mode keeps the spec-loose behaviour of accepting raw UTF-8
+/// in path / query / fragment, but the bytes must in fact *be* UTF-8.
+/// Strict mode's per-byte byte-set checks already restrict to ASCII,
+/// but the floor check still runs unconditionally so the `unsafe
+/// from_utf8_unchecked` calls scattered across the accessor surface
+/// remain sound under all modes.
+fn validate_utf8(bytes: &[u8]) -> Result<(), ParseError> {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(ParseError::NonUtf8 {
+            at: e.valid_up_to(),
+        }),
+    }
 }
 
 /// Verifies a `%XX` percent-escape at `i`. Caller has confirmed
