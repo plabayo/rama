@@ -407,8 +407,8 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
                 i += 1;
             }
             b'%' if i + 2 < input.len() => {
-                if let (Some(h), Some(l)) = (hex_val(input[i + 1]), hex_val(input[i + 2])) {
-                    out.push((h << 4) | l);
+                if let Some(byte) = rama_utils::hex::decode_pair(input[i + 1], input[i + 2]) {
+                    out.push(byte);
                     i += 3;
                 } else {
                     // Malformed `%XX` — emit the `%` literally and move on.
@@ -433,75 +433,15 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
     }
 }
 
-/// ASCII hex digit → 0..=15, `None` for non-hex bytes.
-#[inline]
-const fn hex_val(b: u8) -> Option<u8> {
-    let d = b.wrapping_sub(b'0');
-    if d < 10 {
-        return Some(d);
-    }
-    // Case-fold by setting bit 5: `'A' | 0x20 == 'a'`.
-    let l = (b | 0x20).wrapping_sub(b'a');
-    if l < 6 {
-        return Some(l + 10);
-    }
-    None
-}
-
 #[cfg(test)]
 mod internal_tests {
-    //! Direct tests for the private `form_decode` / `hex_val` helpers.
-    //! Behavioural coverage via the public `QueryRef::pairs()` API lives in
-    //! `super::super::parser::tests::query_pairs`; these are the
+    //! Direct tests for the private `form_decode` helper. Behavioural
+    //! coverage via the public `QueryRef::pairs()` API lives in
+    //! `super::super::parser::tests::query_pairs`; these pin the
     //! function-level invariants that don't surface through the iterator.
 
-    use super::{form_decode, hex_val};
+    use super::form_decode;
     use std::borrow::Cow;
-
-    // ---- hex_val ----------------------------------------------------
-
-    /// Exhaustive sweep over all 256 byte values: every ASCII hex digit
-    /// must produce the right value, every other byte must return `None`.
-    #[test]
-    fn hex_val_exhaustive_256_bytes() {
-        for b in 0u8..=255 {
-            let got = hex_val(b);
-            let expected = match b {
-                b'0'..=b'9' => Some(b - b'0'),
-                b'a'..=b'f' => Some(b - b'a' + 10),
-                b'A'..=b'F' => Some(b - b'A' + 10),
-                _ => None,
-            };
-            assert_eq!(got, expected, "hex_val(0x{b:02X}) (= {:?})", b as char);
-        }
-    }
-
-    /// Pin the boundary bytes explicitly — these are the off-by-one
-    /// traps for the wrapping_sub idiom.
-    #[test]
-    fn hex_val_boundary_bytes() {
-        // Just before '0' / just after '9'.
-        assert_eq!(hex_val(b'/'), None); // 0x2F
-        assert_eq!(hex_val(b'0'), Some(0));
-        assert_eq!(hex_val(b'9'), Some(9));
-        assert_eq!(hex_val(b':'), None); // 0x3A
-
-        // Just before 'A' / just after 'F'.
-        assert_eq!(hex_val(b'@'), None); // 0x40
-        assert_eq!(hex_val(b'A'), Some(10));
-        assert_eq!(hex_val(b'F'), Some(15));
-        assert_eq!(hex_val(b'G'), None); // 0x47
-
-        // Just before 'a' / just after 'f'.
-        assert_eq!(hex_val(b'`'), None); // 0x60
-        assert_eq!(hex_val(b'a'), Some(10));
-        assert_eq!(hex_val(b'f'), Some(15));
-        assert_eq!(hex_val(b'g'), None); // 0x67
-
-        // High-bit bytes — never accept.
-        assert_eq!(hex_val(0x80), None);
-        assert_eq!(hex_val(0xFF), None);
-    }
 
     // ---- form_decode ------------------------------------------------
 
