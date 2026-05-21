@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use rama_core::bytes::Bytes;
 
 use crate::address::parse_utils;
-use crate::address::{Domain, Host};
+use crate::address::{Authority, Domain, Host, HostWithOptPort, UserInfo};
 use crate::uri::lazy::LazyAuthority;
 use crate::uri::{Component, ParseError};
 
@@ -13,14 +13,39 @@ use super::ParserMode;
 use super::byte_sets::{is_control_byte, is_userinfo_byte};
 use super::check_pct_encoded;
 
-/// If `bytes[start..]` begins with `//`, parse an authority and return
-/// `(Some(LazyAuthority), end_of_authority_offset)`. Otherwise return
-/// `(None, start)` — the absolute URI is opaque-path form.
+/// Result of `parse_optional_authority`.
+pub(super) struct AuthorityScan {
+    pub(super) authority: Option<ParsedAuthority>,
+    /// Offset where the path starts — the first byte after the authority,
+    /// or `start` itself when no authority was present.
+    pub(super) path_start: usize,
+}
+
+/// Parsed authority in one of two shapes.
+///
+/// The variant tells the top-level parser which `Uri` form to build:
+/// `Lazy` keeps zero-copy projection into the original bytes; `Owned`
+/// signals that the host was IDN-normalised (UTS #46 applied), so the
+/// typed host view has already diverged from the raw input — there's no
+/// point keeping the Lazy buffer around.
+pub(super) enum ParsedAuthority {
+    /// Host bytes still match the source buffer — projectable into a
+    /// [`LazyUriRef`](crate::uri::lazy::LazyUriRef).
+    Lazy(LazyAuthority),
+    /// Host was rewritten by UTS #46. Already materialised into an
+    /// [`Authority`] so the upper layer can drop straight into an
+    /// [`OwnedUriRef`](crate::uri::owned::OwnedUriRef) without a Lazy
+    /// detour.
+    Owned(Authority),
+}
+
+/// If `bytes[start..]` begins with `//`, parse an authority. Otherwise
+/// signal opaque-path form (no authority).
 pub(super) fn parse_optional_authority(
     bytes: &Bytes,
     start: usize,
     mode: ParserMode,
-) -> Result<(Option<LazyAuthority>, usize), ParseError> {
+) -> Result<AuthorityScan, ParseError> {
     if bytes.len() >= start + 2 && bytes[start] == b'/' && bytes[start + 1] == b'/' {
         let auth_start = start + 2;
         // Authority ends at the first `/`, `?`, `#`, or end of input.
@@ -29,20 +54,27 @@ pub(super) fn parse_optional_authority(
             .position(|&b| matches!(b, b'/' | b'?' | b'#'))
             .map_or(bytes.len(), |p| p + auth_start);
         let auth = parse_authority(bytes, auth_start, auth_end, mode)?;
-        Ok((Some(auth), auth_end))
+        Ok(AuthorityScan {
+            authority: Some(auth),
+            path_start: auth_end,
+        })
     } else {
-        Ok((None, start))
+        Ok(AuthorityScan {
+            authority: None,
+            path_start: start,
+        })
     }
 }
 
 /// Parse the bytes `[start, end)` of the parent buffer as an RFC 3986 §3.2
-/// authority: `[ userinfo "@" ] host [ ":" port ]`.
+/// authority. Returns a [`ParsedAuthority`] whose variant signals whether
+/// the host required UTS #46 rewriting.
 fn parse_authority(
     bytes: &Bytes,
     start: usize,
     end: usize,
     mode: ParserMode,
-) -> Result<LazyAuthority, ParseError> {
+) -> Result<ParsedAuthority, ParseError> {
     // Reject control chars inside the authority.
     let mut k = start;
     while k < end {
@@ -70,13 +102,25 @@ fn parse_authority(
 
     // Parse host + optional port from bytes[host_start..end].
     let host_view = &bytes[host_start..end];
-    let (host, port) = parse_host_and_port(bytes, host_start, host_view, end)?;
+    let (host, port, idn_encoded) = parse_host_and_port(bytes, host_start, host_view, end)?;
 
-    Ok(LazyAuthority {
-        userinfo_range,
-        host,
-        port,
-    })
+    if idn_encoded {
+        // Host bytes were rewritten by UTS #46 — Lazy projection would lie.
+        // Build the typed [`Authority`] directly so the upper layer can drop
+        // it into an [`OwnedUriRef`] without going through a Lazy detour.
+        let user_info = userinfo_range
+            .map(|(s, e)| UserInfo::from_bytes_unchecked(bytes.slice(s as usize..e as usize)));
+        Ok(ParsedAuthority::Owned(Authority {
+            user_info,
+            address: HostWithOptPort { host, port },
+        }))
+    } else {
+        Ok(ParsedAuthority::Lazy(LazyAuthority {
+            userinfo_range,
+            host,
+            port,
+        }))
+    }
 }
 
 /// RFC 3986 §3.2.1 userinfo grammar check. Each byte must be in the
@@ -102,12 +146,16 @@ fn validate_userinfo_strict(bytes: &[u8]) -> Result<(), ParseError> {
 /// for zero-copy slicing of Domain bytes); `host_start` is the absolute
 /// offset; `view` is `&parent[host_start..end]`; `end` is the absolute
 /// end-of-authority offset.
+///
+/// Returns `(host, port, idn_encoded)`. `idn_encoded` is `true` when the
+/// host was rewritten by UTS #46 (non-ASCII input → ACE form); the caller
+/// ([`parse_authority`]) uses it to pick the [`ParsedAuthority`] variant.
 fn parse_host_and_port(
     parent: &Bytes,
     host_start: usize,
     view: &[u8],
     end: usize,
-) -> Result<(Host, Option<u16>), ParseError> {
+) -> Result<(Host, Option<u16>, bool), ParseError> {
     if view.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
     }
@@ -137,7 +185,7 @@ fn parse_host_and_port(
             [b':', rest @ ..] => Some(parse_port(rest)?),
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
-        return Ok((host, port));
+        return Ok((host, port, false));
     }
 
     // Non-bracketed host: optionally followed by `:port`. The port separator
@@ -158,8 +206,8 @@ fn parse_host_and_port(
         return Err(ParseError::InvalidComponent(Component::Host));
     };
 
-    let host = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
-        Host::Address(IpAddr::V4(v4))
+    let (host, idn_encoded) = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
+        (Host::Address(IpAddr::V4(v4)), false)
     } else if host_bytes_rel.is_ascii() {
         // ASCII fast-path: validate cheaply, then construct the Domain
         // zero-copy by slicing the parent Bytes — no allocation.
@@ -169,13 +217,13 @@ fn parse_host_and_port(
         let domain_bytes = parent.slice(host_start..host_start + host_bytes_len);
         // Safety: validated above.
         let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
-        Host::Name(domain)
+        (Host::Name(domain), false)
     } else {
         // Non-ASCII: route through `Domain::try_from`, which handles IDN
         // (UTS #46) under the `idna` feature. Map the not-enabled error
         // to the URI-level variant so callers can distinguish.
         match Domain::try_from(host_str) {
-            Ok(domain) => Host::Name(domain),
+            Ok(domain) => (Host::Name(domain), true),
             #[cfg(not(feature = "idna"))]
             Err(e) if e.is_idna_not_enabled() => return Err(ParseError::IdnaNotEnabled),
             Err(_) => return Err(ParseError::InvalidComponent(Component::Host)),
@@ -185,7 +233,7 @@ fn parse_host_and_port(
     // `end` is unused on the non-bracketed path — bind to a no-op to silence
     // unused-variable warnings without complicating the signature.
     let _ = end;
-    Ok((host, port))
+    Ok((host, port, idn_encoded))
 }
 
 fn parse_port(bytes: &[u8]) -> Result<u16, ParseError> {

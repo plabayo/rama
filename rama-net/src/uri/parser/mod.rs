@@ -45,10 +45,13 @@
 //! - [`authority`] — authority / host / port / userinfo parsing
 //! - [`tests`](mod@tests) — large multi-file corpus
 
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{Bytes, BytesMut};
 
 use super::lazy::LazyUriRef;
-use super::{Component, ParseError, Uri, UriInner};
+use super::owned::OwnedUriRef;
+use super::{Component, Fragment, ParseError, Query, Uri, UriInner};
+
+use authority::ParsedAuthority;
 
 mod authority;
 mod byte_sets;
@@ -116,17 +119,18 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
         };
 
         let after_colon = colon + 1;
-        let (auth, hier_start) = authority::parse_optional_authority(&bytes, after_colon, mode)?;
-        let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
+        let auth_scan = authority::parse_optional_authority(&bytes, after_colon, mode)?;
+        let path_start = auth_scan.path_start;
+        let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
 
-        return Ok(finalise(LazyUriRef {
-            scheme: Some(scheme),
-            authority: auth,
-            path: (hier_start as u16, scan.path_end),
-            query: scan.query,
-            fragment: scan.fragment,
+        return Ok(build_uri(
+            Some(scheme),
+            auth_scan.authority,
+            (path_start as u16, path_scan.path_end),
+            path_scan.query,
+            path_scan.fragment,
             bytes,
-        }));
+        ));
     }
 
     // Anything else (relative refs with path-noscheme, HTTP authority-form
@@ -147,9 +151,10 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
         return Err(ParseError::TooLong { len: bytes.len() });
     }
 
-    // Empty input → empty same-document reference.
+    // Empty input → empty same-document reference. No host means no IDN
+    // possible — Lazy is always correct.
     if bytes.is_empty() {
-        return Ok(finalise(LazyUriRef {
+        return Ok(Uri::from_lazy(LazyUriRef {
             scheme: None,
             authority: None,
             path: (0, 0),
@@ -171,16 +176,17 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
             return Err(ParseError::InvalidComponent(Component::Scheme));
         };
         let after_colon = colon + 1;
-        let (auth, hier_start) = authority::parse_optional_authority(&bytes, after_colon, mode)?;
-        let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
-        return Ok(finalise(LazyUriRef {
-            scheme: Some(scheme),
-            authority: auth,
-            path: (hier_start as u16, scan.path_end),
-            query: scan.query,
-            fragment: scan.fragment,
+        let auth_scan = authority::parse_optional_authority(&bytes, after_colon, mode)?;
+        let path_start = auth_scan.path_start;
+        let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
+        return Ok(build_uri(
+            Some(scheme),
+            auth_scan.authority,
+            (path_start as u16, path_scan.path_end),
+            path_scan.query,
+            path_scan.fragment,
             bytes,
-        }));
+        ));
     }
 
     // Relative-ref. Per RFC 3986 §4.2, the disambiguation is:
@@ -188,32 +194,67 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     //                 / path-absolute   (starts with `/` but not `//`)
     //                 / path-noscheme   (no `/`, no `:` in first segment)
     //                 / path-empty      (path starts with `?` / `#` / EOF)
-    let (auth, hier_start) = authority::parse_optional_authority(&bytes, 0, mode)?;
-    let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
+    let auth_scan = authority::parse_optional_authority(&bytes, 0, mode)?;
+    let path_start = auth_scan.path_start;
+    let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
 
-    Ok(finalise(LazyUriRef {
-        scheme: None,
-        authority: auth,
-        path: (hier_start as u16, scan.path_end),
-        query: scan.query,
-        fragment: scan.fragment,
+    Ok(build_uri(
+        None,
+        auth_scan.authority,
+        (path_start as u16, path_scan.path_end),
+        path_scan.query,
+        path_scan.fragment,
         bytes,
-    }))
+    ))
 }
 
-/// Finalise a parsed [`LazyUriRef`] into a [`Uri`]. If the input contained
-/// non-ASCII bytes the host may have been IDN-normalised (ACE-encoded);
-/// the Lazy variant projects raw input bytes for [`Display`](std::fmt::Display),
-/// which would diverge from the typed host view. Promote to Owned in that
-/// case so the canonical display reassembles from the typed components.
-fn finalise(lazy: LazyUriRef) -> Uri {
-    if lazy.bytes.is_ascii() {
-        return Uri::from_lazy(lazy);
-    }
-    let uri = Uri::from_lazy(lazy);
-    let owned = uri.as_owned_components();
-    Uri {
-        inner: UriInner::Owned(std::sync::Arc::new(owned)),
+/// Assemble parsed parts into a [`Uri`]. The authority variant decides
+/// the storage shape: `Lazy` keeps zero-copy projection into `bytes`;
+/// `Owned` short-circuits to [`OwnedUriRef`] because UTS #46 rewrote the
+/// host, so the raw buffer no longer agrees with the typed view.
+///
+/// The Owned path still slices path / query / fragment out of `bytes`
+/// into fresh `BytesMut` buffers — that's the same copy cost the
+/// upgrade-on-mutation path pays, just done eagerly here so we skip the
+/// throwaway `Arc<LazyUriRef>` allocation.
+fn build_uri(
+    scheme: Option<crate::Protocol>,
+    authority: Option<ParsedAuthority>,
+    path: (u16, u16),
+    query: Option<(u16, u16)>,
+    fragment: Option<(u16, u16)>,
+    bytes: Bytes,
+) -> Uri {
+    match authority {
+        None => Uri::from_lazy(LazyUriRef {
+            scheme,
+            authority: None,
+            path,
+            query,
+            fragment,
+            bytes,
+        }),
+        Some(ParsedAuthority::Lazy(lazy_auth)) => Uri::from_lazy(LazyUriRef {
+            scheme,
+            authority: Some(lazy_auth),
+            path,
+            query,
+            fragment,
+            bytes,
+        }),
+        Some(ParsedAuthority::Owned(authority)) => {
+            let slice = |(s, e): (u16, u16)| BytesMut::from(&bytes[s as usize..e as usize]);
+            let owned = OwnedUriRef {
+                scheme,
+                authority: Some(authority),
+                path: slice(path),
+                query: query.map(|r| Query { bytes: slice(r) }),
+                fragment: fragment.map(|r| Fragment { bytes: slice(r) }),
+            };
+            Uri {
+                inner: UriInner::Owned(std::sync::Arc::new(owned)),
+            }
+        }
     }
 }
 
