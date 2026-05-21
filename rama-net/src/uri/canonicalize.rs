@@ -57,6 +57,20 @@ pub(super) fn canonicalize_uri(uri: Uri) -> Uri {
 /// Apply RFC 3986 §6.2.2 syntax-based normalization to `owned` in
 /// place. See the module docs for the full ordering.
 fn canonicalize_owned(mut owned: OwnedUriRef) -> OwnedUriRef {
+    // 0. Scheme case (§6.2.2.1). Known schemes are already canonical
+    // (the `Protocol` enum stores http/https/ws/wss/socks5/socks5h
+    // case-insensitively at construction). Custom schemes preserve
+    // input case — lowercase them here if needed. Parser-validated
+    // schemes are ASCII-only, so `to_ascii_lowercase` is loss-free.
+    if let Some(scheme) = &owned.scheme
+        && scheme.as_str().bytes().any(|b| b.is_ascii_uppercase())
+    {
+        let lower = scheme.as_str().to_ascii_lowercase();
+        if let Ok(lowered) = crate::Protocol::try_from(lower) {
+            owned.scheme = Some(lowered);
+        }
+    }
+
     // 1. Host promotion.
     if let Some(authority) = &mut owned.authority {
         if let Host::Uninterpreted(h) = &authority.address.host {

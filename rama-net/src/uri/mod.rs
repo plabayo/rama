@@ -22,6 +22,29 @@
 //! - **authority-form** (`host:port`, for CONNECT) — [`Uri::parse_authority_form`]
 //! - **asterisk-form** (`*`, for OPTIONS) — [`Uri::parse`]
 //!
+//! ## Migrating from `http::Uri`
+//!
+//! Notable behavioural differences for code switching from `http::Uri`:
+//!
+//! - **CONNECT request-targets must use [`Uri::parse_authority_form`].**
+//!   `http::Uri::from_str("example.com:443")` silently misparsed the
+//!   target; rama's [`parse`](Uri::parse) follows RFC 3986 and reads
+//!   it as `scheme=example.com / path=443`. Proxies handling CONNECT
+//!   must route through the dedicated entry point or the
+//!   tie-break will quietly route wrong.
+//! - **Out-of-range port → `Err`.** `http::Uri` silently discards
+//!   ports outside `u16`; rama returns
+//!   [`ParseError::InvalidComponent`] tagged with [`Component::Port`].
+//! - **Empty host with port (`http://:8080/`) → `Err`.** `http::Uri`
+//!   accepted; rama doesn't.
+//! - **Empty port (`http://example.com:`) → `Err`.** Same rationale.
+//! - **Control bytes anywhere → `Err`.** Browsers strip CR/LF/Tab;
+//!   rama refuses (smuggling defense).
+//! - **Non-special schemes (`urn:`, `data:`, `mailto:`) parse
+//!   correctly.** `http::Uri` either rejected them or misparsed
+//!   `mailto:user@…` as authority-bearing. rama follows RFC 3986
+//!   opaque-path semantics.
+//!
 //! # Design (skeleton — implementation arrives in M3–M9)
 //!
 //! - [`Uri`] is an **opaque** struct. Internally it holds a private
@@ -107,6 +130,10 @@ pub use fragment::{Fragment, FragmentRef};
 mod lazy;
 mod owned;
 mod parser;
+// Re-exported so [`crate::address::UserInfo::try_from`] can share the
+// same byte-set table the URI parser uses (strict-mode userinfo grammar
+// check). Keeps validation single-sourced.
+pub(crate) use parser::is_userinfo_byte;
 
 use lazy::LazyUriRef;
 use owned::OwnedUriRef;
@@ -197,6 +224,31 @@ impl Uri {
     /// Strict variant of [`parse_reference`](Self::parse_reference).
     pub fn parse_reference_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
         parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Strict)
+    }
+
+    /// Parse a `&'static str` URI, panicking on invalid input. Convenient
+    /// for compile-time-known URIs (constants, defaults, tests, examples)
+    /// where the failure mode is "this binary contains a typo" rather
+    /// than runtime input handling.
+    ///
+    /// Uses the graceful parser — same shape as [`parse`](Self::parse),
+    /// just without the `Result`. Use [`parse`](Self::parse) for any
+    /// runtime / user-supplied input.
+    ///
+    /// # Panics
+    ///
+    /// Panics with the underlying [`ParseError`] if `s` is not a valid
+    /// URI.
+    #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at runtime for what's intended to be a compile-time-known URI string"
+    )]
+    pub fn from_static(s: &'static str) -> Self {
+        match Self::parse(rama_core::bytes::Bytes::from_static(s.as_bytes())) {
+            Ok(uri) => uri,
+            Err(e) => panic!("Uri::from_static: invalid URI {s:?}: {e}"),
+        }
     }
 
     /// Parse the HTTP authority-form request-target —

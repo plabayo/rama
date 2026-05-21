@@ -128,6 +128,27 @@ fn canonicalize_pct_no_change_when_already_canonical() {
 // ----------------------------------------------------------------------
 
 #[test]
+fn canonicalize_lowercases_uppercase_scheme() {
+    // RFC 3986 §6.2.2.1: scheme is case-insensitive; canonical form
+    // is lowercase. Known schemes (http, https, …) are already
+    // case-normalized at `Protocol` construction. Custom schemes
+    // preserve input case at parse time; canonicalize lowercases them.
+    let uri = Uri::parse("CUSTOM://example.com/").unwrap();
+    let canonical = uri.canonicalize();
+    assert_eq!(canonical.scheme().unwrap().as_str(), "custom");
+}
+
+#[test]
+fn canonicalize_lowercases_known_scheme_even_when_already_canonical() {
+    // Sanity: known schemes (HTTP) round-trip cleanly. Parser
+    // already lowercases via the `Protocol` enum at parse time, so
+    // canonicalize is a no-op here.
+    let uri = Uri::parse("HTTPS://example.com/").unwrap();
+    let canonical = uri.canonicalize();
+    assert_eq!(canonical.scheme().unwrap().as_str(), "https");
+}
+
+#[test]
 fn canonicalize_drops_http_default_port() {
     let uri = Uri::parse("http://example.com:80/").unwrap();
     let canonical = uri.canonicalize();

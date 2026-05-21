@@ -21,6 +21,16 @@
 //! - [`query_deserialize`] — `QueryRef::deserialize` / `Query::deserialize`
 //! - [`fragment`] — `FragmentRef` / `Fragment` views
 //! - [`idna`] — IDN / UTS #46 host normalisation and strict-mode rejection
+//! - [`canonicalize`] — RFC 3986 §6.2.2 canonical-form pipeline (host
+//!   promotion, pct-decode unreserved, default-port drop, dot-segment
+//!   removal, scheme lowercase) and `set_host` / `try_set_host`
+//! - [`accessors`], [`mutation`], [`display`], [`wire`], [`resolve`],
+//!   [`query_collect`], [`query_mut`], [`path_mut`] — per-API surface
+//!
+//! All files use the subject-based naming convention (the component or
+//! API surface being exercised). Form-specific shapes
+//! (`origin_form` / `absolute_form` / `authority_form`) are also
+//! subject-based — the subject is "this form's parser path."
 //!
 //! Shared helpers live in this file.
 

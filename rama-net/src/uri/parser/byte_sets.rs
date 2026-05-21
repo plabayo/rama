@@ -120,7 +120,7 @@ pub(super) const fn is_scheme_rest_byte(b: u8) -> bool {
 }
 
 #[inline(always)]
-pub(super) const fn is_userinfo_byte(b: u8) -> bool {
+pub(crate) const fn is_userinfo_byte(b: u8) -> bool {
     USERINFO_BYTE_SET[b as usize]
 }
 

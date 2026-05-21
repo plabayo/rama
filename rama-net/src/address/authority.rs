@@ -490,7 +490,22 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     // before the boundary, not after).
     let mut user_info = None;
     if let Some(idx) = crate::address::parse_utils::find_userinfo_split(s.as_bytes()) {
-        user_info = Some(UserInfo::try_from(&s[..idx])?);
+        // Graceful path: the last-`@` split deliberately leaves
+        // earlier `@`s inside the userinfo region (curl / browser /
+        // url-crate parity). `UserInfo::try_from(&str)` is strict and
+        // would reject those, so we do explicit control-byte
+        // screening here and bypass via `from_bytes_unchecked` —
+        // mirroring the URI parser's authority handler.
+        let ui_bytes = &s.as_bytes()[..idx];
+        if ui_bytes.iter().any(|&b| b < 0x20 || b == 0x7F) {
+            return Err(
+                OpaqueError::from_static_str("userinfo contains control character")
+                    .into_box_error(),
+            );
+        }
+        user_info = Some(UserInfo::from_bytes_unchecked(
+            rama_core::bytes::Bytes::copy_from_slice(ui_bytes),
+        ));
         s = &s[idx + 1..];
     }
 

@@ -465,6 +465,20 @@ impl fmt::Display for Host {
     }
 }
 
+impl fmt::Display for HostRef<'_> {
+    /// Renders the host in its canonical wire form — matching
+    /// [`Host`]'s `Display` for the same value. Useful for one-liner
+    /// log/format calls (`format!("{}", host_ref)`) without first
+    /// promoting to an owned [`Host`].
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Name(d) => f.write_str(d.as_str()),
+            Self::Address(ip) => ip.fmt(f),
+            Self::Uninterpreted(host) => host.fmt(f),
+        }
+    }
+}
+
 impl std::str::FromStr for Host {
     type Err = BoxError;
 
@@ -961,5 +975,24 @@ mod tests {
         let h = reg_host(b"example.com");
         assert!(h != Ipv4Addr::new(127, 0, 0, 1));
         assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
+    }
+
+    // ---- HostRef: Display ergonomics -----------------------------------
+
+    #[test]
+    fn host_ref_display_matches_owned_host() {
+        // `Display` on the borrowed view must render the same string as
+        // the owned form — callers can `format!("{}", uri.host()?)`
+        // without first promoting.
+        for owned in [
+            Host::Name(Domain::from_static("example.com")),
+            Host::Address("127.0.0.1".parse().unwrap()),
+            Host::Address("::1".parse().unwrap()),
+            reg_host(b"exa%6Dple.com"),
+            bracketed_host(b"v1.fe80::a"),
+        ] {
+            let r: HostRef<'_> = (&owned).into();
+            assert_eq!(format!("{r}"), format!("{owned}"));
+        }
     }
 }

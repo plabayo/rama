@@ -476,6 +476,20 @@ mod tests {
     }
 
     #[test]
+    fn try_from_rejects_non_ascii_scheme() {
+        // RFC 3986 §3.1: scheme is ASCII only. `validate_scheme_str`
+        // catches non-ASCII bytes via the byte-set LUT (all entries
+        // above 0x7F are 0). Confirms the typed constructor enforces
+        // the same constraint as the parser's per-byte byte-set check.
+        Protocol::try_from("müncheme").unwrap_err();
+        Protocol::try_from("ab cd").unwrap_err();
+        Protocol::try_from("ab\0").unwrap_err();
+        // Valid: ASCII alpha + sub-delims allowed by the scheme grammar.
+        Protocol::try_from("git+ssh").unwrap();
+        Protocol::try_from("coap+tcp").unwrap();
+    }
+
+    #[test]
     fn regression_custom_scheme_over_smolstr_inline_cap_does_not_panic() {
         // Uri-fuzzer regression: a 25-byte all-ASCII custom scheme is a
         // perfectly valid RFC 3986 scheme but exceeds `SmolStr`'s 23-byte

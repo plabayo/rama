@@ -62,6 +62,11 @@ mod scheme;
 /// Re-exported for the URI component setters' fast-path check.
 pub(in crate::uri) use byte_sets::{is_path_byte, is_query_fragment_byte, is_unreserved_byte};
 
+/// Re-exported for the [`crate::address::UserInfo`] typed constructor
+/// so its byte-level validation matches the URI parser's strict-mode
+/// userinfo grammar check (RFC 3986 §3.2.1).
+pub(crate) use byte_sets::is_userinfo_byte;
+
 #[cfg(test)]
 mod tests;
 

@@ -21,8 +21,15 @@ pub struct UserInfo {
 
 impl UserInfo {
     /// Construct from a compile-time string. Zero-allocation.
+    ///
+    /// **Panics at compile time** if `s` contains a byte outside the
+    /// RFC 3986 §3.2.1 userinfo grammar (`unreserved / pct-encoded /
+    /// sub-delims / ":"`). This matches the URI parser's strict-mode
+    /// validation: byte sets stay single-sourced, and typed construction
+    /// can never produce a `UserInfo` that the parser would reject.
     #[must_use]
     pub const fn from_static_str(s: &'static str) -> Self {
+        validate_userinfo_static(s.as_bytes());
         Self {
             bytes: Bytes::from_static(s.as_bytes()),
         }
@@ -93,16 +100,21 @@ impl std::str::FromStr for UserInfo {
 
 impl TryFrom<&str> for UserInfo {
     type Error = BoxError;
+
+    /// Validate `s` against the RFC 3986 §3.2.1 userinfo grammar —
+    /// same byte set the URI parser uses in strict mode. Rejects:
+    ///
+    /// - Control bytes anywhere.
+    /// - Raw `@` (must be percent-encoded as `%40`).
+    /// - Raw space, brackets, gen-delims, and other non-userinfo bytes.
+    /// - Malformed pct-escapes (`%X` truncated, `%XY` non-hex).
+    /// - Pct-decoded control bytes (smuggling vector).
+    ///
+    /// Without this guard, `Uri::set_authority(authority_with_loose_userinfo)`
+    /// could embed bytes the parser would otherwise reject — producing
+    /// URIs that round-trip into malformed wire form.
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        // Sanity: reject control bytes — `@` and other smuggling-class
-        // characters are caught at parse time when used inside a URI.
-        // Here we only guard against the obviously-wrong inputs.
-        if s.as_bytes().iter().any(|&b| b < 0x20 || b == 0x7F) {
-            return Err(
-                OpaqueError::from_static_str("userinfo contains control character")
-                    .into_box_error(),
-            );
-        }
+        validate_userinfo_runtime(s.as_bytes())?;
         Ok(Self {
             bytes: Bytes::copy_from_slice(s.as_bytes()),
         })
@@ -112,15 +124,111 @@ impl TryFrom<&str> for UserInfo {
 impl TryFrom<String> for UserInfo {
     type Error = BoxError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        if s.as_bytes().iter().any(|&b| b < 0x20 || b == 0x7F) {
+        validate_userinfo_runtime(s.as_bytes())?;
+        Ok(Self {
+            bytes: Bytes::from(s),
+        })
+    }
+}
+
+/// Runtime userinfo-grammar validator, shared by `TryFrom<&str>` and
+/// `TryFrom<String>`. Delegates the byte-set check to the URI parser's
+/// [`crate::uri::is_userinfo_byte`] LUT so the grammar is single-sourced.
+///
+/// Rules (RFC 3986 §3.2.1):
+/// - Each byte must be `unreserved / pct-encoded / sub-delims / ":"`.
+/// - `%XX` must be a well-formed hex pair.
+/// - Pct-decoded byte must not be a control character (smuggling
+///   defense — mirrors the URI parser's reg-name handling).
+fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x20 || b == 0x7F {
             return Err(
                 OpaqueError::from_static_str("userinfo contains control character")
                     .into_box_error(),
             );
         }
-        Ok(Self {
-            bytes: Bytes::from(s),
-        })
+        if b == b'%' {
+            let h1 = bytes.get(i + 1).copied();
+            let h2 = bytes.get(i + 2).copied();
+            match (h1, h2) {
+                (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
+                    if let Some(decoded) = rama_utils::hex::decode_pair(a, b)
+                        && (decoded < 0x20 || decoded == 0x7F)
+                    {
+                        return Err(OpaqueError::from_static_str(
+                            "userinfo pct-escape decodes to a control character",
+                        )
+                        .into_box_error());
+                    }
+                    i += 3;
+                    continue;
+                }
+                _ => {
+                    return Err(OpaqueError::from_static_str(
+                        "userinfo contains malformed percent-escape",
+                    )
+                    .into_box_error());
+                }
+            }
+        }
+        if !crate::uri::is_userinfo_byte(b) {
+            return Err(
+                OpaqueError::from_static_str("userinfo contains disallowed character")
+                    .into_box_error(),
+            );
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+/// `const` mirror of [`validate_userinfo_runtime`] for
+/// [`UserInfo::from_static_str`]. Same rules; panics at compile time
+/// on violation. Can't share the `?`-based runtime variant because `?`
+/// isn't const-stable yet.
+const fn validate_userinfo_static(bytes: &[u8]) {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        assert!(
+            b >= 0x20 && b != 0x7F,
+            "UserInfo::from_static_str: control character in input"
+        );
+        if b == b'%' {
+            assert!(
+                i + 2 < bytes.len(),
+                "UserInfo::from_static_str: truncated percent-escape"
+            );
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            assert!(
+                h1.is_ascii_hexdigit() && h2.is_ascii_hexdigit(),
+                "UserInfo::from_static_str: malformed percent-escape"
+            );
+            // Shared hex helper — `decode_pair` is const-stable. Both
+            // h1 and h2 just passed `is_ascii_hexdigit` so the `Some`
+            // arm always fires; `unreachable_unchecked` lets the
+            // compiler drop the dead `None` branch.
+            let Some(decoded) = rama_utils::hex::decode_pair(h1, h2) else {
+                // SAFETY: both hex digits are ASCII hex per the
+                // assertion above; decode_pair always succeeds.
+                unsafe { std::hint::unreachable_unchecked() }
+            };
+            assert!(
+                decoded >= 0x20 && decoded != 0x7F,
+                "UserInfo::from_static_str: pct-escape decodes to a control character"
+            );
+            i += 3;
+            continue;
+        }
+        assert!(
+            crate::uri::is_userinfo_byte(b),
+            "UserInfo::from_static_str: disallowed character"
+        );
+        i += 1;
     }
 }
 
@@ -289,6 +397,86 @@ mod tests {
         UserInfo::try_from("alice:secret").unwrap();
         UserInfo::try_from("us!er$tag").unwrap();
         UserInfo::try_from("user%40info").unwrap(); // pct-encoded `@`
+    }
+
+    /// Regression: previously `try_from` only rejected control bytes,
+    /// so `UserInfo::try_from("a b@c")` succeeded and
+    /// `Uri::set_authority(...)` then rendered `//a b@c@host/` — a
+    /// malformed wire URI the parser would never accept. Tightened
+    /// validation now matches the URI parser's strict-mode userinfo
+    /// byte set.
+    #[test]
+    fn try_from_str_rejects_raw_at_sign() {
+        // Raw `@` is the userinfo terminator and MUST be pct-encoded
+        // (`%40`) per RFC 3986 §3.2.1.
+        UserInfo::try_from("alice@example.com").unwrap_err();
+        UserInfo::try_from("a@b@c").unwrap_err();
+    }
+
+    #[test]
+    fn try_from_str_rejects_raw_space() {
+        UserInfo::try_from("a b").unwrap_err();
+        UserInfo::try_from("alice secret").unwrap_err();
+    }
+
+    #[test]
+    fn try_from_str_rejects_gen_delims() {
+        // gen-delims (other than `:` and `@`, which have specific roles)
+        // aren't valid in userinfo.
+        UserInfo::try_from("user/path").unwrap_err();
+        UserInfo::try_from("user?query").unwrap_err();
+        UserInfo::try_from("user#frag").unwrap_err();
+        UserInfo::try_from("user[bracket").unwrap_err();
+    }
+
+    #[test]
+    fn try_from_str_rejects_malformed_pct() {
+        UserInfo::try_from("user%4").unwrap_err(); // truncated
+        UserInfo::try_from("user%4Z").unwrap_err(); // non-hex
+        UserInfo::try_from("user%").unwrap_err(); // bare %
+    }
+
+    #[test]
+    fn try_from_str_rejects_pct_decoded_control_byte() {
+        // Smuggling defense: `%00` (NUL), `%0D` (CR), `%0A` (LF), etc.
+        // Even though the wire bytes are printable, the decoded byte
+        // would be a control character — same protection the URI
+        // parser applies to reg-name pct-escapes.
+        UserInfo::try_from("user%00").unwrap_err();
+        UserInfo::try_from("user%0D").unwrap_err();
+        UserInfo::try_from("user%0A").unwrap_err();
+        UserInfo::try_from("user%09").unwrap_err();
+        UserInfo::try_from("user%7F").unwrap_err();
+    }
+
+    #[test]
+    fn from_static_str_panics_on_invalid_input() {
+        // `from_static_str` is a const fn that validates at compile
+        // time. Use `catch_unwind` to verify the runtime panic message
+        // for cases that would-be compile errors in actual usage.
+        let bad_inputs = [
+            "alice@host", // raw @
+            "alice bob",  // raw space
+            "user%4",     // truncated pct
+            "user%00",    // pct-decoded NUL
+        ];
+        for input in bad_inputs {
+            let result = std::panic::catch_unwind(|| {
+                UserInfo::from_static_str(unsafe {
+                    // Safety: the leaked `&'static str` is only used
+                    // inside `catch_unwind`; we never escape it.
+                    std::mem::transmute::<&str, &'static str>(input)
+                })
+            });
+            assert!(result.is_err(), "expected panic for {input:?}");
+        }
+    }
+
+    #[test]
+    fn from_static_str_accepts_valid_inputs() {
+        let _u = UserInfo::from_static_str("alice");
+        let _u = UserInfo::from_static_str("alice:secret");
+        let _u = UserInfo::from_static_str("user%40info"); // pct-encoded @
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub(crate) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
         let value = value
             .strip_prefix('[')
             .and_then(|value| value.strip_suffix(']'))?;
-        // Reject zone identifiers (RFC 9844) — `Ipv6Addr::parse` will fail
+        // Reject zone identifiers (RFC 6874) — `Ipv6Addr::parse` will fail
         // on `%25en0`-style content anyway, but `ipv6_bracket_has_zone`
         // makes the rejection explicit and consistent with the URI
         // parser's typed error.
@@ -52,7 +52,7 @@ pub(crate) fn find_userinfo_split(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Returns `true` if the bytes between IPv6 brackets contain a `%`,
-/// which indicates a zone identifier (RFC 9844 `%25en0` wire encoding).
+/// which indicates a zone identifier (RFC 6874 `%25en0` wire encoding).
 /// We don't currently support zone IDs in either parser — `std::net::Ipv6Addr`
 /// has no field for them.
 #[inline]
@@ -99,13 +99,13 @@ pub(crate) fn parse_bracketed_ipv6_with_port(
             .strip_prefix('[')
             .and_then(|value| value.strip_suffix(']'))
             .context("strip brackets from ipv6 host w/ trailing port")?;
-        // RFC 9844 zone identifiers (wire-encoded as `%25en0`) are not
+        // RFC 6874 zone identifiers (wire-encoded as `%25en0`) are not
         // currently supported — they require an `Ipv6+zone` host shape
         // we haven't built. Reject with a clear message rather than
         // letting `Ipv6Addr::parse` fail opaquely on the `%`.
         if ipv6_bracket_has_zone(value.as_bytes()) {
             return Err(OpaqueError::from_static_str(
-                "ipv6 zone identifiers (RFC 9844) are not supported",
+                "ipv6 zone identifiers (RFC 6874) are not supported",
             )
             .into_box_error());
         }

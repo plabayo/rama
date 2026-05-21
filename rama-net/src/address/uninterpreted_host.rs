@@ -1,22 +1,8 @@
 //! Host bytes that aren't a DNS-shaped [`Domain`] or recognized IP
 //! address — preserved verbatim per RFC 3986 §3.2.2.
 //!
-//! Two grammar shapes land here, distinguished by [`UninterpretedHost::is_bracketed`]:
-//!
-//! - **Non-bracketed `reg-name`**: bytes outside the strict DNS-label
-//!   shape — pct-encoded segments (`exa%6Dple.com`), sub-delim characters
-//!   (`tag,with,commas`), or raw non-ASCII UTF-8 (`münchen.de` under
-//!   graceful URI parsing / IRI). Stored as-received.
-//! - **Bracketed IPvFuture literal**: the body of `[vN.X]`. The brackets
-//!   are URI syntax, not host content — they're not stored, but
-//!   [`Display`](std::fmt::Display) re-adds them.
-//!
-//! Wire-fidelity is the design contract: this type is **construction-
-//! free from the public API** — only the URI parser builds it, by
-//! preserving bytes off the wire. Callers either keep it as-is
-//! (forwarding, logging) or convert into [`Domain`], [`IpAddr`],
-//! [`Ipv4Addr`], or [`Ipv6Addr`] via the `TryFrom` impls, which apply
-//! pct-decoding and (for `Domain`) UTS #46 IDN normalization on the way.
+//! See [`UninterpretedHost`] for the full design contract; this module
+//! also hosts the borrowed view [`UninterpretedHostRef`].
 
 use std::{
     borrow::Cow,

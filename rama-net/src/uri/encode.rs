@@ -123,49 +123,53 @@ fn query_or_fragment_needs_encoding(input: &[u8]) -> bool {
 // Encoder entry points
 // ---------------------------------------------------------------------------
 
-/// Encode the path input into a [`BytesMut`]. Fast-path: when the
-/// input is already legal under the path grammar, owned input types
-/// (`String`, `Vec<u8>`, `BytesMut`, `Bytes`) move into storage without
-/// copying.
+/// Common encode driver shared by all component setters.
+///
+/// Fast-path: when `needs_encoding` returns `false` for the input
+/// bytes, owned input types (`String`, `Vec<u8>`, `BytesMut`, `Bytes`)
+/// move into storage without copying via
+/// [`IntoUriComponent::into_uri_component_bytes_mut`].
+///
+/// Slow-path: percent-encode under the given `AsciiSet` into a fresh
+/// `BytesMut` sized to the input.
+#[inline]
+fn encode<T: IntoUriComponent, F: Fn(&[u8]) -> bool>(
+    input: T,
+    needs_encoding: F,
+    encode_set: &'static AsciiSet,
+) -> BytesMut {
+    if needs_encoding(input.as_uri_component_bytes()) {
+        let bytes = input.as_uri_component_bytes();
+        let mut out = BytesMut::with_capacity(bytes.len());
+        for chunk in percent_encode(bytes, encode_set) {
+            out.extend_from_slice(chunk.as_bytes());
+        }
+        out
+    } else {
+        input.into_uri_component_bytes_mut()
+    }
+}
+
+/// Encode the path input into a [`BytesMut`]. Owned-input fast-path
+/// avoids the copy when the bytes are already path-legal.
+#[inline]
 pub(super) fn encode_path<T: IntoUriComponent>(input: T) -> BytesMut {
-    if path_needs_encoding(input.as_uri_component_bytes()) {
-        let bytes = input.as_uri_component_bytes();
-        let mut out = BytesMut::with_capacity(bytes.len());
-        for chunk in percent_encode(bytes, PATH_ENCODE_SET) {
-            out.extend_from_slice(chunk.as_bytes());
-        }
-        out
-    } else {
-        input.into_uri_component_bytes_mut()
-    }
+    encode(input, path_needs_encoding, PATH_ENCODE_SET)
 }
 
-/// Encode the query input. See [`encode_path`] for the fast-path behaviour.
+/// Encode the query input.
+#[inline]
 pub(super) fn encode_query<T: IntoUriComponent>(input: T) -> BytesMut {
-    if query_or_fragment_needs_encoding(input.as_uri_component_bytes()) {
-        let bytes = input.as_uri_component_bytes();
-        let mut out = BytesMut::with_capacity(bytes.len());
-        for chunk in percent_encode(bytes, QUERY_ENCODE_SET) {
-            out.extend_from_slice(chunk.as_bytes());
-        }
-        out
-    } else {
-        input.into_uri_component_bytes_mut()
-    }
+    encode(input, query_or_fragment_needs_encoding, QUERY_ENCODE_SET)
 }
 
-/// Encode the fragment input. See [`encode_path`] for the fast-path behaviour.
+/// Encode the fragment input. The query and fragment grammars accept
+/// the same bytes, so the `needs_encoding` predicate is shared with
+/// `encode_query`; only the [`AsciiSet`] differs (fragment doesn't
+/// encode `?`).
+#[inline]
 pub(super) fn encode_fragment<T: IntoUriComponent>(input: T) -> BytesMut {
-    if query_or_fragment_needs_encoding(input.as_uri_component_bytes()) {
-        let bytes = input.as_uri_component_bytes();
-        let mut out = BytesMut::with_capacity(bytes.len());
-        for chunk in percent_encode(bytes, FRAGMENT_ENCODE_SET) {
-            out.extend_from_slice(chunk.as_bytes());
-        }
-        out
-    } else {
-        input.into_uri_component_bytes_mut()
-    }
+    encode(input, query_or_fragment_needs_encoding, FRAGMENT_ENCODE_SET)
 }
 
 /// Append `input` to `target`, percent-encoding under the segment
