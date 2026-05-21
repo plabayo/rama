@@ -50,6 +50,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "uri_resolve"
+path = "fuzz_targets/uri_resolve.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["ua", "http", "net"] }

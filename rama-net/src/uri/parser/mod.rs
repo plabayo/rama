@@ -130,8 +130,75 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     }
 
     // Anything else (relative refs with path-noscheme, HTTP authority-form
-    // `host:port`, etc.) is not yet supported.
+    // `host:port`, etc.) is not accepted by [`parse`]. Callers that need
+    // to parse a relative URI-reference should use [`parse_uri_reference`].
     Err(ParseError::InvalidComponent(Component::Scheme))
+}
+
+/// Parse any RFC 3986 URI-reference — absolute URI or relative-ref.
+///
+/// Accepts everything [`parse`] accepts, plus the relative-ref grammar
+/// from §4.2: empty input (same-document), `//host/...` (network-path),
+/// `g/h` (path-noscheme), `?query` (query-only), `#frag` (fragment-only).
+///
+/// Used by [`super::Uri::resolve`] to materialise the reference operand.
+pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
+    if bytes.len() > MAX_URI_LEN {
+        return Err(ParseError::TooLong { len: bytes.len() });
+    }
+
+    // Empty input → empty same-document reference.
+    if bytes.is_empty() {
+        return Ok(Uri::from_lazy(LazyUriRef {
+            scheme: None,
+            authority: None,
+            path: (0, 0),
+            query: None,
+            fragment: None,
+            bytes,
+        }));
+    }
+
+    // Asterisk-form.
+    if bytes.as_ref() == b"*" {
+        return Ok(Uri::from_asterisk());
+    }
+
+    // Absolute-form (scheme present).
+    if let Some(colon) = scheme::find_scheme_end(&bytes) {
+        let scheme_str = bytes_to_str(&bytes[..colon]);
+        let Ok(scheme) = crate::Protocol::try_from(scheme_str) else {
+            return Err(ParseError::InvalidComponent(Component::Scheme));
+        };
+        let after_colon = colon + 1;
+        let (auth, hier_start) = authority::parse_optional_authority(&bytes, after_colon, mode)?;
+        let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
+        return Ok(Uri::from_lazy(LazyUriRef {
+            scheme: Some(scheme),
+            authority: auth,
+            path: (hier_start as u16, scan.path_end),
+            query: scan.query,
+            fragment: scan.fragment,
+            bytes,
+        }));
+    }
+
+    // Relative-ref. Per RFC 3986 §4.2, the disambiguation is:
+    //   relative-part = "//" authority path-abempty
+    //                 / path-absolute   (starts with `/` but not `//`)
+    //                 / path-noscheme   (no `/`, no `:` in first segment)
+    //                 / path-empty      (path starts with `?` / `#` / EOF)
+    let (auth, hier_start) = authority::parse_optional_authority(&bytes, 0, mode)?;
+    let scan = path::scan_path_query_fragment(&bytes, hier_start, mode)?;
+
+    Ok(Uri::from_lazy(LazyUriRef {
+        scheme: None,
+        authority: auth,
+        path: (hier_start as u16, scan.path_end),
+        query: scan.query,
+        fragment: scan.fragment,
+        bytes,
+    }))
 }
 
 // --- Small shared helpers used by sibling modules --------------------------

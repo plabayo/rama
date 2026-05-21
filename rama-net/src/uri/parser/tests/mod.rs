@@ -38,6 +38,7 @@ pub(super) mod query_collect;
 pub(super) mod query_deserialize;
 pub(super) mod query_mut;
 pub(super) mod query_pairs;
+pub(super) mod resolve;
 pub(super) mod rfc3986_examples;
 pub(super) mod smoke;
 pub(super) mod strict_mode;

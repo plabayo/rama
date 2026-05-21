@@ -79,6 +79,10 @@ mod query_mut;
 #[doc(inline)]
 pub use query_mut::{Drain as QueryDrain, QueryMut};
 
+mod resolve;
+#[doc(inline)]
+pub use resolve::ResolveError;
+
 mod fragment;
 #[doc(inline)]
 pub use fragment::{Fragment, FragmentRef};
@@ -103,8 +107,15 @@ pub mod util {
 
 /// First-class URI value.
 ///
-/// Opaque — fields are private. Construct via [`Uri::parse`] /
-/// [`Uri::parse_strict`]; inspect via typed accessors ([`scheme`](Self::scheme),
+/// Represents any RFC 3986 URI-reference — an absolute URI
+/// (`http://example.com/path`), a network-path (`//host/path`), an
+/// origin-form path (`/path?query`), a relative reference (`../foo`,
+/// `?y`, `#frag`), or the HTTP asterisk-form (`*`). Use
+/// [`is_absolute`](Self::is_absolute) to check for the scheme-bearing case.
+///
+/// Opaque — fields are private. Construct via [`Uri::parse`] (strict
+/// shapes only) or [`Uri::parse_reference`] (all URI-references including
+/// relatives); inspect via typed accessors ([`scheme`](Self::scheme),
 /// [`path`](Self::path), [`query`](Self::query), [`fragment`](Self::fragment),
 /// [`host`](Self::host), [`port`](Self::port), [`userinfo`](Self::userinfo),
 /// [`authority`](Self::authority)); mutate via the `set_*` / `clear_*`
@@ -150,10 +161,39 @@ impl Uri {
         parser::parse(input::into_uri_input(input), ParserMode::Strict)
     }
 
+    /// Parse any RFC 3986 URI-reference — absolute URI or relative-ref.
+    ///
+    /// Accepts everything [`parse`](Self::parse) accepts, plus the
+    /// relative-ref grammar from §4.2:
+    /// - empty input (same-document reference)
+    /// - `//host/path` (network-path reference)
+    /// - `g`, `g/h`, `../g` (path-noscheme)
+    /// - `?y` (query-only)
+    /// - `#s` (fragment-only)
+    ///
+    /// Use this when parsing a reference to feed into
+    /// [`resolve`](Self::resolve).
+    pub fn parse_reference<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Graceful)
+    }
+
+    /// Strict variant of [`parse_reference`](Self::parse_reference).
+    pub fn parse_reference_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Strict)
+    }
+
     /// Returns `true` if this is the OPTIONS-`*` request-target.
     #[must_use]
     pub fn is_asterisk(&self) -> bool {
         matches!(self.inner, UriInner::Asterisk)
+    }
+
+    /// Returns `true` if this is an absolute URI — has a scheme. Inverse
+    /// case is a URI-reference without a scheme (relative reference,
+    /// origin-form path, or the asterisk).
+    #[must_use]
+    pub fn is_absolute(&self) -> bool {
+        self.scheme().is_some()
     }
 
     /// Returns the scheme component, or `None` if the URI has none
@@ -346,8 +386,10 @@ impl Uri {
     }
 
     /// Snapshot the current URI as an [`OwnedUriRef`]. Used by `to_mut`
-    /// to materialise components when promoting from Lazy / Asterisk.
-    fn as_owned_components(&self) -> OwnedUriRef {
+    /// to materialise components when promoting from Lazy / Asterisk,
+    /// and by [`resolve`](Self::resolve) to take owned snapshots of
+    /// base / reference for component-level recomposition.
+    pub(super) fn as_owned_components(&self) -> OwnedUriRef {
         match &self.inner {
             UriInner::Asterisk => OwnedUriRef::default(),
             UriInner::Lazy(arc) => {
@@ -430,6 +472,32 @@ impl Uri {
     pub fn with_query_value(mut self, query: Query) -> Self {
         self.set_query_value(query);
         self
+    }
+
+    // ---- Reference resolution (RFC 3986 §5.2) ----------------------------
+
+    /// Resolve `reference` against `self` (the base URI).
+    ///
+    /// Graceful — matches browser / curl behaviour:
+    /// - If the reference shares the base's scheme, the scheme is
+    ///   treated as inherited (RFC 3986 §5.2.2 non-strict loophole).
+    /// - Excess `..` segments past the path root are silently clamped.
+    ///
+    /// Use [`resolve_strict`](Self::resolve_strict) to reject both.
+    ///
+    /// Errors when the base has no scheme, the base or reference is
+    /// the asterisk-form, or the resolved URI exceeds the internal cap.
+    pub fn resolve(&self, reference: &Self) -> Result<Self, ResolveError> {
+        resolve::resolve(self, reference, resolve::ResolveMode::Graceful)
+    }
+
+    /// Resolve `reference` against `self` in strict mode (RFC 3986 §5.2.2):
+    /// - No scheme-matching loophole — a reference with a scheme stays
+    ///   absolute even if its scheme matches the base's.
+    /// - A `..` segment that would traverse past the path root is an
+    ///   error ([`ResolveError::DotSegmentTraversalPastRoot`]).
+    pub fn resolve_strict(&self, reference: &Self) -> Result<Self, ResolveError> {
+        resolve::resolve(self, reference, resolve::ResolveMode::Strict)
     }
 
     /// Remove the query entirely (no `?` on the wire — distinct from
