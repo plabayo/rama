@@ -31,7 +31,7 @@
 //! are fully asynchronous and scale naturally — no tokio blocking-pool
 //! traffic.
 //!
-//! `LinuxDnsResolver` (via `res_nquery` / `getaddrinfo`) and
+//! `LinuxDnsResolver` (via `res_nsearch` / `getaddrinfo`) and
 //! [`client::TokioDnsResolver`] (via `getaddrinfo`) are different: each
 //! lookup occupies a tokio blocking-pool thread for the duration of the
 //! libc call. Under sustained high-concurrency DNS load (typical for

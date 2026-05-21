@@ -65,7 +65,7 @@ where
                         %err,
                         "linux::getaddrinfo: item failed to resolve on time: return timeout error",
                     );
-                    // `res_nquery` is a blocking libc call, so timing out here only stops
+                    // `getaddrinfo` is a blocking libc call, so timing out here only stops
                     // waiting for the worker result; it does not cancel the underlying OS
                     // resolver call once it has started.
                     yielder

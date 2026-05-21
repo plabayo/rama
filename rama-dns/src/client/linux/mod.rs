@@ -1,7 +1,10 @@
 //! Linux-native DNS resolver.
 //!
-//! On targets with `res_nquery` support, `A` / `AAAA` / `TXT` lookups are
-//! backed by the native resolver stub.
+//! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` lookups are
+//! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
+//! used so the resolver walks the `search` list from `/etc/resolv.conf` and
+//! respects `ndots`, matching the behavior of `getaddrinfo` and hickory's
+//! system resolver.
 //!
 //! On other Linux libc environments, address lookups fall back to
 //! `getaddrinfo`, while TXT lookups return a stable unsupported error.
@@ -44,13 +47,13 @@ mod legacy;
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-mod res_nquery;
+mod res_nsearch;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 const DEFAULT_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
-/// Default `res_nquery` response buffer size.
+/// Default `res_nsearch` response buffer size.
 ///
 /// Most DNS responses fit comfortably in 4 KiB, but large TXT/AAAA fan-outs
 /// (DKIM, long SPF, multi-record AAAA sets) can exceed that. 16 KiB matches
@@ -113,7 +116,7 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Per-query response buffer size used by `res_nquery`. Responses that
+        /// Per-query response buffer size used by `res_nsearch`. Responses that
         /// exceed this bound are reported as an error; bump this for workloads
         /// that legitimately receive large TXT/AAAA fan-outs.
         pub fn response_buffer_size(mut self, response_buffer_size: usize) -> Self {
@@ -267,14 +270,14 @@ impl DnsResolver for LinuxDnsResolver {}
 /// Events emitted by uncached lookup streams.
 ///
 /// `AuthoritativeNegative` is only emitted by backends that can distinguish
-/// "the zone says there is no such record" (the `res_nquery` path) from
+/// "the zone says there is no such record" (the `res_nsearch` path) from
 /// "this lookup returned nothing for unrelated reasons" (the legacy
 /// `getaddrinfo` path, where `AI_ADDRCONFIG` can suppress whole families
 /// based on local interface state). Only the former is safe to cache as a
 /// negative entry.
 pub(super) enum LookupEvent<T> {
     Record(T, u32),
-    // Only constructed by the `res_nquery` backend (glibc / BSDs). The
+    // Only constructed by the `res_nsearch` backend (glibc / BSDs). The
     // legacy `getaddrinfo` fallback (used on e.g. musl) cannot distinguish
     // authoritative DNS negatives from local-policy empties — see
     // `legacy.rs` — so it never emits this variant. The `cfg_attr` only
@@ -287,7 +290,7 @@ pub(super) enum LookupEvent<T> {
             target_os = "openbsd",
             target_os = "netbsd",
         )),
-        expect(dead_code, reason = "only constructed by the res_nquery backend")
+        expect(dead_code, reason = "only constructed by the res_nsearch backend")
     )]
     AuthoritativeNegative {
         soa_ttl: Option<u32>,
@@ -379,7 +382,7 @@ fn lookup_ipv4_uncached_stream(
     timeout: Duration,
     response_buffer_size: usize,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv4Addr>, BoxError>> + Send {
-    res_nquery::lookup_ipv4_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_ipv4_stream(domain, timeout, response_buffer_size)
 }
 
 #[cfg(not(any(
@@ -407,7 +410,7 @@ fn lookup_ipv6_uncached_stream(
     timeout: Duration,
     response_buffer_size: usize,
 ) -> impl Stream<Item = Result<LookupEvent<Ipv6Addr>, BoxError>> + Send {
-    res_nquery::lookup_ipv6_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_ipv6_stream(domain, timeout, response_buffer_size)
 }
 
 #[cfg(not(any(
@@ -435,7 +438,7 @@ fn lookup_txt_uncached_stream(
     timeout: Duration,
     response_buffer_size: usize,
 ) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
-    res_nquery::lookup_txt_stream(domain, timeout, response_buffer_size)
+    res_nsearch::lookup_txt_stream(domain, timeout, response_buffer_size)
 }
 
 #[cfg(not(any(
