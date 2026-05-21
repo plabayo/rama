@@ -40,7 +40,8 @@ impl IntoCanonicalIpAddr for Host {
     #[inline(always)]
     fn into_canonical_ip_addr(self) -> Self {
         match self {
-            Self::Name(_) => self,
+            // Non-Address variants: pass-through — there's no IP to canonicalize.
+            Self::Name(_) | Self::Uninterpreted(_) => self,
             Self::Address(ip_addr) => Self::Address(ip_addr.into_canonical_ip_addr()),
         }
     }

@@ -410,6 +410,10 @@ impl fmt::Display for HostWithOptPort {
                     ip.fmt(f)
                 }?
             }
+            // `UninterpretedHost`'s own Display already brackets
+            // IP-literal forms and renders reg-name bytes verbatim.
+            // Either way, no extra bracketing is needed when a port follows.
+            Host::Uninterpreted(host) => host.fmt(f)?,
         }
 
         if let Some(port) = self.port {

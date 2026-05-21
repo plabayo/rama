@@ -49,13 +49,10 @@
 //! - [`authority`] — authority / host / port / userinfo parsing
 //! - [`tests`](mod@tests) — large multi-file corpus
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::bytes::Bytes;
 
-use super::lazy::LazyUriRef;
-use super::owned::OwnedUriRef;
-use super::{Component, Fragment, ParseError, Query, Uri, UriInner};
-
-use authority::ParsedAuthority;
+use super::lazy::{LazyAuthority, LazyUriRef};
+use super::{Component, ParseError, Uri};
 
 mod authority;
 mod byte_sets;
@@ -248,54 +245,27 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     ))
 }
 
-/// Assemble parsed parts into a [`Uri`]. The authority variant decides
-/// the storage shape: `Lazy` keeps zero-copy projection into `bytes`;
-/// `Owned` short-circuits to [`OwnedUriRef`] because UTS #46 rewrote the
-/// host, so the raw buffer no longer agrees with the typed view.
-///
-/// The Owned path still slices path / query / fragment out of `bytes`
-/// into fresh `BytesMut` buffers — that's the same copy cost the
-/// upgrade-on-mutation path pays, just done eagerly here so we skip the
-/// throwaway `Arc<LazyUriRef>` allocation.
+/// Assemble parsed parts into a [`Uri`]. Always emits the `Lazy` shape —
+/// without parser-time canonicalization (M7 reversed: pct-encoded /
+/// IDN host bytes are now preserved verbatim via
+/// [`Host::Uninterpreted`](crate::address::Host::Uninterpreted)), the
+/// typed view never diverges from the source buffer.
 fn build_uri(
     scheme: Option<crate::Protocol>,
-    authority: Option<ParsedAuthority>,
+    authority: Option<LazyAuthority>,
     path: (u16, u16),
     query: Option<(u16, u16)>,
     fragment: Option<(u16, u16)>,
     bytes: Bytes,
 ) -> Uri {
-    match authority {
-        None => Uri::from_lazy(LazyUriRef {
-            scheme,
-            authority: None,
-            path,
-            query,
-            fragment,
-            bytes,
-        }),
-        Some(ParsedAuthority::Lazy(lazy_auth)) => Uri::from_lazy(LazyUriRef {
-            scheme,
-            authority: Some(lazy_auth),
-            path,
-            query,
-            fragment,
-            bytes,
-        }),
-        Some(ParsedAuthority::Owned(authority)) => {
-            let slice = |(s, e): (u16, u16)| BytesMut::from(&bytes[s as usize..e as usize]);
-            let owned = OwnedUriRef {
-                scheme,
-                authority: Some(authority),
-                path: slice(path),
-                query: query.map(|r| Query { bytes: slice(r) }),
-                fragment: fragment.map(|r| Fragment { bytes: slice(r) }),
-            };
-            Uri {
-                inner: UriInner::Owned(std::sync::Arc::new(owned)),
-            }
-        }
-    }
+    Uri::from_lazy(LazyUriRef {
+        scheme,
+        authority,
+        path,
+        query,
+        fragment,
+        bytes,
+    })
 }
 
 // --- Small shared helpers used by sibling modules --------------------------

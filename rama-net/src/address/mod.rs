@@ -13,6 +13,10 @@ mod host;
 #[doc(inline)]
 pub use host::{Host, HostRef};
 
+mod uninterpreted_host;
+#[doc(inline)]
+pub use uninterpreted_host::{UninterpretedHost, UninterpretedHostRef};
+
 pub mod domain;
 #[doc(inline)]
 pub use domain::{AsDomainRef, Domain, DomainRef, IntoDomain};

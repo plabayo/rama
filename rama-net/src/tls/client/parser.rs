@@ -338,7 +338,12 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
         .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
 
     match host {
-        Host::Address(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
+        // TLS SNI carries a DNS-shaped name (RFC 6066 §3). Anything
+        // else — IP literal or RFC 3986 reg-name preserved verbatim —
+        // is rejected here.
+        Host::Address(_) | Host::Uninterpreted(_) => {
+            Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))
+        }
         Host::Name(domain) => Ok((i, domain)),
     }
 }

@@ -198,6 +198,15 @@ impl From<HostWithOptPort> for NodeId {
         match host {
             Host::Name(domain) => (domain, port).into(),
             Host::Address(ip) => (ip, port).into(),
+            // RFC 7239 `obfnode` grammar is strict (alpha/digit/.-_).
+            // Pct-encoded reg-name and bracketed IP-literal bytes don't
+            // fit; route through `from_str_lossy` so any non-obfnode
+            // byte becomes `_`. Lossy by design — the Forwarded header
+            // carries a typed identifier, not a wire-faithful URI.
+            Host::Uninterpreted(host) => Self {
+                name: NodeName::Obf(ObfNode::from_str_lossy(&host.to_string())),
+                port: port.map(NodePort::Num),
+            },
         }
     }
 }
@@ -208,6 +217,10 @@ impl From<HostWithPort> for NodeId {
         match host {
             Host::Name(domain) => (domain, port).into(),
             Host::Address(ip) => (ip, port).into(),
+            Host::Uninterpreted(host) => Self {
+                name: NodeName::Obf(ObfNode::from_str_lossy(&host.to_string())),
+                port: Some(NodePort::Num(port)),
+            },
         }
     }
 }

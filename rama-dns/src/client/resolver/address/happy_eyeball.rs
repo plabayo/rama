@@ -13,7 +13,7 @@ use rama_core::{
     stream::{StreamExt as _, adapters::Merge},
 };
 use rama_net::{
-    address::Host,
+    address::{Domain, Host},
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
 
@@ -82,6 +82,20 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
 
         let domain = match self.host {
             Host::Name(domain) => domain,
+            // Wire-preserved reg-name / IP-literal bytes: try to recover
+            // a typed Domain (pct-decode + IDN normalize). If that
+            // fails, error out — DNS can only resolve DNS names.
+            Host::Uninterpreted(host) => match Domain::try_from(host) {
+                Ok(domain) => domain,
+                Err(_) => {
+                    return HappyEyeballIpStream::Once {
+                        stream: rama_core::stream::once(Err(OpaqueError::from_static_str(
+                            "uninterpreted host is not resolvable as a domain",
+                        )
+                        .into_opaque_error())),
+                    };
+                }
+            },
             Host::Address(ip) => {
                 //check if IP Version is allowed
                 return HappyEyeballIpStream::Once {

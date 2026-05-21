@@ -165,6 +165,19 @@ fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
                 buf.extend_from_slice(v6.to_string().as_bytes());
                 buf.extend_from_slice(b"]");
             }
+            HostRef::Uninterpreted(host) => {
+                // Wire-fidelity: emit the preserved bytes exactly as
+                // received. `UninterpretedHost` stores bracketed
+                // IP-literal bodies without the surrounding `[...]`,
+                // so we add them back here to match URI authority syntax.
+                if host.is_bracketed() {
+                    buf.extend_from_slice(b"[");
+                    buf.extend_from_slice(host.as_bytes());
+                    buf.extend_from_slice(b"]");
+                } else {
+                    buf.extend_from_slice(host.as_bytes());
+                }
+            }
         }
     }
     if let Some(port) = uri.port() {

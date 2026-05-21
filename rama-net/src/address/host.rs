@@ -1,5 +1,5 @@
 use super::domain::{DomainLabelIter, DomainLabels, Label};
-use super::{Domain, parse_utils};
+use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
@@ -12,14 +12,28 @@ use std::{
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
 
-/// Either a [`Domain`] or an [`IpAddr`].
+/// Either a [`Domain`], an [`IpAddr`], or [`UninterpretedHost`] bytes
+/// preserved verbatim from a URI authority.
+///
+/// `Uninterpreted` covers the RFC 3986 host shapes that aren't a strict
+/// DNS-label-shaped [`Domain`] or a recognized IP address — pct-encoded
+/// `reg-name` (`exa%6Dple.com`), sub-delim hostnames (`tag,with,commas`),
+/// IPvFuture literals (`[vN.X]`), and raw UTF-8 host bytes preserved
+/// under graceful URI / IRI parsing. The variant exists so a proxy
+/// receiving wire bytes can forward them faithfully; callers needing a
+/// canonical typed form convert via the `TryFrom` impls on
+/// [`UninterpretedHost`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Host {
-    /// A domain.
+    /// A DNS-label-shaped name (ASCII, IDN normalised to ACE on
+    /// construction via [`Domain::try_from`]).
     Name(Domain),
 
-    /// An IP address.
+    /// A literal IPv4 or IPv6 address.
     Address(IpAddr),
+
+    /// Host bytes preserved verbatim. See [`UninterpretedHost`].
+    Uninterpreted(UninterpretedHost),
 }
 
 impl Host {
@@ -33,7 +47,7 @@ impl Host {
     pub fn as_domain(&self) -> Option<&Domain> {
         match self {
             Self::Name(domain) => Some(domain),
-            Self::Address(_) => None,
+            Self::Address(_) | Self::Uninterpreted(_) => None,
         }
     }
 
@@ -41,7 +55,7 @@ impl Host {
     pub fn into_domain(self) -> Option<Domain> {
         match self {
             Self::Name(domain) => Some(domain),
-            Self::Address(_) => None,
+            Self::Address(_) | Self::Uninterpreted(_) => None,
         }
     }
 
@@ -54,7 +68,7 @@ impl Host {
     #[must_use]
     pub fn as_ip(&self) -> Option<&IpAddr> {
         match self {
-            Self::Name(_) => None,
+            Self::Name(_) | Self::Uninterpreted(_) => None,
             Self::Address(addr) => Some(addr),
         }
     }
@@ -62,8 +76,31 @@ impl Host {
     #[must_use]
     pub fn into_ip(self) -> Option<IpAddr> {
         match self {
-            Self::Name(_) => None,
+            Self::Name(_) | Self::Uninterpreted(_) => None,
             Self::Address(addr) => Some(addr),
+        }
+    }
+
+    /// Returns `true` if [`Host`] is an [`UninterpretedHost`] — preserved
+    /// reg-name / IP-literal bytes that aren't a typed [`Domain`] or [`IpAddr`].
+    #[must_use]
+    pub fn is_uninterpreted(&self) -> bool {
+        matches!(self, Self::Uninterpreted(_))
+    }
+
+    #[must_use]
+    pub fn as_uninterpreted(&self) -> Option<&UninterpretedHost> {
+        match self {
+            Self::Uninterpreted(host) => Some(host),
+            Self::Name(_) | Self::Address(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn into_uninterpreted(self) -> Option<UninterpretedHost> {
+        match self {
+            Self::Uninterpreted(host) => Some(host),
+            Self::Name(_) | Self::Address(_) => None,
         }
     }
 
@@ -85,6 +122,11 @@ impl Host {
         match self {
             Self::Name(domain) => domain.as_str().into(),
             Self::Address(ip_addr) => ip_addr.to_string().into(),
+            // Bracketed forms (IPvFuture) need brackets in the string
+            // form to match URI authority syntax — defer to Display.
+            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
+            // Non-bracketed reg-name bytes are valid UTF-8 — borrow directly.
+            Self::Uninterpreted(host) => host.as_str().into(),
         }
     }
 
@@ -102,6 +144,12 @@ impl Host {
         match self {
             Self::Name(d) => d.as_unicode(),
             Self::Address(ip) => ip.to_string().into(),
+            // Bracketed forms need wrapping brackets to match URI syntax.
+            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
+            // Non-bracketed: pct-decode on demand. Returns the decoded
+            // form when `%XX` is present, otherwise borrows the raw
+            // bytes (already valid UTF-8 per the parser invariant).
+            Self::Uninterpreted(host) => host.as_unicode(),
         }
     }
 }
@@ -142,6 +190,9 @@ pub enum HostRef<'a> {
     Name(super::domain::DomainRef<'a>),
     /// A literal IPv4 or IPv6 address.
     Address(IpAddr),
+    /// Borrowed view of an [`UninterpretedHost`] — reg-name bytes
+    /// preserved verbatim or a bracketed IP-literal.
+    Uninterpreted(UninterpretedHostRef<'a>),
 }
 
 impl HostRef<'_> {
@@ -153,6 +204,8 @@ impl HostRef<'_> {
         match self {
             Self::Name(d) => d.as_str().into(),
             Self::Address(ip) => ip.to_string().into(),
+            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
+            Self::Uninterpreted(host) => host.as_str().into(),
         }
     }
 
@@ -165,6 +218,8 @@ impl HostRef<'_> {
         match self {
             Self::Name(d) => d.as_unicode(),
             Self::Address(ip) => ip.to_string().into(),
+            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
+            Self::Uninterpreted(host) => host.as_unicode(),
         }
     }
 
@@ -175,6 +230,7 @@ impl HostRef<'_> {
         match *self {
             Self::Name(d) => Host::Name(d.to_owned()),
             Self::Address(ip) => Host::Address(ip),
+            Self::Uninterpreted(host) => Host::Uninterpreted(host.to_owned()),
         }
     }
 }
@@ -184,6 +240,7 @@ impl<'a> From<&'a Host> for HostRef<'a> {
         match h {
             Host::Name(d) => Self::Name(d.into()),
             Host::Address(ip) => Self::Address(*ip),
+            Host::Uninterpreted(host) => Self::Uninterpreted(host.into()),
         }
     }
 }
@@ -198,6 +255,34 @@ impl PartialEq<str> for Host {
             // `"0:0:0:0:0:0:0:1"` are equal, `"127.0.0.001"` is not equal
             // to `127.0.0.1` because std rejects leading-zero octets).
             Self::Address(ip) => other.parse::<IpAddr>().is_ok_and(|parsed| parsed == *ip),
+            Self::Uninterpreted(host) if host.is_bracketed() => {
+                // Bracketed forms (e.g. `[v1.fe80::a]`) store bytes
+                // without the surrounding brackets. Strip the brackets
+                // from `other` and byte-compare the inside — no
+                // allocation, no `to_string()`.
+                let o = other.as_bytes();
+                o.len() >= 2
+                    && o[0] == b'['
+                    && o[o.len() - 1] == b']'
+                    && &o[1..o.len() - 1] == host.as_bytes()
+            }
+            Self::Uninterpreted(host) => {
+                // Fast path — byte-compare on the raw wire form.
+                let bytes = host.as_bytes();
+                if bytes == other.as_bytes() {
+                    return true;
+                }
+                // Semantic path — when pct-encoding is present, the
+                // decoded form might match. Only allocate when there's
+                // actually `%` to decode.
+                if bytes.contains(&b'%')
+                    && let s = host.as_unicode()
+                    && s.as_ref() == other
+                {
+                    return true;
+                }
+                false
+            }
         }
     }
 }
@@ -242,6 +327,17 @@ impl PartialEq<Ipv4Addr> for Host {
                 IpAddr::V4(ip) => ip == other,
                 IpAddr::V6(ip) => ip.to_ipv4().map(|ip| ip == *other).unwrap_or_default(),
             },
+            // Semantic equivalence: pct-decoded bytes might be a v4
+            // dotted-quad or a v4-mapped v6. Decode once via the
+            // `TryFrom<UninterpretedHostRef>` impl (which uses
+            // `as_unicode` — borrowed when no `%` is present, so the
+            // happy path doesn't allocate). Bracketed IPvFuture inputs
+            // always return `Err` and so never match an IP.
+            Self::Uninterpreted(host) => match IpAddr::try_from(host) {
+                Ok(IpAddr::V4(ip)) => ip == *other,
+                Ok(IpAddr::V6(ip)) => ip.to_ipv4().map(|ip| ip == *other).unwrap_or_default(),
+                Err(_) => false,
+            },
         }
     }
 }
@@ -259,6 +355,12 @@ impl PartialEq<Ipv6Addr> for Host {
             Self::Address(ip) => match ip {
                 IpAddr::V4(ip) => ip.to_ipv6_mapped() == *other,
                 IpAddr::V6(ip) => ip == other,
+            },
+            // Same semantic strategy as the v4 case — see comment there.
+            Self::Uninterpreted(host) => match IpAddr::try_from(host) {
+                Ok(IpAddr::V4(ip)) => ip.to_ipv6_mapped() == *other,
+                Ok(IpAddr::V6(ip)) => ip == *other,
+                Err(_) => false,
             },
         }
     }
@@ -319,7 +421,10 @@ impl DomainLabels for Host {
     fn labels(&self) -> Self::LabelIter<'_> {
         match self {
             Self::Name(d) => HostLabelIter::Domain(d.labels()),
-            Self::Address(_) => HostLabelIter::Empty,
+            // No label structure is exposed for non-Domain variants —
+            // pct-encoded reg-name bytes aren't DNS labels by definition,
+            // and IP literals don't have labels at all.
+            Self::Address(_) | Self::Uninterpreted(_) => HostLabelIter::Empty,
         }
     }
 }
@@ -353,6 +458,9 @@ impl fmt::Display for Host {
         match self {
             Self::Name(domain) => domain.fmt(f),
             Self::Address(ip) => ip.fmt(f),
+            // [`UninterpretedHost`]'s Display already handles the
+            // bracketed-IP-literal vs reg-name distinction.
+            Self::Uninterpreted(host) => host.fmt(f),
         }
     }
 }
@@ -485,10 +593,16 @@ mod tests {
                     panic!("expected host address {address} to be the domain: {domain}",)
                 }
                 Host::Name(name) => assert_eq!(domain, name),
+                Host::Uninterpreted(host) => {
+                    panic!("expected host {host} to be the domain: {domain}")
+                }
             },
             Is::Ip(ip) => match host {
                 Host::Address(address) => assert_eq!(ip, address.to_string()),
                 Host::Name(name) => panic!("expected host domain {name} to be the ip: {ip}"),
+                Host::Uninterpreted(host) => {
+                    panic!("expected uninterpreted host {host} to be the ip: {ip}")
+                }
             },
         }
     }
@@ -728,5 +842,124 @@ mod tests {
                 "host should reject zone-id input {input:?}",
             );
         }
+    }
+
+    // ---- Uninterpreted variant: PartialEq behaviour --------------------
+    //
+    // Wire-fidelity preservation means callers comparing against a
+    // semantic value (IP address, decoded string) get equivalence —
+    // pct-encoded bytes decode through to match — but the comparison
+    // stays cheap on the common all-ASCII no-`%` path.
+
+    fn reg_host(bytes: &'static [u8]) -> Host {
+        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::from_static(bytes),
+            false,
+        ))
+    }
+
+    fn bracketed_host(bytes: &'static [u8]) -> Host {
+        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::from_static(bytes),
+            true,
+        ))
+    }
+
+    #[test]
+    fn eq_str_byte_compares_raw_form() {
+        // Fast path — no `%` in bytes, byte-compare is exact.
+        let h = reg_host(b"example.com");
+        assert!(h == "example.com");
+        assert!(h != "other.com");
+    }
+
+    #[test]
+    fn eq_str_byte_compares_pct_encoded_raw_first() {
+        // Comparing the literal pct-encoded form should match without
+        // any decoding work (byte-compare hits first).
+        let h = reg_host(b"exa%6Dple.com");
+        assert!(h == "exa%6Dple.com");
+    }
+
+    #[test]
+    fn eq_str_decodes_pct_when_byte_compare_fails() {
+        // When raw bytes don't match, fall through to decoded compare.
+        let h = reg_host(b"exa%6Dple.com");
+        assert!(h == "example.com");
+    }
+
+    #[test]
+    fn eq_str_no_decode_when_no_pct_in_bytes() {
+        // Bytes without `%` short-circuit at byte-compare — no decode
+        // pass. Semantically: a host like `example.com` can never match
+        // anything else, so we don't waste cycles on `as_unicode`.
+        let h = reg_host(b"example.com");
+        assert!(h != "something.completely.different");
+    }
+
+    #[test]
+    fn eq_str_brackets_compared_without_allocation() {
+        // Bracketed form: stored bytes don't include `[...]`; the str
+        // side must. We strip from `other` rather than `to_string()`
+        // the host. Hence no allocation in the comparison path.
+        let h = bracketed_host(b"v1.fe80::a");
+        assert!(h == "[v1.fe80::a]");
+        // Without brackets on the str side → no match.
+        assert!(h != "v1.fe80::a");
+        // Mismatched bytes inside brackets → no match.
+        assert!(h != "[v2.fe80::a]");
+        // Edge: empty / too-short str inputs.
+        assert!(h != "");
+        assert!(h != "[]");
+    }
+
+    #[test]
+    fn eq_ipv4_decodes_pct_encoded_dotted_quad() {
+        // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` which equals
+        // the Ipv4Addr value.
+        let h = reg_host(b"%31%32%37.0.0.1");
+        assert!(h == Ipv4Addr::new(127, 0, 0, 1));
+        assert!(Ipv4Addr::new(127, 0, 0, 1) == h);
+        assert!(h != Ipv4Addr::new(127, 0, 0, 2));
+    }
+
+    #[test]
+    fn eq_ipv4_matches_unencoded_dotted_quad_too() {
+        let h = reg_host(b"127.0.0.1");
+        assert!(h == Ipv4Addr::new(127, 0, 0, 1));
+    }
+
+    #[test]
+    fn eq_ipv6_decodes_pct_encoded_colon_form() {
+        // Pct-encoding `:` (%3A) inside an IPv6 literal — niche but legal.
+        let h = reg_host(b"2001%3Adb8%3A%3A1");
+        assert!(h == "2001:db8::1".parse::<Ipv6Addr>().unwrap());
+    }
+
+    #[test]
+    fn eq_ipv4_mapped_v6_via_pct_encoded_v4() {
+        // `127.0.0.1` decodes to v4 dotted-quad; comparing against the
+        // IPv6 mapped form must succeed.
+        let h = reg_host(b"%31%32%37.0.0.1");
+        let mapped = Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped();
+        assert!(h == mapped);
+    }
+
+    #[test]
+    fn eq_ipvfuture_never_matches_any_ip() {
+        // Bracketed IPvFuture can't decode to v4 or v6.
+        let h = bracketed_host(b"v1.fe80::a");
+        assert!(h != Ipv4Addr::new(127, 0, 0, 1));
+        assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
+        let any: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(h != any);
+    }
+
+    #[test]
+    fn eq_reg_name_never_matches_ip_when_not_decodable() {
+        // A genuine DNS-shaped reg-name doesn't decode to any IP.
+        let h = reg_host(b"example.com");
+        assert!(h != Ipv4Addr::new(127, 0, 0, 1));
+        assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
     }
 }

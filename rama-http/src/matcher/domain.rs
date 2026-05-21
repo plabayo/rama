@@ -64,6 +64,14 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
                 tracing::trace!("DomainMatcher: ignore request host address");
                 false
             }
+            // Wire-preserved reg-name / IP-literal bytes aren't a typed
+            // DNS name — never match. Callers wanting semantic
+            // equivalence convert via `Domain::try_from(&uninterpreted)`
+            // before matching.
+            Host::Uninterpreted(_) => {
+                tracing::trace!("DomainMatcher: ignore uninterpreted host");
+                false
+            }
         }
     }
 }

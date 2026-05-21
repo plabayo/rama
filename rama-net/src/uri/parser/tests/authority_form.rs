@@ -80,9 +80,12 @@ fn invalid_port_rejected() {
 
 #[cfg(feature = "idna")]
 #[test]
-fn graceful_idn_normalises_non_ascii_host() {
+fn graceful_preserves_non_ascii_host_in_authority_form() {
+    // Wire-fidelity preservation (M7 reversed): parser stores the bytes
+    // verbatim. IDN conversion to ACE happens on demand via
+    // `Domain::try_from(uri.host().as_uninterpreted())`.
     let u = Uri::parse_authority_form("münchen.de:443").unwrap();
-    assert_eq!(u.host().unwrap().to_str(), "xn--mnchen-3ya.de");
+    assert_eq!(u.host().unwrap().to_str(), "münchen.de");
 }
 
 #[cfg(feature = "idna")]

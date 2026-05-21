@@ -470,6 +470,47 @@ impl UdpSocketRelay {
                 }
             }
             Host::Address(ip_addr) => ip_addr,
+            // Try to recover a typed Domain (pct-decode + IDN) and
+            // resolve via DNS. Caller may also pre-convert if they
+            // need finer control.
+            Host::Uninterpreted(host) => {
+                let domain = rama_net::address::Domain::try_from(host).context(
+                    "uninterpreted host is not resolvable as a domain via SOCKS5 udp relay",
+                )?;
+                let dns_resolver = self
+                    .dns_resolver
+                    .clone()
+                    .context("domain cannot be resolved: no dns resolver defined")?;
+                match self.dns_resolve_mode {
+                    DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
+                        dns_resolver
+                            .lookup_ipv4_rand(domain)
+                            .await
+                            .context("no ipv4 addresses found during DNS lookup")?
+                            .context("ipv4 dns lookup")?,
+                    ),
+                    DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
+                        dns_resolver
+                            .lookup_ipv6_rand(domain)
+                            .await
+                            .context("no ipv6 addresses found during DNS lookup")?
+                            .context("ipv6 dns lookup")?,
+                    ),
+                    DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+                        // Best-effort: try v4 first, fall back to v6.
+                        match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
+                            Some(Ok(addr)) => IpAddr::V4(addr),
+                            _ => IpAddr::V6(
+                                dns_resolver
+                                    .lookup_ipv6_rand(domain)
+                                    .await
+                                    .context("no addresses found during DNS lookup")?
+                                    .context("ipv6 dns lookup fallback")?,
+                            ),
+                        }
+                    }
+                }
+            }
         };
         Ok((ip_addr, port).into())
     }

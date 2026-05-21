@@ -255,6 +255,19 @@ where
                     })?;
                 return Err(Error::aborted("bind failed").with_context(reply_kind));
             }
+            Host::Uninterpreted(host) => {
+                tracing::debug!(
+                    "bind command does not accept uninterpreted host {host} as bind address"
+                );
+                let reply_kind = ReplyKind::AddressTypeNotSupported;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut ingress_stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: bind failed")
+                    })?;
+                return Err(Error::aborted("bind failed").with_context(reply_kind));
+            }
             Host::Address(ip_addr) => ip_addr,
         };
         let requested_address = SocketAddress::new(requested_addr, requested_port);

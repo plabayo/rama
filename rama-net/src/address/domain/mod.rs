@@ -535,6 +535,13 @@ enum DomainParseErrorKind {
     BadWildcard {
         at: usize,
     },
+    /// The input bytes form an IP-literal in URI authority syntax
+    /// (bracketed `[...]`, e.g. an IPvFuture literal). IP-literals
+    /// are a distinct grammatical category from domains — produced
+    /// when converting from
+    /// [`UninterpretedHost`](crate::address::UninterpretedHost) that
+    /// preserved a bracketed host.
+    BracketedIpLiteral,
     /// UTS #46 IDN processing rejected the input (e.g. disallowed
     /// codepoints, bidi violations). Only produced when the `idna`
     /// feature is on.
@@ -565,6 +572,10 @@ impl DomainParseError {
     #[inline]
     const fn bad_wildcard(at: usize) -> Self {
         Self(DomainParseErrorKind::BadWildcard { at })
+    }
+    #[inline]
+    pub(crate) const fn bracketed_ip_literal() -> Self {
+        Self(DomainParseErrorKind::BracketedIpLiteral)
     }
     #[cfg(feature = "idna")]
     #[inline]
@@ -611,6 +622,9 @@ impl fmt::Display for DomainParseError {
                 f,
                 "'*' wildcard label is only valid at index 0, found at index {at}"
             ),
+            DomainParseErrorKind::BracketedIpLiteral => {
+                f.write_str("bracketed IP-literal is not a domain")
+            }
             #[cfg(feature = "idna")]
             DomainParseErrorKind::IdnaProcessing => {
                 f.write_str("IDN domain rejected by UTS #46 processing")

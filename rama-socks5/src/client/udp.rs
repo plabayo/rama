@@ -71,7 +71,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelayBinder<S> {
 
         let HostWithPort { host, port } = server_reply.bind_address;
         let bind_address: SocketAddress = match host {
-            rama_net::address::Host::Name(_) => {
+            rama_net::address::Host::Name(_) | rama_net::address::Host::Uninterpreted(_) => {
                 return Err(
                     HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported).with_context(
                         "server responded with named address: incompatible for udp bind",
@@ -260,6 +260,12 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
                 "server responded with named address: incompatible for udp bind",
             )
             .context_field("domain", domain));
+        }
+        rama_net::address::Host::Uninterpreted(host) => {
+            return Err(OpaqueError::from_static_str(
+                "server responded with uninterpreted host: incompatible for udp bind",
+            )
+            .context_field("host", host.to_string()));
         }
         rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
     };

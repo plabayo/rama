@@ -307,6 +307,10 @@ impl<S> Socks5ProxyConnector<S> {
                     }
                 },
                 Host::Address(ip_addr) => Host::Address(ip_addr),
+                // Wire-preserved reg-name / IP-literal bytes: pass
+                // them through unchanged. The downstream proxy will
+                // see exactly what the caller put in.
+                Host::Uninterpreted(host) => Host::Uninterpreted(host),
             };
 
             let address = HostWithPort::new(host, port);

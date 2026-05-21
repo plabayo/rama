@@ -74,6 +74,19 @@ const SCHEME_REST_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 25
 const USERINFO_BYTE_SET: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:%");
 
+/// RFC 3986 §3.2.2 `reg-name = *( unreserved / pct-encoded / sub-delims )`.
+/// ASCII subset of the byte set; non-ASCII is allowed in graceful mode under
+/// the IRI `ireg-name` extension (handled inline at the validator).
+/// `%` is the pct-escape lead — the `%XX` triple is checked separately.
+const REG_NAME_BYTE_SET: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=%");
+
+/// RFC 3986 §3.2.2 IPvFuture tail: `1*( unreserved / sub-delims / ":" )`.
+/// The leading `v`, hex digits, and `.` separator are validated separately
+/// at the start of the literal. No pct-encoding inside IPvFuture.
+const IPVFUTURE_TAIL_BYTE_SET: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:");
+
 // --- Predicates (single-load hot path) -------------------------------------
 
 #[inline(always)]
@@ -104,4 +117,14 @@ pub(super) const fn is_scheme_rest_byte(b: u8) -> bool {
 #[inline(always)]
 pub(super) const fn is_userinfo_byte(b: u8) -> bool {
     USERINFO_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+pub(super) const fn is_reg_name_byte(b: u8) -> bool {
+    REG_NAME_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+pub(super) const fn is_ipvfuture_tail_byte(b: u8) -> bool {
+    IPVFUTURE_TAIL_BYTE_SET[b as usize]
 }

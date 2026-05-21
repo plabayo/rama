@@ -5,38 +5,22 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use rama_core::bytes::Bytes;
 
 use crate::address::parse_utils;
-use crate::address::{Authority, Domain, Host, HostWithOptPort, UserInfo};
+use crate::address::{Domain, Host, UninterpretedHost};
 use crate::uri::lazy::LazyAuthority;
 use crate::uri::{Component, ParseError};
 
 use super::ParserMode;
-use super::byte_sets::{is_control_byte, is_userinfo_byte};
+use super::byte_sets::{
+    is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
+};
 use super::check_pct_encoded;
 
 /// Result of `parse_optional_authority`.
 pub(super) struct AuthorityScan {
-    pub(super) authority: Option<ParsedAuthority>,
+    pub(super) authority: Option<LazyAuthority>,
     /// Offset where the path starts — the first byte after the authority,
     /// or `start` itself when no authority was present.
     pub(super) path_start: usize,
-}
-
-/// Parsed authority in one of two shapes.
-///
-/// The variant tells the top-level parser which `Uri` form to build:
-/// `Lazy` keeps zero-copy projection into the original bytes; `Owned`
-/// signals that the host was IDN-normalised (UTS #46 applied), so the
-/// typed host view has already diverged from the raw input — there's no
-/// point keeping the Lazy buffer around.
-pub(super) enum ParsedAuthority {
-    /// Host bytes still match the source buffer — projectable into a
-    /// [`LazyUriRef`](crate::uri::lazy::LazyUriRef).
-    Lazy(LazyAuthority),
-    /// Host was rewritten by UTS #46. Already materialised into an
-    /// [`Authority`] so the upper layer can drop straight into an
-    /// [`OwnedUriRef`](crate::uri::owned::OwnedUriRef) without a Lazy
-    /// detour.
-    Owned(Authority),
 }
 
 /// If `bytes[start..]` begins with `//`, parse an authority. Otherwise
@@ -67,8 +51,24 @@ pub(super) fn parse_optional_authority(
 }
 
 /// Parse the bytes `[start, end)` of the parent buffer as an RFC 3986 §3.2
-/// authority. Returns a [`ParsedAuthority`] whose variant signals whether
-/// the host required UTS #46 rewriting.
+/// authority. Returns a [`LazyAuthority`] holding a [`Host`] whose variant
+/// depends on the input shape:
+///
+/// - `IPv4address` → [`Host::Address`].
+/// - DNS-label-shaped ASCII reg-name → [`Host::Name`] (zero-copy slice of
+///   the parent buffer).
+/// - Bracketed IPv6 → [`Host::Address`].
+/// - **Anything else legal under RFC 3986 / 3987 §3.2.2** —
+///   pct-encoded reg-name, sub-delim reg-name, raw UTF-8 reg-name
+///   (graceful only), bracketed IPvFuture — → [`Host::Uninterpreted`]
+///   with the wire bytes preserved. Callers convert on demand via
+///   `Domain::try_from` / `IpAddr::try_from` / etc.
+///
+/// **No parser-time canonicalization.** Wire fidelity is the design
+/// contract: bytes that arrive intact survive intact. The earlier M7
+/// IDN-at-parse behaviour was reversed here — graceful mode no longer
+/// auto-normalises non-ASCII hosts to ACE; the caller asks
+/// `Domain::try_from(uri.host().as_uninterpreted()?)` when they want it.
 ///
 /// Exposed to the parser module so [`super::parse_authority_form`] can
 /// drive it directly for HTTP CONNECT's authority-form request-target,
@@ -78,20 +78,14 @@ pub(super) fn parse_authority(
     start: usize,
     end: usize,
     mode: ParserMode,
-) -> Result<ParsedAuthority, ParseError> {
+) -> Result<LazyAuthority, ParseError> {
     // Walk authority bytes. Two invariants per byte:
     //   1. No control bytes (smuggling / header-injection vector).
     //   2. In graceful mode, non-ASCII bytes must form well-formed
     //      UTF-8 sequences — the `from_utf8_unchecked` derives in
-    //      every userinfo accessor would otherwise be UB. Strict
-    //      mode's byte-set check below rejects non-ASCII outright,
-    //      so the UTF-8 path is graceful-only.
-    //
-    // Host bytes are also walked here, but they're either ASCII (no
-    // UTF-8 work) or hand-validated downstream by
-    // [`parse_host_and_port`] which routes through `Domain::try_from`
-    // (full UTF-8 check via std). Running the check once here keeps
-    // the host UTF-8 invariant cheap to re-establish on access.
+    //      every userinfo / host accessor would otherwise be UB.
+    //      Strict mode rejects non-ASCII outright in the host
+    //      validators below, so the UTF-8 path is graceful-only.
     let mut k = start;
     while k < end {
         let b = bytes[k];
@@ -123,25 +117,13 @@ pub(super) fn parse_authority(
 
     // Parse host + optional port from bytes[host_start..end].
     let host_view = &bytes[host_start..end];
-    let (host, port, idn_encoded) = parse_host_and_port(bytes, host_start, host_view, end, mode)?;
+    let (host, port) = parse_host_and_port(bytes, host_start, host_view, mode)?;
 
-    if idn_encoded {
-        // Host bytes were rewritten by UTS #46 — Lazy projection would lie.
-        // Build the typed [`Authority`] directly so the upper layer can drop
-        // it into an [`OwnedUriRef`] without going through a Lazy detour.
-        let user_info = userinfo_range
-            .map(|(s, e)| UserInfo::from_bytes_unchecked(bytes.slice(s as usize..e as usize)));
-        Ok(ParsedAuthority::Owned(Authority {
-            user_info,
-            address: HostWithOptPort { host, port },
-        }))
-    } else {
-        Ok(ParsedAuthority::Lazy(LazyAuthority {
-            userinfo_range,
-            host,
-            port,
-        }))
-    }
+    Ok(LazyAuthority {
+        userinfo_range,
+        host,
+        port,
+    })
 }
 
 /// RFC 3986 §3.2.1 userinfo grammar check. Each byte must be in the
@@ -163,47 +145,58 @@ fn validate_userinfo_strict(bytes: &[u8]) -> Result<(), ParseError> {
     Ok(())
 }
 
-/// Parse the host and optional port. `parent` is the full URI buffer (used
-/// for zero-copy slicing of Domain bytes); `host_start` is the absolute
-/// offset; `view` is `&parent[host_start..end]`; `end` is the absolute
-/// end-of-authority offset.
+/// Parse the host and optional port. `parent` is the full URI buffer
+/// (used for zero-copy slicing of `Domain` / `UninterpretedHost` bytes);
+/// `host_start` is the absolute offset; `view` is
+/// `&parent[host_start..end]`.
 ///
-/// Returns `(host, port, idn_encoded)`. `idn_encoded` is `true` when the
-/// host was rewritten by UTS #46 (non-ASCII input → ACE form); the caller
-/// ([`parse_authority`]) uses it to pick the [`ParsedAuthority`] variant.
-///
-/// IDN normalisation runs only in graceful mode. Strict mode treats
-/// non-ASCII host bytes as a [`ParseError::StrictViolation`] per
-/// RFC 3986 §3.2.2 (the host grammar is ASCII-only — callers wanting
-/// IDN under strict must pre-encode to ACE).
+/// Returns `(host, port)`. The host's variant is chosen by the input
+/// shape — see [`parse_authority`] for the full table. No parser-time
+/// canonicalization happens; bytes are always preserved or zero-copy
+/// sliced from `parent`.
 fn parse_host_and_port(
     parent: &Bytes,
     host_start: usize,
     view: &[u8],
-    end: usize,
     mode: ParserMode,
-) -> Result<(Host, Option<u16>, bool), ParseError> {
+) -> Result<(Host, Option<u16>), ParseError> {
     if view.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
     }
 
+    // --- IP-literal (bracketed) -------------------------------------------
     if view[0] == b'[' {
-        // Bracketed IPv6 literal.
         let close_rel = view
             .iter()
             .position(|&b| b == b']')
             .ok_or(ParseError::InvalidComponent(Component::Host))?;
         let inside = &view[1..close_rel];
-        if parse_utils::ipv6_bracket_has_zone(inside) {
-            return Err(ParseError::IPv6ZoneNotSupported);
-        }
-        let Ok(s) = std::str::from_utf8(inside) else {
-            return Err(ParseError::InvalidComponent(Component::Host));
+        let inside_start = host_start + 1;
+
+        let host = match inside.first() {
+            // RFC 3986 §3.2.2 `IPvFuture = "v" 1*HEXDIG "." 1*(...)`.
+            // Preserved verbatim — no `vN` form is registered with
+            // IANA, so there's nothing to decode. Bytes are stored
+            // without the surrounding brackets.
+            Some(b'v' | b'V') => {
+                validate_ipvfuture(inside)?;
+                let body = parent.slice(inside_start..inside_start + inside.len());
+                Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, true))
+            }
+            // Standard IPv6.
+            _ => {
+                if parse_utils::ipv6_bracket_has_zone(inside) {
+                    return Err(ParseError::IPv6ZoneNotSupported);
+                }
+                let Ok(s) = std::str::from_utf8(inside) else {
+                    return Err(ParseError::InvalidComponent(Component::Host));
+                };
+                let Ok(addr) = s.parse::<Ipv6Addr>() else {
+                    return Err(ParseError::InvalidComponent(Component::Host));
+                };
+                Host::Address(IpAddr::V6(addr))
+            }
         };
-        let Ok(addr) = s.parse::<Ipv6Addr>() else {
-            return Err(ParseError::InvalidComponent(Component::Host));
-        };
-        let host = Host::Address(IpAddr::V6(addr));
 
         // After `]`, optional `:port`.
         let after = &view[close_rel + 1..];
@@ -212,11 +205,13 @@ fn parse_host_and_port(
             [b':', rest @ ..] => Some(parse_port(rest)?),
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
-        return Ok((host, port, false));
+        return Ok((host, port));
     }
 
-    // Non-bracketed host: optionally followed by `:port`. The port separator
-    // is the rightmost `:` (there is at most one in non-bracketed form).
+    // --- Non-bracketed host -----------------------------------------------
+    //
+    // Split off the rightmost `:` as the port separator (reg-name has no
+    // `:` in its grammar, so the rightmost colon is always the port).
     let (host_bytes_rel, port) = match view.iter().rposition(|&b| b == b':') {
         Some(colon) => {
             let port = parse_port(&view[colon + 1..])?;
@@ -229,45 +224,129 @@ fn parse_host_and_port(
     }
     let host_bytes_len = host_bytes_rel.len();
 
+    // Validate against (i)reg-name grammar. Rejects mode-incompatible
+    // bytes early — strict-mode non-ASCII, illegal punctuation, malformed
+    // pct-escapes, smuggling-vector pct-decoded control bytes.
+    validate_reg_name(host_bytes_rel, mode)?;
+
     let Ok(host_str) = std::str::from_utf8(host_bytes_rel) else {
         return Err(ParseError::InvalidComponent(Component::Host));
     };
 
-    let (host, idn_encoded) = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
-        (Host::Address(IpAddr::V4(v4)), false)
-    } else if host_bytes_rel.is_ascii() {
-        // ASCII fast-path: validate cheaply, then construct the Domain
-        // zero-copy by slicing the parent Bytes — no allocation.
-        if Domain::try_from(host_str).is_err() {
-            return Err(ParseError::InvalidComponent(Component::Host));
-        }
+    // Try the typed-host shapes first, in priority order:
+    //   1. IPv4 dotted-quad.
+    //   2. DNS-label-shaped ASCII reg-name → `Host::Name` (zero-copy).
+    //   3. Anything else legal under reg-name (already validated above)
+    //      → `Host::Uninterpreted` (zero-copy, preserved verbatim).
+    let host = if let Ok(v4) = host_str.parse::<Ipv4Addr>() {
+        Host::Address(IpAddr::V4(v4))
+    } else if host_bytes_rel.is_ascii() && Domain::try_from(host_str).is_ok() {
+        // ASCII DNS-label-shaped fast path: zero-copy slice into Domain.
         let domain_bytes = parent.slice(host_start..host_start + host_bytes_len);
-        // Safety: validated above.
+        // Safety: `Domain::try_from(host_str)` returned `Ok` above —
+        // the bytes are validated DNS-label-shape.
         let domain = unsafe { Domain::from_maybe_borrowed_unchecked(domain_bytes) };
-        (Host::Name(domain), false)
-    } else if mode == ParserMode::Strict {
-        // Strict mode is the RFC 3986 grammar; the host slot is ASCII-only
-        // (`unreserved / pct-encoded / sub-delims`). UTS #46 normalisation
-        // is a graceful-mode convenience, not part of the spec. Callers
-        // wanting strict + IDN must pre-encode to ACE.
-        return Err(ParseError::StrictViolation);
+        Host::Name(domain)
     } else {
-        // Graceful + non-ASCII: route through `Domain::try_from`, which
-        // handles IDN (UTS #46) under the `idna` feature. Map the
-        // not-enabled error to the URI-level variant so callers can
-        // distinguish.
-        match Domain::try_from(host_str) {
-            Ok(domain) => (Host::Name(domain), true),
-            #[cfg(not(feature = "idna"))]
-            Err(e) if e.is_idna_not_enabled() => return Err(ParseError::IdnaNotEnabled),
-            Err(_) => return Err(ParseError::InvalidComponent(Component::Host)),
-        }
+        // Reg-name with pct-encoding, sub-delims, or raw UTF-8.
+        // Stored verbatim; conversion to Domain / IpAddr is opt-in
+        // via `TryFrom<&UninterpretedHost>`.
+        let body = parent.slice(host_start..host_start + host_bytes_len);
+        Host::Uninterpreted(UninterpretedHost::from_validated_bytes(body, false))
     };
 
-    // `end` is unused on the non-bracketed path — bind to a no-op to silence
-    // unused-variable warnings without complicating the signature.
-    let _ = end;
-    Ok((host, port, idn_encoded))
+    Ok((host, port))
+}
+
+/// RFC 3986 §3.2.2 `reg-name` validation, with optional IRI extension.
+///
+/// - Strict mode: bytes must be `unreserved / pct-encoded / sub-delims`,
+///   all ASCII.
+/// - Graceful mode: same, plus non-ASCII UTF-8 (`ireg-name` per
+///   RFC 3987 §2.2). Non-ASCII bytes were already UTF-8-validated by
+///   the upstream authority walker, so here we just skip multi-byte
+///   sequences.
+///
+/// Pct-escapes must be well-formed, and the decoded byte must not be a
+/// control byte — pct-encoded smuggling vectors (`%00`, `%0D`, etc.)
+/// are rejected at parse time.
+fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            check_pct_encoded(bytes, i)?;
+            // Defence-in-depth: a pct-escape that decodes to a control
+            // byte is a smuggling vector even though the wire bytes
+            // themselves are printable. Reject at parse.
+            if let Some(decoded) = rama_utils::hex::decode_pair(bytes[i + 1], bytes[i + 2])
+                && is_control_byte(decoded)
+            {
+                return Err(ParseError::ControlCharInUri {
+                    at: i,
+                    byte: decoded,
+                });
+            }
+            i += 3;
+            continue;
+        }
+        if is_reg_name_byte(b) {
+            i += 1;
+            continue;
+        }
+        if b >= 0x80 {
+            // Graceful mode tolerates `ireg-name` UTF-8 (RFC 3987);
+            // strict mode does not. The authority-level walker has
+            // already verified UTF-8 well-formedness in graceful mode,
+            // so `check_utf8_sequence` will succeed — we just need the
+            // sequence length to advance the cursor.
+            if mode == ParserMode::Strict {
+                return Err(ParseError::StrictViolation);
+            }
+            i += super::check_utf8_sequence(bytes, i)?;
+            continue;
+        }
+        // ASCII byte outside the reg-name grammar — `[`, `]`, `<`, `>`,
+        // backslash, space, etc.
+        return Err(if mode == ParserMode::Strict {
+            ParseError::StrictViolation
+        } else {
+            ParseError::InvalidComponent(Component::Host)
+        });
+    }
+    Ok(())
+}
+
+/// RFC 3986 §3.2.2 `IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )`.
+/// `inside` is the bytes between the surrounding `[` and `]`.
+fn validate_ipvfuture(inside: &[u8]) -> Result<(), ParseError> {
+    // First byte: `v` / `V`.
+    let Some((&v, rest)) = inside.split_first() else {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    };
+    if v != b'v' && v != b'V' {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    // One or more hex digits, terminated by `.`.
+    let dot_at = rest
+        .iter()
+        .position(|&b| b == b'.')
+        .ok_or(ParseError::InvalidComponent(Component::Host))?;
+    if dot_at == 0 {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    let hex = &rest[..dot_at];
+    let tail = &rest[dot_at + 1..];
+    if !hex.iter().all(|&b| b.is_ascii_hexdigit()) {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    // Tail: one or more bytes from the IPvFuture-tail byte set
+    // (unreserved / sub-delims / `:`). No pct-encoding inside IPvFuture
+    // per RFC 3986 §3.2.2.
+    if tail.is_empty() || !tail.iter().all(|&b| is_ipvfuture_tail_byte(b)) {
+        return Err(ParseError::InvalidComponent(Component::Host));
+    }
+    Ok(())
 }
 
 fn parse_port(bytes: &[u8]) -> Result<u16, ParseError> {

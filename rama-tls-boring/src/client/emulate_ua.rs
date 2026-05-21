@@ -87,6 +87,22 @@ where
                             cfg.extensions = Some(extensions);
                         }
                     }
+                    Host::Uninterpreted(host) => {
+                        tracing::trace!(
+                            "ua tls emulator: drop SNI as target is an uninterpreted host: {host}"
+                        );
+                        let cfg = emulate_config.to_mut();
+                        let extensions: Vec<_> = cfg
+                            .extensions
+                            .take()
+                            .into_iter()
+                            .flatten()
+                            .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
+                            .collect();
+                        if !extensions.is_empty() {
+                            cfg.extensions = Some(extensions);
+                        }
+                    }
                 }
             } else {
                 tracing::trace!("ua tls emulator: no SNI defined, so neither do we");

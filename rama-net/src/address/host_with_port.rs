@@ -297,6 +297,9 @@ impl fmt::Display for HostWithPort {
                 IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
                 IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
             },
+            // `UninterpretedHost`'s Display already wraps bracketed
+            // IP-literals in `[...]`; reg-name bytes render verbatim.
+            Host::Uninterpreted(host) => write!(f, "{}:{}", host, self.port),
         }
     }
 }

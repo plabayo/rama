@@ -16,6 +16,10 @@ pub(super) fn authority_length(authority: &HostWithPort) -> usize {
             IpAddr::V4(_) => 4,
             IpAddr::V6(_) => 16,
         },
+        // SOCKS5 has no wire form for arbitrary reg-name / IP-literal
+        // bytes — encode as `DomainName` and let the upstream
+        // resolver interpret. Length-prefix matches the Domain case.
+        Host::Uninterpreted(host) => 1 + host.as_bytes().len(),
     }
 }
 
@@ -126,6 +130,19 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &
                 buf.put_slice(&addr.octets());
             }
         },
+        // SOCKS5 carries hosts in three categories: IPv4, IPv6, or
+        // domain-name (length-prefixed bytes). Wire-preserved
+        // reg-name / IP-literal bytes don't fit IP and have no
+        // direct SOCKS5 category — best-effort encode as
+        // `DomainName` so the upstream resolver gets the bytes
+        // verbatim and can decide what to do with them.
+        Host::Uninterpreted(host) => {
+            let bytes = host.as_bytes();
+            buf.put_u8(AddressType::DomainName.into());
+            debug_assert!(bytes.len() <= 255);
+            buf.put_u8(bytes.len() as u8);
+            buf.put_slice(bytes);
+        }
     }
     buf.put_u16(authority.port);
 }

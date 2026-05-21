@@ -308,6 +308,22 @@ impl Client {
                         .with_context("selected bind addr cannot be a domain name"),
                 );
             }
+            Host::Uninterpreted(host) => {
+                tracing::debug!(
+                    "bind command response does not accept uninterpreted host {host} as bind address",
+                );
+                let reply_kind = ReplyKind::AddressTypeNotSupported;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        HandshakeError::io(err).with_context("read server response: bind failed")
+                    })?;
+                return Err(
+                    HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
+                        .with_context("selected bind addr cannot be an uninterpreted host"),
+                );
+            }
             Host::Address(ip_addr) => ip_addr,
         };
         let selected_bind_address = SocketAddress::new(selected_addr, selected_port);

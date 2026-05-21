@@ -183,7 +183,9 @@ impl Reply {
                 self.write_to_buf(&mut buf.as_mut_slice());
                 w.write_all(&buf[..]).await
             }
-            rama_net::address::Host::Name(_) => {
+            // Both `Name` and `Uninterpreted` serialize as SOCKS5
+            // `DomainName` — see same-named arm in proto/client.rs.
+            rama_net::address::Host::Name(_) | rama_net::address::Host::Uninterpreted(_) => {
                 const SMALL_LEN: usize = 32 + 1 + 6;
                 const MED_LEN: usize = 64 + 1 + 6;
 

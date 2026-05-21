@@ -281,7 +281,10 @@ impl RequestRef<'_> {
                 self.write_to_buf(&mut buf.as_mut_slice());
                 w.write_all(&buf[..]).await
             }
-            rama_net::address::Host::Name(_) => {
+            // Both `Name` (typed Domain) and `Uninterpreted` (preserved
+            // reg-name bytes) serialize as SOCKS5 `DomainName` —
+            // length-prefixed byte slice. Same buffer-sizing strategy.
+            rama_net::address::Host::Name(_) | rama_net::address::Host::Uninterpreted(_) => {
                 const SMALL_LEN: usize = 32 + 1 + 6;
                 const MED_LEN: usize = 64 + 1 + 6;
 

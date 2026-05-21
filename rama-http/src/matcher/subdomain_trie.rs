@@ -64,6 +64,13 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
                 tracing::trace!("SubdomainTrieMatcher: ignoring numeric address: {address}",);
                 false
             }
+            // Wire-preserved reg-name / IP-literal bytes aren't typed
+            // DNS names — ignore them. Callers wanting equivalence can
+            // convert via `Domain::try_from(&uninterpreted)` first.
+            Host::Uninterpreted(ref host) => {
+                tracing::trace!("SubdomainTrieMatcher: ignoring uninterpreted host: {host}");
+                false
+            }
         }
     }
 }
