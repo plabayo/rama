@@ -542,15 +542,7 @@ impl Uri {
     /// preserve received bytes should leave the URI unmodified.
     #[must_use]
     pub fn canonicalize(self) -> Self {
-        // Asterisk-form has no components to canonicalize.
-        if matches!(self.inner, UriInner::Asterisk) {
-            return self;
-        }
-        let owned = self.as_owned_components();
-        let canonical = canonicalize::canonicalize(owned);
-        Self {
-            inner: UriInner::Owned(Arc::new(canonical)),
-        }
+        canonicalize::canonicalize_uri(self)
     }
 
     /// Parse `input` and immediately apply [`canonicalize`](Self::canonicalize).
