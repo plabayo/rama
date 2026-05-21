@@ -347,157 +347,26 @@ fn try_with_host_consuming_form() {
 }
 
 // ----------------------------------------------------------------------
-// Fast-path: already-canonical URIs are returned untouched.
+// Idempotence: canonicalize(canonicalize(x)) == canonicalize(x).
 //
-// Internal optimization — `canonicalize` skips the Lazy→Owned copy
-// when the pre-scan proves no normalization would happen. These tests
-// pin the boundaries of that detection so the fast-path doesn't
-// silently skip work it should be doing.
+// Strictly an observable-behaviour test — not a perf assertion. The
+// implementation always materialises Owned (no fast-path), so the
+// second pass costs the same as the first; the assertion here is just
+// that the result is stable.
 // ----------------------------------------------------------------------
-
-/// Asserts `canonicalize` returns its input by-value without
-/// allocating a new `Arc`. Indirectly proves the fast-path hit:
-/// `Arc::ptr_eq` on the inner Lazy / Owned arcs is the cheapest
-/// observable check.
-#[track_caller]
-fn assert_canonicalize_is_noop(uri: Uri) {
-    use crate::uri::UriInner;
-    let before = uri.clone();
-    let after = uri.canonicalize();
-    match (&before.inner, &after.inner) {
-        (UriInner::Lazy(a), UriInner::Lazy(b)) => assert!(
-            std::sync::Arc::ptr_eq(a, b),
-            "fast-path missed: Lazy Arc was cloned/copied; bytes were={:?}",
-            String::from_utf8_lossy(&a.bytes),
-        ),
-        (UriInner::Owned(a), UriInner::Owned(b)) => assert!(
-            std::sync::Arc::ptr_eq(a, b),
-            "fast-path missed: Owned Arc was cloned/copied",
-        ),
-        (UriInner::Asterisk, UriInner::Asterisk) => {}
-        (a, b) => panic!("variant changed during fast-path no-op: {a:?} → {b:?}"),
-    }
-}
-
-#[test]
-fn fast_path_canonical_url_with_path() {
-    // Typed host, non-default port (or no port), no pct in path, no
-    // dot segments → fast-path.
-    assert_canonicalize_is_noop(Uri::parse("http://example.com/path").unwrap());
-    assert_canonicalize_is_noop(Uri::parse("https://example.com:8443/").unwrap());
-    assert_canonicalize_is_noop(Uri::parse("http://127.0.0.1/").unwrap());
-    assert_canonicalize_is_noop(Uri::parse("http://[::1]/").unwrap());
-}
-
-#[test]
-fn fast_path_origin_form_with_path() {
-    // No authority → no host/port checks. No `%` → no pct work.
-    assert_canonicalize_is_noop(Uri::parse("/path/to/thing").unwrap());
-}
-
-#[test]
-fn fast_path_query_and_fragment_without_pct() {
-    assert_canonicalize_is_noop(Uri::parse("http://example.com/p?a=1&b=2#frag").unwrap());
-}
-
-#[test]
-fn fast_path_uppercase_pct_keeping_reserved() {
-    // `%2F` is uppercase and decodes to `/` (reserved) → kept encoded.
-    // Already canonical — no change would occur.
-    assert_canonicalize_is_noop(Uri::parse("http://example.com/foo%2Fbar").unwrap());
-}
-
-#[test]
-fn fast_path_asterisk_form() {
-    assert_canonicalize_is_noop(Uri::parse("*").unwrap());
-}
-
-#[test]
-fn fast_path_misses_pct_lowercase_hex() {
-    // `%2f` would be uppercased — must NOT fast-path.
-    let uri = Uri::parse("http://example.com/foo%2fbar").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/foo%2Fbar");
-}
-
-#[test]
-fn fast_path_misses_pct_decodable() {
-    // `%6D` decodes to `m` (unreserved) — must NOT fast-path.
-    let uri = Uri::parse("http://example.com/exa%6Dple").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/example");
-}
-
-#[test]
-fn fast_path_misses_default_port() {
-    let uri = Uri::parse("http://example.com:80/").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.port(), None);
-}
-
-#[test]
-fn fast_path_misses_uninterpreted_host() {
-    let uri = Uri::parse("http://exa%6Dple.com/").unwrap();
-    let canonical = uri.canonicalize();
-    assert!(matches!(
-        canonical.host().unwrap().to_owned(),
-        Host::Name(_)
-    ));
-}
-
-#[test]
-fn fast_path_misses_empty_path_with_authority() {
-    let uri = Uri::parse("http://example.com").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/");
-}
-
-#[test]
-fn fast_path_misses_leading_dot_segment() {
-    // `./foo` — leading dot segment.
-    let uri = Uri::parse("/./foo").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/foo");
-}
-
-#[test]
-fn fast_path_misses_mid_dot_dot_segment() {
-    let uri = Uri::parse("http://example.com/a/b/../c").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/a/c");
-}
-
-#[test]
-fn fast_path_misses_trailing_dot_segment() {
-    let uri = Uri::parse("http://example.com/a/.").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.path().unwrap().as_raw_str(), "/a/");
-}
-
-#[test]
-fn fast_path_misses_pct_in_query() {
-    let uri = Uri::parse("http://example.com/?key=val%75e").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.query().unwrap().as_raw_str(), "key=value");
-}
-
-#[test]
-fn fast_path_misses_pct_in_fragment() {
-    let uri = Uri::parse("http://example.com/#se%63t").unwrap();
-    let canonical = uri.canonicalize();
-    assert_eq!(canonical.fragment().unwrap().as_raw_str(), "sect");
-}
 
 #[test]
 fn canonicalize_is_idempotent() {
-    // Second canonicalize is a fast-path no-op (covered) — but also
-    // observably idempotent at the surface.
     let once = Uri::parse_canonical("http://exa%6Dple.com:80/a/../b").unwrap();
     let twice = once.clone().canonicalize();
     assert_eq!(once.to_string(), twice.to_string());
-    // And the second pass hits the fast-path on the already-canonical
-    // result.
-    assert_canonicalize_is_noop(once);
+}
+
+#[test]
+fn canonicalize_idempotent_on_clean_input() {
+    let once = Uri::parse_canonical("http://example.com/path?a=1#f").unwrap();
+    let twice = once.clone().canonicalize();
+    assert_eq!(once.to_string(), twice.to_string());
 }
 
 // ----------------------------------------------------------------------

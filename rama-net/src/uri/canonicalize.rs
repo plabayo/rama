@@ -29,7 +29,6 @@ use rama_core::bytes::BytesMut;
 
 use crate::address::{Domain, Host, UninterpretedHostRef};
 
-use super::lazy::LazyUriRef;
 use super::owned::OwnedUriRef;
 use super::parser::is_unreserved_byte;
 use super::resolve::remove_dot_segments_graceful;
@@ -37,18 +36,15 @@ use super::{Uri, UriInner};
 
 /// Top-level entry — apply RFC 3986 §6.2.2 normalization to `uri`.
 ///
-/// Fast-path: when [`is_already_canonical`] returns `true`, the URI is
-/// already in canonical form and we return it unchanged — no
-/// allocation, no Lazy→Owned copy. Cheap O(n) pre-scan over the
-/// component bytes; the saving when the fast-path hits is the
-/// component-bytes copy in `as_owned_components` plus the Authority
-/// clone and BytesMut allocations for path/query/fragment.
+/// Always allocates one `OwnedUriRef`. No "already canonical?"
+/// pre-scan: empirically, byte-walking to detect the no-op case costs
+/// more than the allocation it would avoid on typical inputs
+/// (`parse_canonical(user_input)` rarely receives already-canonical
+/// bytes). If a future benchmark shows the idempotent-canonicalize
+/// case dominates, revisit then.
 pub(super) fn canonicalize_uri(uri: Uri) -> Uri {
     // Asterisk-form has no components — never needs work.
     if matches!(uri.inner, UriInner::Asterisk) {
-        return uri;
-    }
-    if is_already_canonical(&uri) {
         return uri;
     }
     let owned = uri.as_owned_components();
@@ -56,160 +52,6 @@ pub(super) fn canonicalize_uri(uri: Uri) -> Uri {
     Uri {
         inner: UriInner::Owned(std::sync::Arc::new(canonical)),
     }
-}
-
-/// `true` when `uri` is already in canonical form — no host promotion,
-/// no pct-decode work, no default-port to drop, no empty-path fix, no
-/// dot-segments to collapse.
-///
-/// Conservative — false positives (returning `true` when canonicalize
-/// *would* be a no-op anyway) are fine; false negatives (returning
-/// `false` when canonicalize would in fact change something) would
-/// silently skip the normalize and are not OK. So when in doubt, we
-/// return `false` and run the full algorithm.
-fn is_already_canonical(uri: &Uri) -> bool {
-    match &uri.inner {
-        UriInner::Asterisk => true,
-        UriInner::Lazy(arc) => lazy_is_canonical(arc.as_ref()),
-        UriInner::Owned(arc) => owned_is_canonical(arc.as_ref()),
-    }
-}
-
-fn lazy_is_canonical(l: &LazyUriRef) -> bool {
-    if let Some(auth) = &l.authority {
-        // Host promotion would change `Uninterpreted` to `Domain` /
-        // `IpAddr` when convertible.
-        if matches!(auth.host, Host::Uninterpreted(_)) {
-            return false;
-        }
-        // Default-port drop?
-        if let Some(scheme) = &l.scheme
-            && let Some(default) = scheme.default_port()
-            && auth.port == Some(default)
-        {
-            return false;
-        }
-        // Empty path with authority → would become `/`.
-        if l.path.0 == l.path.1 {
-            return false;
-        }
-    }
-    let path = &l.bytes[l.path.0 as usize..l.path.1 as usize];
-    if !path_is_canonical(path) {
-        return false;
-    }
-    if let Some((s, e)) = l.query
-        && bytes_need_pct_normalization(&l.bytes[s as usize..e as usize])
-    {
-        return false;
-    }
-    if let Some((s, e)) = l.fragment
-        && bytes_need_pct_normalization(&l.bytes[s as usize..e as usize])
-    {
-        return false;
-    }
-    true
-}
-
-fn owned_is_canonical(o: &OwnedUriRef) -> bool {
-    if let Some(auth) = &o.authority {
-        if matches!(auth.address.host, Host::Uninterpreted(_)) {
-            return false;
-        }
-        if let Some(scheme) = &o.scheme
-            && let Some(default) = scheme.default_port()
-            && auth.address.port == Some(default)
-        {
-            return false;
-        }
-        if o.path.is_empty() {
-            return false;
-        }
-    }
-    if !path_is_canonical(&o.path) {
-        return false;
-    }
-    if let Some(q) = &o.query
-        && bytes_need_pct_normalization(&q.bytes)
-    {
-        return false;
-    }
-    if let Some(f) = &o.fragment
-        && bytes_need_pct_normalization(&f.bytes)
-    {
-        return false;
-    }
-    true
-}
-
-/// `true` when the path bytes are already canonical — no pct sequence
-/// that needs decoding/uppercasing, no `.` / `..` segments.
-fn path_is_canonical(path: &[u8]) -> bool {
-    !bytes_need_pct_normalization(path) && !has_dot_segments(path)
-}
-
-/// `true` when `bytes` contains a `%XX` sequence that either decodes to
-/// an unreserved character (would be inlined) or has lowercase hex
-/// digits (would be uppercased).
-///
-/// Cheap fast-path: if no `%` appears, return `false` without further
-/// work. Otherwise walk and check each `%XX`.
-fn bytes_need_pct_normalization(bytes: &[u8]) -> bool {
-    if !bytes.contains(&b'%') {
-        return false;
-    }
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let h1 = bytes[i + 1];
-            let h2 = bytes[i + 2];
-            // Lowercase hex → would be uppercased.
-            if h1.is_ascii_lowercase() || h2.is_ascii_lowercase() {
-                return true;
-            }
-            // Decoded byte is unreserved → would be decoded inline.
-            if let Some(decoded) = rama_utils::hex::decode_pair(h1, h2)
-                && is_unreserved_byte(decoded)
-            {
-                return true;
-            }
-            i += 3;
-            continue;
-        }
-        i += 1;
-    }
-    false
-}
-
-/// `true` when `path` contains `.` / `..` segments that
-/// [`remove_dot_segments_graceful`] would collapse.
-fn has_dot_segments(path: &[u8]) -> bool {
-    // Whole-input shapes.
-    if path == b"." || path == b".." || path == b"/." || path == b"/.." {
-        return true;
-    }
-    // Leading "./" or "../".
-    if path.starts_with(b"./") || path.starts_with(b"../") {
-        return true;
-    }
-    // Trailing "/." or "/..".
-    if path.ends_with(b"/.") || path.ends_with(b"/..") {
-        return true;
-    }
-    // Mid-path "/./" or "/../". `memchr` of `/` then peek would be
-    // faster on long paths, but the inline scan is fine for the
-    // typical short-path case.
-    let mut i = 0;
-    while i + 2 < path.len() {
-        if path[i] == b'/'
-            && path[i + 1] == b'.'
-            && (path[i + 2] == b'/' || (path[i + 2] == b'.' && path.get(i + 3) == Some(&b'/')))
-        {
-            return true;
-        }
-        i += 1;
-    }
-    false
 }
 
 /// Apply RFC 3986 §6.2.2 syntax-based normalization to `owned` in
