@@ -34,6 +34,7 @@ pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
 pub(super) mod path_mut;
 pub(super) mod path_segments;
+pub(super) mod query_collect;
 pub(super) mod query_deserialize;
 pub(super) mod query_mut;
 pub(super) mod query_pairs;

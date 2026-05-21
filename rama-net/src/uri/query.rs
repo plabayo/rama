@@ -67,6 +67,48 @@ impl Query {
     }
 }
 
+/// Starting-capacity hint per pair when collecting via [`FromIterator`].
+/// Covers a typical short `name=value` plus the `&` separator with
+/// margin; [`BytesMut`] grows further if the iterator turns out to
+/// produce longer content.
+const COLLECT_BYTES_PER_PAIR: usize = 32;
+
+impl FromIterator<QueryPair> for Query {
+    /// Build a [`Query`] by concatenating pre-encoded pair bytes with
+    /// `&` separators. No re-encoding — the pairs' bytes are assumed to
+    /// already be in canonical on-wire form (which they are, when they
+    /// come from [`QueryRef::pairs`], [`QueryMut::pop`](super::QueryMut::pop)
+    /// or [`QueryMut::drain`](super::QueryMut::drain)).
+    fn from_iter<I: IntoIterator<Item = QueryPair>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let mut bytes = BytesMut::with_capacity(iter.size_hint().0 * COLLECT_BYTES_PER_PAIR);
+        for pair in iter {
+            if !bytes.is_empty() {
+                bytes.extend_from_slice(b"&");
+            }
+            bytes.extend_from_slice(&pair.raw);
+        }
+        Self { bytes }
+    }
+}
+
+impl<'a> FromIterator<QueryPairRef<'a>> for Query {
+    /// Build a [`Query`] from borrowed pair views by copying their raw
+    /// bytes. See [`FromIterator<QueryPair>`](Query#impl-FromIterator<QueryPair>-for-Query)
+    /// for the no-re-encoding contract.
+    fn from_iter<I: IntoIterator<Item = QueryPairRef<'a>>>(iter: I) -> Self {
+        let iter = iter.into_iter();
+        let mut bytes = BytesMut::with_capacity(iter.size_hint().0 * COLLECT_BYTES_PER_PAIR);
+        for pair in iter {
+            if !bytes.is_empty() {
+                bytes.extend_from_slice(b"&");
+            }
+            bytes.extend_from_slice(pair.raw);
+        }
+        Self { bytes }
+    }
+}
+
 /// Borrowed view of a URI query component (no leading `?`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryRef<'a> {

@@ -417,6 +417,21 @@ impl Uri {
         QueryMut::new(self.to_mut())
     }
 
+    /// Assign a pre-built [`Query`] directly. The query's bytes are
+    /// taken as-is, with no re-encoding — useful when collecting from
+    /// an iterator (e.g. `let q: Query = pairs.collect(); uri.set_query_value(q);`).
+    pub fn set_query_value(&mut self, query: Query) -> &mut Self {
+        self.to_mut().query = Some(query);
+        self
+    }
+
+    /// Consuming form of [`set_query_value`](Self::set_query_value).
+    #[must_use]
+    pub fn with_query_value(mut self, query: Query) -> Self {
+        self.set_query_value(query);
+        self
+    }
+
     /// Remove the query entirely (no `?` on the wire — distinct from
     /// an empty-query `?` per §3.4).
     pub fn unset_query(&mut self) -> &mut Self {

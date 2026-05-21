@@ -2,8 +2,7 @@
 //!
 //! For bulk encode/decode prefer the `hex` crate. These helpers are
 //! useful in tight inner loops (URI percent-decoding, TLS keylog parsing,
-//! fingerprint formatting) where pulling in a full crate dependency for
-//! one operation is overkill.
+//! fingerprint formatting).
 
 /// ASCII hex digit → `0..=15`, `None` for non-hex bytes.
 ///
