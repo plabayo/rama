@@ -547,11 +547,11 @@ enum DomainParseErrorKind {
 
 impl DomainParseError {
     #[inline]
-    fn empty() -> Self {
+    const fn empty() -> Self {
         Self(DomainParseErrorKind::Empty)
     }
     #[inline]
-    fn too_long(len: usize) -> Self {
+    const fn too_long(len: usize) -> Self {
         Self(DomainParseErrorKind::TooLong { len })
     }
     #[inline]
@@ -559,11 +559,11 @@ impl DomainParseError {
         Self(DomainParseErrorKind::NonUtf8 { source })
     }
     #[inline]
-    fn label(at: usize, error: LabelError) -> Self {
+    const fn label(at: usize, error: LabelError) -> Self {
         Self(DomainParseErrorKind::Label { at, error })
     }
     #[inline]
-    fn bad_wildcard(at: usize) -> Self {
+    const fn bad_wildcard(at: usize) -> Self {
         Self(DomainParseErrorKind::BadWildcard { at })
     }
     #[cfg(feature = "idna")]
@@ -633,25 +633,39 @@ impl std::error::Error for DomainParseError {
     }
 }
 
-/// Validate a `&str` as a presentation-format domain.
+/// Validate a `&[u8]` as a presentation-format domain.
 ///
-/// Single source of truth for the runtime parse path (`FromStr` / `TryFrom`).
-/// Mirrors the const `is_valid_name` used by `from_static`, but reports
-/// position info via [`DomainParseError`].
+/// **Single source of truth** for every Domain validity decision. Both the
+/// compile-time entry point ([`Domain::from_static`]) and the runtime parse
+/// path ([`Domain::try_from`]) call through this; the bool-returning
+/// [`is_valid_name`] and the str-taking [`validate_domain_str`] are thin
+/// wrappers.
+///
+/// Keeping the algorithm in one place is the fix for a class of
+/// fuzz-found bugs where two near-identical validators drifted (the URI
+/// parser validated via `try_from` and then deref'd via
+/// `from_maybe_borrowed_unchecked`, whose debug-assert called the
+/// const validator — divergence panicked).
 ///
 /// # Accepted shapes
 ///
-/// - bare: `"example.com"`, `"localhost"`
-/// - FQDN: `"example.com."` (trailing dot)
-/// - leading-dot: `".example.com"` (matches behaviour of the const path)
-/// - wildcard: `"*.example.com"`
-/// - leading-dot wildcard: `".*.example.com"` (the leading FQDN dot is
-///   stripped before label-walking; equivalent to `"*.example.com"`)
+/// - bare: `b"example.com"`, `b"localhost"`
+/// - FQDN: `b"example.com."` (one trailing dot)
+/// - leading-dot: `b".example.com"`
+/// - wildcard (leftmost only): `b"*.example.com"`
+/// - leading-dot wildcard: `b".*.example.com"` — the leading FQDN dot is
+///   consumed before the wildcard check
 ///
-/// The bare wildcard label `"*"` is rejected (it must prefix at least one
-/// further label), and `"*"` is only valid as the leftmost label.
-fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
-    if s.is_empty() {
+/// The bare wildcard `b"*"` is rejected (it must prefix at least one
+/// further label).
+///
+/// # Const-fn constraints
+///
+/// `?` and slice equality (`==`) are not stable in const fn yet, so the
+/// body uses explicit `match` for label results and length-plus-first-byte
+/// for the wildcard compare.
+const fn validate_domain_bytes(name: &[u8]) -> Result<(), DomainParseError> {
+    if name.is_empty() {
         return Err(DomainParseError::empty());
     }
     // RFC 1035 §2.3.4: the wire-format max is 255 octets and the
@@ -660,42 +674,90 @@ fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
     // FQDN-form input like `example.com.` of length 254.
     //
     // Regression: `tests::regression_domain_fqdn_trailing_dot_length`.
-    let effective_len = if s.ends_with('.') {
-        s.len() - 1
+    let last = name[name.len() - 1];
+    let effective_len = if last == b'.' {
+        name.len() - 1
     } else {
-        s.len()
+        name.len()
     };
     if effective_len > MAX_NAME_LEN {
-        return Err(DomainParseError::too_long(s.len()));
+        return Err(DomainParseError::too_long(name.len()));
     }
 
-    // Normalize leading/trailing FQDN dots away for label walking. Each is
-    // optional and at most one.
-    let trimmed = s.strip_prefix('.').unwrap_or(s);
-    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    if trimmed.is_empty() {
+    // Skip at most one leading FQDN dot and at most one trailing FQDN
+    // dot. The label-walking loop below operates on the inner range
+    // `[start, stop)`.
+    let start = if name[0] == b'.' { 1 } else { 0 };
+    let stop = if last == b'.' && name.len() > 1 {
+        name.len() - 1
+    } else {
+        name.len()
+    };
+    if start >= stop {
+        // Input was just "." or "..".
         return Err(DomainParseError::empty());
     }
 
-    let mut parts = trimmed.split('.');
-    let mut idx = 0usize;
-    let mut last_part: Option<&str> = None;
-    for part in &mut parts {
-        label::validate_label_bytes(part.as_bytes())
-            .map_err(|e| DomainParseError::label(idx, e))?;
-        // Wildcard label is only valid as the leftmost.
-        if part == "*" && idx != 0 {
-            return Err(DomainParseError::bad_wildcard(idx));
+    // Walk labels by indexing into `name[start..stop]`. `idx` counts
+    // non-empty labels (0-based) and is what error reporting uses.
+    let mut idx: usize = 0;
+    let mut label_start = start;
+    let mut leftmost_was_wildcard = false;
+    let mut i = start;
+    while i <= stop {
+        if i == stop || name[i] == b'.' {
+            // Label byte-range is name[label_start..i].
+            if label_start == i {
+                // Mid-name empty label (double-dot inside the trimmed
+                // range). Leading and trailing FQDN dots were already
+                // consumed by `start` / `stop`.
+                return Err(DomainParseError::label(idx, LabelError::empty()));
+            }
+            // Validate the label bytes via the shared const validator.
+            // `name.split_at(...)` is the const-stable way to subslice;
+            // direct indexing `&name[start..end]` still needs the
+            // `Index` trait to be const, which it isn't.
+            let (_, after_start) = name.split_at(label_start);
+            let (label, _) = after_start.split_at(i - label_start);
+            // Manual match because `?` isn't stable in const fn yet.
+            match label::validate_label_bytes(label) {
+                Ok(()) => {}
+                Err(e) => return Err(DomainParseError::label(idx, e)),
+            }
+            // Wildcard `*` is only valid as the leftmost label.
+            if label.len() == 1 && label[0] == b'*' {
+                if idx != 0 {
+                    return Err(DomainParseError::bad_wildcard(idx));
+                }
+                leftmost_was_wildcard = true;
+            }
+            label_start = i + 1;
+            idx += 1;
+            if i == stop {
+                break;
+            }
         }
-        last_part = Some(part);
-        idx += 1;
+        i += 1;
     }
-    // A bare wildcard ("*" alone) is not a valid domain — it must prefix at
-    // least one further label.
-    if idx == 1 && last_part == Some("*") {
+
+    // Bare wildcard (`*` or `.*` or `*.`) — no parent label.
+    if leftmost_was_wildcard && idx == 1 {
         return Err(DomainParseError::bad_wildcard(0));
     }
     Ok(())
+}
+
+/// Bool-returning const wrapper used by [`Domain::from_static`] and
+/// the debug-assert in [`Domain::from_maybe_borrowed_unchecked`].
+const fn is_valid_name(name: &[u8]) -> bool {
+    matches!(validate_domain_bytes(name), Ok(()))
+}
+
+/// Str-returning runtime wrapper used by every `TryFrom` impl. Just
+/// dispatches to the byte validator — keeping both surfaces honest by
+/// construction.
+fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
+    validate_domain_bytes(s.as_bytes())
 }
 
 /// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
@@ -881,84 +943,6 @@ impl<'de> serde::Deserialize<'de> for Domain {
     {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-impl Domain {
-    /// The maximum length of a domain label.
-    const MAX_LABEL_LEN: usize = Label::MAX_LEN;
-
-    /// The maximum length of a domain name.
-    const MAX_NAME_LEN: usize = MAX_NAME_LEN;
-}
-
-const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
-    if start >= stop
-        || stop - start > Domain::MAX_LABEL_LEN
-        || name[start] == b'-'
-        || start == stop
-        || name[stop - 1] == b'-'
-    {
-        false
-    } else {
-        let mut i = start;
-        while i < stop {
-            let c = name[i];
-            if !c.is_ascii_alphanumeric() && c != b'_' && (c != b'-' || i == start) {
-                return false;
-            }
-            i += 1;
-        }
-        true
-    }
-}
-
-/// Checks if the domain name is valid.
-const fn is_valid_name(name: &[u8]) -> bool {
-    if name.is_empty() || name.len() > Domain::MAX_NAME_LEN {
-        false
-    } else {
-        let mut non_empty_groups = 0;
-        let mut i = 0;
-        let mut offset = 0;
-
-        // wildcard special case, only needed once
-        if name[0] == b'*' {
-            if name.len() <= 2 || name[1] != b'.' {
-                return false;
-            }
-            offset = 2;
-            i = 2;
-            non_empty_groups = 1;
-        }
-
-        while i < name.len() {
-            let c = name[i];
-            if c == b'.' {
-                if offset == i {
-                    // empty
-                    if i == 0 || i == name.len() - 1 {
-                        i += 1;
-                        offset = i + 1;
-                        continue;
-                    } else {
-                        // double dot not allowed
-                        return false;
-                    }
-                }
-                if !is_valid_label(name, offset, i) {
-                    return false;
-                }
-                offset = i + 1;
-                non_empty_groups += 1;
-            }
-            i += 1;
-        }
-        if offset == i {
-            non_empty_groups > 0
-        } else {
-            is_valid_label(name, offset, i)
-        }
     }
 }
 
@@ -1515,6 +1499,37 @@ mod tests {
         let too_long = format!("{prefix}c");
         assert_eq!(too_long.len(), 254);
         Domain::try_from(too_long).unwrap_err();
+    }
+
+    /// Regression: `is_valid_name` (the const validator behind
+    /// `from_static` / `from_maybe_borrowed_unchecked`) used to disagree
+    /// with `validate_domain_str` (the public-API validator behind
+    /// `try_from`) on two leading-dot shapes — `.A` and `.*.k`. The URI
+    /// parser validates via `try_from` and dereferences via
+    /// `from_maybe_borrowed_unchecked`, so the divergence surfaced as a
+    /// debug-assert panic in `from_maybe_borrowed_unchecked`. Both
+    /// inputs were found by the `uri_parse` / `uri_resolve` fuzz targets.
+    #[test]
+    fn regression_domain_const_validator_matches_public_validator() {
+        for input in [
+            ".A",     // leading-dot single label
+            ".*.k",   // leading-dot wildcard
+            ".com",   // leading-dot TLD (was accidentally working pre-fix)
+            ".com.",  // leading + trailing dot
+            "*.x",    // bare wildcard
+            "A",      // single label, no dots
+            "com.uk", // ordinary multi-label
+        ] {
+            Domain::try_from(input)
+                .unwrap_or_else(|e| panic!("try_from({input:?}) rejected unexpectedly: {e}"));
+            // `from_static` exercises `is_valid_name` — must agree.
+            let _ = Domain::from_static(input);
+        }
+        // Mirror the URI-parser paths that originally hit the panic.
+        let uri: crate::uri::Uri = "k://.A/".parse().unwrap();
+        assert_eq!(uri.host().unwrap().to_str(), ".A");
+        let uri: crate::uri::Uri = "k://.*.k".parse().unwrap();
+        assert_eq!(uri.host().unwrap().to_str(), ".*.k");
     }
 
     #[test]

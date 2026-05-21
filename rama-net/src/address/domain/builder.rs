@@ -65,7 +65,7 @@ impl DomainBuilder {
     ///
     /// `label` must satisfy [`Label`]'s invariants. The total name length
     /// after the push (including the joining dot) must not exceed
-    /// `Domain::MAX_NAME_LEN` (253).
+    /// `MAX_NAME_LEN` (253).
     ///
     /// # Errors
     ///
@@ -82,7 +82,7 @@ impl DomainBuilder {
     /// # Errors
     ///
     /// Returns a too-long [`PushError`] if the resulting name length would
-    /// exceed `Domain::MAX_NAME_LEN`.
+    /// exceed `MAX_NAME_LEN`.
     pub fn push(&mut self, label: &Label) -> Result<&mut Self, PushError> {
         self.push_validated_label(label.as_str())
     }

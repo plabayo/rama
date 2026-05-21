@@ -248,8 +248,12 @@ impl TryFrom<&str> for Protocol {
     type Error = InvalidProtocolStr;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // `SmolStr::new` — *not* `new_inline`. `new_inline` panics if the
+        // input exceeds the 23-byte inline cap; the URI parser does not
+        // cap scheme length (RFC 3986 doesn't either), so a custom scheme
+        // > 23 bytes is a valid graceful input and must not abort.
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new_inline(s)))))
+            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 
@@ -469,6 +473,23 @@ mod tests {
         assert_eq!("socks5".parse(), Ok(Protocol::SOCKS5));
         assert_eq!("socks5h".parse(), Ok(Protocol::SOCKS5H));
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
+    }
+
+    #[test]
+    fn regression_custom_scheme_over_smolstr_inline_cap_does_not_panic() {
+        // Uri-fuzzer regression: a 25-byte all-ASCII custom scheme is a
+        // perfectly valid RFC 3986 scheme but exceeds `SmolStr`'s 23-byte
+        // inline cap. `Protocol::try_from(&str)` previously used
+        // `SmolStr::new_inline`, which panics over the cap. Now uses
+        // `SmolStr::new`, which heap-allocates beyond the cap.
+        let long = "hhhhhhahhhhhhhhhhhhhhhhhh"; // 25 bytes
+        assert_eq!(long.len(), 25);
+        let proto: Protocol = long.try_into().unwrap();
+        assert_eq!(proto.as_str(), long);
+
+        // Also exercise the parser path that the fuzzer hit.
+        let uri: crate::uri::Uri = format!("{long}:/aq").parse().unwrap();
+        assert_eq!(uri.scheme().unwrap().as_str(), long);
     }
 
     #[cfg(feature = "http")]
