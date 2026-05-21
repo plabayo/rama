@@ -43,6 +43,7 @@ pub(super) mod rfc3986_examples;
 pub(super) mod smoke;
 pub(super) mod strict_mode;
 pub(super) mod whatwg_corpus;
+pub(super) mod wire;
 
 /// Parse in graceful mode via the public API.
 pub(super) fn parse_graceful(s: &str) -> Result<Uri, ParseError> {

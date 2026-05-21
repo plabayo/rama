@@ -55,6 +55,7 @@ flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
+itoa = { workspace = true }
 md5 = { workspace = true, optional = true }
 memchr = { workspace = true }
 nom = { workspace = true }

@@ -83,6 +83,10 @@ mod resolve;
 #[doc(inline)]
 pub use resolve::ResolveError;
 
+mod wire;
+#[doc(inline)]
+pub use wire::WireError;
+
 mod fragment;
 #[doc(inline)]
 pub use fragment::{Fragment, FragmentRef};

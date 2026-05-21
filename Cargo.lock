@@ -3744,6 +3744,7 @@ dependencies = [
  "hex",
  "ipnet",
  "itertools 0.14.0",
+ "itoa",
  "libc",
  "md5",
  "memchr",
