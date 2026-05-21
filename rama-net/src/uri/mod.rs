@@ -90,6 +90,8 @@ mod query_mut;
 #[doc(inline)]
 pub use query_mut::{Drain as QueryDrain, QueryMut};
 
+mod canonicalize;
+
 mod resolve;
 #[doc(inline)]
 pub use resolve::ResolveError;
@@ -516,6 +518,54 @@ impl Uri {
         self
     }
 
+    // ---- Canonicalization (RFC 3986 §6.2.2) ------------------------------
+
+    /// Apply RFC 3986 §6.2.2 syntax-based normalization. Returns a new
+    /// [`Uri`] with:
+    ///
+    /// - Host promoted from [`Host::Uninterpreted`](crate::address::Host)
+    ///   to typed [`Domain`](crate::address::Domain) / [`IpAddr`] when the
+    ///   bytes decode to one (`%6D` → `m`; pct-encoded UTF-8 → IDN→ACE
+    ///   under the `idna` feature). Sub-delim reg-name and IPvFuture
+    ///   stay `Uninterpreted` — no canonical typed form exists.
+    /// - Pct-encoded octets that map to unreserved characters
+    ///   (`%41` → `A`, `%7E` → `~`) decoded in path / query / fragment.
+    ///   Reserved / sub-delim octets stay encoded; their hex digits are
+    ///   uppercased per §6.2.2.1.
+    /// - Default port dropped (`http://example.com:80/` → `http://example.com/`).
+    /// - Empty path replaced with `/` when an authority is present.
+    /// - Dot-segments (`.`, `..`) removed from the path per §6.2.2.3.
+    ///
+    /// **Wire-fidelity is lost.** Use this when you specifically want a
+    /// canonical form — typically client-side, building HTTP requests
+    /// from user input. Server / proxy / forwarding code that needs to
+    /// preserve received bytes should leave the URI unmodified.
+    #[must_use]
+    pub fn canonicalize(self) -> Self {
+        // Asterisk-form has no components to canonicalize.
+        if matches!(self.inner, UriInner::Asterisk) {
+            return self;
+        }
+        let owned = self.as_owned_components();
+        let canonical = canonicalize::canonicalize(owned);
+        Self {
+            inner: UriInner::Owned(Arc::new(canonical)),
+        }
+    }
+
+    /// Parse `input` and immediately apply [`canonicalize`](Self::canonicalize).
+    /// One-shot convenience for client-side URI construction from user
+    /// input.
+    pub fn parse_canonical<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        Self::parse(input).map(Self::canonicalize)
+    }
+
+    /// Strict variant of [`parse_canonical`](Self::parse_canonical) —
+    /// rejects RFC 3986 grammar violations before canonicalizing.
+    pub fn parse_canonical_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
+        Self::parse_strict(input).map(Self::canonicalize)
+    }
+
     // ---- Reference resolution (RFC 3986 §5.2) ----------------------------
 
     /// Resolve `reference` against `self` (the base URI).
@@ -596,6 +646,70 @@ impl Uri {
             self.to_mut().authority = authority;
             self
         }
+    }
+
+    /// Set just the host, preserving any existing userinfo and port.
+    ///
+    /// Accepts any [`Into<Host>`] — [`Host`](crate::address::Host),
+    /// [`Domain`](crate::address::Domain), [`IpAddr`],
+    /// [`Ipv4Addr`](std::net::Ipv4Addr), or
+    /// [`Ipv6Addr`](std::net::Ipv6Addr). For inputs that need
+    /// parsing (`&str` / `String`), use
+    /// [`try_set_host`](Self::try_set_host) instead.
+    ///
+    /// If the URI has no authority yet, one is created with the given
+    /// host and no userinfo / port. Existing authority parts are
+    /// preserved otherwise.
+    pub fn set_host(&mut self, host: impl Into<crate::address::Host>) -> &mut Self {
+        let host = host.into();
+        let owned = self.to_mut();
+        match &mut owned.authority {
+            Some(authority) => {
+                authority.address.host = host;
+            }
+            None => {
+                owned.authority = Some(crate::address::Authority {
+                    user_info: None,
+                    address: crate::address::HostWithOptPort { host, port: None },
+                });
+            }
+        }
+        self
+    }
+
+    /// Consuming form of [`set_host`](Self::set_host).
+    #[must_use]
+    pub fn with_host(mut self, host: impl Into<crate::address::Host>) -> Self {
+        self.set_host(host);
+        self
+    }
+
+    /// Fallible host setter. Accepts any [`TryInto<Host>`] — typically
+    /// `&str` / `String` / `&[u8]` / [`Vec<u8>`].
+    ///
+    /// Routes through [`Host::try_from`](crate::address::Host) which
+    /// does IP-first, then [`Domain::try_from`](crate::address::Domain)
+    /// (IDN-normalising non-ASCII to ACE under the `idna` feature). So
+    /// `try_set_host("münchen.de")` ends up with a canonical
+    /// `Host::Name(Domain("xn--mnchen-3ya.de"))` — exactly what
+    /// client-side code building URIs from user input expects.
+    pub fn try_set_host<H>(&mut self, host: H) -> Result<&mut Self, rama_core::error::BoxError>
+    where
+        H: TryInto<crate::address::Host>,
+        H::Error: Into<rama_core::error::BoxError>,
+    {
+        let host: crate::address::Host = host.try_into().map_err(Into::into)?;
+        Ok(self.set_host(host))
+    }
+
+    /// Consuming form of [`try_set_host`](Self::try_set_host).
+    pub fn try_with_host<H>(mut self, host: H) -> Result<Self, rama_core::error::BoxError>
+    where
+        H: TryInto<crate::address::Host>,
+        H::Error: Into<rama_core::error::BoxError>,
+    {
+        self.try_set_host(host)?;
+        Ok(self)
     }
 }
 

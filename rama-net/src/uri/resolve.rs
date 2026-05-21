@@ -267,6 +267,26 @@ fn pop_last_segment(output: &mut BytesMut, mode: ResolveMode) -> Result<(), Reso
 }
 
 // ---------------------------------------------------------------------------
+/// Apply RFC 3986 §5.2.4 dot-segment removal to a standalone path,
+/// graceful mode (`..` past root is silently clamped). Returned buffer
+/// is always representable; the underlying machinery only ever errors
+/// under strict mode, which this wrapper hard-pins to graceful.
+///
+/// Used by [`crate::uri::canonicalize`] for §6.2.2.3 path-segment
+/// normalization.
+pub(super) fn remove_dot_segments_graceful(input: &[u8]) -> BytesMut {
+    // Graceful mode never errors — `pop_last_segment` is the only error
+    // site and it only fires under `ResolveMode::Strict`.
+    remove_dot_segments(input, ResolveMode::Graceful).unwrap_or_else(|_| {
+        // Defence-in-depth: any future change that would let graceful
+        // mode error trips here loudly rather than silently returning
+        // an empty path.
+        debug_assert!(false, "graceful remove_dot_segments must not error");
+        BytesMut::from(input)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Size estimation for the cap check
 // ---------------------------------------------------------------------------
 

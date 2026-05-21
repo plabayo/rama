@@ -32,6 +32,7 @@ pub(super) mod absolute_form;
 pub(super) mod accessors;
 pub(super) mod adversarial;
 pub(super) mod authority_form;
+pub(super) mod canonicalize;
 pub(super) mod display;
 pub(super) mod fragment;
 pub(super) mod host;
