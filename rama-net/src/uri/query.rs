@@ -10,12 +10,10 @@ use std::borrow::Cow;
 use std::fmt;
 
 use percent_encoding::percent_decode;
-use rama_core::bytes::BytesMut;
+use rama_core::bytes::{Bytes, BytesMut};
 
-/// Owned query component.
-///
-/// Storage is `BytesMut` so that in Owned mode the path/query/fragment can
-/// be mutated cheaply via the RAII guards landing in M5.
+/// Owned query component. Cheaply mutable in-place via the
+/// [`QueryMut`](super::QueryMut) RAII guard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Query {
     pub(crate) bytes: BytesMut,
@@ -166,57 +164,145 @@ impl std::error::Error for QueryDeserializeError {
     }
 }
 
-/// One `name[=value]` pair from a URI query string. See [`QueryRef::pairs`]
-/// for the splitting rules.
+/// One owned `name[=value]` pair, cheap to clone. Produced by
+/// [`QueryMut::pop`](super::QueryMut::pop) and
+/// [`QueryMut::drain`](super::QueryMut::drain) — popping a pair off a
+/// query doesn't copy the byte content (the buffer is refcount-shared
+/// with the source).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QueryPair {
+    raw: Bytes,
+    /// Offset of `=` within `raw`, or `None` for a bare key.
+    eq_at: Option<u16>,
+}
+
+impl QueryPair {
+    /// Construct from raw `name[=value]` bytes (no leading `&`).
+    /// Finds the first `=` once at construction; subsequent accessors
+    /// slice without rescanning.
+    #[inline]
+    #[must_use]
+    pub(crate) fn from_raw(raw: Bytes) -> Self {
+        let eq_at = memchr::memchr(b'=', &raw).map(|i| i as u16);
+        Self { raw, eq_at }
+    }
+
+    /// Borrowed view.
+    #[must_use]
+    pub fn as_ref(&self) -> QueryPairRef<'_> {
+        QueryPairRef {
+            raw: &self.raw,
+            eq_at: self.eq_at,
+        }
+    }
+
+    /// Raw on-wire bytes of the name.
+    #[must_use]
+    pub fn name_bytes(&self) -> &[u8] {
+        match self.eq_at {
+            Some(i) => &self.raw[..i as usize],
+            None => &self.raw,
+        }
+    }
+
+    /// Name as `&str` with no decoding. Parser-validated UTF-8.
+    #[must_use]
+    pub fn name_raw(&self) -> &str {
+        // Safety: parser invariant.
+        unsafe { std::str::from_utf8_unchecked(self.name_bytes()) }
+    }
+
+    /// Name with form-urlencoded decoding: `+` → space, `%XX` → byte.
+    /// `Cow::Borrowed` when neither escape is present.
+    #[must_use]
+    pub fn name_decoded(&self) -> Cow<'_, str> {
+        form_decode(self.name_bytes())
+    }
+
+    /// Raw on-wire bytes of the value, or `None` for a bare key (`?foo`).
+    #[must_use]
+    pub fn value_bytes(&self) -> Option<&[u8]> {
+        self.eq_at.map(|i| &self.raw[i as usize + 1..])
+    }
+
+    /// Value as `&str` with no decoding, or `None` for a bare key.
+    #[must_use]
+    pub fn value_raw(&self) -> Option<&str> {
+        // Safety: parser invariant.
+        self.value_bytes()
+            .map(|v| unsafe { std::str::from_utf8_unchecked(v) })
+    }
+
+    /// Value with form-urlencoded decoding (`+` → space, `%XX` → byte),
+    /// or `None` for a bare key.
+    #[must_use]
+    pub fn value_decoded(&self) -> Option<Cow<'_, str>> {
+        self.value_bytes().map(form_decode)
+    }
+
+    /// `true` if the pair has an `=` separator. `?foo=` → `true`; `?foo` → `false`.
+    #[must_use]
+    pub fn has_value(&self) -> bool {
+        self.eq_at.is_some()
+    }
+}
+
+/// Borrowed `name[=value]` pair view. Yielded by
+/// [`QueryRef::pairs`] / [`Query::pairs`].
 ///
 /// Decoded views apply the form-urlencoded convention (`+` → space,
 /// `%XX` → byte) — distinct from [`QueryRef::as_decoded_str`] which only
 /// percent-decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryPair<'a> {
-    name: &'a [u8],
-    value: Option<&'a [u8]>,
+pub struct QueryPairRef<'a> {
+    raw: &'a [u8],
+    /// Offset of `=` within `raw`, or `None` for a bare key.
+    eq_at: Option<u16>,
 }
 
-impl<'a> QueryPair<'a> {
+impl<'a> QueryPairRef<'a> {
+    /// Construct from raw `name[=value]` bytes (no leading `&`).
     #[inline]
     #[must_use]
-    pub(crate) const fn new(name: &'a [u8], value: Option<&'a [u8]>) -> Self {
-        Self { name, value }
+    pub(crate) fn from_raw(raw: &'a [u8]) -> Self {
+        let eq_at = memchr::memchr(b'=', raw).map(|i| i as u16);
+        Self { raw, eq_at }
     }
 
     /// Raw on-wire bytes of the name.
     #[must_use]
     pub fn name_bytes(&self) -> &'a [u8] {
-        self.name
+        match self.eq_at {
+            Some(i) => &self.raw[..i as usize],
+            None => self.raw,
+        }
     }
 
     /// Name as `&str` with no decoding. Parser-validated UTF-8.
     #[must_use]
     pub fn name_raw(&self) -> &'a str {
         // Safety: parser invariant.
-        unsafe { std::str::from_utf8_unchecked(self.name) }
+        unsafe { std::str::from_utf8_unchecked(self.name_bytes()) }
     }
 
     /// Name with form-urlencoded decoding: `+` → space, `%XX` → byte.
     /// `Cow::Borrowed` when neither escape is present.
     #[must_use]
     pub fn name_decoded(&self) -> Cow<'a, str> {
-        form_decode(self.name)
+        form_decode(self.name_bytes())
     }
 
     /// Raw on-wire bytes of the value, or `None` for a bare key (`?foo`).
     #[must_use]
     pub fn value_bytes(&self) -> Option<&'a [u8]> {
-        self.value
+        self.eq_at.map(|i| &self.raw[i as usize + 1..])
     }
 
     /// Value as `&str` with no decoding, or `None` for a bare key.
-    /// Parser-validated UTF-8.
     #[must_use]
     pub fn value_raw(&self) -> Option<&'a str> {
         // Safety: parser invariant.
-        self.value
+        self.value_bytes()
             .map(|v| unsafe { std::str::from_utf8_unchecked(v) })
     }
 
@@ -224,14 +310,22 @@ impl<'a> QueryPair<'a> {
     /// or `None` for a bare key.
     #[must_use]
     pub fn value_decoded(&self) -> Option<Cow<'a, str>> {
-        self.value.map(form_decode)
+        self.value_bytes().map(form_decode)
     }
 
-    /// `true` if the pair contains an `=` separator. `?foo=` returns
-    /// `true` (empty value is still a value); `?foo` returns `false`.
+    /// `true` if the pair has an `=` separator. `?foo=` → `true`; `?foo` → `false`.
     #[must_use]
     pub fn has_value(&self) -> bool {
-        self.value.is_some()
+        self.eq_at.is_some()
+    }
+
+    /// Allocate an owned [`QueryPair`] copying the raw bytes.
+    #[must_use]
+    pub fn to_owned(&self) -> QueryPair {
+        QueryPair {
+            raw: Bytes::copy_from_slice(self.raw),
+            eq_at: self.eq_at,
+        }
     }
 }
 
@@ -257,7 +351,7 @@ impl<'a> QueryPairs<'a> {
 }
 
 impl<'a> Iterator for QueryPairs<'a> {
-    type Item = QueryPair<'a>;
+    type Item = QueryPairRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -280,17 +374,10 @@ impl<'a> Iterator for QueryPairs<'a> {
             if fragment.is_empty() {
                 // Empty fragment (`&&`, leading `&`, trailing `&`) — skip,
                 // matching WHATWG URLSearchParams / serde_html_form behaviour.
-                // If this was the last fragment, `exhausted` is already true
-                // so the next iteration returns None.
                 continue;
             }
 
-            // Split on the *first* `=` only. `a=b=c` → name="a", value="b=c".
-            let pair = match memchr::memchr(b'=', fragment) {
-                Some(i) => QueryPair::new(&fragment[..i], Some(&fragment[i + 1..])),
-                None => QueryPair::new(fragment, None),
-            };
-            return Some(pair);
+            return Some(QueryPairRef::from_raw(fragment));
         }
     }
 }

@@ -73,7 +73,11 @@ pub use path_mut::PathMut;
 
 mod query;
 #[doc(inline)]
-pub use query::{Query, QueryDeserializeError, QueryPair, QueryPairs, QueryRef};
+pub use query::{Query, QueryDeserializeError, QueryPair, QueryPairRef, QueryPairs, QueryRef};
+
+mod query_mut;
+#[doc(inline)]
+pub use query_mut::{Drain as QueryDrain, QueryMut};
 
 mod fragment;
 #[doc(inline)]
@@ -405,6 +409,12 @@ impl Uri {
             });
             self
         }
+    }
+
+    /// Returns a [`QueryMut`] guard for incremental query mutation —
+    /// `push_pair`, `push_key`, `pop`, `drain`.
+    pub fn query_mut(&mut self) -> QueryMut<'_> {
+        QueryMut::new(self.to_mut())
     }
 
     /// Remove the query entirely (no `?` on the wire — distinct from

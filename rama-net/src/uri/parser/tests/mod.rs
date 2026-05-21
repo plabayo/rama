@@ -35,6 +35,7 @@ pub(super) mod origin_form;
 pub(super) mod path_mut;
 pub(super) mod path_segments;
 pub(super) mod query_deserialize;
+pub(super) mod query_mut;
 pub(super) mod query_pairs;
 pub(super) mod rfc3986_examples;
 pub(super) mod smoke;

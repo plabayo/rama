@@ -9,7 +9,6 @@ use rama_core::bytes::BytesMut;
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
-use super::path::PathRef;
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
 ///
@@ -24,18 +23,6 @@ impl<'a> PathMut<'a> {
     #[inline]
     pub(crate) fn new(owned: &'a mut OwnedUriRef) -> Self {
         Self { owned }
-    }
-
-    /// Raw on-the-wire path bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.owned.path
-    }
-
-    /// Borrowed [`PathRef`] view of the current path.
-    #[must_use]
-    pub fn as_path_ref(&self) -> PathRef<'_> {
-        PathRef::new(&self.owned.path)
     }
 
     /// Append a `/`-delimited segment, percent-encoding any bytes that
@@ -99,8 +86,8 @@ impl<'a> PathMut<'a> {
 
 impl std::fmt::Debug for PathMut<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PathMut")
-            .field("path", &self.as_path_ref().as_raw_str())
-            .finish()
+        // Safety: parser invariant — path bytes are valid UTF-8.
+        let path = unsafe { std::str::from_utf8_unchecked(&self.owned.path) };
+        f.debug_struct("PathMut").field("path", &path).finish()
     }
 }

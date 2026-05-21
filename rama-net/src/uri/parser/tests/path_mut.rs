@@ -169,23 +169,6 @@ fn clear_path() {
     assert!(uri.path_mut().pop_segment().is_none());
 }
 
-// ----------------------------------------------------------------------
-// Borrow + Debug
-// ----------------------------------------------------------------------
-
-#[test]
-fn as_bytes_and_as_path_ref() {
-    let mut uri: Uri = parse_graceful("/foo/bar").unwrap();
-    let g = uri.path_mut();
-    assert_eq!(g.as_bytes(), b"/foo/bar");
-    let segs: Vec<_> = g
-        .as_path_ref()
-        .segments()
-        .map(|s| s.as_raw_str().to_owned())
-        .collect();
-    assert_eq!(segs, vec!["foo", "bar"]);
-}
-
 #[test]
 fn debug_impl_shows_current_path() {
     let mut uri: Uri = parse_graceful("/api/v1").unwrap();
@@ -201,10 +184,12 @@ fn debug_impl_shows_current_path() {
 #[test]
 fn push_then_pop_yields_encoded_form() {
     let mut uri: Uri = parse_graceful("/api").unwrap();
-    let mut g = uri.path_mut();
-    g.push_segment("a/b"); // becomes a%2Fb on the wire
-    assert_eq!(g.as_bytes(), b"/api/a%2Fb");
-    let popped = g.pop_segment();
+    {
+        let mut g = uri.path_mut();
+        g.push_segment("a/b"); // becomes a%2Fb on the wire
+    }
+    assert_eq!(uri.to_string(), "/api/a%2Fb");
+    let popped = uri.path_mut().pop_segment();
     assert_eq!(popped.as_deref(), Some(b"a%2Fb".as_ref()));
-    assert_eq!(g.as_bytes(), b"/api");
+    assert_eq!(uri.to_string(), "/api");
 }

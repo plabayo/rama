@@ -80,6 +80,28 @@ pub(super) const SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
+/// Bytes encoded inside a query name-or-value (one half of a pair).
+/// Legal pass-through: `pchar` minus `=`. `&`, `=`, `+` are encoded so
+/// the pair structure stays intact and form-decoding round-trips.
+pub(super) const PAIR_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'&')
+    .add(b'+')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
 // ---------------------------------------------------------------------------
 // Fast-path predicates — reuse the parser's `[bool; 256]` byte tables, plus
 // the `%` exclusion (setter input is raw content, not pre-encoded).
@@ -151,6 +173,15 @@ pub(super) fn encode_fragment<T: IntoUriComponent>(input: T) -> BytesMut {
 /// where we always extend (no zero-copy opportunity).
 pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: &[u8]) {
     for chunk in percent_encode(input, SEGMENT_ENCODE_SET) {
+        target.extend_from_slice(chunk.as_bytes());
+    }
+}
+
+/// Append `input` to `target`, percent-encoding under the pair policy.
+/// Used by [`QueryMut::push_pair`](super::QueryMut::push_pair) /
+/// [`QueryMut::push_key`](super::QueryMut::push_key).
+pub(super) fn extend_encoded_pair(target: &mut BytesMut, input: &[u8]) {
+    for chunk in percent_encode(input, PAIR_ENCODE_SET) {
         target.extend_from_slice(chunk.as_bytes());
     }
 }

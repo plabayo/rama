@@ -3,9 +3,9 @@
 //! `userinfo = *( unreserved / pct-encoded / sub-delims / ":" )`.
 //!
 //! Conventionally `user[:password]` but the grammar allows any
-//! pchar-without-`@` byte sequence (and pct-encoded `@`). Stored as
-//! raw [`Bytes`] for byte fidelity — convert to typed forms via
-//! [`UserInfo::split_user_password`] for the conventional split, or
+//! pchar-without-`@` byte sequence (and pct-encoded `@`). The raw on-wire
+//! bytes are preserved verbatim; convert to typed forms via
+//! [`UserInfo::split_user_password`] for the conventional split or
 //! [`UserInfo::to_basic`] for HTTP Basic-Auth interop.
 
 use rama_core::bytes::Bytes;
@@ -13,8 +13,7 @@ use rama_core::bytes::Bytes;
 use crate::user::Basic;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 
-/// Raw RFC 3986 userinfo bytes. Cheap to clone (refcount on the
-/// underlying [`Bytes`]).
+/// Raw RFC 3986 userinfo bytes. Cheap to clone.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UserInfo {
     bytes: Bytes,

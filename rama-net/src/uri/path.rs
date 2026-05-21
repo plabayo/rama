@@ -1,8 +1,5 @@
-//! Borrowed view of a [`Uri`](super::Uri)'s path component.
-//!
-//! The owned storage for the path lives directly inside `OwnedUriRef` as a
-//! `BytesMut` — there is no separate `Path` owned type. The borrowed view
-//! is just a `&[u8]` plus iteration helpers.
+//! Borrowed view of a [`Uri`](super::Uri)'s path component. Mutate
+//! incrementally via the [`PathMut`](super::PathMut) RAII guard.
 
 use std::borrow::Cow;
 

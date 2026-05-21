@@ -1,9 +1,8 @@
 //! Input trait for URI component setters.
 //!
-//! The setters need both a borrowed view (for validation) and an owned
-//! [`BytesMut`] (for storage). `IntoUriComponent` lets owned input shapes
-//! ([`String`], [`Vec<u8>`], [`BytesMut`], [`Bytes`]) move into storage
-//! without an extra copy.
+//! `IntoUriComponent` accepts borrowed (`&str`, `&[u8]`) and owned
+//! (`String`, `Vec<u8>`, `Bytes`, `BytesMut`) byte sources, and lets
+//! owned inputs move into the URI without an extra copy.
 
 use rama_core::bytes::{Bytes, BytesMut};
 
