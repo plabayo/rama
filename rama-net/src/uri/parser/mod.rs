@@ -60,7 +60,7 @@ mod path;
 mod scheme;
 
 /// Re-exported for the URI component setters' fast-path check.
-pub(in crate::uri) use byte_sets::{is_path_byte, is_query_fragment_byte};
+pub(in crate::uri) use byte_sets::{is_path_byte, is_query_fragment_byte, is_unreserved_byte};
 
 #[cfg(test)]
 mod tests;

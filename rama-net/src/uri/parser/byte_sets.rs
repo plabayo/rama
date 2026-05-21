@@ -74,6 +74,11 @@ const SCHEME_REST_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 25
 const USERINFO_BYTE_SET: [bool; 256] =
     set_each(set_ascii_alphanum([false; 256]), b"-._~!$&'()*+,;=:%");
 
+/// RFC 3986 §2.3 `unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"`.
+/// Used by [`crate::uri::canonicalize`] to decide whether a pct-encoded
+/// octet can be decoded back to its literal form (§6.2.2.2).
+const UNRESERVED_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"-._~");
+
 /// RFC 3986 §3.2.2 `reg-name = *( unreserved / pct-encoded / sub-delims )`.
 /// ASCII subset of the byte set; non-ASCII is allowed in graceful mode under
 /// the IRI `ireg-name` extension (handled inline at the validator).
@@ -117,6 +122,11 @@ pub(super) const fn is_scheme_rest_byte(b: u8) -> bool {
 #[inline(always)]
 pub(super) const fn is_userinfo_byte(b: u8) -> bool {
     USERINFO_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+pub(in crate::uri) const fn is_unreserved_byte(b: u8) -> bool {
+    UNRESERVED_BYTE_SET[b as usize]
 }
 
 #[inline(always)]

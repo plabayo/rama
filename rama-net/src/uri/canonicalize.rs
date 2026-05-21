@@ -30,6 +30,7 @@ use rama_core::bytes::BytesMut;
 use crate::address::{Domain, Host, UninterpretedHostRef};
 
 use super::owned::OwnedUriRef;
+use super::parser::is_unreserved_byte;
 use super::resolve::remove_dot_segments_graceful;
 
 /// Apply RFC 3986 §6.2.2 syntax-based normalization to `owned` in
@@ -104,7 +105,7 @@ fn normalize_pct(buf: &mut BytesMut) {
             let h1 = bytes[read + 1];
             let h2 = bytes[read + 2];
             if let Some(decoded) = rama_utils::hex::decode_pair(h1, h2) {
-                if is_unreserved(decoded) {
+                if is_unreserved_byte(decoded) {
                     bytes[write] = decoded;
                     write += 1;
                     read += 3;
@@ -128,15 +129,6 @@ fn normalize_pct(buf: &mut BytesMut) {
         read += 1;
     }
     buf.truncate(write);
-}
-
-/// RFC 3986 §2.3 unreserved character class.
-#[inline]
-const fn is_unreserved(b: u8) -> bool {
-    matches!(
-        b,
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~'
-    )
 }
 
 #[cfg(test)]
