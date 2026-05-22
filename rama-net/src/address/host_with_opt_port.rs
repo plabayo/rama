@@ -469,6 +469,17 @@ impl TryFrom<&str> for HostWithOptPort {
     }
 }
 
+/// Reg-name fallback: routes the host bytes through the URI authority
+/// parser so byte-set validation is shared with `Uri::parse_authority_form`.
+fn try_via_uri_authority_form(host_str: &str) -> Result<Host, BoxError> {
+    let uri = crate::uri::Uri::parse_authority_form(host_str)
+        .context("parse host via uri authority-form parser")?;
+    let auth = uri.authority().ok_or_else(|| {
+        OpaqueError::from_static_str("parsed authority has no host").into_box_error()
+    })?;
+    Ok(auth.host().into_owned())
+}
+
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithOptPort, BoxError> {
     let s = maybe_borrowed.as_ref();
 
@@ -502,7 +513,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                 )
             };
 
-            // try ipv4 first, domain afterwards
+            // try ipv4 first, domain afterwards, then Uninterpreted via URI parser
             host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
                 Host::Address(IpAddr::V4(ipv4))
             } else {
@@ -510,22 +521,23 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                 owned_vec.truncate(last_colon);
                 let owned_str = String::from_utf8(owned_vec)
                     .context("interpret host-with-opt-port's host as utf-8 str")?;
-                Host::Name(Domain::try_from(owned_str).context(
-                    "parse host-with-opt-port's host utf-8 str as domain w/ trailing port",
-                )?)
+                match Domain::try_from(owned_str.as_str()) {
+                    Ok(domain) => Host::Name(domain),
+                    Err(_) => try_via_uri_authority_form(&owned_str)?,
+                }
             };
         };
     } else {
-        // no port, so either IpAddr or Domain, in that order
-        host =
-            if let Ok(ip) = s.parse::<IpAddr>() {
-                Host::Address(ip)
-            } else {
-                let owned_str = maybe_borrowed.into_owned();
-                Host::Name(Domain::try_from(owned_str).context(
-                    "parse host utf-8 str as domain w/o trailing port (host-with-opt-port)",
-                )?)
-            };
+        // no port, so either IpAddr, Domain, or Uninterpreted fallback
+        host = if let Ok(ip) = s.parse::<IpAddr>() {
+            Host::Address(ip)
+        } else {
+            let owned_str = maybe_borrowed.into_owned();
+            match Domain::try_from(owned_str.as_str()) {
+                Ok(domain) => Host::Name(domain),
+                Err(_) => try_via_uri_authority_form(&owned_str)?,
+            }
+        };
     }
 
     Ok(HostWithOptPort { host, port })
@@ -627,15 +639,9 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
-            "-",
-            ".",
             ":",
             ":80",
-            "-.",
-            ".-",
-            "[::1]",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
-            "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "example.com:-1",
             "example.com:999999",

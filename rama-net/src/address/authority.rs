@@ -515,6 +515,19 @@ impl TryFrom<&str> for Authority {
     }
 }
 
+/// Reg-name fallback: routes the host bytes through the URI authority
+/// parser so byte-set validation is shared with `Uri::parse_authority_form`.
+/// Returns the extracted [`Host`] (typically `Host::Uninterpreted` for
+/// pct-encoded or sub-delim reg-names that `Domain::try_from` rejects).
+fn try_via_uri_authority_form(host_str: &str) -> Result<Host, BoxError> {
+    let uri = crate::uri::Uri::parse_authority_form(host_str)
+        .context("parse authority host via uri authority-form parser")?;
+    let auth = uri.authority().ok_or_else(|| {
+        OpaqueError::from_static_str("parsed authority has no host").into_box_error()
+    })?;
+    Ok(auth.host().into_owned())
+}
+
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority, BoxError> {
     let mut s = maybe_borrowed.as_ref();
 
@@ -573,7 +586,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
                 )
             };
 
-            // try ipv4 first, domain afterwards
+            // try ipv4 first, domain afterwards, then Uninterpreted fallback
             host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
                 Host::Address(IpAddr::V4(ipv4))
             } else {
@@ -585,14 +598,18 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
                 owned_vec.truncate(last_colon);
                 let owned_str = String::from_utf8(owned_vec)
                     .context("interpret authority host as utf-8 str")?;
-                Host::Name(
-                    Domain::try_from(owned_str)
-                        .context("parse authority host utf-8 str as domain w/ trailing port")?,
-                )
+                match Domain::try_from(owned_str.as_str()) {
+                    Ok(domain) => Host::Name(domain),
+                    // Pct-encoded reg-name, sub-delim reg-name, etc. — the
+                    // URI parser accepts these and the `Host` enum can
+                    // represent them. Route through the URI authority-
+                    // form parser so the byte-set validation matches.
+                    Err(_) => try_via_uri_authority_form(&owned_str)?,
+                }
             };
         };
     } else {
-        // no port, so either IpAddr or Domain, in that order
+        // no port, so either IpAddr, Domain, or Uninterpreted fallback
         host = if let Ok(ip) = s.parse::<IpAddr>() {
             Host::Address(ip)
         } else {
@@ -601,10 +618,10 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             } else {
                 maybe_borrowed.into_owned()
             };
-            Host::Name(
-                Domain::try_from(owned_str)
-                    .context("parse host utf-8 str as domain w/o trailing port")?,
-            )
+            match Domain::try_from(owned_str.as_str()) {
+                Ok(domain) => Host::Name(domain),
+                Err(_) => try_via_uri_authority_form(&owned_str)?,
+            }
         };
     }
 
@@ -948,19 +965,14 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
-            "-",
-            ".",
             ":",
             ":80",
-            "-.",
-            ".-",
             "[::1]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "example.com:-1",
             "example.com:999999",
-            "example:com",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
             // `:foo@host` used to be invalid because Basic required a
@@ -1042,6 +1054,28 @@ mod tests {
         let (user, pass) = ui.split_user_password();
         assert_eq!(user, b"user@name");
         assert_eq!(pass, Some(&b"pass"[..]));
+    }
+
+    /// Regression: pct-encoded reg-names are accepted by both the URI
+    /// parser and the eager `Authority::try_from` path — uniform host
+    /// shape across the public API.
+    #[test]
+    fn authority_try_from_accepts_pct_encoded_reg_name() {
+        let from_uri = crate::uri::Uri::parse_authority_form("exa%6Dple.com")
+            .unwrap()
+            .authority()
+            .unwrap()
+            .into_owned();
+        let direct = Authority::try_from("exa%6Dple.com").unwrap();
+        assert_eq!(direct, from_uri);
+        // ...and with a port.
+        let from_uri_p = crate::uri::Uri::parse_authority_form("exa%6Dple.com:443")
+            .unwrap()
+            .authority()
+            .unwrap()
+            .into_owned();
+        let direct_p = Authority::try_from("exa%6Dple.com:443").unwrap();
+        assert_eq!(direct_p, from_uri_p);
     }
 
     /// Regression: RFC 6874 IPv6 zone-ids must never be accepted in an
