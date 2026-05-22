@@ -234,6 +234,40 @@ fn set_path_on_asterisk_drops_asterisk() {
 }
 
 #[test]
+fn set_scheme_on_asterisk_drops_asterisk() {
+    let mut uri: Uri = parse_graceful("*").unwrap();
+    assert!(uri.is_asterisk());
+    uri.set_scheme(crate::Protocol::HTTP);
+    assert!(!uri.is_asterisk());
+    // Asterisk had no path/host — the result is a scheme-only URI.
+    assert!(uri.scheme().is_some());
+}
+
+#[test]
+fn set_fragment_on_asterisk_drops_asterisk() {
+    let mut uri: Uri = parse_graceful("*").unwrap();
+    uri.set_fragment("frag");
+    assert!(!uri.is_asterisk());
+    assert!(uri.fragment().is_some());
+}
+
+#[test]
+fn set_query_from_bytes_on_asterisk_drops_asterisk() {
+    let mut uri: Uri = parse_graceful("*").unwrap();
+    uri.set_query_from_bytes("a=1");
+    assert!(!uri.is_asterisk());
+    assert!(uri.query().is_some());
+}
+
+#[test]
+fn set_host_on_asterisk_drops_asterisk() {
+    let mut uri: Uri = parse_graceful("*").unwrap();
+    uri.set_host(crate::address::Domain::from_static("example.com"));
+    assert!(!uri.is_asterisk());
+    assert_eq!(uri.host().unwrap().to_str(), "example.com");
+}
+
+#[test]
 fn chained_setters() {
     let mut uri: Uri = parse_graceful("/").unwrap();
     uri.set_path("/v2/users")
@@ -368,6 +402,25 @@ fn try_set_userinfo_rejects_invalid_input() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
     // Raw `@` inside userinfo is a gen-delim — `UserInfo::try_from` rejects.
     let err = uri.try_set_user_info("bad@user").unwrap_err();
+    match err {
+        crate::uri::UriError::ComponentConversion { component, .. } => {
+            assert_eq!(component, crate::uri::Component::UserInfo);
+        }
+        other => panic!("expected ComponentConversion(UserInfo), got {other:?}"),
+    }
+}
+
+#[test]
+fn try_with_user_info_consuming_form_success() {
+    let uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    let uri = uri.try_with_user_info("alice").unwrap();
+    assert_eq!(uri.to_string(), "https://alice@example.com/p");
+}
+
+#[test]
+fn try_with_user_info_consuming_form_error() {
+    let uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    let err = uri.try_with_user_info("bad@user").unwrap_err();
     match err {
         crate::uri::UriError::ComponentConversion { component, .. } => {
             assert_eq!(component, crate::uri::Component::UserInfo);

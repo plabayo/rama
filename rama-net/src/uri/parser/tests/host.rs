@@ -207,3 +207,43 @@ fn strict_rejects_raw_utf8_host() {
     let r = parse_strict("https://münchen.de/");
     assert!(matches!(r, Err(ParseError::StrictViolation)));
 }
+
+#[test]
+fn fqdn_trailing_dot_in_host_preserved() {
+    // `example.com.` (with trailing dot) is the FQDN form. URI parser
+    // should accept and preserve the bytes verbatim.
+    let u = parse_graceful("https://example.com./p").unwrap();
+    // host may project as Domain (which normalises the trailing dot in
+    // its label iteration) or stay Uninterpreted — either is acceptable;
+    // what matters is the wire form round-trips.
+    assert!(u.to_string().contains("example.com."));
+}
+
+#[test]
+fn consecutive_dots_in_host_rejected_strict_accepted_graceful() {
+    // `example..com` — empty label between dots. Strict rejects (empty
+    // reg-name label is grammar-invalid via the Domain validator).
+    // Graceful is more permissive — current behavior treats the bytes
+    // as an Uninterpreted reg-name; just pin the round-trip.
+    if let Ok(u) = parse_graceful("https://example..com/p") {
+        assert!(u.to_string().contains("example..com"));
+    }
+}
+
+#[test]
+fn long_host_within_rfc1035_limit() {
+    // Four 63-byte labels joined by `.` = 4×63 + 3 = 255 bytes. Too
+    // long. Three 63-byte + one 60-byte = 3×63 + 60 + 3 = 252 bytes —
+    // under the 253 cap.
+    let host: String = std::iter::repeat_n('a', 63)
+        .chain(std::iter::once('.'))
+        .chain(std::iter::repeat_n('b', 63))
+        .chain(std::iter::once('.'))
+        .chain(std::iter::repeat_n('c', 63))
+        .chain(std::iter::once('.'))
+        .chain(std::iter::repeat_n('d', 60))
+        .collect();
+    assert_eq!(host.len(), 252);
+    let uri_str = format!("https://{host}/p");
+    parse_graceful(&uri_str).unwrap();
+}

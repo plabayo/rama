@@ -1189,6 +1189,37 @@ mod tests {
     }
 
     #[test]
+    fn eq_str_address_ipv6_mixed_case() {
+        // §6.2.2.1: hosts are case-insensitive. `Host::Address` parses
+        // the right-hand side via `IpAddr::from_str`, which already
+        // accepts mixed-case hex — verify both Display-form and
+        // mixed-case forms compare equal.
+        let h = Host::Address("fe80::1".parse().unwrap());
+        assert!(h == "fe80::1");
+        assert!(h == "FE80::1");
+        assert!(h == "Fe80::1");
+        // Canonical equivalent (fully-expanded) also matches via parse-equality.
+        assert!(h == "fe80:0:0:0:0:0:0:1");
+        // Different address — no match.
+        assert!(h != "fe80::2");
+    }
+
+    #[test]
+    fn eq_str_address_ipv4_mapped_ipv6_kept_distinct() {
+        // `127.0.0.1` parses as `IpAddr::V4`; `::ffff:127.0.0.1` parses
+        // as `IpAddr::V6`. They're different addresses to `std`, so
+        // `Host::Address(V4)` does not match the v4-mapped-v6 string.
+        // Pin behavior so a future relaxation is a conscious change.
+        let h4 = Host::Address("127.0.0.1".parse().unwrap());
+        assert!(h4 == "127.0.0.1");
+        assert!(h4 != "::ffff:127.0.0.1");
+
+        let h6 = Host::Address("::ffff:127.0.0.1".parse().unwrap());
+        assert!(h6 == "::ffff:127.0.0.1");
+        assert!(h6 != "127.0.0.1");
+    }
+
+    #[test]
     fn eq_str_brackets_compared_without_allocation() {
         // Bracketed form: stored bytes don't include `[...]`; the str
         // side must. We strip from `other` rather than `to_string()`
