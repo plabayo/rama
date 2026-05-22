@@ -102,6 +102,42 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         )
     }
 
+    /// Regression: the linger watchdog must fire even when the
+    /// pump itself is deallocated before the deadline. The
+    /// promote-cutover teardown path drops the per-flow ctx
+    /// (and the pump with it) right after the FIN send
+    /// completes; without a strong capture of the connection,
+    /// the watchdog `[weak self]` no-ops and the NWConnection
+    /// registration leaks.
+    func testLingerCancelsConnectionEvenAfterPumpDeallocated() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+
+        do {
+            let pump = NwTcpConnectionWritePump(
+                connection: mock,
+                queue: queue,
+                lingerCloseDeadline: .milliseconds(150),
+                onDrained: {}
+            )
+            pump.closeWhenDrained()
+            waitForQueueDrain(queue)
+            XCTAssertEqual(mock.sentChunks.count, 1, "FIN was sent")
+            XCTAssertEqual(mock.cancelCount, 0, "linger not yet fired")
+            // `pump` goes out of scope → deallocated.
+        }
+
+        // Wait past the linger deadline + slack.
+        Thread.sleep(forTimeInterval: 0.30)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "linger watchdog must cancel the connection even after the pump is deallocated"
+        )
+    }
+
     func testDrainOnNonReadyConnectionDoesNotSendFinOrArmWatchdog() {
         let mock = MockNwConnection()
         mock.transition(to: .preparing)

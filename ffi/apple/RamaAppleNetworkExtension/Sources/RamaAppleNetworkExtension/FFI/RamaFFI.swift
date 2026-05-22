@@ -16,9 +16,11 @@ struct RamaTransparentProxyFlowMetaBridge {
 struct RamaTransparentProxyRuleBridge {
     var remoteNetwork: String?
     var remotePrefix: UInt8?
+    var remotePort: UInt16?
     var localNetwork: String?
     var localPrefix: UInt8?
     var protocolRaw: UInt32
+    var exclude: Bool = false
 }
 
 struct RamaTransparentProxyConfigBridge {
@@ -139,6 +141,32 @@ final class UdpSessionCallbackBox {
         self.onClientReadDemand = onClientReadDemand
         self.onServerClosed = onServerClosed
     }
+}
+
+/// Holds the Rust→Swift "promote requested" callback for a TCP
+/// session.
+///
+/// Retained for the lifetime of the session; Rust may call
+/// `onPromoteRequest` at most once per session (the
+/// `PromoteHandle` CAS-guards the fire). The Swift consumer is
+/// responsible for ACKing via `confirmPromoted` after the
+/// cutover work completes.
+///
+/// Callbacks may fire from a Rust worker thread — the consumer
+/// MUST hop onto its per-flow dispatch queue before touching
+/// flow-scoped state.
+final class TcpPromoteCallbackBox {
+    let onPromoteRequest: () -> Void
+
+    init(onPromoteRequest: @escaping () -> Void) {
+        self.onPromoteRequest = onPromoteRequest
+    }
+}
+
+/// Bridge-level mirror of `RamaPromoteConfirmStatus`.
+enum RamaPromoteConfirmStatusBridge: UInt8 {
+    case ok = 0
+    case failed = 1
 }
 
 /// Holds the Rust→Swift egress callbacks for a TCP session.
@@ -382,6 +410,15 @@ private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawP
         box.onEgressReadDemand()
     }
 
+// ── Promote C callback ────────────────────────────────────────────────────────
+
+private let ramaTcpOnPromoteRequestCallback:
+    @convention(c) (UnsafeMutableRawPointer?) -> Void = { context in
+        guard let context else { return }
+        let box = Unmanaged<TcpPromoteCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        box.onPromoteRequest()
+    }
+
 final class RamaTransparentProxyEngineHandle {
     // Serialises `enginePtr` access so `stop()` can't free the engine
     // while another thread is mid-FFI call. The session handles already
@@ -471,12 +508,14 @@ final class RamaTransparentProxyEngineHandle {
                             Int(cRule.remote_network_utf8_len)
                         ),
                         remotePrefix: cRule.remote_prefix_is_set ? cRule.remote_prefix : nil,
+                        remotePort: cRule.remote_port_is_set ? cRule.remote_port : nil,
                         localNetwork: stringFromUtf8(
                             cRule.local_network_utf8,
                             Int(cRule.local_network_utf8_len)
                         ),
                         localPrefix: cRule.local_prefix_is_set ? cRule.local_prefix : nil,
-                        protocolRaw: cRule.protocol
+                        protocolRaw: cRule.protocol,
+                        exclude: cRule.exclude
                     )
                 )
             }
@@ -631,6 +670,11 @@ final class RamaTcpSessionHandle {
     private let callbackBox: Unmanaged<TcpSessionCallbackBox>
     /// Retained while the session is alive so Rust can call the egress write callbacks.
     private var egressCallbackBox: Unmanaged<TcpEgressCallbackBox>?
+    /// Retained while the session is alive so Rust can call the
+    /// `on_promote_request` callback when the in-Rust service
+    /// invokes `PromoteHandle::into_passthrough`. `nil` until
+    /// `registerPromoteCallback` is called.
+    private var promoteCallbackBox: Unmanaged<TcpPromoteCallbackBox>?
     private var cancelled = false
 
     fileprivate init(sessionPtr: OpaquePointer, callbackBox: Unmanaged<TcpSessionCallbackBox>) {
@@ -645,6 +689,8 @@ final class RamaTcpSessionHandle {
         cancelled = true
         let egressBox = egressCallbackBox
         egressCallbackBox = nil
+        let promoteBox = promoteCallbackBox
+        promoteCallbackBox = nil
         lock.unlock()
 
         // Free the Rust session before releasing the boxes:
@@ -658,6 +704,7 @@ final class RamaTcpSessionHandle {
         }
         callbackBox.release()
         egressBox?.release()
+        promoteBox?.release()
     }
 
     /// Deliver bytes from the intercepted flow to the Rust session.
@@ -820,6 +867,91 @@ final class RamaTcpSessionHandle {
         guard !cancelled, let s = sessionPtr else { return }
         cancelled = true
         rama_transparent_proxy_tcp_session_cancel(s)
+    }
+
+    /// Register a callback fired by Rust when the in-Rust per-flow
+    /// service invokes `PromoteHandle::into_passthrough` on this
+    /// session.
+    ///
+    /// Idempotent: a later call replaces the previous registration
+    /// and releases the previous Swift callback box. The callback
+    /// may fire from any Tokio worker thread; the consumer is
+    /// responsible for hopping to its per-flow dispatch queue
+    /// before touching flow-scoped state.
+    ///
+    /// After the cutover work completes, the consumer MUST call
+    /// `confirmPromoted(_:reason:)` to resolve Rust's pending
+    /// future. If no callback is ever registered, the in-Rust
+    /// `into_passthrough` resolves with `EgressUnavailable` and
+    /// the layer falls through to the in-Rust data path.
+    ///
+    /// CONTRACT: `onPromoteRequest` MUST NOT synchronously call
+    /// `cancel()` on this same session. Rust's `fire()` holds the
+    /// session's `callback_active` lock across the C-trampoline
+    /// call to keep this box alive — a re-entrant `cancel()` would
+    /// deadlock waiting for that same lock. Hop to a dispatch
+    /// queue inside `onPromoteRequest` and return immediately, as
+    /// the production callsite in `TransparentProxyCore` does.
+    /// `confirmPromoted(_:reason:)` is safe to call synchronously.
+    func registerPromoteCallback(_ onPromoteRequest: @escaping () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+
+        let box = Unmanaged.passRetained(
+            TcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest))
+        let previous = promoteCallbackBox
+        promoteCallbackBox = box
+
+        let callbacks = RamaTransparentProxyTcpPromoteCallbacks(
+            context: box.toOpaque(),
+            on_promote_request: ramaTcpOnPromoteRequestCallback
+        )
+        rama_transparent_proxy_tcp_session_register_promote_callbacks(s, callbacks)
+
+        // Drop the previous box only after the new registration
+        // is in place so Rust never sees a stale pointer.
+        previous?.release()
+    }
+
+    /// ACK an in-flight `PromoteHandle::into_passthrough` cutover.
+    ///
+    /// - `.ok` — Rust drops its ingress sender; the service sees
+    ///   EOF after draining in-flight bytes; `into_passthrough`
+    ///   resolves with `Ok(())`.
+    /// - `.failed` — surfaces as `PromoteError::SwiftCutoverFailed
+    ///   { reason }`; the in-Rust data path keeps running
+    ///   unchanged.
+    ///
+    /// Calling without an in-flight promote (e.g. before any
+    /// service ran `into_passthrough`, or after a previous
+    /// confirm) is a no-op.
+    func confirmPromoted(
+        _ status: RamaPromoteConfirmStatusBridge,
+        reason: String? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return }
+
+        let cStatus = status.rawValue
+        if let reason, !reason.isEmpty {
+            // Pass the raw UTF-8 bytes + actual byte count rather
+            // than relying on `strlen` over a NUL-terminated copy
+            // — reason strings could contain interior NULs, and
+            // the Rust side reads exactly `len` bytes.
+            let utf8 = Array(reason.utf8)
+            utf8.withUnsafeBufferPointer { buf in
+                let ptr = buf.baseAddress.map {
+                    UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self)
+                }
+                rama_transparent_proxy_tcp_session_confirm_promoted(
+                    s, cStatus, ptr, utf8.count)
+            }
+        } else {
+            rama_transparent_proxy_tcp_session_confirm_promoted(
+                s, cStatus, nil, 0)
+        }
     }
 }
 

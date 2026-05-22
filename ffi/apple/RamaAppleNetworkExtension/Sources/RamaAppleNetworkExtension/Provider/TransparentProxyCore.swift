@@ -210,6 +210,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
             stateQueue.sync { self.udpContexts[ObjectIdentifier(flow)]?.writer }
         }
+
+        /// Test-only accessor for the per-flow TCP context. Used by
+        /// the promote-cutover integration tests to drive
+        /// `beginPromoteCutover` directly + inspect the resulting
+        /// state (mode transition, forwarder presence). Same
+        /// gating rationale as the UDP accessor above.
+        func testInspectTcpContext(for flow: AnyObject) -> TcpFlowContext? {
+            stateQueue.sync { self.tcpContexts[ObjectIdentifier(flow)] }
+        }
     #endif
 
     // MARK: - Logging helpers
@@ -294,7 +303,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                 self?.removeTcpFlow(flowId)
             },
             onDrained: { [weak ctx] in
-                ctx?.session?.signalServerDrain()
+                // Mode-aware: post-cutover the forwarder owns
+                // the S→C write path and needs the drain edge
+                // to replay any `.paused` chunk it buffered.
+                // Pre-cutover it routes to Rust as before.
+                if let fwd = ctx?.directForwarder {
+                    fwd.onClientPumpDrained()
+                } else {
+                    ctx?.session?.signalServerDrain()
+                }
             }
         )
         ctx.clientWritePump = writer
@@ -319,17 +336,27 @@ final class TransparentProxyCore: @unchecked Sendable {
                     }
                 },
                 onServerClosed: { [weak self, weak ctx] in
-                    ctx?.clientWritePump?.closeWhenDrained { wasOpened in
-                        if wasOpened {
-                            flow.closeReadWithError(nil)
-                            flow.closeWriteWithError(nil)
-                        } else {
-                            let error = tcpUpstreamUnavailableError()
-                            flow.closeReadWithError(error)
-                            flow.closeWriteWithError(error)
+                    // Hop to flowQueue before touching ctx — fires
+                    // from a Rust worker thread, and `ctx.mode`
+                    // is queue-confined.
+                    flowQueue.async { [weak self, weak ctx] in
+                        guard let ctx else { return }
+                        if ctx.mode != .viaRust {
+                            ctx.directForwarder?.markRustS2CDone()
+                            return
                         }
-                        ctx?.connection?.cancel()
-                        self?.removeTcpFlow(flowId)
+                        ctx.clientWritePump?.closeWhenDrained { wasOpened in
+                            if wasOpened {
+                                flow.closeReadWithError(nil)
+                                flow.closeWriteWithError(nil)
+                            } else {
+                                let error = tcpUpstreamUnavailableError()
+                                flow.closeReadWithError(error)
+                                flow.closeWriteWithError(error)
+                            }
+                            ctx.connection?.cancel()
+                            self?.removeTcpFlow(flowId)
+                        }
                     }
                 }
             ) ?? .passthrough
@@ -455,6 +482,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             ctx?.clientReadPump = nil
             ctx?.clientWritePump?.cancel()
             ctx?.clientWritePump = nil
+            // Drive the direct forwarder to terminal explicitly. In
+            // `.promoted` mode the forwarder owns the data path and
+            // would otherwise unwind nondeterministically via its
+            // own read-loop errors. Its `onTerminal` re-closes the
+            // flow with `nil` — harmless because Apple's
+            // `closeReadWithError` keeps the first error.
+            ctx?.directForwarder?.cancel()
+            ctx?.directForwarder = nil
             ctx?.session?.cancel()
             self?.removeTcpFlow(flowId)
         }
@@ -481,7 +516,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                         queue: flowQueue,
                         lingerCloseDeadline: .milliseconds(Int(lingerCloseMs)),
                         onDrained: { [weak ctx] in
-                            ctx?.session?.signalEgressDrain()
+                            // Mode-aware: post-cutover the
+                            // forwarder owns the C→S write path.
+                            // See the symmetric `clientWritePump`
+                            // construction for context.
+                            if let fwd = ctx?.directForwarder {
+                                fwd.onEgressPumpDrained()
+                            } else {
+                                ctx?.session?.signalEgressDrain()
+                            }
                         }
                     )
                     ctx.egressWritePump = writePump
@@ -503,7 +546,20 @@ final class TransparentProxyCore: @unchecked Sendable {
                             }
                         },
                         onCloseEgress: { [weak ctx] in
-                            ctx?.egressWritePump?.closeWhenDrained()
+                            // Mode-aware: skip the FIN-via-pump
+                            // path when a direct forwarder owns
+                            // the egress write side. The
+                            // forwarder will emit its own FIN
+                            // once the kernel C→S direction
+                            // hits EOF.
+                            flowQueue.async { [weak ctx] in
+                                guard let ctx else { return }
+                                if ctx.mode != .viaRust {
+                                    ctx.directForwarder?.markRustC2SDone()
+                                    return
+                                }
+                                ctx.egressWritePump?.closeWhenDrained()
+                            }
                         }
                     )
 
@@ -576,6 +632,13 @@ final class TransparentProxyCore: @unchecked Sendable {
                                     readPump?.cancel()
                                     ctx?.clientWritePump?.cancel()
                                     ctx?.egressWritePump?.cancel()
+                                    // Same rationale as
+                                    // `tearDownPostReady`: drive the
+                                    // direct forwarder to terminal so
+                                    // `.promoted`-mode teardown is
+                                    // deterministic.
+                                    ctx?.directForwarder?.cancel()
+                                    ctx?.directForwarder = nil
                                     session?.cancel()
                                     ctx?.clientReadPump = nil
                                     ctx?.egressReadPump = nil
@@ -592,6 +655,28 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 onTerminal: terminal.dispatch
                             )
                             ctx.clientReadPump = flowReadPump
+
+                            // Promote cutover registration. Lands
+                            // here (after every pump exists) so
+                            // an in-Rust service that calls
+                            // `PromoteHandle::into_passthrough` —
+                            // which it can only do once it has
+                            // bytes to process, i.e. after the
+                            // kernel flow is open and reads start
+                            // landing — observes a fully-armed
+                            // cutover handler.
+                            session.registerPromoteCallback {
+                                [weak self, weak ctx] in
+                                flowQueue.async { [weak self, weak ctx] in
+                                    self?.beginPromoteCutover(
+                                        ctx: ctx,
+                                        flow: flow,
+                                        flowQueue: flowQueue,
+                                        flowId: flowId
+                                    )
+                                }
+                            }
+
                             flowReadPump.requestRead()
                         }
                     }
@@ -670,6 +755,114 @@ final class TransparentProxyCore: @unchecked Sendable {
 
         connection.start(queue: flowQueue)
         return true
+    }
+
+    // MARK: - Promote cutover orchestration
+
+    /// Coordinate a service-initiated promote: cancel the
+    /// Rust-bound read pumps with carryover routed into a fresh
+    /// `TcpDirectForwarder`, then ACK Rust so its in-flight
+    /// service drains and exits.
+    ///
+    /// Runs on the per-flow `flowQueue`. Assumes all four pumps,
+    /// the kernel flow, and the egress `NWConnection` are live
+    /// (the promote callback is registered only after that
+    /// point in `handleTcpFlow`).
+    ///
+    /// Failure modes that ACK `.failed` instead of `.ok`:
+    ///   * Mode already advanced past `.viaRust` (e.g. double-
+    ///     fire). Idempotent: subsequent calls are no-ops.
+    ///   * Connection or pumps already torn down (a fast hard-
+    ///     error path raced ahead). Confirm with a diagnostic
+    ///     reason so the service falls through to the in-Rust
+    ///     data path.
+    ///
+    /// `internal` (not `private`) so the integration tests in
+    /// `PromoteCutoverIntegrationTests` can call this directly
+    /// with mock flows / connections — exercising the full
+    /// cutover sequence without needing a real Rust service to
+    /// invoke `into_passthrough` from the engine side.
+    func beginPromoteCutover<F: TcpFlowLike>(
+        ctx: TcpFlowContext?,
+        flow: F,
+        flowQueue: DispatchQueue,
+        flowId: ObjectIdentifier
+    ) {
+        guard let ctx else { return }
+        guard ctx.mode == .viaRust else {
+            // Idempotent: a later promote-callback invocation
+            // (e.g. test-only manual fire) lands here. No-op.
+            return
+        }
+        guard let session = ctx.session,
+              let connection = ctx.connection,
+              let clientWritePump = ctx.clientWritePump,
+              let egressWritePump = ctx.egressWritePump
+        else {
+            logDebug(
+                "promote: flow not in a promotable state (missing session/connection/pumps); confirming failed"
+            )
+            ctx.session?.confirmPromoted(
+                .failed, reason: "egress not ready")
+            return
+        }
+
+        ctx.mode = .promoted
+        logTrace("promote: cutover begin")
+
+        let forwarder = TcpDirectForwarder(
+            flow: flow,
+            connection: connection,
+            clientWritePump: clientWritePump,
+            egressWritePump: egressWritePump,
+            queue: flowQueue,
+            logger: { [weak self] message in self?.logFlowMessage(message) },
+            onTerminal: { [weak self, weak flow] in
+                // Both direct directions done. Close the
+                // kernel flow read+write sides + drop the
+                // per-flow registry entry. The egress
+                // NWConnection's lifecycle is owned by
+                // egressWritePump (drain → FIN → linger).
+                flow?.closeReadWithError(nil)
+                flow?.closeWriteWithError(nil)
+                self?.removeTcpFlow(flowId)
+            }
+        )
+        ctx.directForwarder = forwarder
+
+        // Cancel the Rust-bound read pumps. Their in-flight
+        // bytes (the `.paused` replay buffer plus any
+        // outstanding `readData` / `receive` result) are
+        // routed into the forwarder's per-direction
+        // buffers, to be flushed FIFO after Rust's tail
+        // when the corresponding Rust-done signal arrives.
+        //
+        // `onComplete` fires the read-drain barrier: only
+        // then can the forwarder issue its own
+        // `flow.readData` / `connection.receive` without
+        // racing the in-flight kernel-side request.
+        ctx.clientReadPump?.cancelForPromote(
+            onCarryover: { [weak forwarder] data in
+                forwarder?.acceptClientCarryover(data)
+            },
+            onComplete: { [weak forwarder] in
+                forwarder?.markClientReadDrained()
+            })
+        ctx.egressReadPump?.cancelForPromote(
+            onCarryover: { [weak forwarder] data in
+                forwarder?.acceptEgressCarryover(data)
+            },
+            onComplete: { [weak forwarder] in
+                forwarder?.markEgressReadDrained()
+            })
+
+        // ACK the cutover. Rust drops its ingress + egress
+        // senders; the service drains its read loops + writes
+        // its responses to the existing write pumps. Once
+        // Rust signals `onServerClosed` / `onCloseEgress`,
+        // the mode-aware handlers transition the forwarder's
+        // per-direction state to `.active`.
+        session.confirmPromoted(.ok)
     }
 
     // MARK: - Per-flow handling (UDP)

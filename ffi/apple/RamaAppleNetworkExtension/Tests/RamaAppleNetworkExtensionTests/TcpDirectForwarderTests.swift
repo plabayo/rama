@@ -1,0 +1,816 @@
+import Foundation
+import Network
+import XCTest
+
+@testable import RamaAppleNetworkExtension
+
+/// State-machine tests for `TcpDirectForwarder` — the Swift-only
+/// kernel ↔ NWConnection direct data path that takes over after a
+/// successful promote cutover.
+///
+/// All tests drive the forwarder against `MockTcpFlow` and
+/// `MockNwConnection`. The forwarder is constructed against real
+/// `TcpClientWritePump` / `NwTcpConnectionWritePump` instances —
+/// those pumps are independently covered by their own test
+/// modules, so we trust their enqueue/drain semantics and focus
+/// purely on the forwarder's coordination.
+///
+/// Test naming convention:
+///   * `c2s` / `s2c` directions
+///   * `buffering` → `active` → `finishing` → `finished` phases
+///   * `markRustC2SDone` / `markRustS2CDone` cause the transition
+///   * `acceptClientCarryover` / `acceptEgressCarryover` capture
+///     in-flight bytes from the read pumps
+final class TcpDirectForwarderTests: XCTestCase {
+
+    // MARK: - Fixture
+
+    private final class Harness {
+        let flow = MockTcpFlow()
+        let conn = MockNwConnection()
+        let queue: DispatchQueue
+        let clientWritePump: TcpClientWritePump
+        let egressWritePump: NwTcpConnectionWritePump
+        let forwarder: TcpDirectForwarder
+        var terminalCount = 0
+        /// Background thread that auto-fires pending send
+        /// completions on the mock connection. The egress
+        /// write pump serialises sends — each `send` call
+        /// awaits its completion before the next. Without
+        /// auto-completing, the FIN-on-drain (now
+        /// async-completion based, after the audit fix) never
+        /// fires and `c2sPhase = .finished` never transitions,
+        /// hanging every C→S finish test.
+        private let stopAutoCompleter = AtomicBool()
+
+        /// `preDrained` = `true` (default) auto-fires both
+        /// read-drain barriers (`markClientReadDrained` +
+        /// `markEgressReadDrained`) as if `cancelForPromote`
+        /// had reported the old pumps as idle. Tests that
+        /// specifically exercise the barrier behaviour pass
+        /// `false` and fire the signals themselves.
+        ///
+        /// `autoCompleter` = `true` (default) runs a background
+        /// loop that completes the mock connection's pending
+        /// sends as they arrive — required by every test that
+        /// expects normal `c2sPhase = .finished` progression.
+        /// Backpressure tests pass `false` and trigger completions
+        /// manually so the egress pump's `pendingBytes` can
+        /// actually exceed `writePumpMaxPendingBytes` and
+        /// force `.paused`.
+        init(_ tag: String, preDrained: Bool = true, autoCompleter: Bool = true) {
+            queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
+            // Move connection to .ready so the egress write pump
+            // is willing to send. Real production wires this via
+            // stateUpdateHandler; here we transition directly.
+            conn.transition(to: .ready)
+            // Forward-declared ref so the pumps' drain callbacks
+            // can route into the forwarder (set below). Mirrors
+            // the production indirection via `TcpFlowContext`.
+            var forwarderRef: TcpDirectForwarder? = nil
+            clientWritePump = TcpClientWritePump(
+                flow: flow, queue: queue,
+                logger: { _ in },
+                onTerminalError: { _ in },
+                onDrained: { forwarderRef?.onClientPumpDrained() })
+            egressWritePump = NwTcpConnectionWritePump(
+                connection: conn, queue: queue,
+                lingerCloseDeadline: .milliseconds(100),
+                onDrained: { forwarderRef?.onEgressPumpDrained() })
+            // Mark client write pump opened so it accepts enqueues.
+            clientWritePump.markOpened()
+
+            var capturedTerminalRef: (() -> Void)? = nil
+            self.forwarder = TcpDirectForwarder(
+                flow: flow, connection: conn,
+                clientWritePump: clientWritePump,
+                egressWritePump: egressWritePump,
+                queue: queue,
+                logger: { _ in },
+                onTerminal: { capturedTerminalRef?() }
+            )
+            forwarderRef = self.forwarder
+            capturedTerminalRef = { [weak self] in
+                guard let self else { return }
+                // Hop to queue to ensure consistent ordering for
+                // assertions.
+                self.queue.async { self.terminalCount += 1 }
+            }
+            if preDrained {
+                forwarder.markClientReadDrained()
+                forwarder.markEgressReadDrained()
+                queue.sync {}
+            }
+            // Spin up the auto-completer unless the test opts out.
+            // Stops on `deinit`.
+            if autoCompleter {
+                let stop = stopAutoCompleter
+                let conn = conn
+                DispatchQueue.global().async {
+                    while !stop.load() {
+                        _ = conn.completePendingSend(error: nil)
+                        Thread.sleep(forTimeInterval: 0.001)
+                    }
+                }
+            }
+        }
+
+        deinit {
+            stopAutoCompleter.store(true)
+        }
+
+        /// Wait until the queue has processed everything currently
+        /// enqueued. Tight bound via `sync` barrier.
+        func drain() {
+            queue.sync {}
+        }
+    }
+
+    // MARK: - Buffering phase
+
+    /// In `.buffering` no read loops should fire — the forwarder
+    /// is waiting for the per-direction Rust-done signal. Verify
+    /// the flow / connection see no `readData` / `receive` calls
+    /// just from constructing the forwarder + accepting carryover.
+    func testBufferingPhaseDoesNotIssueReads() {
+        let h = Harness("buffering.noreads")
+        h.forwarder.acceptClientCarryover(Data([1, 2, 3]))
+        h.forwarder.acceptEgressCarryover(Data([4, 5, 6]))
+        h.drain()
+
+        XCTAssertEqual(h.flow.pendingReadCount, 0,
+            "no flow.readData until C→S direction is `.active`")
+        XCTAssertEqual(h.conn.pendingReceiveCount, 0,
+            "no connection.receive until S→C direction is `.active`")
+        XCTAssertEqual(h.forwarder.c2sPhase, .buffering)
+        XCTAssertEqual(h.forwarder.s2cPhase, .buffering)
+    }
+
+    /// `markRustC2SDone` flushes the C→S carryover buffer to the
+    /// egress write pump in FIFO order, then issues the first
+    /// `flow.readData`. Same shape for `markRustS2CDone` →
+    /// clientWritePump + `connection.receive`.
+    ///
+    /// Note: the egress write pump serialises sends — it waits
+    /// for `completion` of each send before issuing the next.
+    /// The test fires send completions in a background spin so
+    /// the pump can drain both buffered chunks.
+    func testRustDoneFlushesCarryoverThenStartsReadLoop() {
+        let h = Harness("rustdone.flush")
+        let chunk1 = Data([0xAA, 0xBB])
+        let chunk2 = Data([0xCC, 0xDD, 0xEE])
+        h.forwarder.acceptClientCarryover(chunk1)
+        h.forwarder.acceptClientCarryover(chunk2)
+        h.drain()
+
+        // Pre-transition: nothing should reach the NWConnection.
+        XCTAssertEqual(h.conn.sentChunks.count, 0)
+
+        // Background completer: fire `send` completions as they
+        // queue up, so the pump can serially drain its queue.
+        let stopCompleter = atomicFlag()
+        DispatchQueue.global().async {
+            while !stopCompleter.load() {
+                _ = h.conn.completePendingSend(error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { stopCompleter.store(true) }
+
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        waitFor("egressWritePump dispatched both chunks", timeout: 2.0) {
+            h.conn.sentChunks.count >= 2
+        }
+
+        // FIFO ordering preserved.
+        XCTAssertEqual(h.conn.sentChunks[0].content, chunk1)
+        XCTAssertEqual(h.conn.sentChunks[1].content, chunk2)
+        XCTAssertEqual(h.forwarder.c2sPhase, .active)
+        // First flow.readData should be in flight (issued after
+        // buffer flush).
+        waitFor("forwarder issued first flow.readData", timeout: 1.0) {
+            h.flow.pendingReadCount >= 1
+        }
+    }
+
+    /// Buffered EOF (`acceptClientCarryover(nil)`) seen during
+    /// `.buffering` makes the direction skip the read loop and
+    /// emit a FIN via the egress write pump. `.finished` is set
+    /// once the FIN's `send` completion fires (the harness's
+    /// auto-completer fires it for us).
+    func testBufferedEofSkipsReadLoopOnTransitionToActive() {
+        let h = Harness("eof.early")
+        h.forwarder.acceptClientCarryover(.none)  // EOF
+        h.drain()
+
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        XCTAssertEqual(h.flow.pendingReadCount, 0,
+            "EOF buffered during cutover MUST suppress the read loop")
+        waitFor("direction reaches .finished after FIN drain", timeout: 2.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+    }
+
+    // MARK: - Active phase — direct read loops
+
+    /// In the `.active` phase the forwarder reads from the flow
+    /// and enqueues bytes to the egress write pump, which forwards
+    /// them to the connection. End-to-end byte fidelity.
+    func testActiveC2SReadLoopForwardsBytesToConnection() {
+        let h = Harness("active.c2s")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, 1)
+
+        let payload = Data([0x01, 0x02, 0x03, 0x04, 0x05])
+        h.flow.completeRead(data: payload, error: nil)
+        waitFor("connection received forwarded chunk", timeout: 1.0) {
+            h.conn.sentChunks.contains(where: { $0.content == payload })
+        }
+        // Forwarder loops — next readData should already be in
+        // flight.
+        waitFor("forwarder issued next flow.readData", timeout: 1.0) {
+            h.flow.pendingReadCount >= 1
+        }
+    }
+
+    /// S→C symmetric: forwarder receives from NWConnection, sends
+    /// to flow via clientWritePump.
+    func testActiveS2CReceiveLoopForwardsBytesToFlow() {
+        let h = Harness("active.s2c")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+
+        let payload = Data([0xAA, 0xBB, 0xCC])
+        _ = h.conn.completePendingReceive(data: payload, isComplete: false, error: nil)
+        waitFor("flow received forwarded chunk", timeout: 1.0) {
+            h.flow.writes.contains(payload)
+        }
+        waitFor("forwarder issued next connection.receive", timeout: 1.0) {
+            h.conn.pendingReceiveCount >= 1
+        }
+    }
+
+    // MARK: - Finishing / terminal
+
+    /// Kernel half-close (flow.readData returns nil) transitions
+    /// the C→S direction to `.finished` and begins FIN-on-the-
+    /// connection via the egress write pump.
+    func testKernelEofFinishesC2SDirection() {
+        let h = Harness("eof.kernel")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        // Drive the first read to EOF.
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("c2s direction finished", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+    }
+
+    /// NWConnection EOF (isComplete=true) finishes the S→C
+    /// direction. With clientWritePump.closeWhenDrained, the
+    /// transition to `.finished` is paced by the pump's actual
+    /// drain.
+    func testConnectionCompleteFinishesS2CDirection() {
+        let h = Harness("eof.conn")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true, error: nil)
+        waitFor("s2c direction finished", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+    }
+
+    /// Both directions finished → onTerminal fires exactly once.
+    func testBothDirectionsFinishedFiresTerminalOnce() {
+        let h = Harness("both.finished")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        h.flow.completeRead(data: nil, error: nil)
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true, error: nil)
+
+        waitFor("terminal fired", timeout: 2.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        // Hammer additional poll iterations to make sure no
+        // duplicate fires happen.
+        h.drain()
+        XCTAssertEqual(h.terminalCount, 1,
+            "onTerminal must fire exactly once across the both-directions-done window")
+    }
+
+    /// External `cancel()` short-circuits to terminal regardless
+    /// of phase. `onTerminal` still fires exactly once.
+    func testExternalCancelFiresTerminalImmediately() {
+        let h = Harness("ext.cancel")
+        h.forwarder.cancel()
+        waitFor("terminal fired on cancel", timeout: 1.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        XCTAssertEqual(h.terminalCount, 1)
+        XCTAssertEqual(h.forwarder.c2sPhase, .finished)
+        XCTAssertEqual(h.forwarder.s2cPhase, .finished)
+    }
+
+    /// Double cancel is a no-op on the second call.
+    func testCancelIsIdempotent() {
+        let h = Harness("ext.cancel.idem")
+        h.forwarder.cancel()
+        h.forwarder.cancel()
+        h.drain()
+        // Allow the async terminal hop to land.
+        waitFor("terminal hop landed", timeout: 1.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        XCTAssertEqual(h.terminalCount, 1)
+    }
+
+    /// `acceptClientCarryover` AFTER the direction has already
+    /// transitioned to `.active` is a no-op — the read loop is
+    /// already pulling from the kernel, and routing additional
+    /// carryover would put bytes out of order. Defensive guard.
+    func testAcceptCarryoverAfterActiveIsIgnored() {
+        let h = Harness("late.carryover")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        // Try to inject after .active. Should be ignored — no
+        // extra send to the connection should happen.
+        let initialSends = h.conn.sentChunks.count
+        h.forwarder.acceptClientCarryover(Data([0xFF, 0xFE]))
+        h.drain()
+        XCTAssertEqual(h.conn.sentChunks.count, initialSends,
+            "late carryover must not be enqueued")
+    }
+
+    // MARK: - Multi-chunk FIFO flush ordering
+
+    /// Many carryover chunks in both directions must flush in
+    /// strict FIFO order to the respective write pumps. Order
+    /// matters: a service that called `into_passthrough` at a
+    /// clean record boundary can still rely on byte-order being
+    /// preserved across the cutover.
+    func testCarryoverFlushPreservesFifoOrderManyChunks() {
+        let h = Harness("multi.chunk.fifo")
+        let chunks = (0..<8).map { idx -> Data in
+            Data([UInt8(idx), 0xA0, 0xB0])
+        }
+        for c in chunks {
+            h.forwarder.acceptClientCarryover(c)
+        }
+        h.drain()
+
+        let stopCompleter = AtomicBool()
+        DispatchQueue.global().async {
+            while !stopCompleter.load() {
+                _ = h.conn.completePendingSend(error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { stopCompleter.store(true) }
+
+        h.forwarder.markRustC2SDone()
+        waitFor("all chunks dispatched", timeout: 2.0) {
+            h.conn.sentChunks.count >= chunks.count
+        }
+
+        for (idx, expected) in chunks.enumerated() {
+            XCTAssertEqual(h.conn.sentChunks[idx].content, expected,
+                "FIFO violation at idx \(idx)")
+        }
+    }
+
+    /// Mixed carryover: data then EOF in the SAME direction. The
+    /// data must flush, then the direction transitions straight
+    /// to `.finished` without starting a read loop.
+    func testCarryoverDataThenEofFlushesDataThenFinishes() {
+        let h = Harness("data.then.eof")
+        let chunk = Data([0x42, 0x43])
+        h.forwarder.acceptClientCarryover(chunk)
+        h.forwarder.acceptClientCarryover(.none)  // EOF
+        h.drain()
+
+        let stopCompleter = AtomicBool()
+        DispatchQueue.global().async {
+            while !stopCompleter.load() {
+                _ = h.conn.completePendingSend(error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { stopCompleter.store(true) }
+
+        h.forwarder.markRustC2SDone()
+        waitFor("data chunk dispatched", timeout: 2.0) {
+            h.conn.sentChunks.contains { $0.content == chunk }
+        }
+        waitFor("direction finished", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+        XCTAssertEqual(h.flow.pendingReadCount, 0,
+            "buffered EOF must suppress the read loop even with prior data")
+    }
+
+    /// Egress side: buffered EOF (`acceptEgressCarryover(.none)`)
+    /// also fast-paths to `.finished`. Symmetric guarantee to
+    /// `testBufferedEofSkipsReadLoopOnTransitionToActive`.
+    func testEgressBufferedEofSkipsReceiveLoopOnTransitionToActive() {
+        let h = Harness("egress.eof.early")
+        h.forwarder.acceptEgressCarryover(.none)
+        h.drain()
+
+        h.forwarder.markRustS2CDone()
+
+        // The pump's `closeWhenDrained` is paced by an async
+        // completion; spin until the direction settles.
+        waitFor("direction finished", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+        XCTAssertEqual(h.conn.pendingReceiveCount, 0,
+            "EOF buffered during cutover MUST suppress the receive loop")
+    }
+
+    // MARK: - Direction independence
+
+    /// Kernel EOF closes C→S without affecting S→C. The forwarder
+    /// keeps reading from the connection until that direction
+    /// hits its own EOF.
+    func testKernelEofDoesNotAffectS2CDirection() {
+        let h = Harness("dir.independence.kernel")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        // Kernel half-close.
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("c2s finished", timeout: 2.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+
+        // S→C is still active and reading from connection.
+        XCTAssertEqual(h.forwarder.s2cPhase, .active)
+        XCTAssertGreaterThan(h.conn.pendingReceiveCount, 0,
+            "S→C must keep receiving after C→S EOF")
+    }
+
+    /// NWConnection EOF closes S→C without affecting C→S.
+    func testConnectionEofDoesNotAffectC2SDirection() {
+        let h = Harness("dir.independence.conn")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(
+            data: nil, isComplete: true, error: nil)
+        waitFor("s2c finished", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+        XCTAssertEqual(h.forwarder.c2sPhase, .active)
+        XCTAssertGreaterThan(h.flow.pendingReadCount, 0)
+    }
+
+    // MARK: - External cancel under various phases
+
+    /// External `cancel()` while a `flow.readData` is in flight
+    /// must terminate cleanly. Late completions (kernel callback
+    /// firing post-cancel) must not crash.
+    func testExternalCancelDuringActiveWithInFlightReadIsClean() {
+        let h = Harness("cancel.during.active")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, 1)
+
+        h.forwarder.cancel()
+        waitFor("terminal fired", timeout: 1.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        XCTAssertEqual(h.terminalCount, 1)
+
+        // Late kernel callback — must not crash, must not
+        // cause additional terminal fires.
+        h.flow.completeRead(data: Data([0xDE, 0xAD]), error: nil)
+        h.drain()
+        XCTAssertEqual(h.terminalCount, 1,
+            "post-cancel late callback must not re-fire terminal")
+    }
+
+    /// External cancel while in `.finishing` (FIN already requested,
+    /// pump still draining) terminates cleanly.
+    func testExternalCancelDuringFinishingIsClean() {
+        let h = Harness("cancel.during.finishing")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(
+            data: nil, isComplete: true, error: nil)
+        // We are now in `.finishing` waiting for the
+        // clientWritePump.closeWhenDrained completion to fire
+        // → `.finished`. Cancel pre-empts.
+        h.forwarder.cancel()
+        waitFor("terminal fired", timeout: 1.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        XCTAssertEqual(h.terminalCount, 1)
+    }
+
+    /// Cancel during `.buffering` with carryover already
+    /// captured. Buffer must be dropped; terminal fires once.
+    func testExternalCancelDuringBufferingWithCarryoverIsClean() {
+        let h = Harness("cancel.during.buffering")
+        h.forwarder.acceptClientCarryover(Data([0xCA, 0xFE]))
+        h.forwarder.acceptEgressCarryover(Data([0xBE, 0xEF]))
+        h.drain()
+
+        h.forwarder.cancel()
+        waitFor("terminal fired", timeout: 1.0) {
+            h.queue.sync { h.terminalCount } > 0
+        }
+        XCTAssertEqual(h.terminalCount, 1)
+        // Carryover should have been dropped, not flushed (we
+        // cancelled before the Rust-done signals).
+        XCTAssertEqual(h.conn.sentChunks.count, 0,
+            "cancel during buffering must NOT flush carryover")
+    }
+
+    // MARK: - Write-pump `.closed` mid-loop
+
+    /// If the egress write pump reports `.closed` mid-read-loop,
+    /// the forwarder transitions C→S to `.finished` without
+    /// trying to issue more reads.
+    ///
+    /// We force the pump to `.closed` by cancelling it directly
+    /// (its `core.prepareCancel` flips the lifecycle). The
+    /// forwarder's enqueue check picks this up at the next
+    /// iteration.
+    func testEgressWritePumpClosedTerminatesC2SDirection() {
+        let h = Harness("egress.pump.closed")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, 1)
+
+        // Cancel the egress pump out from under the forwarder.
+        h.egressWritePump.cancel()
+        h.drain()
+
+        // Deliver bytes — the forwarder's enqueue will return
+        // `.closed`, triggering C→S finish.
+        h.flow.completeRead(data: Data([0x01, 0x02]), error: nil)
+        waitFor("c2s finished after pump closed", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+    }
+
+    /// Symmetric: clientWritePump `.closed` during S→C loop.
+    func testClientWritePumpClosedTerminatesS2CDirection() {
+        let h = Harness("client.pump.closed")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+
+        h.clientWritePump.cancel()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(
+            data: Data([0xAA, 0xBB]),
+            isComplete: false, error: nil)
+        waitFor("s2c finished after pump closed", timeout: 1.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+    }
+
+    // MARK: - Phased ordering: kernel EOF arrives during read
+
+    /// Kernel error (NSError) closes C→S the same as EOF.
+    /// Treating errors as "direction done" is the contract for
+    /// the direct-forward path.
+    func testKernelReadErrorFinishesC2SDirection() {
+        let h = Harness("kernel.error")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        let err = NSError(domain: "test.fwd", code: 7)
+        h.flow.completeRead(data: nil, error: err)
+        waitFor("c2s finished on error", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+    }
+
+    /// NWConnection receive error closes S→C the same as EOF.
+    func testConnectionReceiveErrorFinishesS2CDirection() {
+        let h = Harness("conn.error")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(
+            data: nil, isComplete: false,
+            error: NWError.posix(.ECONNRESET))
+        waitFor("s2c finished on error", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+    }
+
+    // MARK: - Markers without data
+
+    /// `acceptClientCarryover(.none)` followed by
+    /// `markRustC2SDone` with NO data carryover means: kernel
+    /// already half-closed during the cutover window. Direction
+    /// goes straight to `.finished`.
+    func testEofOnlyCarryoverFinishesDirectly() {
+        let h = Harness("eof.only")
+        h.forwarder.acceptClientCarryover(.none)
+        h.drain()
+        h.forwarder.markRustC2SDone()
+        waitFor("c2s finished", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+        XCTAssertEqual(h.flow.pendingReadCount, 0)
+    }
+
+    /// markRustC2SDone is idempotent: a second call has no
+    /// effect.
+    func testRustDoneIsIdempotent() {
+        let h = Harness("rust.done.idem")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        let firstPendingReadCount = h.flow.pendingReadCount
+
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, firstPendingReadCount,
+            "second markRustC2SDone must not issue an extra readData")
+    }
+
+    // MARK: - Hardening (audit findings #6, #7)
+
+    /// Audit finding #6: `finishC2SLocked` must wait for the
+    /// FIN-drain to ACTUALLY complete before setting
+    /// `c2sPhase = .finished`. The pre-fix code transitioned
+    /// synchronously which could cause the pump to drop
+    /// before drain ran → FIN lost → NWConnection
+    /// registration leaked.
+    ///
+    /// This test pins the contract: with the harness's
+    /// auto-completer firing send completions, the
+    /// transition to `.finished` happens AFTER the FIN's
+    /// `connection.send` is recorded.
+    func testFinishC2SWaitsForFinSendBeforeFinished() {
+        let h = Harness("audit.fin.wait")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        let preSendCount = h.conn.sentChunks.count
+
+        // Trigger kernel EOF → finishC2SLocked.
+        h.flow.completeRead(data: nil, error: nil)
+
+        // .finished is reached only AFTER the FIN send
+        // completion fires. Verify the FIN appears in
+        // sentChunks before .finished is observed.
+        waitFor("c2s reaches .finished", timeout: 2.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+        XCTAssertGreaterThan(h.conn.sentChunks.count, preSendCount,
+            "FIN must have been queued (visible in sentChunks) by the time .finished landed")
+        // The last sent chunk should be the FIN (empty
+        // content + isComplete=true via finalMessage). The
+        // auto-completer fires its completion.
+    }
+
+    /// Audit finding #6 fallback: if the egress write pump
+    /// is deallocated before its drain runs, the
+    /// `onDrainedCallback` must still fire (via `deinit`)
+    /// so the forwarder's state machine doesn't stall. We
+    /// simulate the pump dying by external `cancel()` —
+    /// which fires the pending callback in the cancel path.
+    func testFinishC2SDirectlyAfterPumpCancelFinishesViaCallback() {
+        let h = Harness("audit.fin.cancel.path")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+
+        // Cancel the pump AFTER the forwarder is in .active
+        // but BEFORE we drive kernel EOF. The next enqueue
+        // returns .closed → finishC2SLocked is called →
+        // closeWhenDrained on a cancelled pump fires the
+        // callback synchronously via the isClosed fast-
+        // path. c2sPhase reaches .finished.
+        h.egressWritePump.cancel()
+        h.drain()
+
+        h.flow.completeRead(data: Data([0x01]), error: nil)
+        waitFor("c2s reaches .finished via cancelled-pump path",
+                timeout: 2.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+    }
+
+    // MARK: - Active phase — write-pump backpressure (round-4 audit)
+
+    /// Round-4 audit (codex finding): pre-fix, every `enqueue`
+    /// site in the forwarder treated `.paused` the same as
+    /// `.accepted` — silently dropping the bytes. The fix buffers
+    /// the rejected chunk in `c2sBuffer` and replays it from the
+    /// pump's drain edge (`onEgressPumpDrained`).
+    ///
+    /// We exercise this through the carryover-flush path because
+    /// it's the only one where two enqueues land synchronously
+    /// inside a single queue block (the forwarder's
+    /// `flushC2SBufferLocked` `while` loop). That keeps the pump's
+    /// `pendingBytes` accumulating: chunk 1 is accepted and bumps
+    /// `pendingBytes` to its size; chunk 2 hits the cap before
+    /// the pump's async dispatch can dequeue chunk 1.
+    ///
+    /// The fix is unified across every `enqueue` call site
+    /// (`writeC2SLocked` is the single entry point), so coverage
+    /// of one site suffices for the design.
+    func testActiveC2SBufferedReplayUnderBackpressure() {
+        let h = Harness("backpressure.c2s.carryover", autoCompleter: false)
+        // Sized to exceed `writePumpMaxPendingBytes` (256 KiB
+        // default). The first chunk passes via the "first chunk
+        // always accepts" invariant; the second pushes
+        // `pendingBytes + data.count` over the cap → `.paused`.
+        let big = Data(repeating: 0xAB, count: 300 * 1024)
+        let small = Data([0xCD, 0xEF])
+
+        // Pre-cutover: both chunks land in `c2sBuffer`.
+        h.forwarder.acceptClientCarryover(big)
+        h.forwarder.acceptClientCarryover(small)
+        // Transition: synchronous flush. enqueue(big) → accepted,
+        // pendingBytes = 300 KiB. enqueue(small) → paused, set
+        // pausedSignaled. Loop exits with c2sWritePaused = true
+        // and `small` still at the head of `c2sBuffer`.
+        h.forwarder.markRustC2SDone()
+        // The pump's flush of `big` happens on an async block
+        // queued AFTER our `drain()` barrier, so a `waitFor` is
+        // the only way to observe the send. After it fires, run
+        // a second `drain` to let the drain-edge → forwarder
+        // re-enqueue path settle.
+        waitFor("first chunk reached the wire", timeout: 1.0) {
+            h.conn.sentChunks.contains(where: { $0.content == big })
+        }
+        h.drain()
+
+        XCTAssertEqual(
+            h.conn.pendingSendCount, 1,
+            "exactly the first chunk should be in flight"
+        )
+        XCTAssertFalse(
+            h.conn.sentChunks.contains(where: { $0.content == small }),
+            "second chunk MUST be buffered, not dropped (pre-fix bug)"
+        )
+
+        // Complete the in-flight send. Pump's `flush` completion
+        // callback fires `writing = false` then re-enters flush;
+        // since `pending` is non-empty (we pushed `big` into
+        // `pump.pending` via the async path before the test
+        // observed the drain), the pump drains it. The drain edge
+        // — triggered by `pausedSignaled` going false on a
+        // pendingBytes drop — calls `forwarder.onEgressPumpDrained`,
+        // which calls `flushC2SBufferLocked`, which retries `small`
+        // (now accepted) and routes it to `conn.send`.
+        _ = h.conn.completePendingSend(error: nil)
+        waitFor("buffered chunk replayed after drain", timeout: 2.0) {
+            h.conn.sentChunks.contains(where: { $0.content == small })
+        }
+        // Drain the second send so the pump's lifecycle wraps up.
+        _ = h.conn.completePendingSend(error: nil)
+        h.drain()
+    }
+
+    // MARK: - Helpers
+
+    private func waitFor(
+        _ description: String, timeout: TimeInterval, predicate: @escaping () -> Bool
+    ) {
+        let exp = expectation(description: description)
+        DispatchQueue.global().async {
+            let deadline = Date(timeIntervalSinceNow: timeout)
+            while Date() < deadline {
+                if predicate() { exp.fulfill(); return }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            XCTFail("waitFor timed out: \(description)")
+        }
+        wait(for: [exp], timeout: timeout + 0.5)
+    }
+
+    /// Tiny atomic-bool helper for background-thread coordination
+    /// in the send-completer test. Backed by NSLock; the access
+    /// pattern is too rare to care about cache-line contention.
+    private func atomicFlag() -> AtomicBool {
+        AtomicBool()
+    }
+}
+
+private final class AtomicBool {
+    private let lock = NSLock()
+    private var _v: Bool = false
+    func load() -> Bool { lock.lock(); defer { lock.unlock() }; return _v }
+    func store(_ x: Bool) { lock.lock(); _v = x; lock.unlock() }
+}

@@ -56,6 +56,9 @@ pub use self::runtime::{
     TransparentProxyAsyncRuntimeFactory,
 };
 
+mod promote;
+pub use self::promote::{Promote, PromoteError, PromoteHandle, PromoteLayer};
+
 /// Default deadline for flow-handler decisions. Tuned via
 /// [`TransparentProxyEngineBuilder::with_decision_deadline`].
 pub const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(3);
@@ -399,15 +402,32 @@ struct TcpSessionPendingData {
 
 pub struct TransparentProxyTcpSession {
     // ingress data path
-    client_tx: Option<mpsc::Sender<Bytes>>,
+    //
+    // Shared with `promote::PromoteRegistry` so the promote fire
+    // closure can drop the sender on a successful Swift cutover —
+    // see `PromoteRegistry::fire`. The lock is uncontended on the
+    // hot path (`on_client_bytes`) — only the promote path ever
+    // contends with `on_client_bytes`, and only at cutover time.
+    client_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
     saw_client_bytes: bool,
 
-    // egress data path (populated by activate)
-    egress_tx: Option<mpsc::Sender<Bytes>>,
+    // egress data path (populated by activate).
+    //
+    // Same `Arc<Mutex<Option<...>>>` shape as `client_tx` — and
+    // for the same reason: the promote fire closure also drops
+    // this sender on Ok ACK so a service using bidirectional
+    // copy gets EOF on its `egress.read()` too. Without this
+    // mirror, only `ingress.read()` would EOF and
+    // `copy_bidirectional` (or any "both halves" reader) would
+    // wedge forever after cutover.
+    egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
 
     /// Shared paused flags + drain notifications for both directions.
     /// One allocation, used by `on_*_bytes`, the bridges, and `signal_*_drain`.
     signals: Arc<TcpPerFlowSignals>,
+
+    // promote
+    promote_registry: Arc<promote::PromoteRegistry>,
 
     // lifecycle
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -441,7 +461,11 @@ impl TransparentProxyTcpSession {
             return TcpDeliverStatus::Accepted;
         }
         self.saw_client_bytes = true;
-        let Some(tx) = self.client_tx.as_mut() else {
+        // Lock window is bounded: `try_reserve` + `permit.send` are
+        // both non-blocking. The lock is only contended with the
+        // promote path at cutover time.
+        let guard = self.client_tx.lock();
+        let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
@@ -465,12 +489,18 @@ impl TransparentProxyTcpSession {
     /// would create a select-fairness race against `read_half.read()`
     /// that can either drop the last chunk (too-eager EOF) or starve the
     /// response direction (over-prioritised EOF).
+    ///
+    /// If the client EOFs without ever sending a byte (`!saw_client_bytes`),
+    /// route through `cancel()`: there's nothing for the service to do, and
+    /// dragging the bridges through a normal half-close just adds latency
+    /// before teardown. Note this is asymmetric with [`Self::on_egress_eof`]
+    /// — see that method.
     pub fn on_client_eof(&mut self) {
         if !self.saw_client_bytes {
             self.cancel();
             return;
         }
-        self.client_tx = None;
+        *self.client_tx.lock() = None;
     }
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
@@ -483,7 +513,11 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return TcpDeliverStatus::Accepted;
         }
-        let Some(tx) = self.egress_tx.as_mut() else {
+        // Same lock-discipline rationale as `on_client_bytes` —
+        // the only writer that contends is the promote fire
+        // closure dropping the sender on Ok ACK.
+        let guard = self.egress_tx.lock();
+        let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
@@ -518,9 +552,15 @@ impl TransparentProxyTcpSession {
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
     ///
-    /// Same channel-close pattern as [`Self::on_client_eof`].
+    /// Same channel-close pattern as [`Self::on_client_eof`], but no
+    /// "no-traffic → cancel" fast path: a server closing before sending
+    /// any response bytes is a normal protocol outcome (HTTP CONNECT
+    /// tunnel close, idle disconnect, request-only verbs), and the
+    /// service may still want to flush request bytes or run epilogue
+    /// logic. Dropping `egress_tx` lets the service's `egress.read()`
+    /// EOF naturally; the service decides what to do from there.
     pub fn on_egress_eof(&mut self) {
-        self.egress_tx = None;
+        *self.egress_tx.lock() = None;
     }
 
     /// Return the handler-supplied egress connect options, if any.
@@ -583,13 +623,22 @@ impl TransparentProxyTcpSession {
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ProxyTarget(remote));
         }
+        // Service-initiated hand-off back to Swift; see [`PromoteHandle`].
+        // The handle is backed by the session's `PromoteRegistry` so
+        // `into_passthrough` fires the FFI-registered Swift callback,
+        // awaits Swift's `confirm_promoted` ACK, and on success drops
+        // both ingress + egress senders so the bridges EOF the
+        // service after draining in-flight bytes.
+        ingress_stream
+            .extensions()
+            .insert(self.promote_registry.clone().into_handle(rt_handle.clone()));
 
         // egress stream (service ↔ NWConnection)
         let (egress_user, egress_internal) = tokio::io::duplex(tcp_flow_buffer_size);
         let egress_stream = NwTcpStream::new(egress_user);
 
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        self.egress_tx = Some(egress_client_tx);
+        *self.egress_tx.lock() = Some(egress_client_tx);
 
         // guard egress callbacks
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
@@ -682,6 +731,61 @@ impl TransparentProxyTcpSession {
         }
     }
 
+    /// Register the Swift callback fired when the per-flow service
+    /// calls [`PromoteHandle::into_passthrough`].
+    ///
+    /// Idempotent: a later call replaces the previous registration.
+    /// If no callback is registered when `into_passthrough` fires,
+    /// the future resolves with [`PromoteError::EgressUnavailable`]
+    /// and `PromoteLayer` falls through to the in-Rust data path.
+    ///
+    /// After Swift completes the cutover it MUST call
+    /// [`Self::confirm_promoted`] on this session to resolve the
+    /// pending future.
+    pub fn register_promote_request_callback<F>(&self, on_request: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // Rust-typed registration: the registry stores the
+        // closure as `Arc<dyn Fn>`, so re-registration drops
+        // the previous closure (and any sentinel it captured)
+        // promptly — no leak. Mutually exclusive with the
+        // FFI-shape slot; registering one clears the other.
+        self.promote_registry.register_rust(on_request);
+    }
+
+    /// Engine-internal: register a raw FFI-shape promote callback.
+    /// Used by `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
+    #[doc(hidden)]
+    pub fn register_promote_request_callback_raw(
+        &self,
+        context: *mut std::ffi::c_void,
+        on_promote_request: unsafe extern "C" fn(*mut std::ffi::c_void),
+    ) {
+        self.promote_registry
+            .register_raw(promote::PromoteRequestCallback {
+                context: context as usize,
+                on_promote_request,
+            });
+    }
+
+    /// Swift→Rust ACK for a pending `PromoteHandle::into_passthrough`.
+    ///
+    /// Resolves the future on the awaiting service task:
+    /// - `Ok(())` → the in-Rust ingress sender is dropped so the
+    ///   service sees EOF after draining in-flight bytes, then
+    ///   `into_passthrough` returns `Ok(())`.
+    /// - `Err(PromoteError::SwiftCutoverFailed { reason })` → the
+    ///   layer logs the failure and the in-Rust data path keeps
+    ///   running unchanged.
+    ///
+    /// Calling without a pending promote (e.g. duplicate confirm,
+    /// or confirm before any service called `into_passthrough`) is
+    /// a no-op.
+    pub fn confirm_promoted(&self, result: Result<(), PromoteError>) {
+        self.promote_registry.confirm(result);
+    }
+
     pub fn cancel(&mut self) {
         // Order matters. See `guarded_datagram_sink` for the
         // callback_active contract.
@@ -714,9 +818,14 @@ impl TransparentProxyTcpSession {
         }
         self.signals.ingress_drain.notify_one();
         self.signals.egress_drain.notify_one();
-        self.client_tx = None;
-        self.egress_tx = None;
+        *self.client_tx.lock() = None;
+        *self.egress_tx.lock() = None;
         self.pending = None;
+        // Abort any in-flight promote so callers of
+        // `PromoteHandle::into_passthrough` resolve with
+        // `EngineShuttingDown` instead of hanging on the ACK
+        // forever.
+        self.promote_registry.abort_pending();
         _ = self.ingress_bridge_task.take();
         _ = self.egress_bridge_task.take();
         if let Some(task) = self.service_task.take() {
@@ -883,11 +992,21 @@ where
         egress_connect_options,
     };
 
+    let client_tx_shared = Arc::new(parking_lot::Mutex::new(Some(client_tx)));
+    let egress_tx_shared: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let promote_registry = promote::PromoteRegistry::new(
+        client_tx_shared.clone(),
+        egress_tx_shared.clone(),
+        callback_active.clone(),
+    );
+
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
-        client_tx: Some(client_tx),
+        client_tx: client_tx_shared,
         saw_client_bytes: false,
-        egress_tx: None,
+        egress_tx: egress_tx_shared,
         signals,
+        promote_registry,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),

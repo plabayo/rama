@@ -99,6 +99,10 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
         pub type RamaTransparentProxyTcpEgressCallbacks =
             $crate::ffi::tproxy::TransparentProxyTcpEgressCallbacks;
+        pub type RamaTransparentProxyTcpPromoteCallbacks =
+            $crate::ffi::tproxy::TransparentProxyTcpPromoteCallbacks;
+        pub type RamaPromoteConfirmStatus =
+            $crate::ffi::tproxy::PromoteConfirmStatus;
 
         #[repr(C)]
         pub struct RamaTransparentProxyTcpSessionResult {
@@ -413,6 +417,81 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
 
             unsafe { (*session).cancel() };
+        }
+
+        /// Register a Swift callback fired when the in-Rust service
+        /// calls `PromoteHandle::into_passthrough` on this session.
+        ///
+        /// Idempotent: a later call replaces any prior registration.
+        /// Calling on a null session is a no-op.
+        ///
+        /// See [`RamaTransparentProxyTcpPromoteCallbacks`] for the
+        /// `context` lifetime / threading contract.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_register_promote_callbacks(
+            session: *mut RamaTransparentProxyTcpSession,
+            callbacks: RamaTransparentProxyTcpPromoteCallbacks,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            let Some(on_promote_request) = callbacks.on_promote_request else {
+                return;
+            };
+            unsafe {
+                (*session).register_promote_request_callback_raw(
+                    callbacks.context,
+                    on_promote_request,
+                )
+            };
+        }
+
+        /// Swift → Rust ACK for a pending promote cutover.
+        ///
+        /// On `Ok` the engine drops its ingress sender so the
+        /// service sees EOF after draining in-flight bytes, then
+        /// `into_passthrough` resolves with `Ok(())`.
+        ///
+        /// On `Failed`, `reason_ptr`/`reason_len` (optional UTF-8;
+        /// pass `(null, 0)` for none) is surfaced via
+        /// `PromoteError::SwiftCutoverFailed`; the in-Rust data
+        /// path keeps running unchanged.
+        ///
+        /// Calling without a pending promote (e.g. before any
+        /// service ran `into_passthrough`, or after a previous
+        /// confirm) is a no-op.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_confirm_promoted(
+            session: *mut RamaTransparentProxyTcpSession,
+            status: RamaPromoteConfirmStatus,
+            reason_ptr: *const ::std::ffi::c_char,
+            reason_len: usize,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            let result = match status {
+                RamaPromoteConfirmStatus::Ok => Ok(()),
+                RamaPromoteConfirmStatus::Failed => {
+                    let reason = if reason_ptr.is_null() || reason_len == 0 {
+                        String::new()
+                    } else {
+                        // SAFETY: caller contract — pointer is valid
+                        // for `reason_len` bytes and contains UTF-8.
+                        unsafe {
+                            let slice = ::std::slice::from_raw_parts(
+                                reason_ptr as *const u8,
+                                reason_len,
+                            );
+                            ::std::str::from_utf8(slice)
+                                .unwrap_or("<non-utf8 reason>")
+                                .to_owned()
+                        }
+                    };
+                    Err($crate::tproxy::PromoteError::SwiftCutoverFailed { reason })
+                }
+            };
+            unsafe { (*session).confirm_promoted(result) };
         }
 
         #[unsafe(no_mangle)]

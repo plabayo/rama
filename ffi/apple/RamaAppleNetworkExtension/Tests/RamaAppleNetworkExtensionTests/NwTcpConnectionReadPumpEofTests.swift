@@ -177,6 +177,49 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         )
     }
 
+    /// Regression: the EOF backstop must fire even after the pump
+    /// itself is deallocated. A promote teardown drops the per-flow
+    /// ctx — and the read pump along with it — once the cutover
+    /// completes; without a strong capture of the connection, the
+    /// backstop's `[weak self]` no-ops and the NWConnection
+    /// registration leaks until the OS reaps it.
+    ///
+    /// Mirrors `testLingerCancelsConnectionEvenAfterPumpDeallocated`
+    /// in the writer-pump linger suite.
+    func testCancelStillFiresAfterPumpDeallocated() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        let session = makeInterceptedSession(engine)
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+
+        do {
+            let pump = NwTcpConnectionReadPump(
+                connection: mock,
+                session: session,
+                queue: queue,
+                eofGraceDeadline: .milliseconds(150)
+            )
+            pump.start()
+            waitForQueueDrain(queue)
+            XCTAssertEqual(mock.pendingReceiveCount, 1)
+
+            mock.completePendingReceive(isComplete: true)
+            waitForQueueDrain(queue)
+            XCTAssertEqual(mock.cancelCount, 0, "backstop not yet fired")
+            // `pump` goes out of scope → deallocated.
+        }
+
+        // Past the grace deadline + slack.
+        Thread.sleep(forTimeInterval: 0.30)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "EOF backstop must cancel the connection even after the pump is deallocated"
+        )
+    }
+
     func testNonTerminalReceiveDoesNotScheduleBackstop() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }

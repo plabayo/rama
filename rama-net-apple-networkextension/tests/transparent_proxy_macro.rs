@@ -65,3 +65,19 @@ fn macro_generates_direct_dependency_ffi_symbols() {
             rama_net_apple_networkextension::ffi::BytesView,
         ) -> rama_net_apple_networkextension::ffi::BytesOwned;
 }
+
+#[test]
+fn macro_generates_promote_ffi_symbols() {
+    _ = rama_transparent_proxy_tcp_session_register_promote_callbacks
+        as unsafe extern "C" fn(
+            *mut RamaTransparentProxyTcpSession,
+            RamaTransparentProxyTcpPromoteCallbacks,
+        );
+    _ = rama_transparent_proxy_tcp_session_confirm_promoted
+        as unsafe extern "C" fn(
+            *mut RamaTransparentProxyTcpSession,
+            RamaPromoteConfirmStatus,
+            *const ::std::ffi::c_char,
+            usize,
+        );
+}

@@ -447,6 +447,12 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// would punch a hole in the byte stream and the downstream TLS layer
     /// would surface "bad record MAC" once the gap reaches the decryptor.
     private var pendingData: Data?
+    /// Set by `cancelForPromote(onCarryover:)` to route in-flight
+    /// `readData` results to a `TcpDirectForwarder` instead of
+    /// dropping them. `Data?` payload: `.some(data)` for bytes,
+    /// `.none` for EOF (or error). Fires at most once, then
+    /// clears.
+    private var onPromoteCarryover: ((Data?) -> Void)?
 
     init(
         flow: any TcpFlowReadable,
@@ -473,6 +479,68 @@ final class TcpClientReadPump: @unchecked Sendable {
             guard self.phase == .paused else { return }
             self.phase = .open
             self.requestReadLocked()
+        }
+    }
+
+    /// Stop this pump as part of a promote cutover and route any
+    /// in-flight bytes to the caller-supplied carryover handler
+    /// instead of dropping them.
+    ///
+    /// Three callbacks (all invoked on `queue`):
+    ///   * `onCarryover(.some(data))` — for the `.paused`-replay
+    ///     buffer (if non-nil), and for the result of an
+    ///     in-flight `readData` once its completion handler
+    ///     fires.
+    ///   * `onCarryover(.none)` — if the in-flight read returned
+    ///     EOF or an error (the cutover treats these uniformly:
+    ///     the direct forwarder propagates EOF to its egress
+    ///     pump).
+    ///   * `onComplete()` — fires exactly once, AFTER any
+    ///     `onCarryover` invocations, when the pump guarantees
+    ///     no more carryover will be delivered. The direct
+    ///     forwarder uses this as a barrier: it must NOT issue
+    ///     its own `flow.readData` until `onComplete` has
+    ///     fired, because `NEAppProxyTCPFlow.readData` is
+    ///     caller-enforced serial and the in-flight read must
+    ///     finish before a new one is issued.
+    ///
+    /// `onComplete` fires immediately for an idle pump (no
+    /// in-flight read); otherwise after the in-flight read's
+    /// completion handler has been routed through `onCarryover`.
+    ///
+    /// Does NOT fire `onTerminal` — the per-flow context's
+    /// teardown path is owned by the cutover orchestrator from
+    /// this point on.
+    func cancelForPromote(
+        onCarryover: @escaping (Data?) -> Void,
+        onComplete: @escaping () -> Void
+    ) {
+        queue.async {
+            guard self.phase != .closed else {
+                onComplete()
+                return
+            }
+            // Hand over the replay buffer immediately.
+            if let pending = self.pendingData {
+                self.pendingData = nil
+                onCarryover(.some(pending))
+            }
+            let hadInFlightRead = (self.phase == .reading)
+            self.phase = .closed
+            // Install the carryover sink for the in-flight read
+            // (if any). When the readData completion lands, it
+            // routes through `onPromoteCarryover` rather than
+            // the normal sink, then fires `onComplete`. For an
+            // idle pump (no in-flight read) we fire `onComplete`
+            // immediately — no further carryover can land.
+            if hadInFlightRead {
+                self.onPromoteCarryover = { payload in
+                    onCarryover(payload)
+                    onComplete()
+                }
+            } else {
+                onComplete()
+            }
         }
     }
 
@@ -516,7 +584,26 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.flow.readData { [weak self] data, error in
             guard let self else { return }
             self.queue.async { [weak self] in
-                guard let self, self.phase != .closed else { return }
+                guard let self else { return }
+                if self.phase == .closed {
+                    // Pump cancelled while a `readData` was in
+                    // flight. If a promote-cutover installed a
+                    // carryover sink, route the result through
+                    // it so the bytes (or EOF) land in the
+                    // direct forwarder; otherwise drop, as
+                    // before — there is no sink to hand them
+                    // to.
+                    let sink = self.onPromoteCarryover
+                    self.onPromoteCarryover = nil
+                    if let sink {
+                        if let data, !data.isEmpty {
+                            sink(.some(data))
+                        } else {
+                            sink(.none)
+                        }
+                    }
+                    return
+                }
                 self.phase = .open
 
                 if let error {
@@ -1480,6 +1567,9 @@ final class NwTcpConnectionReadPump {
     /// (NWConnection-receive) direction. Dropping rejected bytes here is what
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
+    /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
+    /// the egress (NWConnection-receive) direction.
+    private var onPromoteCarryover: ((Data?) -> Void)?
 
     init(
         connection: any NwConnectionLike,
@@ -1505,6 +1595,39 @@ final class NwTcpConnectionReadPump {
             guard self.phase == .paused else { return }
             self.phase = .open
             self.scheduleReadLocked()
+        }
+    }
+
+    /// Symmetric to [`TcpClientReadPump.cancelForPromote`] for the
+    /// egress (NWConnection-receive) direction. See its doc for
+    /// the carryover semantics and the `onComplete` barrier.
+    func cancelForPromote(
+        onCarryover: @escaping (Data?) -> Void,
+        onComplete: @escaping () -> Void
+    ) {
+        queue.async {
+            guard self.phase != .closed else {
+                onComplete()
+                return
+            }
+            if let pending = self.pendingData {
+                self.pendingData = nil
+                onCarryover(.some(pending))
+            }
+            let hadInFlightRead = (self.phase == .reading)
+            self.phase = .closed
+            // External cancel pre-empts the EOF backstop — same
+            // rationale as the existing `cancel()` path.
+            self.eofWork?.cancel()
+            self.eofWork = nil
+            if hadInFlightRead {
+                self.onPromoteCarryover = { payload in
+                    onCarryover(payload)
+                    onComplete()
+                }
+            } else {
+                onComplete()
+            }
         }
     }
 
@@ -1538,7 +1661,22 @@ final class NwTcpConnectionReadPump {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             self.queue.async {
-                guard self.phase != .closed else { return }
+                if self.phase == .closed {
+                    // Receive in flight while the pump was
+                    // cancelled. If a promote-cutover installed
+                    // a carryover sink, route the result; else
+                    // drop as before.
+                    let sink = self.onPromoteCarryover
+                    self.onPromoteCarryover = nil
+                    if let sink {
+                        if let data, !data.isEmpty {
+                            sink(.some(data))
+                        } else if isComplete || error != nil {
+                            sink(.none)
+                        }
+                    }
+                    return
+                }
                 self.phase = .open
 
                 if let data, !data.isEmpty {
@@ -1590,10 +1728,18 @@ final class NwTcpConnectionReadPump {
                     // clean path reaches it first, the work item is
                     // invalidated by `cancel()` below or the call
                     // becomes a no-op.
+                    //
+                    // Capture `connection` strongly: a promote teardown
+                    // (or any outer drop) can release the pump between
+                    // EOF observation and the grace deadline. With
+                    // `[weak self]` only, `self.connection.cancel()`
+                    // never fires and the NWConnection registration
+                    // leaks until the OS reaps it. Mirrors the write
+                    // pump's linger watchdog.
+                    let conn = self.connection
                     let work = DispatchWorkItem { [weak self] in
-                        guard let self else { return }
-                        self.connection.cancel()
-                        self.eofWork = nil
+                        conn.cancel()
+                        self?.eofWork = nil
                     }
                     self.eofWork = work
                     self.queue.asyncAfter(deadline: .now() + self.eofGraceDeadline, execute: work)
@@ -1647,6 +1793,13 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// when the connection closes naturally before the deadline (or
     /// when the pump is externally cancelled).
     private var lingerWork: DispatchWorkItem?
+    /// Pending callback installed by
+    /// `closeWhenDrained(_:)` — fires exactly once when the FIN
+    /// completes (success or local error), or from `deinit` as
+    /// a fallback if the pump is deallocated before drain has a
+    /// chance to run. This guarantees a caller awaiting the FIN
+    /// (e.g. `TcpDirectForwarder`) is never stranded.
+    private var onDrainedCallback: (() -> Void)?
 
     init(
         connection: any NwConnectionLike,
@@ -1688,9 +1841,48 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge { core.enqueue(data) }
 
-    func closeWhenDrained() {
+    /// Drain the queue, then send a FIN to the remote.
+    ///
+    /// `onDrained` (if non-nil) fires EXACTLY ONCE on the
+    /// `core.queue`, after either:
+    ///   * The FIN's `send` completion has fired (success or
+    ///     local error path), OR
+    ///   * The pump is externally cancelled before the FIN
+    ///     completes, OR
+    ///   * The pump is deallocated before either of the above
+    ///     (fallback in `deinit`).
+    ///
+    /// The fallbacks are load-bearing for the
+    /// `TcpDirectForwarder` state machine: if the pump dies
+    /// mid-drain (e.g. because the per-flow ctx that holds it
+    /// was removed from the registry due to an unrelated
+    /// teardown path), the forwarder's `c2sPhase = .finished`
+    /// transition would otherwise hang waiting for a callback
+    /// that never fires, and the flow would leak in the
+    /// registry.
+    func closeWhenDrained(_ onDrained: (() -> Void)? = nil) {
         core.queue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                // Pump already gone — fire the callback so the
+                // caller's state machine progresses.
+                onDrained?()
+                return
+            }
+            if self.core.isClosed() {
+                // Already cancelled / closed — `beginDraining`
+                // would no-op and the callback would never
+                // fire. Mirror `TcpClientWritePump`'s fast-path
+                // and fire `onDrained` synchronously instead.
+                onDrained?()
+                return
+            }
+            // Replace any prior pending callback. Real callers
+            // call this at most once per pump lifetime; this
+            // guard is for defensive safety.
+            if let stale = self.onDrainedCallback {
+                stale()
+            }
+            self.onDrainedCallback = onDrained
             self.core.beginDraining()
         }
     }
@@ -1705,6 +1897,25 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
             // pre-empted.
             self?.lingerWork?.cancel()
             self?.lingerWork = nil
+            // Fire any pending closeWhenDrained callback so a
+            // caller waiting on FIN completion doesn't stall.
+            if let cb = self?.onDrainedCallback {
+                self?.onDrainedCallback = nil
+                cb()
+            }
+        }
+    }
+
+    deinit {
+        // Fallback: if the pump is deallocated before drain
+        // completes, fire the callback so the caller's state
+        // machine isn't stranded. `deinit` runs synchronously
+        // on whichever thread releases the last strong ref —
+        // the callback contract doesn't promise a specific
+        // queue, but for safety the caller should treat it as
+        // "not necessarily on `core.queue`" and hop if needed.
+        if let cb = onDrainedCallback {
+            cb()
         }
     }
 }
@@ -1716,7 +1927,19 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     }
 
     fileprivate func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
-        guard connection.state == .ready else { return }
+        // Snapshot the pending close-callback and clear the
+        // slot BEFORE issuing the FIN send. We capture `cb`
+        // strongly inside the `send` completion so the
+        // callback fires regardless of whether `self` is
+        // still alive when the completion lands.
+        let cb = self.onDrainedCallback
+        self.onDrainedCallback = nil
+        guard connection.state == .ready else {
+            // Can't FIN — fire the callback so the caller
+            // unblocks, then bail.
+            cb?()
+            return
+        }
         // `.finalMessage` + `isComplete: true` is the documented way
         // to trigger a TCP half-close (FIN) on a `NWConnection`. Using
         // `.defaultMessage` only marks the logical message complete and
@@ -1728,19 +1951,25 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
             content: nil,
             contentContext: .finalMessage,
             isComplete: true,
-            completion: .contentProcessed({ _ in })
+            completion: .contentProcessed({ _ in
+                // The FIN has been processed locally (queued
+                // for transmission). Fire the close-callback
+                // for the caller waiting on drain completion.
+                cb?()
+            })
         )
         // The FIN is queued. Schedule the linger watchdog so the
         // NWConnection registration is released even if the peer
-        // never replies with its own FIN. `cancel()` is idempotent —
-        // if a natural close path (state handler, read-pump EOF
-        // backstop, external pump cancel) gets there first, this
-        // work item is cancelled before firing or the cancel call
-        // becomes a no-op.
+        // never replies with its own FIN. `cancel()` is idempotent.
+        //
+        // Capture `connection` strongly: a promote teardown can
+        // drop the per-flow ctx (and us with it) right after the
+        // FIN send completes, well before the linger deadline —
+        // `[weak self]` would no-op and leak the NWConnection.
+        let conn = connection
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.connection.cancel()
-            self.lingerWork = nil
+            conn.cancel()
+            self?.lingerWork = nil
         }
         lingerWork = work
         core.queue.asyncAfter(deadline: .now() + lingerCloseDeadline, execute: work)
@@ -1781,6 +2010,34 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
 /// the context (flow.open / connection.receive completions, etc.) stay
 /// Swift-6-clean instead of forcing those closures to drop their
 /// `@Sendable` requirement.
+/// Per-flow data-path mode. Switches from `.viaRust` to
+/// `.promoted` when the in-Rust service calls
+/// `PromoteHandle::into_passthrough` — from that moment on
+/// the per-flow `TcpDirectForwarder` owns the kernel flow and
+/// the egress `NWConnection`.
+///
+/// Mode-aware close handlers (`onServerClosed`, `onCloseEgress`)
+/// use `mode != .viaRust` to skip teardown of the kernel flow /
+/// egress connection — they are owned by the forwarder until
+/// both directions finish.
+///
+/// Internally the forwarder distinguishes its OWN per-direction
+/// phases (buffering / active / finishing / finished) — see
+/// `TcpDirectForwarder.DirectionPhase`. Carrying that granularity
+/// on `TcpFlowContext.mode` too would be redundant: every other
+/// caller only cares about the binary "is the forwarder running
+/// or not" question, and the forwarder is the source of truth
+/// for the finer states.
+enum TcpFlowMode {
+    /// Bytes flow through the in-Rust service (default).
+    case viaRust
+    /// Promote cutover initiated. The `TcpDirectForwarder`
+    /// owns the kernel flow and the egress NWConnection
+    /// lifecycle from this point. Mode-aware close handlers
+    /// observe this and skip their own teardown.
+    case promoted
+}
+
 final class TcpFlowContext: @unchecked Sendable {
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
@@ -1796,6 +2053,13 @@ final class TcpFlowContext: @unchecked Sendable {
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
     var egressWritePump: NwTcpConnectionWritePump?
+    /// Mode of the per-flow data path. Mutated only on the
+    /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
+    var mode: TcpFlowMode = .viaRust
+    /// Active when `mode == .promoted`. Owns the kernel ↔
+    /// NWConnection direct read/write loops + cutover
+    /// buffer.
+    var directForwarder: TcpDirectForwarder?
 
     init() {
     }
@@ -1926,21 +2190,33 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let settings = NETransparentProxyNetworkSettings(
             tunnelRemoteAddress: startup.tunnelRemoteAddress
         )
-        var builtRules: [NENetworkRule] = []
+        var includedRules: [NENetworkRule] = []
+        var excludedRules: [NENetworkRule] = []
         for (idx, rule) in startup.rules.enumerated() {
-            if let built = Self.makeNetworkRule(rule) {
-                builtRules.append(built)
-                core.logInfo(
-                    "include rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
-                )
-            } else {
+            let kind = rule.exclude ? "exclude" : "include"
+            let built = Self.makeNetworkRules(rule)
+            if built.isEmpty {
                 core.logError(
-                    "invalid rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
+                    "invalid \(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
                 )
+                continue
             }
+            for one in built {
+                if rule.exclude {
+                    excludedRules.append(one)
+                } else {
+                    includedRules.append(one)
+                }
+            }
+            core.logInfo(
+                "\(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw) emitted=\(built.count)"
+            )
         }
-        settings.includedNetworkRules = builtRules
-        core.logInfo("included network rules count=\(builtRules.count)")
+        settings.includedNetworkRules = includedRules
+        settings.excludedNetworkRules = excludedRules.isEmpty ? nil : excludedRules
+        core.logInfo(
+            "network rules: included=\(includedRules.count) excluded=\(excludedRules.count)"
+        )
 
         setTunnelNetworkSettings(settings) { [core] error in
             if let error {
@@ -1996,20 +2272,48 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return false
     }
 
-    private static func makeNetworkRule(_ rule: RamaTransparentProxyRuleBridge)
-        -> NENetworkRule?
+    /// Translate one Rust-side rule into one or more
+    /// `NENetworkRule`s. Returns an empty array on invalid
+    /// input. A port-only rule (no `remoteNetwork`) expands to
+    /// two rules — one for IPv4, one for IPv6 wildcards — so
+    /// the port constraint is preserved at the framework level.
+    internal static func makeNetworkRules(_ rule: RamaTransparentProxyRuleBridge)
+        -> [NENetworkRule]
     {
-        let remote = networkEndpoint(from: rule.remoteNetwork)
-        let local = networkEndpoint(from: rule.localNetwork)
         let proto = networkRuleProtocol(rule.protocolRaw)
+        let local = networkEndpoint(from: rule.localNetwork, port: nil)
+
+        // Port-only: synthesise wildcard endpoints so the port
+        // constraint actually reaches Apple's framework. Two
+        // rules — v4 + v6 — because a wildcard endpoint can
+        // only carry one address family.
+        if rule.remoteNetwork == nil, let port = rule.remotePort {
+            let portStr = String(port)
+            let v4 = NWHostEndpoint(hostname: "0.0.0.0", port: portStr)
+            let v6 = NWHostEndpoint(hostname: "::", port: portStr)
+            let localPrefix = resolvedPrefix(
+                endpoint: local,
+                networkText: rule.localNetwork,
+                explicitPrefix: rule.localPrefix
+            ) ?? 0
+            return [v4, v6].map {
+                NENetworkRule(
+                    remoteNetwork: $0,
+                    remotePrefix: 0,
+                    localNetwork: local,
+                    localPrefix: localPrefix,
+                    protocol: proto,
+                    direction: .outbound
+                )
+            }
+        }
+
+        let remote = networkEndpoint(from: rule.remoteNetwork, port: rule.remotePort)
 
         // Host/domain-only rule (no local matcher): use destination-host initializer.
         // This avoids forcing CIDR for non-IP hosts (e.g. example.com).
         if let remote, local == nil, rule.remotePrefix == nil {
-            return NENetworkRule(
-                destinationHost: remote,
-                protocol: proto
-            )
+            return [NENetworkRule(destinationHost: remote, protocol: proto)]
         }
 
         guard
@@ -2024,17 +2328,17 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 explicitPrefix: rule.localPrefix
             )
         else {
-            return nil
+            return []
         }
 
-        return NENetworkRule(
+        return [NENetworkRule(
             remoteNetwork: remote,
             remotePrefix: remotePrefix,
             localNetwork: local,
             localPrefix: localPrefix,
             protocol: proto,
             direction: .outbound
-        )
+        )]
     }
 
     private static func resolvedPrefix(
@@ -2048,9 +2352,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return inferredHostPrefix(networkText)
     }
 
-    private static func networkEndpoint(from network: String?) -> NWHostEndpoint? {
+    private static func networkEndpoint(from network: String?, port: UInt16?) -> NWHostEndpoint? {
         guard let network, !network.isEmpty else { return nil }
-        return NWHostEndpoint(hostname: network, port: "0")
+        let portStr = port.map(String.init) ?? "0"
+        return NWHostEndpoint(hostname: network, port: portStr)
     }
 
     /// Pull `engineConfigJson` from `startOptions` (preferred — the
