@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn as_unicode_lossy_fallback_on_invalid_utf8() {
         // `%C3` is the start of a 2-byte UTF-8 sequence; `%C3%C3` is
-        // not a valid continuation. The audit M11 fix: surface a
+        // not a valid continuation. Surface a
         // lossy U+FFFD substitution instead of silently returning the
         // raw pct-encoded form (which would confuse callers).
         let h = reg(b"%C3%C3");

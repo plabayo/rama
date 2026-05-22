@@ -14,7 +14,15 @@ use rama_core::bytes::{Bytes, BytesMut};
 
 /// Owned query component. Cheaply mutable in-place via the
 /// [`QueryMut`](super::QueryMut) RAII guard.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Default` produces an empty query (zero bytes — distinct from
+/// "no query"; the distinction is owned by [`super::Uri::query`] /
+/// [`super::Uri::set_query`]). `Display` writes the raw on-wire
+/// bytes (no leading `?`). `Hash` / `PartialOrd` / `Ord` are bytewise
+/// — queries are case-sensitive and pct-encoding-preserving per RFC
+/// 3986 (§3.4 leaves application-specific interpretation to the
+/// receiver).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Query {
     pub(crate) bytes: BytesMut,
 }
@@ -498,6 +506,28 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
     match String::from_utf8(out) {
         Ok(s) => Cow::Owned(s),
         Err(e) => Cow::Owned(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
+}
+
+impl fmt::Display for Query {
+    /// Renders the query bytes (no leading `?`). Same string the raw
+    /// view returns — pct-encoding is preserved as-is.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_raw_str())
+    }
+}
+
+impl std::str::FromStr for Query {
+    type Err = std::convert::Infallible;
+
+    /// Encode arbitrary input as a [`Query`] — bytes outside
+    /// `pchar ∪ {'/', '?'}` get percent-encoded. Infallible because
+    /// every input round-trips after encoding; `str::parse` users with
+    /// `?`-ladder code can still use this through the `Result` shape.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self {
+            bytes: super::encode::encode_query(s),
+        })
     }
 }
 

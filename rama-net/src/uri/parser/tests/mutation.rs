@@ -303,3 +303,98 @@ fn set_path_with_encodable_string_allocates_new_buffer() {
     uri.set_path(s);
     assert_eq!(uri.to_string(), "/hello%20world");
 }
+
+// ----------------------------------------------------------------------
+// Mutator quartet — set_port / set_userinfo / set_scheme
+// ----------------------------------------------------------------------
+
+#[test]
+fn set_port_replaces_explicit_port() {
+    let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
+    uri.set_port(8080);
+    assert_eq!(uri.port(), Some(8080));
+    assert_eq!(uri.to_string(), "https://example.com:8080/p");
+}
+
+#[test]
+fn set_port_clears_via_none() {
+    let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
+    uri.set_port(None);
+    assert!(uri.port().is_none());
+    assert_eq!(uri.to_string(), "https://example.com/p");
+}
+
+#[test]
+fn unset_port_shortcut() {
+    let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
+    uri.unset_port();
+    assert!(uri.port().is_none());
+}
+
+#[test]
+fn with_port_consuming_form() {
+    let uri = parse_graceful("https://example.com/p")
+        .unwrap()
+        .with_port(9000);
+    assert_eq!(uri.port(), Some(9000));
+}
+
+#[test]
+fn set_userinfo_replaces_userinfo() {
+    let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    let ui = UserInfo::from_static_str("alice:secret");
+    uri.set_userinfo(ui);
+    assert!(uri.userinfo().is_some());
+    assert_eq!(uri.to_string(), "https://alice:secret@example.com/p");
+}
+
+#[test]
+fn set_userinfo_clears_via_none() {
+    let mut uri: Uri = parse_graceful("https://alice:secret@example.com/p").unwrap();
+    uri.set_userinfo(None);
+    assert!(uri.userinfo().is_none());
+    assert_eq!(uri.to_string(), "https://example.com/p");
+}
+
+#[test]
+fn try_set_userinfo_accepts_str() {
+    let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    uri.try_set_userinfo("alice").unwrap();
+    assert_eq!(uri.to_string(), "https://alice@example.com/p");
+}
+
+#[test]
+fn try_set_userinfo_rejects_invalid_input() {
+    let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    // Raw `@` inside userinfo is a gen-delim — `UserInfo::try_from` rejects.
+    let err = uri.try_set_userinfo("bad@user").unwrap_err();
+    match err {
+        crate::uri::UriError::ComponentConversion { component, .. } => {
+            assert_eq!(component, crate::uri::Component::UserInfo);
+        }
+        other => panic!("expected ComponentConversion(UserInfo), got {other:?}"),
+    }
+}
+
+#[test]
+fn set_scheme_replaces_scheme() {
+    let mut uri: Uri = parse_graceful("http://example.com/p").unwrap();
+    uri.set_scheme(Protocol::HTTPS);
+    assert_eq!(uri.to_string(), "https://example.com/p");
+}
+
+#[test]
+fn unset_scheme_yields_relative_reference() {
+    let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    uri.unset_scheme();
+    assert!(uri.scheme().is_none());
+}
+
+#[test]
+fn maybe_set_scheme_accepts_some_or_none() {
+    let mut uri: Uri = parse_graceful("http://example.com/p").unwrap();
+    uri.maybe_set_scheme(Some(Protocol::WSS));
+    assert_eq!(uri.scheme(), Some(&Protocol::WSS));
+    uri.maybe_set_scheme(None);
+    assert!(uri.scheme().is_none());
+}

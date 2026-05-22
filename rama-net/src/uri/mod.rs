@@ -596,6 +596,58 @@ impl Uri {
         self
     }
 
+    /// Set the scheme. Accepts any [`Into<Protocol>`] — most usefully
+    /// [`Protocol`](crate::Protocol) itself, but also `&str` / `String`
+    /// (via the existing `Protocol::From<&str>` chain that's used
+    /// throughout rama's HTTP / SOCKS5 / TLS plumbing).
+    ///
+    /// The scheme is a presentation-only component for the parsed URI
+    /// — `canonicalize` lowercases custom schemes per RFC 3986
+    /// §6.2.2.1, known schemes (`http`, `https`, `ws`, `wss`,
+    /// `socks5`, `socks5h`) are already case-normalised at construction.
+    pub fn set_scheme(&mut self, scheme: impl Into<crate::Protocol>) -> &mut Self {
+        let scheme = scheme.into();
+        self.to_mut().scheme = Some(scheme);
+        self
+    }
+
+    /// Consuming form of [`set_scheme`](Self::set_scheme).
+    #[must_use]
+    pub fn with_scheme(mut self, scheme: impl Into<crate::Protocol>) -> Self {
+        self.set_scheme(scheme);
+        self
+    }
+
+    /// Clear the scheme — turns an absolute-form URI into a
+    /// relative-reference. Shortcut for the `None` arm of
+    /// [`maybe_set_scheme`](Self::maybe_set_scheme).
+    pub fn unset_scheme(&mut self) -> &mut Self {
+        self.to_mut().scheme = None;
+        self
+    }
+
+    /// Consuming form of [`unset_scheme`](Self::unset_scheme).
+    #[must_use]
+    pub fn without_scheme(mut self) -> Self {
+        self.unset_scheme();
+        self
+    }
+
+    /// Set or clear the scheme in one call. `Some(scheme)` is equivalent
+    /// to [`set_scheme`](Self::set_scheme); `None` is equivalent to
+    /// [`unset_scheme`](Self::unset_scheme).
+    pub fn maybe_set_scheme(&mut self, scheme: impl Into<Option<crate::Protocol>>) -> &mut Self {
+        self.to_mut().scheme = scheme.into();
+        self
+    }
+
+    /// Consuming form of [`maybe_set_scheme`](Self::maybe_set_scheme).
+    #[must_use]
+    pub fn maybe_with_scheme(mut self, scheme: impl Into<Option<crate::Protocol>>) -> Self {
+        self.maybe_set_scheme(scheme);
+        self
+    }
+
     // ---- Canonicalization (RFC 3986 §6.2.2) ------------------------------
 
     /// Apply RFC 3986 §6.2.2 syntax-based normalization. Returns a new
@@ -702,15 +754,6 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set or remove the scheme. Removing yields a relative
-        /// reference — origin-form when the authority is also absent.
-        pub fn scheme(mut self, scheme: Option<crate::Protocol>) -> Self {
-            self.to_mut().scheme = scheme;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
         /// Set or remove the authority (userinfo + host + port).
         pub fn authority(mut self, authority: Option<crate::address::Authority>) -> Self {
             self.to_mut().authority = authority;
@@ -787,6 +830,134 @@ impl Uri {
         H::Error: Into<rama_core::error::BoxError>,
     {
         self.try_set_host(host)?;
+        Ok(self)
+    }
+
+    /// Set just the port, preserving the rest of the authority.
+    ///
+    /// `Some(port)` sets the explicit port; `None` clears any
+    /// existing `:port` suffix (scheme default ports are not
+    /// substituted — they remain implicit). If the URI has no
+    /// authority yet, one is created with the loopback IPv4 host
+    /// as a placeholder — callers building a URI from scratch should
+    /// set the host before the port for clarity.
+    pub fn set_port(&mut self, port: impl Into<Option<u16>>) -> &mut Self {
+        let port = port.into();
+        let owned = self.to_mut();
+        match &mut owned.authority {
+            Some(authority) => {
+                authority.address.port = port;
+            }
+            None => {
+                owned.authority = Some(crate::address::Authority {
+                    user_info: None,
+                    address: crate::address::HostWithOptPort {
+                        host: crate::address::Host::LOCALHOST_IPV4,
+                        port,
+                    },
+                });
+            }
+        }
+        self
+    }
+
+    /// Consuming form of [`set_port`](Self::set_port).
+    #[must_use]
+    pub fn with_port(mut self, port: impl Into<Option<u16>>) -> Self {
+        self.set_port(port);
+        self
+    }
+
+    /// Clear the port. Shortcut for `set_port(None)`.
+    pub fn unset_port(&mut self) -> &mut Self {
+        self.set_port(None)
+    }
+
+    /// Consuming form of [`unset_port`](Self::unset_port).
+    #[must_use]
+    pub fn without_port(mut self) -> Self {
+        self.unset_port();
+        self
+    }
+
+    /// Set just the userinfo, preserving the rest of the authority.
+    ///
+    /// `Some(userinfo)` sets the explicit userinfo (the `user[:pass]@`
+    /// prefix); `None` clears any existing userinfo. If the URI has no
+    /// authority yet, one is created with the loopback IPv4 host as a
+    /// placeholder — see [`set_port`](Self::set_port) for the same
+    /// caveat.
+    pub fn set_userinfo(
+        &mut self,
+        user_info: impl Into<Option<crate::address::UserInfo>>,
+    ) -> &mut Self {
+        let user_info = user_info.into();
+        let owned = self.to_mut();
+        match &mut owned.authority {
+            Some(authority) => {
+                authority.user_info = user_info;
+            }
+            None => {
+                owned.authority = Some(crate::address::Authority {
+                    user_info,
+                    address: crate::address::HostWithOptPort {
+                        host: crate::address::Host::LOCALHOST_IPV4,
+                        port: None,
+                    },
+                });
+            }
+        }
+        self
+    }
+
+    /// Consuming form of [`set_userinfo`](Self::set_userinfo).
+    #[must_use]
+    pub fn with_userinfo(mut self, user_info: impl Into<Option<crate::address::UserInfo>>) -> Self {
+        self.set_userinfo(user_info);
+        self
+    }
+
+    /// Clear the userinfo. Shortcut for `set_userinfo(None)`.
+    pub fn unset_userinfo(&mut self) -> &mut Self {
+        self.set_userinfo(None)
+    }
+
+    /// Consuming form of [`unset_userinfo`](Self::unset_userinfo).
+    #[must_use]
+    pub fn without_userinfo(mut self) -> Self {
+        self.unset_userinfo();
+        self
+    }
+
+    /// Fallible userinfo setter. Accepts any
+    /// [`TryInto<UserInfo>`] — typically `&str` / `String`. Routes
+    /// through [`UserInfo::try_from`](crate::address::UserInfo) which
+    /// enforces the full RFC 3986 §3.2.1 userinfo grammar.
+    ///
+    /// Returns [`UriError::ComponentConversion`] tagged with
+    /// [`Component::UserInfo`] when the upstream conversion fails.
+    pub fn try_set_userinfo<U>(&mut self, user_info: U) -> Result<&mut Self, UriError>
+    where
+        U: TryInto<crate::address::UserInfo>,
+        U::Error: Into<rama_core::error::BoxError>,
+    {
+        let user_info: crate::address::UserInfo =
+            user_info
+                .try_into()
+                .map_err(|e| UriError::ComponentConversion {
+                    component: Component::UserInfo,
+                    cause: e.into(),
+                })?;
+        Ok(self.set_userinfo(Some(user_info)))
+    }
+
+    /// Consuming form of [`try_set_userinfo`](Self::try_set_userinfo).
+    pub fn try_with_userinfo<U>(mut self, user_info: U) -> Result<Self, UriError>
+    where
+        U: TryInto<crate::address::UserInfo>,
+        U::Error: Into<rama_core::error::BoxError>,
+    {
+        self.try_set_userinfo(user_info)?;
         Ok(self)
     }
 }
@@ -1027,6 +1198,143 @@ impl std::hash::Hash for Uri {
                 f.hash(state);
             }
             None => state.write_u8(0),
+        }
+    }
+}
+
+// ---- UriRef: borrowed snapshot of a `Uri` -------------------------------
+
+/// Borrowed snapshot of a [`Uri`]'s components.
+///
+/// A single match-once walk caches `Option<&Protocol>`,
+/// `Option<AuthorityRef<'_>>`, `Option<PathRef<'_>>`,
+/// `Option<QueryRef<'_>>`, and `Option<FragmentRef<'_>>` so downstream
+/// code that wants to inspect several components without re-walking
+/// the `UriInner` enum per accessor gets them in one shot. The
+/// asterisk-form is preserved as a single boolean — every component
+/// accessor on an asterisk view returns `None`.
+///
+/// `Display` and `Debug` delegate back through the `Uri` they were
+/// minted from, so logging surface is identical.
+#[derive(Debug, Clone, Copy)]
+pub struct UriRef<'a> {
+    /// The source URI — used by `Display`/`Debug` to render. All other
+    /// accessors read from the cached component fields directly so
+    /// they're branch-free (one struct-field load instead of a
+    /// per-call `match` on `UriInner`).
+    source: &'a Uri,
+    scheme: Option<&'a crate::Protocol>,
+    authority: Option<crate::address::AuthorityRef<'a>>,
+    path: Option<PathRef<'a>>,
+    query: Option<QueryRef<'a>>,
+    fragment: Option<FragmentRef<'a>>,
+    is_asterisk: bool,
+}
+
+impl<'a> UriRef<'a> {
+    /// Returns the scheme component, or `None` for origin-form /
+    /// asterisk-form URIs.
+    #[must_use]
+    #[inline]
+    pub const fn scheme(&self) -> Option<&'a crate::Protocol> {
+        self.scheme
+    }
+
+    /// Returns the authority bundle (host + port + userinfo), or
+    /// `None` for asterisk-form / opaque-path / origin-form URIs.
+    #[must_use]
+    #[inline]
+    pub const fn authority(&self) -> Option<crate::address::AuthorityRef<'a>> {
+        self.authority
+    }
+
+    /// Returns the path component, or `None` for asterisk-form
+    /// (which has no path — the request-target *is* `*`).
+    #[must_use]
+    #[inline]
+    pub const fn path(&self) -> Option<PathRef<'a>> {
+        self.path
+    }
+
+    /// Returns the query component, or `None` if the URI has no `?`.
+    #[must_use]
+    #[inline]
+    pub const fn query(&self) -> Option<QueryRef<'a>> {
+        self.query
+    }
+
+    /// Returns the fragment component, or `None` if the URI has no `#`.
+    #[must_use]
+    #[inline]
+    pub const fn fragment(&self) -> Option<FragmentRef<'a>> {
+        self.fragment
+    }
+
+    /// Returns the host shortcut, or `None` if no authority.
+    #[must_use]
+    #[inline]
+    pub fn host(&self) -> Option<crate::address::HostRef<'a>> {
+        self.authority.map(|a| a.host())
+    }
+
+    /// Returns the port shortcut, or `None` if no authority OR no
+    /// explicit port.
+    #[must_use]
+    #[inline]
+    pub fn port(&self) -> Option<u16> {
+        self.authority.and_then(|a| a.port())
+    }
+
+    /// Returns the userinfo shortcut, or `None` if no authority OR
+    /// no `@` on the wire.
+    #[must_use]
+    #[inline]
+    pub fn userinfo(&self) -> Option<crate::address::UserInfoRef<'a>> {
+        self.authority.and_then(|a| a.userinfo())
+    }
+
+    /// Returns `true` for the OPTIONS-`*` request-target.
+    #[must_use]
+    #[inline]
+    pub const fn is_asterisk(&self) -> bool {
+        self.is_asterisk
+    }
+
+    /// Returns `true` if the URI has a scheme (absolute URI per
+    /// RFC 3986 §4.3).
+    #[must_use]
+    #[inline]
+    pub const fn is_absolute(&self) -> bool {
+        self.scheme.is_some()
+    }
+}
+
+impl std::fmt::Display for UriRef<'_> {
+    /// Renders the canonical URI string — same output as the source
+    /// [`Uri`]'s `Display`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.source, f)
+    }
+}
+
+impl Uri {
+    /// Borrow this URI as a [`UriRef`] — a single match-once snapshot
+    /// of every component accessor.
+    ///
+    /// Most useful for code that inspects three-or-more components in
+    /// a row: each `Uri::scheme()` / `host()` / `path()` etc. re-walks
+    /// the internal `match &self.inner { … }` per call; `view()` does
+    /// the walk once and exposes the results as struct fields.
+    #[must_use]
+    pub fn view(&self) -> UriRef<'_> {
+        UriRef {
+            source: self,
+            scheme: self.scheme(),
+            authority: self.authority(),
+            path: self.path(),
+            query: self.query(),
+            fragment: self.fragment(),
+            is_asterisk: self.is_asterisk(),
         }
     }
 }

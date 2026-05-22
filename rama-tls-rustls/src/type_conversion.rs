@@ -203,4 +203,55 @@ mod tests {
         let p = rustls::ProtocolVersion::rama_from(p);
         assert_eq!(p, rustls::ProtocolVersion::TLSv1_3);
     }
+
+    // ---- Uninterpreted host promotion fallback (audit M3 / C13) ----------
+    //
+    // Both the owned and borrowed `Host → ServerName` conversions retry
+    // `Domain::try_from` on `Uninterpreted` hosts so a pct-encoded or
+    // IDN reg-name reaches the TLS layer as a proper `DnsName` rather
+    // than tripping the AddressTypeNotSupported / OpaqueError path.
+    //
+    // `UninterpretedHost::from_validated_bytes` is crate-private to
+    // `rama-net`, so cross-crate tests construct the variant via the
+    // URI parser (the only public path that produces it).
+
+    fn parse_uninterpreted_host(uri_input: &str) -> Host {
+        let uri = rama_net::uri::Uri::parse(uri_input).expect("valid URI");
+        uri.host().expect("authority present").into_owned()
+    }
+
+    #[test]
+    fn owned_host_uninterpreted_recovers_to_dns_name() {
+        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let sn = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
+        match sn {
+            rustls::pki_types::ServerName::DnsName(dns) => {
+                assert_eq!(dns.as_ref(), "example.com");
+            }
+            other => panic!("expected DnsName from pct-encoded Uninterpreted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn borrowed_host_uninterpreted_recovers_to_dns_name() {
+        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        // Borrowed-input conversion (the audit added this recovery
+        // branch — used to error unconditionally).
+        let sn = rustls::pki_types::ServerName::rama_try_from(&host).unwrap();
+        match sn {
+            rustls::pki_types::ServerName::DnsName(dns) => {
+                assert_eq!(dns.as_ref(), "example.com");
+            }
+            other => panic!("expected DnsName from pct-encoded Uninterpreted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_uninterpreted_bracketed_ipvfuture_still_errors() {
+        // No typed recovery is possible for IPvFuture — must surface
+        // the conversion error rather than emitting a bogus DnsName.
+        let host = parse_uninterpreted_host("http://[v1.fe80::a]/");
+        rustls::pki_types::ServerName::rama_try_from(host).unwrap_err();
+    }
 }

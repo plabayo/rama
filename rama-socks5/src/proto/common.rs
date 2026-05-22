@@ -249,4 +249,52 @@ mod tests {
             SocksAuthority
         );
     }
+
+    // ---- Uninterpreted host promotion fallback (audit M3 / C13) ----------
+    //
+    // The wire writer was retrofitted to try `Domain::try_from(host)` and
+    // emit the canonical ACE form rather than the raw pct-encoded bytes —
+    // a pct-encoded reg-name reaches the SOCKS5 server as a normal
+    // DomainName, not as bytes the server has no chance of resolving.
+
+    /// Build a `Host::Uninterpreted(_)` via the URI parser — the only
+    /// public path for constructing this variant from a cross-crate
+    /// test (`UninterpretedHost::from_validated_bytes` is crate-private
+    /// to `rama-net`).
+    fn parse_uninterpreted_host(uri_input: &str) -> Host {
+        let uri = rama_net::uri::Uri::parse(uri_input).expect("valid URI");
+        uri.host().expect("authority present").into_owned()
+    }
+
+    #[test]
+    fn socks5_write_authority_promotes_pct_encoded_reg_name_to_domain() {
+        // `exa%6Dple.com` (Uninterpreted) → after `Domain::try_from`
+        // pct-decode → `example.com` on the wire.
+        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let auth = HostWithPort::new(host, 443);
+        let mut buf = Vec::new();
+        write_authority_to_buf(&auth, &mut buf);
+        // First byte is the DomainName address-type tag, second is the
+        // length-prefix, then the bytes. Recovered bytes must be the
+        // canonical `example.com`, not the pct-encoded source.
+        assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
+        assert_eq!(buf[1] as usize, b"example.com".len());
+        assert_eq!(&buf[2..2 + b"example.com".len()], b"example.com");
+    }
+
+    #[test]
+    fn socks5_write_authority_keeps_subdelim_host_verbatim() {
+        // Sub-delim reg-name doesn't promote to a Domain → emit the
+        // raw bytes so the upstream resolver gets what the caller
+        // handed in.
+        let host = parse_uninterpreted_host("http://tag,with,commas/");
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let auth = HostWithPort::new(host, 8080);
+        let mut buf = Vec::new();
+        write_authority_to_buf(&auth, &mut buf);
+        assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
+        assert_eq!(buf[1] as usize, b"tag,with,commas".len());
+        assert_eq!(&buf[2..2 + b"tag,with,commas".len()], b"tag,with,commas");
+    }
 }

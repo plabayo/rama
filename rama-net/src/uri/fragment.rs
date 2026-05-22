@@ -11,7 +11,14 @@ use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
 
 /// Owned fragment component (the part after `#`, sans the `#` itself).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Default` produces an empty fragment (zero bytes — distinct from
+/// "no fragment"; that distinction lives on [`super::Uri::fragment`] /
+/// [`super::Uri::set_fragment`]). `Display` writes the raw on-wire
+/// bytes (no leading `#`). `Hash` / `PartialOrd` / `Ord` are bytewise —
+/// fragments are case-sensitive and pct-encoding-preserving per RFC
+/// 3986 §3.5.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fragment {
     pub(crate) bytes: BytesMut,
 }
@@ -91,5 +98,27 @@ impl<'a> FragmentRef<'a> {
         Fragment {
             bytes: BytesMut::from(self.bytes),
         }
+    }
+}
+
+impl std::fmt::Display for Fragment {
+    /// Renders the fragment bytes (no leading `#`). Same string the
+    /// raw view returns — pct-encoding is preserved as-is.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_raw_str())
+    }
+}
+
+impl std::str::FromStr for Fragment {
+    type Err = std::convert::Infallible;
+
+    /// Encode arbitrary input as a [`Fragment`] — bytes outside
+    /// `pchar ∪ {'/', '?'}` get percent-encoded. Infallible because
+    /// every input round-trips after encoding; `str::parse` users with
+    /// `?`-ladder code can still use this through the `Result` shape.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self {
+            bytes: super::encode::encode_fragment(s),
+        })
     }
 }

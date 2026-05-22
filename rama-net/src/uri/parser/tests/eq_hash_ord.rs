@@ -199,6 +199,103 @@ fn ord_asterisk_sorts_before_all_other_uris() {
     assert_eq!(v[0].to_string(), "*", "asterisk must sort first, got {v:?}");
 }
 
+// ---- Query / Fragment derives + Display + FromStr-------------
+
+#[test]
+fn query_display_and_from_str_round_trip() {
+    use crate::uri::Query;
+    use std::str::FromStr as _;
+    let q = Query::from_str("a=1&b=2").unwrap();
+    assert_eq!(q.to_string(), "a=1&b=2");
+    // Already-legal pchar passes through; bytes outside the set encode.
+    let q = Query::from_str("hello world").unwrap();
+    assert_eq!(q.to_string(), "hello%20world");
+}
+
+#[test]
+fn query_default_is_empty_and_distinct_from_dummy() {
+    use crate::uri::Query;
+    let d = Query::default();
+    assert_eq!(d.as_bytes(), b"");
+    assert_eq!(d.to_string(), "");
+}
+
+#[test]
+fn fragment_display_and_from_str_round_trip() {
+    use crate::uri::Fragment;
+    use std::str::FromStr as _;
+    let f = Fragment::from_str("section-1.2").unwrap();
+    assert_eq!(f.to_string(), "section-1.2");
+}
+
+// ---- UriRef + Uri::view()-------------------------------------
+
+#[test]
+fn uri_view_caches_all_components() {
+    let u = Uri::parse("https://alice:secret@example.com:8443/p?q=1#f").unwrap();
+    let v = u.view();
+    // Every accessor returns the same value as the source Uri's
+    // accessor — the snapshot is a faithful borrow, just cached.
+    assert_eq!(v.scheme(), u.scheme());
+    assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
+    assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));
+    assert_eq!(v.fragment().map(|f| f.as_raw_str()), Some("f"));
+    assert_eq!(v.port(), Some(8443));
+    assert!(v.host().is_some());
+    assert!(v.userinfo().is_some());
+    assert!(!v.is_asterisk());
+    assert!(v.is_absolute());
+}
+
+#[test]
+fn uri_view_display_matches_source() {
+    let u = Uri::parse("https://example.com/p?q=1").unwrap();
+    assert_eq!(u.view().to_string(), u.to_string());
+}
+
+#[test]
+fn uri_view_asterisk_form_all_components_none() {
+    let u = Uri::parse("*").unwrap();
+    let v = u.view();
+    assert!(v.is_asterisk());
+    assert!(!v.is_absolute());
+    assert!(v.scheme().is_none());
+    assert!(v.authority().is_none());
+    assert!(v.path().is_none());
+    assert!(v.query().is_none());
+    assert!(v.fragment().is_none());
+    assert!(v.host().is_none());
+    assert!(v.port().is_none());
+    assert!(v.userinfo().is_none());
+}
+
+#[test]
+fn uri_view_origin_form_no_authority() {
+    let u = Uri::parse("/p?q=1#f").unwrap();
+    let v = u.view();
+    assert!(v.scheme().is_none());
+    assert!(v.authority().is_none());
+    assert!(v.host().is_none());
+    assert!(v.port().is_none());
+    assert!(v.userinfo().is_none());
+    assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
+    assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));
+    assert_eq!(v.fragment().map(|f| f.as_raw_str()), Some("f"));
+}
+
+#[test]
+fn query_hash_works_as_btreemap_key() {
+    // Hash / Ord derives let `Query` flow into ordered/unordered maps.
+    use crate::uri::Query;
+    use std::collections::BTreeMap;
+    use std::str::FromStr as _;
+    let mut m: BTreeMap<Query, &'static str> = BTreeMap::new();
+    m.insert(Query::from_str("a=1").unwrap(), "first");
+    m.insert(Query::from_str("a=2").unwrap(), "second");
+    assert_eq!(m.get(&Query::from_str("a=1").unwrap()), Some(&"first"));
+    assert_eq!(m.len(), 2);
+}
+
 #[test]
 fn hash_asterisk_distinct_from_other_uris() {
     // The discriminant byte for `Asterisk` in `Uri::hash` is dedicated

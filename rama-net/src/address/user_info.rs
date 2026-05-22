@@ -23,7 +23,7 @@ use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 /// `Debug`-print of a [`Uri`](crate::uri::Uri) would otherwise leak
 /// credentials into observability sinks. The user portion is rendered raw;
 /// pct-encoded bytes are not decoded for the Debug view.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserInfo {
     bytes: Bytes,
 }
@@ -701,7 +701,7 @@ mod tests {
         Basic::try_from(&u).unwrap_err();
     }
 
-    // ---- `From<Basic>` divergence regression (audit C2 pinning) -------
+    // ---- `From<Basic>` divergence regression -------
     //
     // `Basic` validates only CR/LF/NUL; `UserInfo::try_from` enforces the
     // full RFC 3986 §3.2.1 grammar (no raw `@`, no space, no gen-delims,
