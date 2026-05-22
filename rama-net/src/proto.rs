@@ -117,7 +117,7 @@ impl Protocol {
 
         Self(if eq_ignore_ascii_case!(s, Self::HTTPS_SCHEME) {
             ProtocolKind::Https
-        } else if s.is_empty() || eq_ignore_ascii_case!(s, Self::HTTP_SCHEME) {
+        } else if eq_ignore_ascii_case!(s, Self::HTTP_SCHEME) {
             ProtocolKind::Http
         } else if eq_ignore_ascii_case!(s, Self::SOCKS5_SCHEME) {
             ProtocolKind::Socks5
@@ -236,7 +236,7 @@ fn try_to_convert_str_to_non_custom_protocol(
     Ok(Some(Protocol(
         if eq_ignore_ascii_case!(s, Protocol::HTTPS_SCHEME) {
             ProtocolKind::Https
-        } else if s.is_empty() || eq_ignore_ascii_case!(s, Protocol::HTTP_SCHEME) {
+        } else if eq_ignore_ascii_case!(s, Protocol::HTTP_SCHEME) {
             ProtocolKind::Http
         } else if eq_ignore_ascii_case!(s, Protocol::SOCKS5_SCHEME) {
             ProtocolKind::Socks5
@@ -476,13 +476,21 @@ mod tests {
     #[test]
     fn test_from_str() {
         assert_eq!("http".parse(), Ok(Protocol::HTTP));
-        assert_eq!("".parse(), Ok(Protocol::HTTP));
         assert_eq!("https".parse(), Ok(Protocol::HTTPS));
         assert_eq!("ws".parse(), Ok(Protocol::WS));
         assert_eq!("wss".parse(), Ok(Protocol::WSS));
         assert_eq!("socks5".parse(), Ok(Protocol::SOCKS5));
         assert_eq!("socks5h".parse(), Ok(Protocol::SOCKS5H));
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
+    }
+
+    #[test]
+    fn empty_scheme_rejected() {
+        // Per RFC 3986 §3.1 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-"
+        // / "." )` — empty is not valid. Reject explicitly rather than
+        // silently defaulting to HTTP.
+        "".parse::<Protocol>().unwrap_err();
+        Protocol::try_from("").unwrap_err();
     }
 
     #[test]

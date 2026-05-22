@@ -597,14 +597,23 @@ impl HostCanonicalView<'_> {
 
 impl PartialEq for HostRef<'_> {
     fn eq(&self, other: &Self) -> bool {
-        // Same-variant fast paths (no allocation, no promotion attempts).
+        // Same-variant fast paths. `Uninterpreted` only skips canonical
+        // projection when both sides are pct-free pure ASCII — otherwise
+        // UTS #46 may fold distinct surface bytes (e.g. `ß` vs `ẞ`) to
+        // the same Domain, which the byte-level compare wouldn't see.
         match (self, other) {
             (Self::Name(a), Self::Name(b)) => return a == b,
             (Self::Address(a), Self::Address(b)) => return a == b,
-            (Self::Uninterpreted(a), Self::Uninterpreted(b)) => return a == b,
+            (Self::Uninterpreted(a), Self::Uninterpreted(b))
+                if uninterpreted_byte_compare_is_canonical(*a)
+                    && uninterpreted_byte_compare_is_canonical(*b) =>
+            {
+                return a == b;
+            }
             _ => {}
         }
-        // Cross-variant: project both through the canonical form.
+        // Cross-variant or non-ASCII Uninterpreted: project through the
+        // canonical form.
         let lhs = HostCanonical::from_ref(*self);
         let rhs = HostCanonical::from_ref(*other);
         match (lhs.as_view(), rhs.as_view()) {
@@ -614,6 +623,15 @@ impl PartialEq for HostRef<'_> {
             _ => false,
         }
     }
+}
+
+/// `true` when an `UninterpretedHostRef`'s bytes cannot be UTS #46
+/// normalized into a different surface form — i.e. byte-level case-fold
+/// already matches the canonical projection. Requires: no `%` (pct-decode
+/// could yield non-ASCII) and no byte ≥ 0x80 (raw non-ASCII normalizes).
+#[inline]
+fn uninterpreted_byte_compare_is_canonical(u: UninterpretedHostRef<'_>) -> bool {
+    u.as_bytes().iter().all(|&b| b < 0x80 && b != b'%')
 }
 
 impl Eq for HostRef<'_> {}
@@ -1330,5 +1348,67 @@ mod tests {
         assert!(matches!(&v[2], Host::Address(_)));
         // Then Opaque-class.
         assert!(matches!(&v[3], Host::Uninterpreted(u) if u.as_str() == "tag,with,commas"));
+    }
+
+    // ---- Eq transitivity across the UTS#46 / pct-encoding boundary ---------
+
+    #[cfg(feature = "idna")]
+    #[test]
+    fn eq_transitive_uts46_via_non_ascii_uninterpreted() {
+        // Two distinct UTF-8 surface forms of the same domain
+        // (`ß` U+00DF vs `ẞ` U+1E9E) canonicalize to the same ACE
+        // label. Same-variant byte compare would say they differ;
+        // both must still equal the typed Domain that IDN produces.
+        let a = reg_host("ß.de".as_bytes()); // U+00DF
+        let b = reg_host("ẞ.de".as_bytes()); // U+1E9E
+        let c = Host::Name(Domain::try_from("ß.de").unwrap());
+
+        assert_eq!(a, c);
+        assert_eq!(b, c);
+        assert_eq!(a, b, "Eq must be transitive — A==C ∧ B==C ⇒ A==B");
+    }
+
+    #[cfg(feature = "idna")]
+    #[test]
+    fn eq_transitive_uts46_via_pct_encoded_non_ascii() {
+        // Pct-encoded forms of the same Unicode label must also bridge.
+        let a = reg_host(b"%E1%BA%9E.de"); // pct-encoded U+1E9E
+        let b = reg_host(b"%C3%9F.de"); // pct-encoded U+00DF
+        let c = Host::Name(Domain::try_from("ß.de").unwrap());
+
+        assert_eq!(a, c);
+        assert_eq!(b, c);
+        assert_eq!(a, b);
+    }
+
+    // ---- H7: Hash determinism + Ord transitivity ---------------------------
+
+    #[test]
+    fn hash_determinism_bracketed_ipvfuture() {
+        // Two `HostRef::Uninterpreted` instances built from the same
+        // bracketed IPvFuture bytes must hash identically.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash as _, Hasher};
+
+        let h1 = bracketed_host(b"v1.fe80::a");
+        let h2 = bracketed_host(b"v1.fe80::a");
+        let mut s1 = DefaultHasher::new();
+        h1.hash(&mut s1);
+        let mut s2 = DefaultHasher::new();
+        h2.hash(&mut s2);
+        assert_eq!(s1.finish(), s2.finish());
+    }
+
+    #[test]
+    fn ord_transitive_across_bridge() {
+        // Three values, one from each side of the typed↔Uninterpreted
+        // bridge, must satisfy a<b ∧ b<c ⇒ a<c.
+        let a = Host::Name(Domain::from_static("aaaa.example"));
+        let b = reg_host(b"bbbb.example"); // promotes to Domain
+        let c = Host::Name(Domain::from_static("cccc.example"));
+
+        assert!(a < b);
+        assert!(b < c);
+        assert!(a < c, "Ord must be transitive across the bridge");
     }
 }

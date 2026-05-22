@@ -161,8 +161,17 @@ fn parse_host_and_port(
     view: &[u8],
     mode: ParserMode,
 ) -> Result<(Host, Option<u16>), ParseError> {
+    // RFC 3986 §3.2.2 `reg-name = *(...)` allows empty — `file:///path`,
+    // `unix:///run/x`, etc. Stored as `Host::Uninterpreted(b"")`; callers
+    // that need a non-empty host check `host.as_str().is_empty()`.
     if view.is_empty() {
-        return Err(ParseError::InvalidComponent(Component::Host));
+        return Ok((
+            Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+                parent.slice(host_start..host_start),
+                false,
+            )),
+            None,
+        ));
     }
 
     // --- IP-literal (bracketed) -------------------------------------------
@@ -200,7 +209,7 @@ fn parse_host_and_port(
         let after = &view[close_rel + 1..];
         let port = match after {
             [] => None,
-            [b':', rest @ ..] => Some(parse_port(rest)?),
+            [b':', rest @ ..] => parse_port(rest)?,
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
         return Ok((host, port));
@@ -213,7 +222,7 @@ fn parse_host_and_port(
     let (host_bytes_rel, port) = match view.iter().rposition(|&b| b == b':') {
         Some(colon) => {
             let port = parse_port(&view[colon + 1..])?;
-            (&view[..colon], Some(port))
+            (&view[..colon], port)
         }
         None => (view, None),
     };
@@ -347,14 +356,14 @@ fn validate_ipvfuture(inside: &[u8]) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn parse_port(bytes: &[u8]) -> Result<u16, ParseError> {
-    // Empty port (`host:`) — reject. RFC 3986 §3.2.3 permits the
-    // production but recommends producers omit; receivers diverge in
-    // the wild, so we pick the stricter side. Note: `parse_port_bytes`
-    // also returns `None` for empty input, so this explicit branch is
-    // for documentation only — the behaviour is identical without it.
+fn parse_port(bytes: &[u8]) -> Result<Option<u16>, ParseError> {
+    // RFC 3986 §3.2.3 `port = *DIGIT` — empty (`host:`) is grammatically
+    // valid. Curl and browsers accept it; we treat it as "no explicit
+    // port" (`None`).
     if bytes.is_empty() {
-        return Err(ParseError::InvalidComponent(Component::Port));
+        return Ok(None);
     }
-    parse_utils::parse_port_bytes(bytes).ok_or(ParseError::InvalidComponent(Component::Port))
+    parse_utils::parse_port_bytes(bytes)
+        .map(Some)
+        .ok_or(ParseError::InvalidComponent(Component::Port))
 }

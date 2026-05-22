@@ -233,12 +233,13 @@ fn invalid_scheme_char_rejected() {
 }
 
 #[test]
-fn empty_port_rejected() {
-    let r = parse_graceful("http://example.com:/");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Port))
-    ));
+fn empty_port_accepted_as_none() {
+    // RFC 3986 §3.2.3 `port = *DIGIT` — empty is valid. Curl and
+    // browsers accept it; we surface it as "no explicit port".
+    let u = parse_graceful("http://example.com:/").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert_eq!(auth.port, None);
+    assert_eq!(auth.host.to_str(), "example.com");
 }
 
 #[test]

@@ -75,7 +75,23 @@ fn empty_input_rejected() {
 fn invalid_port_rejected() {
     Uri::parse_authority_form("example.com:99999").unwrap_err();
     Uri::parse_authority_form("example.com:abc").unwrap_err();
-    Uri::parse_authority_form("example.com:").unwrap_err();
+}
+
+#[test]
+fn empty_port_accepted_in_graceful_as_bare_host() {
+    // RFC 3986 §3.2.3 allows empty port; graceful authority-form
+    // accepts bare-host shapes, so `example.com:` parses with `None`.
+    let u = Uri::parse_authority_form("example.com:").unwrap();
+    assert_eq!(u.host().unwrap().to_str(), "example.com");
+    assert_eq!(u.port(), None);
+}
+
+#[test]
+fn empty_port_rejected_in_strict_authority_form() {
+    // RFC 9112 §3.2.3 requires `host ":" port` — strict mode rejects
+    // the bare-host form an empty port produces.
+    let r = Uri::parse_authority_form_strict("example.com:");
+    assert!(matches!(r, Err(crate::uri::ParseError::StrictViolation)));
 }
 
 #[cfg(feature = "idna")]

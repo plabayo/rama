@@ -308,34 +308,33 @@ fn port_negative_rejected() {
 }
 
 // ----------------------------------------------------------------------
-// Empty authority
+// Empty authority (RFC 3986 §3.2.2 `reg-name = *(...)` — empty allowed)
 // ----------------------------------------------------------------------
 
 #[test]
-fn empty_authority_rejected() {
-    // `http:///path` — `//` followed by `/`, no host.
-    let r = parse_graceful("http:///path");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Host))
-    ));
+fn empty_authority_accepted_as_empty_uninterpreted_host() {
+    // `file:///path`, `unix:///run/x`, also `http:///path` — empty
+    // reg-name parses as `Host::Uninterpreted(b"")`. Callers that need a
+    // non-empty host enforce that at a higher layer.
+    use crate::address::Host;
+    let u = parse_graceful("file:///tmp/x").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    match &auth.host {
+        Host::Uninterpreted(h) => assert!(h.as_str().is_empty()),
+        other => panic!("expected empty Uninterpreted host, got {other:?}"),
+    }
+    assert_eq!(auth.port, None);
+
+    // `http://` — empty authority with no path.
+    let u = parse_graceful("http://").unwrap();
+    let auth = lazy(&u).authority.as_ref().unwrap();
+    assert!(matches!(&auth.host, Host::Uninterpreted(h) if h.as_str().is_empty()));
 }
 
 #[test]
-fn scheme_with_only_colon_rejected() {
-    // `http:` — bare scheme + colon, no path / authority. Path is empty.
-    // Per RFC 3986 this is a valid (if degenerate) URI. Accept.
+fn scheme_with_only_colon_accepted() {
+    // `http:` — bare scheme + colon, no path / authority. RFC-valid
+    // (degenerate) URI.
     let u = parse_graceful("http:").unwrap();
     assert!(lazy(&u).scheme.is_some());
-}
-
-#[test]
-fn scheme_with_only_slashes_rejected() {
-    // `http://` — scheme + `//` + empty authority. Authority parser
-    // rejects empty host.
-    let r = parse_graceful("http://");
-    assert!(matches!(
-        r,
-        Err(ParseError::InvalidComponent(Component::Host))
-    ));
 }
