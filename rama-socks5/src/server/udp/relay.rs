@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::telemetry::tracing;
-use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress};
 use rama_udp::UdpSocket;
 
 use crate::proto::udp::UdpHeader;
@@ -381,134 +381,100 @@ impl UdpSocketRelay {
         authority: HostWithPort,
     ) -> Result<SocketAddress, BoxError> {
         let HostWithPort { host, port } = authority;
-        let ip_addr = match host {
-            Host::Name(domain) => {
-                let dns_resolver = self
-                    .dns_resolver
-                    .clone()
-                    .context("domain cannot be resolved: no dns resolver defined")?;
+        // IP fast path first — `try_as_ip` also bridges pct-encoded
+        // dotted-quad inside `Uninterpreted`. Fall through to DNS
+        // resolution of a typed `Domain` (bridged from `Uninterpreted`
+        // via pct-decode + IDN). Non-promotable inputs (sub-delim,
+        // IPvFuture) hit the error path inside `try_into_domain`.
+        let ip_addr = if let Ok(ip) = host.try_as_ip() {
+            ip
+        } else {
+            let domain = host
+                .try_into_domain()
+                .context("host is not resolvable as a domain via SOCKS5 udp relay")?;
+            let dns_resolver = self
+                .dns_resolver
+                .clone()
+                .context("domain cannot be resolved: no dns resolver defined")?;
 
-                match self.dns_resolve_mode {
-                    DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
-                        dns_resolver
-                            .lookup_ipv4_rand(domain.clone())
-                            .await
-                            .context("no ipv4 addresses found during DNS lookup")?
-                            .context("ipv4 dns lookup")?,
-                    ),
-                    DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
-                        dns_resolver
-                            .lookup_ipv6_rand(domain.clone())
-                            .await
-                            .context("no ipv6 addresses found during DNS lookup")?
-                            .context("ipv6 dns lookup")?,
-                    ),
-                    DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                        use tracing::{Instrument, trace_span};
+            match self.dns_resolve_mode {
+                DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
+                    dns_resolver
+                        .lookup_ipv4_rand(domain.clone())
+                        .await
+                        .context("no ipv4 addresses found during DNS lookup")?
+                        .context("ipv4 dns lookup")?,
+                ),
+                DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
+                    dns_resolver
+                        .lookup_ipv6_rand(domain.clone())
+                        .await
+                        .context("no ipv6 addresses found during DNS lookup")?
+                        .context("ipv6 dns lookup")?,
+                ),
+                DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+                    use tracing::{Instrument, trace_span};
 
-                        let (tx, mut rx) = mpsc::unbounded_channel();
+                    let (tx, mut rx) = mpsc::unbounded_channel();
 
-                        tokio::spawn(
-                            {
-                                let tx = tx.clone();
-                                let domain = domain.clone();
-                                let dns_resolver = dns_resolver.clone();
-                                async move {
-                                    match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
-                                        Some(Ok(addr)) => {
-                                            if let Err(err) = tx.send(IpAddr::V4(addr)) {
-                                                tracing::debug!(
-                                                    "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
-                                                )
-                                            }
-                                        },
-                                        Some(Err(err)) => {
+                    tokio::spawn(
+                        {
+                            let tx = tx.clone();
+                            let domain = domain.clone();
+                            let dns_resolver = dns_resolver.clone();
+                            async move {
+                                match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
+                                    Some(Ok(addr)) => {
+                                        if let Err(err) = tx.send(IpAddr::V4(addr)) {
                                             tracing::debug!(
-                                                "failed to lookup ipv4 addresses for domain: {err:?}"
-                                            );
+                                                "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
+                                            )
                                         }
-                                        None => {
-                                            tracing::debug!(
-                                                "failed to lookup ipv4 addresses for domain: no addresses found"
-                                            );
-                                        }
+                                    },
+                                    Some(Err(err)) => {
+                                        tracing::debug!(
+                                            "failed to lookup ipv4 addresses for domain: {err:?}"
+                                        );
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            "failed to lookup ipv4 addresses for domain: no addresses found"
+                                        );
                                     }
                                 }
                             }
-                            .instrument(trace_span!("dns::ipv4_lookup")),
-                        );
-
-                        tokio::spawn(
-                            {
-                                async move {
-                                    match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
-                                        Some(Ok(addr)) => {
-                                            if let Err(err) = tx.send(IpAddr::V6(addr)) {
-                                                tracing::debug!(
-                                                    "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
-                                                )
-                                            }
-                                        },
-                                        Some(Err(err)) => {
-                                            tracing::debug!(
-                                                "failed to lookup ipv6 addresses for domain: {err:?}"
-                                            );
-                                        }
-                                        None => {
-                                            tracing::debug!(
-                                                "failed to lookup ipv6 addresses for domain: no addresses found"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            .instrument(trace_span!("dns::ipv6_lookup")),
-                        );
-
-                        rx.recv().await.context("receive resolved ip address")?
-                    }
-                }
-            }
-            Host::Address(ip_addr) => ip_addr,
-            // Try to recover a typed Domain (pct-decode + IDN) and
-            // resolve via DNS. Caller may also pre-convert if they
-            // need finer control.
-            Host::Uninterpreted(host) => {
-                let domain = rama_net::address::Domain::try_from(host).context(
-                    "uninterpreted host is not resolvable as a domain via SOCKS5 udp relay",
-                )?;
-                let dns_resolver = self
-                    .dns_resolver
-                    .clone()
-                    .context("domain cannot be resolved: no dns resolver defined")?;
-                match self.dns_resolve_mode {
-                    DnsResolveIpMode::SingleIpV4 => IpAddr::V4(
-                        dns_resolver
-                            .lookup_ipv4_rand(domain)
-                            .await
-                            .context("no ipv4 addresses found during DNS lookup")?
-                            .context("ipv4 dns lookup")?,
-                    ),
-                    DnsResolveIpMode::SingleIpV6 => IpAddr::V6(
-                        dns_resolver
-                            .lookup_ipv6_rand(domain)
-                            .await
-                            .context("no ipv6 addresses found during DNS lookup")?
-                            .context("ipv6 dns lookup")?,
-                    ),
-                    DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                        // Best-effort: try v4 first, fall back to v6.
-                        match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
-                            Some(Ok(addr)) => IpAddr::V4(addr),
-                            _ => IpAddr::V6(
-                                dns_resolver
-                                    .lookup_ipv6_rand(domain)
-                                    .await
-                                    .context("no addresses found during DNS lookup")?
-                                    .context("ipv6 dns lookup fallback")?,
-                            ),
                         }
-                    }
+                        .instrument(trace_span!("dns::ipv4_lookup")),
+                    );
+
+                    tokio::spawn(
+                        {
+                            async move {
+                                match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
+                                    Some(Ok(addr)) => {
+                                        if let Err(err) = tx.send(IpAddr::V6(addr)) {
+                                            tracing::debug!(
+                                                "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
+                                            )
+                                        }
+                                    },
+                                    Some(Err(err)) => {
+                                        tracing::debug!(
+                                            "failed to lookup ipv6 addresses for domain: {err:?}"
+                                        );
+                                    }
+                                    None => {
+                                        tracing::debug!(
+                                            "failed to lookup ipv6 addresses for domain: no addresses found"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        .instrument(trace_span!("dns::ipv6_lookup")),
+                    );
+
+                    rx.recv().await.context("receive resolved ip address")?
                 }
             }
         };

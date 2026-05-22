@@ -273,51 +273,50 @@ impl RequestRef<'_> {
     {
         let n = self.serialized_len();
 
-        match self.destination.host {
-            rama_net::address::Host::Address(IpAddr::V4(_)) => {
-                tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
-                debug_assert_eq!(4 + 4 + 2, n);
-                let mut buf = [0u8; 10];
-                self.write_to_buf(&mut buf.as_mut_slice())?;
-                w.write_all(&buf[..]).await
-            }
-            // Both `Name` (typed Domain) and `Uninterpreted` (preserved
-            // reg-name bytes) serialize as SOCKS5 `DomainName` —
-            // length-prefixed byte slice. Same buffer-sizing strategy.
-            rama_net::address::Host::Name(_) | rama_net::address::Host::Uninterpreted(_) => {
-                const SMALL_LEN: usize = 32 + 1 + 6;
-                const MED_LEN: usize = 64 + 1 + 6;
-
-                if n <= SMALL_LEN {
-                    tracing::trace!(
-                        "write socks5 client request w/ (small) domain name: on stack (w={n})",
-                    );
-                    let mut buf = [0u8; SMALL_LEN];
+        // Try IP first (cheap path — fixed-size buffer). Fall through
+        // to the domain-name path (variable length, sized via `n`).
+        // `try_as_ip` / `try_as_domain` bridge `Uninterpreted` for us;
+        // hosts that promote to neither error at write time inside
+        // `write_authority_to_buf`.
+        if let Ok(ip) = self.destination.host.try_as_ip() {
+            return match ip {
+                IpAddr::V4(_) => {
+                    tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
+                    debug_assert_eq!(4 + 4 + 2, n);
+                    let mut buf = [0u8; 10];
                     self.write_to_buf(&mut buf.as_mut_slice())?;
-                    w.write_all(&buf[..n]).await
-                } else if n <= MED_LEN {
-                    tracing::trace!(
-                        "write socks5 client request w/ (medium) domain name: on stack (w={n})",
-                    );
-                    let mut buf = [0u8; MED_LEN];
-                    self.write_to_buf(&mut buf.as_mut_slice())?;
-                    w.write_all(&buf[..n]).await
-                } else {
-                    tracing::trace!(
-                        "write socks5 client request w/ (large) domain name: on heap (w={n})"
-                    );
-                    let mut buf = BytesMut::with_capacity(n);
-                    self.write_to_buf(&mut buf)?;
-                    w.write_all(&buf).await
+                    w.write_all(&buf[..]).await
                 }
-            }
-            rama_net::address::Host::Address(IpAddr::V6(_)) => {
-                tracing::trace!("write socks5 client request w/ Ipv6 addr: on stack (w={n})");
-                debug_assert_eq!(4 + 16 + 2, n);
-                let mut buf = [0u8; 22];
-                self.write_to_buf(&mut buf.as_mut_slice())?;
-                w.write_all(&buf[..]).await
-            }
+                IpAddr::V6(_) => {
+                    tracing::trace!("write socks5 client request w/ Ipv6 addr: on stack (w={n})");
+                    debug_assert_eq!(4 + 16 + 2, n);
+                    let mut buf = [0u8; 22];
+                    self.write_to_buf(&mut buf.as_mut_slice())?;
+                    w.write_all(&buf[..]).await
+                }
+            };
+        }
+        // Domain-name path. `n` already accounts for the actual length.
+        const SMALL_LEN: usize = 32 + 1 + 6;
+        const MED_LEN: usize = 64 + 1 + 6;
+
+        if n <= SMALL_LEN {
+            tracing::trace!("write socks5 client request w/ (small) domain name: on stack (w={n})");
+            let mut buf = [0u8; SMALL_LEN];
+            self.write_to_buf(&mut buf.as_mut_slice())?;
+            w.write_all(&buf[..n]).await
+        } else if n <= MED_LEN {
+            tracing::trace!(
+                "write socks5 client request w/ (medium) domain name: on stack (w={n})",
+            );
+            let mut buf = [0u8; MED_LEN];
+            self.write_to_buf(&mut buf.as_mut_slice())?;
+            w.write_all(&buf[..n]).await
+        } else {
+            tracing::trace!("write socks5 client request w/ (large) domain name: on heap (w={n})");
+            let mut buf = BytesMut::with_capacity(n);
+            self.write_to_buf(&mut buf)?;
+            w.write_all(&buf).await
         }
     }
 

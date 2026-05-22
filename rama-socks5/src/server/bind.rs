@@ -5,11 +5,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
-use rama_net::{
-    address::{Host, SocketAddress},
-    proxy::IoForwardService,
-    socket::SocketService,
-};
+use rama_net::{address::SocketAddress, proxy::IoForwardService, socket::SocketService};
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_set_and_with;
 
@@ -243,40 +239,18 @@ where
             port: requested_port,
         } = requested_bind_address;
 
-        let requested_addr = match requested_host {
-            Host::Name(domain) => {
-                tracing::debug!("bind command does not accept domain {domain} as bind address",);
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut ingress_stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: bind failed")
-                    })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
-            }
-            Host::Uninterpreted(host) => {
-                // Try to recover an IP first — a pct-encoded IPv4
-                // (`%31%32%37.0.0.1`) is a legitimate bind address that
-                // happens to ride in the Uninterpreted variant. Only
-                // reject the bind when the bytes truly aren't an IP.
-                if let Ok(ip) = std::net::IpAddr::try_from(&host) {
-                    ip
-                } else {
-                    tracing::debug!(
-                        "bind command does not accept uninterpreted host {host} as bind address"
-                    );
-                    let reply_kind = ReplyKind::AddressTypeNotSupported;
-                    Reply::error_reply(reply_kind)
-                        .write_to(&mut ingress_stream)
-                        .await
-                        .map_err(|err| {
-                            Error::io(err).with_context("write server reply: bind failed")
-                        })?;
-                    return Err(Error::aborted("bind failed").with_context(reply_kind));
-                }
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // Bind target MUST be an IP. `try_as_ip` bridges pct-encoded
+        // IPv4 inside `Uninterpreted`; anything else is rejected.
+        let Ok(requested_addr) = requested_host.try_as_ip() else {
+            tracing::debug!(
+                "bind command does not accept non-IP host {requested_host} as bind address"
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut ingress_stream)
+                .await
+                .map_err(|err| Error::io(err).with_context("write server reply: bind failed"))?;
+            return Err(Error::aborted("bind failed").with_context(reply_kind));
         };
         let requested_address = SocketAddress::new(requested_addr, requested_port);
 

@@ -3,34 +3,27 @@ use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
 use rama_core::error::BoxError;
 use rama_net::address::{Domain, Host, HostWithPort};
-use std::{borrow::Cow, io::Read, net::IpAddr};
+use std::{io::Read, net::IpAddr};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Compute the length of an authority,
 /// used in the context of buffer allocation
 /// in function of writing a socks5 protocol element.
 pub(super) fn authority_length(authority: &HostWithPort) -> usize {
-    2 + match &authority.host {
-        Host::Name(domain) => 1 + domain.len(),
-        Host::Address(ip_addr) => match ip_addr {
+    // Same dispatch order as `write_authority_to_buf`: IP first, then
+    // Domain (with `Uninterpreted` bridging). Non-promotable hosts
+    // (sub-delim reg-name, IPvFuture) fail at write time — we count
+    // them as `1 + 0` so the caller's buffer is large enough for the
+    // header byte the writer would emit before erroring.
+    2 + if let Ok(ip) = authority.host.try_as_ip() {
+        match ip {
             IpAddr::V4(_) => 4,
             IpAddr::V6(_) => 16,
-        },
-        // Mirror `write_authority_to_buf`'s recovery path: a typed
-        // `Domain::try_from(host)` succeeds for pct-encoded / IDN reg-
-        // names and serializes to ACE form, which is usually shorter
-        // than the raw bytes (e.g. `m%C3%BCnchen.de` 16B → `xn--mnchen-3ya.de` 17B —
-        // most cases are within a byte either way). Falls back to the
-        // verbatim length when recovery fails. The wire writer applies
-        // the exact same logic so the buffer pre-allocation stays
-        // accurate.
-        Host::Uninterpreted(host) => {
-            let len = match Domain::try_from(host) {
-                Ok(domain) => domain.len(),
-                Err(_) => host.as_bytes().len(),
-            };
-            1 + len
         }
+    } else if let Ok(domain) = authority.host.try_as_domain() {
+        1 + domain.len()
+    } else {
+        1
     }
 }
 
@@ -124,24 +117,17 @@ pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<HostWithPort, Re
 
 /// Write the authority into the (usually pre-allocated) buffer.
 ///
-/// Returns `Err(io::ErrorKind::InvalidInput)` for `Host::Uninterpreted`
-/// with empty bytes — SOCKS5 has no representation for an empty host
-/// (a zero-length `DomainName` is rejected by the reader), and the
-/// URI parser surfaces empty reg-names (`file:///path`) as
-/// `Host::Uninterpreted(b"")`. The encoder refuses rather than
-/// emitting invalid wire bytes the peer will reject anyway.
+/// Tries [`Host::try_as_ip`] first (cheapest — no allocation), then
+/// [`Host::try_as_domain`] (allocates only for the `Uninterpreted`
+/// bridge). Errors with `io::ErrorKind::InvalidInput` for hosts that
+/// promote to neither — SOCKS5 has no representation for sub-delim
+/// reg-names, IPvFuture literals, or empty hosts.
 pub(super) fn write_authority_to_buf<B: BufMut>(
     authority: &HostWithPort,
     buf: &mut B,
 ) -> Result<(), std::io::Error> {
-    match &authority.host {
-        Host::Name(domain) => {
-            buf.put_u8(AddressType::DomainName.into());
-            debug_assert!(domain.len() <= 255);
-            buf.put_u8(domain.len() as u8);
-            buf.put_slice(domain.as_str().as_bytes());
-        }
-        Host::Address(ip_addr) => match ip_addr {
+    if let Ok(ip) = authority.host.try_as_ip() {
+        match ip {
             IpAddr::V4(addr) => {
                 buf.put_u8(AddressType::IpV4.into());
                 buf.put_slice(&addr.octets());
@@ -150,32 +136,23 @@ pub(super) fn write_authority_to_buf<B: BufMut>(
                 buf.put_u8(AddressType::IpV6.into());
                 buf.put_slice(&addr.octets());
             }
-        },
-        // SOCKS5 carries hosts in three categories: IPv4, IPv6, or
-        // domain-name (length-prefixed bytes). Wire-preserved
-        // reg-name / IP-literal bytes don't fit IP and have no
-        // direct SOCKS5 category — try to recover a typed Domain
-        // first (pct-decode + IDN via `Domain::try_from`) so a
-        // pct-encoded reg-name or raw-UTF-8 IDN host gets sent
-        // in canonical ACE form. Falls back to the verbatim bytes
-        // when recovery fails (sub-delim reg-name, IPvFuture, …) —
-        // the upstream resolver can still try them.
-        Host::Uninterpreted(host) => {
-            if host.as_bytes().is_empty() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "SOCKS5 has no representation for an empty host",
-                ));
-            }
-            let bytes: Cow<'_, [u8]> = match Domain::try_from(host) {
-                Ok(domain) => Cow::Owned(domain.as_str().as_bytes().to_vec()),
-                Err(_) => Cow::Borrowed(host.as_bytes()),
-            };
-            buf.put_u8(AddressType::DomainName.into());
-            debug_assert!(bytes.len() <= 255);
-            buf.put_u8(bytes.len() as u8);
-            buf.put_slice(&bytes);
         }
+    } else if let Ok(domain) = authority.host.try_as_domain() {
+        let bytes = domain.as_str().as_bytes();
+        if bytes.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "SOCKS5 DomainName is u8-length-prefixed; domain exceeds 255 bytes",
+            ));
+        }
+        buf.put_u8(AddressType::DomainName.into());
+        buf.put_u8(bytes.len() as u8);
+        buf.put_slice(bytes);
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SOCKS5 cannot encode host: not promotable to Domain or IpAddr",
+        ));
     }
     buf.put_u16(authority.port);
     Ok(())
@@ -301,18 +278,16 @@ mod tests {
     }
 
     #[test]
-    fn socks5_write_authority_keeps_subdelim_host_verbatim() {
-        // Sub-delim reg-name doesn't promote to a Domain → emit the
-        // raw bytes so the upstream resolver gets what the caller
-        // handed in.
+    fn socks5_write_authority_rejects_subdelim_host_unpromotable() {
+        // Sub-delim reg-name doesn't promote to a Domain *or* IpAddr —
+        // SOCKS5 has no representation for it. Encoder errors rather
+        // than emitting raw bytes the wire-level grammar can't carry.
         let host = parse_uninterpreted_host("http://tag,with,commas/");
         assert!(matches!(host, Host::Uninterpreted(_)));
         let auth = HostWithPort::new(host, 8080);
         let mut buf = Vec::new();
-        write_authority_to_buf(&auth, &mut buf).unwrap();
-        assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
-        assert_eq!(buf[1] as usize, b"tag,with,commas".len());
-        assert_eq!(&buf[2..2 + b"tag,with,commas".len()], b"tag,with,commas");
+        let err = write_authority_to_buf(&auth, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     #[test]

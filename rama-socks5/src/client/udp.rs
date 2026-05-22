@@ -70,15 +70,17 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelayBinder<S> {
         }
 
         let HostWithPort { host, port } = server_reply.bind_address;
-        let bind_address: SocketAddress = match host {
-            rama_net::address::Host::Name(_) | rama_net::address::Host::Uninterpreted(_) => {
+        // UDP bind reply MUST be an IP. `try_as_ip` bridges pct-encoded
+        // IPv4 inside `Uninterpreted`; everything else fails.
+        let bind_address: SocketAddress = match host.try_as_ip() {
+            Ok(ip) => (ip, port).into(),
+            Err(_) => {
                 return Err(
                     HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported).with_context(
-                        "server responded with named address: incompatible for udp bind",
+                        "server responded with non-IP address: incompatible for udp bind",
                     ),
                 );
             }
-            rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
         };
 
         socket
@@ -254,28 +256,14 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
     let header_offset = header.serialized_len();
 
     let HostWithPort { host, port } = header.destination;
-    let from: SocketAddress = match host {
-        rama_net::address::Host::Name(domain) => {
+    let from: SocketAddress = match host.try_as_ip() {
+        Ok(ip) => (ip, port).into(),
+        Err(_) => {
             return Err(OpaqueError::from_static_str(
-                "server responded with named address: incompatible for udp bind",
+                "server responded with non-IP host: incompatible for udp bind",
             )
-            .context_field("domain", domain));
+            .context_field("host", host.to_string()));
         }
-        rama_net::address::Host::Uninterpreted(host) => {
-            // Try to recover an IP first — a pct-encoded IPv4 is a
-            // valid UDP source address that happens to ride in the
-            // Uninterpreted variant. Only error on bytes that truly
-            // aren't an IP after pct-decode.
-            if let Ok(ip) = std::net::IpAddr::try_from(&host) {
-                (ip, port).into()
-            } else {
-                return Err(OpaqueError::from_static_str(
-                    "server responded with uninterpreted host: incompatible for udp bind",
-                )
-                .context_field("host", host.to_string()));
-            }
-        }
-        rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
     };
 
     Ok((header_offset, from))

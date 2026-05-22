@@ -66,24 +66,20 @@ impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerNa
     type Error = BoxError;
 
     fn rama_try_from(value: Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str().to_owned())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
-            // Try to recover a DNS name (pct-decode + IDN). Bracketed
-            // IP-literals fall through to an error — rustls SNI/IP
-            // categories don't cover IPvFuture.
-            Host::Uninterpreted(host) => {
-                let domain = Domain::try_from(host)
-                    .context("uninterpreted host is not a domain for rustls ServerName")?;
-                Ok(rustls::pki_types::ServerName::DnsName(
-                    rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
-                        .context("convert domain to rustls (PKI) ServerName")?,
-                ))
-            }
+        // Try IP first (cheaper — no allocation, no IDN). `Uninterpreted`
+        // bridges via the typed accessors; non-promotable inputs
+        // (sub-delim reg-name, IPvFuture) error — rustls's ServerName
+        // grammar doesn't model them.
+        if let Ok(ip) = value.try_as_ip() {
+            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
         }
+        let domain = value
+            .try_into_domain()
+            .context("host is not a domain or IP for rustls ServerName")?;
+        Ok(rustls::pki_types::ServerName::DnsName(
+            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                .context("convert domain to rustls (PKI) ServerName")?,
+        ))
     }
 }
 
@@ -108,25 +104,26 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
     type Error = BoxError;
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
+        // Try IP first; fall through to Domain. `Uninterpreted` bridges
+        // via the typed accessors. The borrowed `DnsName::try_from(&str)`
+        // arm only fires for the `Name` variant (zero-copy); the bridged
+        // path materializes an owned `String` anyway, so there's no
+        // borrow benefit on that branch.
+        if let Ok(ip) = value.try_as_ip() {
+            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
+        }
+        if let Some(name) = value.as_domain() {
+            return Ok(rustls::pki_types::ServerName::DnsName(
                 rustls::pki_types::DnsName::try_from(name.as_str())
                     .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress((*ip).into())),
-            // For the borrowed form we can't borrow into a pct-decoded
-            // domain string — the decoded bytes don't live in the
-            // input. But it's worth trying the recovery and returning a
-            // `DnsName` built from the resulting owned `String` so a
-            // pct-encoded / IDN reg-name (`exa%6Dple.com`, `münchen.de`)
-            // doesn't trip this path. Bracketed IPvFuture and sub-delim
-            // reg-names still fail — rustls's ServerName grammar
-            // doesn't model them.
-            Host::Uninterpreted(host) => {
-                let domain = Domain::try_from(host).context(
-                    "uninterpreted host is not a domain for rustls ServerName \
-                     (borrowed conversion)",
-                )?;
+            ));
+        }
+        // Uninterpreted that bridges to Domain — must allocate.
+        {
+            let domain = value.try_as_domain().context(
+                "host is not a domain or IP for rustls ServerName (borrowed conversion)",
+            )?;
+            {
                 Ok(rustls::pki_types::ServerName::DnsName(
                     rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
                         .context("convert recovered domain to rustls (PKI) ServerName")?,

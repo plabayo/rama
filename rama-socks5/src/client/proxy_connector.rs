@@ -306,11 +306,9 @@ impl<S> Socks5ProxyConnector<S> {
                             .unwrap_or(Host::Name(domain))
                     }
                 },
-                Host::Address(ip_addr) => Host::Address(ip_addr),
-                // Wire-preserved reg-name / IP-literal bytes: pass
-                // them through unchanged. The downstream proxy will
-                // see exactly what the caller put in.
-                Host::Uninterpreted(host) => Host::Uninterpreted(host),
+                // IPs and any non-Domain shape pass through unchanged —
+                // there's nothing to resolve.
+                _ => host,
             };
 
             let address = HostWithPort::new(host, port);

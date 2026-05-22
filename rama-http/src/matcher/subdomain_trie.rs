@@ -1,7 +1,7 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
 use rama_core::{extensions::Extensions, matcher::Matcher};
-use rama_net::address::{AsDomainRef, DomainTrie, Host};
+use rama_net::address::{AsDomainRef, DomainTrie};
 use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
@@ -50,28 +50,20 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
             }
         };
 
-        match req_ctx.authority.host {
-            Host::Name(ref domain) => {
-                let is_match = self.is_match(domain);
-                tracing::trace!(
-                    "SubdomainTrieMatcher: matching domain = {}, matched = {}",
-                    domain,
-                    is_match
-                );
-                is_match
-            }
-            Host::Address(address) => {
-                tracing::trace!("SubdomainTrieMatcher: ignoring numeric address: {address}",);
-                false
-            }
-            // Wire-preserved reg-name / IP-literal bytes aren't typed
-            // DNS names — ignore them. Callers wanting equivalence can
-            // convert via `Domain::try_from(&uninterpreted)` first.
-            Host::Uninterpreted(ref host) => {
-                tracing::trace!("SubdomainTrieMatcher: ignoring uninterpreted host: {host}");
-                false
-            }
-        }
+        // Bridge `Uninterpreted` to `Domain` via the typed accessor —
+        // pct-encoded reg-names that decode to a domain participate.
+        // IPs and non-promotable hosts (sub-delim, IPvFuture) don't.
+        let Ok(domain) = req_ctx.authority.host.try_as_domain() else {
+            tracing::trace!("SubdomainTrieMatcher: host is not a domain — no match");
+            return false;
+        };
+        let is_match = self.is_match(domain.as_ref());
+        tracing::trace!(
+            "SubdomainTrieMatcher: matching domain = {}, matched = {}",
+            domain,
+            is_match
+        );
+        is_match
     }
 }
 

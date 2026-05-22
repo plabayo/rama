@@ -2,7 +2,7 @@ use crate::Request;
 
 use rama_core::{extensions::Extensions, telemetry::tracing};
 use rama_net::{
-    address::{Domain, Host, IntoDomain},
+    address::{Domain, IntoDomain},
     http::RequestContext,
 };
 
@@ -50,28 +50,19 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
             req_ctx.authority.host
         };
 
-        match host {
-            Host::Name(domain) => {
-                if self.sub {
-                    tracing::trace!("DomainMatcher: ({}).is_parent_of({})", self.domain, domain);
-                    self.domain.is_parent_of(&domain)
-                } else {
-                    tracing::trace!("DomainMatcher: ({}) == ({})", self.domain, domain);
-                    self.domain == domain
-                }
-            }
-            Host::Address(_) => {
-                tracing::trace!("DomainMatcher: ignore request host address");
-                false
-            }
-            // Wire-preserved reg-name / IP-literal bytes aren't a typed
-            // DNS name — never match. Callers wanting semantic
-            // equivalence convert via `Domain::try_from(&uninterpreted)`
-            // before matching.
-            Host::Uninterpreted(_) => {
-                tracing::trace!("DomainMatcher: ignore uninterpreted host");
-                false
-            }
+        // Try bridging via the typed accessor — pct-encoded reg-names
+        // that decode to a domain get matched too. IP addresses and
+        // non-promotable hosts (sub-delim reg-name, IPvFuture) never match.
+        let Ok(domain) = host.try_into_domain() else {
+            tracing::trace!("DomainMatcher: host is not a domain — no match");
+            return false;
+        };
+        if self.sub {
+            tracing::trace!("DomainMatcher: ({}).is_parent_of({})", self.domain, domain);
+            self.domain.is_parent_of(&domain)
+        } else {
+            tracing::trace!("DomainMatcher: ({}) == ({})", self.domain, domain);
+            self.domain == domain
         }
     }
 }

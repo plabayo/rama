@@ -5,11 +5,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_net::{
-    address::{Domain, Host},
-    tls::client::ClientHelloExtension,
-    transport::TryRefIntoTransportContext,
-};
+use rama_net::{tls::client::ClientHelloExtension, transport::TryRefIntoTransportContext};
 use rama_ua::profile::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
 use std::{borrow::Cow, sync::Arc};
@@ -66,64 +62,29 @@ where
                 .flatten()
                 .any(|e| matches!(e, ClientHelloExtension::ServerName(_)))
             {
-                match &transport_ctx.authority.host {
-                    Host::Name(domain) => {
-                        tracing::trace!(
-                            "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
-                        );
-                        domain_overwrite = Some(Arc::new(
-                            TlsConnectorDataBuilder::new().with_server_name(domain.clone()),
-                        ));
-                    }
-                    Host::Address(ip) => {
-                        tracing::trace!("ua tls emulator: drop SNI as target is IP: {ip}");
-                        let cfg = emulate_config.to_mut();
-                        let extensions: Vec<_> = cfg
-                            .extensions
-                            .take()
-                            .into_iter()
-                            .flatten()
-                            .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
-                            .collect();
-                        if !extensions.is_empty() {
-                            cfg.extensions = Some(extensions);
-                        }
-                    }
-                    Host::Uninterpreted(host) => {
-                        // Try to recover a typed Domain first (pct-decode + IDN
-                        // via `Domain::try_from`). A pct-encoded reg-name like
-                        // `exa%6Dple.com` or raw-UTF-8 `münchen.de` is a
-                        // legitimate SNI target after normalization — only fall
-                        // back to dropping SNI when the bytes truly aren't a
-                        // domain (sub-delim reg-name, IPvFuture, …).
-                        match Domain::try_from(host) {
-                            Ok(domain) => {
-                                tracing::trace!(
-                                    "ua tls emulator: SNI recovered from uninterpreted host: {domain}"
-                                );
-                                domain_overwrite = Some(Arc::new(
-                                    TlsConnectorDataBuilder::new().with_server_name(domain),
-                                ));
-                            }
-                            Err(err) => {
-                                tracing::trace!(
-                                    "ua tls emulator: drop SNI as target is an uninterpreted host ({host}); domain recovery failed: {err}"
-                                );
-                                let cfg = emulate_config.to_mut();
-                                let extensions: Vec<_> = cfg
-                                    .extensions
-                                    .take()
-                                    .into_iter()
-                                    .flatten()
-                                    .filter(|ext| {
-                                        !matches!(ext, ClientHelloExtension::ServerName(_))
-                                    })
-                                    .collect();
-                                if !extensions.is_empty() {
-                                    cfg.extensions = Some(extensions);
-                                }
-                            }
-                        }
+                let host = &transport_ctx.authority.host;
+                // SNI is a DNS name. Try Domain first (`try_as_domain`
+                // bridges pct-encoded reg-names + IDN). IPs and non-
+                // promotable hosts → drop SNI.
+                if let Ok(domain) = host.try_as_domain() {
+                    tracing::trace!(
+                        "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
+                    );
+                    domain_overwrite = Some(Arc::new(
+                        TlsConnectorDataBuilder::new().with_server_name(domain.into_owned()),
+                    ));
+                } else {
+                    tracing::trace!("ua tls emulator: drop SNI as target is not a domain: {host}");
+                    let cfg = emulate_config.to_mut();
+                    let extensions: Vec<_> = cfg
+                        .extensions
+                        .take()
+                        .into_iter()
+                        .flatten()
+                        .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
+                        .collect();
+                    if !extensions.is_empty() {
+                        cfg.extensions = Some(extensions);
                     }
                 }
             } else {

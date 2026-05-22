@@ -13,7 +13,7 @@ use rama_core::{
     stream::{StreamExt as _, adapters::Merge},
 };
 use rama_net::{
-    address::{Domain, Host},
+    address::Host,
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
 
@@ -80,42 +80,32 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
             .and_then(|ext| ext.get_ref().copied())
             .unwrap_or_default();
 
-        let domain = match self.host {
-            Host::Name(domain) => domain,
-            // Wire-preserved reg-name / IP-literal bytes: try to recover
-            // a typed Domain (pct-decode + IDN normalize). If that
-            // fails, error out — DNS can only resolve DNS names.
-            Host::Uninterpreted(host) => match Domain::try_from(host) {
-                Ok(domain) => domain,
-                Err(_) => {
-                    return HappyEyeballIpStream::Once {
-                        stream: rama_core::stream::once(Err(OpaqueError::from_static_str(
-                            "uninterpreted host is not resolvable as a domain",
-                        )
-                        .into_opaque_error())),
-                    };
-                }
-            },
-            Host::Address(ip) => {
-                //check if IP Version is allowed
-                return HappyEyeballIpStream::Once {
-                    stream: rama_core::stream::once(match (ip, ip_mode) {
-                        (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                            Err(OpaqueError::from_static_str("IPv4 address is not allowed")
-                                .into_opaque_error())
-                        }
-                        (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                            Err(OpaqueError::from_static_str("IPv6 address is not allowed")
-                                .into_opaque_error())
-                        }
-                        _ => {
-                            // if the host is already defined as an allowed IP address
-                            // we can directly connect to it
-                            Ok(ip)
-                        }
-                    }),
-                };
-            }
+        // Try as IP first (most common path — no DNS roundtrip); fall
+        // through to Domain otherwise. `Uninterpreted` bridges through
+        // both via pct-decode + IDN. Non-promotable hosts (sub-delim
+        // reg-name, IPvFuture) error — DNS can't resolve them.
+        if let Ok(ip) = self.host.try_as_ip() {
+            return HappyEyeballIpStream::Once {
+                stream: rama_core::stream::once(match (ip, ip_mode) {
+                    (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
+                        Err(OpaqueError::from_static_str("IPv4 address is not allowed")
+                            .into_opaque_error())
+                    }
+                    (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
+                        Err(OpaqueError::from_static_str("IPv6 address is not allowed")
+                            .into_opaque_error())
+                    }
+                    _ => Ok(ip),
+                }),
+            };
+        }
+        let Ok(domain) = self.host.try_into_domain() else {
+            return HappyEyeballIpStream::Once {
+                stream: rama_core::stream::once(Err(OpaqueError::from_static_str(
+                    "host is not resolvable as a domain",
+                )
+                .into_opaque_error())),
+            };
         };
 
         let maybe_dns_overwrite = self

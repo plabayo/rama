@@ -3,7 +3,7 @@ use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
-use rama_core::error::{BoxError, ErrorContext};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -58,7 +58,19 @@ use rama_http_types::HeaderValue;
 /// - call [`crate::uri::Uri::canonicalize`] first — it doesn't promote
 ///   these to `Address` (Rust's strict parser still rejects), so this
 ///   is informational rather than a fix.
+///
+/// # Why `#[non_exhaustive]`
+///
+/// Variant matching is a footgun on this type: a [`Domain`] can live
+/// in `Name` *or* in `Uninterpreted` (pct-encoded bytes that decode
+/// to a domain), and an [`IpAddr`] can live in `Address` *or* in
+/// `Uninterpreted` (pct-encoded dotted-quad). External callers that
+/// pattern-match on the variant tag will miss the bridged forms.
+/// Use [`try_as_domain`](Self::try_as_domain) /
+/// [`try_as_ip`](Self::try_as_ip) (and the `try_into_*` consuming
+/// counterparts) which bridge across variants.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Host {
     /// A DNS-label-shaped name (ASCII, IDN normalised to ACE on
     /// construction via [`Domain::try_from`]).
@@ -136,6 +148,50 @@ impl Host {
         match self {
             Self::Uninterpreted(host) => Some(host),
             Self::Name(_) | Self::Address(_) => None,
+        }
+    }
+
+    /// View as a [`Domain`], bridging the `Uninterpreted` variant.
+    /// `Cow::Borrowed` for `Name`; `Cow::Owned` for an `Uninterpreted`
+    /// whose pct-decoded (and IDN-normalized) bytes parse as a domain.
+    /// `Address` and IPvFuture-bracketed `Uninterpreted` fail.
+    pub fn try_as_domain(&self) -> Result<std::borrow::Cow<'_, Domain>, BoxError> {
+        match self {
+            Self::Name(d) => Ok(std::borrow::Cow::Borrowed(d)),
+            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+                "Host::Address is not a Domain",
+            )
+            .into_box_error()),
+            Self::Uninterpreted(host) => Domain::try_from(host)
+                .map(std::borrow::Cow::Owned)
+                .map_err(Into::into),
+        }
+    }
+
+    /// Consuming form of [`try_as_domain`](Self::try_as_domain).
+    pub fn try_into_domain(self) -> Result<Domain, BoxError> {
+        match self {
+            Self::Name(d) => Ok(d),
+            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+                "Host::Address is not a Domain",
+            )
+            .into_box_error()),
+            Self::Uninterpreted(ref host) => Domain::try_from(host).map_err(Into::into),
+        }
+    }
+
+    /// View as an [`IpAddr`], bridging the `Uninterpreted` variant.
+    /// Returns the address from `Address` directly; `Uninterpreted`
+    /// succeeds when its pct-decoded bytes parse as an IPv4 or IPv6
+    /// address. `Name` and IPvFuture-bracketed `Uninterpreted` fail.
+    pub fn try_as_ip(&self) -> Result<IpAddr, BoxError> {
+        match self {
+            Self::Address(ip) => Ok(*ip),
+            Self::Name(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+                "Host::Name is not an IpAddr",
+            )
+            .into_box_error()),
+            Self::Uninterpreted(host) => IpAddr::try_from(host).map_err(Into::into),
         }
     }
 
@@ -228,7 +284,11 @@ impl Host {
 /// pct-encoded reg-name that decodes to an [`IpAddr`] vs
 /// [`HostRef::Address`]. Bracketed `Uninterpreted` (IPvFuture) keeps
 /// its own equality class — there's no typed counterpart to bridge to.
+/// `#[non_exhaustive]` for the same reason as [`Host`] — bridging
+/// `Uninterpreted` to typed variants is what callers usually want;
+/// pattern-matching on the tag misses the bridged forms.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum HostRef<'a> {
     /// A DNS-style name.
     Name(super::domain::DomainRef<'a>),
@@ -277,6 +337,32 @@ impl<'a> HostRef<'a> {
             Self::Name(d) => Host::Name(d.into_owned()),
             Self::Address(ip) => Host::Address(ip),
             Self::Uninterpreted(host) => Host::Uninterpreted(host.into_owned()),
+        }
+    }
+
+    /// Bridging accessor. See [`Host::try_as_domain`].
+    pub fn try_as_domain(self) -> Result<std::borrow::Cow<'a, Domain>, BoxError> {
+        match self {
+            Self::Name(d) => Ok(std::borrow::Cow::Owned(d.into_owned())),
+            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+                "HostRef::Address is not a Domain",
+            )
+            .into_box_error()),
+            Self::Uninterpreted(host) => Domain::try_from(host)
+                .map(std::borrow::Cow::Owned)
+                .map_err(Into::into),
+        }
+    }
+
+    /// Bridging accessor. See [`Host::try_as_ip`].
+    pub fn try_as_ip(self) -> Result<IpAddr, BoxError> {
+        match self {
+            Self::Address(ip) => Ok(ip),
+            Self::Name(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+                "HostRef::Name is not an IpAddr",
+            )
+            .into_box_error()),
+            Self::Uninterpreted(host) => IpAddr::try_from(host).map_err(Into::into),
         }
     }
 }
