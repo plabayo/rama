@@ -102,8 +102,16 @@ impl<'a> FragmentRef<'a> {
 }
 
 impl std::fmt::Display for Fragment {
-    /// Renders the fragment bytes (no leading `#`). Same string the
-    /// raw view returns — pct-encoding is preserved as-is.
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.view(), f)
+    }
+}
+
+impl std::fmt::Display for FragmentRef<'_> {
+    /// Renders the fragment bytes (no leading `#`). Raw on-wire form —
+    /// pct-encoding is preserved as-is.
+    #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_raw_str())
     }

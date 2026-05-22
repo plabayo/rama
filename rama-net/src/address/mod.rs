@@ -19,7 +19,10 @@ pub use uninterpreted_host::{UninterpretedHost, UninterpretedHostRef};
 
 pub mod domain;
 #[doc(inline)]
-pub use domain::{AsDomainRef, Domain, DomainRef, IntoDomain};
+pub use domain::{
+    AsDomainRef, Domain, DomainBuilder, DomainLabelIter, DomainLabels, DomainRef, IntoDomain,
+    Label, LabelError, PushError, SuffixIter,
+};
 
 mod host_with_port;
 #[doc(inline)]

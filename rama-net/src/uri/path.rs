@@ -71,6 +71,14 @@ impl<'a> PathRef<'a> {
     }
 }
 
+impl std::fmt::Display for PathRef<'_> {
+    /// Renders the raw on-wire path bytes (pct-encoding preserved).
+    #[inline(always)]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_raw_str())
+    }
+}
+
 /// One segment in a URI path — the bytes between two `/` separators
 /// (or between a `/` and the end of the path).
 ///

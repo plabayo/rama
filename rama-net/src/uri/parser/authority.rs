@@ -285,9 +285,9 @@ fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
             check_pct_encoded(bytes, i)?;
             // Defence-in-depth: a pct-escape that decodes to a control
             // byte is a smuggling vector even though the wire bytes
-            // themselves are printable. Reject at parse.
-            if let Some(decoded) = rama_utils::hex::decode_pair(bytes[i + 1], bytes[i + 2])
-                && is_control_byte(decoded)
+            // themselves are printable.
+            if let Some(decoded) =
+                crate::byte_sets::pct_decoded_control_byte(bytes[i + 1], bytes[i + 2])
             {
                 return Err(ParseError::ControlCharInUri {
                     at: i,

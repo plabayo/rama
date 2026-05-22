@@ -62,6 +62,14 @@ impl Authority {
         }
     }
 
+    /// Compile-time constructor for a domain-only [`Authority`]
+    /// (no user-info, no explicit port). Panics at compile time when
+    /// `s` isn't a valid domain.
+    #[must_use]
+    pub const fn from_static(s: &'static str) -> Self {
+        Self::new(HostWithOptPort::new(Host::from_static(s)))
+    }
+
     /// creates a new local ipv4 [`Authority`] without a port.
     ///
     /// # Example
@@ -466,11 +474,9 @@ impl From<DomainAddress> for Authority {
 }
 
 impl fmt::Display for Authority {
+    #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(ref user_info) = self.user_info {
-            write!(f, "{user_info}@")?;
-        }
-        self.address.fmt(f)
+        fmt::Display::fmt(&self.view(), f)
     }
 }
 

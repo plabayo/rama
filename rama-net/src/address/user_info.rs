@@ -196,14 +196,7 @@ const fn validate_userinfo_bytes(bytes: &[u8]) -> Result<(), UserInfoFault> {
             if !h1.is_ascii_hexdigit() || !h2.is_ascii_hexdigit() {
                 return Err(UserInfoFault::PctMalformed);
             }
-            // `decode_pair` always succeeds when both bytes are hex
-            // digits — drop the dead `None` branch.
-            let Some(decoded) = rama_utils::hex::decode_pair(h1, h2) else {
-                // SAFETY: the `is_ascii_hexdigit` check above is the
-                // exact precondition `decode_pair` documents.
-                unsafe { std::hint::unreachable_unchecked() }
-            };
-            if decoded < 0x20 || decoded == 0x7F {
+            if crate::byte_sets::pct_decoded_control_byte(h1, h2).is_some() {
                 return Err(UserInfoFault::PctDecodesToControl);
             }
             i += 3;

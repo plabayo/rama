@@ -110,6 +110,16 @@ pub(crate) const fn is_control_byte(b: u8) -> bool {
     CONTROL_BYTE_SET[b as usize]
 }
 
+/// `Some(b)` when `%h1h2` pct-decodes to a control byte `b` (smuggling
+/// vector). `None` for non-hex inputs or non-control decodes.
+#[inline(always)]
+pub(crate) const fn pct_decoded_control_byte(h1: u8, h2: u8) -> Option<u8> {
+    match rama_utils::hex::decode_pair(h1, h2) {
+        Some(b) if is_control_byte(b) => Some(b),
+        _ => None,
+    }
+}
+
 #[inline(always)]
 pub(crate) const fn is_path_byte(b: u8) -> bool {
     PATH_BYTE_SET[b as usize]

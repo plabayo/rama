@@ -35,6 +35,10 @@ pub const MAX_NAME_LEN: usize = 253;
 pub struct Domain(Bytes);
 
 impl Domain {
+    /// Maximum byte length of a fully-qualified domain name (RFC 1035).
+    /// Inputs longer than this fail validation.
+    pub const MAX_LEN: usize = MAX_NAME_LEN;
+
     /// Creates a domain at compile time.
     ///
     /// This function requires the static string to be a valid domain

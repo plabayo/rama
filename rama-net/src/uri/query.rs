@@ -511,8 +511,16 @@ fn form_decode(input: &[u8]) -> Cow<'_, str> {
 }
 
 impl fmt::Display for Query {
-    /// Renders the query bytes (no leading `?`). Same string the raw
-    /// view returns — pct-encoding is preserved as-is.
+    #[inline(always)]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.view(), f)
+    }
+}
+
+impl fmt::Display for QueryRef<'_> {
+    /// Renders the query bytes (no leading `?`). Raw on-wire form —
+    /// pct-encoding is preserved as-is.
+    #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_raw_str())
     }

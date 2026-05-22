@@ -173,6 +173,13 @@ impl Host {
 }
 
 impl Host {
+    /// Compile-time constructor for a [`Domain`]-shaped host. Panics
+    /// at compile time when `s` isn't a valid domain.
+    #[must_use]
+    pub const fn from_static(s: &'static str) -> Self {
+        Self::Name(Domain::from_static(s))
+    }
+
     /// Local loopback address (IPv4)
     pub const LOCALHOST_IPV4: Self = Self::Address(IPV4_LOCALHOST);
 

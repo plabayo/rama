@@ -44,25 +44,7 @@
 //!   `mailto:user@…` as authority-bearing. rama follows RFC 3986
 //!   opaque-path semantics.
 //!
-//! # Design (skeleton — implementation arrives in M3–M9)
-//!
-//! - [`Uri`] is an **opaque** struct. Internally it holds a private
-//!   `UriInner` enum:
-//!
-//!   ```text
-//!   UriInner = Asterisk
-//!            | Lazy(Arc<LazyUriRef>)
-//!            | Owned(Arc<OwnedUriRef>)
-//!   ```
-//!
-//! - **Asterisk** is the OPTIONS-`*` request-target — a separate variant so
-//!   we can't represent impossible states like `*?foo=bar`.
-//! - **Lazy** is the cheap-to-clone parsed-once form (single `Bytes` buffer
-//!   plus offset markers and pre-parsed scalars). Reads are zero-copy.
-//! - **Owned** is the mutated form. First mutation upgrades Lazy → Owned
-//!   via `Arc::make_mut` + a `LazyUriRef → OwnedUriRef` conversion.
-//!
-//! ## What lives where
+//! # What lives where
 //!
 //! - [`Uri`] (this file) — the opaque public type
 //! - URI-component borrowed views: [`PathRef`], [`QueryRef`], [`FragmentRef`]
@@ -70,13 +52,11 @@
 //! - Errors: [`ParseError`], [`UriError`]
 //!
 //! Host-related borrowed views live with their owned counterparts in
-//! [`crate::address`] (`HostRef`, `DomainRef`) — they have utility beyond
-//! URIs (e.g. header parsing, DNS scanners).
+//! [`crate::address`] (`HostRef`, `DomainRef`).
 //!
-//! The `Scheme` for a `Uri` is the existing [`Protocol`](crate::Protocol);
-//! the authority is the existing [`Authority`](crate::address::Authority);
-//! the host is the existing [`Host`](crate::address::Host). No new
-//! re-exports are added — use those types directly.
+//! `Scheme` is [`Protocol`](crate::Protocol); authority is
+//! [`Authority`](crate::address::Authority); host is
+//! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
 use std::sync::Arc;
 
