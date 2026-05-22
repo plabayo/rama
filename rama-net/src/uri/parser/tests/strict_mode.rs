@@ -235,3 +235,46 @@ fn strict_rejects_bad_pct_in_userinfo() {
         );
     }
 }
+
+#[test]
+fn strict_reference_rejects_colon_in_first_path_segment() {
+    // RFC 3986 §3.3 `segment-nz-nc` — a path-noscheme relative reference
+    // can't have `:` in its first segment. These inputs aren't valid
+    // scheme readings (`1a` starts with a digit; `a%62` contains `%`)
+    // so they fall through to relative-ref, where the colon rule fires.
+    // Graceful continues to accept.
+    use crate::uri::Uri;
+    for s in ["1a:b", "a%62:c"] {
+        assert!(
+            matches!(
+                Uri::parse_reference_strict(s),
+                Err(ParseError::StrictViolation)
+            ),
+            "strict reference must reject {s:?}, got {:?}",
+            Uri::parse_reference_strict(s)
+        );
+        // Graceful accepts (parses as scheme=foo, opaque-path=bar shape
+        // where the colon is the scheme separator).
+        assert!(
+            Uri::parse_reference(s).is_ok(),
+            "graceful reference must accept {s:?}"
+        );
+    }
+}
+
+#[test]
+fn strict_reference_accepts_colon_in_non_first_segment() {
+    // `:` is only forbidden in the FIRST segment of a path-noscheme.
+    // Absolute paths and segments past the first are fine.
+    use crate::uri::Uri;
+    for s in [
+        "/foo:bar",    // path-absolute — first byte is `/`, segment-nz-nc rule doesn't apply
+        "./foo:bar",   // `:` is in second segment ("foo:bar" after `.`)
+        "foo/bar:baz", // `:` is in second segment
+        "?q=foo:bar",  // query-only, no path
+        "#frag:colon", // fragment-only
+    ] {
+        Uri::parse_reference_strict(s)
+            .unwrap_or_else(|e| panic!("strict reference must accept {s:?}, got {e:?}"));
+    }
+}

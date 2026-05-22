@@ -265,6 +265,25 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
     let path_start = auth_scan.path_start;
     let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
 
+    // RFC 3986 §3.3 `segment-nz-nc`: a path-noscheme reference can't have
+    // `:` in its first segment — otherwise the input would parse as a
+    // scheme reading. Strict mode enforces; graceful continues to accept
+    // (curl/browsers do).
+    if matches!(mode, ParserMode::Strict)
+        && auth_scan.authority.is_none()
+        && path_scan.path_end as usize > path_start
+        && !bytes[path_start..].starts_with(b"/")
+    {
+        let first_seg_end = bytes[path_start..path_scan.path_end as usize]
+            .iter()
+            .position(|&b| matches!(b, b'/' | b'?' | b'#'))
+            .map(|i| path_start + i)
+            .unwrap_or(path_scan.path_end as usize);
+        if bytes[path_start..first_seg_end].contains(&b':') {
+            return Err(ParseError::StrictViolation);
+        }
+    }
+
     Ok(build_uri(
         None,
         auth_scan.authority,
