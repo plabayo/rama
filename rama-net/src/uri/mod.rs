@@ -247,16 +247,28 @@ impl Uri {
         }
     }
 
-    /// Parse the HTTP authority-form request-target —
-    /// `[userinfo@]host[:port]` only (RFC 9112 §3.2.3).
+    /// Parse the HTTP authority-form request-target used by `CONNECT`
+    /// (RFC 9112 §3.2.3).
     ///
-    /// This is the request-target shape used by the `CONNECT` method.
-    /// It must be a dedicated entry point because [`parse`](Self::parse)
-    /// cannot disambiguate it from `scheme:opaque-path` — e.g.
-    /// `example.com:443` is grammatically both `authority(example.com:443)`
-    /// and `scheme(example.com) + opaque-path(443)`, and RFC 3986 prefers
-    /// the scheme reading. HTTP proxies and clients handling CONNECT
-    /// **must** route those targets through this function instead.
+    /// Dedicated entry point because [`parse`](Self::parse) cannot
+    /// disambiguate authority-form from `scheme:opaque-path` —
+    /// `example.com:443` is grammatically both
+    /// `authority(example.com:443)` and `scheme(example.com) +
+    /// opaque-path(443)`, and RFC 3986 prefers the scheme reading. HTTP
+    /// proxies and clients handling CONNECT **must** route those
+    /// targets through this function instead.
+    ///
+    /// # Graceful grammar (this method): `[userinfo@]host[:port]`
+    ///
+    /// Userinfo and a missing port are accepted as graceful conveniences
+    /// for HTTP tooling — userinfo is preserved on the value but
+    /// stripped by [`write_http_authority_form`](Self::write_http_authority_form)
+    /// before serialization, and the missing port is treated as "fill
+    /// in from the scheme" by the HTTP layer. Wire output remains RFC
+    /// 9112-compliant.
+    ///
+    /// For a parser that rejects everything outside `host:port`, use
+    /// [`parse_authority_form_strict`](Self::parse_authority_form_strict).
     ///
     /// The returned [`Uri`] has no scheme, no path, no query, and no
     /// fragment — only the authority components ([`host`](Self::host),
@@ -269,7 +281,12 @@ impl Uri {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Graceful)
     }
 
-    /// Strict variant of [`parse_authority_form`](Self::parse_authority_form).
+    /// Strict-mode variant of [`parse_authority_form`](Self::parse_authority_form):
+    /// enforces RFC 9112 §3.2.3 exactly.
+    ///
+    /// Grammar: `host ":" port`. Userinfo and a missing port both
+    /// return [`ParseError::StrictViolation`]; everything else matches
+    /// [`parse_authority_form`](Self::parse_authority_form).
     pub fn parse_authority_form_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
     }

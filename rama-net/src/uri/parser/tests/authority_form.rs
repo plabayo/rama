@@ -117,3 +117,56 @@ fn plain_parse_treats_host_port_as_scheme_path() {
     assert_eq!(u.scheme().map(|s| s.as_str()), Some("example.com"));
     assert!(u.host().is_none());
 }
+
+// ---- Strict RFC 9112 §3.2.3 enforcement -----------------------------------
+
+#[test]
+fn strict_accepts_host_port() {
+    // The canonical CONNECT shape passes through cleanly.
+    let u = Uri::parse_authority_form_strict("example.com:443").unwrap();
+    assert_eq!(u.host().unwrap().to_str(), "example.com");
+    assert_eq!(u.port(), Some(443));
+}
+
+#[test]
+fn strict_accepts_bracketed_ipv6_host_port() {
+    let u = Uri::parse_authority_form_strict("[2001:db8::1]:443").unwrap();
+    assert_eq!(u.host().unwrap().to_str(), "2001:db8::1");
+    assert_eq!(u.port(), Some(443));
+}
+
+#[test]
+fn strict_rejects_userinfo() {
+    // RFC 9112 §3.2.3: "The request-target consists of the host and port
+    // number of the tunnel destination" — no userinfo permitted.
+    let err = Uri::parse_authority_form_strict("user:pass@example.com:443").unwrap_err();
+    assert!(
+        matches!(err, ParseError::StrictViolation),
+        "expected StrictViolation, got {err:?}"
+    );
+    // Userinfo on its own (no password) is also out.
+    Uri::parse_authority_form_strict("user@example.com:443").unwrap_err();
+}
+
+#[test]
+fn strict_rejects_bare_host_without_port() {
+    // §3.2.3 mandates a port. Graceful accepts; strict does not.
+    let err = Uri::parse_authority_form_strict("example.com").unwrap_err();
+    assert!(
+        matches!(err, ParseError::StrictViolation),
+        "expected StrictViolation, got {err:?}"
+    );
+    // IPv6 bracketed without port also rejected.
+    Uri::parse_authority_form_strict("[2001:db8::1]").unwrap_err();
+}
+
+#[test]
+fn strict_keeps_path_query_fragment_rejection() {
+    // Pre-port-check guard fires before the strict-mode shape check.
+    // The error kind (InvalidComponent vs StrictViolation) doesn't matter
+    // — both modes reject — but pin both still error so we don't accept
+    // a CONNECT target with a path under any setting.
+    Uri::parse_authority_form_strict("example.com:443/p").unwrap_err();
+    Uri::parse_authority_form_strict("example.com:443?q").unwrap_err();
+    Uri::parse_authority_form_strict("example.com:443#f").unwrap_err();
+}

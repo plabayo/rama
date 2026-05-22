@@ -137,12 +137,27 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     Err(ParseError::InvalidComponent(Component::Scheme))
 }
 
-/// Parse an HTTP authority-form request-target — `[userinfo@]host[:port]`
-/// only. Used for the CONNECT method (RFC 9112 §3.2.3).
+/// Parse an HTTP authority-form request-target. Used for the CONNECT
+/// method (RFC 9112 §3.2.3).
 ///
-/// Distinct entry point because `[`parse`]` cannot disambiguate authority-
+/// Distinct entry point because [`parse`] cannot disambiguate authority-
 /// form from `scheme:opaque-path` — `example.com:443` is grammatically
 /// valid as both, and RFC 3986 prefers the scheme reading.
+///
+/// # Grammar by mode
+///
+/// - **Graceful** ([`Uri::parse_authority_form`](super::super::Uri::parse_authority_form)):
+///   `[userinfo@]host[:port]`. Userinfo and bare-host (no port) are
+///   accepted — the latter so callers without a port handy (e.g. HTTP
+///   tooling that derives the port from the scheme) can still go
+///   through this entry point. The wire writer ([`super::super::wire`])
+///   strips userinfo before serializing, so wire RFC 9112 compliance
+///   is preserved regardless.
+/// - **Strict** ([`Uri::parse_authority_form_strict`](super::super::Uri::parse_authority_form_strict)):
+///   exactly `host:port`. Userinfo and bare-host are
+///   [`ParseError::StrictViolation`] — RFC 9112 §3.2.3 says
+///   "The request-target consists of the host and port number of the
+///   tunnel destination", no optional parts.
 pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     if bytes.is_empty() {
         return Err(ParseError::Empty);
@@ -161,6 +176,19 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
 
     let len = bytes.len();
     let auth = authority::parse_authority(&bytes, 0, len, mode)?;
+
+    // RFC 9112 §3.2.3 in strict mode: CONNECT authority-form is exactly
+    // `host:port`. Userinfo and bare-host (port-less) are documented as
+    // graceful-only conveniences, so reject them here.
+    if matches!(mode, ParserMode::Strict) {
+        if auth.userinfo_range.is_some() {
+            return Err(ParseError::StrictViolation);
+        }
+        if auth.port.is_none() {
+            return Err(ParseError::StrictViolation);
+        }
+    }
+
     Ok(build_uri(
         None,
         Some(auth),
