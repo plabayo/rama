@@ -323,6 +323,13 @@ impl Domain {
         unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
 
+    /// Borrowed view.
+    #[must_use]
+    #[inline]
+    pub fn view(&self) -> DomainRef<'_> {
+        DomainRef::from(self)
+    }
+
     /// Returns the Unicode (display) form of the domain. See
     /// [`DomainRef::as_unicode`] for borrow / allocation behavior.
     #[cfg(feature = "idna")]

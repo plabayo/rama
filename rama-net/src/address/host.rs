@@ -142,6 +142,15 @@ impl Host {
         matches!(self, Self::Address(IpAddr::V6(_)))
     }
 
+    /// Borrowed view. Same shape as `From<&Self> for HostRef` but
+    /// surfaces the borrowed view as an inherent method so call sites
+    /// don't need the trait in scope.
+    #[must_use]
+    #[inline]
+    pub fn view(&self) -> HostRef<'_> {
+        HostRef::from(self)
+    }
+
     /// Returns this host as a string. See [`HostRef::to_str`] for the
     /// borrow / allocation behavior.
     #[must_use]

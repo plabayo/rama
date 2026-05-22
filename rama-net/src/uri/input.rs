@@ -5,7 +5,7 @@
 //! `sealed::Sealed`, so the public surface is just the marker
 //! `IntoUriInput`. Downstream crates cannot add implementations.
 
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::bytes::Bytes;
 
 mod sealed {
     use super::Bytes;
@@ -33,14 +33,6 @@ impl sealed::Sealed for Bytes {
     }
 }
 impl IntoUriInput for Bytes {}
-
-impl sealed::Sealed for BytesMut {
-    #[inline(always)]
-    fn into_uri_input(self) -> Bytes {
-        self.freeze()
-    }
-}
-impl IntoUriInput for BytesMut {}
 
 impl sealed::Sealed for String {
     #[inline(always)]

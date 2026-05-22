@@ -287,9 +287,10 @@ impl Authority {
     }
 
     generate_set_and_with! {
-        /// Set [`Host`] of [`Authority`]
-        pub fn host(mut self, host: Host) -> Self {
-            self.address.set_host(host);
+        /// Set [`Host`] of [`Authority`]. Accepts any [`Into<Host>`] —
+        /// [`Domain`], [`IpAddr`](std::net::IpAddr), and so on.
+        pub fn host(mut self, host: impl Into<Host>) -> Self {
+            self.address.set_host(host.into());
             self
         }
     }
@@ -308,6 +309,23 @@ impl Authority {
             self.user_info = user_info;
             self
         }
+    }
+
+    /// Borrowed view.
+    #[must_use]
+    #[inline]
+    pub fn view(&self) -> AuthorityRef<'_> {
+        AuthorityRef::from(self)
+    }
+}
+
+impl<'a> From<&'a Authority> for AuthorityRef<'a> {
+    fn from(a: &'a Authority) -> Self {
+        Self::new(
+            a.user_info.as_ref().map(UserInfoRef::from),
+            HostRef::from(&a.address.host),
+            a.address.port,
+        )
     }
 }
 
@@ -653,6 +671,22 @@ impl<'a> AuthorityRef<'a> {
     #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.port
+    }
+
+    /// Promote this borrowed view to an owned [`Authority`] by copying
+    /// the underlying bytes. Mirrors the `into_owned` family on the
+    /// other borrowed views.
+    #[must_use]
+    pub fn into_owned(self) -> Authority {
+        let host = self.host.into_owned();
+        let address = match self.port {
+            Some(port) => HostWithOptPort::new_with_port(host, port),
+            None => HostWithOptPort::new(host),
+        };
+        Authority {
+            user_info: self.userinfo.map(|u| u.into_owned()),
+            address,
+        }
     }
 }
 

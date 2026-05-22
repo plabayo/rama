@@ -1,5 +1,5 @@
 //! `Query: FromIterator<QueryPair>` / `FromIterator<QueryPairRef<'_>>`
-//! and the bypass-encoding setter `Uri::set_query_value`.
+//! and the bypass-encoding setter `Uri::set_query`.
 
 use super::parse_graceful;
 use crate::uri::{Query, Uri};
@@ -59,11 +59,11 @@ fn collect_filtered_pairs_into_query() {
 }
 
 // ----------------------------------------------------------------------
-// set_query_value / with_query_value (bypass encoding)
+// set_query / with_query (bypass encoding)
 // ----------------------------------------------------------------------
 
 #[test]
-fn set_query_value_assigns_query_back() {
+fn set_query_assigns_query_back() {
     let mut uri: Uri = parse_graceful("/p?a=1&b=2&c=3").unwrap();
     let q: Query = uri
         .query()
@@ -71,28 +71,28 @@ fn set_query_value_assigns_query_back() {
         .pairs()
         .filter(|p| p.name_raw() != "b")
         .collect();
-    uri.set_query_value(q);
+    uri.set_query(q);
     assert_eq!(uri.to_string(), "/p?a=1&c=3");
 }
 
 #[test]
-fn with_query_value_consuming_form() {
+fn with_query_consuming_form() {
     let q: Query = parse_graceful("/p?a=1&b=2")
         .unwrap()
         .query()
         .unwrap()
         .pairs()
         .collect();
-    let uri = parse_graceful("/x").unwrap().with_query_value(q);
+    let uri = parse_graceful("/x").unwrap().with_query(q);
     assert_eq!(uri.to_string(), "/x?a=1&b=2");
 }
 
 #[test]
-fn set_query_value_no_double_encoding_of_existing_percents() {
-    // Round-trip through collect + set_query_value must preserve bytes.
+fn set_query_no_double_encoding_of_existing_percents() {
+    // Round-trip through collect + set_query must preserve bytes.
     let mut uri: Uri = parse_graceful("/p?msg=hello%20world").unwrap();
     let q: Query = uri.query().unwrap().pairs().collect();
-    uri.set_query_value(q);
+    uri.set_query(q);
     assert_eq!(uri.to_string(), "/p?msg=hello%20world");
 }
 
@@ -105,6 +105,6 @@ fn full_round_trip_drain_filter_collect_assign() {
         .drain()
         .filter(|p| p.name_raw() == "keep")
         .collect();
-    uri.set_query_value(kept);
+    uri.set_query(kept);
     assert_eq!(uri.to_string(), "/p?keep=1&keep=3");
 }

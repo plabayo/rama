@@ -80,18 +80,18 @@ fn with_path_consumes_and_returns() {
 #[test]
 fn set_query_replaces_and_adds() {
     let mut uri: Uri = parse_graceful("/p?old=1").unwrap();
-    uri.set_query("new=2");
+    uri.set_query_from_bytes("new=2");
     assert_eq!(uri.to_string(), "/p?new=2");
 
     let mut uri: Uri = parse_graceful("/p").unwrap();
-    uri.set_query("a=1");
+    uri.set_query_from_bytes("a=1");
     assert_eq!(uri.to_string(), "/p?a=1");
 }
 
 #[test]
 fn set_query_empty_preserves_question_mark() {
     let mut uri: Uri = parse_graceful("/p").unwrap();
-    uri.set_query("");
+    uri.set_query_from_bytes("");
     assert_eq!(uri.to_string(), "/p?");
 }
 
@@ -99,16 +99,16 @@ fn set_query_empty_preserves_question_mark() {
 fn set_query_auto_encodes_hash() {
     // `#` would start a fragment — encoded so it stays in the query.
     let mut uri: Uri = parse_graceful("/p").unwrap();
-    uri.set_query("a=1#frag");
+    uri.set_query_from_bytes("a=1#frag");
     assert_eq!(uri.to_string(), "/p?a=1%23frag");
 }
 
 #[test]
 fn set_query_auto_encodes_controls_and_non_ascii() {
     let mut uri: Uri = parse_graceful("/p").unwrap();
-    uri.set_query("a=\n");
+    uri.set_query_from_bytes("a=\n");
     assert_eq!(uri.to_string(), "/p?a=%0A");
-    uri.set_query("city=caf\u{e9}");
+    uri.set_query_from_bytes("city=caf\u{e9}");
     assert_eq!(uri.to_string(), "/p?city=caf%C3%A9");
 }
 
@@ -116,7 +116,7 @@ fn set_query_auto_encodes_controls_and_non_ascii() {
 fn set_query_passes_query_grammar_through() {
     // Query allows `/` and `?` in addition to pchar.
     let mut uri: Uri = parse_graceful("/p").unwrap();
-    uri.set_query("a=1&b=2/3?4");
+    uri.set_query_from_bytes("a=1&b=2/3?4");
     assert_eq!(uri.to_string(), "/p?a=1&b=2/3?4");
 }
 
@@ -237,7 +237,7 @@ fn set_path_on_asterisk_drops_asterisk() {
 fn chained_setters() {
     let mut uri: Uri = parse_graceful("/").unwrap();
     uri.set_path("/v2/users")
-        .set_query("page=2")
+        .set_query_from_bytes("page=2")
         .set_fragment("results");
     assert_eq!(uri.to_string(), "/v2/users?page=2#results");
 }
@@ -247,7 +247,7 @@ fn fluent_with_chain() {
     let uri = parse_graceful("/")
         .unwrap()
         .with_path("/v2/users")
-        .with_query("page=2")
+        .with_query_from_bytes("page=2")
         .with_fragment("results");
     assert_eq!(uri.to_string(), "/v2/users?page=2#results");
 }
@@ -256,7 +256,7 @@ fn fluent_with_chain() {
 fn second_mutation_does_not_re_promote() {
     let mut uri: Uri = parse_graceful("/p?a=1").unwrap();
     uri.set_path("/q");
-    uri.set_query("b=2");
+    uri.set_query_from_bytes("b=2");
     assert_eq!(uri.to_string(), "/q?b=2");
 }
 
@@ -305,7 +305,7 @@ fn set_path_with_encodable_string_allocates_new_buffer() {
 }
 
 // ----------------------------------------------------------------------
-// Mutator quartet — set_port / set_userinfo / set_scheme
+// Mutator quartet — set_port / set_user_info / set_scheme
 // ----------------------------------------------------------------------
 
 #[test]
@@ -343,7 +343,7 @@ fn with_port_consuming_form() {
 fn set_userinfo_replaces_userinfo() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
     let ui = UserInfo::from_static("alice:secret");
-    uri.set_userinfo(ui);
+    uri.set_user_info(ui);
     assert!(uri.userinfo().is_some());
     assert_eq!(uri.to_string(), "https://alice:secret@example.com/p");
 }
@@ -351,7 +351,7 @@ fn set_userinfo_replaces_userinfo() {
 #[test]
 fn set_userinfo_clears_via_none() {
     let mut uri: Uri = parse_graceful("https://alice:secret@example.com/p").unwrap();
-    uri.set_userinfo(None);
+    uri.set_user_info(None);
     assert!(uri.userinfo().is_none());
     assert_eq!(uri.to_string(), "https://example.com/p");
 }
@@ -359,7 +359,7 @@ fn set_userinfo_clears_via_none() {
 #[test]
 fn try_set_userinfo_accepts_str() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
-    uri.try_set_userinfo("alice").unwrap();
+    uri.try_set_user_info("alice").unwrap();
     assert_eq!(uri.to_string(), "https://alice@example.com/p");
 }
 
@@ -367,7 +367,7 @@ fn try_set_userinfo_accepts_str() {
 fn try_set_userinfo_rejects_invalid_input() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
     // Raw `@` inside userinfo is a gen-delim — `UserInfo::try_from` rejects.
-    let err = uri.try_set_userinfo("bad@user").unwrap_err();
+    let err = uri.try_set_user_info("bad@user").unwrap_err();
     match err {
         crate::uri::UriError::ComponentConversion { component, .. } => {
             assert_eq!(component, crate::uri::Component::UserInfo);

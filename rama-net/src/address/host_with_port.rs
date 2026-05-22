@@ -175,9 +175,9 @@ impl HostWithPort {
     }
 
     generate_set_and_with! {
-        /// Set [`Host`] of [`HostWithPort`]
-        pub fn host(mut self, host: Host) -> Self {
-            self.host = host;
+        /// Set [`Host`] of [`HostWithPort`]. Accepts any [`Into<Host>`].
+        pub fn host(mut self, host: impl Into<Host>) -> Self {
+            self.host = host.into();
             self
         }
     }

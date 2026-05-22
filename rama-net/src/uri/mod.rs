@@ -37,7 +37,6 @@
 //!   [`ParseError::InvalidComponent`] tagged with [`Component::Port`].
 //! - **Empty host with port (`http://:8080/`) → `Err`.** `http::Uri`
 //!   accepted; rama doesn't.
-//! - **Empty port (`http://example.com:`) → `Err`.** Same rationale.
 //! - **Control bytes anywhere → `Err`.** Browsers strip CR/LF/Tab;
 //!   rama refuses (smuggling defense).
 //! - **Non-special schemes (`urn:`, `data:`, `mailto:`) parse
@@ -563,6 +562,21 @@ impl Uri {
         }
     }
 
+    /// Clear the path (empty bytes — no leading `/`). Path is never
+    /// absent in the URI grammar, so this is the canonical "no path"
+    /// state, not a removal.
+    pub fn unset_path(&mut self) -> &mut Self {
+        self.to_mut().path = BytesMut::new();
+        self
+    }
+
+    /// Consuming form of [`unset_path`](Self::unset_path).
+    #[must_use]
+    pub fn without_path(mut self) -> Self {
+        self.unset_path();
+        self
+    }
+
     /// Returns a [`PathMut`] guard for incremental path mutation —
     /// `push_segment`, `pop_segment`, `clear`.
     pub fn path_mut(&mut self) -> PathMut<'_> {
@@ -570,35 +584,35 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the query. Leading `?` is implicit. Bytes outside
-        /// `pchar ∪ {'/', '?'}` are percent-encoded (including `#`).
-        pub fn query(mut self, query: impl IntoUriComponent) -> Self {
-            self.to_mut().query = Some(Query {
-                bytes: encode::encode_query(query),
-            });
+        /// Set, clear, or assign the query. Bytes taken as-is — no
+        /// re-encoding. Pair with [`set_query_from_bytes`](Self::set_query_from_bytes)
+        /// when you have raw bytes that need pct-encoding.
+        pub fn query(mut self, query: Option<Query>) -> Self {
+            self.to_mut().query = query;
             self
         }
+    }
+
+    /// Encode raw bytes into a [`Query`] and assign. Bytes outside
+    /// `pchar ∪ {'/', '?'}` are percent-encoded (including `#`).
+    pub fn set_query_from_bytes(&mut self, query: impl IntoUriComponent) -> &mut Self {
+        self.to_mut().query = Some(Query {
+            bytes: encode::encode_query(query),
+        });
+        self
+    }
+
+    /// Consuming form of [`set_query_from_bytes`](Self::set_query_from_bytes).
+    #[must_use]
+    pub fn with_query_from_bytes(mut self, query: impl IntoUriComponent) -> Self {
+        self.set_query_from_bytes(query);
+        self
     }
 
     /// Returns a [`QueryMut`] guard for incremental query mutation —
     /// `push_pair`, `push_key`, `pop`, `drain`.
     pub fn query_mut(&mut self) -> QueryMut<'_> {
         QueryMut::new(self.to_mut())
-    }
-
-    /// Assign a pre-built [`Query`] directly. The query's bytes are
-    /// taken as-is, with no re-encoding — useful when collecting from
-    /// an iterator (e.g. `let q: Query = pairs.collect(); uri.set_query_value(q);`).
-    pub fn set_query_value(&mut self, query: Query) -> &mut Self {
-        self.to_mut().query = Some(query);
-        self
-    }
-
-    /// Consuming form of [`set_query_value`](Self::set_query_value).
-    #[must_use]
-    pub fn with_query_value(mut self, query: Query) -> Self {
-        self.set_query_value(query);
-        self
     }
 
     /// Set the scheme. Accepts any [`Into<Protocol>`] — most usefully
@@ -717,20 +731,6 @@ impl Uri {
     ///   error ([`ResolveError::DotSegmentTraversalPastRoot`]).
     pub fn resolve_strict(&self, reference: &Self) -> Result<Self, ResolveError> {
         resolve::resolve(self, reference, resolve::ResolveMode::Strict)
-    }
-
-    /// Remove the query entirely (no `?` on the wire — distinct from
-    /// an empty-query `?` per §3.4).
-    pub fn unset_query(&mut self) -> &mut Self {
-        self.to_mut().query = None;
-        self
-    }
-
-    /// Consuming form of [`unset_query`](Self::unset_query).
-    #[must_use]
-    pub fn without_query(mut self) -> Self {
-        self.unset_query();
-        self
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -885,14 +885,13 @@ impl Uri {
         self
     }
 
-    /// Set just the userinfo, preserving the rest of the authority.
+    /// Set just the user-info, preserving the rest of the authority.
     ///
-    /// `Some(userinfo)` sets the explicit userinfo (the `user[:pass]@`
-    /// prefix); `None` clears any existing userinfo. If the URI has no
-    /// authority yet, one is created with the loopback IPv4 host as a
-    /// placeholder — see [`set_port`](Self::set_port) for the same
-    /// caveat.
-    pub fn set_userinfo(
+    /// `Some(user_info)` sets the `user[:pass]@` prefix; `None` clears
+    /// any existing user-info. If the URI has no authority yet, one is
+    /// created with the loopback IPv4 host as a placeholder — see
+    /// [`set_port`](Self::set_port) for the same caveat.
+    pub fn set_user_info(
         &mut self,
         user_info: impl Into<Option<crate::address::UserInfo>>,
     ) -> &mut Self {
@@ -915,33 +914,33 @@ impl Uri {
         self
     }
 
-    /// Consuming form of [`set_userinfo`](Self::set_userinfo).
+    /// Consuming form of [`set_user_info`](Self::set_user_info).
     #[must_use]
-    pub fn with_userinfo(mut self, user_info: impl Into<Option<crate::address::UserInfo>>) -> Self {
-        self.set_userinfo(user_info);
+    pub fn with_user_info(
+        mut self,
+        user_info: impl Into<Option<crate::address::UserInfo>>,
+    ) -> Self {
+        self.set_user_info(user_info);
         self
     }
 
-    /// Clear the userinfo. Shortcut for `set_userinfo(None)`.
-    pub fn unset_userinfo(&mut self) -> &mut Self {
-        self.set_userinfo(None)
+    /// Clear the user-info. Shortcut for `set_user_info(None)`.
+    pub fn unset_user_info(&mut self) -> &mut Self {
+        self.set_user_info(None)
     }
 
-    /// Consuming form of [`unset_userinfo`](Self::unset_userinfo).
+    /// Consuming form of [`unset_user_info`](Self::unset_user_info).
     #[must_use]
-    pub fn without_userinfo(mut self) -> Self {
-        self.unset_userinfo();
+    pub fn without_user_info(mut self) -> Self {
+        self.unset_user_info();
         self
     }
 
-    /// Fallible userinfo setter. Accepts any
-    /// [`TryInto<UserInfo>`] — typically `&str` / `String`. Routes
-    /// through [`UserInfo::try_from`](crate::address::UserInfo) which
-    /// enforces the full RFC 3986 §3.2.1 userinfo grammar.
-    ///
-    /// Returns [`UriError::ComponentConversion`] tagged with
-    /// [`Component::UserInfo`] when the upstream conversion fails.
-    pub fn try_set_userinfo<U>(&mut self, user_info: U) -> Result<&mut Self, UriError>
+    /// Fallible user-info setter. Accepts any [`TryInto<UserInfo>`] —
+    /// typically `&str` / `String`. Routes through
+    /// [`UserInfo::try_from`](crate::address::UserInfo) which enforces
+    /// the RFC 3986 §3.2.1 userinfo grammar.
+    pub fn try_set_user_info<U>(&mut self, user_info: U) -> Result<&mut Self, UriError>
     where
         U: TryInto<crate::address::UserInfo>,
         U::Error: Into<rama_core::error::BoxError>,
@@ -953,16 +952,16 @@ impl Uri {
                     component: Component::UserInfo,
                     cause: e.into(),
                 })?;
-        Ok(self.set_userinfo(Some(user_info)))
+        Ok(self.set_user_info(Some(user_info)))
     }
 
-    /// Consuming form of [`try_set_userinfo`](Self::try_set_userinfo).
-    pub fn try_with_userinfo<U>(mut self, user_info: U) -> Result<Self, UriError>
+    /// Consuming form of [`try_set_user_info`](Self::try_set_user_info).
+    pub fn try_with_user_info<U>(mut self, user_info: U) -> Result<Self, UriError>
     where
         U: TryInto<crate::address::UserInfo>,
         U::Error: Into<rama_core::error::BoxError>,
     {
-        self.try_set_userinfo(user_info)?;
+        self.try_set_user_info(user_info)?;
         Ok(self)
     }
 }
@@ -994,14 +993,7 @@ macro_rules! uri_try_from {
     };
 }
 
-uri_try_from!(
-    &str,
-    String,
-    &[u8],
-    Vec<u8>,
-    rama_core::bytes::Bytes,
-    rama_core::bytes::BytesMut,
-);
+uri_try_from!(&str, String, &[u8], Vec<u8>, rama_core::bytes::Bytes,);
 
 impl Uri {
     /// Shared walker for [`Display`](std::fmt::Display) and
@@ -1311,6 +1303,14 @@ impl<'a> UriRef<'a> {
     #[inline]
     pub const fn is_absolute(&self) -> bool {
         self.scheme.is_some()
+    }
+
+    /// Promote this borrowed view to an owned [`Uri`] — cheap, just
+    /// clones the source `Uri` (which is Arc-backed).
+    #[must_use]
+    #[inline]
+    pub fn into_owned(self) -> Uri {
+        self.source.clone()
     }
 }
 

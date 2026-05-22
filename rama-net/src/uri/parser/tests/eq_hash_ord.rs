@@ -21,7 +21,7 @@
 //! level, but `uri.canonicalize() == other.canonicalize()` does hold.
 
 use ahash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::bytes::Bytes;
 
 use crate::uri::Uri;
 
@@ -386,12 +386,6 @@ fn try_from_bytes() {
 }
 
 #[test]
-fn try_from_bytes_mut() {
-    let u = Uri::try_from(BytesMut::from(URI_STR.as_bytes())).unwrap();
-    assert_eq!(u.host().unwrap().to_str(), "example.com");
-}
-
-#[test]
 fn try_from_propagates_parse_error() {
     // Empty input → ParseError::Empty surfaces through TryFrom.
     let err = Uri::try_from("").unwrap_err();
@@ -420,7 +414,6 @@ fn try_from_works_at_generic_bound() {
     accept(URI_STR.as_bytes());
     accept(URI_STR.as_bytes().to_vec());
     accept(Bytes::from_static(URI_STR.as_bytes()));
-    accept(BytesMut::from(URI_STR.as_bytes()));
 }
 
 // ---- Uri::from_static ------------------------------------------
