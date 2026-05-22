@@ -404,6 +404,7 @@ cli = [
 net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
 net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
+idna = ["net", "rama-net?/idna"]
 dns = ["net", "dep:rama-dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]
@@ -426,6 +427,7 @@ http-full = [
     "http",
     "tcp",
     "ws",
+    "idna",
     "dep:rama-http-backend",
     "dep:rama-http-core",
     "ua-embed-profiles",
