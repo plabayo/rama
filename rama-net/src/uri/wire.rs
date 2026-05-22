@@ -150,19 +150,31 @@ impl Uri {
 /// Write `host[:port]` to `buf`. IPv6 addresses are bracketed per
 /// RFC 3986 §3.2.2 (`IP-literal = "[" IPv6address "]"`). Userinfo is
 /// intentionally skipped (HTTP messages MUST NOT carry it).
+///
+/// IP-address rendering streams through a `fmt::Write` adapter into
+/// `buf` — no `to_string()` allocation per request.
 fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
+    use std::fmt::Write as _;
     if let Some(host) = uri.host() {
         match host {
             HostRef::Name(d) => buf.extend_from_slice(d.as_bytes()),
             HostRef::Address(IpAddr::V4(v4)) => {
-                // `IpAddr::to_string` allocates a small `String` (max 15
-                // bytes for IPv4). HTTP wire writing happens once per
-                // request — fine.
-                buf.extend_from_slice(v4.to_string().as_bytes());
+                // `Ipv4Addr` Display goes through `fmt::Write`; route
+                // it straight into the buffer (max 15 bytes, no alloc).
+                // `BytesMutWriter::write_str` is infallible.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "BytesMutWriter::write_str is infallible by construction"
+                )]
+                let _ = write!(BytesMutWriter(buf), "{v4}");
             }
             HostRef::Address(IpAddr::V6(v6)) => {
                 buf.extend_from_slice(b"[");
-                buf.extend_from_slice(v6.to_string().as_bytes());
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "BytesMutWriter::write_str is infallible by construction"
+                )]
+                let _ = write!(BytesMutWriter(buf), "{v6}");
                 buf.extend_from_slice(b"]");
             }
             HostRef::Uninterpreted(host) => {
@@ -184,6 +196,19 @@ fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
         buf.extend_from_slice(b":");
         let mut itoa = itoa::Buffer::new();
         buf.extend_from_slice(itoa.format(port).as_bytes());
+    }
+}
+
+/// [`fmt::Write`] adapter that pushes formatted bytes straight into a
+/// [`BytesMut`]. Used by [`write_host_port`] to stream `Ipv4Addr` /
+/// `Ipv6Addr` Display output into the request buffer with no
+/// intermediate `String`.
+struct BytesMutWriter<'a>(&'a mut BytesMut);
+
+impl std::fmt::Write for BytesMutWriter<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
     }
 }
 

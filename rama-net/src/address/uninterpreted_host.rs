@@ -163,6 +163,13 @@ impl<'a> UninterpretedHostRef<'a> {
     /// Pct-decoded view. Borrows when no `%` is present, allocates a
     /// new `String` when decoding actually occurred. See
     /// [`UninterpretedHost::as_unicode`] for the full contract.
+    ///
+    /// If the decoded bytes aren't valid UTF-8 (e.g. an isolated
+    /// pct-encoded byte that doesn't form a multi-byte sequence),
+    /// falls back to lossy U+FFFD substitution — matching the
+    /// [`crate::uri::Query::as_decoded_str`] /
+    /// [`crate::uri::Fragment::as_decoded_str`] contract so callers
+    /// see consistent behaviour across decoded-view surfaces.
     #[must_use]
     pub fn as_unicode(&self) -> Cow<'a, str> {
         if !self.bytes.contains(&b'%') {
@@ -186,7 +193,12 @@ impl<'a> UninterpretedHostRef<'a> {
         }
         match String::from_utf8(out) {
             Ok(s) => Cow::Owned(s),
-            Err(_) => Cow::Borrowed(self.as_str()),
+            Err(e) => {
+                // Lossy U+FFFD substitution on invalid pct-decoded UTF-8.
+                // `into_bytes` recovers the original `Vec` so we avoid
+                // a duplicate allocation in the failure path.
+                Cow::Owned(String::from_utf8_lossy(&e.into_bytes()).into_owned())
+            }
         }
     }
 
@@ -515,6 +527,23 @@ mod tests {
         // %C3%BCller.de → müller.de
         let h = reg(b"m%C3%BCller.de");
         assert_eq!(&*h.as_unicode(), "müller.de");
+    }
+
+    #[test]
+    fn as_unicode_lossy_fallback_on_invalid_utf8() {
+        // `%C3` is the start of a 2-byte UTF-8 sequence; `%C3%C3` is
+        // not a valid continuation. The audit M11 fix: surface a
+        // lossy U+FFFD substitution instead of silently returning the
+        // raw pct-encoded form (which would confuse callers).
+        let h = reg(b"%C3%C3");
+        let decoded = h.as_unicode();
+        // Must NOT be the raw pct-encoded passthrough.
+        assert_ne!(&*decoded, "%C3%C3", "expected lossy decoded form, not raw");
+        // Must contain at least one replacement char.
+        assert!(
+            decoded.contains('\u{FFFD}'),
+            "expected U+FFFD in lossy fallback, got {decoded:?}"
+        );
     }
 
     // -- TryFrom<&UninterpretedHost> for Domain ---------------------------

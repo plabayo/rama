@@ -294,6 +294,7 @@ pub(super) fn remove_dot_segments_graceful(input: &[u8]) -> BytesMut {
 /// would emit). Used to enforce the [`MAX_URI_LEN`] cap on the resolved
 /// URI without an extra `to_string()` allocation.
 fn serialized_len(owned: &OwnedUriRef) -> usize {
+    use std::fmt::Write as _;
     let mut n = 0;
     if let Some(scheme) = &owned.scheme {
         n += scheme.as_str().len() + 1; // ":" suffix
@@ -303,9 +304,16 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
         if let Some(ui) = &auth.user_info {
             n += ui.as_bytes().len() + 1; // "@" suffix
         }
-        // Host: use the existing Display path. Fast enough for size calc;
-        // not a hot path.
-        n += auth.address.host.to_string().len();
+        // Host length without materialising a `String`: drive `Display`
+        // into a write-counting adapter that just accumulates the byte
+        // length of every fragment.
+        let mut counter = FmtLenCounter(0);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "FmtLenCounter::write_str is infallible by construction"
+        )]
+        let _ = write!(&mut counter, "{}", auth.address.host);
+        n += counter.0;
         if let Some(port) = auth.address.port {
             n += 1; // ":"
             n += port_decimal_len(port);
@@ -319,6 +327,19 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
         n += 1 + f.bytes.len(); // "#" + bytes
     }
     n
+}
+
+/// [`fmt::Write`] sink that accumulates the byte length of everything
+/// written to it, discarding the bytes themselves. Lets [`serialized_len`]
+/// compute a `Host` (or any other `Display`) rendered size with zero
+/// allocation.
+struct FmtLenCounter(usize);
+
+impl std::fmt::Write for FmtLenCounter {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
 }
 
 #[inline]
