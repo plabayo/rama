@@ -109,25 +109,8 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     // Absolute-form: `scheme ":" hier-part [ "?" query ] [ "#" fragment ]`
     // (RFC 3986 §3). hier-part is either `//authority path-abempty` or an
     // opaque path-absolute / path-rootless (e.g. `urn:isbn:0`, `mailto:a@b`).
-    if let Some(colon) = scheme::find_scheme_end(&bytes) {
-        let scheme_str = bytes_to_str(&bytes[..colon]);
-        let Ok(scheme) = crate::Protocol::try_from(scheme_str) else {
-            return Err(ParseError::InvalidComponent(Component::Scheme));
-        };
-
-        let after_colon = colon + 1;
-        let auth_scan = authority::parse_optional_authority(&bytes, after_colon, mode)?;
-        let path_start = auth_scan.path_start;
-        let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
-
-        return Ok(build_uri(
-            Some(scheme),
-            auth_scan.authority,
-            (path_start as u16, path_scan.path_end),
-            path_scan.query,
-            path_scan.fragment,
-            bytes,
-        ));
+    if let Some(uri) = try_parse_absolute(&bytes, mode)? {
+        return Ok(uri);
     }
 
     // Anything else (relative refs with path-noscheme, the HTTP CONNECT
@@ -135,6 +118,41 @@ pub(super) fn parse(bytes: Bytes, mode: ParserMode) -> Result<Uri, ParseError> {
     // Use [`parse_uri_reference`] for relative refs or
     // [`parse_authority_form`] for HTTP CONNECT targets.
     Err(ParseError::InvalidComponent(Component::Scheme))
+}
+
+/// Try the absolute-form (scheme-bearing) branch of RFC 3986 §3.
+///
+/// - `Ok(Some(uri))` when `bytes` starts with a valid scheme and the
+///   rest parses.
+/// - `Ok(None)` when no scheme is present (caller decides whether to
+///   continue with origin-form / relative-ref handling).
+/// - `Err(_)` when a scheme is present but invalid (unknown
+///   [`crate::Protocol`]), or the body fails the per-component checks.
+///
+/// Shared by [`parse`] and [`parse_uri_reference`] so the scheme +
+/// hier-part walk has a single definition.
+fn try_parse_absolute(bytes: &Bytes, mode: ParserMode) -> Result<Option<Uri>, ParseError> {
+    let Some(colon) = scheme::find_scheme_end(bytes) else {
+        return Ok(None);
+    };
+    let scheme_str = bytes_to_str(&bytes[..colon]);
+    let Ok(scheme) = crate::Protocol::try_from(scheme_str) else {
+        return Err(ParseError::InvalidComponent(Component::Scheme));
+    };
+    let after_colon = colon + 1;
+    let auth_scan = authority::parse_optional_authority(bytes, after_colon, mode)?;
+    let path_start = auth_scan.path_start;
+    let path_scan = path::scan_path_query_fragment(bytes, path_start, mode)?;
+    Ok(Some(build_uri(
+        Some(scheme),
+        auth_scan.authority,
+        (path_start as u16, path_scan.path_end),
+        path_scan.query,
+        path_scan.fragment,
+        // `Bytes::clone` is one atomic refcount bump — only paid on
+        // the commit path; no clone if we return None earlier.
+        bytes.clone(),
+    )))
 }
 
 /// Parse an HTTP authority-form request-target. Used for the CONNECT
@@ -230,24 +248,10 @@ pub(super) fn parse_uri_reference(bytes: Bytes, mode: ParserMode) -> Result<Uri,
         return Ok(Uri::from_asterisk());
     }
 
-    // Absolute-form (scheme present).
-    if let Some(colon) = scheme::find_scheme_end(&bytes) {
-        let scheme_str = bytes_to_str(&bytes[..colon]);
-        let Ok(scheme) = crate::Protocol::try_from(scheme_str) else {
-            return Err(ParseError::InvalidComponent(Component::Scheme));
-        };
-        let after_colon = colon + 1;
-        let auth_scan = authority::parse_optional_authority(&bytes, after_colon, mode)?;
-        let path_start = auth_scan.path_start;
-        let path_scan = path::scan_path_query_fragment(&bytes, path_start, mode)?;
-        return Ok(build_uri(
-            Some(scheme),
-            auth_scan.authority,
-            (path_start as u16, path_scan.path_end),
-            path_scan.query,
-            path_scan.fragment,
-            bytes,
-        ));
+    // Absolute-form (scheme present). Falls through to the relative-ref
+    // grammar below when there's no scheme.
+    if let Some(uri) = try_parse_absolute(&bytes, mode)? {
+        return Ok(uri);
     }
 
     // Relative-ref. Per RFC 3986 §4.2, the disambiguation is:

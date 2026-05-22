@@ -140,104 +140,117 @@ impl TryFrom<String> for UserInfo {
     }
 }
 
-/// Runtime userinfo-grammar validator, shared by `TryFrom<&str>` and
-/// `TryFrom<String>`. Delegates the byte-set check to
-/// [`crate::byte_sets::is_userinfo_byte`] so the grammar is single-sourced.
+/// First-violation tag returned by the shared const validator below.
+/// Lets the runtime and `from_static_str` entry points decode the same
+/// algorithm into their preferred error mode (boxed error vs panic).
+#[derive(Clone, Copy)]
+enum UserInfoFault {
+    /// Raw control byte (`< 0x20` or `0x7F`).
+    ControlByte,
+    /// `%` followed by fewer than two bytes.
+    PctTruncated,
+    /// `%XY` where `X` or `Y` is not a hex digit.
+    PctMalformed,
+    /// `%XX` that decodes to a control byte (smuggling vector).
+    PctDecodesToControl,
+    /// Byte outside the RFC 3986 §3.2.1 userinfo byte set.
+    DisallowedByte,
+}
+
+/// `const` userinfo-grammar walker — single source of truth for both
+/// [`validate_userinfo_runtime`] (returns [`BoxError`]) and
+/// [`validate_userinfo_static`] (panics). Adding a rejection rule here
+/// can't drift between the two entry points.
 ///
 /// Rules (RFC 3986 §3.2.1):
 /// - Each byte must be `unreserved / pct-encoded / sub-delims / ":"`.
 /// - `%XX` must be a well-formed hex pair.
 /// - Pct-decoded byte must not be a control character (smuggling
 ///   defense — mirrors the URI parser's reg-name handling).
-fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
+const fn validate_userinfo_bytes(bytes: &[u8]) -> Result<(), UserInfoFault> {
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
         if b < 0x20 || b == 0x7F {
-            return Err(
-                OpaqueError::from_static_str("userinfo contains control character")
-                    .into_box_error(),
-            );
+            return Err(UserInfoFault::ControlByte);
         }
         if b == b'%' {
-            let h1 = bytes.get(i + 1).copied();
-            let h2 = bytes.get(i + 2).copied();
-            match (h1, h2) {
-                (Some(a), Some(b)) if a.is_ascii_hexdigit() && b.is_ascii_hexdigit() => {
-                    if let Some(decoded) = rama_utils::hex::decode_pair(a, b)
-                        && (decoded < 0x20 || decoded == 0x7F)
-                    {
-                        return Err(OpaqueError::from_static_str(
-                            "userinfo pct-escape decodes to a control character",
-                        )
-                        .into_box_error());
-                    }
-                    i += 3;
-                    continue;
-                }
-                _ => {
-                    return Err(OpaqueError::from_static_str(
-                        "userinfo contains malformed percent-escape",
-                    )
-                    .into_box_error());
-                }
+            if i + 2 >= bytes.len() {
+                return Err(UserInfoFault::PctTruncated);
             }
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            if !h1.is_ascii_hexdigit() || !h2.is_ascii_hexdigit() {
+                return Err(UserInfoFault::PctMalformed);
+            }
+            // `decode_pair` always succeeds when both bytes are hex
+            // digits — drop the dead `None` branch.
+            let Some(decoded) = rama_utils::hex::decode_pair(h1, h2) else {
+                // SAFETY: the `is_ascii_hexdigit` check above is the
+                // exact precondition `decode_pair` documents.
+                unsafe { std::hint::unreachable_unchecked() }
+            };
+            if decoded < 0x20 || decoded == 0x7F {
+                return Err(UserInfoFault::PctDecodesToControl);
+            }
+            i += 3;
+            continue;
         }
         if !crate::byte_sets::is_userinfo_byte(b) {
-            return Err(
-                OpaqueError::from_static_str("userinfo contains disallowed character")
-                    .into_box_error(),
-            );
+            return Err(UserInfoFault::DisallowedByte);
         }
         i += 1;
     }
     Ok(())
 }
 
-/// `const` mirror of [`validate_userinfo_runtime`] for
-/// [`UserInfo::from_static_str`]. Same rules; panics at compile time
-/// on violation. Can't share the `?`-based runtime variant because `?`
-/// isn't const-stable yet.
-const fn validate_userinfo_static(bytes: &[u8]) {
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        assert!(
-            b >= 0x20 && b != 0x7F,
-            "UserInfo::from_static_str: control character in input"
-        );
-        if b == b'%' {
-            assert!(
-                i + 2 < bytes.len(),
-                "UserInfo::from_static_str: truncated percent-escape"
-            );
-            let h1 = bytes[i + 1];
-            let h2 = bytes[i + 2];
-            assert!(
-                h1.is_ascii_hexdigit() && h2.is_ascii_hexdigit(),
-                "UserInfo::from_static_str: malformed percent-escape"
-            );
-            // Shared hex helper — `decode_pair` is const-stable. Both
-            // h1 and h2 just passed `is_ascii_hexdigit` so the `Some`
-            // arm always fires; `unreachable_unchecked` lets the
-            // compiler drop the dead `None` branch.
-            let Some(decoded) = rama_utils::hex::decode_pair(h1, h2) else {
-                // SAFETY: both hex digits are ASCII hex per the
-                // assertion above; decode_pair always succeeds.
-                unsafe { std::hint::unreachable_unchecked() }
+/// Runtime userinfo-grammar validator. Used by `TryFrom<&str>` /
+/// `TryFrom<String>`; maps the const walker's fault tag into a boxed
+/// error suitable for the `?`-ladder.
+fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
+    match validate_userinfo_bytes(bytes) {
+        Ok(()) => Ok(()),
+        Err(fault) => {
+            let msg = match fault {
+                UserInfoFault::ControlByte => "userinfo contains control character",
+                UserInfoFault::PctTruncated | UserInfoFault::PctMalformed => {
+                    "userinfo contains malformed percent-escape"
+                }
+                UserInfoFault::PctDecodesToControl => {
+                    "userinfo pct-escape decodes to a control character"
+                }
+                UserInfoFault::DisallowedByte => "userinfo contains disallowed character",
             };
-            assert!(
-                decoded >= 0x20 && decoded != 0x7F,
-                "UserInfo::from_static_str: pct-escape decodes to a control character"
-            );
-            i += 3;
-            continue;
+            Err(OpaqueError::from_static_str(msg).into_box_error())
         }
-        assert!(
-            crate::byte_sets::is_userinfo_byte(b),
-            "UserInfo::from_static_str: disallowed character"
-        );
-        i += 1;
+    }
+}
+
+/// `const` validator for [`UserInfo::from_static_str`]. Maps the
+/// const walker's fault tag into a `panic!` at compile time so static
+/// inputs that violate the grammar fail the build.
+#[expect(
+    clippy::panic,
+    reason = "static-str invariant: compile-time panic when the static input violates the userinfo grammar"
+)]
+const fn validate_userinfo_static(bytes: &[u8]) {
+    match validate_userinfo_bytes(bytes) {
+        Ok(()) => {}
+        Err(UserInfoFault::ControlByte) => {
+            panic!("UserInfo::from_static_str: control character in input")
+        }
+        Err(UserInfoFault::PctTruncated) => {
+            panic!("UserInfo::from_static_str: truncated percent-escape")
+        }
+        Err(UserInfoFault::PctMalformed) => {
+            panic!("UserInfo::from_static_str: malformed percent-escape")
+        }
+        Err(UserInfoFault::PctDecodesToControl) => {
+            panic!("UserInfo::from_static_str: pct-escape decodes to a control character")
+        }
+        Err(UserInfoFault::DisallowedByte) => {
+            panic!("UserInfo::from_static_str: disallowed character")
+        }
     }
 }
 
