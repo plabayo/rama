@@ -359,9 +359,9 @@ fn set_port_clears_via_none() {
 }
 
 #[test]
-fn unset_port_shortcut() {
+fn set_port_unset_clears() {
     let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
-    uri.unset_port();
+    uri.set_port(crate::address::OptPort::Unset);
     assert!(uri.port().is_unset());
 }
 

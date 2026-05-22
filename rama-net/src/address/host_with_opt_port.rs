@@ -301,10 +301,9 @@ impl HostWithOptPort {
 
     generate_set_and_with! {
         /// Set the port. Accepts `u16`, `OptPort`, or `Option<u16>` via
-        /// [`Into<OptPort>`]; the macro then derives the full
-        /// set/with/unset/without/maybe quartet over `OptPort`.
-        pub fn port(mut self, port: Option<OptPort>) -> Self {
-            self.port = port.unwrap_or(OptPort::Unset);
+        /// [`Into<OptPort>`]. Pass `OptPort::Unset` to clear.
+        pub fn port(mut self, port: impl Into<OptPort>) -> Self {
+            self.port = port.into();
             self
         }
     }

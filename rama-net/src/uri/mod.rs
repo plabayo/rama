@@ -877,18 +877,6 @@ impl Uri {
         self
     }
 
-    /// Clear the port. Shortcut for `set_port(OptPort::Unset)`.
-    pub fn unset_port(&mut self) -> &mut Self {
-        self.set_port(crate::address::OptPort::Unset)
-    }
-
-    /// Consuming form of [`unset_port`](Self::unset_port).
-    #[must_use]
-    pub fn without_port(mut self) -> Self {
-        self.unset_port();
-        self
-    }
-
     /// Set just the user-info, preserving the rest of the authority.
     ///
     /// `Some(user_info)` sets the `user[:pass]@` prefix; `None` clears

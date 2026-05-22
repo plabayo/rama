@@ -304,10 +304,11 @@ impl Authority {
     }
 
     generate_set_and_with! {
-        /// Set, unset, or maybe-set the port of [`Authority`]. Accepts
-        /// any `impl Into<OptPort>` — `u16`, `OptPort`, or `Option<u16>`.
-        pub fn port(mut self, port: Option<OptPort>) -> Self {
-            self.address.port = port.unwrap_or(OptPort::Unset);
+        /// Set the port of [`Authority`]. Accepts `u16`, `OptPort`, or
+        /// `Option<u16>` via [`Into<OptPort>`]. Pass `OptPort::Unset`
+        /// to clear.
+        pub fn port(mut self, port: impl Into<OptPort>) -> Self {
+            self.address.port = port.into();
             self
         }
     }
