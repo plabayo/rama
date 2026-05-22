@@ -7,8 +7,9 @@
 use percent_encoding::{AsciiSet, CONTROLS, percent_encode};
 use rama_core::bytes::BytesMut;
 
+use crate::byte_sets::{is_path_byte, is_query_fragment_byte};
+
 use super::component_input::IntoUriComponent;
-use super::parser::{is_path_byte, is_query_fragment_byte};
 
 // ---------------------------------------------------------------------------
 // `AsciiSet`s used by the `percent_encoding` crate's encoder.

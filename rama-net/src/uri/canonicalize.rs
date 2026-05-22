@@ -30,9 +30,9 @@ use rama_core::bytes::BytesMut;
 use crate::address::{Domain, Host, UninterpretedHostRef};
 
 use super::owned::OwnedUriRef;
-use super::parser::is_unreserved_byte;
 use super::resolve::remove_dot_segments_graceful;
 use super::{Uri, UriInner};
+use crate::byte_sets::is_unreserved_byte;
 
 /// Top-level entry — apply RFC 3986 §6.2.2 normalization to `uri`.
 ///

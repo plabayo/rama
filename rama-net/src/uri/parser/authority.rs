@@ -9,10 +9,11 @@ use crate::address::{Domain, Host, UninterpretedHost};
 use crate::uri::lazy::LazyAuthority;
 use crate::uri::{Component, ParseError};
 
-use super::ParserMode;
-use super::byte_sets::{
+use crate::byte_sets::{
     is_control_byte, is_ipvfuture_tail_byte, is_reg_name_byte, is_userinfo_byte,
 };
+
+use super::ParserMode;
 use super::check_pct_encoded;
 
 /// Result of `parse_optional_authority`.

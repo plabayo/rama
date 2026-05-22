@@ -237,8 +237,7 @@ pub(crate) const fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError>
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
-        let ok = c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
-        if !ok {
+        if !crate::byte_sets::is_label_byte(c) {
             return Err(LabelError::invalid_char(c, i));
         }
         i += 1;
@@ -336,5 +335,26 @@ mod tests {
         let l = unsafe { Label::from_str_unchecked(s) };
         assert_eq!(l.as_str(), s);
         assert_eq!(l.len(), s.len());
+    }
+
+    #[test]
+    fn label_byte_set_matches_predicate() {
+        // Drift guard: the LUT must agree byte-for-byte with the
+        // grammar `ALPHA / DIGIT / "_" / "-"` it claims to encode.
+        // If the table-build loop in `crate::byte_sets` ever drops a byte,
+        // this catches it on the label-grammar side too.
+        for b in 0u8..=255 {
+            let expected = b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+            assert_eq!(
+                crate::byte_sets::is_label_byte(b),
+                expected,
+                "byte 0x{b:02x} ({}) — LUT disagreed with predicate",
+                if b.is_ascii_graphic() {
+                    format!("{:?}", b as char)
+                } else {
+                    "non-graphic".to_owned()
+                }
+            );
+        }
     }
 }

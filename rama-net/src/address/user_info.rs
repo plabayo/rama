@@ -132,8 +132,8 @@ impl TryFrom<String> for UserInfo {
 }
 
 /// Runtime userinfo-grammar validator, shared by `TryFrom<&str>` and
-/// `TryFrom<String>`. Delegates the byte-set check to the URI parser's
-/// [`crate::uri::is_userinfo_byte`] LUT so the grammar is single-sourced.
+/// `TryFrom<String>`. Delegates the byte-set check to
+/// [`crate::byte_sets::is_userinfo_byte`] so the grammar is single-sourced.
 ///
 /// Rules (RFC 3986 §3.2.1):
 /// - Each byte must be `unreserved / pct-encoded / sub-delims / ":"`.
@@ -174,7 +174,7 @@ fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
                 }
             }
         }
-        if !crate::uri::is_userinfo_byte(b) {
+        if !crate::byte_sets::is_userinfo_byte(b) {
             return Err(
                 OpaqueError::from_static_str("userinfo contains disallowed character")
                     .into_box_error(),
@@ -225,7 +225,7 @@ const fn validate_userinfo_static(bytes: &[u8]) {
             continue;
         }
         assert!(
-            crate::uri::is_userinfo_byte(b),
+            crate::byte_sets::is_userinfo_byte(b),
             "UserInfo::from_static_str: disallowed character"
         );
         i += 1;

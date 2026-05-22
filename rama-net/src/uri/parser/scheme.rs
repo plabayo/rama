@@ -2,7 +2,7 @@
 //!
 //! `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` followed by `:`.
 
-use super::byte_sets::{is_scheme_first_byte, is_scheme_rest_byte};
+use crate::byte_sets::{is_scheme_first_byte, is_scheme_rest_byte};
 
 /// If `bytes` starts with `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` followed
 /// by `:`, return the byte index of the `:`. Otherwise `None`.

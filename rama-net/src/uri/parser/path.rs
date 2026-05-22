@@ -10,8 +10,9 @@ use rama_core::bytes::Bytes;
 
 use crate::uri::ParseError;
 
+use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
+
 use super::ParserMode;
-use super::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
 use super::{check_pct_encoded, check_utf8_sequence};
 
 /// Result of the path/query/fragment scan: where the path ends and what

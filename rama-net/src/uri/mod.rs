@@ -130,10 +130,6 @@ pub use fragment::{Fragment, FragmentRef};
 mod lazy;
 mod owned;
 mod parser;
-// Re-exported so [`crate::address::UserInfo::try_from`] can share the
-// same byte-set table the URI parser uses (strict-mode userinfo grammar
-// check). Keeps validation single-sourced.
-pub(crate) use parser::is_userinfo_byte;
 
 use lazy::LazyUriRef;
 use owned::OwnedUriRef;
