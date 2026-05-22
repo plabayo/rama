@@ -131,7 +131,11 @@ where
         match self.mode {
             DnsResolveIpMode::SingleIpV4 => self.collect_v4(host, &mut ips).await,
             DnsResolveIpMode::SingleIpV6 => self.collect_v6(host, &mut ips).await,
-            DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+            DnsResolveIpMode::Dual => {
+                self.collect_v6(host, &mut ips).await;
+                self.collect_v4(host, &mut ips).await;
+            }
+            DnsResolveIpMode::DualPreferIpV4 => {
                 self.collect_v4(host, &mut ips).await;
                 self.collect_v6(host, &mut ips).await;
             }

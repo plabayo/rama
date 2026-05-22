@@ -8,7 +8,7 @@ use std::{
 
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_net::address::Domain;
-use rand::{RngExt as _, rngs::SmallRng};
+use rand::RngExt as _;
 
 use super::HostResolution;
 
@@ -78,6 +78,7 @@ impl DnsIpPicker for RoundRobinPicker {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 /// Random IP picker
 pub struct RandomPicker;
 
@@ -94,8 +95,7 @@ impl DnsIpPicker for RandomPicker {
         _host: &Domain,
         resolution: &HostResolution,
     ) -> Result<Option<IpAddr>, BoxError> {
-        let mut rng: SmallRng = rand::make_rng();
-        let idx = rng.random_range(0..resolution.ips.len());
+        let idx = rand::rng().random_range(0..resolution.ips.len());
         Ok(Some(resolution.ips[idx]))
     }
 }
