@@ -401,3 +401,67 @@ fn round_trip_pct_encoded_to_canonical_wire() {
     // host promoted to typed Domain.
     assert_eq!(uri.to_string(), "http://example.com/path?k=val#frag");
 }
+
+// ----------------------------------------------------------------------
+// Host case + pct normalization (RFC 3986 §6.2.2.1 + §6.2.2.2)
+// ----------------------------------------------------------------------
+
+#[test]
+fn canonicalize_lowercases_typed_domain_host() {
+    // `Domain` already case-folds for Eq/Hash, but the canonical *render*
+    // must lowercase too (RFC 3986 §6.2.2.1).
+    let uri = Uri::parse_canonical("HTTP://EXAMPLE.COM/p").unwrap();
+    assert_eq!(uri.to_string(), "http://example.com/p");
+}
+
+#[test]
+fn canonicalize_lowercases_uninterpreted_reg_name() {
+    // Sub-delim reg-names stay `Uninterpreted` (no typed canonical form);
+    // canonicalize still lowercases the bytes per §6.2.2.1.
+    let uri = Uri::parse_canonical("http://TAG,WITH,COMMAS/p").unwrap();
+    assert_eq!(uri.to_string(), "http://tag,with,commas/p");
+}
+
+#[test]
+fn canonicalize_lowercases_bracketed_ipvfuture() {
+    // IPvFuture literals also stay `Uninterpreted`; the bracketed body
+    // case-folds (FE80 → fe80) while the brackets are re-emitted by
+    // Display.
+    let uri = Uri::parse_canonical("http://[v1.FE80::A]/p").unwrap();
+    assert_eq!(uri.to_string(), "http://[v1.fe80::a]/p");
+}
+
+#[test]
+fn canonicalize_normalizes_pct_in_uninterpreted_host() {
+    // `tag%21,more` — `%21` is sub-delim `!`, must stay encoded;
+    // mixed-case input → uppercase-hex output. Host bytes also case-fold.
+    let uri = Uri::parse_canonical("http://Tag%21,More/p").unwrap();
+    assert_eq!(uri.to_string(), "http://tag%21,more/p");
+}
+
+// ----------------------------------------------------------------------
+// Combined: every §6.2.2 rule firing on one input
+// ----------------------------------------------------------------------
+
+#[test]
+fn canonicalize_applies_all_rules_in_one_pass() {
+    // Exercises every rule the pipeline implements:
+    //   - scheme case (HTTPS → https)
+    //   - host promotion (Uninterpreted reg-name → Domain after pct-decode)
+    //   - host case (EXa%6Dple.COM → example.com)
+    //   - default-port drop (:443 with https)
+    //   - dot-segment removal (/a/./b/../c → /a/c)
+    //   - pct-decode unreserved on path  (p%61th → path)
+    //   - pct-encoded reserved kept uppercased on path (%2f → %2F);
+    //     it lives inside one segment, so dot-segment removal does NOT
+    //     treat it as a separator
+    //   - pct-decode unreserved on query (val%75e → value)
+    //   - pct-decode unreserved on fragment (fr%61g → frag)
+    let uri =
+        Uri::parse_canonical("HTTPS://EXa%6Dple.COM:443/a/./b/../c/p%61th%2fmore?k=val%75e#fr%61g")
+            .unwrap();
+    assert_eq!(
+        uri.to_string(),
+        "https://example.com/a/c/path%2Fmore?k=value#frag"
+    );
+}

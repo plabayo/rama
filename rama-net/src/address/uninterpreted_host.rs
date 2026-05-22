@@ -35,12 +35,29 @@ use super::domain::DomainParseError;
 /// [`Ipv4Addr`](std::net::Ipv4Addr), or [`Ipv6Addr`](std::net::Ipv6Addr)
 /// via the `TryFrom` impls — which apply pct-decoding and (for
 /// `Domain`) UTS #46 IDN normalization on the way.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// # Equality, hashing, ordering
+///
+/// All three apply **RFC 3986 §6.2.2 syntactic equivalence**:
+///
+/// - Bytes are ASCII-case-insensitive (§6.2.2.1), matching the rest of
+///   the host stack (`Domain`, the `Host` enum).
+/// - Pct-encoded triplets are decoded on the fly (§6.2.2.2), so
+///   `%44` ≡ `%64` ≡ `D` ≡ `d`. `exa%6Dple.com`, `EXA%6dple.COM`, and
+///   `example.com` all compare equal.
+/// - The bracketed flag is compared strictly: a bracketed
+///   `[v1.fe80::a]` is never equal to an unbracketed `v1.fe80::a`
+///   regardless of byte content — distinct host shapes.
+///
+/// Equality is semantic (per RFC); wire bytes are preserved separately
+/// and recoverable via [`as_bytes`](Self::as_bytes) /
+/// [`as_str`](Self::as_str).
+#[derive(Debug, Clone)]
 pub struct UninterpretedHost {
     /// `true` when the host came from a bracketed IP-literal (`[vN.X]`).
     /// The bytes below do **not** include the surrounding brackets —
     /// those belong to URI syntax, not host content. Ordered before
-    /// `bytes` so derived [`Ord`] compares bracketed forms separately.
+    /// `bytes` so [`Ord`] compares bracketed forms separately.
     bracketed: bool,
     bytes: Bytes,
 }
@@ -108,7 +125,10 @@ impl fmt::Display for UninterpretedHost {
 /// [`UninterpretedHost`] are also available here, so callers holding a
 /// `HostRef` don't need to round-trip back through an owned form just to
 /// pct-decode or attempt a typed conversion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Equality, hashing, and ordering follow the same ASCII-case-insensitive
+/// rules as [`UninterpretedHost`].
+#[derive(Debug, Clone, Copy)]
 pub struct UninterpretedHostRef<'a> {
     /// `true` when the host is a bracketed IP-literal. See
     /// [`UninterpretedHost::is_bracketed`].
@@ -192,6 +212,150 @@ impl<'a> From<&'a UninterpretedHost> for UninterpretedHostRef<'a> {
             bracketed: host.bracketed,
             bytes: &host.bytes,
         }
+    }
+}
+
+// ---- Equality / hashing / ordering ----------------------------------------
+//
+// RFC 3986 §6.2.2 syntactic equivalence: case-insensitive on host bytes
+// (§6.2.2.1), pct-encoded triplets decoded on the fly (§6.2.2.2). The
+// bracketed flag compares strictly — IP-literal and reg-name shapes are
+// distinct regardless of bytes.
+//
+// `UninterpretedHostRef` carries the canonical implementation;
+// `UninterpretedHost` delegates via `From<&_>`. Eq/Hash/Ord all walk the
+// same logical-byte stream so they remain consistent by construction.
+
+/// Iterator yielding one logical byte per advance, decoding pct-encoded
+/// triplets in place. `%XX` where `XX` is a valid hex pair becomes one
+/// emitted byte; a stray `%` or malformed `%X` is emitted as the literal
+/// byte (the parser already rejects truly malformed inputs, this is
+/// defensive).
+///
+/// Shared by `PartialEq`, `Hash`, and `Ord` on `UninterpretedHostRef`
+/// so the three traits agree by construction. Used only in slow paths —
+/// `%`-free inputs short-circuit to raw byte comparison.
+struct LogicalBytes<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> LogicalBytes<'a> {
+    #[inline]
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+}
+
+impl<'a> Iterator for LogicalBytes<'a> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        if self.pos >= self.buf.len() {
+            return None;
+        }
+        if self.buf[self.pos] == b'%'
+            && self.pos + 2 < self.buf.len()
+            && let Some(d) =
+                rama_utils::hex::decode_pair(self.buf[self.pos + 1], self.buf[self.pos + 2])
+        {
+            self.pos += 3;
+            return Some(d);
+        }
+        let b = self.buf[self.pos];
+        self.pos += 1;
+        Some(b)
+    }
+}
+
+impl PartialEq for UninterpretedHostRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        if self.bracketed != other.bracketed {
+            return false;
+        }
+        // Fast path: neither side carries pct-encoding → raw ASCII fold.
+        if !self.bytes.contains(&b'%') && !other.bytes.contains(&b'%') {
+            return rama_utils::macros::str::eq_ignore_ascii_case(self.bytes, other.bytes);
+        }
+        // Slow path: walk both as decoded logical bytes, ASCII-case-fold.
+        let a = LogicalBytes::new(self.bytes).map(|b| b.to_ascii_lowercase());
+        let b = LogicalBytes::new(other.bytes).map(|b| b.to_ascii_lowercase());
+        a.eq(b)
+    }
+}
+
+impl Eq for UninterpretedHostRef<'_> {}
+
+impl Ord for UninterpretedHostRef<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Bracketed shapes sort separately so equal-content-but-different-
+        // shape never compares Equal (which would violate `PartialEq`
+        // agreement).
+        self.bracketed.cmp(&other.bracketed).then_with(|| {
+            if !self.bytes.contains(&b'%') && !other.bytes.contains(&b'%') {
+                let a = self.bytes.iter().map(|b| b.to_ascii_lowercase());
+                let b = other.bytes.iter().map(|b| b.to_ascii_lowercase());
+                return a.cmp(b);
+            }
+            let a = LogicalBytes::new(self.bytes).map(|b| b.to_ascii_lowercase());
+            let b = LogicalBytes::new(other.bytes).map(|b| b.to_ascii_lowercase());
+            a.cmp(b)
+        })
+    }
+}
+
+impl PartialOrd for UninterpretedHostRef<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for UninterpretedHostRef<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bracketed.hash(state);
+        // Match Eq exactly: pct-free fast path emits raw lowered bytes;
+        // pct-bearing slow path emits decoded lowered bytes. Both feed
+        // a `usize` length sentinel keyed on the LOGICAL byte count, so
+        // `%44` and `D` hash identically (count 1 in both branches).
+        if !self.bytes.contains(&b'%') {
+            for &b in self.bytes {
+                state.write_u8(b.to_ascii_lowercase());
+            }
+            state.write_usize(self.bytes.len());
+            return;
+        }
+        let mut count = 0usize;
+        for b in LogicalBytes::new(self.bytes) {
+            state.write_u8(b.to_ascii_lowercase());
+            count += 1;
+        }
+        state.write_usize(count);
+    }
+}
+
+impl PartialEq for UninterpretedHost {
+    fn eq(&self, other: &Self) -> bool {
+        UninterpretedHostRef::from(self) == UninterpretedHostRef::from(other)
+    }
+}
+
+impl Eq for UninterpretedHost {}
+
+impl Ord for UninterpretedHost {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        UninterpretedHostRef::from(self).cmp(&UninterpretedHostRef::from(other))
+    }
+}
+
+impl PartialOrd for UninterpretedHost {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for UninterpretedHost {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        UninterpretedHostRef::from(self).hash(state);
     }
 }
 
@@ -487,7 +651,7 @@ mod tests {
 
     #[test]
     fn ord_sorts_bracketed_after_reg_name() {
-        // Derived Ord compares `bracketed` first, then `bytes`.
+        // Ord compares `bracketed` first, then case-folded bytes.
         // `false < true`, so reg-name comes before IP-literal.
         let mut v = [bracketed(b"v1"), reg(b"zzz"), reg(b"aaa")];
         v.sort();
@@ -497,6 +661,104 @@ mod tests {
         assert!(!v[1].is_bracketed());
         assert_eq!(v[2].as_str(), "v1");
         assert!(v[2].is_bracketed());
+    }
+
+    // -- Case-insensitive equality / hashing / ordering ---------------------
+
+    #[test]
+    fn eq_ignores_ascii_case_in_reg_name_bytes() {
+        // RFC 3986 §6.2.2.1 — reg-name is case-insensitive.
+        assert_eq!(reg(b"Example.COM"), reg(b"example.com"));
+        assert_eq!(reg(b"EXAMPLE.com"), reg(b"example.com"));
+    }
+
+    #[test]
+    fn eq_ignores_pct_hex_case() {
+        // `%6D` and `%6d` denote the same byte (m); pct-hex case is
+        // normalised away — RFC 3986 §6.2.2.2.
+        assert_eq!(reg(b"exa%6Dple.com"), reg(b"exa%6dple.com"));
+    }
+
+    #[test]
+    fn eq_treats_pct_encoded_as_decoded_form() {
+        // RFC 3986 §6.2.2.2: a pct-encoded octet whose decoded value is
+        // unreserved is syntactically equivalent to the literal byte.
+        // `exa%6Dple.com` ≡ `example.com`.
+        assert_eq!(reg(b"exa%6Dple.com"), reg(b"example.com"));
+    }
+
+    #[test]
+    fn eq_folds_pct_encoded_letter_case() {
+        // `%44` (D pct-encoded) and `%64` (d pct-encoded) are both `D`
+        // after pct-decode and `d` after the subsequent ASCII case-fold.
+        // Together with the previous test this means `%44`, `%64`, `D`,
+        // and `d` all compare equal.
+        assert_eq!(reg(b"%44host.com"), reg(b"%64host.com"));
+        assert_eq!(reg(b"%44host.com"), reg(b"Dhost.com"));
+        assert_eq!(reg(b"%44host.com"), reg(b"dhost.com"));
+    }
+
+    #[test]
+    fn eq_distinguishes_bracketed_regardless_of_case() {
+        // Even with identical case-folded bytes, bracketed vs reg-name
+        // are different host shapes.
+        assert_ne!(reg(b"V1"), bracketed(b"v1"));
+        assert_ne!(reg(b"v1"), bracketed(b"V1"));
+    }
+
+    #[test]
+    fn hash_matches_eq_for_case_variants() {
+        use ahash::{HashMap, HashMapExt as _};
+        let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
+        m.insert(reg(b"Example.com"), "value");
+        assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));
+        assert_eq!(m.get(&reg(b"EXAMPLE.COM")), Some(&"value"));
+        // Distinct shape (bracketed) must not collide on lookup.
+        assert!(!m.contains_key(&bracketed(b"Example.com")));
+    }
+
+    #[test]
+    fn hash_matches_eq_for_pct_hex_case_variants() {
+        use ahash::{HashMap, HashMapExt as _};
+        let mut m: HashMap<UninterpretedHost, ()> = HashMap::new();
+        m.insert(reg(b"exa%6Dple.com"), ());
+        assert!(m.contains_key(&reg(b"exa%6dple.com")));
+    }
+
+    #[test]
+    fn hash_matches_eq_across_encoding_forms() {
+        // Pct-decoded equivalence: `D` and `%44` must hash identically
+        // so the HashMap finds either when keyed by the other.
+        use ahash::{HashMap, HashMapExt as _};
+        let mut m: HashMap<UninterpretedHost, &'static str> = HashMap::new();
+        m.insert(reg(b"exa%6Dple.com"), "value");
+        assert_eq!(m.get(&reg(b"example.com")), Some(&"value"));
+        assert_eq!(m.get(&reg(b"EXAMPLE.com")), Some(&"value"));
+        assert_eq!(m.get(&reg(b"exa%6dple.com")), Some(&"value"));
+    }
+
+    #[test]
+    fn ord_uses_case_folded_compare_within_shape() {
+        // "B.com" sorts after "a.com" under raw bytes (uppercase B = 0x42
+        // < lowercase a = 0x61). Case-folded, B becomes b and the ordering
+        // is alphabetical.
+        let mut v = [reg(b"B.com"), reg(b"a.com")];
+        v.sort();
+        // Case-folded "a.com" < "b.com" → a-host comes first regardless
+        // of input case.
+        assert_eq!(v[0].as_str(), "a.com");
+        assert_eq!(v[1].as_str(), "B.com");
+    }
+
+    #[test]
+    fn eq_ref_and_owned_agree() {
+        let a = reg(b"Example.com");
+        let b = reg(b"example.com");
+        let ar: UninterpretedHostRef<'_> = (&a).into();
+        let br: UninterpretedHostRef<'_> = (&b).into();
+        assert_eq!(ar, br);
+        // Cross-shape between owned and ref also stays consistent.
+        assert_eq!(a, b);
     }
 
     // -- UninterpretedHostRef -------------------------------------------
