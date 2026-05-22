@@ -27,6 +27,15 @@ use rama_http_types::HeaderValue;
 /// Equality, hashing, and ordering bridge across variant boundaries per
 /// RFC 3986 §6.2.2.2: see [`HostRef`]'s type-level docs.
 ///
+/// # Empty Uninterpreted host
+///
+/// RFC 3986 §3.2.2 `reg-name = *(...)` permits empty bytes, so URIs like
+/// `file:///path` or `unix:///run/x` parse with `Host::Uninterpreted(b"")`.
+/// This is URI-valid but **not network-valid** — protocol writers that
+/// have no representation for "no host" (SOCKS5, TLS SNI, HTTP `Host:`)
+/// will refuse it. Code dispatching a `Host` onto a network call must
+/// either reject the empty case or substitute a sensible default.
+///
 /// # Alternate IPv4 forms (SSRF awareness)
 ///
 /// Inputs that look like IP addresses but aren't accepted by Rust's

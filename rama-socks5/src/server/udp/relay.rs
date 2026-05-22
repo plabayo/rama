@@ -298,7 +298,7 @@ impl UdpSocketRelay {
                 return Ok(());
             }
 
-            header.write_to_buf(&mut self.north_write_buf);
+            header.write_to_buf(&mut self.north_write_buf)?;
             self.north_write_buf.extend_from_slice(&data);
         } else {
             tracing::trace!(
@@ -309,7 +309,7 @@ impl UdpSocketRelay {
                 "send packet north: data from south socket (len = {})",
                 self.south_read_buf.len(),
             );
-            header.write_to_buf(&mut self.north_write_buf);
+            header.write_to_buf(&mut self.north_write_buf)?;
             self.north_write_buf.extend_from_slice(&self.south_read_buf);
         };
 
@@ -569,7 +569,7 @@ mod tests {
             destination: server_socket_addr.into(),
         };
         let mut expected = BytesMut::new();
-        expected_header.write_to_buf(&mut expected);
+        expected_header.write_to_buf(&mut expected).unwrap();
         expected.extend_from_slice(payload);
 
         assert_eq!(
@@ -604,7 +604,7 @@ mod tests {
             destination: target.into(),
         };
         let mut packet = BytesMut::new();
-        header.write_to_buf(&mut packet);
+        header.write_to_buf(&mut packet).unwrap();
         packet.extend_from_slice(b"data");
         sender.send_to(&packet, north_addr).await.unwrap();
 

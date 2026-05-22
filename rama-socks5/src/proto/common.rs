@@ -123,7 +123,17 @@ pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<HostWithPort, Re
 }
 
 /// Write the authority into the (usually pre-allocated) buffer.
-pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &mut B) {
+///
+/// Returns `Err(io::ErrorKind::InvalidInput)` for `Host::Uninterpreted`
+/// with empty bytes — SOCKS5 has no representation for an empty host
+/// (a zero-length `DomainName` is rejected by the reader), and the
+/// URI parser surfaces empty reg-names (`file:///path`) as
+/// `Host::Uninterpreted(b"")`. The encoder refuses rather than
+/// emitting invalid wire bytes the peer will reject anyway.
+pub(super) fn write_authority_to_buf<B: BufMut>(
+    authority: &HostWithPort,
+    buf: &mut B,
+) -> Result<(), std::io::Error> {
     match &authority.host {
         Host::Name(domain) => {
             buf.put_u8(AddressType::DomainName.into());
@@ -151,6 +161,12 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &
         // when recovery fails (sub-delim reg-name, IPvFuture, …) —
         // the upstream resolver can still try them.
         Host::Uninterpreted(host) => {
+            if host.as_bytes().is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "SOCKS5 has no representation for an empty host",
+                ));
+            }
             let bytes: Cow<'_, [u8]> = match Domain::try_from(host) {
                 Ok(domain) => Cow::Owned(domain.as_str().as_bytes().to_vec()),
                 Err(_) => Cow::Borrowed(host.as_bytes()),
@@ -162,6 +178,7 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &
         }
     }
     buf.put_u16(authority.port);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -205,7 +222,7 @@ mod tests {
                 W: AsyncWrite + Unpin,
             {
                 let mut v = Vec::new();
-                write_authority_to_buf(&self.0, &mut v);
+                write_authority_to_buf(&self.0, &mut v)?;
                 w.write_all(&v).await
             }
         }
@@ -237,7 +254,7 @@ mod tests {
                 W: Write,
             {
                 let mut v = Vec::new();
-                write_authority_to_buf(&self.0, &mut v);
+                write_authority_to_buf(&self.0, &mut v)?;
                 w.write_all(&v)
             }
         }
@@ -274,7 +291,7 @@ mod tests {
         assert!(matches!(host, Host::Uninterpreted(_)));
         let auth = HostWithPort::new(host, 443);
         let mut buf = Vec::new();
-        write_authority_to_buf(&auth, &mut buf);
+        write_authority_to_buf(&auth, &mut buf).unwrap();
         // First byte is the DomainName address-type tag, second is the
         // length-prefix, then the bytes. Recovered bytes must be the
         // canonical `example.com`, not the pct-encoded source.
@@ -292,9 +309,26 @@ mod tests {
         assert!(matches!(host, Host::Uninterpreted(_)));
         let auth = HostWithPort::new(host, 8080);
         let mut buf = Vec::new();
-        write_authority_to_buf(&auth, &mut buf);
+        write_authority_to_buf(&auth, &mut buf).unwrap();
         assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
         assert_eq!(buf[1] as usize, b"tag,with,commas".len());
         assert_eq!(&buf[2..2 + b"tag,with,commas".len()], b"tag,with,commas");
+    }
+
+    #[test]
+    fn socks5_write_authority_empty_uninterpreted_host_errors() {
+        // `file:///path` surfaces `Host::Uninterpreted(b"")` from the URI
+        // parser — SOCKS5 has no representation for an empty host, so
+        // the encoder must refuse rather than emit a zero-length
+        // DomainName (which the reader correctly rejects).
+        let host = rama_net::uri::Uri::parse("file:///tmp/socket")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let auth = HostWithPort::new(host, 80);
+        let mut buf = Vec::new();
+        let err = write_authority_to_buf(&auth, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

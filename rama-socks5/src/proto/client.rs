@@ -278,7 +278,7 @@ impl RequestRef<'_> {
                 tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
                 let mut buf = [0u8; 10];
-                self.write_to_buf(&mut buf.as_mut_slice());
+                self.write_to_buf(&mut buf.as_mut_slice())?;
                 w.write_all(&buf[..]).await
             }
             // Both `Name` (typed Domain) and `Uninterpreted` (preserved
@@ -293,21 +293,21 @@ impl RequestRef<'_> {
                         "write socks5 client request w/ (small) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; SMALL_LEN];
-                    self.write_to_buf(&mut buf.as_mut_slice());
+                    self.write_to_buf(&mut buf.as_mut_slice())?;
                     w.write_all(&buf[..n]).await
                 } else if n <= MED_LEN {
                     tracing::trace!(
                         "write socks5 client request w/ (medium) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; MED_LEN];
-                    self.write_to_buf(&mut buf.as_mut_slice());
+                    self.write_to_buf(&mut buf.as_mut_slice())?;
                     w.write_all(&buf[..n]).await
                 } else {
                     tracing::trace!(
                         "write socks5 client request w/ (large) domain name: on heap (w={n})"
                     );
                     let mut buf = BytesMut::with_capacity(n);
-                    self.write_to_buf(&mut buf);
+                    self.write_to_buf(&mut buf)?;
                     w.write_all(&buf).await
                 }
             }
@@ -315,7 +315,7 @@ impl RequestRef<'_> {
                 tracing::trace!("write socks5 client request w/ Ipv6 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 16 + 2, n);
                 let mut buf = [0u8; 22];
-                self.write_to_buf(&mut buf.as_mut_slice());
+                self.write_to_buf(&mut buf.as_mut_slice())?;
                 w.write_all(&buf[..]).await
             }
         }
@@ -324,11 +324,11 @@ impl RequestRef<'_> {
     /// Write the client [`Request`] in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), std::io::Error> {
         buf.put_u8(self.version.into());
         buf.put_u8(self.command.into());
         buf.put_u8(0 /* RSV */);
-        write_authority_to_buf(self.destination, buf);
+        write_authority_to_buf(self.destination, buf)
     }
 
     fn serialized_len(&self) -> usize {

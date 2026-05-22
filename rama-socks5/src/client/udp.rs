@@ -153,7 +153,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
 
         self.write_buffer.truncate(0);
 
-        header.write_to_buf(&mut self.write_buffer);
+        header.write_to_buf(&mut self.write_buffer)?;
         self.write_buffer.extend_from_slice(b);
 
         Ok(self.socket.send(&self.write_buffer[..]).await?)
@@ -174,7 +174,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
 
         self.write_buffer.truncate(0);
 
-        header.write_to_buf(&mut self.write_buffer);
+        header.write_to_buf(&mut self.write_buffer)?;
         self.write_buffer.extend_from_slice(b);
 
         self.socket
