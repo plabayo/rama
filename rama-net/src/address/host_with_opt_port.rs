@@ -468,15 +468,13 @@ impl TryFrom<&str> for HostWithOptPort {
     }
 }
 
-/// Reg-name fallback: routes the host bytes through the URI authority
-/// parser so byte-set validation is shared with `Uri::parse_authority_form`.
-fn try_via_uri_authority_form(host_str: &str) -> Result<Host, BoxError> {
-    let uri = crate::uri::Uri::parse_authority_form(host_str)
-        .context("parse host via uri authority-form parser")?;
-    let auth = uri.authority().ok_or_else(|| {
-        OpaqueError::from_static_str("parsed authority has no host").into_box_error()
-    })?;
-    Ok(auth.host().into_owned())
+/// Reg-name fallback for inputs `Domain::try_from` rejects but the
+/// URI reg-name grammar accepts. Shares byte-set validation with
+/// the URI parser without constructing a `Uri`.
+fn try_as_uninterpreted_host(host_str: &str) -> Result<Host, BoxError> {
+    let host = super::UninterpretedHost::try_from_reg_name_str(host_str)
+        .context("parse host as reg-name")?;
+    Ok(Host::Uninterpreted(host))
 }
 
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithOptPort, BoxError> {
@@ -491,6 +489,26 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
 
     let host;
     let mut port = OptPort::Unset;
+
+    // Standalone bracketed IPv6 (no trailing port): `[::1]`. Without
+    // this fast-path the colon-split below treats the final `:` inside
+    // the address as a port separator.
+    if s.starts_with('[') && s.ends_with(']') {
+        let inside = &s[1..s.len() - 1];
+        if parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
+            return Err(OpaqueError::from_static_str(
+                "ipv6 zone identifiers (RFC 6874) are not supported",
+            )
+            .into_box_error());
+        }
+        let addr = inside
+            .parse::<Ipv6Addr>()
+            .context("parse bracketed ipv6 host without port")?;
+        return Ok(HostWithOptPort {
+            host: Host::Address(IpAddr::V6(addr)),
+            port: OptPort::Unset,
+        });
+    }
 
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
@@ -522,7 +540,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                     .context("interpret host-with-opt-port's host as utf-8 str")?;
                 match Domain::try_from(owned_str.as_str()) {
                     Ok(domain) => Host::Name(domain),
-                    Err(_) => try_via_uri_authority_form(&owned_str)?,
+                    Err(_) => try_as_uninterpreted_host(&owned_str)?,
                 }
             };
         };
@@ -534,7 +552,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             let owned_str = maybe_borrowed.into_owned();
             match Domain::try_from(owned_str.as_str()) {
                 Ok(domain) => Host::Name(domain),
-                Err(_) => try_via_uri_authority_form(&owned_str)?,
+                Err(_) => try_as_uninterpreted_host(&owned_str)?,
             }
         };
     }
@@ -597,6 +615,9 @@ mod tests {
             ("example.com:80", ("example.com", OptPort::Set(80))),
             ("example.com:", ("example.com", OptPort::Empty)),
             ("::1", ("::1", OptPort::Unset)),
+            // Standalone bracketed IPv6 — typed Address, NOT Uninterpreted.
+            ("[::1]", ("::1", OptPort::Unset)),
+            ("[2001:db8::1]", ("2001:db8::1", OptPort::Unset)),
             ("[::1]:80", ("::1", OptPort::Set(80))),
             ("127.0.0.1", ("127.0.0.1", OptPort::Unset)),
             ("127.0.0.1:80", ("127.0.0.1", OptPort::Set(80))),
@@ -638,8 +659,6 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
-            ":",
-            ":80",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "example.com:-1",

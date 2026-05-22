@@ -54,7 +54,7 @@ use rama_core::bytes::Bytes;
 use super::lazy::{LazyAuthority, LazyUriRef};
 use super::{Component, ParseError, Uri};
 
-mod authority;
+pub(crate) mod authority;
 mod path;
 mod scheme;
 

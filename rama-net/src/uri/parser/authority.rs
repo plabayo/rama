@@ -277,6 +277,18 @@ fn parse_host_and_port(
 /// Pct-escapes must be well-formed, and the decoded byte must not be a
 /// control byte — pct-encoded smuggling vectors (`%00`, `%0D`, etc.)
 /// are rejected at parse time.
+/// Graceful-mode reg-name validation. Re-exported via [`crate::uri::parser`]
+/// so address types can validate without depending on the internal
+/// [`ParserMode`] enum.
+pub(crate) fn validate_reg_name_graceful(bytes: &[u8]) -> Result<(), ParseError> {
+    validate_reg_name(bytes, ParserMode::Graceful)
+}
+
+/// Strict-mode reg-name validation. See [`validate_reg_name_graceful`].
+pub(crate) fn validate_reg_name_strict(bytes: &[u8]) -> Result<(), ParseError> {
+    validate_reg_name(bytes, ParserMode::Strict)
+}
+
 fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
     let mut i = 0;
     while i < bytes.len() {

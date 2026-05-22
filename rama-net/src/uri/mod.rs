@@ -108,7 +108,7 @@ pub use fragment::{Fragment, FragmentRef};
 
 mod lazy;
 mod owned;
-mod parser;
+pub(crate) mod parser;
 
 use lazy::LazyUriRef;
 use owned::OwnedUriRef;

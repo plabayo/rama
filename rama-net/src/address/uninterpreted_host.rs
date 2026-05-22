@@ -11,6 +11,7 @@ use std::{
 };
 
 use rama_core::bytes::Bytes;
+use rama_core::error::{BoxError, ErrorContext};
 
 use super::Domain;
 use super::domain::DomainParseError;
@@ -69,6 +70,34 @@ impl UninterpretedHost {
     #[inline]
     pub(crate) fn from_validated_bytes(bytes: Bytes, bracketed: bool) -> Self {
         Self { bracketed, bytes }
+    }
+
+    /// Validate `s` against the **graceful** RFC 3986 reg-name byte set
+    /// (accepts raw UTF-8 as `ireg-name` per RFC 3987) and construct.
+    /// Internal — used by `Authority::try_from` / `HostWithOptPort::try_from`
+    /// to bridge inputs the URI parser would accept but typed
+    /// [`Domain`](super::Domain) / [`IpAddr`](std::net::IpAddr) reject.
+    pub(crate) fn try_from_reg_name_str(s: &str) -> Result<Self, BoxError> {
+        crate::uri::parser::authority::validate_reg_name_graceful(s.as_bytes())
+            .map_err(BoxError::from)
+            .context("validate reg-name bytes")?;
+        Ok(Self::from_validated_bytes(
+            Bytes::copy_from_slice(s.as_bytes()),
+            false,
+        ))
+    }
+
+    /// Validate `s` against the **strict** RFC 3986 reg-name byte set
+    /// (ASCII only) and construct. See [`try_from_reg_name_str`].
+    #[expect(dead_code, reason = "exposed for strict-mode address constructors")]
+    pub(crate) fn try_from_reg_name_str_strict(s: &str) -> Result<Self, BoxError> {
+        crate::uri::parser::authority::validate_reg_name_strict(s.as_bytes())
+            .map_err(BoxError::from)
+            .context("validate reg-name bytes")?;
+        Ok(Self::from_validated_bytes(
+            Bytes::copy_from_slice(s.as_bytes()),
+            false,
+        ))
     }
 
     /// Borrow this host as an [`UninterpretedHostRef`]. The

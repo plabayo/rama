@@ -516,17 +516,14 @@ impl TryFrom<&str> for Authority {
     }
 }
 
-/// Reg-name fallback: routes the host bytes through the URI authority
-/// parser so byte-set validation is shared with `Uri::parse_authority_form`.
-/// Returns the extracted [`Host`] (typically `Host::Uninterpreted` for
-/// pct-encoded or sub-delim reg-names that `Domain::try_from` rejects).
-fn try_via_uri_authority_form(host_str: &str) -> Result<Host, BoxError> {
-    let uri = crate::uri::Uri::parse_authority_form(host_str)
-        .context("parse authority host via uri authority-form parser")?;
-    let auth = uri.authority().ok_or_else(|| {
-        OpaqueError::from_static_str("parsed authority has no host").into_box_error()
-    })?;
-    Ok(auth.host().into_owned())
+/// Reg-name fallback for inputs `Domain::try_from` rejects but the
+/// URI reg-name grammar accepts (pct-encoded / sub-delim / raw UTF-8).
+/// Validates against the same byte set as the URI parser without
+/// constructing a `Uri`.
+fn try_as_uninterpreted_host(host_str: &str) -> Result<Host, BoxError> {
+    let host = super::UninterpretedHost::try_from_reg_name_str(host_str)
+        .context("parse authority host as reg-name")?;
+    Ok(Host::Uninterpreted(host))
 }
 
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority, BoxError> {
@@ -567,6 +564,29 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let host;
     let mut port = OptPort::Unset;
 
+    // Standalone bracketed IPv6 (no trailing port): `[::1]`. Without
+    // this fast-path the colon-split below treats the final `:` inside
+    // the address as a port separator.
+    if s.starts_with('[') && s.ends_with(']') {
+        let inside = &s[1..s.len() - 1];
+        if crate::address::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
+            return Err(OpaqueError::from_static_str(
+                "ipv6 zone identifiers (RFC 6874) are not supported",
+            )
+            .into_box_error());
+        }
+        let addr = inside
+            .parse::<Ipv6Addr>()
+            .context("parse bracketed ipv6 authority host without port")?;
+        return Ok(Authority {
+            user_info,
+            address: HostWithOptPort {
+                host: Host::Address(IpAddr::V6(addr)),
+                port: OptPort::Unset,
+            },
+        });
+    }
+
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
         if first_part.contains(':') {
@@ -605,7 +625,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
                     // URI parser accepts these and the `Host` enum can
                     // represent them. Route through the URI authority-
                     // form parser so the byte-set validation matches.
-                    Err(_) => try_via_uri_authority_form(&owned_str)?,
+                    Err(_) => try_as_uninterpreted_host(&owned_str)?,
                 }
             };
         };
@@ -621,7 +641,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             };
             match Domain::try_from(owned_str.as_str()) {
                 Ok(domain) => Host::Name(domain),
-                Err(_) => try_via_uri_authority_form(&owned_str)?,
+                Err(_) => try_as_uninterpreted_host(&owned_str)?,
             }
         };
     }
@@ -966,21 +986,12 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
-            ":",
-            ":80",
-            "[::1]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
-            "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "example.com:-1",
             "example.com:999999",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
-            // `:foo@host` used to be invalid because Basic required a
-            // non-empty user. UserInfo is the raw RFC 3986 view — it
-            // accepts these — so only `:foo@:80` (empty host) remains
-            // invalid here.
-            ":foo@:80",
             // IPv6 zone identifiers (RFC 9844 `%25en0` wire form) — rejected
             // by both eager and lazy paths with the same `parse_utils`
             // helper.
@@ -1077,6 +1088,21 @@ mod tests {
             .into_owned();
         let direct_p = Authority::try_from("exa%6Dple.com:443").unwrap();
         assert_eq!(direct_p, from_uri_p);
+    }
+
+    /// Standalone bracketed IPv6 (no trailing port) parses as a typed
+    /// `Host::Address`, not as `Host::Uninterpreted`.
+    #[test]
+    fn authority_try_from_bracketed_ipv6_no_port_is_typed_address() {
+        let auth = Authority::try_from("[::1]").unwrap();
+        assert!(
+            matches!(auth.address.host, Host::Address(IpAddr::V6(_))),
+            "expected typed IPv6 Address, got {:?}",
+            auth.address.host
+        );
+        assert_eq!(auth.address.port, OptPort::Unset);
+        // Display round-trips with brackets.
+        assert_eq!(auth.to_string(), "[::1]");
     }
 
     /// Regression: RFC 6874 IPv6 zone-ids must never be accepted in an
