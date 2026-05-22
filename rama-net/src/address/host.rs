@@ -292,16 +292,13 @@ impl PartialEq<str> for Host {
                 o.len() >= 2
                     && o[0] == b'['
                     && o[o.len() - 1] == b']'
-                    && rama_utils::macros::str::eq_ignore_ascii_case(
-                        &o[1..o.len() - 1],
-                        host.as_bytes(),
-                    )
+                    && rama_utils::str::eq_ignore_ascii_case(&o[1..o.len() - 1], host.as_bytes())
             }
             Self::Uninterpreted(host) => {
                 // Fast path — case-insensitive byte compare on the raw
                 // wire form.
                 let bytes = host.as_bytes();
-                if rama_utils::macros::str::eq_ignore_ascii_case(bytes, other.as_bytes()) {
+                if rama_utils::str::eq_ignore_ascii_case(bytes, other.as_bytes()) {
                     return true;
                 }
                 // Semantic path — when pct-encoding is present, the
@@ -309,7 +306,7 @@ impl PartialEq<str> for Host {
                 // allocate when there's actually `%` to decode.
                 if bytes.contains(&b'%')
                     && let s = host.as_unicode()
-                    && rama_utils::macros::str::eq_ignore_ascii_case(
+                    && rama_utils::str::eq_ignore_ascii_case(
                         s.as_ref().as_bytes(),
                         other.as_bytes(),
                     )

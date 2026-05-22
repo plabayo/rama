@@ -290,7 +290,7 @@ impl PartialEq for UninterpretedHostRef<'_> {
         }
         // Fast path: neither side carries pct-encoding → raw ASCII fold.
         if !self.bytes.contains(&b'%') && !other.bytes.contains(&b'%') {
-            return rama_utils::macros::str::eq_ignore_ascii_case(self.bytes, other.bytes);
+            return rama_utils::str::eq_ignore_ascii_case(self.bytes, other.bytes);
         }
         // Slow path: walk both as decoded logical bytes, ASCII-case-fold.
         let a = LogicalBytes::new(self.bytes).map(|b| b.to_ascii_lowercase());
