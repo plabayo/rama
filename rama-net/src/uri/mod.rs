@@ -199,6 +199,11 @@ pub(crate) enum UriInner {
 }
 
 impl Uri {
+    /// Maximum input length accepted by any of the `Uri::parse*` entry
+    /// points. Inputs longer than this fail with [`ParseError::TooLong`].
+    /// Capped at `u16::MAX - 1` (component offsets are `u16`).
+    pub const MAX_LEN: usize = parser::MAX_URI_LEN;
+
     /// Parse a URI. **Graceful**: accepts what browsers and curl accept
     /// (e.g. unreserved chars outside RFC 3986's `pchar`, raw UTF-8 in
     /// path/query/fragment). Rejects: ASCII control bytes anywhere,

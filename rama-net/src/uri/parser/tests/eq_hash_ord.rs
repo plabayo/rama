@@ -153,6 +153,45 @@ fn hashset_dedup() {
     assert_eq!(s.len(), 2);
 }
 
+#[test]
+fn hash_consistent_with_eq_for_pct_encoded_host() {
+    // §6.2.2.2-equivalent hosts must hash equal (std Hash/Eq contract).
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash as _, Hasher};
+
+    let a = Uri::parse("http://exa%2Cmple/p").unwrap();
+    let b = Uri::parse("http://exa,mple/p").unwrap();
+    assert_eq!(a, b);
+
+    let mut ha = DefaultHasher::new();
+    a.hash(&mut ha);
+    let mut hb = DefaultHasher::new();
+    b.hash(&mut hb);
+    assert_eq!(ha.finish(), hb.finish());
+
+    // Practical: HashMap lookup crosses the pct-encoding boundary.
+    let mut m: HashMap<Uri, &'static str> = HashMap::new();
+    m.insert(a, "value");
+    assert_eq!(m.get(&b), Some(&"value"));
+}
+
+#[test]
+fn hash_consistent_with_eq_for_host_case() {
+    // §6.2.2.1: host comparison is ASCII case-insensitive — hash follows.
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash as _, Hasher};
+
+    let a = Uri::parse("https://EXAMPLE.com/p").unwrap();
+    let b = Uri::parse("https://example.com/p").unwrap();
+    assert_eq!(a, b);
+
+    let mut ha = DefaultHasher::new();
+    a.hash(&mut ha);
+    let mut hb = DefaultHasher::new();
+    b.hash(&mut hb);
+    assert_eq!(ha.finish(), hb.finish());
+}
+
 // ---- Ord / PartialOrd -----------------------------------------------------
 
 #[test]
@@ -357,6 +396,17 @@ fn try_from_propagates_parse_error() {
     // Empty input → ParseError::Empty surfaces through TryFrom.
     let err = Uri::try_from("").unwrap_err();
     assert!(matches!(err, crate::uri::ParseError::Empty));
+}
+
+#[test]
+fn from_str_direct_via_parse_trait() {
+    // `str::parse::<Uri>()` routes through `FromStr` (graceful mode).
+    let u: Uri = "https://example.com/p".parse().unwrap();
+    assert_eq!(u.host().unwrap().to_str(), "example.com");
+    assert_eq!(u.path().unwrap().as_raw_str(), "/p");
+
+    let r: Result<Uri, _> = "".parse();
+    assert!(matches!(r, Err(crate::uri::ParseError::Empty)));
 }
 
 #[test]

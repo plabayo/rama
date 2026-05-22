@@ -26,6 +26,29 @@ use rama_http_types::HeaderValue;
 ///
 /// Equality, hashing, and ordering bridge across variant boundaries per
 /// RFC 3986 §6.2.2.2: see [`HostRef`]'s type-level docs.
+///
+/// # Alternate IPv4 forms (SSRF awareness)
+///
+/// Inputs that look like IP addresses but aren't accepted by Rust's
+/// `Ipv4Addr::from_str` — octal (`0177.0.0.1`), hex (`0x7f.0.0.1`),
+/// 3-part (`127.0.1`), and integer (`2130706433`) — parse as
+/// [`Host::Name(Domain)`](Self::Name) rather than
+/// [`Host::Address`](Self::Address), because each label is digit-only
+/// and passes the DNS-label byte set. This is RFC 3986 compliant (the
+/// strings *are* reg-names under §3.2.2) but **diverges from
+/// browsers**, which normalise all four to `127.0.0.1`.
+///
+/// **SSRF caveat**: code that filters destination addresses on
+/// `Host::Address` will see `0177.0.0.1` as a `Name` and bypass
+/// IP-based allowlists / blocklists. Either:
+///
+/// - resolve through DNS (loopback returns naturally) before applying
+///   the filter, OR
+/// - reject any `Name` whose labels look digit-only at the policy
+///   layer, OR
+/// - call [`crate::uri::Uri::canonicalize`] first — it doesn't promote
+///   these to `Address` (Rust's strict parser still rejects), so this
+///   is informational rather than a fix.
 #[derive(Debug, Clone)]
 pub enum Host {
     /// A DNS-label-shaped name (ASCII, IDN normalised to ACE on
@@ -119,41 +142,24 @@ impl Host {
         matches!(self, Self::Address(IpAddr::V6(_)))
     }
 
-    /// Returns [`Host`] as a string, only allocated if we need to render it.
+    /// Returns this host as a string. See [`HostRef::to_str`] for the
+    /// borrow / allocation behavior.
     #[must_use]
     pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
-        match self {
-            Self::Name(domain) => domain.as_str().into(),
-            Self::Address(ip_addr) => ip_addr.to_string().into(),
-            // Bracketed forms (IPvFuture) need brackets in the string
-            // form to match URI authority syntax — defer to Display.
-            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
-            // Non-bracketed reg-name bytes are valid UTF-8 — borrow directly.
-            Self::Uninterpreted(host) => host.as_str().into(),
-        }
+        HostRef::from(self).to_str()
     }
 
     /// Returns the Unicode (display) form of this host. For named hosts,
     /// any `xn--` A-labels are inverse-encoded via UTS #46. IP addresses
     /// are rendered to their standard textual form.
     ///
-    /// Cheap when no conversion is needed — returns `Cow::Borrowed`
-    /// pointing at the domain bytes; allocates only for IP addresses or
-    /// IDN A-labels that actually require decoding.
+    /// `Cow::Borrowed` when no conversion is needed; `Cow::Owned` for
+    /// IP addresses and IDN A-labels that actually require decoding.
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
     pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
-        match self {
-            Self::Name(d) => d.as_unicode(),
-            Self::Address(ip) => ip.to_string().into(),
-            // Bracketed forms need wrapping brackets to match URI syntax.
-            Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
-            // Non-bracketed: pct-decode on demand. Returns the decoded
-            // form when `%XX` is present, otherwise borrows the raw
-            // bytes (already valid UTF-8 per the parser invariant).
-            Self::Uninterpreted(host) => host.as_unicode(),
-        }
+        HostRef::from(self).as_unicode()
     }
 }
 
@@ -190,18 +196,13 @@ impl Host {
 ///
 /// # Equality, hashing, ordering
 ///
-/// Apply RFC 3986 §6.2.2 syntactic equivalence **across variant
-/// boundaries**. A non-bracketed [`HostRef::Uninterpreted`] whose bytes
-/// pct-decode + IDN-normalize to a typed [`Domain`] compares (and
-/// hashes, and orders) equal to the corresponding
-/// [`HostRef::Name`]; same for a pct-encoded reg-name that decodes to
-/// an [`IpAddr`] vs the typed [`HostRef::Address`]. So
-/// `Name(Domain("example.com"))` ≡ `Uninterpreted("exa%6Dple.com")`
-/// per §6.2.2.2 — both are syntactically equivalent hosts.
-///
-/// Variant boundary is preserved for the *bracketed* sub-shape of
-/// [`UninterpretedHost`] (IPvFuture); those never bridge to typed
-/// `Name`/`Address` because there's no typed counterpart.
+/// RFC 3986 §6.2.2 syntactic equivalence applies across variants. A
+/// non-bracketed [`HostRef::Uninterpreted`] whose bytes pct-decode
+/// (and IDN-normalize) to a typed [`Domain`] compares, hashes, and
+/// orders equal to the corresponding [`HostRef::Name`]; same for a
+/// pct-encoded reg-name that decodes to an [`IpAddr`] vs
+/// [`HostRef::Address`]. Bracketed `Uninterpreted` (IPvFuture) keeps
+/// its own equality class — there's no typed counterpart to bridge to.
 #[derive(Debug, Clone, Copy)]
 pub enum HostRef<'a> {
     /// A DNS-style name.
@@ -213,12 +214,12 @@ pub enum HostRef<'a> {
     Uninterpreted(UninterpretedHostRef<'a>),
 }
 
-impl HostRef<'_> {
-    /// Returns this host as a string. Domain names are returned as
-    /// `Cow::Borrowed` (no allocation); IP addresses are formatted into
-    /// a fresh `String`.
+impl<'a> HostRef<'a> {
+    /// Returns this host as a string. Domain names and non-bracketed
+    /// reg-names return `Cow::Borrowed` (no allocation); IP addresses
+    /// and bracketed IP-literals are formatted into a fresh `String`.
     #[must_use]
-    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+    pub fn to_str(self) -> std::borrow::Cow<'a, str> {
         match self {
             Self::Name(d) => d.as_str().into(),
             Self::Address(ip) => ip.to_string().into(),
@@ -232,7 +233,7 @@ impl HostRef<'_> {
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
-    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+    pub fn as_unicode(self) -> std::borrow::Cow<'a, str> {
         match self {
             Self::Name(d) => d.as_unicode(),
             Self::Address(ip) => ip.to_string().into(),
@@ -266,38 +267,52 @@ impl<'a> From<&'a Host> for HostRef<'a> {
 }
 
 impl PartialEq<str> for Host {
+    /// ASCII-case-insensitive compare against a string, matching
+    /// [`Domain`] / `Uri` / `Eq for Host` (RFC 3986 §6.2.2.1).
     fn eq(&self, other: &str) -> bool {
         match self {
-            Self::Name(domain) => domain.as_str() == other,
+            // `Domain == &str` is already case-insensitive (matches
+            // `Domain::Eq` itself); delegate.
+            Self::Name(domain) => domain == other,
             // Compare via address parsing rather than `ip.to_string()`, so
             // we avoid allocating a `String` on every comparison *and*
             // canonicalize the right-hand side (e.g. `"::1"` and
             // `"0:0:0:0:0:0:0:1"` are equal, `"127.0.0.001"` is not equal
             // to `127.0.0.1` because std rejects leading-zero octets).
+            // `IpAddr::parse` accepts mixed case for IPv6 (`FE80::1` ==
+            // `fe80::1`) and IPv4 is digits-only, so case-insensitivity
+            // is satisfied for free.
             Self::Address(ip) => other.parse::<IpAddr>().is_ok_and(|parsed| parsed == *ip),
             Self::Uninterpreted(host) if host.is_bracketed() => {
                 // Bracketed forms (e.g. `[v1.fe80::a]`) store bytes
                 // without the surrounding brackets. Strip the brackets
-                // from `other` and byte-compare the inside — no
+                // from `other` and ASCII-case-fold the inside — no
                 // allocation, no `to_string()`.
                 let o = other.as_bytes();
                 o.len() >= 2
                     && o[0] == b'['
                     && o[o.len() - 1] == b']'
-                    && &o[1..o.len() - 1] == host.as_bytes()
+                    && rama_utils::macros::str::eq_ignore_ascii_case(
+                        &o[1..o.len() - 1],
+                        host.as_bytes(),
+                    )
             }
             Self::Uninterpreted(host) => {
-                // Fast path — byte-compare on the raw wire form.
+                // Fast path — case-insensitive byte compare on the raw
+                // wire form.
                 let bytes = host.as_bytes();
-                if bytes == other.as_bytes() {
+                if rama_utils::macros::str::eq_ignore_ascii_case(bytes, other.as_bytes()) {
                     return true;
                 }
                 // Semantic path — when pct-encoding is present, the
-                // decoded form might match. Only allocate when there's
-                // actually `%` to decode.
+                // decoded form might match (case-insensitively). Only
+                // allocate when there's actually `%` to decode.
                 if bytes.contains(&b'%')
                     && let s = host.as_unicode()
-                    && s.as_ref() == other
+                    && rama_utils::macros::str::eq_ignore_ascii_case(
+                        s.as_ref().as_bytes(),
+                        other.as_bytes(),
+                    )
                 {
                     return true;
                 }
@@ -1083,6 +1098,39 @@ mod tests {
         let h = reg_host(b"example.com");
         assert!(h == "example.com");
         assert!(h != "other.com");
+    }
+
+    // ---- PartialEq<str> case-insensitive (§6.2.2.1) -------------------
+
+    #[test]
+    fn eq_str_is_case_insensitive_for_named_host() {
+        // `Domain::Eq` is case-insensitive; `Host == str` follows.
+        let h = Host::Name(Domain::from_static("example.com"));
+        assert!(h == "EXAMPLE.com");
+        assert!(h == "Example.Com");
+        assert!(h == "example.com");
+    }
+
+    #[test]
+    fn eq_str_is_case_insensitive_for_uninterpreted_reg_name() {
+        let h = reg_host(b"tag,WITH,commas");
+        assert!(h == "tag,with,commas");
+        assert!(h == "TAG,WITH,COMMAS");
+    }
+
+    #[test]
+    fn eq_str_is_case_insensitive_through_pct_decode() {
+        // `exa%6Dple.com` pct-decodes to `example.com`; the decoded
+        // path also case-folds.
+        let h = reg_host(b"exa%6Dple.com");
+        assert!(h == "EXAMPLE.com");
+    }
+
+    #[test]
+    fn eq_str_is_case_insensitive_for_bracketed_ipvfuture() {
+        let h = bracketed_host(b"v1.FE80::A");
+        assert!(h == "[v1.fe80::a]");
+        assert!(h == "[V1.fe80::a]");
     }
 
     #[test]

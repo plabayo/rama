@@ -36,12 +36,26 @@ impl UserInfo {
     /// sub-delims / ":"`). This matches the URI parser's strict-mode
     /// validation: byte sets stay single-sourced, and typed construction
     /// can never produce a `UserInfo` that the parser would reject.
+    ///
+    /// Naming: `from_static` matches the `Uri::from_static` /
+    /// `Domain::from_static` precedent across the rest of the crate.
+    /// The legacy [`Self::from_static_str`] alias is deprecated.
     #[must_use]
-    pub const fn from_static_str(s: &'static str) -> Self {
+    pub const fn from_static(s: &'static str) -> Self {
         validate_userinfo_static(s.as_bytes());
         Self {
             bytes: Bytes::from_static(s.as_bytes()),
         }
+    }
+
+    /// Deprecated alias for [`Self::from_static`].
+    #[must_use]
+    #[deprecated(
+        since = "0.3.0-rc1",
+        note = "renamed to `UserInfo::from_static` for parity with `Uri::from_static` / `Domain::from_static`"
+    )]
+    pub const fn from_static_str(s: &'static str) -> Self {
+        Self::from_static(s)
     }
 
     /// Construct from already-validated bytes (parser invariant: UTF-8,
@@ -81,10 +95,7 @@ impl UserInfo {
     /// [`crate::uri::util::percent_encoding`] to decode if needed.
     #[must_use]
     pub fn split_user_password(&self) -> (&[u8], Option<&[u8]>) {
-        match self.bytes.iter().position(|&b| b == b':') {
-            Some(i) => (&self.bytes[..i], Some(&self.bytes[i + 1..])),
-            None => (&self.bytes, None),
-        }
+        self.view().split_user_password()
     }
 
     /// Convenience: convert this userinfo into a [`Basic`] HTTP
@@ -228,7 +239,7 @@ fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
     }
 }
 
-/// `const` validator for [`UserInfo::from_static_str`]. Maps the
+/// `const` validator for [`UserInfo::from_static`]. Maps the
 /// const walker's fault tag into a `panic!` at compile time so static
 /// inputs that violate the grammar fail the build.
 #[expect(
@@ -239,19 +250,19 @@ const fn validate_userinfo_static(bytes: &[u8]) {
     match validate_userinfo_bytes(bytes) {
         Ok(()) => {}
         Err(UserInfoFault::ControlByte) => {
-            panic!("UserInfo::from_static_str: control character in input")
+            panic!("UserInfo::from_static: control character in input")
         }
         Err(UserInfoFault::PctTruncated) => {
-            panic!("UserInfo::from_static_str: truncated percent-escape")
+            panic!("UserInfo::from_static: truncated percent-escape")
         }
         Err(UserInfoFault::PctMalformed) => {
-            panic!("UserInfo::from_static_str: malformed percent-escape")
+            panic!("UserInfo::from_static: malformed percent-escape")
         }
         Err(UserInfoFault::PctDecodesToControl) => {
-            panic!("UserInfo::from_static_str: pct-escape decodes to a control character")
+            panic!("UserInfo::from_static: pct-escape decodes to a control character")
         }
         Err(UserInfoFault::DisallowedByte) => {
-            panic!("UserInfo::from_static_str: disallowed character")
+            panic!("UserInfo::from_static: disallowed character")
         }
     }
 }
@@ -429,20 +440,20 @@ mod tests {
 
     #[test]
     fn from_static_str() {
-        let u = UserInfo::from_static_str("alice");
+        let u = UserInfo::from_static("alice");
         assert_eq!(u.as_bytes(), b"alice");
         assert_eq!(u.as_str(), "alice");
     }
 
     #[test]
     fn split_user_password_user_only() {
-        let u = UserInfo::from_static_str("alice");
+        let u = UserInfo::from_static("alice");
         assert_eq!(u.split_user_password(), (&b"alice"[..], None));
     }
 
     #[test]
     fn split_user_password_both() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let (user, pass) = u.split_user_password();
         assert_eq!(user, b"alice");
         assert_eq!(pass, Some(&b"secret"[..]));
@@ -450,7 +461,7 @@ mod tests {
 
     #[test]
     fn split_user_password_empty_user() {
-        let u = UserInfo::from_static_str(":secret");
+        let u = UserInfo::from_static(":secret");
         let (user, pass) = u.split_user_password();
         assert_eq!(user, b"");
         assert_eq!(pass, Some(&b"secret"[..]));
@@ -458,7 +469,7 @@ mod tests {
 
     #[test]
     fn split_user_password_empty_password() {
-        let u = UserInfo::from_static_str("alice:");
+        let u = UserInfo::from_static("alice:");
         let (user, pass) = u.split_user_password();
         assert_eq!(user, b"alice");
         assert_eq!(pass, Some(&b""[..]));
@@ -467,7 +478,7 @@ mod tests {
     #[test]
     fn split_user_password_multiple_colons() {
         // RFC 3986 userinfo allows multiple `:`. First `:` is the split.
-        let u = UserInfo::from_static_str("alice:p:w");
+        let u = UserInfo::from_static("alice:p:w");
         let (user, pass) = u.split_user_password();
         assert_eq!(user, b"alice");
         assert_eq!(pass, Some(&b"p:w"[..]));
@@ -475,7 +486,7 @@ mod tests {
 
     #[test]
     fn to_basic_user_only() {
-        let u = UserInfo::from_static_str("alice");
+        let u = UserInfo::from_static("alice");
         let b = u.to_basic().unwrap();
         assert_eq!(b.username(), "alice");
         assert!(b.password().is_none());
@@ -483,7 +494,7 @@ mod tests {
 
     #[test]
     fn to_basic_user_password() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let b = u.to_basic().unwrap();
         assert_eq!(b.username(), "alice");
         assert_eq!(b.password(), Some("secret"));
@@ -493,7 +504,7 @@ mod tests {
 
     #[test]
     fn debug_redacts_password() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let s = format!("{u:?}");
         assert!(!s.contains("secret"), "debug leaked password: {s}");
         assert!(s.contains("alice"), "debug missing user: {s}");
@@ -503,7 +514,7 @@ mod tests {
     #[test]
     fn debug_omits_password_field_when_absent() {
         // No `:` → no credential → no `password` field at all.
-        let u = UserInfo::from_static_str("alice");
+        let u = UserInfo::from_static("alice");
         let s = format!("{u:?}");
         assert!(s.contains("alice"));
         assert!(
@@ -516,7 +527,7 @@ mod tests {
     #[test]
     fn debug_redacts_empty_password() {
         // Empty password is still a credential signal.
-        let u = UserInfo::from_static_str("alice:");
+        let u = UserInfo::from_static("alice:");
         let s = format!("{u:?}");
         assert!(s.contains("alice"));
         assert!(s.contains("***"), "debug must redact even empty password");
@@ -526,7 +537,7 @@ mod tests {
     fn debug_redacts_multiple_colon_password() {
         // RFC 3986 allows extra `:` in the password portion. Redaction
         // covers everything after the first `:`.
-        let u = UserInfo::from_static_str("alice:secret:more");
+        let u = UserInfo::from_static("alice:secret:more");
         let s = format!("{u:?}");
         assert!(!s.contains("secret"), "debug leaked password: {s}");
         assert!(!s.contains("more"), "debug leaked password tail: {s}");
@@ -536,7 +547,7 @@ mod tests {
     fn ref_debug_matches_owned_redaction() {
         // The borrowed view uses the same redacting helper as the owned
         // type so logging through either path is safe.
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let r: UserInfoRef<'_> = (&u).into();
         let owned_dbg = format!("{u:?}");
         let ref_dbg = format!("{r:?}");
@@ -546,7 +557,7 @@ mod tests {
     #[test]
     fn to_basic_rejects_empty_user() {
         // `Basic` requires non-empty username.
-        let u = UserInfo::from_static_str(":secret");
+        let u = UserInfo::from_static(":secret");
         u.to_basic().unwrap_err();
     }
 
@@ -629,7 +640,7 @@ mod tests {
         ];
         for input in bad_inputs {
             let result = std::panic::catch_unwind(|| {
-                UserInfo::from_static_str(unsafe {
+                UserInfo::from_static(unsafe {
                     // Safety: the leaked `&'static str` is only used
                     // inside `catch_unwind`; we never escape it.
                     std::mem::transmute::<&str, &'static str>(input)
@@ -641,9 +652,9 @@ mod tests {
 
     #[test]
     fn from_static_str_accepts_valid_inputs() {
-        let _u = UserInfo::from_static_str("alice");
-        let _u = UserInfo::from_static_str("alice:secret");
-        let _u = UserInfo::from_static_str("user%40info"); // pct-encoded @
+        let _u = UserInfo::from_static("alice");
+        let _u = UserInfo::from_static("alice:secret");
+        let _u = UserInfo::from_static("user%40info"); // pct-encoded @
     }
 
     #[test]
@@ -664,7 +675,7 @@ mod tests {
 
     #[test]
     fn ref_split_user_password() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let r = u.view();
         assert_eq!(
             r.split_user_password(),
@@ -674,7 +685,7 @@ mod tests {
 
     #[test]
     fn ref_into_owned_roundtrip() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let r = u.view();
         let owned = r.into_owned();
         assert_eq!(owned, u);
@@ -684,7 +695,7 @@ mod tests {
 
     #[test]
     fn try_from_userinfo_for_basic_user_password() {
-        let u = UserInfo::from_static_str("alice:secret");
+        let u = UserInfo::from_static("alice:secret");
         let b = Basic::try_from(&u).unwrap();
         assert_eq!(b.username(), "alice");
         assert_eq!(b.password(), Some("secret"));
@@ -697,7 +708,7 @@ mod tests {
     #[test]
     fn try_from_userinfo_for_basic_propagates_error() {
         // Empty username — `Basic::try_from(&str)` rejects.
-        let u = UserInfo::from_static_str(":secret");
+        let u = UserInfo::from_static(":secret");
         Basic::try_from(&u).unwrap_err();
     }
 

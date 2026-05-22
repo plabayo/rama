@@ -342,7 +342,7 @@ fn with_port_consuming_form() {
 #[test]
 fn set_userinfo_replaces_userinfo() {
     let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
-    let ui = UserInfo::from_static_str("alice:secret");
+    let ui = UserInfo::from_static("alice:secret");
     uri.set_userinfo(ui);
     assert!(uri.userinfo().is_some());
     assert_eq!(uri.to_string(), "https://alice:secret@example.com/p");

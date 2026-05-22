@@ -246,6 +246,15 @@ fn parse_canonical_propagates_parse_error() {
     Uri::parse_canonical("http://exa%0Dmple.com/").unwrap_err();
 }
 
+#[test]
+fn parse_canonical_strict_rejects_strict_violations() {
+    // Strict-mode gating runs before canonicalization. Backslash in path
+    // is graceful-only.
+    let r = Uri::parse_canonical_strict("/path\\foo");
+    assert!(matches!(r, Err(crate::uri::ParseError::StrictViolation)));
+    Uri::parse_canonical("/path\\foo").unwrap();
+}
+
 // ----------------------------------------------------------------------
 // Asterisk-form passes through unchanged
 // ----------------------------------------------------------------------

@@ -323,24 +323,13 @@ impl Domain {
         unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
 
-    /// Returns the Unicode (display) form of the domain.
-    ///
-    /// Domains with no `xn--` labels round-trip as `Cow::Borrowed` —
-    /// no allocation, no UTS #46 work. Domains containing IDN A-labels
-    /// are inverse-encoded via UTS #46 and returned as `Cow::Owned`.
+    /// Returns the Unicode (display) form of the domain. See
+    /// [`DomainRef::as_unicode`] for borrow / allocation behavior.
     #[cfg(feature = "idna")]
     #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
     #[must_use]
     pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
-        let s = self.as_str();
-        // Fast-path: domains without an `xn--` A-label have no ACE
-        // labels to decode. `idna::domain_to_unicode` would still
-        // succeed, but it'd run UTS #46 over every label.
-        if memchr::memmem::find(s.as_bytes(), b"xn--").is_none() {
-            return std::borrow::Cow::Borrowed(s);
-        }
-        let (unicode, _result) = idna::domain_to_unicode(s);
-        std::borrow::Cow::Owned(unicode)
+        DomainRef::from(self).as_unicode()
     }
 }
 
@@ -459,6 +448,13 @@ impl std::hash::Hash for DomainRef<'_> {
                 state.write_u8(b.to_ascii_lowercase());
             }
         }
+    }
+}
+
+impl fmt::Display for DomainRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // ASCII presentation form — `as_unicode` handles IDN decoding.
+        f.write_str(self.as_str())
     }
 }
 
@@ -1528,6 +1524,25 @@ mod tests {
         assert!(!m.contains_key(&Domain::from_static("examine.com")));
         assert!(!m.contains_key(&Domain::from_static("example.co")));
         assert!(!m.contains_key(&Domain::from_static("example.commerce")));
+    }
+
+    #[test]
+    fn domain_and_domainref_hash_identically() {
+        // Owned and borrowed must hash equal so they're interchangeable
+        // as collection keys.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash as _, Hasher};
+
+        for name in ["example.com", "EXAMPLE.com", "sub.example.com", "x.y"] {
+            let owned = Domain::from_static(name);
+            let borrowed = DomainRef::from(&owned);
+
+            let mut ho = DefaultHasher::new();
+            owned.hash(&mut ho);
+            let mut hb = DefaultHasher::new();
+            borrowed.hash(&mut hb);
+            assert_eq!(ho.finish(), hb.finish(), "hash mismatch for {name:?}");
+        }
     }
 
     #[test]

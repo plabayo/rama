@@ -92,6 +92,18 @@ fn backslash_not_folded_to_slash() {
     ));
 }
 
+#[test]
+fn backslash_authority_spoof_rejected_in_both_modes() {
+    // Classic browser-spoof input: `https://example.com\evil.com/`.
+    // WHATWG-URL rewrites `\` → `/` and parses host as `evil.com`;
+    // rama rejects — `\` isn't in the host byte set.
+    assert!(matches!(
+        parse_graceful("https://example.com\\evil.com/"),
+        Err(ParseError::InvalidComponent(Component::Host))
+    ));
+    parse_strict("https://example.com\\evil.com/").unwrap_err();
+}
+
 // ----------------------------------------------------------------------
 // Alternate IPv4 forms — must not silently decode to 127.0.0.1
 // (SSRF amplifier)
@@ -161,6 +173,12 @@ fn exactly_max_uri_len_accepted() {
     let exactly = "/".to_owned() + &"a".repeat(MAX_URI_LEN - 1);
     assert_eq!(exactly.len(), MAX_URI_LEN);
     parse_graceful(&exactly).unwrap();
+}
+
+#[test]
+fn public_uri_max_len_matches_internal_cap() {
+    use crate::uri::Uri;
+    assert_eq!(Uri::MAX_LEN, MAX_URI_LEN);
 }
 
 // ----------------------------------------------------------------------

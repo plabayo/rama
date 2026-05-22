@@ -52,7 +52,7 @@ impl Authority {
     ///
     /// Not `const fn` — `UserInfo` wraps `Bytes` which has no const
     /// constructor; use the builder ([`Self::with_user_info`]) plus
-    /// [`UserInfo::from_static_str`] for the const-friendly path.
+    /// [`UserInfo::from_static`] for the const-friendly path.
     #[must_use]
     #[inline(always)]
     pub fn new_with_user_info(addr: HostWithOptPort, user_info: UserInfo) -> Self {
@@ -730,12 +730,12 @@ mod tests {
             ("example.com", (None, "example.com", None)),
             (
                 "user@example.com",
-                (Some(UserInfo::from_static_str("user")), "example.com", None),
+                (Some(UserInfo::from_static("user")), "example.com", None),
             ),
             (
                 "user:password@example.com",
                 (
-                    Some(UserInfo::from_static_str("user:password")),
+                    Some(UserInfo::from_static("user:password")),
                     "example.com",
                     None,
                 ),
@@ -743,42 +743,34 @@ mod tests {
             ("example.com:80", (None, "example.com", Some(80))),
             (
                 "user@example.com:80",
-                (
-                    Some(UserInfo::from_static_str("user")),
-                    "example.com",
-                    Some(80),
-                ),
+                (Some(UserInfo::from_static("user")), "example.com", Some(80)),
             ),
             (
                 "user:secret@example.com:80",
                 (
-                    Some(UserInfo::from_static_str("user:secret")),
+                    Some(UserInfo::from_static("user:secret")),
                     "example.com",
                     Some(80),
                 ),
             ),
             (
                 "user@::1",
-                (Some(UserInfo::from_static_str("user")), "::1", None),
+                (Some(UserInfo::from_static("user")), "::1", None),
             ),
             (
                 "user:password@::1",
-                (
-                    Some(UserInfo::from_static_str("user:password")),
-                    "::1",
-                    None,
-                ),
+                (Some(UserInfo::from_static("user:password")), "::1", None),
             ),
             ("::1", (None, "::1", None)),
             ("[::1]:80", (None, "::1", Some(80))),
             (
                 "user@[::1]:80",
-                (Some(UserInfo::from_static_str("user")), "::1", Some(80)),
+                (Some(UserInfo::from_static("user")), "::1", Some(80)),
             ),
             (
                 "user:password@[::1]:80",
                 (
-                    Some(UserInfo::from_static_str("user:password")),
+                    Some(UserInfo::from_static("user:password")),
                     "::1",
                     Some(80),
                 ),
@@ -786,12 +778,12 @@ mod tests {
             ("127.0.0.1", (None, "127.0.0.1", None)),
             (
                 "user@127.0.0.1",
-                (Some(UserInfo::from_static_str("user")), "127.0.0.1", None),
+                (Some(UserInfo::from_static("user")), "127.0.0.1", None),
             ),
             (
                 "user:password@127.0.0.1",
                 (
-                    Some(UserInfo::from_static_str("user:password")),
+                    Some(UserInfo::from_static("user:password")),
                     "127.0.0.1",
                     None,
                 ),
@@ -799,16 +791,12 @@ mod tests {
             ("127.0.0.1:80", (None, "127.0.0.1", Some(80))),
             (
                 "user@127.0.0.1:80",
-                (
-                    Some(UserInfo::from_static_str("user")),
-                    "127.0.0.1",
-                    Some(80),
-                ),
+                (Some(UserInfo::from_static("user")), "127.0.0.1", Some(80)),
             ),
             (
                 "user:secret@127.0.0.1:80",
                 (
-                    Some(UserInfo::from_static_str("user:secret")),
+                    Some(UserInfo::from_static("user:secret")),
                     "127.0.0.1",
                     Some(80),
                 ),
@@ -820,7 +808,7 @@ mod tests {
             (
                 "user@2001:db8:3333:4444:5555:6666:7777:8888",
                 (
-                    Some(UserInfo::from_static_str("user")),
+                    Some(UserInfo::from_static("user")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     None,
                 ),
@@ -828,7 +816,7 @@ mod tests {
             (
                 "user:secret@2001:db8:3333:4444:5555:6666:7777:8888",
                 (
-                    Some(UserInfo::from_static_str("user:secret")),
+                    Some(UserInfo::from_static("user:secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     None,
                 ),
@@ -840,7 +828,7 @@ mod tests {
             (
                 "user@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
                 (
-                    Some(UserInfo::from_static_str("user")),
+                    Some(UserInfo::from_static("user")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     Some(80),
                 ),
@@ -848,7 +836,7 @@ mod tests {
             (
                 "user:secret@[2001:db8:3333:4444:5555:6666:7777:8888]:80",
                 (
-                    Some(UserInfo::from_static_str("user:secret")),
+                    Some(UserInfo::from_static("user:secret")),
                     "2001:db8:3333:4444:5555:6666:7777:8888",
                     Some(80),
                 ),

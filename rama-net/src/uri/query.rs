@@ -83,6 +83,23 @@ impl Query {
 /// produce longer content.
 const COLLECT_BYTES_PER_PAIR: usize = 32;
 
+/// Build a [`Query`] from an iterator of pair-byte slices, joining with `&`.
+fn collect_pairs<'a, I>(iter: I) -> Query
+where
+    I: IntoIterator,
+    I::Item: AsRef<[u8]> + 'a,
+{
+    let iter = iter.into_iter();
+    let mut bytes = BytesMut::with_capacity(iter.size_hint().0 * COLLECT_BYTES_PER_PAIR);
+    for pair in iter {
+        if !bytes.is_empty() {
+            bytes.extend_from_slice(b"&");
+        }
+        bytes.extend_from_slice(pair.as_ref());
+    }
+    Query { bytes }
+}
+
 impl FromIterator<QueryPair> for Query {
     /// Build a [`Query`] by concatenating pre-encoded pair bytes with
     /// `&` separators. No re-encoding — the pairs' bytes are assumed to
@@ -90,15 +107,7 @@ impl FromIterator<QueryPair> for Query {
     /// come from [`QueryRef::pairs`], [`QueryMut::pop`](super::QueryMut::pop)
     /// or [`QueryMut::drain`](super::QueryMut::drain)).
     fn from_iter<I: IntoIterator<Item = QueryPair>>(iter: I) -> Self {
-        let iter = iter.into_iter();
-        let mut bytes = BytesMut::with_capacity(iter.size_hint().0 * COLLECT_BYTES_PER_PAIR);
-        for pair in iter {
-            if !bytes.is_empty() {
-                bytes.extend_from_slice(b"&");
-            }
-            bytes.extend_from_slice(&pair.raw);
-        }
-        Self { bytes }
+        collect_pairs(iter.into_iter().map(|p| p.raw))
     }
 }
 
@@ -107,15 +116,7 @@ impl<'a> FromIterator<QueryPairRef<'a>> for Query {
     /// bytes. See [`FromIterator<QueryPair>`](Query#impl-FromIterator<QueryPair>-for-Query)
     /// for the no-re-encoding contract.
     fn from_iter<I: IntoIterator<Item = QueryPairRef<'a>>>(iter: I) -> Self {
-        let iter = iter.into_iter();
-        let mut bytes = BytesMut::with_capacity(iter.size_hint().0 * COLLECT_BYTES_PER_PAIR);
-        for pair in iter {
-            if !bytes.is_empty() {
-                bytes.extend_from_slice(b"&");
-            }
-            bytes.extend_from_slice(pair.raw);
-        }
-        Self { bytes }
+        collect_pairs(iter.into_iter().map(|p| p.raw))
     }
 }
 

@@ -186,7 +186,17 @@ impl Protocol {
         }
     }
 
-    /// Returns the default port for this [`Protocol`]
+    /// Returns the default port for this [`Protocol`].
+    ///
+    /// Registered defaults: `http=80`, `https=443`, `ws=80`, `wss=443`,
+    /// `socks5=1080`, `socks5h=1080`. Other schemes (`ftp:21`, `ssh:22`,
+    /// `ldap:389`, …) return `None` — `Protocol`'s scope is the
+    /// web-protocol set rama actively models.
+    /// [`crate::uri::Uri::canonicalize`] only drops ports that match a
+    /// registered default, so `ftp://host:21/` keeps its `:21`. This
+    /// diverges from WHATWG-URL (which strips `ftp:21`).
+    ///
+    /// The set of supported protocols grows with the needs that justify them.
     #[must_use]
     pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
