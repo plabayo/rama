@@ -392,8 +392,8 @@ impl Uri {
     /// `urn:isbn:0`, etc.).
     ///
     /// This is a shortcut for accessing just the host component;
-    /// [`Uri::authority`](crate::uri::Uri) (lands with M4 (c)) gives
-    /// the full bundle.
+    /// [`Uri::authority`](Self::authority) gives the full bundle
+    /// (host + port + userinfo).
     #[must_use]
     pub fn host(&self) -> Option<crate::address::HostRef<'_>> {
         match &self.inner {

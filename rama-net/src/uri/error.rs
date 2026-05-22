@@ -151,8 +151,12 @@ pub enum UriError {
 /// Which URI component a [`ParseError`] or [`UriError`] refers to.
 ///
 /// `Authority` is the umbrella for `UserInfo` + `Host` + `Port`; a parse
-/// failure inside a sub-component is reported against the sub-component,
-/// not against `Authority` itself.
+/// failure *inside* a sub-component is reported against the sub-component,
+/// not against `Authority` itself. The variant still surfaces for
+/// structural failures that aren't attributable to one sub-component
+/// — e.g. IP-literal bracket mismatches in `parser::authority`, and
+/// path / query / fragment delimiters appearing in a CONNECT
+/// authority-form input (`parse_authority_form`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Component {
     Scheme,

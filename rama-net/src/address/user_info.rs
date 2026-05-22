@@ -256,6 +256,24 @@ const fn validate_userinfo_static(bytes: &[u8]) {
     }
 }
 
+/// Construct a [`UserInfo`] from a [`Basic`] credential.
+///
+/// # Spec divergence
+///
+/// [`Basic`] only rejects raw `\r` / `\n` / NUL bytes in its validation,
+/// while [`UserInfo`]'s own `TryFrom` enforces the full RFC 3986 §3.2.1
+/// userinfo grammar (rejects raw `@`, space, gen-delims, malformed pct,
+/// pct-decoded control bytes). So this `From` impl can produce a
+/// [`UserInfo`] containing bytes that [`UserInfo::try_from`] would
+/// reject — `Basic::new("user@host", "pw")?` round-tripped through
+/// this conversion will emit `user@host:pw` and serialize into a URI
+/// authority that the parser then refuses to re-read.
+///
+/// This is deliberate (the conversion is infallible by trait
+/// signature), and the planned follow-up is to drop [`UserInfo`] in
+/// favour of a relaxed [`Basic`] altogether (see the type-level docs
+/// for the migration plan). For now, callers that need the round-trip
+/// guarantee should validate through [`UserInfo::try_from`] first.
 impl From<Basic> for UserInfo {
     fn from(basic: Basic) -> Self {
         // Format as the canonical `user:password` or `user` string.
@@ -266,6 +284,28 @@ impl From<Basic> for UserInfo {
         Self {
             bytes: Bytes::from(serialized),
         }
+    }
+}
+
+impl TryFrom<&UserInfo> for Basic {
+    type Error = BoxError;
+
+    /// Parse a [`UserInfo`] into HTTP Basic-Auth credentials. Same
+    /// semantics as [`UserInfo::to_basic`] — kept as a [`TryFrom`]
+    /// impl for the standard `Basic::try_from(&userinfo)?` idiom.
+    fn try_from(value: &UserInfo) -> Result<Self, Self::Error> {
+        value.to_basic()
+    }
+}
+
+impl TryFrom<UserInfo> for Basic {
+    type Error = BoxError;
+
+    /// Owned-input form of [`TryFrom<&UserInfo>`](Self#impl-TryFrom<%26UserInfo>-for-Basic).
+    /// Routes through the borrowed impl since [`Basic::try_from`]
+    /// doesn't need to own the bytes.
+    fn try_from(value: UserInfo) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
     }
 }
 
@@ -449,7 +489,7 @@ mod tests {
         assert_eq!(b.password(), Some("secret"));
     }
 
-    // -- Debug redaction (audit H3) -------------------------------------
+    // -- Debug redaction -------------------------------------
 
     #[test]
     fn debug_redacts_password() {
@@ -638,5 +678,26 @@ mod tests {
         let r = u.view();
         let owned = r.into_owned();
         assert_eq!(owned, u);
+    }
+
+    // ---- TryFrom<UserInfo> for Basic ------------------------
+
+    #[test]
+    fn try_from_userinfo_for_basic_user_password() {
+        let u = UserInfo::from_static_str("alice:secret");
+        let b = Basic::try_from(&u).unwrap();
+        assert_eq!(b.username(), "alice");
+        assert_eq!(b.password(), Some("secret"));
+
+        // Owned-input form delegates to the borrowed impl.
+        let b2 = Basic::try_from(u).unwrap();
+        assert_eq!(b2.username(), "alice");
+    }
+
+    #[test]
+    fn try_from_userinfo_for_basic_propagates_error() {
+        // Empty username — `Basic::try_from(&str)` rejects.
+        let u = UserInfo::from_static_str(":secret");
+        Basic::try_from(&u).unwrap_err();
     }
 }

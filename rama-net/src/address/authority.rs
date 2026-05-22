@@ -648,6 +648,34 @@ impl<'a> AuthorityRef<'a> {
     }
 }
 
+impl fmt::Display for AuthorityRef<'_> {
+    /// Renders `[userinfo@]host[:port]`. Matches [`Authority`]'s
+    /// `Display` exactly so the two types serialise byte-identically.
+    ///
+    /// IPv6 hosts are wrapped in `[...]` brackets only when a port is
+    /// present — same rule [`HostWithOptPort`] uses. Brackets are URI
+    /// authority syntax, not host content, so the bare-IPv6 form (no
+    /// port) doesn't carry them.
+    ///
+    /// Note: userinfo emission is the *Display* contract — wire writers
+    /// for HTTP request-targets strip userinfo separately
+    /// (`write_http_authority_form` / `write_h2_authority` on
+    /// [`crate::uri::Uri`]).
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(ui) = self.userinfo {
+            write!(f, "{ui}@")?;
+        }
+        match self.host {
+            HostRef::Address(IpAddr::V6(ip)) if self.port.is_some() => write!(f, "[{ip}]")?,
+            _ => self.host.fmt(f)?,
+        }
+        if let Some(port) = self.port {
+            write!(f, ":{port}")?;
+        }
+        Ok(())
+    }
+}
+
 impl serde::Serialize for Authority {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -967,6 +995,32 @@ mod tests {
             assert!(
                 Authority::try_from(input).is_err(),
                 "authority should reject zone-id input {input:?}",
+            );
+        }
+    }
+
+    // ---- AuthorityRef::Display parity -----------------------
+
+    #[test]
+    fn authority_ref_display_matches_owned() {
+        for input in [
+            "example.com",
+            "example.com:443",
+            "user@example.com:80",
+            "user:secret@example.com:8080",
+            "127.0.0.1:8080",
+            "[2001:db8::1]:443",
+        ] {
+            let owned: Authority = input.parse().unwrap();
+            let ref_view = AuthorityRef::new(
+                owned.user_info.as_ref().map(UserInfoRef::from),
+                HostRef::from(&owned.address.host),
+                owned.address.port,
+            );
+            assert_eq!(
+                ref_view.to_string(),
+                owned.to_string(),
+                "AuthorityRef Display must match Authority for {input:?}"
             );
         }
     }
