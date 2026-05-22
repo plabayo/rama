@@ -221,3 +221,42 @@ fn debug_wraps_in_uri_marker() {
     let u = parse_graceful("http://example.com/").unwrap();
     assert_eq!(format!("{u:?}"), r#"Uri("http://example.com/")"#);
 }
+
+// ----------------------------------------------------------------------
+// IPv6 authority brackets — RFC 3986 §3.2.2 mandates `IP-literal = "["
+// IPv6address "]"` for URI authority context, regardless of port. Lazy
+// preserves source bytes so it Just Works; Owned reassembly used to
+// drop the brackets when port was None.
+// ----------------------------------------------------------------------
+
+#[test]
+fn owned_ipv6_no_port_keeps_brackets() {
+    let mut u = parse_graceful("http://[::1]/path").unwrap();
+    u.set_path("/other"); // promotes Lazy → Owned
+    assert_eq!(u.to_string(), "http://[::1]/other");
+}
+
+#[test]
+fn owned_ipv6_with_port_keeps_brackets() {
+    let mut u = parse_graceful("http://[2001:db8::1]:8080/p").unwrap();
+    u.set_path("/q");
+    assert_eq!(u.to_string(), "http://[2001:db8::1]:8080/q");
+}
+
+#[test]
+fn owned_ipv6_canonicalize_keeps_brackets() {
+    // canonicalize also produces an Owned form. Default-port drop
+    // (https:443) should leave the IPv6 host bracketed.
+    let u = parse_graceful("https://[::1]:443/p").unwrap();
+    let canonical = u.canonicalize();
+    assert_eq!(canonical.to_string(), "https://[::1]/p");
+}
+
+#[test]
+fn owned_ipv6_userinfo_brackets_correctly() {
+    // userinfo + IPv6 + no port — every section needs the right
+    // delimiters after Owned reassembly.
+    let mut u = parse_graceful("http://alice@[::1]/p").unwrap();
+    u.set_path("/q");
+    assert_eq!(u.to_string(), "http://alice@[::1]/q");
+}

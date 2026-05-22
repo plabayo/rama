@@ -98,11 +98,15 @@ impl Authority {
     ///
     /// # Example
     ///
+    /// IPv6 addresses always render with `[…]` brackets even with no
+    /// port — see [`HostWithOptPort`]'s `Display` impl for the
+    /// rationale.
+    ///
     /// ```
     /// use rama_net::address::Authority;
     ///
     /// let addr = Authority::local_ipv6();
-    /// assert_eq!("::1", addr.to_string());
+    /// assert_eq!("[::1]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -160,13 +164,17 @@ impl Authority {
 
     /// creates a new default ipv6 [`Authority`] without a port.
     ///
+    /// IPv6 addresses always render with `[…]` brackets even with no
+    /// port — see [`HostWithOptPort`]'s `Display` impl for the
+    /// rationale.
+    ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::Authority;
     ///
     /// let addr = Authority::default_ipv6();
-    /// assert_eq!("::", addr.to_string());
+    /// assert_eq!("[::]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -650,12 +658,15 @@ impl<'a> AuthorityRef<'a> {
 
 impl fmt::Display for AuthorityRef<'_> {
     /// Renders `[userinfo@]host[:port]`. Matches [`Authority`]'s
-    /// `Display` exactly so the two types serialise byte-identically.
+    /// `Display` byte-for-byte.
     ///
-    /// IPv6 hosts are wrapped in `[...]` brackets only when a port is
-    /// present — same rule [`HostWithOptPort`] uses. Brackets are URI
-    /// authority syntax, not host content, so the bare-IPv6 form (no
-    /// port) doesn't carry them.
+    /// IPv6 hosts are **always** bracketed (`[ip]`), regardless of
+    /// whether a port follows — same rule [`HostWithOptPort`]'s
+    /// `Display` uses. Without brackets, `::1:8080` would be ambiguous between
+    /// "address `::1` + port `8080`" and "address `::1:8080`, no
+    /// port". We bracket inline here rather than delegating to
+    /// `HostRef`'s `Display` because that formatter is a standalone-
+    /// host renderer that doesn't compose with `:port`.
     ///
     /// Note: userinfo emission is the *Display* contract — wire writers
     /// for HTTP request-targets strip userinfo separately
@@ -666,7 +677,7 @@ impl fmt::Display for AuthorityRef<'_> {
             write!(f, "{ui}@")?;
         }
         match self.host {
-            HostRef::Address(IpAddr::V6(ip)) if self.port.is_some() => write!(f, "[{ip}]")?,
+            HostRef::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
             _ => self.host.fmt(f)?,
         }
         if let Some(port) = self.port {
@@ -949,9 +960,13 @@ mod tests {
             ("[::1]:80", "[::1]:80"),
             ("user@[::1]:80", "user@[::1]:80"),
             ("secret:user@[::1]:80", "secret:user@[::1]:80"),
-            ("::1", "::1"),
-            ("user@::1", "user@::1"),
-            ("user:secret@::1", "user:secret@::1"),
+            // IPv6 hosts ALWAYS render with `[…]` brackets — even
+            // when no port is present — to avoid the `::1:8080`
+            // ambiguity. See `HostWithOptPort::Display` for the
+            // single-source-of-truth rationale.
+            ("::1", "[::1]"),
+            ("user@::1", "user@[::1]"),
+            ("user:secret@::1", "user:secret@[::1]"),
             ("127.0.0.1:80", "127.0.0.1:80"),
             ("user@127.0.0.1:80", "user@127.0.0.1:80"),
             ("user:secret@127.0.0.1:80", "user:secret@127.0.0.1:80"),

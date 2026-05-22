@@ -80,13 +80,16 @@ impl HostWithOptPort {
 
     /// creates a new local ipv6 [`HostWithOptPort`] without a port.
     ///
+    /// IPv6 addresses always render with `[…]` brackets even with no
+    /// port — see the type's `Display` impl for the rationale.
+    ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::HostWithOptPort;
     ///
     /// let addr = HostWithOptPort::local_ipv6();
-    /// assert_eq!("::1", addr.to_string());
+    /// assert_eq!("[::1]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -144,13 +147,16 @@ impl HostWithOptPort {
 
     /// creates a new default ipv6 [`HostWithOptPort`] without a port.
     ///
+    /// IPv6 addresses always render with `[…]` brackets — see the
+    /// type's `Display` impl for the rationale.
+    ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::HostWithOptPort;
     ///
     /// let addr = HostWithOptPort::default_ipv6();
-    /// assert_eq!("::", addr.to_string());
+    /// assert_eq!("[::]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -400,20 +406,23 @@ impl From<DomainAddress> for HostWithOptPort {
 }
 
 impl fmt::Display for HostWithOptPort {
+    /// Renders `host[:port]` with IPv6 addresses **always** bracketed
+    /// (`[ip]`), regardless of whether a port follows.
+    ///
+    /// Without the brackets, IPv6 + port is ambiguous: `::1:8080`
+    /// could parse as the IPv6 address `::1` with port `8080`, or as
+    /// the IPv6 address `::1:8080` with no port. RFC 3986 §3.2.2
+    /// resolves this with the `IP-literal = "[" IPv6address "]"`
+    /// rule; we apply it consistently across all `Display` contexts
+    /// (URI authority and standalone address spec alike) so callers
+    /// never accidentally emit ambiguous bytes.
+    ///
+    /// `UninterpretedHost`'s own `Display` already brackets IP-literal
+    /// forms and renders reg-name bytes verbatim.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.host {
-            host @ (Host::Name(_) | Host::Address(IpAddr::V4(_))) => host.fmt(f)?,
-            Host::Address(IpAddr::V6(ip)) => {
-                if self.port.is_some() {
-                    write!(f, "[{ip}]")
-                } else {
-                    ip.fmt(f)
-                }?
-            }
-            // `UninterpretedHost`'s own Display already brackets
-            // IP-literal forms and renders reg-name bytes verbatim.
-            // Either way, no extra bracketing is needed when a port follows.
-            Host::Uninterpreted(host) => host.fmt(f)?,
+            Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
+            other => other.fmt(f)?,
         }
 
         if let Some(port) = self.port {
@@ -637,7 +646,10 @@ mod tests {
             ("example.com", "example.com"),
             ("example.com:80", "example.com:80"),
             ("[::1]:80", "[::1]:80"),
-            ("::1", "::1"),
+            // IPv6 always brackets — even with no port — to avoid
+            // the `::1:8080` ambiguity. See the `Display` impl above
+            // for the single-source-of-truth rationale.
+            ("::1", "[::1]"),
             ("127.0.0.1:80", "127.0.0.1:80"),
             ("127.0.0.1", "127.0.0.1"),
         ] {
