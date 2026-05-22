@@ -18,7 +18,7 @@ fn canonicalize_promotes_pct_encoded_ascii_to_domain() {
     let canonical = uri.canonicalize();
     let host = canonical.host().unwrap();
     assert_eq!(host.to_str(), "example.com");
-    assert!(matches!(host.to_owned(), Host::Name(_)));
+    assert!(matches!(host.into_owned(), Host::Name(_)));
 }
 
 #[cfg(feature = "idna")]
@@ -44,7 +44,7 @@ fn canonicalize_promotes_pct_encoded_utf8_to_ace_domain() {
 fn canonicalize_promotes_pct_encoded_to_ipv4() {
     let uri = Uri::parse("http://%31%32%37.0.0.1/").unwrap();
     let canonical = uri.canonicalize();
-    let host = canonical.host().unwrap().to_owned();
+    let host = canonical.host().unwrap().into_owned();
     assert_eq!(host, Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
 }
 
@@ -54,7 +54,7 @@ fn canonicalize_leaves_sub_delim_host_as_uninterpreted() {
     // canonical typed form — must stay Uninterpreted.
     let uri = Uri::parse("http://tag,with,commas/").unwrap();
     let canonical = uri.canonicalize();
-    let host = canonical.host().unwrap().to_owned();
+    let host = canonical.host().unwrap().into_owned();
     assert!(matches!(host, Host::Uninterpreted(_)));
     assert_eq!(canonical.host().unwrap().to_str(), "tag,with,commas");
 }
@@ -63,7 +63,7 @@ fn canonicalize_leaves_sub_delim_host_as_uninterpreted() {
 fn canonicalize_leaves_ipvfuture_as_uninterpreted() {
     let uri = Uri::parse("http://[v1.fe80::a]/").unwrap();
     let canonical = uri.canonicalize();
-    let host = canonical.host().unwrap().to_owned();
+    let host = canonical.host().unwrap().into_owned();
     let u = host.as_uninterpreted().unwrap();
     assert!(u.is_bracketed());
     assert_eq!(canonical.host().unwrap().to_str(), "[v1.fe80::a]");

@@ -66,9 +66,11 @@ impl UserInfo {
         unsafe { std::str::from_utf8_unchecked(&self.bytes) }
     }
 
-    /// Borrowed view.
+    /// Borrowed view. Named `view` (not `as_ref`) so it doesn't shadow
+    /// the std `AsRef` trait — see the type-level docs.
     #[must_use]
-    pub fn as_ref(&self) -> UserInfoRef<'_> {
+    #[inline]
+    pub fn view(&self) -> UserInfoRef<'_> {
         UserInfoRef::new(&self.bytes)
     }
 
@@ -308,9 +310,11 @@ impl<'a> UserInfoRef<'a> {
         }
     }
 
-    /// Construct an owned [`UserInfo`] by copying the bytes.
+    /// Construct an owned [`UserInfo`] by copying the bytes. Named
+    /// `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't
+    /// shadow the std `ToOwned` trait method.
     #[must_use]
-    pub fn to_owned(&self) -> UserInfo {
+    pub fn into_owned(self) -> UserInfo {
         UserInfo {
             bytes: Bytes::copy_from_slice(self.bytes),
         }
@@ -621,7 +625,7 @@ mod tests {
     #[test]
     fn ref_split_user_password() {
         let u = UserInfo::from_static_str("alice:secret");
-        let r = u.as_ref();
+        let r = u.view();
         assert_eq!(
             r.split_user_password(),
             (&b"alice"[..], Some(&b"secret"[..]))
@@ -629,10 +633,10 @@ mod tests {
     }
 
     #[test]
-    fn ref_to_owned_roundtrip() {
+    fn ref_into_owned_roundtrip() {
         let u = UserInfo::from_static_str("alice:secret");
-        let r = u.as_ref();
-        let owned = r.to_owned();
+        let r = u.view();
+        let owned = r.into_owned();
         assert_eq!(owned, u);
     }
 }

@@ -383,8 +383,10 @@ impl<'a> DomainRef<'a> {
     }
 
     /// Returns an owned [`Domain`] by copying the underlying bytes.
+    /// Named `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't
+    /// shadow the std `ToOwned` trait method.
     #[must_use]
-    pub fn to_owned(&self) -> Domain {
+    pub fn into_owned(self) -> Domain {
         let bytes = Bytes::copy_from_slice(self.bytes);
         // Safety: `DomainRef`'s contents are a validated `Domain` in
         // presentation form.

@@ -46,7 +46,7 @@ mod with_idna {
     #[test]
     fn german_idn_converts_to_ace_on_demand() {
         let uri: Uri = parse_graceful("https://münchen.de/").unwrap();
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         let uninterpreted = owned
             .as_uninterpreted()
             .expect("non-ASCII host parses as Uninterpreted");
@@ -60,7 +60,7 @@ mod with_idna {
         let h = uri.host().unwrap();
         assert_eq!(h.to_str(), "日本.com");
         // ACE recovery on demand.
-        let owned = h.to_owned();
+        let owned = h.into_owned();
         let uninterpreted = owned.as_uninterpreted().unwrap();
         let d = Domain::try_from(uninterpreted).unwrap();
         assert!(d.as_str().starts_with("xn--"), "got {d}");
@@ -73,7 +73,7 @@ mod with_idna {
         // parses as `Host::Name(Domain)`, not Uninterpreted.
         let uri: Uri = parse_graceful("https://xn--mnchen-3ya.de/").unwrap();
         assert_eq!(uri.host().unwrap().to_str(), "xn--mnchen-3ya.de");
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         assert!(matches!(owned, Host::Name(_)));
     }
 
@@ -83,7 +83,7 @@ mod with_idna {
     fn uppercase_non_ascii_preserved_then_normalised_on_convert() {
         let uri: Uri = parse_graceful("https://MÜNCHEN.de/").unwrap();
         assert_eq!(uri.host().unwrap().to_str(), "MÜNCHEN.de");
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         let uninterpreted = owned.as_uninterpreted().unwrap();
         let d = Domain::try_from(uninterpreted).unwrap();
         assert_eq!(d.as_str(), "xn--mnchen-3ya.de");
@@ -93,7 +93,7 @@ mod with_idna {
     fn mixed_labels_preserved_then_normalised_on_convert() {
         let uri: Uri = parse_graceful("https://münchen.example.com/").unwrap();
         assert_eq!(uri.host().unwrap().to_str(), "münchen.example.com");
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         let uninterpreted = owned.as_uninterpreted().unwrap();
         let d = Domain::try_from(uninterpreted).unwrap();
         assert_eq!(d.as_str(), "xn--mnchen-3ya.example.com");
@@ -158,7 +158,7 @@ mod with_idna {
     fn uts46_disallowed_codepoint_caught_on_domain_conversion() {
         let uri: Uri = parse_graceful("https://a\u{fe6e}b.com/")
             .expect("parser preserves the bytes; UTS #46 runs on convert");
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         let uninterpreted = owned.as_uninterpreted().unwrap();
         let r = Domain::try_from(uninterpreted);
         assert!(r.is_err(), "UTS #46 must reject disallowed codepoint");
@@ -247,7 +247,7 @@ mod without_idna {
     fn non_ascii_host_preserved_but_domain_conversion_errors() {
         let uri: Uri = parse_graceful("https://münchen.de/").unwrap();
         assert_eq!(uri.host().unwrap().to_str(), "münchen.de");
-        let owned = uri.host().unwrap().to_owned();
+        let owned = uri.host().unwrap().into_owned();
         let uninterpreted = owned.as_uninterpreted().unwrap();
         let err = Domain::try_from(uninterpreted).unwrap_err();
         assert!(err.is_idna_not_enabled(), "got {err:?}");

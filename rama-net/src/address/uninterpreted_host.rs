@@ -74,9 +74,11 @@ impl UninterpretedHost {
     /// Borrow this host as an [`UninterpretedHostRef`]. The
     /// inspection / conversion API lives on the Ref type; the owned
     /// type's accessors here just delegate, so there's one
-    /// implementation to maintain.
+    /// implementation to maintain. Named `view` (not `as_ref`) so it
+    /// doesn't shadow the std `AsRef` trait.
     #[must_use]
-    pub fn as_ref(&self) -> UninterpretedHostRef<'_> {
+    #[inline]
+    pub fn view(&self) -> UninterpretedHostRef<'_> {
         UninterpretedHostRef::from(self)
     }
 
@@ -84,13 +86,13 @@ impl UninterpretedHost {
     /// literals, the surrounding brackets are *not* included.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.as_ref().as_str()
+        self.view().as_str()
     }
 
     /// Raw bytes view.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        self.as_ref().as_bytes()
+        self.view().as_bytes()
     }
 
     /// `true` when this came from a bracketed IP-literal (`[vN.X]`).
@@ -105,7 +107,7 @@ impl UninterpretedHost {
     /// the contract — this is a delegating wrapper.
     #[must_use]
     pub fn as_unicode(&self) -> Cow<'_, str> {
-        self.as_ref().as_unicode()
+        self.view().as_unicode()
     }
 }
 
@@ -189,9 +191,10 @@ impl<'a> UninterpretedHostRef<'a> {
     }
 
     /// Returns an owned [`UninterpretedHost`] by copying the underlying
-    /// bytes.
+    /// bytes. Named `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it
+    /// doesn't shadow the std `ToOwned` trait method.
     #[must_use]
-    pub fn to_owned(&self) -> UninterpretedHost {
+    pub fn into_owned(self) -> UninterpretedHost {
         UninterpretedHost::from_validated_bytes(Bytes::copy_from_slice(self.bytes), self.bracketed)
     }
 }
@@ -780,10 +783,10 @@ mod tests {
     }
 
     #[test]
-    fn ref_to_owned_roundtrip() {
+    fn ref_into_owned_roundtrip() {
         let h = reg(b"exa%6Dple.com");
         let r: UninterpretedHostRef<'_> = (&h).into();
-        let back: UninterpretedHost = r.to_owned();
+        let back: UninterpretedHost = r.into_owned();
         assert_eq!(back, h);
     }
 

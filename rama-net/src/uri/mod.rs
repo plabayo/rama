@@ -436,7 +436,7 @@ impl Uri {
                 .authority
                 .as_ref()
                 .and_then(|a| a.user_info.as_ref())
-                .map(|ui| ui.as_ref()),
+                .map(|ui| ui.view()),
         }
     }
 
@@ -463,7 +463,7 @@ impl Uri {
             }
             UriInner::Owned(arc) => {
                 let auth = arc.authority.as_ref()?;
-                let userinfo = auth.user_info.as_ref().map(|ui| ui.as_ref());
+                let userinfo = auth.user_info.as_ref().map(|ui| ui.view());
                 Some(AuthorityRef::new(
                     userinfo,
                     HostRef::from(&auth.address.host),

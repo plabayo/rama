@@ -212,11 +212,11 @@ fn iterator_yields_query_pair_ref() {
 fn query_pair_ref_to_owned_round_trip() {
     let uri: Uri = parse_graceful("/p?key=value").unwrap();
     let ref_pair = uri.query().unwrap().pairs().next().unwrap();
-    let owned = ref_pair.to_owned();
+    let owned = ref_pair.into_owned();
     assert_eq!(owned.name_raw(), "key");
     assert_eq!(owned.value_raw(), Some("value"));
     // Owned -> Ref round-trip
-    let back = owned.as_ref();
+    let back = owned.view();
     assert_eq!(back.name_bytes(), b"key");
     assert_eq!(back.value_bytes(), Some(b"value".as_ref()));
 }

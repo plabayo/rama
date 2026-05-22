@@ -72,10 +72,10 @@ fn no_fragment_yields_none() {
 fn owned_round_trip_preserves_bytes() {
     let uri: Uri = parse_graceful("/p#section%201").unwrap();
     let f_ref = uri.fragment().unwrap();
-    let owned = f_ref.to_owned();
+    let owned = f_ref.into_owned();
     assert_eq!(owned.as_bytes(), f_ref.as_bytes());
     assert_eq!(owned.as_raw_str(), f_ref.as_raw_str());
     assert_eq!(owned.as_decoded_str(), f_ref.as_decoded_str());
     // Borrowed view from the owned form matches the original.
-    assert_eq!(owned.as_ref().as_bytes(), f_ref.as_bytes());
+    assert_eq!(owned.view().as_bytes(), f_ref.as_bytes());
 }

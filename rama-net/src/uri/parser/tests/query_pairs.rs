@@ -217,7 +217,7 @@ fn owned_query_pairs_matches_ref() {
         .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
         .collect();
     let from_owned: Vec<_> = q_ref
-        .to_owned()
+        .into_owned()
         .pairs()
         .map(|p| (p.name_raw().to_owned(), p.value_raw().map(str::to_owned)))
         .collect();

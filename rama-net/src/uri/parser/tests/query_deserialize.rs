@@ -239,7 +239,7 @@ fn owned_query_deserialize_parity() {
     }
     let uri: Uri = parse_graceful("/p?a=hi&b=7").unwrap();
     let from_ref: Params = uri.query().unwrap().deserialize().unwrap();
-    let from_owned: Params = uri.query().unwrap().to_owned().deserialize().unwrap();
+    let from_owned: Params = uri.query().unwrap().into_owned().deserialize().unwrap();
     assert_eq!(from_ref, from_owned);
 }
 

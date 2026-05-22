@@ -224,13 +224,15 @@ impl HostRef<'_> {
     }
 
     /// Returns an owned [`Host`] containing a copy of the underlying bytes
-    /// (or, for the IP variants, a copy of the address value).
+    /// (or, for the IP variants, a copy of the address value). Named
+    /// `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't shadow
+    /// the std `ToOwned` trait method.
     #[must_use]
-    pub fn to_owned(&self) -> Host {
-        match *self {
-            Self::Name(d) => Host::Name(d.to_owned()),
+    pub fn into_owned(self) -> Host {
+        match self {
+            Self::Name(d) => Host::Name(d.into_owned()),
             Self::Address(ip) => Host::Address(ip),
-            Self::Uninterpreted(host) => Host::Uninterpreted(host.to_owned()),
+            Self::Uninterpreted(host) => Host::Uninterpreted(host.into_owned()),
         }
     }
 }

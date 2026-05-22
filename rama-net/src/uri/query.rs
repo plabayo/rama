@@ -42,9 +42,11 @@ impl Query {
         percent_decode(&self.bytes).decode_utf8_lossy()
     }
 
-    /// Borrowed view.
+    /// Borrowed view. Named `view` (not `as_ref`) so it doesn't shadow
+    /// the std `AsRef` trait — see the type-level docs.
     #[must_use]
-    pub fn as_ref(&self) -> QueryRef<'_> {
+    #[inline]
+    pub fn view(&self) -> QueryRef<'_> {
         QueryRef { bytes: &self.bytes }
     }
 
@@ -63,7 +65,7 @@ impl Query {
     where
         T: serde::de::Deserialize<'de>,
     {
-        self.as_ref().deserialize::<T>()
+        self.view().deserialize::<T>()
     }
 }
 
@@ -144,9 +146,11 @@ impl<'a> QueryRef<'a> {
         percent_decode(self.bytes).decode_utf8_lossy()
     }
 
-    /// Returns an owned copy.
+    /// Returns an owned copy. Named `into_owned` (matching
+    /// [`std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
+    /// trait method.
     #[must_use]
-    pub fn to_owned(&self) -> Query {
+    pub fn into_owned(self) -> Query {
         Query {
             bytes: BytesMut::from(self.bytes),
         }
@@ -236,63 +240,67 @@ impl QueryPair {
         Self { raw, eq_at }
     }
 
-    /// Borrowed view.
+    /// Borrowed view. All inspection methods on `QueryPair` route
+    /// through this — single source of truth for the slicing /
+    /// decoding logic.
     #[must_use]
-    pub fn as_ref(&self) -> QueryPairRef<'_> {
+    #[inline]
+    pub fn view(&self) -> QueryPairRef<'_> {
         QueryPairRef {
             raw: &self.raw,
             eq_at: self.eq_at,
         }
     }
 
-    /// Raw on-wire bytes of the name.
+    /// Raw on-wire bytes of the name. See [`QueryPairRef::name_bytes`].
     #[must_use]
+    #[inline]
     pub fn name_bytes(&self) -> &[u8] {
-        match self.eq_at {
-            Some(i) => &self.raw[..i as usize],
-            None => &self.raw,
-        }
+        self.view().name_bytes()
     }
 
     /// Name as `&str` with no decoding. Parser-validated UTF-8.
     #[must_use]
+    #[inline]
     pub fn name_raw(&self) -> &str {
-        // Safety: parser invariant.
-        unsafe { std::str::from_utf8_unchecked(self.name_bytes()) }
+        self.view().name_raw()
     }
 
     /// Name with form-urlencoded decoding: `+` → space, `%XX` → byte.
     /// `Cow::Borrowed` when neither escape is present.
     #[must_use]
+    #[inline]
     pub fn name_decoded(&self) -> Cow<'_, str> {
-        form_decode(self.name_bytes())
+        self.view().name_decoded()
     }
 
     /// Raw on-wire bytes of the value, or `None` for a bare key (`?foo`).
     #[must_use]
+    #[inline]
     pub fn value_bytes(&self) -> Option<&[u8]> {
-        self.eq_at.map(|i| &self.raw[i as usize + 1..])
+        self.view().value_bytes()
     }
 
     /// Value as `&str` with no decoding, or `None` for a bare key.
     #[must_use]
+    #[inline]
     pub fn value_raw(&self) -> Option<&str> {
-        // Safety: parser invariant.
-        self.value_bytes()
-            .map(|v| unsafe { std::str::from_utf8_unchecked(v) })
+        self.view().value_raw()
     }
 
     /// Value with form-urlencoded decoding (`+` → space, `%XX` → byte),
     /// or `None` for a bare key.
     #[must_use]
+    #[inline]
     pub fn value_decoded(&self) -> Option<Cow<'_, str>> {
-        self.value_bytes().map(form_decode)
+        self.view().value_decoded()
     }
 
     /// `true` if the pair has an `=` separator. `?foo=` → `true`; `?foo` → `false`.
     #[must_use]
+    #[inline]
     pub fn has_value(&self) -> bool {
-        self.eq_at.is_some()
+        self.view().has_value()
     }
 }
 
@@ -376,8 +384,12 @@ impl<'a> QueryPairRef<'a> {
     }
 
     /// Allocate an owned [`QueryPair`] copying the raw bytes.
+    ///
+    /// Named `into_owned` (matching the [`std::borrow::Cow::into_owned`] precedent)
+    /// rather than `to_owned` to avoid shadowing the std `ToOwned`
+    /// trait method.
     #[must_use]
-    pub fn to_owned(&self) -> QueryPair {
+    pub fn into_owned(self) -> QueryPair {
         QueryPair {
             raw: Bytes::copy_from_slice(self.raw),
             eq_at: self.eq_at,

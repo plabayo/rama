@@ -20,7 +20,7 @@ use crate::uri::{ParseError, Uri};
 /// parsed URI, panicking if the host isn't `Uninterpreted`.
 fn uninterpreted(uri: &Uri) -> UninterpretedHost {
     uri.host()
-        .and_then(|h| match h.to_owned() {
+        .and_then(|h| match h.into_owned() {
             Host::Uninterpreted(u) => Some(u),
             _ => None,
         })
@@ -178,7 +178,7 @@ fn ipvfuture_grammar_rejects_invalid_shapes() {
 fn ipv6_still_parses_as_typed_address_not_uninterpreted() {
     // Bracketed IPv6 stays as the typed `Host::Address`.
     let uri = parse_strict("http://[::1]/").unwrap();
-    let owned = uri.host().unwrap().to_owned();
+    let owned = uri.host().unwrap().into_owned();
     assert!(matches!(owned, Host::Address(_)));
     assert!(!matches!(owned, Host::Uninterpreted(_)));
 }

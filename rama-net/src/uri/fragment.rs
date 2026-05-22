@@ -39,9 +39,11 @@ impl Fragment {
         percent_decode(&self.bytes).decode_utf8_lossy()
     }
 
-    /// Borrowed view.
+    /// Borrowed view. Named `view` (not `as_ref`) so it doesn't shadow
+    /// the std `AsRef` trait — see the type-level docs.
     #[must_use]
-    pub fn as_ref(&self) -> FragmentRef<'_> {
+    #[inline]
+    pub fn view(&self) -> FragmentRef<'_> {
         FragmentRef { bytes: &self.bytes }
     }
 }
@@ -81,9 +83,11 @@ impl<'a> FragmentRef<'a> {
         percent_decode(self.bytes).decode_utf8_lossy()
     }
 
-    /// Returns an owned copy.
+    /// Returns an owned copy. Named `into_owned` (matching
+    /// [`std::borrow::Cow::into_owned`]) so it doesn't shadow the std `ToOwned`
+    /// trait method.
     #[must_use]
-    pub fn to_owned(&self) -> Fragment {
+    pub fn into_owned(self) -> Fragment {
         Fragment {
             bytes: BytesMut::from(self.bytes),
         }
