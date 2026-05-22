@@ -59,7 +59,7 @@ fn flow_action_for_remote_endpoint(
     };
 
     match &target.host {
-        Host::Name(_) => TransparentProxyFlowAction::Intercept,
+        Host::Name(_) | Host::Uninterpreted(_) => TransparentProxyFlowAction::Intercept,
         Host::Address(addr) => {
             if is_private_ip(*addr) && !addr.is_loopback() {
                 // non-loopback private ip addreses,

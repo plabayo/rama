@@ -56,12 +56,11 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
     // sendto traffic), so the cast is the common case. If a non-IP
     // host ever sneaks through, fallback is simply unavailable for
     // that flow.
-    let initial_target: Option<SocketAddr> = initial_target_hwp.as_ref().and_then(|hwp| {
-        match hwp.host {
+    let initial_target: Option<SocketAddr> =
+        initial_target_hwp.as_ref().and_then(|hwp| match hwp.host {
             rama::net::address::Host::Address(ip) => Some(SocketAddr::new(ip, hwp.port)),
-            rama::net::address::Host::Name(_) => None,
-        }
-    });
+            rama::net::address::Host::Name(_) | rama::net::address::Host::Uninterpreted(_) => None,
+        });
 
     tracing::info!(
         initial_target = ?initial_target_hwp,

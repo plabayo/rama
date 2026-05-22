@@ -1649,9 +1649,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c65b2bf5409ff0b5c6f7a60d6253ee8d901cc22205f7213058332c0634c2641"
+checksum = "4c03ba23150acaa7ad24244bf4e1057467edb24dd5ee2409a33c8422d8731116"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -1662,9 +1662,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b68650132a39b88012aad1ddd6041f38bf8d266d20476afcaa36f4f95088c9"
+checksum = "a4c2791c00c24204bd08d77cc9a69f7951b84d22b8de64da510ec1eafe149682"
 dependencies = [
  "bindgen",
  "cmake",
@@ -1674,9 +1674,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21c3fb915e5e11154bf9a009106199ebc69b3d8da90c9e232a95ebf455f53c95"
+checksum = "281fcec29c2e5a23114a198913c444bad1b409a91123e5396ce3aa06cf108eaf"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -1951,8 +1951,10 @@ dependencies = [
  "hex",
  "ipnet",
  "itertools 0.14.0",
+ "itoa",
  "libc",
  "md5",
+ "memchr",
  "nom 8.0.0",
  "parking_lot",
  "percent-encoding",
@@ -1964,6 +1966,7 @@ dependencies = [
  "rama-macros",
  "rama-utils",
  "serde",
+ "serde_html_form",
  "sha2",
  "socket2",
  "tokio",
