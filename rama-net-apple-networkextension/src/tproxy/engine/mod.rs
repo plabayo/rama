@@ -99,36 +99,31 @@ impl std::fmt::Display for DecisionDeadlineAction {
     }
 }
 
-const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
-/// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress) will
-/// buffer before we tell Swift to stop reading from the kernel and wait for a
-/// demand callback to resume. Each chunk is whatever Swift hands us in one
-/// `flow.readData` / `connection.receive` callback (typically 4–64 KiB).
+/// Default duplex buffer size between the per-flow bridge and the service.
+/// Two duplexes per TCP flow (ingress + egress) at this size each, fixed
+/// at flow creation, so this is a per-flow memory floor of `2× this`.
 ///
-/// We bound this to keep per-flow worst-case memory in check: the prior
-/// unbounded design let one slow flow buffer arbitrary pending bytes, which
-/// under sustained traffic exhausted Apple's per-flow NE kernel buffer and
-/// aborted the shared NEAppProxyProvider director, killing every flow on the
-/// extension.
+/// 16 KiB matches the bridge's own read buffer ([`run_tcp_bridge`]). For
+/// L4 transparent forwarding this is plenty of burst absorption — the
+/// bridge always copies out before the next read. Handlers that terminate
+/// HTTP/2 (or other heavy fan-in protocols) should raise this via
+/// [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`].
+const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
+/// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
+/// will buffer before backpressuring Swift. Each chunk is whatever Swift
+/// hands us in one `flow.readData` / `connection.receive` callback
+/// (typically 4–64 KiB).
 ///
-/// 128 chunks is sized for L4 transparent forwarding (the design centre of
-/// this engine): one or two in-flight `flow.readData` results plus brief
-/// downstream backpressure absorb cleanly. At ~64 KiB per chunk that gives
-/// ~8 MiB of worst-case headroom per direction, ~16 MiB per flow — modest
-/// enough that a few hundred concurrent flows do not push the SE process
-/// past a sensible RSS, but generous enough that legitimate single-flow
-/// throughput does not see a pause every few packets. Handlers that
-/// terminate HTTP/2 (or other heavy fan-in protocols) should raise this
-/// via `TransparentProxyEngineBuilder::tcp_channel_capacity` for those
-/// flows specifically — the high default that used to live here was sized
-/// for that case but applied to every flow, which is the wrong tradeoff
-/// for an L4 transparent proxy.
-const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 128;
+/// 32 chunks is sized for L4 transparent forwarding (the design centre of
+/// this engine). At ~16 KiB per chunk that gives ~512 KiB of worst-case
+/// headroom per direction, ~1 MiB per flow under saturation. Handlers
+/// that terminate HTTP/2 (or other heavy fan-in protocols) should raise
+/// this via [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 32;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
 /// lossy, so on a full channel we drop the datagram rather than block; the
-/// bound is just a memory cap. Same sizing tradeoff as the TCP channel —
-/// 128 datagrams of headroom is plenty for any normal application.
-const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 128;
+/// bound is just a memory cap.
+const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 32;
 
 /// Default for [`TransparentProxyEngineBuilder::with_tcp_paused_drain_max_wait`].
 /// Backstops a stuck downstream writer (a Swift `flow.write`
@@ -366,22 +361,16 @@ struct TcpSessionPendingData {
     bridge_tx: oneshot::Sender<BridgeIo<TcpFlow, NwTcpStream>>,
     /// Ingress (client→Rust) bytes; handed to the ingress bridge at activate.
     client_rx: mpsc::Receiver<Bytes>,
-    /// Ingress paused flag, shared with `on_client_bytes` and the bridge.
-    /// See [`TransparentProxyTcpSession::client_paused`].
-    client_paused: Arc<AtomicBool>,
+    /// Shared per-flow paused flags + drain notifications.
+    signals: Arc<TcpPerFlowSignals>,
     /// Rust→Swift: signal Swift it can resume reading from the intercepted flow.
     /// Fired by the ingress bridge after it drained a chunk while
-    /// `client_paused` was set.
+    /// `signals.ingress_paused` was set.
     on_client_read_demand: DemandSink,
     /// Rust→Swift: response bytes back to the intercepted client flow.
     /// Returns a [`TcpDeliverStatus`] so the bridge can pause when Swift's
     /// writer pump is full and wait for the matching `signal_server_drain`.
     on_server_bytes: BytesStatusSink,
-    /// Notified by `TransparentProxyTcpSession::signal_server_drain` when the
-    /// Swift writer pump for the intercepted flow has drained capacity.
-    /// The ingress bridge awaits on it after `on_server_bytes` returns
-    /// `Paused`.
-    server_write_notify: Arc<Notify>,
     /// Rust→Swift: ingress response stream done.
     on_server_closed: ClosedSink,
     /// Both ingress and egress duplex buffer size.
@@ -411,27 +400,14 @@ struct TcpSessionPendingData {
 pub struct TransparentProxyTcpSession {
     // ingress data path
     client_tx: Option<mpsc::Sender<Bytes>>,
-    /// `true` while Swift has been told to stop calling `on_client_bytes`
-    /// (because the ingress channel was full). Cleared by the ingress bridge
-    /// after it drains a chunk; the bridge then fires
-    /// `on_client_read_demand` to wake Swift.
-    client_paused: Arc<AtomicBool>,
     saw_client_bytes: bool,
-    /// Symmetric counterpart of `client_paused` for the response direction
-    /// (Rust → Swift writer pump). Notified by Swift via
-    /// [`Self::signal_server_drain`] when its writer drains capacity, awaited
-    /// by the ingress bridge after `on_server_bytes` returns `Paused`.
-    server_write_notify: Arc<Notify>,
 
     // egress data path (populated by activate)
     egress_tx: Option<mpsc::Sender<Bytes>>,
-    /// Same role as `client_paused` but for the egress (NWConnection→Rust)
-    /// channel; populated at `activate`.
-    egress_paused: Option<Arc<AtomicBool>>,
-    /// Symmetric counterpart for the egress request direction (Rust →
-    /// Swift NWConnection writer pump); populated at `activate`. Notified by
-    /// Swift via [`Self::signal_egress_drain`].
-    egress_write_notify: Option<Arc<Notify>>,
+
+    /// Shared paused flags + drain notifications for both directions.
+    /// One allocation, used by `on_*_bytes`, the bridges, and `signal_*_drain`.
+    signals: Arc<TcpPerFlowSignals>,
 
     // lifecycle
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -474,7 +450,7 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                self.client_paused.store(true, Ordering::Release);
+                self.signals.ingress_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
@@ -516,9 +492,7 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                if let Some(paused) = self.egress_paused.as_ref() {
-                    paused.store(true, Ordering::Release);
-                }
+                self.signals.egress_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
@@ -532,16 +506,14 @@ impl TransparentProxyTcpSession {
     /// Idempotent — the underlying `Notify` collapses redundant signals into
     /// a single permit.
     pub fn signal_server_drain(&self) {
-        self.server_write_notify.notify_one();
+        self.signals.ingress_drain.notify_one();
     }
 
     /// Symmetric counterpart of [`Self::signal_server_drain`] for the egress
     /// request direction. Called by Swift when its `NwTcpConnectionWritePump`
     /// has drained capacity after `on_write_to_egress` returned `Paused`.
     pub fn signal_egress_drain(&self) {
-        if let Some(notify) = &self.egress_write_notify {
-            notify.notify_one();
-        }
+        self.signals.egress_drain.notify_one();
     }
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
@@ -587,10 +559,9 @@ impl TransparentProxyTcpSession {
         let TcpSessionPendingData {
             bridge_tx,
             client_rx,
-            client_paused,
+            signals,
             on_client_read_demand,
             on_server_bytes,
-            server_write_notify,
             on_server_closed,
             tcp_flow_buffer_size,
             tcp_channel_capacity,
@@ -618,11 +589,7 @@ impl TransparentProxyTcpSession {
         let egress_stream = NwTcpStream::new(egress_user);
 
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        let egress_paused = Arc::new(AtomicBool::new(false));
-        let egress_write_notify = Arc::new(Notify::new());
         self.egress_tx = Some(egress_client_tx);
-        self.egress_paused = Some(egress_paused.clone());
-        self.egress_write_notify = Some(egress_write_notify.clone());
 
         // guard egress callbacks
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
@@ -656,14 +623,14 @@ impl TransparentProxyTcpSession {
         self.ingress_bridge_task = Some({
             let guard = flow_guard.clone();
             let meta = meta_arc.clone();
+            let signals = signals.clone();
             rt_handle.spawn(async move {
                 run_tcp_bridge(
                     ingress_internal,
                     client_rx,
-                    client_paused,
+                    signals,
                     on_client_read_demand,
                     on_server_bytes,
-                    server_write_notify,
                     on_server_closed,
                     guard,
                     meta,
@@ -683,10 +650,9 @@ impl TransparentProxyTcpSession {
                 run_tcp_bridge(
                     egress_internal,
                     egress_client_rx,
-                    egress_paused,
+                    signals,
                     guarded_egress_demand,
                     guarded_egress_bytes,
-                    egress_write_notify,
                     guarded_egress_closed,
                     guard,
                     meta,
@@ -746,14 +712,10 @@ impl TransparentProxyTcpSession {
                 "tcp cancel: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
             );
         }
-        self.server_write_notify.notify_one();
-        if let Some(notify) = &self.egress_write_notify {
-            notify.notify_one();
-        }
-        self.egress_write_notify = None;
+        self.signals.ingress_drain.notify_one();
+        self.signals.egress_drain.notify_one();
         self.client_tx = None;
         self.egress_tx = None;
-        self.egress_paused = None;
         self.pending = None;
         _ = self.ingress_bridge_task.take();
         _ = self.egress_bridge_task.take();
@@ -839,9 +801,8 @@ where
     let flow_guard = flow_shutdown.guard();
 
     let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-    let client_paused = Arc::new(AtomicBool::new(false));
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
-    let server_write_notify = Arc::new(Notify::new());
+    let signals = Arc::new(TcpPerFlowSignals::new());
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
@@ -908,10 +869,9 @@ where
     let pending = TcpSessionPendingData {
         bridge_tx,
         client_rx,
-        client_paused: client_paused.clone(),
+        signals: signals.clone(),
         on_client_read_demand: on_client_read_demand_guarded,
         on_server_bytes: on_server_bytes_guarded,
-        server_write_notify: server_write_notify.clone(),
         on_server_closed: on_server_closed_guarded,
         tcp_flow_buffer_size,
         tcp_channel_capacity,
@@ -925,12 +885,9 @@ where
 
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
         client_tx: Some(client_tx),
-        client_paused,
         saw_client_bytes: false,
-        server_write_notify,
         egress_tx: None,
-        egress_paused: None,
-        egress_write_notify: None,
+        signals,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
@@ -1556,14 +1513,48 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
+/// Per-flow backpressure flags and drain notifications, shared between the
+/// session's FFI surface and its two bridge tasks via a single `Arc`. One
+/// allocation instead of four (two `AtomicBool` + two `Notify`).
+struct TcpPerFlowSignals {
+    ingress_paused: AtomicBool,
+    ingress_drain: Notify,
+    egress_paused: AtomicBool,
+    egress_drain: Notify,
+}
+
+impl TcpPerFlowSignals {
+    fn new() -> Self {
+        Self {
+            ingress_paused: AtomicBool::new(false),
+            ingress_drain: Notify::new(),
+            egress_paused: AtomicBool::new(false),
+            egress_drain: Notify::new(),
+        }
+    }
+
+    fn paused(&self, dir: BridgeDirection) -> &AtomicBool {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_paused,
+            BridgeDirection::Egress => &self.egress_paused,
+        }
+    }
+
+    fn drain(&self, dir: BridgeDirection) -> &Notify {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_drain,
+            BridgeDirection::Egress => &self.egress_drain,
+        }
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
     mut client_rx: mpsc::Receiver<Bytes>,
-    paused: Arc<AtomicBool>,
+    signals: Arc<TcpPerFlowSignals>,
     on_read_demand: DemandSink,
     on_server_bytes: BytesStatusSink,
-    server_write_notify: Arc<Notify>,
     on_server_closed: ClosedSink,
     flow_guard: ShutdownGuard,
     meta: Arc<TransparentProxyFlowMeta>,
@@ -1571,6 +1562,8 @@ async fn run_tcp_bridge(
     paused_drain_max_wait: Duration,
     direction: BridgeDirection,
 ) {
+    let paused = signals.paused(direction);
+    let server_write_notify = signals.drain(direction);
     let (mut read_half, mut write_half) = tokio::io::split(internal);
     let mut buf = vec![0u8; 16 * 1024];
     // Set to true once the write side is finished so we keep draining read_half even
