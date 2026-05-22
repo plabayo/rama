@@ -490,11 +490,28 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     let host;
     let mut port = OptPort::Unset;
 
-    // Standalone bracketed IPv6 (no trailing port): `[::1]`. Without
-    // this fast-path the colon-split below treats the final `:` inside
-    // the address as a port separator.
+    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
+    // `[v1.fe80::a]`. Without this fast-path the colon-split below
+    // treats the final `:` inside the address as a port separator.
     if s.starts_with('[') && s.ends_with(']') {
         let inside = &s[1..s.len() - 1];
+        if inside.is_empty() {
+            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+        }
+        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
+        // verbatim, matching the URI authority parser's shape.
+        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
+            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
+                .map_err(BoxError::from)
+                .context("parse bracketed IPvFuture")?;
+            return Ok(HostWithOptPort {
+                host: Host::Uninterpreted(super::UninterpretedHost::from_validated_bytes(
+                    rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                    true,
+                )),
+                port: OptPort::Unset,
+            });
+        }
         if parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
             return Err(OpaqueError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
@@ -519,6 +536,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             host = Host::Address(IpAddr::V6(addr));
             port = parsed_port;
         } else {
+            // Reject `:port` (empty host before colon). The URI authority
+            // parser rejects the same shape — keep the eager paths
+            // symmetric.
+            if first_part.is_empty() {
+                return Err(
+                    OpaqueError::from_static_str("empty host before ':port' is invalid")
+                        .into_box_error(),
+                );
+            }
             let port_str = &s[last_colon + 1..];
             port = if port_str.is_empty() {
                 OptPort::Empty
@@ -619,6 +645,9 @@ mod tests {
             ("[::1]", ("::1", OptPort::Unset)),
             ("[2001:db8::1]", ("2001:db8::1", OptPort::Unset)),
             ("[::1]:80", ("::1", OptPort::Set(80))),
+            // Standalone bracketed IPvFuture — surfaces as Uninterpreted
+            // (matches the URI authority parser). Display brackets it.
+            ("[v1.fe80::a]", ("[v1.fe80::a]", OptPort::Unset)),
             ("127.0.0.1", ("127.0.0.1", OptPort::Unset)),
             ("127.0.0.1:80", ("127.0.0.1", OptPort::Set(80))),
             (
@@ -659,6 +688,11 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
+            // Empty host with port — eager and lazy paths agree on
+            // rejection (the URI authority parser does too).
+            ":80",
+            // Empty bracketed IP-literal.
+            "[]",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "example.com:-1",

@@ -564,11 +564,31 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let host;
     let mut port = OptPort::Unset;
 
-    // Standalone bracketed IPv6 (no trailing port): `[::1]`. Without
-    // this fast-path the colon-split below treats the final `:` inside
-    // the address as a port separator.
+    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
+    // `[v1.fe80::a]`. Without this fast-path the colon-split below
+    // treats the final `:` inside the address as a port separator.
     if s.starts_with('[') && s.ends_with(']') {
         let inside = &s[1..s.len() - 1];
+        if inside.is_empty() {
+            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+        }
+        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
+        // verbatim, matching the URI authority parser's shape.
+        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
+            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
+                .map_err(BoxError::from)
+                .context("parse bracketed IPvFuture")?;
+            return Ok(Authority {
+                user_info,
+                address: HostWithOptPort {
+                    host: Host::Uninterpreted(super::UninterpretedHost::from_validated_bytes(
+                        rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                        true,
+                    )),
+                    port: OptPort::Unset,
+                },
+            });
+        }
         if crate::address::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
             return Err(OpaqueError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
@@ -597,6 +617,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             host = Host::Address(IpAddr::V6(addr));
             port = parsed_port;
         } else {
+            // Reject `:port` (empty host before colon). The URI authority
+            // parser rejects the same shape — keep the eager paths
+            // symmetric.
+            if first_part.is_empty() {
+                return Err(
+                    OpaqueError::from_static_str("empty host before ':port' is invalid")
+                        .into_box_error(),
+                );
+            }
             let port_bytes = &s.as_bytes()[last_colon + 1..];
             port = if port_bytes.is_empty() {
                 OptPort::Empty
@@ -986,6 +1015,12 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
+            // Empty host with port — eager and lazy paths agree on
+            // rejection.
+            ":80",
+            ":foo@:80",
+            // Empty bracketed IP-literal.
+            "[]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "example.com:-1",
@@ -1088,6 +1123,31 @@ mod tests {
             .into_owned();
         let direct_p = Authority::try_from("exa%6Dple.com:443").unwrap();
         assert_eq!(direct_p, from_uri_p);
+    }
+
+    /// `:port` with empty host is rejected at the eager parser, matching
+    /// the URI authority-form parser's behavior. Without this the eager
+    /// and lazy paths disagree.
+    #[test]
+    fn authority_try_from_rejects_empty_host_with_port() {
+        Authority::try_from(":80").unwrap_err();
+        Authority::try_from(":foo@:80").unwrap_err();
+        // Confirm the URI parser agrees.
+        crate::uri::Uri::parse_authority_form(":80").unwrap_err();
+    }
+
+    /// Standalone bracketed IPvFuture (`[vN.X]`) parses as
+    /// `Host::Uninterpreted(bracketed=true)`, mirroring the URI parser.
+    #[test]
+    fn authority_try_from_bracketed_ipvfuture() {
+        let direct = Authority::try_from("[v1.fe80::a]").unwrap();
+        let from_uri = crate::uri::Uri::parse_authority_form("[v1.fe80::a]")
+            .unwrap()
+            .authority()
+            .unwrap()
+            .into_owned();
+        assert_eq!(direct, from_uri);
+        assert!(matches!(direct.address.host, Host::Uninterpreted(_)));
     }
 
     /// Standalone bracketed IPv6 (no trailing port) parses as a typed

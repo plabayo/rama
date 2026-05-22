@@ -338,7 +338,7 @@ fn validate_reg_name(bytes: &[u8], mode: ParserMode) -> Result<(), ParseError> {
 
 /// RFC 3986 §3.2.2 `IPvFuture = "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )`.
 /// `inside` is the bytes between the surrounding `[` and `]`.
-fn validate_ipvfuture(inside: &[u8]) -> Result<(), ParseError> {
+pub(crate) fn validate_ipvfuture(inside: &[u8]) -> Result<(), ParseError> {
     // First byte: `v` / `V`.
     let Some((&v, rest)) = inside.split_first() else {
         return Err(ParseError::InvalidComponent(Component::Host));

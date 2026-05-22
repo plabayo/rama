@@ -50,9 +50,16 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
             }
         };
 
-        // Bridge `Uninterpreted` to `Domain` via the typed accessor —
-        // pct-encoded reg-names that decode to a domain participate.
-        // IPs and non-promotable hosts (sub-delim, IPvFuture) don't.
+        // IP-first: pct-encoded IP literals (`%31%32%37.0.0.1`) can
+        // promote to both Domain and IpAddr (shallow Domain validator
+        // accepts digits-and-dots). The Domain match would be wrong for
+        // IP hosts. Filter them out first.
+        if req_ctx.authority.host.try_as_ip().is_ok() {
+            tracing::trace!("SubdomainTrieMatcher: host is an IP — no match");
+            return false;
+        }
+        // Pct-encoded reg-names that decode to a domain participate.
+        // Non-promotable hosts (sub-delim, IPvFuture) don't.
         let Ok(domain) = req_ctx.authority.host.try_as_domain() else {
             tracing::trace!("SubdomainTrieMatcher: host is not a domain — no match");
             return false;

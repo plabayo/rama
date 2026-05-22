@@ -50,9 +50,16 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
             req_ctx.authority.host
         };
 
-        // Try bridging via the typed accessor — pct-encoded reg-names
-        // that decode to a domain get matched too. IP addresses and
-        // non-promotable hosts (sub-delim reg-name, IPvFuture) never match.
+        // IP-first: pct-encoded IP literals (`%31%32%37.0.0.1`) promote
+        // to both Domain (the digits-and-dots form passes the shallow
+        // Domain validator) AND IpAddr. The Domain match would be wrong
+        // for IP hosts. Filter them out first.
+        if host.try_as_ip().is_ok() {
+            tracing::trace!("DomainMatcher: host is an IP — no match");
+            return false;
+        }
+        // Pct-encoded reg-names that decode to a domain get matched too.
+        // Non-promotable hosts (sub-delim reg-name, IPvFuture) never match.
         let Ok(domain) = host.try_into_domain() else {
             tracing::trace!("DomainMatcher: host is not a domain — no match");
             return false;

@@ -63,10 +63,20 @@ where
                 .any(|e| matches!(e, ClientHelloExtension::ServerName(_)))
             {
                 let host = &transport_ctx.authority.host;
-                // SNI is a DNS name. Try Domain first (`try_as_domain`
-                // bridges pct-encoded reg-names + IDN). IPs and non-
-                // promotable hosts → drop SNI.
-                if let Ok(domain) = host.try_as_domain() {
+                // SNI is a DNS name. IP-first: pct-encoded IP literals
+                // (`%31%32%37.0.0.1`) can promote to BOTH Domain and
+                // IpAddr — emitting them as SNI would be wrong per
+                // RFC 6066 §3 ("Literal IPv4 and IPv6 addresses are
+                // not permitted in [SNI]"). Drop SNI for any IP-shaped
+                // host. Otherwise, bridge `Uninterpreted` to Domain
+                // via `try_as_domain`.
+                let host_is_ip = host.try_as_ip().is_ok();
+                let domain_opt = if host_is_ip {
+                    None
+                } else {
+                    host.try_as_domain().ok()
+                };
+                if let Some(domain) = domain_opt {
                     tracing::trace!(
                         "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
                     );

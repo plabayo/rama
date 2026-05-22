@@ -4,7 +4,7 @@ use rama::{
     Service,
     bytes::Bytes,
     net::{
-        address::{Host, HostWithPort, ip::private::is_private_ip},
+        address::{HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -58,17 +58,13 @@ fn flow_action_for_remote_endpoint(
         return TransparentProxyFlowAction::Passthrough;
     };
 
-    match &target.host {
-        Host::Name(_) | Host::Uninterpreted(_) => TransparentProxyFlowAction::Intercept,
-        Host::Address(addr) => {
-            if is_private_ip(*addr) && !addr.is_loopback() {
-                // non-loopback private ip addreses,
-                // as to ensure e2e ffi tests do still run :)
-                TransparentProxyFlowAction::Passthrough
-            } else {
-                TransparentProxyFlowAction::Intercept
-            }
+    // IP-first: intercept domain/uninterpreted hosts; for IPs, passthrough
+    // non-loopback private addresses (keeps e2e tests local).
+    match target.host.try_as_ip() {
+        Ok(addr) if is_private_ip(addr) && !addr.is_loopback() => {
+            TransparentProxyFlowAction::Passthrough
         }
+        _ => TransparentProxyFlowAction::Intercept,
     }
 }
 
