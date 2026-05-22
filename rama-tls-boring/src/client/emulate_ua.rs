@@ -6,7 +6,9 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    address::Host, tls::client::ClientHelloExtension, transport::TryRefIntoTransportContext,
+    address::{Domain, Host},
+    tls::client::ClientHelloExtension,
+    transport::TryRefIntoTransportContext,
 };
 use rama_ua::profile::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
@@ -88,19 +90,39 @@ where
                         }
                     }
                     Host::Uninterpreted(host) => {
-                        tracing::trace!(
-                            "ua tls emulator: drop SNI as target is an uninterpreted host: {host}"
-                        );
-                        let cfg = emulate_config.to_mut();
-                        let extensions: Vec<_> = cfg
-                            .extensions
-                            .take()
-                            .into_iter()
-                            .flatten()
-                            .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
-                            .collect();
-                        if !extensions.is_empty() {
-                            cfg.extensions = Some(extensions);
+                        // Try to recover a typed Domain first (pct-decode + IDN
+                        // via `Domain::try_from`). A pct-encoded reg-name like
+                        // `exa%6Dple.com` or raw-UTF-8 `münchen.de` is a
+                        // legitimate SNI target after normalization — only fall
+                        // back to dropping SNI when the bytes truly aren't a
+                        // domain (sub-delim reg-name, IPvFuture, …).
+                        match Domain::try_from(host) {
+                            Ok(domain) => {
+                                tracing::trace!(
+                                    "ua tls emulator: SNI recovered from uninterpreted host: {domain}"
+                                );
+                                domain_overwrite = Some(Arc::new(
+                                    TlsConnectorDataBuilder::new().with_server_name(domain),
+                                ));
+                            }
+                            Err(err) => {
+                                tracing::trace!(
+                                    "ua tls emulator: drop SNI as target is an uninterpreted host ({host}); domain recovery failed: {err}"
+                                );
+                                let cfg = emulate_config.to_mut();
+                                let extensions: Vec<_> = cfg
+                                    .extensions
+                                    .take()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter(|ext| {
+                                        !matches!(ext, ClientHelloExtension::ServerName(_))
+                                    })
+                                    .collect();
+                                if !extensions.is_empty() {
+                                    cfg.extensions = Some(extensions);
+                                }
+                            }
                         }
                     }
                 }

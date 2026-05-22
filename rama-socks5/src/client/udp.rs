@@ -262,10 +262,18 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
             .context_field("domain", domain));
         }
         rama_net::address::Host::Uninterpreted(host) => {
-            return Err(OpaqueError::from_static_str(
-                "server responded with uninterpreted host: incompatible for udp bind",
-            )
-            .context_field("host", host.to_string()));
+            // Try to recover an IP first — a pct-encoded IPv4 is a
+            // valid UDP source address that happens to ride in the
+            // Uninterpreted variant. Only error on bytes that truly
+            // aren't an IP after pct-decode.
+            if let Ok(ip) = std::net::IpAddr::try_from(&host) {
+                (ip, port).into()
+            } else {
+                return Err(OpaqueError::from_static_str(
+                    "server responded with uninterpreted host: incompatible for udp bind",
+                )
+                .context_field("host", host.to_string()));
+            }
         }
         rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
     };

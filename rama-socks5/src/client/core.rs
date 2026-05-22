@@ -309,20 +309,31 @@ impl Client {
                 );
             }
             Host::Uninterpreted(host) => {
-                tracing::debug!(
-                    "bind command response does not accept uninterpreted host {host} as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        HandshakeError::io(err).with_context("read server response: bind failed")
-                    })?;
-                return Err(
-                    HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
-                        .with_context("selected bind addr cannot be an uninterpreted host"),
-                );
+                // Try to recover an IP first — a pct-encoded IPv4
+                // (`%31%32%37.0.0.1`) is a legitimate bind address that
+                // happens to ride in the Uninterpreted variant. Only
+                // fall through to AddressTypeNotSupported when recovery
+                // fails (sub-delim reg-name / IPvFuture / a domain that
+                // didn't promote).
+                if let Ok(ip) = std::net::IpAddr::try_from(&host) {
+                    ip
+                } else {
+                    tracing::debug!(
+                        "bind command response does not accept uninterpreted host {host} as bind address",
+                    );
+                    let reply_kind = ReplyKind::AddressTypeNotSupported;
+                    Reply::error_reply(reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(|err| {
+                            HandshakeError::io(err)
+                                .with_context("read server response: bind failed")
+                        })?;
+                    return Err(
+                        HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
+                            .with_context("selected bind addr cannot be an uninterpreted host"),
+                    );
+                }
             }
             Host::Address(ip_addr) => ip_addr,
         };

@@ -3,7 +3,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
 use rama_core::error::BoxError;
 use rama_net::address::{Domain, Host, HostWithPort};
-use std::{io::Read, net::IpAddr};
+use std::{borrow::Cow, io::Read, net::IpAddr};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// Compute the length of an authority,
@@ -16,10 +16,21 @@ pub(super) fn authority_length(authority: &HostWithPort) -> usize {
             IpAddr::V4(_) => 4,
             IpAddr::V6(_) => 16,
         },
-        // SOCKS5 has no wire form for arbitrary reg-name / IP-literal
-        // bytes — encode as `DomainName` and let the upstream
-        // resolver interpret. Length-prefix matches the Domain case.
-        Host::Uninterpreted(host) => 1 + host.as_bytes().len(),
+        // Mirror `write_authority_to_buf`'s recovery path: a typed
+        // `Domain::try_from(host)` succeeds for pct-encoded / IDN reg-
+        // names and serializes to ACE form, which is usually shorter
+        // than the raw bytes (e.g. `m%C3%BCnchen.de` 16B → `xn--mnchen-3ya.de` 17B —
+        // most cases are within a byte either way). Falls back to the
+        // verbatim length when recovery fails. The wire writer applies
+        // the exact same logic so the buffer pre-allocation stays
+        // accurate.
+        Host::Uninterpreted(host) => {
+            let len = match Domain::try_from(host) {
+                Ok(domain) => domain.len(),
+                Err(_) => host.as_bytes().len(),
+            };
+            1 + len
+        }
     }
 }
 
@@ -133,15 +144,21 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &
         // SOCKS5 carries hosts in three categories: IPv4, IPv6, or
         // domain-name (length-prefixed bytes). Wire-preserved
         // reg-name / IP-literal bytes don't fit IP and have no
-        // direct SOCKS5 category — best-effort encode as
-        // `DomainName` so the upstream resolver gets the bytes
-        // verbatim and can decide what to do with them.
+        // direct SOCKS5 category — try to recover a typed Domain
+        // first (pct-decode + IDN via `Domain::try_from`) so a
+        // pct-encoded reg-name or raw-UTF-8 IDN host gets sent
+        // in canonical ACE form. Falls back to the verbatim bytes
+        // when recovery fails (sub-delim reg-name, IPvFuture, …) —
+        // the upstream resolver can still try them.
         Host::Uninterpreted(host) => {
-            let bytes = host.as_bytes();
+            let bytes: Cow<'_, [u8]> = match Domain::try_from(host) {
+                Ok(domain) => Cow::Owned(domain.as_str().as_bytes().to_vec()),
+                Err(_) => Cow::Borrowed(host.as_bytes()),
+            };
             buf.put_u8(AddressType::DomainName.into());
             debug_assert!(bytes.len() <= 255);
             buf.put_u8(bytes.len() as u8);
-            buf.put_slice(bytes);
+            buf.put_slice(&bytes);
         }
     }
     buf.put_u16(authority.port);

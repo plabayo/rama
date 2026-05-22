@@ -321,17 +321,26 @@ where
                 return Err(Error::aborted("udp relay failed").with_context(reply_kind));
             }
             Host::Uninterpreted(host) => {
-                tracing::debug!(
-                    "udp associate command does not accept uninterpreted host {host} as bind address"
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: udp relay failed")
-                    })?;
-                return Err(Error::aborted("udp relay failed").with_context(reply_kind));
+                // Try to recover an IP — a pct-encoded IPv4 is a valid
+                // udp-associate bind address that happens to ride in
+                // the Uninterpreted variant. Only reject on hosts that
+                // really aren't an IP after pct-decode (sub-delim reg-
+                // name, IPvFuture, …).
+                if let Ok(ip) = std::net::IpAddr::try_from(&host) {
+                    ip
+                } else {
+                    tracing::debug!(
+                        "udp associate command does not accept uninterpreted host {host} as bind address"
+                    );
+                    let reply_kind = ReplyKind::AddressTypeNotSupported;
+                    Reply::error_reply(reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(|err| {
+                            Error::io(err).with_context("write server reply: udp relay failed")
+                        })?;
+                    return Err(Error::aborted("udp relay failed").with_context(reply_kind));
+                }
             }
             Host::Address(ip_addr) => ip_addr,
         };

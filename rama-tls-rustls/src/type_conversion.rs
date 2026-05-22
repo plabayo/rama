@@ -114,16 +114,24 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
                     .context("convert domain to rustls (PKI) ServerName")?,
             )),
             Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress((*ip).into())),
-            // For the borrowed form we don't have a place to stash a
-            // recovered owned Domain string with a matching lifetime —
-            // borrowed conversion is supported only for already-typed
-            // Domain/IpAddr inputs. Callers needing this can use the
-            // owned `rama_try_from(Host)` variant instead.
-            Host::Uninterpreted(_) => Err(OpaqueError::from_static_str(
-                "uninterpreted host cannot be borrowed as rustls ServerName; \
-                 use the owned `rama_try_from(Host)` conversion instead",
-            )
-            .into()),
+            // For the borrowed form we can't borrow into a pct-decoded
+            // domain string — the decoded bytes don't live in the
+            // input. But it's worth trying the recovery and returning a
+            // `DnsName` built from the resulting owned `String` so a
+            // pct-encoded / IDN reg-name (`exa%6Dple.com`, `münchen.de`)
+            // doesn't trip this path. Bracketed IPvFuture and sub-delim
+            // reg-names still fail — rustls's ServerName grammar
+            // doesn't model them.
+            Host::Uninterpreted(host) => {
+                let domain = Domain::try_from(host).context(
+                    "uninterpreted host is not a domain for rustls ServerName \
+                     (borrowed conversion)",
+                )?;
+                Ok(rustls::pki_types::ServerName::DnsName(
+                    rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                        .context("convert recovered domain to rustls (PKI) ServerName")?,
+                ))
+            }
         }
     }
 }
