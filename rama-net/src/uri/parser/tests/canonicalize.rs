@@ -359,6 +359,23 @@ fn try_set_host_rejects_invalid_input() {
 }
 
 #[test]
+fn try_set_host_returns_typed_uri_error() {
+    use crate::uri::{Component, UriError};
+    let mut uri = Uri::parse("http://old.example/").unwrap();
+    let err = uri.try_set_host("not a valid host").unwrap_err();
+    match err {
+        UriError::ComponentConversion { component, cause } => {
+            assert_eq!(component, Component::Host);
+            // Cause is the boxed upstream `Host::TryFrom` error. The
+            // exact wording belongs to the address layer; we just want
+            // some non-empty diagnostic so callers can log it.
+            assert!(!format!("{cause}").is_empty());
+        }
+        other => panic!("expected ComponentConversion, got {other:?}"),
+    }
+}
+
+#[test]
 fn try_with_host_consuming_form() {
     let uri = Uri::parse("http://old.example/")
         .unwrap()

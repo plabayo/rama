@@ -7,9 +7,8 @@
 //!   went wrong (offset, component) for diagnostics.
 //! - [`UriError`] — surfaced when an operation on an already-parsed Uri
 //!   cannot be applied (e.g. setting an invalid path).
-//!
-//! Both are ordinary enums (no `#[non_exhaustive]`): adding a variant is a
-//! breaking change, which rama accepts at major-bump time.
+
+use rama_core::error::BoxError;
 
 use std::fmt;
 
@@ -114,7 +113,7 @@ impl std::error::Error for ParseError {}
 /// it (e.g. a control-char rejection during `set_path` is more useful as
 /// `InvalidComponent { component: Path, cause: ControlCharInUri }` than
 /// as a bare `ControlCharInUri`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum UriError {
     /// A setter received an input that fails component validation. The
     /// `cause` is the underlying parse-level failure.
@@ -123,6 +122,24 @@ pub enum UriError {
         component: Component,
         /// Underlying parse-level cause.
         cause: ParseError,
+    },
+
+    /// A typed-input conversion into a URI component failed before the
+    /// value reached the setter. The boxed cause is whatever the
+    /// upstream `TryInto` impl returned — typically from
+    /// [`Host::try_from`](crate::address::Host) or
+    /// [`Domain::try_from`](crate::address::Domain) for inputs like raw
+    /// UTF-8 hosts when the `idna` feature is disabled.
+    ///
+    /// Distinct from [`UriError::InvalidComponent`] because the failure
+    /// originates outside the URI parser, so the cause cannot always be
+    /// expressed as a [`ParseError`].
+    ComponentConversion {
+        /// Which component the setter targeted.
+        component: Component,
+        /// Underlying conversion cause (boxed because typed input
+        /// converters live across crate boundaries).
+        cause: BoxError,
     },
 
     /// An operation was attempted that is meaningless for the asterisk-form
@@ -169,6 +186,9 @@ impl fmt::Display for UriError {
             Self::InvalidComponent { component, cause } => {
                 write!(f, "invalid {component} component: {cause}")
             }
+            Self::ComponentConversion { component, cause } => {
+                write!(f, "{component} component conversion failed: {cause}")
+            }
             Self::AsteriskOperation => {
                 f.write_str("operation is not valid on the asterisk-form uri")
             }
@@ -180,6 +200,7 @@ impl std::error::Error for UriError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidComponent { cause, .. } => Some(cause),
+            Self::ComponentConversion { cause, .. } => Some(cause.as_ref()),
             Self::AsteriskOperation => None,
         }
     }

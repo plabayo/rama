@@ -750,17 +750,25 @@ impl Uri {
     /// `try_set_host("münchen.de")` ends up with a canonical
     /// `Host::Name(Domain("xn--mnchen-3ya.de"))` — exactly what
     /// client-side code building URIs from user input expects.
-    pub fn try_set_host<H>(&mut self, host: H) -> Result<&mut Self, rama_core::error::BoxError>
+    ///
+    /// Returns [`UriError::ComponentConversion`] tagged with
+    /// [`Component::Host`] when the upstream conversion fails — the
+    /// inner boxed cause carries the original error.
+    pub fn try_set_host<H>(&mut self, host: H) -> Result<&mut Self, UriError>
     where
         H: TryInto<crate::address::Host>,
         H::Error: Into<rama_core::error::BoxError>,
     {
-        let host: crate::address::Host = host.try_into().map_err(Into::into)?;
+        let host: crate::address::Host =
+            host.try_into().map_err(|e| UriError::ComponentConversion {
+                component: Component::Host,
+                cause: e.into(),
+            })?;
         Ok(self.set_host(host))
     }
 
     /// Consuming form of [`try_set_host`](Self::try_set_host).
-    pub fn try_with_host<H>(mut self, host: H) -> Result<Self, rama_core::error::BoxError>
+    pub fn try_with_host<H>(mut self, host: H) -> Result<Self, UriError>
     where
         H: TryInto<crate::address::Host>,
         H::Error: Into<rama_core::error::BoxError>,
