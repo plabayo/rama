@@ -23,7 +23,10 @@ use rama_http_types::HeaderValue;
 /// receiving wire bytes can forward them faithfully; callers needing a
 /// canonical typed form convert via the `TryFrom` impls on
 /// [`UninterpretedHost`].
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Equality, hashing, and ordering bridge across variant boundaries per
+/// RFC 3986 §6.2.2.2: see [`HostRef`]'s type-level docs.
+#[derive(Debug, Clone)]
 pub enum Host {
     /// A DNS-label-shaped name (ASCII, IDN normalised to ACE on
     /// construction via [`Domain::try_from`]).
@@ -184,7 +187,22 @@ impl Host {
 ///
 /// Useful anywhere a borrowed host view makes sense — URI host components,
 /// header-parse temporaries, DNS lookups against a non-owning buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// # Equality, hashing, ordering
+///
+/// Apply RFC 3986 §6.2.2 syntactic equivalence **across variant
+/// boundaries**. A non-bracketed [`HostRef::Uninterpreted`] whose bytes
+/// pct-decode + IDN-normalize to a typed [`Domain`] compares (and
+/// hashes, and orders) equal to the corresponding
+/// [`HostRef::Name`]; same for a pct-encoded reg-name that decodes to
+/// an [`IpAddr`] vs the typed [`HostRef::Address`]. So
+/// `Name(Domain("example.com"))` ≡ `Uninterpreted("exa%6Dple.com")`
+/// per §6.2.2.2 — both are syntactically equivalent hosts.
+///
+/// Variant boundary is preserved for the *bracketed* sub-shape of
+/// [`UninterpretedHost`] (IPvFuture); those never bridge to typed
+/// `Name`/`Address` because there's no typed counterpart.
+#[derive(Debug, Clone, Copy)]
 pub enum HostRef<'a> {
     /// A DNS-style name.
     Name(super::domain::DomainRef<'a>),
@@ -478,6 +496,184 @@ impl fmt::Display for HostRef<'_> {
             Self::Address(ip) => ip.fmt(f),
             Self::Uninterpreted(host) => host.fmt(f),
         }
+    }
+}
+
+// ---- Cross-variant Eq / Hash / Ord (RFC 3986 §6.2.2.2) -------------------
+//
+// Two `HostRef`s are equal iff their *canonical* host form is equal. A
+// non-bracketed `Uninterpreted(u)` whose bytes pct-decode + IDN-normalise
+// to a typed `Domain` IS that `Domain` per the spec — so we project
+// `Uninterpreted` through `Domain::try_from` / `IpAddr::try_from` before
+// comparing / hashing / ordering. Same-variant cases short-circuit
+// through the underlying type's own impls (case-folded for `Domain`,
+// logical-byte for `UninterpretedHost`, value for `IpAddr`).
+//
+// Cost: promotion attempts run only on cross-variant paths; same-variant
+// is single-dispatch via the sub-type's existing fast impl.
+
+/// Canonical projection of a `HostRef` for Eq / Hash / Ord purposes.
+/// Owned because `Domain::try_from(UninterpretedHostRef)` may allocate
+/// (pct-decoded + IDN-encoded bytes) — the projection only runs at the
+/// Eq/Hash/Ord call site, not on every accessor.
+enum HostCanonical<'a> {
+    Domain(super::domain::Domain),
+    DomainRef(super::domain::DomainRef<'a>),
+    Address(IpAddr),
+    /// Sub-delim reg-name / IPvFuture body — no typed canonical form.
+    Opaque(UninterpretedHostRef<'a>),
+}
+
+impl<'a> HostCanonical<'a> {
+    fn from_ref(host: HostRef<'a>) -> Self {
+        match host {
+            HostRef::Name(d) => Self::DomainRef(d),
+            HostRef::Address(ip) => Self::Address(ip),
+            HostRef::Uninterpreted(u) => {
+                // Bracketed → IPvFuture body, no typed promotion possible.
+                if u.is_bracketed() {
+                    return Self::Opaque(u);
+                }
+                // Try IP first — cheaper than `Domain::try_from` (no
+                // allocation for the common pct-free IPv4 case) and
+                // avoids classifying `127.0.0.1` as a `Name`.
+                if let Ok(ip) = IpAddr::try_from(u) {
+                    return Self::Address(ip);
+                }
+                if let Ok(d) = Domain::try_from(u) {
+                    return Self::Domain(d);
+                }
+                Self::Opaque(u)
+            }
+        }
+    }
+
+    /// Borrowed `DomainRef` view of the canonical form (used by Eq/Ord
+    /// without re-allocating the owned `Domain` produced by `try_from`).
+    fn as_view(&self) -> HostCanonicalView<'_> {
+        match self {
+            Self::Domain(d) => HostCanonicalView::Domain(d.into()),
+            Self::DomainRef(d) => HostCanonicalView::Domain(*d),
+            Self::Address(ip) => HostCanonicalView::Address(*ip),
+            Self::Opaque(u) => HostCanonicalView::Opaque(*u),
+        }
+    }
+}
+
+/// Borrowed view of the canonical form. Variant tag identical to
+/// `HostCanonical`'s; only used for comparing two projections.
+#[derive(Clone, Copy)]
+enum HostCanonicalView<'a> {
+    Domain(super::domain::DomainRef<'a>),
+    Address(IpAddr),
+    Opaque(UninterpretedHostRef<'a>),
+}
+
+impl HostCanonicalView<'_> {
+    /// Discriminant tag for total ordering — `Domain < Address <
+    /// Opaque`. Matches the source `HostRef` variant order (Name → 0,
+    /// Address → 1, Uninterpreted → 2) so the bridging doesn't shuffle
+    /// the natural ordering.
+    fn tag(&self) -> u8 {
+        match self {
+            Self::Domain(_) => 0,
+            Self::Address(_) => 1,
+            Self::Opaque(_) => 2,
+        }
+    }
+}
+
+impl PartialEq for HostRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        // Same-variant fast paths (no allocation, no promotion attempts).
+        match (self, other) {
+            (Self::Name(a), Self::Name(b)) => return a == b,
+            (Self::Address(a), Self::Address(b)) => return a == b,
+            (Self::Uninterpreted(a), Self::Uninterpreted(b)) => return a == b,
+            _ => {}
+        }
+        // Cross-variant: project both through the canonical form.
+        let lhs = HostCanonical::from_ref(*self);
+        let rhs = HostCanonical::from_ref(*other);
+        match (lhs.as_view(), rhs.as_view()) {
+            (HostCanonicalView::Domain(a), HostCanonicalView::Domain(b)) => a == b,
+            (HostCanonicalView::Address(a), HostCanonicalView::Address(b)) => a == b,
+            (HostCanonicalView::Opaque(a), HostCanonicalView::Opaque(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HostRef<'_> {}
+
+impl Ord for HostRef<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let lhs = HostCanonical::from_ref(*self);
+        let rhs = HostCanonical::from_ref(*other);
+        let (la, ra) = (lhs.as_view(), rhs.as_view());
+        match la.tag().cmp(&ra.tag()) {
+            std::cmp::Ordering::Equal => match (la, ra) {
+                (HostCanonicalView::Domain(a), HostCanonicalView::Domain(b)) => a.cmp(&b),
+                (HostCanonicalView::Address(a), HostCanonicalView::Address(b)) => a.cmp(&b),
+                (HostCanonicalView::Opaque(a), HostCanonicalView::Opaque(b)) => a.cmp(&b),
+                // SAFETY: `HostCanonicalView::tag()` returns a unique
+                // discriminant per variant; equal tags ⇒ same variant.
+                // `unreachable_unchecked` keeps the codegen lean without
+                // tripping `clippy::unreachable` for arbitrary inputs.
+                _ => unsafe { std::hint::unreachable_unchecked() },
+            },
+            non_eq => non_eq,
+        }
+    }
+}
+
+impl PartialOrd for HostRef<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for HostRef<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let canonical = HostCanonical::from_ref(*self);
+        let view = canonical.as_view();
+        // Discriminant tag first so Domain / Address / Opaque can't
+        // collide on equal-bytes (e.g. an Address hash and a Domain
+        // hash that happen to produce the same state).
+        state.write_u8(view.tag());
+        match view {
+            HostCanonicalView::Domain(d) => d.hash(state),
+            HostCanonicalView::Address(ip) => ip.hash(state),
+            HostCanonicalView::Opaque(u) => u.hash(state),
+        }
+    }
+}
+
+// ---- Owned `Host` delegates to `HostRef` for Eq / Hash / Ord ------------
+
+impl PartialEq for Host {
+    fn eq(&self, other: &Self) -> bool {
+        HostRef::from(self) == HostRef::from(other)
+    }
+}
+
+impl Eq for Host {}
+
+impl Ord for Host {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        HostRef::from(self).cmp(&HostRef::from(other))
+    }
+}
+
+impl PartialOrd for Host {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for Host {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        HostRef::from(self).hash(state);
     }
 }
 
@@ -996,5 +1192,98 @@ mod tests {
             let r: HostRef<'_> = (&owned).into();
             assert_eq!(format!("{r}"), format!("{owned}"));
         }
+    }
+
+    // ---- Cross-variant Eq / Hash / Ord (RFC 3986 §6.2.2.2) -------------
+
+    #[test]
+    fn cross_variant_name_eq_uninterpreted_via_pct_decode() {
+        // `exa%6Dple.com` pct-decodes to `example.com` — same host per
+        // §6.2.2.2. Promote-then-compare bridges the variant boundary.
+        let typed = Host::Name(Domain::from_static("example.com"));
+        let pct = reg_host(b"exa%6Dple.com");
+        assert_eq!(typed, pct);
+        assert_eq!(pct, typed);
+    }
+
+    #[test]
+    fn cross_variant_name_eq_uninterpreted_case_insensitive() {
+        // `EXAMPLE.com` (Uninterpreted) ≡ `example.com` (Name).
+        // Domain case-folding + variant bridging compose.
+        let typed = Host::Name(Domain::from_static("example.com"));
+        let upper_pct = reg_host(b"EXa%6Dple.COM");
+        assert_eq!(typed, upper_pct);
+    }
+
+    #[test]
+    fn cross_variant_address_eq_uninterpreted_via_pct_decode() {
+        // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` — same IPv4.
+        let typed = Host::Address("127.0.0.1".parse().unwrap());
+        let pct = reg_host(b"%31%32%37.0.0.1");
+        assert_eq!(typed, pct);
+    }
+
+    #[test]
+    fn cross_variant_bracketed_ipvfuture_never_eq_typed() {
+        // Bracketed IPvFuture has no typed counterpart — must NOT
+        // compare equal to any Name or Address.
+        let bracketed = bracketed_host(b"v1.fe80::a");
+        let domain = Host::Name(Domain::from_static("v1"));
+        assert_ne!(bracketed, domain);
+        let v6 = Host::Address("fe80::a".parse().unwrap());
+        assert_ne!(bracketed, v6);
+    }
+
+    #[test]
+    fn cross_variant_opaque_uninterpreted_never_eq_typed() {
+        // Sub-delim reg-name (`tag,with,commas`) has no typed canonical
+        // form. Must not bridge to anything else.
+        let opaque = reg_host(b"tag,with,commas");
+        assert_ne!(opaque, Host::Name(Domain::from_static("tag")));
+        assert_ne!(opaque, Host::Address("127.0.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn cross_variant_hash_agrees_with_eq() {
+        use ahash::{HashMap, HashMapExt as _};
+        let mut m: HashMap<Host, &'static str> = HashMap::new();
+        m.insert(Host::Name(Domain::from_static("example.com")), "value");
+        // Insert as Name, look up via pct-encoded Uninterpreted form.
+        assert_eq!(m.get(&reg_host(b"exa%6Dple.com")), Some(&"value"));
+        // ... and uppercase pct-encoded.
+        assert_eq!(m.get(&reg_host(b"EXa%6Dple.COM")), Some(&"value"));
+    }
+
+    #[test]
+    fn cross_variant_hash_address_via_uninterpreted() {
+        use ahash::{HashMap, HashMapExt as _};
+        let mut m: HashMap<Host, ()> = HashMap::new();
+        m.insert(Host::Address("127.0.0.1".parse().unwrap()), ());
+        // Lookup via pct-encoded Uninterpreted IPv4 form.
+        assert!(m.contains_key(&reg_host(b"%31%32%37.0.0.1")));
+    }
+
+    #[test]
+    fn cross_variant_ord_promotion_groups_typed_together() {
+        // After canonical projection, the ordering tag is (Domain,
+        // Address, Opaque). So a pct-encoded Uninterpreted reg-name
+        // that decodes to a Domain sorts WITH the Domain variant, not
+        // with the other Uninterpreted hosts.
+        let mut v = [
+            reg_host(b"tag,with,commas"),                    // Opaque (tag 2)
+            reg_host(b"exa%6Dple.com"),                      // Promotes to Domain (tag 0)
+            Host::Address("127.0.0.1".parse().unwrap()),     // Address (tag 1)
+            Host::Name(Domain::from_static("aaaa.example")), // Domain (tag 0)
+        ];
+        v.sort();
+        // First two slots: Domain-class (alphabetical by Domain ord).
+        assert!(matches!(&v[0], Host::Name(d) if d.as_str() == "aaaa.example"));
+        // The pct-encoded reg-name canonicalises to a Domain so it
+        // sorts in the Domain group too.
+        assert!(matches!(&v[1], Host::Uninterpreted(_)));
+        // Then Address-class.
+        assert!(matches!(&v[2], Host::Address(_)));
+        // Then Opaque-class.
+        assert!(matches!(&v[3], Host::Uninterpreted(u) if u.as_str() == "tag,with,commas"));
     }
 }
