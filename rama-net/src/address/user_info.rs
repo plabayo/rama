@@ -700,4 +700,29 @@ mod tests {
         let u = UserInfo::from_static_str(":secret");
         Basic::try_from(&u).unwrap_err();
     }
+
+    // ---- `From<Basic>` divergence regression (audit C2 pinning) -------
+    //
+    // `Basic` validates only CR/LF/NUL; `UserInfo::try_from` enforces the
+    // full RFC 3986 §3.2.1 grammar (no raw `@`, no space, no gen-delims,
+    // …). So `From<Basic> for UserInfo` is **deliberately infallible**
+    // even though it can produce bytes the parser would reject. The
+    // type-level doc warns about this and the planned follow-up is to
+    // drop `UserInfo` for a relaxed `Basic`. Until that lands, pin the
+    // current state so we notice if either side's validation drifts.
+
+    #[test]
+    fn from_basic_emits_userinfo_that_try_from_rejects() {
+        // `user@host:pw` — `Basic::try_from(&str)` accepts (no CR/LF/NUL),
+        // but `@` is a userinfo gen-delim that `UserInfo::try_from`
+        // refuses. The `From<Basic>` conversion is documented as
+        // deliberately infallible even though it can produce bytes the
+        // parser would reject; this test pins the divergence so a future
+        // tightening of `Basic` (or loosening of `UserInfo::try_from`)
+        // closes the gap visibly.
+        let basic = Basic::try_from("user@host:pw").unwrap();
+        let ui: UserInfo = basic.into();
+        assert_eq!(ui.as_str(), "user@host:pw");
+        UserInfo::try_from(ui.as_str()).unwrap_err();
+    }
 }

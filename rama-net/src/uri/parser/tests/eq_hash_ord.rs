@@ -1,13 +1,24 @@
-//! `Uri` equality, hashing, ordering — all project through the Display
-//! wire form. Plus the [`TryFrom`] impls for every
-//! supported input shape.
+//! `Uri` equality, hashing, ordering — component-wise + RFC 3986 §6.2.2
+//! semantic. Plus the [`TryFrom`] impls for every supported input shape.
 //!
-//! Wire-form projection means two URIs that render identically compare
-//! equal regardless of Lazy/Owned representation, source-buffer identity,
-//! or component decomposition. **Not** semantic equality —
-//! `https://example.com/a%62c` and `https://example.com/abc` Display
-//! differently and so compare non-equal. Use [`Uri::canonicalize`] when
-//! that distinction needs to be bridged.
+//! All four `Uri` impls compare via the public component accessors
+//! (`scheme`, `authority`, `path`, `query`, `fragment`); each sub-type's
+//! own `Eq`/`Hash`/`Ord` carries the right semantics. So two URIs that
+//! render differently can still compare equal when their components are
+//! §6.2.2 equivalent:
+//!
+//! - Host (§6.2.2.1 + §6.2.2.2): ASCII case-insensitive, pct-encoded
+//!   octets equivalent to their decoded form (`exa%2Cmple` ≡ `exa,mple`,
+//!   `EXAMPLE.com` ≡ `example.com`).
+//! - Scheme (§6.2.2.1): ASCII case-insensitive via the `Protocol` enum.
+//! - Path / query / fragment: **byte-exact** (case-sensitive,
+//!   pct-encoding preserved). Per §6.2.2.2 only the host normalises
+//!   pct-encoded equivalences; paths and queries stay strict.
+//!
+//! `Uri::canonicalize` is the operation that bridges those last three —
+//! e.g. it pct-decodes unreserved bytes inside the path. So
+//! `https://example.com/a%62c` ≢ `https://example.com/abc` at the `Uri`
+//! level, but `uri.canonicalize() == other.canonicalize()` does hold.
 
 use ahash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
 use rama_core::bytes::{Bytes, BytesMut};
@@ -172,6 +183,35 @@ fn ord_sort_stable_for_routing_table_keys() {
             "https://b.example/p".to_owned(),
             "https://c.example/".to_owned(),
         ]
+    );
+}
+
+#[test]
+fn ord_asterisk_sorts_before_all_other_uris() {
+    // `*` is its own variant; `Uri::cmp` places it strictly less than
+    // anything with a scheme/authority/path so sort output is stable
+    // when an asterisk request-target mingles with other URIs.
+    let mut v: Vec<Uri> = ["https://example.com/", "/origin-form", "*", "urn:isbn:0"]
+        .into_iter()
+        .map(|s| Uri::parse(s).unwrap())
+        .collect();
+    v.sort();
+    assert_eq!(v[0].to_string(), "*", "asterisk must sort first, got {v:?}");
+}
+
+#[test]
+fn hash_asterisk_distinct_from_other_uris() {
+    // The discriminant byte for `Asterisk` in `Uri::hash` is dedicated
+    // — must not collide with any other URI's hash key. Insert one of
+    // each into a HashSet and assert no dedup.
+    let mut s: ahash::HashSet<Uri> = ahash::HashSet::default();
+    s.insert(Uri::parse("*").unwrap());
+    s.insert(Uri::parse("/").unwrap()); // origin-form, no scheme/authority
+    s.insert(Uri::parse("https://example.com/").unwrap());
+    assert_eq!(
+        s.len(),
+        3,
+        "asterisk must hash distinctly from origin/absolute"
     );
 }
 

@@ -224,8 +224,8 @@ pub struct QueryPair {
     /// can exceed `MAX_URI_LEN` (the parser-level 16-bit cap applies
     /// only to parsed inputs, not to caller-built queries). `u16` would
     /// silently truncate the offset for pairs whose key crosses 65535
-    /// bytes — caught by the `audit_query_pair_eq_offset_handles_large_pairs`
-    /// regression test.
+    /// bytes — pinned by the `eq_offset_*` and `huge_pair_*` regression
+    /// tests in `parser::tests::query_pairs`.
     eq_at: Option<u32>,
 }
 
@@ -319,8 +319,8 @@ pub struct QueryPairRef<'a> {
     /// can exceed `MAX_URI_LEN` (the parser-level 16-bit cap applies
     /// only to parsed inputs, not to caller-built queries). `u16` would
     /// silently truncate the offset for pairs whose key crosses 65535
-    /// bytes — caught by the `audit_query_pair_eq_offset_handles_large_pairs`
-    /// regression test.
+    /// bytes — pinned by the `eq_offset_*` and `huge_pair_*` regression
+    /// tests in `parser::tests::query_pairs`.
     eq_at: Option<u32>,
 }
 
