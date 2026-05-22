@@ -192,10 +192,16 @@ fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
             }
         }
     }
-    if let Some(port) = uri.port() {
-        buf.extend_from_slice(b":");
-        let mut itoa = itoa::Buffer::new();
-        buf.extend_from_slice(itoa.format(port).as_bytes());
+    match uri.port() {
+        crate::address::OptPort::Unset => {}
+        crate::address::OptPort::Empty => {
+            buf.extend_from_slice(b":");
+        }
+        crate::address::OptPort::Set(port) => {
+            buf.extend_from_slice(b":");
+            let mut itoa = itoa::Buffer::new();
+            buf.extend_from_slice(itoa.format(port).as_bytes());
+        }
     }
 }
 

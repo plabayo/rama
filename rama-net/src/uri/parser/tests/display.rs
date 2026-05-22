@@ -64,7 +64,7 @@ fn http_authority(host: &str, port: Option<u16>, userinfo: Option<&str>) -> Auth
         user_info: userinfo.map(|s| UserInfo::try_from(s).unwrap()),
         address: HostWithOptPort {
             host: Host::Name(Domain::try_from(host).unwrap()),
-            port,
+            port: port.into(),
         },
     }
 }

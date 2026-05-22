@@ -314,9 +314,14 @@ fn serialized_len(owned: &OwnedUriRef) -> usize {
         )]
         let _ = write!(&mut counter, "{}", auth.address.host);
         n += counter.0;
-        if let Some(port) = auth.address.port {
-            n += 1; // ":"
-            n += port_decimal_len(port);
+        match auth.address.port {
+            crate::address::OptPort::Unset => {}
+            crate::address::OptPort::Empty => {
+                n += 1; // bare ":"
+            }
+            crate::address::OptPort::Set(port) => {
+                n += 1 + port_decimal_len(port); // ":" + digits
+            }
         }
     }
     n += owned.path.len();

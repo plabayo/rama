@@ -158,7 +158,7 @@ where
                 let authority = request_ctx.authority;
                 tracing::trace!(
                     server.address = %authority.host,
-                    server.port = authority.port,
+                    server.port = authority.port_u16(),
                     "add missing authority as host header"
                 );
                 req.headers_mut().typed_insert(Host::from(authority));

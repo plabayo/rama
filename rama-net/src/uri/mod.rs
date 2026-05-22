@@ -393,13 +393,34 @@ impl Uri {
     /// We never substitute scheme default ports here — that's a
     /// canonicalisation policy decision the caller makes (e.g.
     /// `Protocol::default_port()` if the URI's scheme is known).
+    ///
+    /// Returns [`OptPort`](crate::address::OptPort) — distinguishes
+    /// `Unset` / `Empty` / `Set(u16)`. For the relaxed `Option<u16>`
+    /// view, use [`port_u16`](Self::port_u16).
     #[must_use]
-    pub fn port(&self) -> Option<u16> {
+    pub fn port(&self) -> crate::address::OptPort {
         match &self.inner {
-            UriInner::Asterisk => None,
-            UriInner::Lazy(arc) => arc.authority.as_ref().and_then(|a| a.port),
-            UriInner::Owned(arc) => arc.authority.as_ref().and_then(|a| a.address.port),
+            UriInner::Asterisk => crate::address::OptPort::Unset,
+            UriInner::Lazy(arc) => arc
+                .authority
+                .as_ref()
+                .map(|a| a.port)
+                .unwrap_or(crate::address::OptPort::Unset),
+            UriInner::Owned(arc) => arc
+                .authority
+                .as_ref()
+                .map(|a| a.address.port)
+                .unwrap_or(crate::address::OptPort::Unset),
         }
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, `Unset` /
+    /// `Empty` both → `None`. Use when the wire distinction between
+    /// "no colon" and "empty colon" doesn't matter (e.g. dialing).
+    #[must_use]
+    #[inline]
+    pub fn port_u16(&self) -> Option<u16> {
+        self.port().as_u16()
     }
 
     /// Returns the userinfo component, or `None` if the URI has no
@@ -768,7 +789,10 @@ impl Uri {
             None => {
                 owned.authority = Some(crate::address::Authority {
                     user_info: None,
-                    address: crate::address::HostWithOptPort { host, port: None },
+                    address: crate::address::HostWithOptPort {
+                        host,
+                        port: crate::address::OptPort::Unset,
+                    },
                 });
             }
         }
@@ -826,7 +850,7 @@ impl Uri {
     /// authority yet, one is created with the loopback IPv4 host
     /// as a placeholder — callers building a URI from scratch should
     /// set the host before the port for clarity.
-    pub fn set_port(&mut self, port: impl Into<Option<u16>>) -> &mut Self {
+    pub fn set_port(&mut self, port: impl Into<crate::address::OptPort>) -> &mut Self {
         let port = port.into();
         let owned = self.to_mut();
         match &mut owned.authority {
@@ -848,14 +872,14 @@ impl Uri {
 
     /// Consuming form of [`set_port`](Self::set_port).
     #[must_use]
-    pub fn with_port(mut self, port: impl Into<Option<u16>>) -> Self {
+    pub fn with_port(mut self, port: impl Into<crate::address::OptPort>) -> Self {
         self.set_port(port);
         self
     }
 
-    /// Clear the port. Shortcut for `set_port(None)`.
+    /// Clear the port. Shortcut for `set_port(OptPort::Unset)`.
     pub fn unset_port(&mut self) -> &mut Self {
-        self.set_port(None)
+        self.set_port(crate::address::OptPort::Unset)
     }
 
     /// Consuming form of [`unset_port`](Self::unset_port).
@@ -886,7 +910,7 @@ impl Uri {
                     user_info,
                     address: crate::address::HostWithOptPort {
                         host: crate::address::Host::LOCALHOST_IPV4,
-                        port: None,
+                        port: crate::address::OptPort::Unset,
                     },
                 });
             }
@@ -1254,12 +1278,23 @@ impl<'a> UriRef<'a> {
         self.authority.map(|a| a.host())
     }
 
-    /// Returns the port shortcut, or `None` if no authority OR no
-    /// explicit port.
+    /// Returns the port marker. `OptPort::Unset` when no authority OR
+    /// no `:` after the host. For the relaxed `Option<u16>` view use
+    /// [`port_u16`](Self::port_u16).
     #[must_use]
     #[inline]
-    pub fn port(&self) -> Option<u16> {
-        self.authority.and_then(|a| a.port())
+    pub fn port(&self) -> crate::address::OptPort {
+        self.authority
+            .map(|a| a.port())
+            .unwrap_or(crate::address::OptPort::Unset)
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
+    /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
+    #[must_use]
+    #[inline]
+    pub fn port_u16(&self) -> Option<u16> {
+        self.port().as_u16()
     }
 
     /// Returns the userinfo shortcut, or `None` if no authority OR

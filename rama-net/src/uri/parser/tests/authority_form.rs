@@ -14,7 +14,7 @@ fn host_port_pair() {
     let u = Uri::parse_authority_form("example.com:443").unwrap();
     assert!(u.scheme().is_none(), "authority-form has no scheme");
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.port(), Some(443));
+    assert_eq!(u.port_u16(), Some(443));
     assert_eq!(u.path().map(|p| p.as_raw_str()), Some(""));
 }
 
@@ -22,7 +22,7 @@ fn host_port_pair() {
 fn host_port_with_userinfo() {
     let u = Uri::parse_authority_form("user:pass@example.com:443").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.port(), Some(443));
+    assert_eq!(u.port_u16(), Some(443));
     assert!(u.userinfo().is_some());
 }
 
@@ -30,18 +30,18 @@ fn host_port_with_userinfo() {
 fn ipv4_literal() {
     let u = Uri::parse_authority_form("127.0.0.1:8080").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "127.0.0.1");
-    assert_eq!(u.port(), Some(8080));
+    assert_eq!(u.port_u16(), Some(8080));
 }
 
 #[test]
 fn ipv6_bracketed_literal() {
     let u = Uri::parse_authority_form("[::1]:443").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "::1");
-    assert_eq!(u.port(), Some(443));
+    assert_eq!(u.port_u16(), Some(443));
 
     let u = Uri::parse_authority_form("[2001:db8::1]:80").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "2001:db8::1");
-    assert_eq!(u.port(), Some(80));
+    assert_eq!(u.port_u16(), Some(80));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn bare_host_without_port_accepted() {
     // port requirement at their layer.
     let u = Uri::parse_authority_form("example.com").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.port(), None);
+    assert_eq!(u.port_u16(), None);
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn empty_port_accepted_in_graceful_as_bare_host() {
     // accepts bare-host shapes, so `example.com:` parses with `None`.
     let u = Uri::parse_authority_form("example.com:").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.port(), None);
+    assert_eq!(u.port_u16(), None);
 }
 
 #[test]
@@ -141,14 +141,14 @@ fn strict_accepts_host_port() {
     // The canonical CONNECT shape passes through cleanly.
     let u = Uri::parse_authority_form_strict("example.com:443").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "example.com");
-    assert_eq!(u.port(), Some(443));
+    assert_eq!(u.port_u16(), Some(443));
 }
 
 #[test]
 fn strict_accepts_bracketed_ipv6_host_port() {
     let u = Uri::parse_authority_form_strict("[2001:db8::1]:443").unwrap();
     assert_eq!(u.host().unwrap().to_str(), "2001:db8::1");
-    assert_eq!(u.port(), Some(443));
+    assert_eq!(u.port_u16(), Some(443));
 }
 
 #[test]

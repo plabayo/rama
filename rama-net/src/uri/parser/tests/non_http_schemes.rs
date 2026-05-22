@@ -120,7 +120,7 @@ fn ftp_with_path() {
     let l = lazy(&u);
     assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("ftp"));
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(2121));
+    assert_eq!(auth.port, crate::address::OptPort::Set(2121));
     assert_eq!(path_str(l), "/pub/");
 }
 
@@ -140,7 +140,7 @@ fn ws_socket() {
 fn wss_with_port() {
     let u = parse_graceful("wss://chat.example.com:8443/socket").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(8443));
+    assert_eq!(auth.port, crate::address::OptPort::Set(8443));
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn git_ssh_compound_scheme() {
     assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("git+ssh"));
     assert_eq!(userinfo_str(l), Some("git"));
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(22));
+    assert_eq!(auth.port, crate::address::OptPort::Set(22));
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn ssh_with_port() {
     let l = lazy(&u);
     assert_eq!(userinfo_str(l), Some("user"));
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(22));
+    assert_eq!(auth.port, crate::address::OptPort::Set(22));
     assert_eq!(path_str(l), "/path");
 }
 
@@ -178,7 +178,7 @@ fn redis_with_db() {
     let l = lazy(&u);
     let auth = l.authority.as_ref().unwrap();
     assert_eq!(auth.host, Host::Name(Domain::from_static("localhost")));
-    assert_eq!(auth.port, Some(6379));
+    assert_eq!(auth.port, crate::address::OptPort::Set(6379));
     assert_eq!(path_str(l), "/0");
 }
 
@@ -188,7 +188,7 @@ fn mongodb_with_userinfo() {
     let l = lazy(&u);
     assert_eq!(userinfo_str(l), Some("user:pass"));
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(27017));
+    assert_eq!(auth.port, crate::address::OptPort::Set(27017));
     assert_eq!(path_str(l), "/mydb");
 }
 
@@ -199,7 +199,7 @@ fn coap_ipv6_iot() {
     let l = lazy(&u);
     assert_eq!(l.scheme.as_ref().map(|p| p.as_str()), Some("coap"));
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(5683));
+    assert_eq!(auth.port, crate::address::OptPort::Set(5683));
     assert_eq!(path_str(l), "/.well-known/core");
 }
 
@@ -218,7 +218,7 @@ fn telnet_ipv4() {
     let u = parse_graceful("telnet://192.0.2.16:80/").unwrap();
     let l = lazy(&u);
     let auth = l.authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(80));
+    assert_eq!(auth.port, crate::address::OptPort::Set(80));
     assert_eq!(path_str(l), "/");
 }
 

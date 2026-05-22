@@ -148,7 +148,7 @@ fn ipvfuture_uppercase_v_accepted() {
 fn ipvfuture_with_port() {
     let uri = parse_strict("http://[v1.fe80::a]:443/").unwrap();
     assert_eq!(uri.host().unwrap().to_str(), "[v1.fe80::a]");
-    assert_eq!(uri.port(), Some(443));
+    assert_eq!(uri.port_u16(), Some(443));
 }
 
 #[test]

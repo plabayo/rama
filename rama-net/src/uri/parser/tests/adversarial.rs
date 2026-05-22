@@ -279,14 +279,14 @@ fn double_at_in_authority_uses_last_at_split() {
 fn port_0_accepted() {
     let u = parse_graceful("http://example.com:0/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(0));
+    assert_eq!(auth.port, crate::address::OptPort::Set(0));
 }
 
 #[test]
 fn port_65535_accepted() {
     let u = parse_graceful("http://example.com:65535/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert_eq!(auth.port, Some(65535));
+    assert_eq!(auth.port, crate::address::OptPort::Set(65535));
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn empty_authority_accepted_as_empty_uninterpreted_host() {
         Host::Uninterpreted(h) => assert!(h.as_str().is_empty()),
         other => panic!("expected empty Uninterpreted host, got {other:?}"),
     }
-    assert_eq!(auth.port, None);
+    assert_eq!(auth.port, crate::address::OptPort::Unset);
 
     // `http://` — empty authority with no path.
     let u = parse_graceful("http://").unwrap();

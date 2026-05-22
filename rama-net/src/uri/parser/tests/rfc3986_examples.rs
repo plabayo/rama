@@ -81,7 +81,7 @@ fn telnet_example() {
         auth.host,
         Host::Address(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 16)))
     );
-    assert_eq!(auth.port, Some(80));
+    assert_eq!(auth.port, crate::address::OptPort::Set(80));
     assert_eq!(path_str(l), "/");
 }
 

@@ -286,18 +286,18 @@ fn host_ipv6() {
 
 #[test]
 fn port_asterisk_is_none() {
-    assert!(parse_graceful("*").unwrap().port().is_none());
+    assert!(parse_graceful("*").unwrap().port().is_unset());
 }
 
 #[test]
 fn port_origin_form_is_none() {
-    assert!(parse_graceful("/foo").unwrap().port().is_none());
+    assert!(parse_graceful("/foo").unwrap().port().is_unset());
 }
 
 #[test]
 fn port_opaque_path_is_none() {
-    assert!(parse_graceful("urn:isbn:0").unwrap().port().is_none());
-    assert!(parse_graceful("mailto:a@b").unwrap().port().is_none());
+    assert!(parse_graceful("urn:isbn:0").unwrap().port().is_unset());
+    assert!(parse_graceful("mailto:a@b").unwrap().port().is_unset());
 }
 
 #[test]
@@ -307,14 +307,14 @@ fn port_absent_when_authority_has_no_port() {
         parse_graceful("http://example.com/")
             .unwrap()
             .port()
-            .is_none()
+            .is_unset()
     );
 }
 
 #[test]
 fn port_explicit() {
     let u = parse_graceful("http://example.com:8080/").unwrap();
-    assert_eq!(u.port(), Some(8080));
+    assert_eq!(u.port_u16(), Some(8080));
 }
 
 #[test]
@@ -326,32 +326,32 @@ fn port_default_not_substituted() {
         parse_graceful("http://example.com/")
             .unwrap()
             .port()
-            .is_none()
+            .is_unset()
     );
     assert!(
         parse_graceful("https://example.com/")
             .unwrap()
             .port()
-            .is_none()
+            .is_unset()
     );
 }
 
 #[test]
 fn port_zero() {
     let u = parse_graceful("http://example.com:0/").unwrap();
-    assert_eq!(u.port(), Some(0));
+    assert_eq!(u.port_u16(), Some(0));
 }
 
 #[test]
 fn port_max() {
     let u = parse_graceful("http://example.com:65535/").unwrap();
-    assert_eq!(u.port(), Some(65535));
+    assert_eq!(u.port_u16(), Some(65535));
 }
 
 #[test]
 fn port_ipv6_authority() {
     let u = parse_graceful("https://[2001:db8::1]:8443/").unwrap();
-    assert_eq!(u.port(), Some(8443));
+    assert_eq!(u.port_u16(), Some(8443));
 }
 
 // ----------------------------------------------------------------------
@@ -463,7 +463,7 @@ fn authority_host_only() {
         a.host(),
         HostRef::from(&Host::Name(Domain::from_static("example.com")))
     );
-    assert!(a.port().is_none());
+    assert!(a.port().is_unset());
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn authority_with_port() {
     let u = parse_graceful("http://example.com:8080/").unwrap();
     let a = u.authority().unwrap();
     assert!(a.userinfo().is_none());
-    assert_eq!(a.port(), Some(8080));
+    assert_eq!(a.port_u16(), Some(8080));
 }
 
 #[test]
@@ -483,7 +483,7 @@ fn authority_with_userinfo_no_port() {
         a.host(),
         HostRef::from(&Host::Name(Domain::from_static("example.com")))
     );
-    assert!(a.port().is_none());
+    assert!(a.port().is_unset());
 }
 
 #[test]
@@ -495,7 +495,7 @@ fn authority_with_userinfo_and_port() {
         a.host(),
         HostRef::from(&Host::Name(Domain::from_static("api.example.com")))
     );
-    assert_eq!(a.port(), Some(8443));
+    assert_eq!(a.port_u16(), Some(8443));
 }
 
 #[test]
@@ -504,7 +504,7 @@ fn authority_ipv6_host() {
     let a = u.authority().unwrap();
     let expected_host = Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()));
     assert_eq!(a.host(), HostRef::from(&expected_host));
-    assert_eq!(a.port(), Some(8443));
+    assert_eq!(a.port_u16(), Some(8443));
 }
 
 #[test]

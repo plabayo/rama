@@ -195,6 +195,9 @@ impl From<(Domain, Option<u16>)> for NodeId {
 impl From<HostWithOptPort> for NodeId {
     fn from(value: HostWithOptPort) -> Self {
         let HostWithOptPort { host, port } = value;
+        // RFC 7239 has no representation for "explicit empty port" — fold
+        // `OptPort::Empty` into `Unset` at the typed-identifier layer.
+        let port = port.as_u16();
         match host {
             Host::Name(domain) => (domain, port).into(),
             Host::Address(ip) => (ip, port).into(),

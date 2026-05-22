@@ -279,7 +279,7 @@ fn uri_view_caches_all_components() {
     assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
     assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));
     assert_eq!(v.fragment().map(|f| f.as_raw_str()), Some("f"));
-    assert_eq!(v.port(), Some(8443));
+    assert_eq!(v.port_u16(), Some(8443));
     assert!(v.host().is_some());
     assert!(v.userinfo().is_some());
     assert!(!v.is_asterisk());
@@ -304,7 +304,7 @@ fn uri_view_asterisk_form_all_components_none() {
     assert!(v.query().is_none());
     assert!(v.fragment().is_none());
     assert!(v.host().is_none());
-    assert!(v.port().is_none());
+    assert!(v.port().is_unset());
     assert!(v.userinfo().is_none());
 }
 
@@ -315,7 +315,7 @@ fn uri_view_origin_form_no_authority() {
     assert!(v.scheme().is_none());
     assert!(v.authority().is_none());
     assert!(v.host().is_none());
-    assert!(v.port().is_none());
+    assert!(v.port().is_unset());
     assert!(v.userinfo().is_none());
     assert_eq!(v.path().map(|p| p.as_raw_str()), Some("/p"));
     assert_eq!(v.query().map(|q| q.as_raw_str()), Some("q=1"));

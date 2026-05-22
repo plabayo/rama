@@ -103,12 +103,17 @@ fn canonicalize_owned(mut owned: OwnedUriRef) -> OwnedUriRef {
             Host::Address(_) => {}
         }
 
-        // 2. Default-port drop.
+        // 2. Default-port drop. Empty (`host:`) also normalises to Unset
+        // since canonicalization is the explicit opt-in to dropping
+        // wire trivia.
         if let Some(scheme) = &owned.scheme
             && let Some(default) = scheme.default_port()
-            && authority.address.port == Some(default)
+            && authority.address.port == crate::address::OptPort::Set(default)
         {
-            authority.address.port = None;
+            authority.address.port = crate::address::OptPort::Unset;
+        }
+        if authority.address.port == crate::address::OptPort::Empty {
+            authority.address.port = crate::address::OptPort::Unset;
         }
     }
 

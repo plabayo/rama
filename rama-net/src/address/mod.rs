@@ -28,6 +28,10 @@ mod host_with_port;
 #[doc(inline)]
 pub use host_with_port::HostWithPort;
 
+mod opt_port;
+#[doc(inline)]
+pub use opt_port::OptPort;
+
 mod host_with_opt_port;
 #[doc(inline)]
 pub use host_with_opt_port::HostWithOptPort;

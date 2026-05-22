@@ -21,7 +21,7 @@ fn http_basic() {
     let auth = l.authority.as_ref().unwrap();
     assert!(auth.userinfo_range.is_none());
     assert_eq!(auth.host, Host::Name(Domain::from_static("example.com")));
-    assert_eq!(auth.port, None);
+    assert_eq!(auth.port, crate::address::OptPort::Unset);
     assert_eq!(path_str(l), "/");
     assert!(l.query.is_none());
     assert!(l.fragment.is_none());
@@ -37,7 +37,7 @@ fn https_with_path_query_fragment() {
         auth.host,
         Host::Name(Domain::from_static("api.example.com"))
     );
-    assert_eq!(auth.port, None);
+    assert_eq!(auth.port, crate::address::OptPort::Unset);
     assert_eq!(path_str(l), "/v1/users");
     assert_eq!(range_str(l, l.query), Some("id=42"));
     assert_eq!(range_str(l, l.fragment), Some("bio"));
@@ -48,7 +48,7 @@ fn with_port() {
     let u = parse_graceful("http://example.com:8080/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
     assert_eq!(auth.host, Host::Name(Domain::from_static("example.com")));
-    assert_eq!(auth.port, Some(8080));
+    assert_eq!(auth.port, crate::address::OptPort::Set(8080));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn ipv4_host() {
         auth.host,
         Host::Address(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 16)))
     );
-    assert_eq!(auth.port, Some(8080));
+    assert_eq!(auth.port, crate::address::OptPort::Set(8080));
 }
 
 // ----------------------------------------------------------------------
@@ -92,7 +92,7 @@ fn ipv6_basic() {
         auth.host,
         Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()))
     );
-    assert!(auth.port.is_none());
+    assert!(auth.port.is_unset());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn ipv6_with_port() {
         auth.host,
         Host::Address(IpAddr::V6("2001:db8::1".parse().unwrap()))
     );
-    assert_eq!(auth.port, Some(8443));
+    assert_eq!(auth.port, crate::address::OptPort::Set(8443));
 }
 
 #[test]
@@ -233,13 +233,31 @@ fn invalid_scheme_char_rejected() {
 }
 
 #[test]
-fn empty_port_accepted_as_none() {
-    // RFC 3986 §3.2.3 `port = *DIGIT` — empty is valid. Curl and
-    // browsers accept it; we surface it as "no explicit port".
+fn empty_port_preserved_as_optport_empty() {
+    // RFC 3986 §3.2.3 `port = *DIGIT` — empty is grammatically valid.
+    // Surfaced as `OptPort::Empty` so the trailing colon round-trips
+    // losslessly through owned address types.
     let u = parse_graceful("http://example.com:/").unwrap();
     let auth = lazy(&u).authority.as_ref().unwrap();
-    assert_eq!(auth.port, None);
+    assert_eq!(auth.port, crate::address::OptPort::Empty);
     assert_eq!(auth.host.to_str(), "example.com");
+    // Lossless round-trip — the bare `:` survives Display.
+    assert_eq!(u.to_string(), "http://example.com:/");
+}
+
+#[test]
+fn empty_port_round_trips_through_authority_into_owned() {
+    use crate::uri::Uri;
+    // Auditor's repro: `into_owned()` must preserve the trailing `:`
+    // (otherwise `OptPort::Empty` collapses to `Unset` at the
+    // wire-vs-semantic boundary).
+    let owned = Uri::parse_authority_form("example.com:")
+        .unwrap()
+        .authority()
+        .unwrap()
+        .into_owned();
+    assert_eq!(owned.to_string(), "example.com:");
+    assert_eq!(owned.address.port, crate::address::OptPort::Empty);
 }
 
 #[test]

@@ -401,7 +401,7 @@ where
             network.peer.address = %proxy_address.address.host,
             network.peer.port = %proxy_address.address.port,
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "socks5 proxy connector: connected to proxy",
         );
 
@@ -413,7 +413,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
                 client.set_auth(basic.clone());
@@ -429,7 +429,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     "socks5 proxy connector: continue handshake without authorisation",
                 );
             }
@@ -452,7 +452,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     %bind_addr,
                     "socks5 proxy connector: handshake complete",
                 )

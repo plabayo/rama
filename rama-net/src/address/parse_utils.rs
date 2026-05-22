@@ -74,19 +74,22 @@ pub(crate) fn parse_port_bytes(bytes: &[u8]) -> Option<u16> {
 /// `s`. The caller is expected to have already verified that the substring
 /// `s[..last_colon]` contains at least one `:` (so this looks IPv6-shaped).
 ///
-/// Returns `(addr, Some(port))` when the input is `[ipv6]:port`,
-/// or `(addr, None)` when the input is a bare bracket-less `ipv6` whose
-/// final colon was actually part of the address.
+/// Returns `(addr, Set(port))` for `[ipv6]:port`, `(addr, Empty)` for
+/// `[ipv6]:` (RFC 3986 §3.2.3 empty port), or `(addr, Unset)` when the
+/// input is a bare bracket-less `ipv6` whose final colon was actually
+/// part of the address.
 ///
 /// # Errors
 ///
 /// Returns a contextual error when the bracket-form is partial (only `[`
 /// or only `]`), when the address itself fails to parse, or when the
-/// port substring is not a valid `u16`.
+/// port substring is non-empty but not a valid `u16`.
 pub(crate) fn parse_bracketed_ipv6_with_port(
     s: &str,
     last_colon: usize,
-) -> Result<(Ipv6Addr, Option<u16>), BoxError> {
+) -> Result<(Ipv6Addr, crate::address::OptPort), BoxError> {
+    use crate::address::OptPort;
+
     let first_part = &s[..last_colon];
     debug_assert!(
         first_part.contains(':'),
@@ -112,16 +115,20 @@ pub(crate) fn parse_bracketed_ipv6_with_port(
         let addr = value
             .parse::<Ipv6Addr>()
             .context("parse ipv6 host inside brackets")?;
-        let port = parse_port_bytes(&s.as_bytes()[last_colon + 1..])
-            .context("parse port string as u16")?;
-        Ok((addr, Some(port)))
+        let port_bytes = &s.as_bytes()[last_colon + 1..];
+        let port = if port_bytes.is_empty() {
+            OptPort::Empty
+        } else {
+            OptPort::Set(parse_port_bytes(port_bytes).context("parse port string as u16")?)
+        };
+        Ok((addr, port))
     } else {
         // No brackets — the whole `s` is a bare ipv6; `last_colon` was part of
         // the address itself, not a port separator.
         let addr = s
             .parse::<Ipv6Addr>()
             .context("parse bare ipv6 host w/o trailing port")?;
-        Ok((addr, None))
+        Ok((addr, OptPort::Unset))
     }
 }
 
@@ -131,29 +138,42 @@ mod tests {
 
     #[test]
     fn parse_bracketed_v6_with_port() {
+        use crate::address::OptPort;
         let s = "[2001:db8::1]:443";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
         assert_eq!(addr, "2001:db8::1".parse::<Ipv6Addr>().unwrap());
-        assert_eq!(port, Some(443));
+        assert_eq!(port, OptPort::Set(443));
+    }
+
+    #[test]
+    fn parse_bracketed_v6_empty_port() {
+        use crate::address::OptPort;
+        let s = "[2001:db8::1]:";
+        let last_colon = s.rfind(':').unwrap();
+        let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
+        assert_eq!(addr, "2001:db8::1".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(port, OptPort::Empty);
     }
 
     #[test]
     fn parse_bare_v6_no_port() {
+        use crate::address::OptPort;
         let s = "2001:db8::1";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
         assert_eq!(addr, "2001:db8::1".parse::<Ipv6Addr>().unwrap());
-        assert_eq!(port, None);
+        assert_eq!(port, OptPort::Unset);
     }
 
     #[test]
     fn parse_bare_v6_loopback() {
+        use crate::address::OptPort;
         let s = "::1";
         let last_colon = s.rfind(':').unwrap();
         let (addr, port) = parse_bracketed_ipv6_with_port(s, last_colon).unwrap();
         assert_eq!(addr, Ipv6Addr::LOCALHOST);
-        assert_eq!(port, None);
+        assert_eq!(port, OptPort::Unset);
     }
 
     #[test]

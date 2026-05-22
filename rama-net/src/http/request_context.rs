@@ -63,7 +63,7 @@ impl RequestContext {
     /// Check if the authority is using the default port for the [`Protocol`] set in this [`RequestContext`]
     #[must_use]
     pub fn authority_has_default_port(&self) -> bool {
-        self.protocol.default_port() == self.authority.port
+        self.protocol.default_port() == self.authority.port.as_u16()
     }
 }
 
@@ -132,7 +132,7 @@ pub fn try_request_ctx_from_http_parts(
             parts.extensions().get_ref::<Forwarded>().and_then(|f| {
                 f.client_host().map(|fauth| {
                     let HostWithOptPort { host, port } = fauth.0.clone();
-                    let port = port.unwrap_or(default_port);
+                    let port = port.as_u16().unwrap_or(default_port);
                     tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
                     (host, port).into()
                 })
@@ -199,6 +199,7 @@ impl RequestContext {
         let port = self
             .authority
             .port
+            .as_u16()
             .or_else(|| self.protocol.default_port())
             .unwrap_or(Protocol::HTTP_DEFAULT_PORT);
         let host = self.authority.host.clone();

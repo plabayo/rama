@@ -197,7 +197,7 @@ fn authority_set_unset_with_without() {
         user_info: None,
         address: HostWithOptPort {
             host: Host::Name(Domain::try_from("new.com").unwrap()),
-            port: Some(8080),
+            port: crate::address::OptPort::Set(8080),
         },
     });
     assert_eq!(uri.to_string(), "https://new.com:8080/p");
@@ -213,7 +213,7 @@ fn set_authority_with_userinfo_on_origin_form() {
             user_info: Some(UserInfo::try_from("u:p").unwrap()),
             address: HostWithOptPort {
                 host: Host::Name(Domain::try_from("api.example.com").unwrap()),
-                port: None,
+                port: crate::address::OptPort::Unset,
             },
         })
         .with_scheme(Protocol::HTTPS);
@@ -346,7 +346,7 @@ fn set_path_with_encodable_string_allocates_new_buffer() {
 fn set_port_replaces_explicit_port() {
     let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
     uri.set_port(8080);
-    assert_eq!(uri.port(), Some(8080));
+    assert_eq!(uri.port_u16(), Some(8080));
     assert_eq!(uri.to_string(), "https://example.com:8080/p");
 }
 
@@ -354,7 +354,7 @@ fn set_port_replaces_explicit_port() {
 fn set_port_clears_via_none() {
     let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
     uri.set_port(None);
-    assert!(uri.port().is_none());
+    assert!(uri.port().is_unset());
     assert_eq!(uri.to_string(), "https://example.com/p");
 }
 
@@ -362,7 +362,7 @@ fn set_port_clears_via_none() {
 fn unset_port_shortcut() {
     let mut uri: Uri = parse_graceful("https://example.com:443/p").unwrap();
     uri.unset_port();
-    assert!(uri.port().is_none());
+    assert!(uri.port().is_unset());
 }
 
 #[test]
@@ -370,7 +370,7 @@ fn with_port_consuming_form() {
     let uri = parse_graceful("https://example.com/p")
         .unwrap()
         .with_port(9000);
-    assert_eq!(uri.port(), Some(9000));
+    assert_eq!(uri.port_u16(), Some(9000));
 }
 
 #[test]

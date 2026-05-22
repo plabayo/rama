@@ -47,7 +47,7 @@ impl TryFrom<&str> for ProxyAddress {
                 },
         } = Authority::try_from(slice)?;
 
-        let port = maybe_port.or_else(|| protocol.as_ref().and_then(|protocol| protocol.default_port()))
+        let port = maybe_port.as_u16().or_else(|| protocol.as_ref().and_then(|protocol| protocol.default_port()))
             .context("proxy address contains no port or scheme with known port; port is required for proxy connections!!")?;
 
         Ok(Self {

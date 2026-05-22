@@ -202,7 +202,9 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
         if auth.userinfo_range.is_some() {
             return Err(ParseError::StrictViolation);
         }
-        if auth.port.is_none() {
+        // RFC 9112 §3.2.3 requires `host ":" port` — `Empty` and `Unset`
+        // both fail the explicit-port requirement.
+        if !matches!(auth.port, crate::address::OptPort::Set(_)) {
             return Err(ParseError::StrictViolation);
         }
     }

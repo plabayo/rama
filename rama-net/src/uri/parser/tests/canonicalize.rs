@@ -152,7 +152,7 @@ fn canonicalize_lowercases_known_scheme_even_when_already_canonical() {
 fn canonicalize_drops_http_default_port() {
     let uri = Uri::parse("http://example.com:80/").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.port(), None);
+    assert_eq!(canonical.port_u16(), None);
     assert_eq!(canonical.to_string(), "http://example.com/");
 }
 
@@ -160,14 +160,14 @@ fn canonicalize_drops_http_default_port() {
 fn canonicalize_drops_https_default_port() {
     let uri = Uri::parse("https://example.com:443/").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.port(), None);
+    assert_eq!(canonical.port_u16(), None);
 }
 
 #[test]
 fn canonicalize_preserves_non_default_port() {
     let uri = Uri::parse("http://example.com:8080/").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.port(), Some(8080));
+    assert_eq!(canonical.port_u16(), Some(8080));
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn canonicalize_drops_default_port_only_when_scheme_matches() {
     // `:80` on https — keep, it's not the default for https.
     let uri = Uri::parse("https://example.com:80/").unwrap();
     let canonical = uri.canonicalize();
-    assert_eq!(canonical.port(), Some(80));
+    assert_eq!(canonical.port_u16(), Some(80));
 }
 
 // ----------------------------------------------------------------------
@@ -226,7 +226,7 @@ fn canonicalize_clamps_excess_dot_dots_gracefully() {
 fn parse_canonical_combines_parse_and_canonicalize() {
     let uri = Uri::parse_canonical("http://exa%6Dple.com:80/foo/./bar").unwrap();
     assert_eq!(uri.host().unwrap().to_str(), "example.com");
-    assert_eq!(uri.port(), None);
+    assert_eq!(uri.port_u16(), None);
     assert_eq!(uri.path().unwrap().as_raw_str(), "/foo/bar");
 }
 
@@ -237,7 +237,7 @@ fn parse_canonical_strict_combines_parse_strict_and_canonicalize() {
     // canonicalize is opt-in normalization on top of strict parsing.
     let uri = Uri::parse_canonical_strict("https://xn--mnchen-3ya.de:443/").unwrap();
     assert_eq!(uri.host().unwrap().to_str(), "xn--mnchen-3ya.de");
-    assert_eq!(uri.port(), None);
+    assert_eq!(uri.port_u16(), None);
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn set_host_preserves_port_and_userinfo() {
     let mut uri = Uri::parse("http://user:pass@old.example:8080/path").unwrap();
     uri.set_host(Domain::from_static("new.example"));
     assert_eq!(uri.host().unwrap().to_str(), "new.example");
-    assert_eq!(uri.port(), Some(8080));
+    assert_eq!(uri.port_u16(), Some(8080));
     assert!(uri.userinfo().is_some());
     assert_eq!(uri.path().unwrap().as_raw_str(), "/path");
 }
@@ -324,7 +324,7 @@ fn set_host_creates_authority_when_absent() {
     uri.set_host(Domain::from_static("example.com"));
     assert_eq!(uri.host().unwrap().to_str(), "example.com");
     assert!(uri.userinfo().is_none());
-    assert_eq!(uri.port(), None);
+    assert_eq!(uri.port_u16(), None);
 }
 
 #[test]

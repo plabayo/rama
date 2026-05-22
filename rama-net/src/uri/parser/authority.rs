@@ -160,7 +160,7 @@ fn parse_host_and_port(
     host_start: usize,
     view: &[u8],
     mode: ParserMode,
-) -> Result<(Host, Option<u16>), ParseError> {
+) -> Result<(Host, crate::address::OptPort), ParseError> {
     // RFC 3986 §3.2.2 `reg-name = *(...)` allows empty — `file:///path`,
     // `unix:///run/x`, etc. Stored as `Host::Uninterpreted(b"")`; callers
     // that need a non-empty host check `host.as_str().is_empty()`.
@@ -170,7 +170,7 @@ fn parse_host_and_port(
                 parent.slice(host_start..host_start),
                 false,
             )),
-            None,
+            crate::address::OptPort::Unset,
         ));
     }
 
@@ -208,7 +208,7 @@ fn parse_host_and_port(
         // After `]`, optional `:port`.
         let after = &view[close_rel + 1..];
         let port = match after {
-            [] => None,
+            [] => crate::address::OptPort::Unset,
             [b':', rest @ ..] => parse_port(rest)?,
             _ => return Err(ParseError::InvalidComponent(Component::Authority)),
         };
@@ -224,7 +224,7 @@ fn parse_host_and_port(
             let port = parse_port(&view[colon + 1..])?;
             (&view[..colon], port)
         }
-        None => (view, None),
+        None => (view, crate::address::OptPort::Unset),
     };
     if host_bytes_rel.is_empty() {
         return Err(ParseError::InvalidComponent(Component::Host));
@@ -356,14 +356,14 @@ fn validate_ipvfuture(inside: &[u8]) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn parse_port(bytes: &[u8]) -> Result<Option<u16>, ParseError> {
+fn parse_port(bytes: &[u8]) -> Result<crate::address::OptPort, ParseError> {
     // RFC 3986 §3.2.3 `port = *DIGIT` — empty (`host:`) is grammatically
-    // valid. Curl and browsers accept it; we treat it as "no explicit
-    // port" (`None`).
+    // valid. Surfaced as `OptPort::Empty` so the trailing colon survives
+    // round-trips through owned address types.
     if bytes.is_empty() {
-        return Ok(None);
+        return Ok(crate::address::OptPort::Empty);
     }
     parse_utils::parse_port_bytes(bytes)
-        .map(Some)
+        .map(crate::address::OptPort::Set)
         .ok_or(ParseError::InvalidComponent(Component::Port))
 }

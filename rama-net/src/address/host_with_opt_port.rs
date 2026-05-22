@@ -1,7 +1,7 @@
 use crate::Protocol;
 use crate::address::HostWithPort;
 
-use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
+use super::{Domain, DomainAddress, Host, OptPort, SocketAddress, parse_utils};
 use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
@@ -25,7 +25,7 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HostWithOptPort {
     pub host: Host,
-    pub port: Option<u16>,
+    pub port: OptPort,
 }
 
 impl HostWithOptPort {
@@ -33,7 +33,10 @@ impl HostWithOptPort {
     #[must_use]
     #[inline(always)]
     pub const fn new(host: Host) -> Self {
-        Self { host, port: None }
+        Self {
+            host,
+            port: OptPort::Unset,
+        }
     }
 
     /// Creates a new [`HostWithOptPort`] from a [`Host`] and port.
@@ -42,8 +45,16 @@ impl HostWithOptPort {
     pub const fn new_with_port(host: Host, port: u16) -> Self {
         Self {
             host,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
+    /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
+    #[must_use]
+    #[inline]
+    pub const fn port_u16(&self) -> Option<u16> {
+        self.port.as_u16()
     }
 
     /// creates a new local ipv4 [`HostWithOptPort`] without a port.
@@ -218,7 +229,7 @@ impl HostWithOptPort {
     pub const fn example_domain() -> Self {
         Self {
             host: Host::EXAMPLE_NAME,
-            port: None,
+            port: OptPort::Unset,
         }
     }
 
@@ -242,7 +253,7 @@ impl HostWithOptPort {
     pub const fn example_domain_with_port(port: u16) -> Self {
         Self {
             host: Host::EXAMPLE_NAME,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
     }
 
@@ -252,7 +263,7 @@ impl HostWithOptPort {
     pub const fn localhost_domain() -> Self {
         Self {
             host: Host::LOCALHOST_NAME,
-            port: None,
+            port: OptPort::Unset,
         }
     }
 
@@ -276,7 +287,7 @@ impl HostWithOptPort {
     pub const fn localhost_domain_with_port(port: u16) -> Self {
         Self {
             host: Host::LOCALHOST_NAME,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
     }
 
@@ -289,9 +300,11 @@ impl HostWithOptPort {
     }
 
     generate_set_and_with! {
-        /// (un)set port (u16) of [`HostWithOptPort`]
-        pub fn port(mut self, port: Option<u16>) -> Self {
-            self.port = port;
+        /// Set the port. Accepts `u16`, `OptPort`, or `Option<u16>` via
+        /// [`Into<OptPort>`]; the macro then derives the full
+        /// set/with/unset/without/maybe quartet over `OptPort`.
+        pub fn port(mut self, port: Option<OptPort>) -> Self {
+            self.port = port.unwrap_or(OptPort::Unset);
             self
         }
     }
@@ -424,12 +437,9 @@ impl fmt::Display for HostWithOptPort {
             Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
             other => other.fmt(f)?,
         }
-
-        if let Some(port) = self.port {
-            write!(f, ":{port}")?
-        }
-
-        Ok(())
+        // `OptPort::Display` handles all three variants — Unset emits
+        // nothing, Empty emits bare `:`, Set(n) emits `:n`.
+        self.port.fmt(f)
     }
 }
 
@@ -470,7 +480,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     }
 
     let host;
-    let mut port = None;
+    let mut port = OptPort::Unset;
 
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
@@ -481,11 +491,16 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             host = Host::Address(IpAddr::V6(addr));
             port = parsed_port;
         } else {
-            port = Some(
-                s[last_colon + 1..]
-                    .parse()
-                    .context("parse host-with-opt-port's port string as u16")?,
-            );
+            let port_str = &s[last_colon + 1..];
+            port = if port_str.is_empty() {
+                OptPort::Empty
+            } else {
+                OptPort::Set(
+                    port_str
+                        .parse()
+                        .context("parse host-with-opt-port's port string as u16")?,
+                )
+            };
 
             // try ipv4 first, domain afterwards
             host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
@@ -559,7 +574,7 @@ mod tests {
     use super::*;
 
     #[expect(clippy::needless_pass_by_value)]
-    fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: Option<u16>) {
+    fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: OptPort) {
         assert_eq!(hwop.host, host, "parsing: {s}");
         assert_eq!(hwop.port, port, "parsing: {s}");
     }
@@ -567,19 +582,20 @@ mod tests {
     #[test]
     fn test_parse_valid() {
         for (s, (expected_host, expected_port)) in [
-            ("example.com", ("example.com", None)),
-            ("example.com:80", ("example.com", Some(80))),
-            ("::1", ("::1", None)),
-            ("[::1]:80", ("::1", Some(80))),
-            ("127.0.0.1", ("127.0.0.1", None)),
-            ("127.0.0.1:80", ("127.0.0.1", Some(80))),
+            ("example.com", ("example.com", OptPort::Unset)),
+            ("example.com:80", ("example.com", OptPort::Set(80))),
+            ("example.com:", ("example.com", OptPort::Empty)),
+            ("::1", ("::1", OptPort::Unset)),
+            ("[::1]:80", ("::1", OptPort::Set(80))),
+            ("127.0.0.1", ("127.0.0.1", OptPort::Unset)),
+            ("127.0.0.1:80", ("127.0.0.1", OptPort::Set(80))),
             (
                 "2001:db8:3333:4444:5555:6666:7777:8888",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", None),
+                ("2001:db8:3333:4444:5555:6666:7777:8888", OptPort::Unset),
             ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", Some(80)),
+                ("2001:db8:3333:4444:5555:6666:7777:8888", OptPort::Set(80)),
             ),
         ] {
             let msg = format!("parsing '{s}'");
@@ -621,7 +637,6 @@ mod tests {
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
-            "example.com:",
             "example.com:-1",
             "example.com:999999",
             "example:com",
@@ -645,6 +660,7 @@ mod tests {
         for (s, expected) in [
             ("example.com", "example.com"),
             ("example.com:80", "example.com:80"),
+            ("example.com:", "example.com:"),
             ("[::1]:80", "[::1]:80"),
             // IPv6 always brackets — even with no port — to avoid
             // the `::1:8080` ambiguity. See the `Display` impl above

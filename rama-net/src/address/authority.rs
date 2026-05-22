@@ -1,4 +1,4 @@
-use crate::address::{HostRef, HostWithOptPort, HostWithPort, UserInfo, UserInfoRef};
+use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef};
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
 use rama_core::error::extra::OpaqueError;
@@ -304,11 +304,20 @@ impl Authority {
     }
 
     generate_set_and_with! {
-        /// (un)set port (u16) of [`Authority`]
-        pub fn port(mut self, port: Option<u16>) -> Self {
-            self.address.maybe_set_port(port);
+        /// Set, unset, or maybe-set the port of [`Authority`]. Accepts
+        /// any `impl Into<OptPort>` — `u16`, `OptPort`, or `Option<u16>`.
+        pub fn port(mut self, port: Option<OptPort>) -> Self {
+            self.address.port = port.unwrap_or(OptPort::Unset);
             self
         }
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
+    /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
+    #[must_use]
+    #[inline]
+    pub const fn port_u16(&self) -> Option<u16> {
+        self.address.port.as_u16()
     }
 
     generate_set_and_with! {
@@ -542,7 +551,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     }
 
     let host;
-    let mut port = None;
+    let mut port = OptPort::Unset;
 
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
@@ -554,10 +563,15 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             host = Host::Address(IpAddr::V6(addr));
             port = parsed_port;
         } else {
-            port = Some(
-                crate::address::parse_utils::parse_port_bytes(&s.as_bytes()[last_colon + 1..])
-                    .context("parse authority port string as u16")?,
-            );
+            let port_bytes = &s.as_bytes()[last_colon + 1..];
+            port = if port_bytes.is_empty() {
+                OptPort::Empty
+            } else {
+                OptPort::Set(
+                    crate::address::parse_utils::parse_port_bytes(port_bytes)
+                        .context("parse authority port string as u16")?,
+                )
+            };
 
             // try ipv4 first, domain afterwards
             host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
@@ -635,7 +649,7 @@ impl TryFrom<&[u8]> for Authority {
 pub struct AuthorityRef<'a> {
     pub(crate) userinfo: Option<UserInfoRef<'a>>,
     pub(crate) host: HostRef<'a>,
-    pub(crate) port: Option<u16>,
+    pub(crate) port: OptPort,
 }
 
 impl<'a> AuthorityRef<'a> {
@@ -646,7 +660,7 @@ impl<'a> AuthorityRef<'a> {
     pub(crate) const fn new(
         userinfo: Option<UserInfoRef<'a>>,
         host: HostRef<'a>,
-        port: Option<u16>,
+        port: OptPort,
     ) -> Self {
         Self {
             userinfo,
@@ -672,11 +686,20 @@ impl<'a> AuthorityRef<'a> {
         self.host
     }
 
-    /// The port, or `None` if the authority has no explicit `:port`.
-    /// Scheme default ports are NOT substituted here.
+    /// The port marker. Distinguishes wire-level `Unset` / `Empty` /
+    /// `Set(u16)`. Most callers want [`port_u16`](Self::port_u16) which
+    /// collapses to `Option<u16>`.
     #[must_use]
-    pub fn port(&self) -> Option<u16> {
+    pub const fn port(&self) -> OptPort {
         self.port
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
+    /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
+    #[must_use]
+    #[inline]
+    pub const fn port_u16(&self) -> Option<u16> {
+        self.port.as_u16()
     }
 
     /// Promote this borrowed view to an owned [`Authority`] by copying
@@ -684,14 +707,12 @@ impl<'a> AuthorityRef<'a> {
     /// other borrowed views.
     #[must_use]
     pub fn into_owned(self) -> Authority {
-        let host = self.host.into_owned();
-        let address = match self.port {
-            Some(port) => HostWithOptPort::new_with_port(host, port),
-            None => HostWithOptPort::new(host),
-        };
         Authority {
             user_info: self.userinfo.map(|u| u.into_owned()),
-            address,
+            address: HostWithOptPort {
+                host: self.host.into_owned(),
+                port: self.port,
+            },
         }
     }
 }
@@ -720,10 +741,7 @@ impl fmt::Display for AuthorityRef<'_> {
             HostRef::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
             _ => self.host.fmt(f)?,
         }
-        if let Some(port) = self.port {
-            write!(f, ":{port}")?;
-        }
-        Ok(())
+        self.port.fmt(f)
     }
 }
 
@@ -761,7 +779,7 @@ mod tests {
     ) {
         assert_eq!(authority.user_info, user_info, "parsing: {s}");
         assert_eq!(authority.address.host, host, "parsing: {s}");
-        assert_eq!(authority.address.port, port, "parsing: {s}");
+        assert_eq!(authority.address.port.as_u16(), port, "parsing: {s}");
     }
 
     #[test]
@@ -781,6 +799,10 @@ mod tests {
                 ),
             ),
             ("example.com:80", (None, "example.com", Some(80))),
+            // Empty port (`host:`) — `OptPort::Empty`, surfaces as
+            // `None` in the relaxed `.as_u16()` view. See the dedicated
+            // round-trip test below for the Display check.
+            ("example.com:", (None, "example.com", None)),
             (
                 "user@example.com:80",
                 (Some(UserInfo::from_static("user")), "example.com", Some(80)),
@@ -936,7 +958,6 @@ mod tests {
             "[2001:db8:3333:4444:5555:6666:7777:8888",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
-            "example.com:",
             "example.com:-1",
             "example.com:999999",
             "example:com",
@@ -1016,7 +1037,7 @@ mod tests {
     fn regression_authority_userinfo_splits_on_last_at() {
         let auth = Authority::try_from("user@name:pass@example.com:80").unwrap();
         assert_eq!(auth.address.host, "example.com");
-        assert_eq!(auth.address.port, Some(80));
+        assert_eq!(auth.address.port, OptPort::Set(80));
         let ui = auth.user_info.as_ref().expect("userinfo present");
         let (user, pass) = ui.split_user_password();
         assert_eq!(user, b"user@name");

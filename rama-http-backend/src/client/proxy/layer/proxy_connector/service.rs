@@ -186,7 +186,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "http proxy connector: connected to proxy",
         );
 
@@ -194,7 +194,9 @@ where
             .app_protocol
             .map(|p| p.is_secure())
             // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
-            .unwrap_or_else(|| transport_ctx.authority.port == Some(Protocol::HTTPS_DEFAULT_PORT))
+            .unwrap_or_else(|| {
+                transport_ctx.authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT)
+            })
         {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
@@ -247,7 +249,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection { input, conn })

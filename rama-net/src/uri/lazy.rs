@@ -53,6 +53,7 @@ pub(crate) struct LazyAuthority {
     /// parent `Bytes`; IP variants carry the address value directly.
     pub(crate) host: Host,
 
-    /// Parsed port number, if present.
-    pub(crate) port: Option<u16>,
+    /// Parsed port marker. `Unset` = no `:` after host; `Empty` = `:`
+    /// with no digits; `Set(n)` = explicit port.
+    pub(crate) port: crate::address::OptPort,
 }
