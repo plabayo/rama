@@ -161,3 +161,49 @@ pub(super) fn assert_origin_form(
     assert_eq!(range_str(l, l.query), expected_query, "query");
     assert_eq!(range_str(l, l.fragment), expected_fragment, "fragment");
 }
+
+// ---- Compile-time `Send + Sync` assertions ---------------------
+//
+// `Uri` clones cheap by sharing an `Arc<…>`; the wrapped types and the
+// borrowed views must stay `Send + Sync` so the whole graph can flow
+// across task boundaries in proxy / routing code. A future field
+// addition that silently breaks this would only surface at a downstream
+// `tokio::spawn` call — the assertions below catch it at this crate's
+// own build.
+#[cfg(test)]
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    use crate::address::{
+        Authority, AuthorityRef, Host, HostRef, UninterpretedHost, UninterpretedHostRef, UserInfo,
+        UserInfoRef,
+    };
+    use crate::uri::{
+        Fragment, FragmentRef, ParseError, PathRef, Query, QueryDeserializeError, QueryPair,
+        QueryPairRef, QueryRef, ResolveError, Uri, UriError, WireError,
+    };
+
+    assert_send_sync::<Uri>();
+    assert_send_sync::<UriError>();
+    assert_send_sync::<ParseError>();
+    assert_send_sync::<ResolveError>();
+    assert_send_sync::<WireError>();
+    assert_send_sync::<QueryDeserializeError>();
+
+    assert_send_sync::<Query>();
+    assert_send_sync::<QueryRef<'static>>();
+    assert_send_sync::<QueryPair>();
+    assert_send_sync::<QueryPairRef<'static>>();
+    assert_send_sync::<Fragment>();
+    assert_send_sync::<FragmentRef<'static>>();
+    assert_send_sync::<PathRef<'static>>();
+
+    assert_send_sync::<Authority>();
+    assert_send_sync::<AuthorityRef<'static>>();
+    assert_send_sync::<Host>();
+    assert_send_sync::<HostRef<'static>>();
+    assert_send_sync::<UserInfo>();
+    assert_send_sync::<UserInfoRef<'static>>();
+    assert_send_sync::<UninterpretedHost>();
+    assert_send_sync::<UninterpretedHostRef<'static>>();
+};

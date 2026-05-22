@@ -283,3 +283,30 @@ fn resolved_uri_reparses_to_same_string() {
         assert_eq!(reparsed.to_string(), resolved, "round-trip {reference:?}");
     }
 }
+
+// ---- ResolveError::ResultTooLong -------------------------------
+
+#[test]
+fn resolve_too_long_result_returns_typed_error() {
+    // The cap is `parser::MAX_URI_LEN = u16::MAX - 1` (65534).
+    // Build an absolute-path reference that fits under the cap on its
+    // own but, prepended with the base's `scheme://authority`, pushes
+    // the resolved URI over the cap.
+    //
+    // Base "http://a/" is 9 bytes. A reference of 65530 bytes
+    // (`"/" + 65529 * 'a'`) parses fine (under 65534) and resolves to
+    // 9 + 65530 = 65539, comfortably above the cap.
+    let base = Uri::parse("http://a/").unwrap();
+    let oversized_path = "/".to_owned() + &"a".repeat(65529);
+    let reference = Uri::parse_reference(oversized_path.as_str()).unwrap();
+    let err = base.resolve(&reference).unwrap_err();
+    match err {
+        ResolveError::ResultTooLong { len } => {
+            assert!(
+                len > u16::MAX as usize - 1,
+                "expected result length above cap, got {len}"
+            );
+        }
+        other => panic!("expected ResultTooLong, got {other:?}"),
+    }
+}

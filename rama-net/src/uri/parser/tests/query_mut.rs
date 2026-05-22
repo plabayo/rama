@@ -220,3 +220,48 @@ fn query_pair_ref_to_owned_round_trip() {
     assert_eq!(back.name_bytes(), b"key");
     assert_eq!(back.value_bytes(), Some(b"value".as_ref()));
 }
+
+// ----------------------------------------------------------------------
+// Multi-key push/pop + drain-then-push sequencing
+// ----------------------------------------------------------------------
+
+#[test]
+fn multi_key_push_then_pop_returns_lifo() {
+    // Same key pushed twice — both entries kept; pop yields them in
+    // reverse-insertion order so the most recent push comes first.
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    {
+        let mut g = uri.query_mut();
+        g.push_pair("a", "1");
+        g.push_pair("a", "2");
+    }
+    assert_eq!(uri.to_string(), "/p?a=1&a=2");
+    {
+        let mut g = uri.query_mut();
+        let last = g.pop().unwrap();
+        assert_eq!(last.name_raw(), "a");
+        assert_eq!(last.value_raw(), Some("2"));
+        let first = g.pop().unwrap();
+        assert_eq!(first.name_raw(), "a");
+        assert_eq!(first.value_raw(), Some("1"));
+        assert!(g.pop().is_none());
+    }
+}
+
+#[test]
+fn drain_then_push_repopulates_query() {
+    // Drain to empty, then push: the Some(empty) → Some(non-empty)
+    // transition keeps the `?` and emits new pairs without a stray `&`.
+    let mut uri: Uri = parse_graceful("/p?a=1&b=2").unwrap();
+    {
+        let mut g = uri.query_mut();
+        for _ in g.drain() {}
+    }
+    assert_eq!(uri.to_string(), "/p?", "drain leaves an empty query");
+    {
+        let mut g = uri.query_mut();
+        g.push_pair("c", "3");
+        g.push_pair("d", "4");
+    }
+    assert_eq!(uri.to_string(), "/p?c=3&d=4");
+}

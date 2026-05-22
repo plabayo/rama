@@ -278,3 +278,44 @@ fn writers_append_not_overwrite() {
     uri.write_http_origin_form(&mut b).unwrap();
     assert_eq!(&b[..], b"prefix:/p");
 }
+
+// ----------------------------------------------------------------------
+// Host::Uninterpreted wire round-trip
+//
+// Bracketed IPvFuture and sub-delim reg-name hosts stay `Uninterpreted`
+// through canonicalize and must round-trip through the wire writers
+// byte-for-byte: the writer emits the preserved body and re-adds the
+// `[...]` brackets for IP-literals.
+// ----------------------------------------------------------------------
+
+#[test]
+fn authority_form_preserves_ipvfuture_brackets() {
+    let uri: Uri = parse_graceful("https://[v1.fe80::a]:443/p").unwrap();
+    assert_eq!(write_authority(&uri).unwrap(), "[v1.fe80::a]:443");
+}
+
+#[test]
+fn authority_form_preserves_sub_delim_reg_name() {
+    let uri: Uri = parse_graceful("https://tag,with,commas:8080/p").unwrap();
+    assert_eq!(write_authority(&uri).unwrap(), "tag,with,commas:8080");
+}
+
+#[test]
+fn h2_authority_preserves_ipvfuture_brackets() {
+    let uri: Uri = parse_graceful("https://[v1.fe80::a]:443/p").unwrap();
+    assert_eq!(write_h2_authority(&uri).unwrap(), "[v1.fe80::a]:443");
+}
+
+#[test]
+fn h2_authority_preserves_sub_delim_reg_name() {
+    let uri: Uri = parse_graceful("https://tag,with,commas:8080/p").unwrap();
+    assert_eq!(write_h2_authority(&uri).unwrap(), "tag,with,commas:8080");
+}
+
+#[test]
+fn h2_authority_brackets_ipv6_no_port() {
+    // Sibling to `authority_form_brackets_ipv6_no_port` covering the
+    // HTTP/2 :authority pseudo-header path.
+    let uri: Uri = parse_graceful("https://[2001:db8::1]/").unwrap();
+    assert_eq!(write_h2_authority(&uri).unwrap(), "[2001:db8::1]");
+}

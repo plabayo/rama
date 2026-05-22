@@ -1,6 +1,6 @@
 //! `Uri` equality, hashing, ordering — all project through the Display
-//! wire form (audit C3 follow-up). Plus the [`TryFrom`] impls for every
-//! supported input shape (audit M10).
+//! wire form. Plus the [`TryFrom`] impls for every
+//! supported input shape.
 //!
 //! Wire-form projection means two URIs that render identically compare
 //! equal regardless of Lazy/Owned representation, source-buffer identity,
@@ -224,8 +224,7 @@ fn try_from_propagates_parse_error() {
 
 #[test]
 fn try_from_works_at_generic_bound() {
-    // Pin that a `T: TryInto<Uri>` bound resolves for the standard
-    // input shapes — the very thing this audit item exists to enable.
+    // Pin that a `T: TryInto<Uri>` bound resolves for the standard inptu shapes.
     fn accept<T: TryInto<Uri, Error = crate::uri::ParseError>>(input: T) -> Uri {
         input.try_into().unwrap()
     }
@@ -235,4 +234,63 @@ fn try_from_works_at_generic_bound() {
     accept(URI_STR.as_bytes().to_vec());
     accept(Bytes::from_static(URI_STR.as_bytes()));
     accept(BytesMut::from(URI_STR.as_bytes()));
+}
+
+// ---- Uri::from_static ------------------------------------------
+
+#[test]
+fn from_static_parses_canonical_input() {
+    let u = Uri::from_static("https://example.com/p?q=1#f");
+    assert_eq!(u.host().unwrap().to_str(), "example.com");
+    assert_eq!(u.path().unwrap().as_raw_str(), "/p");
+    assert_eq!(u.query().unwrap().as_raw_str(), "q=1");
+    assert_eq!(u.fragment().unwrap().as_raw_str(), "f");
+}
+
+#[test]
+fn from_static_round_trips_through_display() {
+    let raw = "http://example.com/";
+    let u = Uri::from_static(raw);
+    assert_eq!(u.to_string(), raw);
+}
+
+#[test]
+#[should_panic(expected = "invalid URI")]
+fn from_static_panics_on_invalid_with_typed_message() {
+    // Control byte → parser rejection → panic message identifies the
+    // invariant for callers debugging a compile-time-constant URI.
+    //
+    // Two competing clippy lints meet here (`unused_must_use` vs
+    // `let_underscore_must_use`); bind the result to a real name so
+    // neither fires, then drop it.
+    let _u = Uri::from_static("http://example.com/\x00path");
+}
+
+// ---- Uri::is_absolute coverage --------------------------------
+
+#[test]
+fn is_absolute_for_absolute_form() {
+    assert!(Uri::parse("https://example.com/p").unwrap().is_absolute());
+    assert!(Uri::parse("urn:isbn:0451450523").unwrap().is_absolute());
+    assert!(Uri::parse("mailto:user@example.com").unwrap().is_absolute());
+}
+
+#[test]
+fn is_absolute_for_origin_form() {
+    // Origin-form has no scheme.
+    assert!(!Uri::parse("/path").unwrap().is_absolute());
+    assert!(!Uri::parse("/p?q#f").unwrap().is_absolute());
+}
+
+#[test]
+fn is_absolute_for_asterisk() {
+    assert!(!Uri::parse("*").unwrap().is_absolute());
+}
+
+#[test]
+fn is_absolute_for_relative_reference() {
+    // `parse_reference` lets us reach the relative-ref grammar.
+    assert!(!Uri::parse_reference("../foo").unwrap().is_absolute());
+    assert!(!Uri::parse_reference("?q").unwrap().is_absolute());
+    assert!(!Uri::parse_reference("#frag").unwrap().is_absolute());
 }

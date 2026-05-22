@@ -159,7 +159,7 @@ fn owned_empty_fragment_distinguished_from_no_fragment() {
 }
 
 // ----------------------------------------------------------------------
-// Debug — userinfo password redaction (audit H3)
+// Debug — userinfo password redaction
 //
 // `Display` is wire-faithful (intentionally) but `Debug` MUST NOT leak
 // credentials through tracing spans, panic messages, or `dbg!`. The
@@ -209,8 +209,7 @@ fn debug_redacts_owned_uri_password() {
 #[test]
 fn display_remains_wire_faithful_with_userinfo() {
     // Display is the wire form — userinfo is preserved verbatim. The
-    // protective surface is `Debug`; the audit explicitly keeps Display
-    // unchanged.
+    // protective surface is `Debug
     let u = parse_graceful("http://alice:secret@example.com/p").unwrap();
     assert_eq!(u.to_string(), "http://alice:secret@example.com/p");
 }
