@@ -163,7 +163,20 @@ pub mod util {
 ///
 /// `Clone` is cheap: `Asterisk` is zero-cost, `Lazy` / `Owned` clone is one
 /// atomic refcount bump on the inner `Arc`.
-#[derive(Debug, Clone)]
+///
+/// # Logging safety
+///
+/// The [`Debug`](std::fmt::Debug) impl redacts the userinfo password
+/// portion (anything after the first `:` inside `user:pass@host`),
+/// rendering it as `"***"`. This is the safe default for tracing spans
+/// and log lines — a raw `Debug`-print would otherwise leak credentials
+/// into observability sinks. The username portion is rendered as-is.
+/// [`Display`](std::fmt::Display) deliberately does **not** redact (it
+/// is the wire-faithful form); use a dedicated wire writer such as
+/// [`write_http_origin_form`](Self::write_http_origin_form) when
+/// serializing for HTTP — those drop the userinfo entirely per RFC 9110
+/// §4.2.4.
+#[derive(Clone)]
 pub struct Uri {
     pub(crate) inner: UriInner,
 }
@@ -791,31 +804,47 @@ impl std::str::FromStr for Uri {
     }
 }
 
-impl std::fmt::Display for Uri {
-    /// Writes the canonical URI string: `[scheme:][//authority][path][?query][#fragment]`.
-    /// `Lazy` URIs round-trip byte-for-byte through their source buffer; `Owned`
-    /// URIs reassemble from components.
+impl Uri {
+    /// Shared walker for [`Display`](std::fmt::Display) and
+    /// [`Debug`](std::fmt::Debug). With `redact_userinfo = true` the
+    /// password portion of any userinfo (everything after the first `:`
+    /// inside the userinfo bytes) is emitted as `"***"`; with `false`
+    /// the URI is rendered wire-faithfully.
     ///
-    /// **Not the HTTP wire form.** This includes userinfo and fragment and
-    /// preserves the original port — none of which belong on an HTTP request
-    /// line or in HTTP/2 pseudo-headers. Use the dedicated `write_*_form`
-    /// helpers (landing with the relative-resolution work) when serializing
-    /// for HTTP. Logging a [`Uri`] via [`Display`](std::fmt::Display) may leak
-    /// userinfo — strip it explicitly if that matters for your call site.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// Single source of truth so the two trait impls cannot diverge on
+    /// component ordering or delimiter choices.
+    fn fmt_uri(&self, f: &mut std::fmt::Formatter<'_>, redact_userinfo: bool) -> std::fmt::Result {
         match &self.inner {
             UriInner::Asterisk => f.write_str("*"),
             UriInner::Lazy(arc) => {
                 // Safety: parser invariant — the source buffer is valid UTF-8
                 // (graceful mode) or ASCII (strict mode).
-                f.write_str(unsafe { std::str::from_utf8_unchecked(&arc.bytes) })
+                let s = unsafe { std::str::from_utf8_unchecked(&arc.bytes) };
+                if redact_userinfo
+                    && let Some(auth) = &arc.authority
+                    && let Some((u_s, u_e)) = auth.userinfo_range
+                {
+                    f.write_str(&s[..u_s as usize])?;
+                    write_redacted_userinfo(&s[u_s as usize..u_e as usize], f)?;
+                    return f.write_str(&s[u_e as usize..]);
+                }
+                f.write_str(s)
             }
             UriInner::Owned(arc) => {
                 if let Some(scheme) = &arc.scheme {
                     write!(f, "{scheme}:")?;
                 }
                 if let Some(auth) = &arc.authority {
-                    write!(f, "//{auth}")?;
+                    f.write_str("//")?;
+                    if let Some(ui) = &auth.user_info {
+                        if redact_userinfo {
+                            write_redacted_userinfo(ui.as_str(), f)?;
+                        } else {
+                            write!(f, "{ui}")?;
+                        }
+                        f.write_str("@")?;
+                    }
+                    write!(f, "{}", auth.address)?;
                 }
                 // Safety: parser invariant on the path bytes.
                 f.write_str(unsafe { std::str::from_utf8_unchecked(&arc.path) })?;
@@ -828,5 +857,44 @@ impl std::fmt::Display for Uri {
                 Ok(())
             }
         }
+    }
+}
+
+/// Emit `user:***` (or just `user` if no `:` is present) — shared by
+/// [`Uri::fmt_uri`]'s Debug branch and any other site that wants the
+/// inline-URI redaction shape (distinct from the structured
+/// `UserInfo` `Debug` rendering, which uses `debug_struct`).
+fn write_redacted_userinfo(s: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match s.bytes().position(|b| b == b':') {
+        Some(i) => write!(f, "{}:***", &s[..i]),
+        None => f.write_str(s),
+    }
+}
+
+impl std::fmt::Display for Uri {
+    /// Writes the canonical URI string: `[scheme:][//authority][path][?query][#fragment]`.
+    /// `Lazy` URIs round-trip byte-for-byte through their source buffer; `Owned`
+    /// URIs reassemble from components.
+    ///
+    /// **Not the HTTP wire form.** This includes userinfo and fragment and
+    /// preserves the original port — none of which belong on an HTTP request
+    /// line or in HTTP/2 pseudo-headers. Use the dedicated `write_*_form`
+    /// helpers (landing with the relative-resolution work) when serializing
+    /// for HTTP. Logging a [`Uri`] via [`Display`](std::fmt::Display) may leak
+    /// userinfo — use [`Debug`](std::fmt::Debug) (password-redacted) if the
+    /// destination is a tracing sink, or strip the userinfo explicitly.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_uri(f, false)
+    }
+}
+
+impl std::fmt::Debug for Uri {
+    /// `Uri("…")` rendering of the canonical URI form, with the
+    /// password portion of any userinfo redacted as `***`. See the
+    /// type-level "Logging safety" docs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Uri(\"")?;
+        self.fmt_uri(f, true)?;
+        f.write_str("\")")
     }
 }

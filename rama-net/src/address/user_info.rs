@@ -14,7 +14,16 @@ use crate::user::Basic;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 
 /// Raw RFC 3986 userinfo bytes. Cheap to clone.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// # Logging safety
+///
+/// The [`Debug`](std::fmt::Debug) impl redacts the password portion (anything
+/// after the first `:`) as `"***"`, matching [`Basic`]'s logging behaviour.
+/// This is the safe default for tracing spans and log lines, where a raw
+/// `Debug`-print of a [`Uri`](crate::uri::Uri) would otherwise leak
+/// credentials into observability sinks. The user portion is rendered raw;
+/// pct-encoded bytes are not decoded for the Debug view.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct UserInfo {
     bytes: Bytes,
 }
@@ -247,7 +256,10 @@ impl From<Basic> for UserInfo {
 
 /// Borrowed view of a [`UserInfo`]. Carries no ownership of the
 /// underlying bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Debug` follows [`UserInfo`]'s redacting policy (password portion
+/// rendered as `"***"`).
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct UserInfoRef<'a> {
     bytes: &'a [u8],
 }
@@ -307,6 +319,50 @@ impl<'a> From<&'a UserInfo> for UserInfoRef<'a> {
 impl std::fmt::Display for UserInfoRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// ---- Redacting Debug ------------------------------------------------------
+//
+// Userinfo carries credentials by convention (`user:password`). A raw
+// `Debug` print would leak the password into any tracing span, panic
+// message, or `assert!`/`dbg!` line that touches a `Uri`. Mirror what
+// [`Basic`]'s Debug impl does: username verbatim, password as `"***"`.
+//
+// Shared `fmt_redacted` helper drives both the owned and borrowed views;
+// the borrowed view's impl is the canonical site and the owned one
+// delegates through `UserInfoRef::from(self)`.
+
+fn fmt_redacted(bytes: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    // SAFETY: parser/static-validator invariant: UserInfo bytes are valid
+    // UTF-8 (graceful preserves UTF-8; strict is ASCII-only; the
+    // const validator at `from_static_str` rejects non-UTF-8 byte
+    // sequences via its byte-class check, which is ASCII).
+    let s = unsafe { std::str::from_utf8_unchecked(bytes) };
+    let (user, password) = match bytes.iter().position(|&b| b == b':') {
+        Some(i) => (&s[..i], Some(&s[i + 1..])),
+        None => (s, None),
+    };
+    let mut dbg = f.debug_struct("UserInfo");
+    dbg.field("user", &user);
+    // Render the password field as the literal `"***"` regardless of
+    // whether it's empty — its mere presence is the credential signal
+    // we want to surface in logs.
+    if password.is_some() {
+        dbg.field("password", &"***");
+    }
+    dbg.finish()
+}
+
+impl std::fmt::Debug for UserInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_redacted(&self.bytes, f)
+    }
+}
+
+impl std::fmt::Debug for UserInfoRef<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fmt_redacted(self.bytes, f)
     }
 }
 
@@ -374,6 +430,60 @@ mod tests {
         let b = u.to_basic().unwrap();
         assert_eq!(b.username(), "alice");
         assert_eq!(b.password(), Some("secret"));
+    }
+
+    // -- Debug redaction (audit H3) -------------------------------------
+
+    #[test]
+    fn debug_redacts_password() {
+        let u = UserInfo::from_static_str("alice:secret");
+        let s = format!("{u:?}");
+        assert!(!s.contains("secret"), "debug leaked password: {s}");
+        assert!(s.contains("alice"), "debug missing user: {s}");
+        assert!(s.contains("***"), "debug missing redaction marker: {s}");
+    }
+
+    #[test]
+    fn debug_omits_password_field_when_absent() {
+        // No `:` → no credential → no `password` field at all.
+        let u = UserInfo::from_static_str("alice");
+        let s = format!("{u:?}");
+        assert!(s.contains("alice"));
+        assert!(
+            !s.contains("***"),
+            "debug shouldn't show *** for plain user"
+        );
+        assert!(!s.contains("password"), "debug shouldn't mention password");
+    }
+
+    #[test]
+    fn debug_redacts_empty_password() {
+        // Empty password is still a credential signal.
+        let u = UserInfo::from_static_str("alice:");
+        let s = format!("{u:?}");
+        assert!(s.contains("alice"));
+        assert!(s.contains("***"), "debug must redact even empty password");
+    }
+
+    #[test]
+    fn debug_redacts_multiple_colon_password() {
+        // RFC 3986 allows extra `:` in the password portion. Redaction
+        // covers everything after the first `:`.
+        let u = UserInfo::from_static_str("alice:secret:more");
+        let s = format!("{u:?}");
+        assert!(!s.contains("secret"), "debug leaked password: {s}");
+        assert!(!s.contains("more"), "debug leaked password tail: {s}");
+    }
+
+    #[test]
+    fn ref_debug_matches_owned_redaction() {
+        // The borrowed view uses the same redacting helper as the owned
+        // type so logging through either path is safe.
+        let u = UserInfo::from_static_str("alice:secret");
+        let r: UserInfoRef<'_> = (&u).into();
+        let owned_dbg = format!("{u:?}");
+        let ref_dbg = format!("{r:?}");
+        assert_eq!(owned_dbg, ref_dbg);
     }
 
     #[test]
