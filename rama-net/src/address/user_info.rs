@@ -259,7 +259,7 @@ impl From<Basic> for UserInfo {
 ///
 /// `Debug` follows [`UserInfo`]'s redacting policy (password portion
 /// rendered as `"***"`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct UserInfoRef<'a> {
     bytes: &'a [u8],
 }

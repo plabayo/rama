@@ -184,7 +184,7 @@ impl Host {
 ///
 /// Useful anywhere a borrowed host view makes sense — URI host components,
 /// header-parse temporaries, DNS lookups against a non-owning buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HostRef<'a> {
     /// A DNS-style name.
     Name(super::domain::DomainRef<'a>),

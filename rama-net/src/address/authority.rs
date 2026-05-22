@@ -594,7 +594,12 @@ impl TryFrom<&[u8]> for Authority {
 ///
 /// Constructed by [`Uri::authority`](crate::uri::Uri::authority) and
 /// — eventually — by [`Authority`]'s own borrow accessor.
-#[derive(Debug, Clone, Copy)]
+///
+/// `PartialEq` / `Eq` / `Hash` follow the same component-wise rules as
+/// the owned [`Authority`] (case-insensitive host via `HostRef`'s impl,
+/// strict equality on userinfo / port), so the two types are
+/// interchangeable as collection keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AuthorityRef<'a> {
     pub(crate) userinfo: Option<UserInfoRef<'a>>,
     pub(crate) host: HostRef<'a>,

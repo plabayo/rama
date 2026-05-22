@@ -355,7 +355,13 @@ impl Domain {
 /// committing to an owned [`Domain`] allocation — e.g. iterating zero-copy
 /// slices out of a parent buffer, or pattern-matching against a transient
 /// header value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `PartialEq` / `Eq` / `Hash` / `Ord` / `PartialOrd` are
+/// **ASCII-case-insensitive** per RFC 3986 §6.2.2.1 (and §3.2.2 host) —
+/// `DomainRef("EXAMPLE.com")` and `DomainRef("example.com")` compare and
+/// hash identically. Mirrors the owned [`Domain`]'s semantics so the two
+/// types stay interchangeable as collection keys.
+#[derive(Debug, Clone, Copy)]
 pub struct DomainRef<'a> {
     bytes: &'a [u8],
 }
@@ -403,6 +409,54 @@ impl<'a> DomainRef<'a> {
 impl<'a> From<&'a Domain> for DomainRef<'a> {
     fn from(d: &'a Domain) -> Self {
         Self { bytes: &d.0 }
+    }
+}
+
+// ---- ASCII-case-insensitive Eq / Hash / Ord (parallels `Domain`) ----------
+//
+// Driven by the same `dotted_segments` + per-label case-fold helpers
+// that `Domain` uses, so a borrowed view and its owned counterpart are
+// fully interchangeable as collection keys / sort keys / equality
+// witnesses. No allocation — the segment iterator borrows from the
+// existing `&str` view.
+
+impl PartialEq for DomainRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        eq_segments(
+            dotted_segments(self.as_str()),
+            dotted_segments(other.as_str()),
+        )
+    }
+}
+
+impl Eq for DomainRef<'_> {}
+
+impl Ord for DomainRef<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        cmp_segments(
+            dotted_segments(self.as_str()),
+            dotted_segments(other.as_str()),
+        )
+    }
+}
+
+impl PartialOrd for DomainRef<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for DomainRef<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Match `Domain`'s per-label hash exactly so the two types
+        // produce identical byte streams for identical content:
+        // for each label `len_usize` + `byte_lower` per byte.
+        for seg in dotted_segments(self.as_str()) {
+            state.write_usize(seg.len());
+            for b in seg.bytes() {
+                state.write_u8(b.to_ascii_lowercase());
+            }
+        }
     }
 }
 

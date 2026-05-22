@@ -10,7 +10,7 @@ use percent_encoding::percent_decode;
 /// The bytes are the raw on-the-wire form (percent-encoded). Iterate
 /// segments via [`PathRef::segments`] — each segment can be inspected
 /// raw or percent-decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathRef<'a> {
     pub(crate) bytes: &'a [u8],
 }

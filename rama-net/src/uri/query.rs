@@ -110,7 +110,7 @@ impl<'a> FromIterator<QueryPairRef<'a>> for Query {
 }
 
 /// Borrowed view of a URI query component (no leading `?`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct QueryRef<'a> {
     pub(crate) bytes: &'a [u8],
 }

@@ -47,7 +47,7 @@ impl Fragment {
 }
 
 /// Borrowed view of a URI fragment component (no leading `#`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FragmentRef<'a> {
     pub(crate) bytes: &'a [u8],
 }

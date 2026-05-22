@@ -791,10 +791,10 @@ impl Uri {
     }
 }
 
-// `FromStr` kept because it's the only way to satisfy `T: FromStr`
-// bounds (e.g. clap argument parsers). `TryFrom` impls are not — the
-// `IntoUriInput`-bound `Uri::parse` covers the same ground with one
-// function call and no `?`-ladder.
+// `FromStr` and `TryFrom<…>` both route through [`Uri::parse`]. `FromStr`
+// is the entry generic code (e.g. clap argument parsers) uses; `TryFrom`
+// is the standard idiom `Uri::try_from(input)?` and gives consistency
+// with `Host`, `Authority`, `Domain` which also expose `TryFrom`.
 impl std::str::FromStr for Uri {
     type Err = ParseError;
 
@@ -803,6 +803,29 @@ impl std::str::FromStr for Uri {
         Self::parse(s)
     }
 }
+
+macro_rules! uri_try_from {
+    ($($t:ty),* $(,)?) => {
+        $(
+            impl TryFrom<$t> for Uri {
+                type Error = ParseError;
+                #[inline(always)]
+                fn try_from(input: $t) -> Result<Self, Self::Error> {
+                    Self::parse(input)
+                }
+            }
+        )*
+    };
+}
+
+uri_try_from!(
+    &str,
+    String,
+    &[u8],
+    Vec<u8>,
+    rama_core::bytes::Bytes,
+    rama_core::bytes::BytesMut,
+);
 
 impl Uri {
     /// Shared walker for [`Display`](std::fmt::Display) and
@@ -896,5 +919,114 @@ impl std::fmt::Debug for Uri {
         f.write_str("Uri(\"")?;
         self.fmt_uri(f, true)?;
         f.write_str("\")")
+    }
+}
+
+// ---- PartialEq / Eq / Hash / Ord — structural over components -------------
+//
+// All four impls compare the URI's *components* (scheme, authority,
+// path, query, fragment) directly through the public accessors. The
+// accessors return cheap borrowed views (`Option<&Protocol>`,
+// `Option<AuthorityRef>`, `Option<PathRef>`, …) whose own Eq/Hash/Ord
+// impls carry the right RFC 3986 semantics — case-insensitive on scheme
+// + host (§6.2.2.1), pct-encoded/decoded equivalence on host bytes
+// (§6.2.2.2 — via `UninterpretedHostRef` and `DomainRef`), strict on
+// userinfo / path / query / fragment.
+//
+// Zero allocation per call: no Display materialization, no string
+// scratch buffers. Identity fast paths (same `Asterisk` tag, or
+// `Arc::ptr_eq` on the inner Arcs) skip the component walk in the
+// common "comparing against self / a clone" case.
+//
+// **Not** raw wire-bytes equality. Two URIs that Display differently
+// can still compare equal here — e.g. `https://EXAMPLE.com/` and
+// `https://example.com/` are equal under §6.2.2.1 case normalisation.
+// If you need stricter byte-by-byte equality, compare the rendered
+// `Display` strings explicitly.
+
+impl PartialEq for Uri {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.inner, &other.inner) {
+            (UriInner::Asterisk, UriInner::Asterisk) => return true,
+            (UriInner::Asterisk, _) | (_, UriInner::Asterisk) => return false,
+            (UriInner::Lazy(a), UriInner::Lazy(b)) if Arc::ptr_eq(a, b) => return true,
+            (UriInner::Owned(a), UriInner::Owned(b)) if Arc::ptr_eq(a, b) => return true,
+            _ => {}
+        }
+        // Component-by-component. All sub-types are `Copy` + `Eq` so
+        // this stays allocation-free on every path.
+        self.scheme() == other.scheme()
+            && self.authority() == other.authority()
+            && self.path() == other.path()
+            && self.query() == other.query()
+            && self.fragment() == other.fragment()
+    }
+}
+
+impl Eq for Uri {}
+
+impl Ord for Uri {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        // Lex order over `(scheme, authority, path, query, fragment)`.
+        // Matches the natural URI grammar order so sort output reads
+        // intuitively (`a.example/p < b.example/p`, `…/a < …/b`, …).
+        match (&self.inner, &other.inner) {
+            (UriInner::Asterisk, UriInner::Asterisk) => return Ordering::Equal,
+            // Asterisk has no scheme/authority/path — sort it before
+            // anything else by treating it as a unique smallest value.
+            (UriInner::Asterisk, _) => return Ordering::Less,
+            (_, UriInner::Asterisk) => return Ordering::Greater,
+            _ => {}
+        }
+        self.scheme()
+            .cmp(&other.scheme())
+            .then_with(|| self.authority().cmp(&other.authority()))
+            .then_with(|| self.path().cmp(&other.path()))
+            .then_with(|| self.query().cmp(&other.query()))
+            .then_with(|| self.fragment().cmp(&other.fragment()))
+    }
+}
+
+impl PartialOrd for Uri {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for Uri {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // A discriminant byte per "section" so a present-but-empty query
+        // (`Some(empty)`) doesn't hash the same as no query at all
+        // (`None`), and so `Uri("?")` ≠ `Uri("#")`. All other distinctness
+        // comes from the sub-type Hash impls below.
+        match &self.inner {
+            UriInner::Asterisk => {
+                state.write_u8(0);
+                return;
+            }
+            UriInner::Lazy(_) | UriInner::Owned(_) => state.write_u8(1),
+        }
+        self.scheme().hash(state);
+        self.authority().hash(state);
+        self.path().hash(state);
+        // Tag query/fragment presence explicitly so Option::hash's own
+        // discriminant stays consistent across Lazy/Owned (Option<T>::hash
+        // already does this, but pinning a marker future-proofs against
+        // any subtype Hash impl that might forget to length-disambiguate).
+        match self.query() {
+            Some(q) => {
+                state.write_u8(0xff);
+                q.hash(state);
+            }
+            None => state.write_u8(0),
+        }
+        match self.fragment() {
+            Some(f) => {
+                state.write_u8(0xff);
+                f.hash(state);
+            }
+            None => state.write_u8(0),
+        }
     }
 }

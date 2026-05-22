@@ -44,6 +44,7 @@ pub(super) mod adversarial;
 pub(super) mod authority_form;
 pub(super) mod canonicalize;
 pub(super) mod display;
+pub(super) mod eq_hash_ord;
 pub(super) mod fragment;
 pub(super) mod host;
 pub(super) mod idna;
