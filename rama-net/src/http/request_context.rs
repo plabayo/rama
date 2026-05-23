@@ -111,7 +111,11 @@ pub fn try_request_ctx_from_http_parts(
                 .extensions()
                 .get_ref::<ProxyTarget>()
                 .and_then(|t| {
-                    t.0.host.is_domain().then(|| {
+                    // Bridge `Uninterpreted` reg-names (`exa%6Dple.com`)
+                    // to Domain so they participate in the proxy-target
+                    // fallback. `is_domain()` was variant-only and
+                    // missed these.
+                    t.0.host.try_as_domain().ok().map(|_| {
                         let authority = t.0.clone().into();
                         tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
                         authority

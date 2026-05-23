@@ -469,4 +469,30 @@ mod tests {
             assert_eq!(host_with_port.to_string(), expected, "{msg}");
         }
     }
+
+    #[test]
+    fn host_with_port_roundtrips_pct_encoded_reg_name() {
+        // Auditor's regression: `Display` emits the reg-name verbatim,
+        // `try_from` must reconstruct it as `Uninterpreted`.
+        let host = crate::uri::Uri::parse_authority_form("exa%6Dple.com:443")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let hwp = HostWithPort::new(host, 443);
+        let round: HostWithPort = hwp.to_string().parse().expect("roundtrip");
+        assert_eq!(hwp, round);
+    }
+
+    #[test]
+    fn host_with_port_roundtrips_bracketed_ipvfuture() {
+        let host = crate::uri::Uri::parse_authority_form("[v1.fe80::a]:443")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let hwp = HostWithPort::new(host, 443);
+        let round: HostWithPort = hwp.to_string().parse().expect("roundtrip");
+        assert_eq!(hwp, round);
+    }
 }

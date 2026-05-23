@@ -223,8 +223,12 @@ where
             });
         }
 
+        // SNI is a DNS name. IP-first per RFC 6066 §3: drop SNI for
+        // IP-shaped hosts (including pct-encoded IP literals inside
+        // `Uninterpreted`). Otherwise bridge `Uninterpreted` to Domain.
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -272,8 +276,9 @@ where
             transport_ctx.app_protocol,
         );
 
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -301,12 +306,16 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
-            tunnel
-                .sni
-                .as_ref()
-                .and_then(|h| h.as_domain())
-                .or(self.kind.sni.as_ref())
+        // Same IP-first bridging on the tunnel SNI overwrite. Bind the
+        // owned/borrowed Cow to a local so its reference is valid for
+        // the duration of the connector_data call below.
+        let tunnel_sni_owned = input
+            .extensions()
+            .get_ref::<TlsTunnel>()
+            .and_then(|t| t.sni.as_ref())
+            .and_then(sni_domain_for);
+        let maybe_sni_overwrite = if input.extensions().get_ref::<TlsTunnel>().is_some() {
+            tunnel_sni_owned.as_deref().or(self.kind.sni.as_ref())
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -333,6 +342,17 @@ where
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }
+}
+
+/// SNI extraction with IP-first policy (RFC 6066 §3 forbids IP literals
+/// in SNI). Returns `None` for IP-shaped hosts (including pct-encoded
+/// IP literals inside `Uninterpreted`) and for non-promotable
+/// reg-names / IPvFuture; otherwise returns the bridged [`Domain`].
+fn sni_domain_for(host: &rama_net::address::Host) -> Option<std::borrow::Cow<'_, Domain>> {
+    if host.try_as_ip().is_ok() {
+        return None;
+    }
+    host.try_as_domain().ok()
 }
 
 #[cfg(feature = "http")]

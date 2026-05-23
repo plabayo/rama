@@ -3,7 +3,7 @@ use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -851,10 +851,7 @@ impl TryFrom<String> for Host {
     type Error = BoxError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        parse_utils::try_to_parse_str_to_ip(name.as_str())
-            .map(Host::Address)
-            .or_else(|| Domain::try_from(name).ok().map(Host::Name))
-            .context("parse host from string")
+        try_from_host_str(name.as_str())
     }
 }
 
@@ -862,11 +859,58 @@ impl TryFrom<&str> for Host {
     type Error = BoxError;
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
-        parse_utils::try_to_parse_str_to_ip(name)
-            .map(Host::Address)
-            .or_else(|| Domain::try_from(name.to_owned()).ok().map(Host::Name))
-            .context("parse host from string")
+        try_from_host_str(name)
     }
+}
+
+/// Parse `s` as a [`Host`] — IPv4/IPv6/IPvFuture (bracketed or bare),
+/// DNS-shaped domain, or otherwise a reg-name [`Uninterpreted`] host.
+/// Symmetric with the URI parser's host byte set so any URI host
+/// `Display`-round-trips through this entry point.
+fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
+    if s.is_empty() {
+        return Err(OpaqueError::from_static_str("empty host string").into_box_error());
+    }
+    // Bracketed IP-literal fast path — without it, the colon-in-IPv6
+    // body confuses bare parses and `[v1.X]` IPvFuture has no shot.
+    if s.starts_with('[') && s.ends_with(']') {
+        let inside = &s[1..s.len() - 1];
+        if inside.is_empty() {
+            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+        }
+        // IPvFuture: surface as `Uninterpreted(bracketed=true)`.
+        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
+            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
+                .map_err(BoxError::from)
+                .context("parse bracketed IPvFuture")?;
+            return Ok(Host::Uninterpreted(
+                UninterpretedHost::from_validated_bytes(
+                    rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                    true,
+                ),
+            ));
+        }
+        if super::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
+            return Err(OpaqueError::from_static_str(
+                "ipv6 zone identifiers (RFC 6874) are not supported",
+            )
+            .into_box_error());
+        }
+        let addr = inside
+            .parse::<std::net::Ipv6Addr>()
+            .context("parse bracketed ipv6 host")?;
+        return Ok(Host::Address(IpAddr::V6(addr)));
+    }
+    if let Some(ip) = parse_utils::try_to_parse_str_to_ip(s) {
+        return Ok(Host::Address(ip));
+    }
+    if let Ok(domain) = Domain::try_from(s.to_owned()) {
+        return Ok(Host::Name(domain));
+    }
+    // Reg-name fallback (pct-encoded, sub-delim, raw UTF-8) — symmetric
+    // with the URI parser's host shape.
+    let host = UninterpretedHost::try_from_reg_name_str(s).context("parse host as reg-name")?;
+    Ok(Host::Uninterpreted(host))
 }
 
 #[cfg(feature = "http")]
@@ -893,10 +937,7 @@ impl TryFrom<Vec<u8>> for Host {
     type Error = BoxError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        try_to_parse_bytes_to_ip(name.as_slice())
-            .map(Host::Address)
-            .or_else(|| Domain::try_from(name).ok().map(Host::Name))
-            .context("parse host from string")
+        Self::try_from(name.as_slice())
     }
 }
 
@@ -904,10 +945,22 @@ impl TryFrom<&[u8]> for Host {
     type Error = BoxError;
 
     fn try_from(name: &[u8]) -> Result<Self, Self::Error> {
-        try_to_parse_bytes_to_ip(name)
-            .map(Host::Address)
-            .or_else(|| Domain::try_from(name.to_owned()).ok().map(Host::Name))
-            .context("parse host from string")
+        // Text-first: a 4-byte text input like `b"[::]"` parses to the
+        // IPv6 unspecified address; the binary-octet interpretation
+        // (4 bytes → IPv4, 16 bytes → IPv6) is the fallback for byte
+        // payloads that aren't valid UTF-8 host text.
+        if let Ok(s) = std::str::from_utf8(name)
+            && let Ok(host) = try_from_host_str(s)
+        {
+            return Ok(host);
+        }
+        if let Ok(arr) = <&[u8; 4]>::try_from(name) {
+            return Ok(Self::Address(IpAddr::from(*arr)));
+        }
+        if let Ok(arr) = <&[u8; 16]>::try_from(name) {
+            return Ok(Self::Address(IpAddr::from(*arr)));
+        }
+        Err(OpaqueError::from_static_str("parse host from bytes failed").into_box_error())
     }
 }
 
@@ -929,25 +982,6 @@ impl<'de> serde::Deserialize<'de> for Host {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
-}
-
-fn try_to_parse_bytes_to_ip(value: &[u8]) -> Option<IpAddr> {
-    if let Some(ip) = std::str::from_utf8(value)
-        .ok()
-        .and_then(parse_utils::try_to_parse_str_to_ip)
-    {
-        return Some(ip);
-    }
-
-    if let Ok(ip) = TryInto::<&[u8; 4]>::try_into(value).map(|bytes| IpAddr::from(*bytes)) {
-        return Some(ip);
-    }
-
-    if let Ok(ip) = TryInto::<&[u8; 16]>::try_into(value).map(|bytes| IpAddr::from(*bytes)) {
-        return Some(ip);
-    }
-
-    None
 }
 
 #[cfg(test)]
@@ -1084,20 +1118,10 @@ mod tests {
     #[test]
     fn test_parse_str_invalid() {
         for str in [
-            "",
-            ".",
-            "-",
-            ".-",
-            "-.",
-            ".-.",
-            "[::",
-            "::]",
+            // Empty input is always invalid.
+            "", // Unbalanced brackets — IP-literal grammar requires both.
+            "[::", "::]", // `@` is the userinfo terminator, not a host byte.
             "@",
-            // Non-ASCII inputs are invalid only when the `idna` feature is off.
-            #[cfg(not(feature = "idna"))]
-            "こんにちは",
-            #[cfg(not(feature = "idna"))]
-            "こんにちは.com",
         ] {
             assert!(Host::try_from(str).is_err(), "parsing {str}");
             assert!(Host::try_from(str.to_owned()).is_err(), "parsing {str}");
@@ -1716,5 +1740,46 @@ mod tests {
         let owned = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         let r = HostRef::from(&owned);
         r.try_as_domain().unwrap_err();
+    }
+
+    // ---- Display ↔ try_from round-trip for Uninterpreted ----------------
+
+    #[test]
+    fn host_try_from_recovers_uninterpreted_pct_encoded() {
+        // `exa%6Dple.com` is not a typed Domain (the validator rejects
+        // `%`) and not an IP. Must round-trip as `Host::Uninterpreted`.
+        let h: Host = "exa%6Dple.com".parse().unwrap();
+        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_eq!(h.to_string(), "exa%6Dple.com");
+    }
+
+    #[test]
+    fn host_try_from_recovers_uninterpreted_subdelim() {
+        let h: Host = "tag,with,commas".parse().unwrap();
+        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_eq!(h.to_string(), "tag,with,commas");
+    }
+
+    #[test]
+    fn host_try_from_recovers_bracketed_ipvfuture() {
+        let h: Host = "[v1.fe80::a]".parse().unwrap();
+        assert!(matches!(h, Host::Uninterpreted(_)));
+        assert_eq!(h.to_string(), "[v1.fe80::a]");
+    }
+
+    #[test]
+    fn host_try_from_recovers_bracketed_ipv6() {
+        let h: Host = "[::1]".parse().unwrap();
+        assert!(matches!(h, Host::Address(IpAddr::V6(_))));
+    }
+
+    #[test]
+    fn host_serde_roundtrip_through_uninterpreted() {
+        // Auditor's regression: Serialize via Display, Deserialize via
+        // try_from. Both must round-trip the Uninterpreted shape.
+        let original = "exa%6Dple.com".parse::<Host>().unwrap();
+        let json = serde_json::to_string(&original).unwrap();
+        let round: Host = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, round);
     }
 }
