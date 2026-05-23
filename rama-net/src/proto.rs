@@ -22,6 +22,7 @@ use rama_http_types::Scheme;
 pub struct Protocol(ProtocolKind);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 enum ProtocolKind {
     /// The `http` protocol.
     Http,
@@ -48,6 +49,13 @@ enum ProtocolKind {
     ///
     /// The difference with [`Self::Socks5`] is that the proxy resolves the URL hostname.
     Socks5h,
+    /// The `file` protocol. Local-filesystem URI scheme — the
+    /// `hier-part` is an absolute path on the host running the URI
+    /// consumer; nothing is sent over the network. Defined by
+    /// [RFC 8089](https://datatracker.ietf.org/doc/html/rfc8089).
+    ///
+    /// Has no default port — `file:` is not a network protocol.
+    File,
     /// Custom protocol.
     Custom(SmolStr),
 }
@@ -95,6 +103,14 @@ impl Protocol {
     /// `SOCKS5H` protocol.
     pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
+    /// `FILE` protocol scheme. RFC 8089 — `file:///path/to/x`.
+    pub const FILE_SCHEME: &str = "file";
+    /// The `file` protocol. Local-filesystem URI scheme: the URI
+    /// references a path on the host running the URI consumer.
+    /// Consumers (CLI tools, file fetchers) open the path directly
+    /// rather than dialing a network endpoint.
+    pub const FILE: Self = Self(ProtocolKind::File);
+
     /// Creates a Protocol from a str a compile time.
     ///
     /// This function requires the static string to be a valid protocol.
@@ -127,6 +143,8 @@ impl Protocol {
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Self::WSS_SCHEME) {
             ProtocolKind::Wss
+        } else if eq_ignore_ascii_case!(s, Self::FILE_SCHEME) {
+            ProtocolKind::File
         } else if validate_scheme_str(s) {
             ProtocolKind::Custom(SmolStr::new_static(s))
         } else {
@@ -143,6 +161,7 @@ impl Protocol {
             | ProtocolKind::Wss
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -156,6 +175,7 @@ impl Protocol {
             | ProtocolKind::Https
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -169,6 +189,7 @@ impl Protocol {
             | ProtocolKind::Https
             | ProtocolKind::Ws
             | ProtocolKind::Wss
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -182,6 +203,7 @@ impl Protocol {
             | ProtocolKind::Http
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -206,7 +228,8 @@ impl Protocol {
             ProtocolKind::Ws => Some(Self::WS_DEFAULT_PORT),
             ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
-            ProtocolKind::Custom(_) => None,
+            // `file:` is not a network protocol — no default port.
+            ProtocolKind::File | ProtocolKind::Custom(_) => None,
         }
     }
 
@@ -214,12 +237,13 @@ impl Protocol {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match &self.0 {
-            ProtocolKind::Http => "http",
-            ProtocolKind::Https => "https",
-            ProtocolKind::Ws => "ws",
-            ProtocolKind::Wss => "wss",
-            ProtocolKind::Socks5 => "socks5",
-            ProtocolKind::Socks5h => "socks5h",
+            ProtocolKind::Http => Self::HTTP_SCHEME,
+            ProtocolKind::Https => Self::HTTPS_SCHEME,
+            ProtocolKind::Ws => Self::WS_SCHEME,
+            ProtocolKind::Wss => Self::WSS_SCHEME,
+            ProtocolKind::Socks5 => Self::SOCKS5_SCHEME,
+            ProtocolKind::Socks5h => Self::SOCKS5H_SCHEME,
+            ProtocolKind::File => Self::FILE_SCHEME,
             ProtocolKind::Custom(s) => s.as_ref(),
         }
     }
@@ -246,6 +270,8 @@ fn try_to_convert_str_to_non_custom_protocol(
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Protocol::WSS_SCHEME) {
             ProtocolKind::Wss
+        } else if eq_ignore_ascii_case!(s, Protocol::FILE_SCHEME) {
+            ProtocolKind::File
         } else if validate_scheme_str(s) {
             return Ok(None);
         } else {
@@ -331,6 +357,7 @@ impl PartialEq<str> for Protocol {
             ProtocolKind::Socks5h => other.eq_ignore_ascii_case(Self::SOCKS5H_SCHEME),
             ProtocolKind::Ws => other.eq_ignore_ascii_case(Self::WS_SCHEME),
             ProtocolKind::Wss => other.eq_ignore_ascii_case(Self::WSS_SCHEME),
+            ProtocolKind::File => other.eq_ignore_ascii_case(Self::FILE_SCHEME),
             ProtocolKind::Custom(s) => other.eq_ignore_ascii_case(s),
         }
     }
