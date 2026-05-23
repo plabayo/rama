@@ -84,12 +84,20 @@ pub enum Host {
 }
 
 impl Host {
-    /// Returns `true` if [`Host`] is a [`Domain`].
+    /// Returns `true` if this is the [`Host::Name`] variant.
+    /// **Variant-only check** — misses `Uninterpreted` reg-names that
+    /// would pct-decode to a valid domain. For the bridging predicate,
+    /// use `try_as_domain().is_ok()`.
     #[must_use]
     pub fn is_domain(&self) -> bool {
         matches!(self, Self::Name(_))
     }
 
+    /// Returns the inner [`Domain`] only when this is the
+    /// [`Host::Name`] variant. **Direct access — does not bridge
+    /// `Uninterpreted`.** For pct-encoded reg-names that should be
+    /// treated as domains (`exa%6Dple.com` → `example.com`), use
+    /// [`try_as_domain`](Self::try_as_domain) instead.
     #[must_use]
     pub fn as_domain(&self) -> Option<&Domain> {
         match self {
@@ -98,6 +106,8 @@ impl Host {
         }
     }
 
+    /// Consuming variant-only access — see [`as_domain`](Self::as_domain).
+    /// For the bridging form, use [`try_into_domain`](Self::try_into_domain).
     #[must_use]
     pub fn into_domain(self) -> Option<Domain> {
         match self {
@@ -106,12 +116,19 @@ impl Host {
         }
     }
 
-    /// Returns `true` if [`Host`] is a [`IpAddr`].
+    /// Returns `true` if this is the [`Host::Address`] variant.
+    /// **Variant-only check** — misses pct-encoded IP literals
+    /// inside `Uninterpreted` (`%31%32%37.0.0.1` → `127.0.0.1`).
+    /// For the bridging predicate, use `try_as_ip().is_ok()`.
     #[must_use]
     pub fn is_ip(&self) -> bool {
         matches!(self, Self::Address(_))
     }
 
+    /// Returns the inner [`IpAddr`] only when this is the
+    /// [`Host::Address`] variant. **Direct access — does not bridge
+    /// `Uninterpreted`.** For pct-encoded IP literals, use
+    /// [`try_as_ip`](Self::try_as_ip) instead.
     #[must_use]
     pub fn as_ip(&self) -> Option<&IpAddr> {
         match self {
@@ -120,6 +137,8 @@ impl Host {
         }
     }
 
+    /// Consuming variant-only access — see [`as_ip`](Self::as_ip).
+    /// For the bridging form, use [`try_as_ip`](Self::try_as_ip).
     #[must_use]
     pub fn into_ip(self) -> Option<IpAddr> {
         match self {
@@ -340,17 +359,18 @@ impl<'a> HostRef<'a> {
         }
     }
 
-    /// Bridging accessor. See [`Host::try_as_domain`].
-    pub fn try_as_domain(self) -> Result<std::borrow::Cow<'a, Domain>, BoxError> {
+    /// Bridging accessor. Returns an owned [`Domain`] — unlike the
+    /// `Host::try_as_domain` `Cow`-returning variant, the borrowed view
+    /// has no `Domain` to lend (it carries a [`DomainRef`]), so this
+    /// always materializes an owned value.
+    pub fn try_as_domain(self) -> Result<Domain, BoxError> {
         match self {
-            Self::Name(d) => Ok(std::borrow::Cow::Owned(d.into_owned())),
+            Self::Name(d) => Ok(d.into_owned()),
             Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
                 "HostRef::Address is not a Domain",
             )
             .into_box_error()),
-            Self::Uninterpreted(host) => Domain::try_from(host)
-                .map(std::borrow::Cow::Owned)
-                .map_err(Into::into),
+            Self::Uninterpreted(host) => Domain::try_from(host).map_err(Into::into),
         }
     }
 
@@ -1161,7 +1181,7 @@ mod tests {
 
     #[test]
     fn host_labels_ip_is_empty_and_never_subdomain() {
-        let h = Host::Address("127.0.0.1".parse().unwrap());
+        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         assert_eq!(h.labels().count(), 0);
         assert_eq!(h.label_count(), 0);
         assert!(h.parent().is_none());
@@ -1305,7 +1325,7 @@ mod tests {
         // as `IpAddr::V6`. They're different addresses to `std`, so
         // `Host::Address(V4)` does not match the v4-mapped-v6 string.
         // Pin behavior so a future relaxation is a conscious change.
-        let h4 = Host::Address("127.0.0.1".parse().unwrap());
+        let h4 = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         assert!(h4 == "127.0.0.1");
         assert!(h4 != "::ffff:127.0.0.1");
 
@@ -1368,7 +1388,7 @@ mod tests {
         let h = bracketed_host(b"v1.fe80::a");
         assert!(h != Ipv4Addr::new(127, 0, 0, 1));
         assert!(h != "::1".parse::<Ipv6Addr>().unwrap());
-        let any: IpAddr = "127.0.0.1".parse().unwrap();
+        let any: IpAddr = "127.0.0.1".parse::<std::net::IpAddr>().unwrap();
         assert!(h != any);
     }
 
@@ -1389,7 +1409,7 @@ mod tests {
         // without first promoting.
         for owned in [
             Host::Name(Domain::from_static("example.com")),
-            Host::Address("127.0.0.1".parse().unwrap()),
+            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
             Host::Address("::1".parse().unwrap()),
             reg_host(b"exa%6Dple.com"),
             bracketed_host(b"v1.fe80::a"),
@@ -1423,7 +1443,7 @@ mod tests {
     #[test]
     fn cross_variant_address_eq_uninterpreted_via_pct_decode() {
         // `%31%32%37.0.0.1` pct-decodes to `127.0.0.1` — same IPv4.
-        let typed = Host::Address("127.0.0.1".parse().unwrap());
+        let typed = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         let pct = reg_host(b"%31%32%37.0.0.1");
         assert_eq!(typed, pct);
     }
@@ -1445,7 +1465,10 @@ mod tests {
         // form. Must not bridge to anything else.
         let opaque = reg_host(b"tag,with,commas");
         assert_ne!(opaque, Host::Name(Domain::from_static("tag")));
-        assert_ne!(opaque, Host::Address("127.0.0.1".parse().unwrap()));
+        assert_ne!(
+            opaque,
+            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap())
+        );
     }
 
     #[test]
@@ -1463,7 +1486,10 @@ mod tests {
     fn cross_variant_hash_address_via_uninterpreted() {
         use ahash::{HashMap, HashMapExt as _};
         let mut m: HashMap<Host, ()> = HashMap::new();
-        m.insert(Host::Address("127.0.0.1".parse().unwrap()), ());
+        m.insert(
+            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
+            (),
+        );
         // Lookup via pct-encoded Uninterpreted IPv4 form.
         assert!(m.contains_key(&reg_host(b"%31%32%37.0.0.1")));
     }
@@ -1475,9 +1501,9 @@ mod tests {
         // that decodes to a Domain sorts WITH the Domain variant, not
         // with the other Uninterpreted hosts.
         let mut v = [
-            reg_host(b"tag,with,commas"),                    // Opaque (tag 2)
-            reg_host(b"exa%6Dple.com"),                      // Promotes to Domain (tag 0)
-            Host::Address("127.0.0.1".parse().unwrap()),     // Address (tag 1)
+            reg_host(b"tag,with,commas"), // Opaque (tag 2)
+            reg_host(b"exa%6Dple.com"),   // Promotes to Domain (tag 0)
+            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()), // Address (tag 1)
             Host::Name(Domain::from_static("aaaa.example")), // Domain (tag 0)
         ];
         v.sort();
@@ -1552,5 +1578,142 @@ mod tests {
         assert!(a < b);
         assert!(b < c);
         assert!(a < c, "Ord must be transitive across the bridge");
+    }
+
+    // ---- try_as_domain / try_into_domain / try_as_ip bridges --------------
+
+    #[test]
+    fn try_as_domain_name_returns_borrowed() {
+        // The contract: `Host::Name → Cow::Borrowed`. Pin the no-alloc
+        // path so a future refactor can't silently start cloning.
+        let h = Host::Name(Domain::from_static("example.com"));
+        let cow = h.try_as_domain().unwrap();
+        assert!(
+            matches!(cow, std::borrow::Cow::Borrowed(_)),
+            "expected Cow::Borrowed for the Name variant"
+        );
+        assert_eq!(cow.as_str(), "example.com");
+    }
+
+    #[test]
+    fn try_as_domain_address_errors() {
+        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        h.try_as_domain().unwrap_err();
+        let h6 = Host::Address("::1".parse().unwrap());
+        h6.try_as_domain().unwrap_err();
+    }
+
+    #[test]
+    fn try_as_domain_uninterpreted_pct_decodes() {
+        let h = reg_host(b"exa%6Dple.com");
+        let cow = h.try_as_domain().unwrap();
+        assert!(matches!(cow, std::borrow::Cow::Owned(_)));
+        assert_eq!(cow.as_str(), "example.com");
+    }
+
+    #[cfg(feature = "idna")]
+    #[test]
+    fn try_as_domain_uninterpreted_idn_normalizes() {
+        let h = reg_host("ß.de".as_bytes());
+        let d = h.try_as_domain().unwrap();
+        assert_eq!(d.as_str(), "xn--zca.de");
+    }
+
+    #[test]
+    fn try_as_domain_uninterpreted_ipvfuture_errors() {
+        let h = bracketed_host(b"v1.fe80::a");
+        h.try_as_domain().unwrap_err();
+    }
+
+    #[test]
+    fn try_as_domain_uninterpreted_subdelim_errors() {
+        let h = reg_host(b"tag,with,commas");
+        h.try_as_domain().unwrap_err();
+    }
+
+    #[test]
+    fn try_into_domain_agrees_with_try_as_domain() {
+        for h in [
+            Host::Name(Domain::from_static("example.com")),
+            reg_host(b"exa%6Dple.com"),
+        ] {
+            let by_ref = h.try_as_domain().map(|c| c.as_str().to_owned());
+            let by_val = h.clone().try_into_domain().map(|d| d.as_str().to_owned());
+            assert_eq!(by_ref.unwrap(), by_val.unwrap());
+        }
+        for h in [
+            Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap()),
+            reg_host(b"tag,with,commas"),
+            bracketed_host(b"v1.fe80::a"),
+        ] {
+            assert!(h.try_as_domain().is_err());
+            assert!(h.clone().try_into_domain().is_err());
+        }
+    }
+
+    #[test]
+    fn try_as_ip_address_returns_value() {
+        let h = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        assert_eq!(
+            h.try_as_ip().unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn try_as_ip_name_errors() {
+        let h = Host::Name(Domain::from_static("example.com"));
+        h.try_as_ip().unwrap_err();
+    }
+
+    #[test]
+    fn try_as_ip_uninterpreted_pct_encoded_ipv4() {
+        // `%31%32%37.0.0.1` decodes to `127.0.0.1` → bridges to IP.
+        let h = reg_host(b"%31%32%37.0.0.1");
+        assert_eq!(
+            h.try_as_ip().unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn try_as_ip_uninterpreted_ipvfuture_errors() {
+        let h = bracketed_host(b"v1.fe80::a");
+        h.try_as_ip().unwrap_err();
+    }
+
+    #[test]
+    fn try_as_ip_uninterpreted_subdelim_errors() {
+        let h = reg_host(b"tag,with,commas");
+        h.try_as_ip().unwrap_err();
+    }
+
+    // ---- HostRef::try_as_* mirror suite -----------------------------------
+
+    #[test]
+    fn host_ref_try_as_domain_name_returns_owned() {
+        // HostRef has no Domain to lend (DomainRef is borrowed), so
+        // the bridge always materializes an owned Domain.
+        let owned = Host::Name(Domain::from_static("example.com"));
+        let r = HostRef::from(&owned);
+        let d = r.try_as_domain().unwrap();
+        assert_eq!(d.as_str(), "example.com");
+    }
+
+    #[test]
+    fn host_ref_try_as_ip_bridges_pct_encoded_ipv4() {
+        let owned = reg_host(b"%31%32%37.0.0.1");
+        let r = HostRef::from(&owned);
+        assert_eq!(
+            r.try_as_ip().unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn host_ref_try_as_domain_address_errors() {
+        let owned = Host::Address("127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+        let r = HostRef::from(&owned);
+        r.try_as_domain().unwrap_err();
     }
 }

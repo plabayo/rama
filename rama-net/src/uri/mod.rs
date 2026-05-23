@@ -387,16 +387,18 @@ impl Uri {
         }
     }
 
-    /// Returns the authority's port, or `None` if the URI has no
-    /// authority OR the authority has no explicit port.
+    /// Returns the port as an [`OptPort`](crate::address::OptPort) —
+    /// `Unset` / `Empty` / `Set(u16)`.
     ///
-    /// We never substitute scheme default ports here — that's a
-    /// canonicalisation policy decision the caller makes (e.g.
+    /// **Most callers want [`port_u16`](Self::port_u16) instead** — it
+    /// returns `Option<u16>` and collapses the wire-only `Empty`
+    /// distinction. Use `port()` only when you need to preserve the
+    /// difference between `host` (no colon) and `host:` (colon with
+    /// no digits) on the wire.
+    ///
+    /// Scheme default ports are NOT substituted — that's a
+    /// canonicalization policy decision the caller makes (e.g.
     /// `Protocol::default_port()` if the URI's scheme is known).
-    ///
-    /// Returns [`OptPort`](crate::address::OptPort) — distinguishes
-    /// `Unset` / `Empty` / `Set(u16)`. For the relaxed `Option<u16>`
-    /// view, use [`port_u16`](Self::port_u16).
     #[must_use]
     pub fn port(&self) -> crate::address::OptPort {
         match &self.inner {
@@ -1266,9 +1268,9 @@ impl<'a> UriRef<'a> {
         self.authority.map(|a| a.host())
     }
 
-    /// Returns the port marker. `OptPort::Unset` when no authority OR
-    /// no `:` after the host. For the relaxed `Option<u16>` view use
-    /// [`port_u16`](Self::port_u16).
+    /// Returns the port as an [`OptPort`](crate::address::OptPort).
+    /// **Most callers want [`port_u16`](Self::port_u16)** — it returns
+    /// `Option<u16>` and collapses the wire-only `Empty` distinction.
     #[must_use]
     #[inline]
     pub fn port(&self) -> crate::address::OptPort {
