@@ -39,23 +39,12 @@ impl UserInfo {
     ///
     /// Naming: `from_static` matches the `Uri::from_static` /
     /// `Domain::from_static` precedent across the rest of the crate.
-    /// The legacy [`Self::from_static_str`] alias is deprecated.
     #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
         validate_userinfo_static(s.as_bytes());
         Self {
             bytes: Bytes::from_static(s.as_bytes()),
         }
-    }
-
-    /// Deprecated alias for [`Self::from_static`].
-    #[must_use]
-    #[deprecated(
-        since = "0.3.0-rc1",
-        note = "renamed to `UserInfo::from_static` for parity with `Uri::from_static` / `Domain::from_static`"
-    )]
-    pub const fn from_static_str(s: &'static str) -> Self {
-        Self::from_static(s)
     }
 
     /// Construct from already-validated bytes (parser invariant: UTF-8,
