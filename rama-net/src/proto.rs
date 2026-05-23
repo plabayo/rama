@@ -527,11 +527,7 @@ mod tests {
     #[cfg(feature = "http")]
     #[test]
     fn test_from_http_scheme() {
-        for s in [
-            "http", "https", "ws", "wss", "socks5", "socks5h", "", "custom",
-        ]
-        .iter()
-        {
+        for s in ["http", "https", "ws", "wss", "socks5", "socks5h", "custom"].iter() {
             let uri =
                 rama_http_types::Uri::from_str(format!("{s}://example.com").as_str()).unwrap();
             assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);

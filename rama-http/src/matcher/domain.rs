@@ -73,3 +73,60 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Request;
+    use rama_core::matcher::Matcher as _;
+
+    fn req_with_host(host_header: &str) -> Request<()> {
+        // Build with a path-only URI and set the Host header — that's
+        // the lane `RequestContext` uses for authority lookup, and
+        // unlike `http::Uri` it accepts pct-encoded reg-names there.
+        Request::builder()
+            .uri("/")
+            .header("host", host_header)
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn plain_domain_matches() {
+        let m = DomainMatcher::exact(rama_net::address::Domain::from_static("example.com"));
+        assert!(m.matches(None, &req_with_host("example.com")));
+    }
+
+    #[test]
+    fn pct_encoded_reg_name_matches_via_bridge() {
+        // `exa%6Dple.com` pct-decodes to `example.com` — bridge takes
+        // us from `Host::Uninterpreted` to `Domain` for matching.
+        let m = DomainMatcher::exact(rama_net::address::Domain::from_static("example.com"));
+        assert!(m.matches(None, &req_with_host("exa%6Dple.com")));
+    }
+
+    #[test]
+    fn ip_host_does_not_match_domain() {
+        // IP-first: an IP literal must not match a domain matcher,
+        // even though the shallow Domain validator accepts it.
+        let m = DomainMatcher::exact(rama_net::address::Domain::from_static("127.0.0.1"));
+        assert!(!m.matches(None, &req_with_host("127.0.0.1")));
+    }
+
+    #[test]
+    fn pct_encoded_ip_does_not_match_domain() {
+        // Regression: `%31%32%37.0.0.1` pct-decodes to `127.0.0.1`,
+        // which both Domain and IpAddr promotion accept. The IP-first
+        // filter must catch this before the domain match runs.
+        let m = DomainMatcher::exact(rama_net::address::Domain::from_static("127.0.0.1"));
+        assert!(!m.matches(None, &req_with_host("%31%32%37.0.0.1")));
+    }
+
+    #[test]
+    fn subdomain_match() {
+        let m = DomainMatcher::sub(rama_net::address::Domain::from_static("example.com"));
+        assert!(m.matches(None, &req_with_host("api.example.com")));
+        assert!(m.matches(None, &req_with_host("example.com")));
+        assert!(!m.matches(None, &req_with_host("other.example")));
+    }
+}

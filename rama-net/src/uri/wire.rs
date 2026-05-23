@@ -91,6 +91,12 @@ impl Uri {
     ///
     /// Only used for `CONNECT`. Userinfo, scheme, path, query, and
     /// fragment are all stripped.
+    ///
+    /// **Wire fidelity**: an [`OptPort::Empty`](crate::address::OptPort::Empty)
+    /// port emits a bare trailing `:` (e.g. `example.com:`), mirroring
+    /// the parser. RFC 3986 §3.2.3 grammar permits this; some peers
+    /// may reject. Call [`Uri::canonicalize`](Self::canonicalize)
+    /// first if you want the empty marker normalized away.
     pub fn write_http_authority_form(&self, buf: &mut BytesMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
@@ -119,6 +125,9 @@ impl Uri {
     /// HTTP/2 / HTTP/3 `:authority` pseudo-header content: `host[:port]`.
     ///
     /// Userinfo is omitted per RFC 9113 §8.3.1.
+    ///
+    /// **Wire fidelity**: see [`write_http_authority_form`](Self::write_http_authority_form)
+    /// for the `OptPort::Empty` round-trip behavior.
     pub fn write_h2_authority(&self, buf: &mut BytesMut) -> Result<(), WireError> {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);

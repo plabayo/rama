@@ -361,8 +361,9 @@ impl<'a> HostRef<'a> {
 
     /// Bridging accessor. Returns an owned [`Domain`] — unlike the
     /// `Host::try_as_domain` `Cow`-returning variant, the borrowed view
-    /// has no `Domain` to lend (it carries a [`DomainRef`]), so this
-    /// always materializes an owned value.
+    /// has no `Domain` to lend (it carries a
+    /// [`DomainRef`](super::domain::DomainRef)), so this always
+    /// materializes an owned value.
     pub fn try_as_domain(self) -> Result<Domain, BoxError> {
         match self {
             Self::Name(d) => Ok(d.into_owned()),
@@ -1646,8 +1647,8 @@ mod tests {
             reg_host(b"tag,with,commas"),
             bracketed_host(b"v1.fe80::a"),
         ] {
-            assert!(h.try_as_domain().is_err());
-            assert!(h.clone().try_into_domain().is_err());
+            h.try_as_domain().unwrap_err();
+            h.clone().try_into_domain().unwrap_err();
         }
     }
 

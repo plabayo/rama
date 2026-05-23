@@ -121,4 +121,31 @@ mod subdomain_trie_tests {
         let request = Request::builder().uri(path).body(()).unwrap();
         assert!(!matcher.matches(None, &request));
     }
+
+    fn req_with_host(host_header: &str) -> Request<()> {
+        Request::builder()
+            .uri("/")
+            .header("host", host_header)
+            .body(())
+            .unwrap()
+    }
+
+    #[test]
+    fn pct_encoded_reg_name_matches_via_bridge() {
+        // `exa%6Dple.com` pct-decodes to `example.com` — the subdomain
+        // trie includes a `sub.example.com` style entry which should
+        // match the bridged domain.
+        let matcher: SubdomainTrieMatcher = ["example.com"].into_iter().collect();
+        assert!(matcher.matches(None, &req_with_host("exa%6Dple.com")));
+    }
+
+    #[test]
+    fn ip_host_does_not_match() {
+        let matcher: SubdomainTrieMatcher = ["127.0.0.1"].into_iter().collect();
+        assert!(!matcher.matches(None, &req_with_host("127.0.0.1")));
+        // Regression: pct-encoded IP that bridges to a digits-and-dots
+        // string the shallow Domain validator accepts. Must be filtered
+        // out by the IP-first check.
+        assert!(!matcher.matches(None, &req_with_host("%31%32%37.0.0.1")));
+    }
 }

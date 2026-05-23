@@ -319,3 +319,25 @@ fn h2_authority_brackets_ipv6_no_port() {
     let uri: Uri = parse_graceful("https://[2001:db8::1]/").unwrap();
     assert_eq!(write_h2_authority(&uri).unwrap(), "[2001:db8::1]");
 }
+
+#[test]
+fn http_authority_form_preserves_empty_port_marker() {
+    // Wire fidelity: `host:` (OptPort::Empty) round-trips through the
+    // HTTP/1.1 authority-form writer. Call `canonicalize()` first if
+    // you want the empty marker normalized away.
+    let uri: Uri = parse_graceful("https://example.com:/p").unwrap();
+    assert_eq!(write_authority(&uri).unwrap(), "example.com:");
+}
+
+#[test]
+fn h2_authority_preserves_empty_port_marker() {
+    let uri: Uri = parse_graceful("https://example.com:/p").unwrap();
+    assert_eq!(write_h2_authority(&uri).unwrap(), "example.com:");
+}
+
+#[test]
+fn http_authority_form_canonicalize_drops_empty_port() {
+    let uri: Uri = parse_graceful("https://example.com:/p").unwrap();
+    let canonical = uri.canonicalize();
+    assert_eq!(write_authority(&canonical).unwrap(), "example.com");
+}

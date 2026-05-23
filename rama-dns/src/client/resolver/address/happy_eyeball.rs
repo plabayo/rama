@@ -222,3 +222,64 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::EmptyDnsResolver;
+    use rama_net::address::Host;
+
+    #[tokio::test]
+    async fn ip_host_returns_directly_without_dns_lookup() {
+        // IP-first path: an IP-shaped host short-circuits and emits the
+        // address directly without consulting the DNS resolver. Use the
+        // empty resolver to prove it: if the code fell through to the
+        // domain path, the stream would be empty.
+        let host: Host = "127.0.0.1".parse::<std::net::IpAddr>().unwrap().into();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = rama_core::futures::StreamExt::next(&mut stream)
+            .await
+            .expect("should emit the IP directly");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn pct_encoded_ip_host_bridges_via_try_as_ip() {
+        // `%31%32%37.0.0.1` lives in `Host::Uninterpreted` but decodes
+        // to `127.0.0.1`. The IP-first early-return must catch it
+        // BEFORE attempting DNS resolution as a Domain.
+        let host = rama_net::uri::Uri::parse("http://%31%32%37.0.0.1/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = stream
+            .next()
+            .await
+            .expect("pct-encoded IP must short-circuit to direct emit");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn non_promotable_host_errors() {
+        // Sub-delim reg-name promotes to neither IP nor Domain — the
+        // resolver emits a single Err.
+        let host = rama_net::uri::Uri::parse("http://tag,with,commas/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = rama_core::futures::StreamExt::next(&mut stream)
+            .await
+            .expect("should emit an error");
+        first.expect_err("non-promotable host must surface an Err");
+    }
+}
