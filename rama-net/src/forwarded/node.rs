@@ -1,6 +1,7 @@
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
 use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
+use rama_utils::str::smol_str::SmolStr;
 use std::{
     fmt,
     net::{IpAddr, Ipv6Addr, SocketAddr},
@@ -185,7 +186,7 @@ impl From<(Domain, Option<u16>)> for NodeId {
         Self {
             // NOTE: this assumes all domains are valid obf nodes,
             // which should be ok given the validation rules for domains are more strict!
-            name: NodeName::Obf(ObfNode::from_inner(domain.into_inner())),
+            name: NodeName::Obf(ObfNode::from_inner(SmolStr::from(domain.as_str()))),
             port: port.map(NodePort::Num),
         }
     }
@@ -194,20 +195,38 @@ impl From<(Domain, Option<u16>)> for NodeId {
 impl From<HostWithOptPort> for NodeId {
     fn from(value: HostWithOptPort) -> Self {
         let HostWithOptPort { host, port } = value;
-        match host {
-            Host::Name(domain) => (domain, port).into(),
-            Host::Address(ip) => (ip, port).into(),
-        }
+        // RFC 7239 has no representation for "explicit empty port" — fold
+        // `OptPort::Empty` into `Unset` at the typed-identifier layer.
+        let port = port.as_u16();
+        node_id_from_host_port(&host, port)
     }
 }
 
 impl From<HostWithPort> for NodeId {
     fn from(value: HostWithPort) -> Self {
         let HostWithPort { host, port } = value;
-        match host {
-            Host::Name(domain) => (domain, port).into(),
-            Host::Address(ip) => (ip, port).into(),
-        }
+        node_id_from_host_port(&host, Some(port))
+    }
+}
+
+/// Promote `host` to the most specific RFC 7239 node identifier:
+/// IP first (pct-encoded IP literals inside `Uninterpreted` bridge for
+/// free), then Domain (pct-encoded reg-names that decode to a domain
+/// land here too), and only genuinely non-typed shapes (sub-delim
+/// reg-name, IPvFuture) fall through to lossy `obfnode`.
+fn node_id_from_host_port(host: &Host, port: Option<u16>) -> NodeId {
+    if let Ok(ip) = host.try_as_ip() {
+        return (ip, port).into();
+    }
+    match host.try_as_domain() {
+        Ok(domain) => (domain.into_owned(), port).into(),
+        Err(_) => NodeId {
+            // Sub-delim reg-name / IPvFuture / non-promotable bytes —
+            // route through `from_str_lossy` so any non-obfnode byte
+            // becomes `_`. Lossy by design.
+            name: NodeName::Obf(ObfNode::from_str_lossy(&host.to_str())),
+            port: port.map(NodePort::Num),
+        },
     }
 }
 

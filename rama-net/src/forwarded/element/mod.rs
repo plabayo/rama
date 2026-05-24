@@ -111,7 +111,7 @@ impl From<SocketAddr> for ForwardedAuthority {
     fn from(value: SocketAddr) -> Self {
         Self(HostWithOptPort {
             host: Host::Address(value.ip()),
-            port: Some(value.port()),
+            port: crate::address::OptPort::Set(value.port()),
         })
     }
 }
@@ -121,7 +121,7 @@ impl From<SocketAddress> for ForwardedAuthority {
     fn from(value: SocketAddress) -> Self {
         Self(HostWithOptPort {
             host: Host::Address(value.ip_addr),
-            port: Some(value.port),
+            port: crate::address::OptPort::Set(value.port),
         })
     }
 }
@@ -354,7 +354,10 @@ impl fmt::Display for ForwardedElement {
 
         if let Some(ref authority) = self.authority {
             write!(f, "{separator}host=")?;
-            let quoted = authority.0.port.is_some()
+            // `host=` syntax requires quoting when there's any colon
+            // (port present in any form, OR an IPv6 address) — see
+            // RFC 7239 §4.
+            let quoted = authority.0.port.is_explicit()
                 || matches!(authority.0.host, Host::Address(IpAddr::V6(_)));
             if quoted {
                 write!(f, r##""{authority}""##)?;

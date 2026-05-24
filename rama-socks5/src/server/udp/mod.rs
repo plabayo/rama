@@ -5,7 +5,7 @@ use rama_core::{
     layer::timeout::DefaultTimeout, telemetry::tracing,
 };
 use rama_net::{
-    address::{Host, HostWithPort, SocketAddress},
+    address::{HostWithPort, SocketAddress},
     socket::SocketService,
 };
 use rama_udp::{UdpSocket, bind_udp_with_address};
@@ -306,21 +306,20 @@ where
             port: dest_port,
         } = destination;
 
-        let dest_addr = match dest_host {
-            Host::Name(domain) => {
-                tracing::debug!(
-                    "udp associate command does not accept domain {domain} as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: udp relay failed")
-                    })?;
-                return Err(Error::aborted("udp relay failed").with_context(reply_kind));
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // UDP-associate bind address MUST be an IP. `try_as_ip` bridges
+        // pct-encoded IPv4 inside `Uninterpreted`; anything else fails.
+        let Ok(dest_addr) = dest_host.try_as_ip() else {
+            tracing::debug!(
+                "udp associate command does not accept non-IP host {dest_host} as bind address",
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut stream)
+                .await
+                .map_err(|err| {
+                    Error::io(err).with_context("write server reply: udp relay failed")
+                })?;
+            return Err(Error::aborted("udp relay failed").with_context(reply_kind));
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
 

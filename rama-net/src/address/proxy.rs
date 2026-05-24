@@ -47,13 +47,19 @@ impl TryFrom<&str> for ProxyAddress {
                 },
         } = Authority::try_from(slice)?;
 
-        let port = maybe_port.or_else(|| protocol.as_ref().and_then(|protocol| protocol.default_port()))
+        let port = maybe_port.as_u16().or_else(|| protocol.as_ref().and_then(|protocol| protocol.default_port()))
             .context("proxy address contains no port or scheme with known port; port is required for proxy connections!!")?;
 
         Ok(Self {
             protocol,
             address: HostWithPort::new(host, port),
-            credential: user_info.map(ProxyCredential::Basic),
+            // RFC 3986 userinfo → HTTP Basic-Auth credential. Drop the
+            // credential (rather than fail the parse) if it can't be
+            // expressed as Basic (e.g. empty user). The proxy will
+            // attempt unauthenticated.
+            credential: user_info
+                .and_then(|ui| ui.to_basic().ok())
+                .map(ProxyCredential::Basic),
         })
     }
 }

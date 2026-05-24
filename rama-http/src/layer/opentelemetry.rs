@@ -238,7 +238,7 @@ impl<S, F> RequestMetricsService<S, F> {
         let request_ctx = RequestContext::try_from(req).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
             attributes.push(KeyValue::new(HTTP_REQUEST_HOST, authority.host.to_string()));
-            if let Some(port) = authority.port {
+            if let Some(port) = authority.port.as_u16() {
                 attributes.push(KeyValue::new(SERVER_PORT, port as i64));
             }
         }
