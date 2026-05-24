@@ -59,7 +59,6 @@ impl TlsMitmRelayPolicyLayer {
         self
     }
 
-    #[expect(unused)]
     pub fn with_fallback<F>(self, fallback: F) -> TlsMitmRelayPolicyLayer<F> {
         TlsMitmRelayPolicyLayer {
             cache: self.cache,

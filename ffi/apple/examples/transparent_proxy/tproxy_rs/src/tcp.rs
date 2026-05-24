@@ -28,7 +28,10 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
-        apple::networkextension::{NwTcpStream, TcpFlow, tproxy::TransparentProxyServiceContext},
+        apple::networkextension::{
+            NwTcpStream, TcpFlow,
+            tproxy::{PromoteLayer, TransparentProxyServiceContext},
+        },
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         tls::server::PeekTlsClientHelloService,
@@ -108,14 +111,18 @@ impl DemoTcpMitmService {
             self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
 
+        let promote_passthrough =
+            PromoteLayer::new().into_layer(IoForwardService::new(exec.clone()));
+
         let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::new(exec.clone()));
+            .with_fallback(promote_passthrough.clone());
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
-        let tls_mitm_relay_policy =
-            TlsMitmRelayPolicyLayer::new(exec.clone()).with_excluded_domains(excluded_domains);
+        let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new(exec.clone())
+            .with_excluded_domains(excluded_domains)
+            .with_fallback(promote_passthrough);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
@@ -182,7 +189,7 @@ impl DemoTcpMitmService {
                         DemoTraceTrafficLayer.into_layer(MirrorService::new()),
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
-                        ConsumeErrLayer::trace_as_debug()
+                        (ConsumeErrLayer::trace_as_debug(), PromoteLayer::new())
                             .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {
