@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use rama_utils::str::smol_str::SmolStrBuilder;
+use rama_core::bytes::BytesMut;
 
 use super::label::validate_label_bytes;
 use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
@@ -14,8 +14,8 @@ use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
 /// rightmost (TLD) last. The builder maintains the [`Domain`] invariant
 /// after every successful push.
 ///
-/// Backed by [`SmolStrBuilder`], so domains up to the inline cap stay on the
-/// stack — no heap allocation in the common case.
+/// Backed by [`BytesMut`], producing a [`Bytes`](rama_core::bytes::Bytes)-backed
+/// [`Domain`] on [`finish`](Self::finish).
 ///
 /// # Example
 ///
@@ -31,11 +31,7 @@ use super::{Domain, DomainLabels, Label, LabelError, MAX_NAME_LEN};
 /// ```
 #[derive(Debug, Default)]
 pub struct DomainBuilder {
-    buf: SmolStrBuilder,
-    // SmolStrBuilder doesn't expose its current length, so we track it
-    // ourselves to enforce MAX_NAME_LEN and to know when the builder is
-    // empty / when we need a separator dot.
-    len: usize,
+    buf: BytesMut,
     label_count: usize,
     starts_with_wildcard: bool,
 }
@@ -56,20 +52,20 @@ impl DomainBuilder {
     /// Returns `true` if no labels have been pushed yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.buf.is_empty()
     }
 
     /// Returns the current length in bytes (including separating dots).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.len
+        self.buf.len()
     }
 
     /// Push a single label.
     ///
     /// `label` must satisfy [`Label`]'s invariants. The total name length
     /// after the push (including the joining dot) must not exceed
-    /// `Domain::MAX_NAME_LEN` (253).
+    /// `MAX_NAME_LEN` (253).
     ///
     /// # Errors
     ///
@@ -86,7 +82,7 @@ impl DomainBuilder {
     /// # Errors
     ///
     /// Returns a too-long [`PushError`] if the resulting name length would
-    /// exceed `Domain::MAX_NAME_LEN`.
+    /// exceed `MAX_NAME_LEN`.
     pub fn push(&mut self, label: &Label) -> Result<&mut Self, PushError> {
         self.push_validated_label(label.as_str())
     }
@@ -105,17 +101,16 @@ impl DomainBuilder {
         } else {
             label.len() + 1
         };
-        let new_len = self.len + added;
+        let new_len = self.buf.len() + added;
         if new_len > MAX_NAME_LEN {
             return Err(PushError::too_long(new_len));
         }
         if !self.is_empty() {
-            self.buf.push('.');
+            self.buf.extend_from_slice(b".");
         } else {
             self.starts_with_wildcard = is_wildcard;
         }
-        self.buf.push_str(label);
-        self.len = new_len;
+        self.buf.extend_from_slice(label.as_bytes());
         self.label_count += 1;
         Ok(self)
     }
@@ -178,7 +173,7 @@ impl DomainBuilder {
             return Err(PushError::misplaced_wildcard());
         }
         // Safety: builder maintained the Domain invariant at every push.
-        Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf.finish()) })
+        Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf.freeze()) })
     }
 }
 

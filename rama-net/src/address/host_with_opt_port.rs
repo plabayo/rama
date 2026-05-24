@@ -1,7 +1,7 @@
 use crate::Protocol;
 use crate::address::HostWithPort;
 
-use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
+use super::{Domain, DomainAddress, Host, OptPort, SocketAddress, parse_utils};
 use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_utils::macros::generate_set_and_with;
@@ -25,7 +25,7 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HostWithOptPort {
     pub host: Host,
-    pub port: Option<u16>,
+    pub port: OptPort,
 }
 
 impl HostWithOptPort {
@@ -33,7 +33,10 @@ impl HostWithOptPort {
     #[must_use]
     #[inline(always)]
     pub const fn new(host: Host) -> Self {
-        Self { host, port: None }
+        Self {
+            host,
+            port: OptPort::Unset,
+        }
     }
 
     /// Creates a new [`HostWithOptPort`] from a [`Host`] and port.
@@ -42,8 +45,16 @@ impl HostWithOptPort {
     pub const fn new_with_port(host: Host, port: u16) -> Self {
         Self {
             host,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
+    }
+
+    /// Relaxed view of the port — `Set(n) → Some(n)`, everything else
+    /// `None`. Use when the `Unset` vs `Empty` distinction doesn't matter.
+    #[must_use]
+    #[inline]
+    pub const fn port_u16(&self) -> Option<u16> {
+        self.port.as_u16()
     }
 
     /// creates a new local ipv4 [`HostWithOptPort`] without a port.
@@ -80,13 +91,16 @@ impl HostWithOptPort {
 
     /// creates a new local ipv6 [`HostWithOptPort`] without a port.
     ///
+    /// IPv6 addresses always render with `[…]` brackets even with no
+    /// port — see the type's `Display` impl for the rationale.
+    ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::HostWithOptPort;
     ///
     /// let addr = HostWithOptPort::local_ipv6();
-    /// assert_eq!("::1", addr.to_string());
+    /// assert_eq!("[::1]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -144,13 +158,16 @@ impl HostWithOptPort {
 
     /// creates a new default ipv6 [`HostWithOptPort`] without a port.
     ///
+    /// IPv6 addresses always render with `[…]` brackets — see the
+    /// type's `Display` impl for the rationale.
+    ///
     /// # Example
     ///
     /// ```
     /// use rama_net::address::HostWithOptPort;
     ///
     /// let addr = HostWithOptPort::default_ipv6();
-    /// assert_eq!("::", addr.to_string());
+    /// assert_eq!("[::]", addr.to_string());
     /// ```
     #[must_use]
     #[inline(always)]
@@ -212,7 +229,7 @@ impl HostWithOptPort {
     pub const fn example_domain() -> Self {
         Self {
             host: Host::EXAMPLE_NAME,
-            port: None,
+            port: OptPort::Unset,
         }
     }
 
@@ -236,7 +253,7 @@ impl HostWithOptPort {
     pub const fn example_domain_with_port(port: u16) -> Self {
         Self {
             host: Host::EXAMPLE_NAME,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
     }
 
@@ -246,7 +263,7 @@ impl HostWithOptPort {
     pub const fn localhost_domain() -> Self {
         Self {
             host: Host::LOCALHOST_NAME,
-            port: None,
+            port: OptPort::Unset,
         }
     }
 
@@ -270,22 +287,23 @@ impl HostWithOptPort {
     pub const fn localhost_domain_with_port(port: u16) -> Self {
         Self {
             host: Host::LOCALHOST_NAME,
-            port: Some(port),
+            port: OptPort::Set(port),
         }
     }
 
     generate_set_and_with! {
-        /// Set [`Host`] of [`HostWithOptPort`]
-        pub fn host(mut self, host: Host) -> Self {
-            self.host = host;
+        /// Set [`Host`] of [`HostWithOptPort`]. Accepts any [`Into<Host>`].
+        pub fn host(mut self, host: impl Into<Host>) -> Self {
+            self.host = host.into();
             self
         }
     }
 
     generate_set_and_with! {
-        /// (un)set port (u16) of [`HostWithOptPort`]
-        pub fn port(mut self, port: Option<u16>) -> Self {
-            self.port = port;
+        /// Set the port. Accepts `u16`, `OptPort`, or `Option<u16>` via
+        /// [`Into<OptPort>`]. Pass `OptPort::Unset` to clear.
+        pub fn port(mut self, port: impl Into<OptPort>) -> Self {
+            self.port = port.into();
             self
         }
     }
@@ -400,23 +418,27 @@ impl From<DomainAddress> for HostWithOptPort {
 }
 
 impl fmt::Display for HostWithOptPort {
+    /// Renders `host[:port]` with IPv6 addresses **always** bracketed
+    /// (`[ip]`), regardless of whether a port follows.
+    ///
+    /// Without the brackets, IPv6 + port is ambiguous: `::1:8080`
+    /// could parse as the IPv6 address `::1` with port `8080`, or as
+    /// the IPv6 address `::1:8080` with no port. RFC 3986 §3.2.2
+    /// resolves this with the `IP-literal = "[" IPv6address "]"`
+    /// rule; we apply it consistently across all `Display` contexts
+    /// (URI authority and standalone address spec alike) so callers
+    /// never accidentally emit ambiguous bytes.
+    ///
+    /// `UninterpretedHost`'s own `Display` already brackets IP-literal
+    /// forms and renders reg-name bytes verbatim.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.host {
-            host @ (Host::Name(_) | Host::Address(IpAddr::V4(_))) => host.fmt(f)?,
-            Host::Address(IpAddr::V6(ip)) => {
-                if self.port.is_some() {
-                    write!(f, "[{ip}]")
-                } else {
-                    ip.fmt(f)
-                }?
-            }
+            Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
+            other => other.fmt(f)?,
         }
-
-        if let Some(port) = self.port {
-            write!(f, ":{port}")?
-        }
-
-        Ok(())
+        // `OptPort::Display` handles all three variants — Unset emits
+        // nothing, Empty emits bare `:`, Set(n) emits `:n`.
+        self.port.fmt(f)
     }
 }
 
@@ -446,6 +468,15 @@ impl TryFrom<&str> for HostWithOptPort {
     }
 }
 
+/// Reg-name fallback for inputs `Domain::try_from` rejects but the
+/// URI reg-name grammar accepts. Shares byte-set validation with
+/// the URI parser without constructing a `Uri`.
+fn try_as_uninterpreted_host(host_str: &str) -> Result<Host, BoxError> {
+    let host = super::UninterpretedHost::try_from_reg_name_str(host_str)
+        .context("parse host as reg-name")?;
+    Ok(Host::Uninterpreted(host))
+}
+
 fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithOptPort, BoxError> {
     let s = maybe_borrowed.as_ref();
 
@@ -457,7 +488,44 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     }
 
     let host;
-    let mut port = None;
+    let mut port = OptPort::Unset;
+
+    // Standalone bracketed IP-literal (no trailing port): `[::1]` or
+    // `[v1.fe80::a]`. Without this fast-path the colon-split below
+    // treats the final `:` inside the address as a port separator.
+    if s.starts_with('[') && s.ends_with(']') {
+        let inside = &s[1..s.len() - 1];
+        if inside.is_empty() {
+            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+        }
+        // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
+        // verbatim, matching the URI authority parser's shape.
+        if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
+            crate::uri::parser::authority::validate_ipvfuture(inside.as_bytes())
+                .map_err(BoxError::from)
+                .context("parse bracketed IPvFuture")?;
+            return Ok(HostWithOptPort {
+                host: Host::Uninterpreted(super::UninterpretedHost::from_validated_bytes(
+                    rama_core::bytes::Bytes::copy_from_slice(inside.as_bytes()),
+                    true,
+                )),
+                port: OptPort::Unset,
+            });
+        }
+        if parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
+            return Err(OpaqueError::from_static_str(
+                "ipv6 zone identifiers (RFC 6874) are not supported",
+            )
+            .into_box_error());
+        }
+        let addr = inside
+            .parse::<Ipv6Addr>()
+            .context("parse bracketed ipv6 host without port")?;
+        return Ok(HostWithOptPort {
+            host: Host::Address(IpAddr::V6(addr)),
+            port: OptPort::Unset,
+        });
+    }
 
     if let Some(last_colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         let first_part = &s[..last_colon];
@@ -468,13 +536,27 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             host = Host::Address(IpAddr::V6(addr));
             port = parsed_port;
         } else {
-            port = Some(
-                s[last_colon + 1..]
-                    .parse()
-                    .context("parse host-with-opt-port's port string as u16")?,
-            );
+            // Reject `:port` (empty host before colon). The URI authority
+            // parser rejects the same shape — keep the eager paths
+            // symmetric.
+            if first_part.is_empty() {
+                return Err(
+                    OpaqueError::from_static_str("empty host before ':port' is invalid")
+                        .into_box_error(),
+                );
+            }
+            let port_str = &s[last_colon + 1..];
+            port = if port_str.is_empty() {
+                OptPort::Empty
+            } else {
+                OptPort::Set(
+                    port_str
+                        .parse()
+                        .context("parse host-with-opt-port's port string as u16")?,
+                )
+            };
 
-            // try ipv4 first, domain afterwards
+            // try ipv4 first, domain afterwards, then Uninterpreted via URI parser
             host = if let Ok(ipv4) = first_part.parse::<Ipv4Addr>() {
                 Host::Address(IpAddr::V4(ipv4))
             } else {
@@ -482,22 +564,23 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
                 owned_vec.truncate(last_colon);
                 let owned_str = String::from_utf8(owned_vec)
                     .context("interpret host-with-opt-port's host as utf-8 str")?;
-                Host::Name(Domain::try_from(owned_str).context(
-                    "parse host-with-opt-port's host utf-8 str as domain w/ trailing port",
-                )?)
+                match Domain::try_from(owned_str.as_str()) {
+                    Ok(domain) => Host::Name(domain),
+                    Err(_) => try_as_uninterpreted_host(&owned_str)?,
+                }
             };
         };
     } else {
-        // no port, so either IpAddr or Domain, in that order
-        host =
-            if let Ok(ip) = s.parse::<IpAddr>() {
-                Host::Address(ip)
-            } else {
-                let owned_str = maybe_borrowed.into_owned();
-                Host::Name(Domain::try_from(owned_str).context(
-                    "parse host utf-8 str as domain w/o trailing port (host-with-opt-port)",
-                )?)
-            };
+        // no port, so either IpAddr, Domain, or Uninterpreted fallback
+        host = if let Ok(ip) = s.parse::<IpAddr>() {
+            Host::Address(ip)
+        } else {
+            let owned_str = maybe_borrowed.into_owned();
+            match Domain::try_from(owned_str.as_str()) {
+                Ok(domain) => Host::Name(domain),
+                Err(_) => try_as_uninterpreted_host(&owned_str)?,
+            }
+        };
     }
 
     Ok(HostWithOptPort { host, port })
@@ -546,7 +629,7 @@ mod tests {
     use super::*;
 
     #[expect(clippy::needless_pass_by_value)]
-    fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: Option<u16>) {
+    fn assert_eq(s: &str, hwop: HostWithOptPort, host: &str, port: OptPort) {
         assert_eq!(hwop.host, host, "parsing: {s}");
         assert_eq!(hwop.port, port, "parsing: {s}");
     }
@@ -554,19 +637,26 @@ mod tests {
     #[test]
     fn test_parse_valid() {
         for (s, (expected_host, expected_port)) in [
-            ("example.com", ("example.com", None)),
-            ("example.com:80", ("example.com", Some(80))),
-            ("::1", ("::1", None)),
-            ("[::1]:80", ("::1", Some(80))),
-            ("127.0.0.1", ("127.0.0.1", None)),
-            ("127.0.0.1:80", ("127.0.0.1", Some(80))),
+            ("example.com", ("example.com", OptPort::Unset)),
+            ("example.com:80", ("example.com", OptPort::Set(80))),
+            ("example.com:", ("example.com", OptPort::Empty)),
+            ("::1", ("::1", OptPort::Unset)),
+            // Standalone bracketed IPv6 — typed Address, NOT Uninterpreted.
+            ("[::1]", ("::1", OptPort::Unset)),
+            ("[2001:db8::1]", ("2001:db8::1", OptPort::Unset)),
+            ("[::1]:80", ("::1", OptPort::Set(80))),
+            // Standalone bracketed IPvFuture — surfaces as Uninterpreted
+            // (matches the URI authority parser). Display brackets it.
+            ("[v1.fe80::a]", ("[v1.fe80::a]", OptPort::Unset)),
+            ("127.0.0.1", ("127.0.0.1", OptPort::Unset)),
+            ("127.0.0.1:80", ("127.0.0.1", OptPort::Set(80))),
             (
                 "2001:db8:3333:4444:5555:6666:7777:8888",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", None),
+                ("2001:db8:3333:4444:5555:6666:7777:8888", OptPort::Unset),
             ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", Some(80)),
+                ("2001:db8:3333:4444:5555:6666:7777:8888", OptPort::Set(80)),
             ),
         ] {
             let msg = format!("parsing '{s}'");
@@ -598,17 +688,13 @@ mod tests {
     fn test_parse_invalid() {
         for s in [
             "",
-            "-",
-            ".",
-            ":",
+            // Empty host with port — eager and lazy paths agree on
+            // rejection (the URI authority parser does too).
             ":80",
-            "-.",
-            ".-",
-            "[::1]",
+            // Empty bracketed IP-literal.
+            "[]",
             "2001:db8:3333:4444:5555:6666:7777:8888]",
-            "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "[2001:db8:3333:4444:5555:6666:7777:8888",
-            "example.com:",
             "example.com:-1",
             "example.com:999999",
             "example:com",
@@ -632,8 +718,12 @@ mod tests {
         for (s, expected) in [
             ("example.com", "example.com"),
             ("example.com:80", "example.com:80"),
+            ("example.com:", "example.com:"),
             ("[::1]:80", "[::1]:80"),
-            ("::1", "::1"),
+            // IPv6 always brackets — even with no port — to avoid
+            // the `::1:8080` ambiguity. See the `Display` impl above
+            // for the single-source-of-truth rationale.
+            ("::1", "[::1]"),
             ("127.0.0.1:80", "127.0.0.1:80"),
             ("127.0.0.1", "127.0.0.1"),
         ] {

@@ -8,6 +8,8 @@
 //! Presentation-format only — no octets generic, no DNS wire format, no
 //! parsed-name layer.
 
+use rama_core::bytes::Bytes;
+
 use super::{Domain, Label};
 
 mod sealed {
@@ -225,7 +227,9 @@ impl DomainLabels for Domain {
         // Safety: `rest` is a suffix of a validated domain at a label
         // boundary. No `*` can be present (the wildcard is only valid as
         // the leftmost label, which we just dropped).
-        Some(unsafe { Self::from_maybe_borrowed_unchecked(rest) })
+        Some(unsafe {
+            Self::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(rest.as_bytes()))
+        })
     }
 }
 

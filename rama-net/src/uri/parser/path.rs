@@ -1,0 +1,130 @@
+//! Path / query / fragment walker — shared by origin-form and
+//! absolute-form parsers.
+//!
+//! Single-pass walk from `start` to end of `bytes`:
+//! - reject control chars (always fatal)
+//! - track section transitions on `?` and `#`
+//! - in strict mode, validate per-section byte set + percent-escapes
+
+use rama_core::bytes::Bytes;
+
+use crate::uri::ParseError;
+
+use crate::byte_sets::{is_control_byte, is_path_byte, is_query_fragment_byte};
+
+use super::ParserMode;
+use super::{check_pct_encoded, check_utf8_sequence};
+
+/// Result of the path/query/fragment scan: where the path ends and what
+/// ranges (if any) the query and fragment occupy in the parent buffer.
+#[derive(Debug)]
+pub(super) struct PathQueryFragment {
+    pub(super) path_end: u16,
+    pub(super) query: Option<(u16, u16)>,
+    pub(super) fragment: Option<(u16, u16)>,
+}
+
+#[derive(Clone, Copy)]
+enum Section {
+    Path,
+    Query,
+    Fragment,
+}
+
+pub(super) fn scan_path_query_fragment(
+    bytes: &Bytes,
+    start: usize,
+    mode: ParserMode,
+) -> Result<PathQueryFragment, ParseError> {
+    let len = bytes.len();
+    let strict = mode == ParserMode::Strict;
+    let mut section = Section::Path;
+    let mut path_end = len;
+    let mut query_start: Option<usize> = None;
+    let mut fragment_start: Option<usize> = None;
+
+    let mut i = start;
+    while i < len {
+        let b = bytes[i];
+        if is_control_byte(b) {
+            return Err(ParseError::ControlCharInUri { at: i, byte: b });
+        }
+
+        // Non-ASCII byte: must be a well-formed UTF-8 sequence (the
+        // typed accessors derive `&str` via `from_utf8_unchecked`, so
+        // the bytes must in fact be UTF-8).
+        //
+        // Strict mode would reject any non-ASCII via the byte-set
+        // check below; we only run the UTF-8 path in graceful mode.
+        // Folding the check in-loop means the all-ASCII fast path
+        // pays zero overhead — only multi-byte sequences enter here.
+        if !strict && b >= 0x80 {
+            let seq_len = check_utf8_sequence(bytes, i)?;
+            // Section delimiters (`?`, `#`) are ASCII, so a multi-byte
+            // sequence can't be one — safe to skip ahead wholesale.
+            i += seq_len;
+            continue;
+        }
+
+        // Section transitions
+        let transitioned = match section {
+            Section::Path => match b {
+                b'?' => {
+                    path_end = i;
+                    query_start = Some(i + 1);
+                    section = Section::Query;
+                    true
+                }
+                b'#' => {
+                    path_end = i;
+                    fragment_start = Some(i + 1);
+                    section = Section::Fragment;
+                    true
+                }
+                _ => false,
+            },
+            Section::Query => {
+                if b == b'#' {
+                    fragment_start = Some(i + 1);
+                    section = Section::Fragment;
+                    true
+                } else {
+                    false
+                }
+            }
+            Section::Fragment => false,
+        };
+        if transitioned {
+            i += 1;
+            continue;
+        }
+
+        if strict {
+            if b == b'%' {
+                check_pct_encoded(bytes, i)?;
+                i += 3;
+                continue;
+            }
+            let ok = match section {
+                Section::Path => is_path_byte(b),
+                Section::Query | Section::Fragment => is_query_fragment_byte(b),
+            };
+            if !ok {
+                return Err(ParseError::StrictViolation);
+            }
+        }
+        i += 1;
+    }
+
+    let query_range = query_start.map(|qs| {
+        let qe = fragment_start.map_or(len, |fs| fs - 1);
+        (qs as u16, qe as u16)
+    });
+    let fragment_range = fragment_start.map(|fs| (fs as u16, len as u16));
+
+    Ok(PathQueryFragment {
+        path_end: path_end as u16,
+        query: query_range,
+        fragment: fragment_range,
+    })
+}

@@ -1,5 +1,5 @@
 use radix_trie::{Trie, TrieCommon};
-use rama_utils::str::smol_str::SmolStrBuilder;
+use rama_core::bytes::BytesMut;
 use std::fmt;
 
 use crate::address::{AsDomainRef, Domain};
@@ -371,18 +371,18 @@ fn truncate_to_parent(key: &mut String) -> bool {
 /// Reverse a stored reversed-form key back into a `Domain`.
 fn reversed_key_to_domain(reversed: &str) -> Domain {
     let from = reversed.trim_matches('.');
-    let mut builder = SmolStrBuilder::new();
+    let mut builder = BytesMut::with_capacity(from.len());
     let mut iter = from.split('.').rev();
     if let Some(part) = iter.next() {
-        builder.push_str(part);
+        builder.extend_from_slice(part.as_bytes());
     }
     for part in iter {
-        builder.push('.');
-        builder.push_str(part);
+        builder.extend_from_slice(b".");
+        builder.extend_from_slice(part.as_bytes());
     }
     // Safety: every key in the trie came from a validated Domain via
     // `insert_domain`, so reversing the labels yields a valid Domain again.
-    unsafe { Domain::from_maybe_borrowed_unchecked(builder.finish()) }
+    unsafe { Domain::from_maybe_borrowed_unchecked(builder.freeze()) }
 }
 
 impl<S, T> FromIterator<(S, T)> for DomainTrie<T>

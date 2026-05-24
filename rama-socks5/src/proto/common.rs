@@ -10,12 +10,20 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 /// used in the context of buffer allocation
 /// in function of writing a socks5 protocol element.
 pub(super) fn authority_length(authority: &HostWithPort) -> usize {
-    2 + match &authority.host {
-        Host::Name(domain) => 1 + domain.len(),
-        Host::Address(ip_addr) => match ip_addr {
+    // Same dispatch order as `write_authority_to_buf`: IP first, then
+    // Domain (with `Uninterpreted` bridging). Non-promotable hosts
+    // (sub-delim reg-name, IPvFuture) fail at write time — we count
+    // them as `1 + 0` so the caller's buffer is large enough for the
+    // header byte the writer would emit before erroring.
+    2 + if let Ok(ip) = authority.host.try_as_ip() {
+        match ip {
             IpAddr::V4(_) => 4,
             IpAddr::V6(_) => 16,
-        },
+        }
+    } else if let Ok(domain) = authority.host.try_as_domain() {
+        1 + domain.len()
+    } else {
+        1
     }
 }
 
@@ -108,15 +116,18 @@ pub(super) fn read_authority_sync<R: Read>(r: &mut R) -> Result<HostWithPort, Re
 }
 
 /// Write the authority into the (usually pre-allocated) buffer.
-pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &mut B) {
-    match &authority.host {
-        Host::Name(domain) => {
-            buf.put_u8(AddressType::DomainName.into());
-            debug_assert!(domain.len() <= 255);
-            buf.put_u8(domain.len() as u8);
-            buf.put_slice(domain.as_str().as_bytes());
-        }
-        Host::Address(ip_addr) => match ip_addr {
+///
+/// Tries [`Host::try_as_ip`] first (cheapest — no allocation), then
+/// [`Host::try_as_domain`] (allocates only for the `Uninterpreted`
+/// bridge). Errors with `io::ErrorKind::InvalidInput` for hosts that
+/// promote to neither — SOCKS5 has no representation for sub-delim
+/// reg-names, IPvFuture literals, or empty hosts.
+pub(super) fn write_authority_to_buf<B: BufMut>(
+    authority: &HostWithPort,
+    buf: &mut B,
+) -> Result<(), std::io::Error> {
+    if let Ok(ip) = authority.host.try_as_ip() {
+        match ip {
             IpAddr::V4(addr) => {
                 buf.put_u8(AddressType::IpV4.into());
                 buf.put_slice(&addr.octets());
@@ -125,9 +136,26 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &HostWithPort, buf: &
                 buf.put_u8(AddressType::IpV6.into());
                 buf.put_slice(&addr.octets());
             }
-        },
+        }
+    } else if let Ok(domain) = authority.host.try_as_domain() {
+        let bytes = domain.as_str().as_bytes();
+        if bytes.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "SOCKS5 DomainName is u8-length-prefixed; domain exceeds 255 bytes",
+            ));
+        }
+        buf.put_u8(AddressType::DomainName.into());
+        buf.put_u8(bytes.len() as u8);
+        buf.put_slice(bytes);
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SOCKS5 cannot encode host: not promotable to Domain or IpAddr",
+        ));
     }
     buf.put_u16(authority.port);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -171,7 +199,7 @@ mod tests {
                 W: AsyncWrite + Unpin,
             {
                 let mut v = Vec::new();
-                write_authority_to_buf(&self.0, &mut v);
+                write_authority_to_buf(&self.0, &mut v)?;
                 w.write_all(&v).await
             }
         }
@@ -203,7 +231,7 @@ mod tests {
                 W: Write,
             {
                 let mut v = Vec::new();
-                write_authority_to_buf(&self.0, &mut v);
+                write_authority_to_buf(&self.0, &mut v)?;
                 w.write_all(&v)
             }
         }
@@ -214,5 +242,55 @@ mod tests {
             SocksAuthority(HostWithPort::example_domain_with_port(1450)),
             SocksAuthority
         );
+    }
+
+    // ---- Uninterpreted host promotion fallback ----------------------------
+    //
+    // The wire writer tries `Domain::try_from(host)` / `IpAddr::try_from`
+    // on `Host::Uninterpreted` and emits the canonical ACE / IP bytes,
+    // so a pct-encoded reg-name reaches the peer as a normal DomainName
+    // rather than bytes it can't resolve.
+
+    #[test]
+    fn socks5_write_authority_promotes_pct_encoded_reg_name_to_domain() {
+        // `exa%6Dple.com` rides as Uninterpreted; the writer's
+        // `try_as_domain` bridge emits the canonical `example.com`.
+        let host = Host::try_from("exa%6Dple.com").unwrap();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let auth = HostWithPort::new(host, 443);
+        let mut buf = Vec::new();
+        write_authority_to_buf(&auth, &mut buf).unwrap();
+        assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
+        assert_eq!(buf[1] as usize, b"example.com".len());
+        assert_eq!(&buf[2..2 + b"example.com".len()], b"example.com");
+    }
+
+    #[test]
+    fn socks5_write_authority_rejects_subdelim_host_unpromotable() {
+        // Sub-delim reg-name doesn't promote to a Domain *or* IpAddr —
+        // SOCKS5 has no representation. Encoder errors.
+        let host = Host::try_from("tag,with,commas").unwrap();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let auth = HostWithPort::new(host, 8080);
+        let mut buf = Vec::new();
+        let err = write_authority_to_buf(&auth, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn socks5_write_authority_empty_uninterpreted_host_errors() {
+        // `file:///path` surfaces `Host::Uninterpreted(b"")` from the URI
+        // parser — the empty-host case is only reachable through URI
+        // parsing (the eager `Host::try_from("")` rejects), so we
+        // construct via the URI path here.
+        let host = rama_net::uri::Uri::parse("file:///tmp/socket")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let auth = HostWithPort::new(host, 80);
+        let mut buf = Vec::new();
+        let err = write_authority_to_buf(&auth, &mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

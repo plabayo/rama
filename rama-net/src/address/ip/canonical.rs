@@ -37,11 +37,15 @@ impl IntoCanonicalIpAddr for SocketAddr {
 }
 
 impl IntoCanonicalIpAddr for Host {
-    #[inline(always)]
     fn into_canonical_ip_addr(self) -> Self {
-        match self {
-            Self::Name(_) => self,
-            Self::Address(ip_addr) => Self::Address(ip_addr.into_canonical_ip_addr()),
+        // Bridge `Uninterpreted` to `IpAddr` before canonicalising —
+        // a pct-encoded IPv4-mapped IPv6 (`%3A%3Affff%3A192.0.2.1`)
+        // would otherwise pass through unchanged and miss the v4
+        // fold-down. Non-promotable inputs (Name, sub-delim Uninterpreted,
+        // IPvFuture) keep their original shape.
+        match self.try_as_ip() {
+            Ok(ip) => Self::Address(ip.into_canonical_ip_addr()),
+            Err(_) => self,
         }
     }
 }
@@ -149,5 +153,81 @@ mod tests {
             socket_addr.into_canonical_ip_addr(),
             SocketAddress::from(([0, 0, 0, 1], 8080))
         );
+    }
+
+    // ---- Host bridging through Uninterpreted ----------------------------
+
+    /// Regression: a pct-encoded IPv4-mapped IPv6 carried in
+    /// `Host::Uninterpreted` must canonicalize to the embedded IPv4,
+    /// not pass through unchanged. The eager parser doesn't promote
+    /// pct-encoded forms — `Host::try_as_ip` does — so the canonical
+    /// op needs to bridge.
+    #[test]
+    fn host_uninterpreted_pct_encoded_v4_mapped_v6_canonicalizes_to_v4() {
+        // ::ffff:192.0.2.1 — but pct-encoded so the URI parser stored
+        // it as `Host::Uninterpreted`.
+        let host = crate::uri::Uri::parse("http://%3A%3Affff%3A192.0.2.1/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        assert!(matches!(host, Host::Uninterpreted(_)), "fixture sanity");
+        let canonical = host.into_canonical_ip_addr();
+        assert_eq!(
+            canonical,
+            Host::Address("192.0.2.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    /// A pct-encoded plain IPv4 also promotes.
+    #[test]
+    fn host_uninterpreted_pct_encoded_v4_canonicalizes() {
+        let host = crate::uri::Uri::parse("http://%31%32%37.0.0.1/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let canonical = host.into_canonical_ip_addr();
+        assert_eq!(
+            canonical,
+            Host::Address("127.0.0.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    /// Non-promotable Uninterpreted (sub-delim) passes through unchanged.
+    #[test]
+    fn host_uninterpreted_subdelim_passes_through() {
+        let host = crate::uri::Uri::parse("http://tag,with,commas/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let canonical = host.clone().into_canonical_ip_addr();
+        assert_eq!(canonical, host);
+    }
+
+    /// IPvFuture (bracketed Uninterpreted) passes through unchanged —
+    /// no IPv4-mapped fold-down for `[vN.X]` shapes.
+    #[test]
+    fn host_uninterpreted_ipvfuture_passes_through() {
+        let host = crate::uri::Uri::parse("http://[v1.fe80::a]/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let canonical = host.clone().into_canonical_ip_addr();
+        assert_eq!(canonical, host);
+    }
+
+    /// `Host::Name` always passes through — domains have no IP shape
+    /// to canonicalize.
+    #[test]
+    fn host_name_passes_through() {
+        let host = Host::Name(crate::address::Domain::from_static("example.com"));
+        let canonical = host.clone().into_canonical_ip_addr();
+        assert_eq!(canonical, host);
     }
 }

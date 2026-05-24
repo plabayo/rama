@@ -123,7 +123,7 @@ where
         let req_method = req.method().clone();
         let req_domain = RequestContext::try_from(&req)
             .ok()
-            .and_then(|rc| rc.authority.host.into_domain());
+            .and_then(|rc| rc.authority.host.try_into_domain().ok());
         let req_uri = req.uri().clone();
 
         let response = self.inner.serve(req).await?;
@@ -315,14 +315,14 @@ fn badge_html(label: &str) -> Vec<u8> {
 
 fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> {
     if let Some(ProxyTarget(target)) = req.extensions().get_ref()
-        && let Some(domain) = target.host.as_domain()
+        && let Ok(domain) = target.host.try_as_domain()
     {
-        Some(Cow::Borrowed(domain))
+        Some(domain)
     } else {
         RequestContext::try_from(req)
             .ok()
             .map(|ctx| ctx.host_with_port())
-            .and_then(|v| v.host.into_domain())
+            .and_then(|v| v.host.try_into_domain().ok())
             .map(Cow::Owned)
     }
 }

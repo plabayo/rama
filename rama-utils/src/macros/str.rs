@@ -1,22 +1,10 @@
+use crate::str::eq_ignore_ascii_case;
+
+/// Const-eval dispatch helper for the [`eq_ignore_ascii_case!`] macro.
+/// Implementation detail; call sites should use the macro.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct EqIgnoreAsciiCase<T1, T2>(pub T1, pub T2);
-
-#[must_use]
-pub const fn eq_ignore_ascii_case(lhs: &[u8], rhs: &[u8]) -> bool {
-    if lhs.len() != rhs.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < lhs.len() {
-        let l = lhs[i].to_ascii_lowercase();
-        let r = rhs[i].to_ascii_lowercase();
-        if l != r {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
 
 impl EqIgnoreAsciiCase<&[u8], &[u8]> {
     #[must_use]

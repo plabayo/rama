@@ -1,4 +1,4 @@
-use rama_utils::str::smol_str::SmolStr;
+use rama_core::bytes::Bytes;
 use std::{cmp::Ordering, fmt};
 
 use super::Host;
@@ -26,10 +26,19 @@ pub const MAX_NAME_LEN: usize = 253;
 ///
 /// The validation of domains created by this type is very shallow.
 /// Proper validation is offloaded to other services such as DNS resolvers.
+///
+/// Storage is `Bytes` so that domain values can share allocations with the
+/// buffers they were parsed from (e.g. URI byte buffers) at zero copy cost.
+/// The validator only accepts ASCII bytes, so the contents are always valid
+/// UTF-8.
 #[derive(Debug, Clone)]
-pub struct Domain(SmolStr);
+pub struct Domain(Bytes);
 
 impl Domain {
+    /// Maximum byte length of a fully-qualified domain name (RFC 1035).
+    /// Inputs longer than this fail validation.
+    pub const MAX_LEN: usize = MAX_NAME_LEN;
+
     /// Creates a domain at compile time.
     ///
     /// This function requires the static string to be a valid domain
@@ -46,14 +55,19 @@ impl Domain {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
         }
-        Self(SmolStr::new_static(s))
+        Self(Bytes::from_static(s.as_bytes()))
     }
 
-    /// Safety: callee ensures that the given string is a valid domain,
-    /// this can be useful in cases where we store a string but which
-    /// came from a Domain originally.
-    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<SmolStr>) -> Self {
-        Self(s.into())
+    /// Safety: callee ensures that the given byte/string source is a valid
+    /// domain. Useful when we have a buffer that we know came from a Domain
+    /// originally (e.g. label-joining helpers, trie key reversal).
+    pub(crate) unsafe fn from_maybe_borrowed_unchecked(s: impl Into<Bytes>) -> Self {
+        let bytes = s.into();
+        debug_assert!(
+            is_valid_name(&bytes),
+            "from_maybe_borrowed_unchecked called with invalid domain bytes"
+        );
+        Self(bytes)
     }
 
     /// Creates the example [`Domain].
@@ -91,7 +105,7 @@ impl Domain {
     /// Returns `true` if this domain is a Fully Qualified Domain Name.
     #[must_use]
     pub fn is_fqdn(&self) -> bool {
-        self.0.ends_with('.')
+        self.0.last() == Some(&b'.')
     }
 
     /// Returns `true` if this domain is a wildcard domain (i.e. its leftmost
@@ -126,7 +140,7 @@ impl Domain {
     #[must_use]
     pub fn is_tld(&self) -> bool {
         self.suffix()
-            .map(|s| cmp_domain(&self.0, s).is_eq())
+            .map(|s| cmp_domain(self.as_str(), s).is_eq())
             .unwrap_or_default()
     }
 
@@ -151,7 +165,7 @@ impl Domain {
     #[must_use]
     pub fn is_sld(&self) -> bool {
         self.suffix()
-            .and_then(|s| self.0.strip_suffix(s))
+            .and_then(|s| self.as_str().strip_suffix(s))
             .map(|s| {
                 let s = s.trim_matches('.');
                 !(s.is_empty() || s.contains('.'))
@@ -308,14 +322,150 @@ impl Domain {
     /// Gets the domain name as reference.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        self.as_ref()
+        // Safety: the validator only accepts ASCII bytes, so the contents
+        // are always valid UTF-8.
+        unsafe { std::str::from_utf8_unchecked(&self.0) }
     }
 
-    /// Returns the domain name inner value.
-    ///
-    /// Should not be exposed in the public rama API.
-    pub(crate) fn into_inner(self) -> SmolStr {
-        self.0
+    /// Borrowed view.
+    #[must_use]
+    #[inline]
+    pub fn view(&self) -> DomainRef<'_> {
+        DomainRef::from(self)
+    }
+
+    /// Returns the Unicode (display) form of the domain. See
+    /// [`DomainRef::as_unicode`] for borrow / allocation behavior.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
+        DomainRef::from(self).as_unicode()
+    }
+}
+
+/// Borrowed view into a domain-name byte slice.
+///
+/// The slice is contractually a validated [`Domain`] in presentation form
+/// (ASCII A-label) — invariants are enforced wherever `DomainRef` is
+/// constructed. Methods always treat the bytes as ASCII (and therefore
+/// valid UTF-8).
+///
+/// Useful for any context where you want a borrowed domain view without
+/// committing to an owned [`Domain`] allocation — e.g. iterating zero-copy
+/// slices out of a parent buffer, or pattern-matching against a transient
+/// header value.
+///
+/// `PartialEq` / `Eq` / `Hash` / `Ord` / `PartialOrd` are
+/// **ASCII-case-insensitive** per RFC 3986 §6.2.2.1 (and §3.2.2 host) —
+/// `DomainRef("EXAMPLE.com")` and `DomainRef("example.com")` compare and
+/// hash identically. Mirrors the owned [`Domain`]'s semantics so the two
+/// types stay interchangeable as collection keys.
+#[derive(Debug, Clone, Copy)]
+pub struct DomainRef<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> DomainRef<'a> {
+    /// Returns the raw bytes (always ASCII).
+    #[must_use]
+    pub fn as_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Returns the domain as a `&str`. ASCII bytes are valid UTF-8 by
+    /// construction.
+    #[must_use]
+    pub fn as_str(&self) -> &'a str {
+        // Safety: `DomainRef` is only ever constructed from a validated
+        // Domain buffer.
+        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
+    /// Returns an owned [`Domain`] by copying the underlying bytes.
+    /// Named `into_owned` (matching [`std::borrow::Cow::into_owned`]) so it doesn't
+    /// shadow the std `ToOwned` trait method.
+    #[must_use]
+    pub fn into_owned(self) -> Domain {
+        let bytes = Bytes::copy_from_slice(self.bytes);
+        // Safety: `DomainRef`'s contents are a validated `Domain` in
+        // presentation form.
+        unsafe { Domain::from_maybe_borrowed_unchecked(bytes) }
+    }
+
+    /// Returns the Unicode (display) form of the domain. See
+    /// [`Domain::as_unicode`] for the contract.
+    #[cfg(feature = "idna")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "idna")))]
+    #[must_use]
+    pub fn as_unicode(&self) -> std::borrow::Cow<'a, str> {
+        let s = self.as_str();
+        if memchr::memmem::find(s.as_bytes(), b"xn--").is_none() {
+            return std::borrow::Cow::Borrowed(s);
+        }
+        let (unicode, _result) = idna::domain_to_unicode(s);
+        std::borrow::Cow::Owned(unicode)
+    }
+}
+
+impl<'a> From<&'a Domain> for DomainRef<'a> {
+    fn from(d: &'a Domain) -> Self {
+        Self { bytes: &d.0 }
+    }
+}
+
+// ---- ASCII-case-insensitive Eq / Hash / Ord (parallels `Domain`) ----------
+//
+// Driven by the same `dotted_segments` + per-label case-fold helpers
+// that `Domain` uses, so a borrowed view and its owned counterpart are
+// fully interchangeable as collection keys / sort keys / equality
+// witnesses. No allocation — the segment iterator borrows from the
+// existing `&str` view.
+
+impl PartialEq for DomainRef<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        eq_segments(
+            dotted_segments(self.as_str()),
+            dotted_segments(other.as_str()),
+        )
+    }
+}
+
+impl Eq for DomainRef<'_> {}
+
+impl Ord for DomainRef<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        cmp_segments(
+            dotted_segments(self.as_str()),
+            dotted_segments(other.as_str()),
+        )
+    }
+}
+
+impl PartialOrd for DomainRef<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl std::hash::Hash for DomainRef<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Match `Domain`'s per-label hash exactly so the two types
+        // produce identical byte streams for identical content:
+        // for each label `len_usize` + `byte_lower` per byte.
+        for seg in dotted_segments(self.as_str()) {
+            state.write_usize(seg.len());
+            for b in seg.bytes() {
+                state.write_u8(b.to_ascii_lowercase());
+            }
+        }
+    }
+}
+
+impl fmt::Display for DomainRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // ASCII presentation form — `as_unicode` handles IDN decoding.
+        f.write_str(self.as_str())
     }
 }
 
@@ -333,13 +483,13 @@ impl std::hash::Hash for Domain {
 
 impl AsRef<str> for Domain {
     fn as_ref(&self) -> &str {
-        self.0.as_str()
+        self.as_str()
     }
 }
 
 impl fmt::Display for Domain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
+        f.write_str(self.as_str())
     }
 }
 
@@ -347,8 +497,7 @@ impl std::str::FromStr for Domain {
     type Err = DomainParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        validate_domain_str(s)?;
-        Ok(Self(SmolStr::new(s)))
+        Self::try_from(s)
     }
 }
 
@@ -356,8 +505,14 @@ impl TryFrom<String> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        validate_domain_str(&name)?;
-        Ok(Self(SmolStr::new(name)))
+        // Fast-path: already ASCII → reuse the input buffer.
+        if name.is_ascii() {
+            validate_domain_str(&name)?;
+            return Ok(Self(Bytes::from(name.into_bytes())));
+        }
+        let ace = idn_to_ascii(&name)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
     }
 }
 
@@ -365,8 +520,13 @@ impl<'a> TryFrom<&'a str> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: &'a str) -> Result<Self, Self::Error> {
-        validate_domain_str(name)?;
-        Ok(Self(SmolStr::new(name)))
+        if name.is_ascii() {
+            validate_domain_str(name)?;
+            return Ok(Self(Bytes::copy_from_slice(name.as_bytes())));
+        }
+        let ace = idn_to_ascii(name)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
     }
 }
 
@@ -375,8 +535,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
-        validate_domain_str(s)?;
-        Ok(Self(SmolStr::new(s)))
+        Self::try_from(s)
     }
 }
 
@@ -384,9 +543,33 @@ impl TryFrom<Vec<u8>> for Domain {
     type Error = DomainParseError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        let s = String::from_utf8(name).map_err(|e| DomainParseError::non_utf8(e.utf8_error()))?;
-        validate_domain_str(&s)?;
-        Ok(Self(SmolStr::new(s)))
+        let s = std::str::from_utf8(&name).map_err(DomainParseError::non_utf8)?;
+        if s.is_ascii() {
+            validate_domain_str(s)?;
+            return Ok(Self(Bytes::from(name)));
+        }
+        let ace = idn_to_ascii(s)?;
+        validate_domain_str(&ace)?;
+        Ok(Self(Bytes::from(ace.into_bytes())))
+    }
+}
+
+/// Convert a non-ASCII domain string to its ASCII-Compatible Encoding
+/// (ACE / Punycode) via UTS #46 non-transitional processing.
+///
+/// Caller MUST have already checked that `input` contains non-ASCII —
+/// this isn't a fast-path optimisation, it's the explicit IDN entry
+/// point. Returns an error if the `idna` feature is off, or if UTS #46
+/// rejects the input.
+fn idn_to_ascii(input: &str) -> Result<String, DomainParseError> {
+    #[cfg(feature = "idna")]
+    {
+        idna::domain_to_ascii(input).map_err(|_e| DomainParseError::idna_processing())
+    }
+    #[cfg(not(feature = "idna"))]
+    {
+        let _ = input;
+        Err(DomainParseError::idna_not_enabled())
     }
 }
 
@@ -402,19 +585,43 @@ pub struct DomainParseError(DomainParseErrorKind);
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DomainParseErrorKind {
     Empty,
-    TooLong { len: usize },
-    NonUtf8 { source: std::str::Utf8Error },
-    Label { at: usize, error: LabelError },
-    BadWildcard { at: usize },
+    TooLong {
+        len: usize,
+    },
+    NonUtf8 {
+        source: std::str::Utf8Error,
+    },
+    Label {
+        at: usize,
+        error: LabelError,
+    },
+    BadWildcard {
+        at: usize,
+    },
+    /// The input bytes form an IP-literal in URI authority syntax
+    /// (bracketed `[...]`, e.g. an IPvFuture literal). IP-literals
+    /// are a distinct grammatical category from domains — produced
+    /// when converting from
+    /// [`UninterpretedHost`](crate::address::UninterpretedHost) that
+    /// preserved a bracketed host.
+    BracketedIpLiteral,
+    /// UTS #46 IDN processing rejected the input (e.g. disallowed
+    /// codepoints, bidi violations). Only produced when the `idna`
+    /// feature is on.
+    #[cfg(feature = "idna")]
+    IdnaProcessing,
+    /// Non-ASCII bytes were supplied but the `idna` feature is off.
+    #[cfg(not(feature = "idna"))]
+    IdnaNotEnabled,
 }
 
 impl DomainParseError {
     #[inline]
-    fn empty() -> Self {
+    const fn empty() -> Self {
         Self(DomainParseErrorKind::Empty)
     }
     #[inline]
-    fn too_long(len: usize) -> Self {
+    const fn too_long(len: usize) -> Self {
         Self(DomainParseErrorKind::TooLong { len })
     }
     #[inline]
@@ -422,12 +629,42 @@ impl DomainParseError {
         Self(DomainParseErrorKind::NonUtf8 { source })
     }
     #[inline]
-    fn label(at: usize, error: LabelError) -> Self {
+    const fn label(at: usize, error: LabelError) -> Self {
         Self(DomainParseErrorKind::Label { at, error })
     }
     #[inline]
-    fn bad_wildcard(at: usize) -> Self {
+    const fn bad_wildcard(at: usize) -> Self {
         Self(DomainParseErrorKind::BadWildcard { at })
+    }
+    #[inline]
+    pub(crate) const fn bracketed_ip_literal() -> Self {
+        Self(DomainParseErrorKind::BracketedIpLiteral)
+    }
+    #[cfg(feature = "idna")]
+    #[inline]
+    fn idna_processing() -> Self {
+        Self(DomainParseErrorKind::IdnaProcessing)
+    }
+    #[cfg(not(feature = "idna"))]
+    #[inline]
+    fn idna_not_enabled() -> Self {
+        Self(DomainParseErrorKind::IdnaNotEnabled)
+    }
+
+    /// `true` if the failure is the "input requires IDNA but the
+    /// `idna` feature is off" case. Lets callers (e.g. the URI parser)
+    /// surface a more specific top-level error. Always `false` when the
+    /// `idna` feature is enabled.
+    #[must_use]
+    pub fn is_idna_not_enabled(&self) -> bool {
+        #[cfg(not(feature = "idna"))]
+        {
+            matches!(self.0, DomainParseErrorKind::IdnaNotEnabled)
+        }
+        #[cfg(feature = "idna")]
+        {
+            false
+        }
     }
 }
 
@@ -448,6 +685,17 @@ impl fmt::Display for DomainParseError {
                 f,
                 "'*' wildcard label is only valid at index 0, found at index {at}"
             ),
+            DomainParseErrorKind::BracketedIpLiteral => {
+                f.write_str("bracketed IP-literal is not a domain")
+            }
+            #[cfg(feature = "idna")]
+            DomainParseErrorKind::IdnaProcessing => {
+                f.write_str("IDN domain rejected by UTS #46 processing")
+            }
+            #[cfg(not(feature = "idna"))]
+            DomainParseErrorKind::IdnaNotEnabled => {
+                f.write_str("non-ASCII domain requires the `idna` feature")
+            }
         }
     }
 }
@@ -462,25 +710,39 @@ impl std::error::Error for DomainParseError {
     }
 }
 
-/// Validate a `&str` as a presentation-format domain.
+/// Validate a `&[u8]` as a presentation-format domain.
 ///
-/// Single source of truth for the runtime parse path (`FromStr` / `TryFrom`).
-/// Mirrors the const `is_valid_name` used by `from_static`, but reports
-/// position info via [`DomainParseError`].
+/// **Single source of truth** for every Domain validity decision. Both the
+/// compile-time entry point ([`Domain::from_static`]) and the runtime parse
+/// path ([`Domain::try_from`]) call through this; the bool-returning
+/// [`is_valid_name`] and the str-taking [`validate_domain_str`] are thin
+/// wrappers.
+///
+/// Keeping the algorithm in one place is the fix for a class of
+/// fuzz-found bugs where two near-identical validators drifted (the URI
+/// parser validated via `try_from` and then deref'd via
+/// `from_maybe_borrowed_unchecked`, whose debug-assert called the
+/// const validator — divergence panicked).
 ///
 /// # Accepted shapes
 ///
-/// - bare: `"example.com"`, `"localhost"`
-/// - FQDN: `"example.com."` (trailing dot)
-/// - leading-dot: `".example.com"` (matches behaviour of the const path)
-/// - wildcard: `"*.example.com"`
-/// - leading-dot wildcard: `".*.example.com"` (the leading FQDN dot is
-///   stripped before label-walking; equivalent to `"*.example.com"`)
+/// - bare: `b"example.com"`, `b"localhost"`
+/// - FQDN: `b"example.com."` (one trailing dot)
+/// - leading-dot: `b".example.com"`
+/// - wildcard (leftmost only): `b"*.example.com"`
+/// - leading-dot wildcard: `b".*.example.com"` — the leading FQDN dot is
+///   consumed before the wildcard check
 ///
-/// The bare wildcard label `"*"` is rejected (it must prefix at least one
-/// further label), and `"*"` is only valid as the leftmost label.
-fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
-    if s.is_empty() {
+/// The bare wildcard `b"*"` is rejected (it must prefix at least one
+/// further label).
+///
+/// # Const-fn constraints
+///
+/// `?` and slice equality (`==`) are not stable in const fn yet, so the
+/// body uses explicit `match` for label results and length-plus-first-byte
+/// for the wildcard compare.
+const fn validate_domain_bytes(name: &[u8]) -> Result<(), DomainParseError> {
+    if name.is_empty() {
         return Err(DomainParseError::empty());
     }
     // RFC 1035 §2.3.4: the wire-format max is 255 octets and the
@@ -489,42 +751,90 @@ fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
     // FQDN-form input like `example.com.` of length 254.
     //
     // Regression: `tests::regression_domain_fqdn_trailing_dot_length`.
-    let effective_len = if s.ends_with('.') {
-        s.len() - 1
+    let last = name[name.len() - 1];
+    let effective_len = if last == b'.' {
+        name.len() - 1
     } else {
-        s.len()
+        name.len()
     };
     if effective_len > MAX_NAME_LEN {
-        return Err(DomainParseError::too_long(s.len()));
+        return Err(DomainParseError::too_long(name.len()));
     }
 
-    // Normalize leading/trailing FQDN dots away for label walking. Each is
-    // optional and at most one.
-    let trimmed = s.strip_prefix('.').unwrap_or(s);
-    let trimmed = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    if trimmed.is_empty() {
+    // Skip at most one leading FQDN dot and at most one trailing FQDN
+    // dot. The label-walking loop below operates on the inner range
+    // `[start, stop)`.
+    let start = if name[0] == b'.' { 1 } else { 0 };
+    let stop = if last == b'.' && name.len() > 1 {
+        name.len() - 1
+    } else {
+        name.len()
+    };
+    if start >= stop {
+        // Input was just "." or "..".
         return Err(DomainParseError::empty());
     }
 
-    let mut parts = trimmed.split('.');
-    let mut idx = 0usize;
-    let mut last_part: Option<&str> = None;
-    for part in &mut parts {
-        label::validate_label_bytes(part.as_bytes())
-            .map_err(|e| DomainParseError::label(idx, e))?;
-        // Wildcard label is only valid as the leftmost.
-        if part == "*" && idx != 0 {
-            return Err(DomainParseError::bad_wildcard(idx));
+    // Walk labels by indexing into `name[start..stop]`. `idx` counts
+    // non-empty labels (0-based) and is what error reporting uses.
+    let mut idx: usize = 0;
+    let mut label_start = start;
+    let mut leftmost_was_wildcard = false;
+    let mut i = start;
+    while i <= stop {
+        if i == stop || name[i] == b'.' {
+            // Label byte-range is name[label_start..i].
+            if label_start == i {
+                // Mid-name empty label (double-dot inside the trimmed
+                // range). Leading and trailing FQDN dots were already
+                // consumed by `start` / `stop`.
+                return Err(DomainParseError::label(idx, LabelError::empty()));
+            }
+            // Validate the label bytes via the shared const validator.
+            // `name.split_at(...)` is the const-stable way to subslice;
+            // direct indexing `&name[start..end]` still needs the
+            // `Index` trait to be const, which it isn't.
+            let (_, after_start) = name.split_at(label_start);
+            let (label, _) = after_start.split_at(i - label_start);
+            // Manual match because `?` isn't stable in const fn yet.
+            match label::validate_label_bytes(label) {
+                Ok(()) => {}
+                Err(e) => return Err(DomainParseError::label(idx, e)),
+            }
+            // Wildcard `*` is only valid as the leftmost label.
+            if label.len() == 1 && label[0] == b'*' {
+                if idx != 0 {
+                    return Err(DomainParseError::bad_wildcard(idx));
+                }
+                leftmost_was_wildcard = true;
+            }
+            label_start = i + 1;
+            idx += 1;
+            if i == stop {
+                break;
+            }
         }
-        last_part = Some(part);
-        idx += 1;
+        i += 1;
     }
-    // A bare wildcard ("*" alone) is not a valid domain — it must prefix at
-    // least one further label.
-    if idx == 1 && last_part == Some("*") {
+
+    // Bare wildcard (`*` or `.*` or `*.`) — no parent label.
+    if leftmost_was_wildcard && idx == 1 {
         return Err(DomainParseError::bad_wildcard(0));
     }
     Ok(())
+}
+
+/// Bool-returning const wrapper used by [`Domain::from_static`] and
+/// the debug-assert in [`Domain::from_maybe_borrowed_unchecked`].
+const fn is_valid_name(name: &[u8]) -> bool {
+    matches!(validate_domain_bytes(name), Ok(()))
+}
+
+/// Str-returning runtime wrapper used by every `TryFrom` impl. Just
+/// dispatches to the byte validator — keeping both surfaces honest by
+/// construction.
+fn validate_domain_str(s: &str) -> Result<(), DomainParseError> {
+    validate_domain_bytes(s.as_bytes())
 }
 
 /// Strip leading and trailing FQDN dots, then yield ASCII-lowercased bytes.
@@ -699,7 +1009,7 @@ impl serde::Serialize for Domain {
     where
         S: serde::Serializer,
     {
-        self.0.serialize(serializer)
+        self.as_str().serialize(serializer)
     }
 }
 
@@ -710,84 +1020,6 @@ impl<'de> serde::Deserialize<'de> for Domain {
     {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
-    }
-}
-
-impl Domain {
-    /// The maximum length of a domain label.
-    const MAX_LABEL_LEN: usize = Label::MAX_LEN;
-
-    /// The maximum length of a domain name.
-    const MAX_NAME_LEN: usize = MAX_NAME_LEN;
-}
-
-const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
-    if start >= stop
-        || stop - start > Domain::MAX_LABEL_LEN
-        || name[start] == b'-'
-        || start == stop
-        || name[stop - 1] == b'-'
-    {
-        false
-    } else {
-        let mut i = start;
-        while i < stop {
-            let c = name[i];
-            if !c.is_ascii_alphanumeric() && c != b'_' && (c != b'-' || i == start) {
-                return false;
-            }
-            i += 1;
-        }
-        true
-    }
-}
-
-/// Checks if the domain name is valid.
-const fn is_valid_name(name: &[u8]) -> bool {
-    if name.is_empty() || name.len() > Domain::MAX_NAME_LEN {
-        false
-    } else {
-        let mut non_empty_groups = 0;
-        let mut i = 0;
-        let mut offset = 0;
-
-        // wildcard special case, only needed once
-        if name[0] == b'*' {
-            if name.len() <= 2 || name[1] != b'.' {
-                return false;
-            }
-            offset = 2;
-            i = 2;
-            non_empty_groups = 1;
-        }
-
-        while i < name.len() {
-            let c = name[i];
-            if c == b'.' {
-                if offset == i {
-                    // empty
-                    if i == 0 || i == name.len() - 1 {
-                        i += 1;
-                        offset = i + 1;
-                        continue;
-                    } else {
-                        // double dot not allowed
-                        return false;
-                    }
-                }
-                if !is_valid_label(name, offset, i) {
-                    return false;
-                }
-                offset = i + 1;
-                non_empty_groups += 1;
-            }
-            i += 1;
-        }
-        if offset == i {
-            non_empty_groups > 0
-        } else {
-            is_valid_label(name, offset, i)
-        }
     }
 }
 
@@ -811,7 +1043,11 @@ pub trait AsDomainRef: seal::AsDomainRefPrivate {
     /// (matching [`Domain::from_static`]); for [`Domain`] it clones cheaply.
     fn to_domain(&self) -> Domain {
         // Safety: domain_as_str is contractually a validated domain string.
-        unsafe { Domain::from_maybe_borrowed_unchecked(self.domain_as_str()) }
+        unsafe {
+            Domain::from_maybe_borrowed_unchecked(Bytes::copy_from_slice(
+                self.domain_as_str().as_bytes(),
+            ))
+        }
     }
 
     /// Return this value in wildcard form (`*.x`).
@@ -1023,8 +1259,13 @@ mod tests {
             "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",
             "example-thislabeliswaytoolongforbeingeversomethingwewishtocareabout.com",
+            // The following are invalid only when the `idna` feature is off
+            // (under it they're UTS #46-processed into valid ACE forms).
+            #[cfg(not(feature = "idna"))]
             "こんにちは",
+            #[cfg(not(feature = "idna"))]
             "こんにちは.com",
+            #[cfg(not(feature = "idna"))]
             "😀",
             "example..com",
             "example dot com",
@@ -1297,6 +1538,25 @@ mod tests {
     }
 
     #[test]
+    fn domain_and_domainref_hash_identically() {
+        // Owned and borrowed must hash equal so they're interchangeable
+        // as collection keys.
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash as _, Hasher};
+
+        for name in ["example.com", "EXAMPLE.com", "sub.example.com", "x.y"] {
+            let owned = Domain::from_static(name);
+            let borrowed = DomainRef::from(&owned);
+
+            let mut ho = DefaultHasher::new();
+            owned.hash(&mut ho);
+            let mut hb = DefaultHasher::new();
+            borrowed.hash(&mut hb);
+            assert_eq!(ho.finish(), hb.finish(), "hash mismatch for {name:?}");
+        }
+    }
+
+    #[test]
     fn parse_error_variant_empty() {
         let err = Domain::try_from(String::new()).unwrap_err();
         assert_eq!(format!("{err}"), "empty domain");
@@ -1335,6 +1595,39 @@ mod tests {
         let too_long = format!("{prefix}c");
         assert_eq!(too_long.len(), 254);
         Domain::try_from(too_long).unwrap_err();
+    }
+
+    /// Regression: `is_valid_name` (the const validator behind
+    /// `from_static` / `from_maybe_borrowed_unchecked`) used to disagree
+    /// with `validate_domain_str` (the public-API validator behind
+    /// `try_from`) on two leading-dot shapes — `.A` and `.*.k`. The URI
+    /// parser validates via `try_from` and dereferences via
+    /// `from_maybe_borrowed_unchecked`, so the divergence surfaced as a
+    /// debug-assert panic in `from_maybe_borrowed_unchecked`. Both
+    /// inputs were found by the `uri_parse` / `uri_resolve` fuzz targets.
+    #[test]
+    fn regression_domain_const_validator_matches_public_validator() {
+        for input in [
+            ".A",     // leading-dot single label
+            ".*.k",   // leading-dot wildcard
+            ".com",   // leading-dot TLD (was accidentally working pre-fix)
+            ".com.",  // leading + trailing dot
+            "*.x",    // bare wildcard
+            "A",      // single label, no dots
+            "com.uk", // ordinary multi-label
+        ] {
+            Domain::try_from(input)
+                .unwrap_or_else(|e| panic!("try_from({input:?}) rejected unexpectedly: {e}"));
+            // `from_static` exercises `is_valid_name` — must agree.
+            // `let _ =` would discard the must-use value; bind to a
+            // suppression name instead so clippy is happy.
+            let _domain = Domain::from_static(input);
+        }
+        // Mirror the URI-parser paths that originally hit the panic.
+        let uri: crate::uri::Uri = "k://.A/".parse().unwrap();
+        assert_eq!(uri.host().unwrap().to_str(), ".A");
+        let uri: crate::uri::Uri = "k://.*.k".parse().unwrap();
+        assert_eq!(uri.host().unwrap().to_str(), ".*.k");
     }
 
     #[test]
