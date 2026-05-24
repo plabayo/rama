@@ -34,7 +34,6 @@ use crate::{
         fs::{DirectoryServeMode, ServeDir},
         web::{
             IntoEndpointService, IntoEndpointServiceWithState,
-            error::DowncastResponseError,
             response::{ErrorResponse, Headers, IntoResponse},
         },
     },
@@ -722,11 +721,7 @@ impl fmt::Display for RouterError {
     }
 }
 
-impl Error for RouterError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(DowncastResponseError::new(self))
-    }
-}
+impl Error for RouterError {}
 
 impl IntoResponse for RouterError {
     fn into_response(self) -> Response {
