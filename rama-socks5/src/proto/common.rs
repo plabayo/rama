@@ -244,34 +244,22 @@ mod tests {
         );
     }
 
-    // ---- Uninterpreted host promotion fallback (audit M3 / C13) ----------
+    // ---- Uninterpreted host promotion fallback ----------------------------
     //
-    // The wire writer was retrofitted to try `Domain::try_from(host)` and
-    // emit the canonical ACE form rather than the raw pct-encoded bytes —
-    // a pct-encoded reg-name reaches the SOCKS5 server as a normal
-    // DomainName, not as bytes the server has no chance of resolving.
-
-    /// Build a `Host::Uninterpreted(_)` via the URI parser — the only
-    /// public path for constructing this variant from a cross-crate
-    /// test (`UninterpretedHost::from_validated_bytes` is crate-private
-    /// to `rama-net`).
-    fn parse_uninterpreted_host(uri_input: &str) -> Host {
-        let uri = rama_net::uri::Uri::parse(uri_input).expect("valid URI");
-        uri.host().expect("authority present").into_owned()
-    }
+    // The wire writer tries `Domain::try_from(host)` / `IpAddr::try_from`
+    // on `Host::Uninterpreted` and emits the canonical ACE / IP bytes,
+    // so a pct-encoded reg-name reaches the peer as a normal DomainName
+    // rather than bytes it can't resolve.
 
     #[test]
     fn socks5_write_authority_promotes_pct_encoded_reg_name_to_domain() {
-        // `exa%6Dple.com` (Uninterpreted) → after `Domain::try_from`
-        // pct-decode → `example.com` on the wire.
-        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        // `exa%6Dple.com` rides as Uninterpreted; the writer's
+        // `try_as_domain` bridge emits the canonical `example.com`.
+        let host = Host::try_from("exa%6Dple.com").unwrap();
         assert!(matches!(host, Host::Uninterpreted(_)));
         let auth = HostWithPort::new(host, 443);
         let mut buf = Vec::new();
         write_authority_to_buf(&auth, &mut buf).unwrap();
-        // First byte is the DomainName address-type tag, second is the
-        // length-prefix, then the bytes. Recovered bytes must be the
-        // canonical `example.com`, not the pct-encoded source.
         assert_eq!(buf[0], u8::from(super::AddressType::DomainName));
         assert_eq!(buf[1] as usize, b"example.com".len());
         assert_eq!(&buf[2..2 + b"example.com".len()], b"example.com");
@@ -280,9 +268,8 @@ mod tests {
     #[test]
     fn socks5_write_authority_rejects_subdelim_host_unpromotable() {
         // Sub-delim reg-name doesn't promote to a Domain *or* IpAddr —
-        // SOCKS5 has no representation for it. Encoder errors rather
-        // than emitting raw bytes the wire-level grammar can't carry.
-        let host = parse_uninterpreted_host("http://tag,with,commas/");
+        // SOCKS5 has no representation. Encoder errors.
+        let host = Host::try_from("tag,with,commas").unwrap();
         assert!(matches!(host, Host::Uninterpreted(_)));
         let auth = HostWithPort::new(host, 8080);
         let mut buf = Vec::new();
@@ -293,9 +280,9 @@ mod tests {
     #[test]
     fn socks5_write_authority_empty_uninterpreted_host_errors() {
         // `file:///path` surfaces `Host::Uninterpreted(b"")` from the URI
-        // parser — SOCKS5 has no representation for an empty host, so
-        // the encoder must refuse rather than emit a zero-length
-        // DomainName (which the reader correctly rejects).
+        // parser — the empty-host case is only reachable through URI
+        // parsing (the eager `Host::try_from("")` rejects), so we
+        // construct via the URI path here.
         let host = rama_net::uri::Uri::parse("file:///tmp/socket")
             .unwrap()
             .host()

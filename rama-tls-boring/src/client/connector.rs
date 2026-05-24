@@ -348,6 +348,12 @@ where
 /// in SNI). Returns `None` for IP-shaped hosts (including pct-encoded
 /// IP literals inside `Uninterpreted`) and for non-promotable
 /// reg-names / IPvFuture; otherwise returns the bridged [`Domain`].
+///
+/// The IP-first guard exists because `Domain::try_from("127.0.0.1")`
+/// succeeds — RFC 1123 §2.1 permits all-digit DNS labels — so an
+/// IPv4-shaped reg-name (`Host::Uninterpreted("127.0.0.1")` or the
+/// pct-encoded form `%31%32%37.0.0.1`) would otherwise promote to a
+/// "domain" of `"127.0.0.1"` and ship as SNI. RFC 6066 forbids that.
 fn sni_domain_for(host: &rama_net::address::Host) -> Option<std::borrow::Cow<'_, Domain>> {
     if host.try_as_ip().is_ok() {
         return None;
@@ -665,5 +671,25 @@ mod tests {
         use rama_utils::test_helpers::assert_sync;
 
         assert_sync::<TlsConnectorLayer>();
+    }
+
+    /// Regression for the IP-first guard in [`sni_domain_for`].
+    /// `Host::Uninterpreted("127.0.0.1")` could otherwise promote to
+    /// Domain `"127.0.0.1"` and ship as SNI in violation of RFC 6066 §3.
+    #[test]
+    fn sni_domain_for_drops_ip_shaped_uninterpreted() {
+        let host = rama_net::address::Host::try_from("127.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+        // Pct-encoded equivalent also resolves to IpAddr first.
+        let host = rama_net::address::Host::try_from("%31%32%37.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+    }
+
+    #[test]
+    fn sni_domain_for_keeps_pct_encoded_reg_name() {
+        // `exa%6Dple.com` bridges Uninterpreted → Domain "example.com".
+        let host = rama_net::address::Host::try_from("exa%6Dple.com").unwrap();
+        let domain = sni_domain_for(&host).expect("should bridge to Domain");
+        assert_eq!(domain.as_str(), "example.com");
     }
 }

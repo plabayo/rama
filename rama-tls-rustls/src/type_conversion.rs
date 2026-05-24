@@ -207,19 +207,10 @@ mod tests {
     // `Domain::try_from` on `Uninterpreted` hosts so a pct-encoded or
     // IDN reg-name reaches the TLS layer as a proper `DnsName` rather
     // than tripping the AddressTypeNotSupported / OpaqueError path.
-    //
-    // `UninterpretedHost::from_validated_bytes` is crate-private to
-    // `rama-net`, so cross-crate tests construct the variant via the
-    // URI parser (the only public path that produces it).
-
-    fn parse_uninterpreted_host(uri_input: &str) -> Host {
-        let uri = rama_net::uri::Uri::parse(uri_input).expect("valid URI");
-        uri.host().expect("authority present").into_owned()
-    }
 
     #[test]
     fn owned_host_uninterpreted_recovers_to_dns_name() {
-        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        let host = Host::try_from("exa%6Dple.com").unwrap();
         assert!(matches!(host, Host::Uninterpreted(_)));
         let sn = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
         match sn {
@@ -232,7 +223,7 @@ mod tests {
 
     #[test]
     fn borrowed_host_uninterpreted_recovers_to_dns_name() {
-        let host = parse_uninterpreted_host("http://exa%6Dple.com/");
+        let host = Host::try_from("exa%6Dple.com").unwrap();
         // Borrowed-input conversion (the audit added this recovery
         // branch — used to error unconditionally).
         let sn = rustls::pki_types::ServerName::rama_try_from(&host).unwrap();
@@ -248,7 +239,7 @@ mod tests {
     fn host_uninterpreted_bracketed_ipvfuture_still_errors() {
         // No typed recovery is possible for IPvFuture — must surface
         // the conversion error rather than emitting a bogus DnsName.
-        let host = parse_uninterpreted_host("http://[v1.fe80::a]/");
+        let host = Host::try_from("[v1.fe80::a]").unwrap();
         rustls::pki_types::ServerName::rama_try_from(host).unwrap_err();
     }
 }
