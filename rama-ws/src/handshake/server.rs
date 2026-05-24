@@ -12,7 +12,6 @@ use rama_core::{
     rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
-use rama_net::extensions::StreamTransformed;
 #[cfg(feature = "compression")]
 use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
@@ -27,6 +26,7 @@ use rama_http::{
     request,
     service::web::response::{self, Headers, IntoResponse},
 };
+use rama_net::extensions::StreamTransformed;
 use rama_utils::{
     collections::non_empty_smallvec,
     str::{NonEmptyStr, non_empty_str},
@@ -404,7 +404,9 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let extensions = Extensions::default();
-        extensions.insert(StreamTransformed { by: "rama-ws::WebSocketAcceptor" });
+        extensions.insert(StreamTransformed {
+            by: "rama-ws::WebSocketAcceptor",
+        });
 
         match validate_http_client_request(&req) {
             Ok(request_data) => {

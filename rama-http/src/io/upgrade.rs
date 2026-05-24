@@ -170,7 +170,9 @@ impl Upgraded {
         T: Io + Unpin + ExtensionsRef,
     {
         let extensions = io.extensions().clone();
-        extensions.insert(StreamTransformed { by: "rama-http::Upgraded" });
+        extensions.insert(StreamTransformed {
+            by: "rama-http::Upgraded",
+        });
         Self {
             extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),

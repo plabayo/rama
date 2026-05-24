@@ -526,8 +526,9 @@ impl Builder {
         async move {
             trace!("client handshake HTTP/1");
 
-            io.extensions()
-                .insert(StreamTransformed { by: "rama-http-core::h1::client" });
+            io.extensions().insert(StreamTransformed {
+                by: "rama-http-core::h1::client",
+            });
 
             let (tx, rx) = dispatch::channel();
             let mut conn = proto::Conn::new(io);

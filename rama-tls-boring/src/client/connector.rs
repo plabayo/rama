@@ -248,8 +248,9 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
-        conn.extensions()
-            .insert(StreamTransformed { by: "rama-tls-boring::TlsConnector" });
+        conn.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsConnector",
+        });
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -293,8 +294,9 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
-        conn.extensions()
-            .insert(StreamTransformed { by: "rama-tls-boring::TlsConnector" });
+        conn.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsConnector",
+        });
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -344,8 +346,9 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
-        conn.extensions()
-            .insert(StreamTransformed { by: "rama-tls-boring::TlsConnector" });
+        conn.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsConnector",
+        });
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }

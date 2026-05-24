@@ -254,9 +254,9 @@ where
         let stream = TlsStream::new(stream);
         stream.extensions().insert(secure_transport);
         stream.extensions().insert(negotiated_tls_params);
-        stream
-            .extensions()
-            .insert(StreamTransformed { by: "rama-tls-boring::TlsAcceptor" });
+        stream.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsAcceptor",
+        });
 
         self.inner
             .serve(stream)

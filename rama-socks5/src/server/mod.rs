@@ -373,9 +373,9 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
             client_request.command,
         );
 
-        stream
-            .extensions()
-            .insert(StreamTransformed { by: "rama-socks5::Socks5Acceptor" });
+        stream.extensions().insert(StreamTransformed {
+            by: "rama-socks5::Socks5Acceptor",
+        });
 
         match client_request.command {
             Command::Connect => {

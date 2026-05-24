@@ -87,9 +87,9 @@ where
 
         stream.extensions().insert(negotiated_tls_params);
         stream.extensions().insert(secure_transport);
-        stream
-            .extensions()
-            .insert(StreamTransformed { by: "rama-tls-rustls::TlsAcceptor" });
+        stream.extensions().insert(StreamTransformed {
+            by: "rama-tls-rustls::TlsAcceptor",
+        });
 
         self.inner
             .serve(stream)

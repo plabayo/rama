@@ -632,19 +632,13 @@ mod tests {
     /// `into_passthrough` is verified not to fire by counter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn promote_layer_skips_when_stream_transformed_present() {
-        marker_skips_promote(rama_net::extensions::StreamTransformed {
-            by: "test",
-        })
-        .await;
+        marker_skips_promote(rama_net::extensions::StreamTransformed { by: "test" }).await;
     }
 
     /// Symmetric coverage for `StreamMultiplexed`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn promote_layer_skips_when_stream_multiplexed_present() {
-        marker_skips_promote(rama_net::extensions::StreamMultiplexed {
-            by: "test",
-        })
-        .await;
+        marker_skips_promote(rama_net::extensions::StreamMultiplexed { by: "test" }).await;
     }
 
     async fn marker_skips_promote<M: Extension>(marker: M) {
@@ -676,7 +670,8 @@ mod tests {
         extensions.insert(marker);
         let bridge = BridgeIo(TestIo { extensions }, ());
 
-        let inner = service_fn(|_b: BridgeIo<TestIo, ()>| async { Ok::<_, std::convert::Infallible>(()) });
+        let inner =
+            service_fn(|_b: BridgeIo<TestIo, ()>| async { Ok::<_, std::convert::Infallible>(()) });
         let wrapped = PromoteLayer::new().into_layer(inner);
 
         wrapped.serve(bridge).await.unwrap();

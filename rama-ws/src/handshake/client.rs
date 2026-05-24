@@ -764,7 +764,9 @@ where
         self,
         extensions: Extensions,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
-        extensions.insert(StreamTransformed { by: "rama-ws::WebSocketClient" });
+        extensions.insert(StreamTransformed {
+            by: "rama-ws::WebSocketClient",
+        });
 
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),

@@ -238,7 +238,9 @@ impl Stream {
 
         // Create extensions for this specific stream
         let extensions = connection_extensions.fork();
-        extensions.insert(StreamMultiplexed { by: "rama-http-core::h2::stream" });
+        extensions.insert(StreamMultiplexed {
+            by: "rama-http-core::h2::stream",
+        });
 
         Ok(Self {
             id,
