@@ -2150,7 +2150,7 @@ mod tests {
                     Host::Name(Domain::from_static("b.example.com")),
                     Protocol::HTTP_DEFAULT_PORT,
                 ),
-                expected_value: "none",
+                expected_value: "cross-site",
             },
         ];
 
