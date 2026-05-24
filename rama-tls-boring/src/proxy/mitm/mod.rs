@@ -16,7 +16,9 @@ use rama_net::{
     address::{Domain, HostWithPort},
     tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData},
 };
-use rama_net::{proxy::ProxyTarget, tls::KeyLogIntent};
+use rama_net::{
+    extensions::StreamTransformed, proxy::ProxyTarget, tls::KeyLogIntent,
+};
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
     fmt,
@@ -522,6 +524,9 @@ where
                     }
                 }
             })?;
+        egress_tls_stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-tls-boring::TlsMitmRelay" });
 
         let egress_ssl_ref = egress_tls_stream.ssl_ref();
         let source_cert = egress_ssl_ref
@@ -705,6 +710,9 @@ where
         }
 
         let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
+        ingress_tls_stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-tls-boring::TlsMitmRelay" });
         Ok(BridgeIo(ingress_tls_stream, egress_tls_stream))
     }
 }

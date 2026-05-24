@@ -19,6 +19,7 @@ pub mod address;
 pub mod asn;
 pub mod client;
 pub mod conn;
+pub mod extensions;
 pub mod forwarded;
 pub mod mode;
 pub mod proxy;

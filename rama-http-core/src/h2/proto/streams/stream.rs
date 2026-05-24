@@ -4,6 +4,7 @@ use super::*;
 
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{self, warn};
+use rama_net::extensions::StreamMultiplexed;
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;
@@ -237,6 +238,7 @@ impl Stream {
 
         // Create extensions for this specific stream
         let extensions = connection_extensions.fork();
+        extensions.insert(StreamMultiplexed { by: "rama-http-core::h2::stream" });
 
         Ok(Self {
             id,

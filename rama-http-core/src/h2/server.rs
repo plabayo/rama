@@ -132,6 +132,7 @@ use rama_core::telemetry::tracing::{
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_net::extensions::StreamTransformed;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
 };
@@ -395,6 +396,9 @@ where
     fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
+
+        io.extensions()
+            .insert(StreamTransformed { by: "rama-http-core::h2::server" });
 
         // Create the codec.
         let mut codec = Codec::new(io);

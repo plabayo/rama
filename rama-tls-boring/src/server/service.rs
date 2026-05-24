@@ -14,7 +14,10 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
-use rama_net::tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters};
+use rama_net::{
+    extensions::StreamTransformed,
+    tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
 
@@ -251,6 +254,9 @@ where
         let stream = TlsStream::new(stream);
         stream.extensions().insert(secure_transport);
         stream.extensions().insert(negotiated_tls_params);
+        stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-tls-boring::TlsAcceptor" });
 
         self.inner
             .serve(stream)

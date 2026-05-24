@@ -15,8 +15,6 @@ mod idle;
 #[doc(inline)]
 pub use idle::IdleGuard;
 
-pub mod extensions;
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net, proxy))]
 /// Target [`HostWithPort`] for a proxy/forwarder service.

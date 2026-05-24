@@ -16,12 +16,13 @@
 
 use rama_core::extensions::Extension;
 
-/// Bytes flowing through this point have been decoded out of an
-/// outer transport (TLS termination, CONNECT inner tunnel, HTTP
-/// upgrade, SOCKS5 inner, …).
+/// A handshake / transition completed on this stream: from here
+/// the bytes (or their meaning) are no longer the raw wire form.
+/// Examples: TLS termination, HTTP upgrade, SOCKS5 handshake,
+/// HTTP/1 or HTTP/2 connection handshake.
 #[derive(Debug, Clone, Copy, Extension)]
-#[extension(tags(net, proxy))]
-pub struct StreamTransportDecoded {
+#[extension(tags(net))]
+pub struct StreamTransformed {
     /// Free-form tag for the inserting site; surfaces in traces.
     pub by: &'static str,
 }
@@ -29,7 +30,7 @@ pub struct StreamTransportDecoded {
 /// This point sees one of several logical streams multiplexed
 /// over a shared underlying transport (HTTP/2, HTTP/3, gRPC).
 #[derive(Debug, Clone, Copy, Extension)]
-#[extension(tags(net, proxy))]
+#[extension(tags(net))]
 pub struct StreamMultiplexed {
     /// Free-form tag for the inserting site; surfaces in traces.
     pub by: &'static str,

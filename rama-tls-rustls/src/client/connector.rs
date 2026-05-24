@@ -11,6 +11,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
@@ -233,6 +234,8 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
+        conn.extensions()
+            .insert(StreamTransformed { by: "rama-tls-rustls::TlsConnector" });
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -275,6 +278,8 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
+        conn.extensions()
+            .insert(StreamTransformed { by: "rama-tls-rustls::TlsConnector" });
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -317,6 +322,8 @@ where
         set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)?;
 
         conn.extensions().insert(negotiated_params);
+        conn.extensions()
+            .insert(StreamTransformed { by: "rama-tls-rustls::TlsConnector" });
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }

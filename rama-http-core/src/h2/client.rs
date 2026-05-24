@@ -148,6 +148,7 @@ use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_net::extensions::StreamTransformed;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
@@ -1445,6 +1446,8 @@ where
         builder: Builder,
     ) -> Result<(SendRequest<B>, Self), crate::h2::Error> {
         bind_connection(&mut io).await?;
+        io.extensions()
+            .insert(StreamTransformed { by: "rama-http-core::h2::client" });
 
         // Create the codec
         let mut codec = Codec::new(io);

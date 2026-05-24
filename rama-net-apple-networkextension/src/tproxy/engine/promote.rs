@@ -12,7 +12,7 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::io::BridgeIo;
 use rama_core::telemetry::tracing;
-use rama_net::proxy::extensions::{StreamMultiplexed, StreamTransportDecoded};
+use rama_net::extensions::{StreamMultiplexed, StreamTransformed};
 
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -501,7 +501,7 @@ impl PromoteRegistry {
 /// MITM context breaks the connection.
 ///
 /// Defense-in-depth: the layer skips the cutover when the bridge's
-/// stream extensions carry [`StreamTransportDecoded`] or
+/// stream extensions carry [`StreamTransformed`] or
 /// [`StreamMultiplexed`]. These are best-effort hints, not a hard
 /// guarantee — the safety contract above is still primary.
 #[derive(Debug, Default, Clone)]
@@ -540,11 +540,11 @@ where
 
     async fn serve(&self, bridge: BridgeIo<T, NwIo>) -> Result<Self::Output, Self::Error> {
         let extensions = bridge.0.extensions();
-        if let Some(marker) = extensions.get_ref::<StreamTransportDecoded>() {
+        if let Some(marker) = extensions.get_ref::<StreamTransformed>() {
             tracing::debug!(
                 target: "rama_apple_ne::tproxy::promote",
                 by = marker.by,
-                "promote skipped: bridge wraps a decoded transport",
+                "promote skipped: bridge wraps a transformed stream",
             );
         } else if let Some(marker) = extensions.get_ref::<StreamMultiplexed>() {
             tracing::debug!(
@@ -628,11 +628,11 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 1, "fire ran exactly once");
     }
 
-    /// `StreamTransportDecoded` in extensions must skip the cutover.
+    /// `StreamTransformed` in extensions must skip the cutover.
     /// `into_passthrough` is verified not to fire by counter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn promote_layer_skips_when_stream_transport_decoded_present() {
-        marker_skips_promote(rama_net::proxy::extensions::StreamTransportDecoded {
+    async fn promote_layer_skips_when_stream_transformed_present() {
+        marker_skips_promote(rama_net::extensions::StreamTransformed {
             by: "test",
         })
         .await;
@@ -641,7 +641,7 @@ mod tests {
     /// Symmetric coverage for `StreamMultiplexed`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn promote_layer_skips_when_stream_multiplexed_present() {
-        marker_skips_promote(rama_net::proxy::extensions::StreamMultiplexed {
+        marker_skips_promote(rama_net::extensions::StreamMultiplexed {
             by: "test",
         })
         .await;

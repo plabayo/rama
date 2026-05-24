@@ -1,7 +1,9 @@
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_net::extensions::StreamTransformed;
 use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
@@ -184,7 +186,7 @@ impl Client {
     /// In case the handshake was sucessfull it will return
     /// the local address used by the Socks5 (proxy) server
     /// to connect to the destination [`HostWithPort`] on behalf of this [`Client`].
-    pub async fn handshake_connect<S: Io + Unpin>(
+    pub async fn handshake_connect<S: Io + Unpin + ExtensionsRef>(
         &self,
         stream: &mut S,
         destination: &HostWithPort,
@@ -236,6 +238,9 @@ impl Client {
             selected_method,
             destination
         );
+        stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-socks5::Socks5Client" });
         Ok(server_reply.bind_address)
     }
 
@@ -252,7 +257,7 @@ impl Client {
     /// is to connect to the socks5 server on behalf of the client (callee of this call).
     /// The [`Binder`] takes ownership over of the input [`Io`] such that it can
     /// await the established connection from target server to socks5 server.
-    pub async fn handshake_bind<S: Io + Unpin>(
+    pub async fn handshake_bind<S: Io + Unpin + ExtensionsRef>(
         &self,
         mut stream: S,
         requested_bind_address: Option<SocketAddress>,
@@ -316,6 +321,10 @@ impl Client {
             "socks5 client: socks5 server ready to bind w/ method {selected_method} at requested destination: {destination}",
         );
 
+        stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-socks5::Socks5Client" });
+
         Ok(Binder::new(
             stream,
             requested_bind_address,
@@ -330,7 +339,7 @@ impl Client {
     /// socks5 proxy server to the required.
     ///
     /// [`Service`]: rama_core::Service
-    pub async fn handshake_udp<S: Io + Unpin>(
+    pub async fn handshake_udp<S: Io + Unpin + ExtensionsRef>(
         &self,
         mut stream: S,
     ) -> Result<UdpSocketRelayBinder<S>, HandshakeError> {
@@ -340,6 +349,10 @@ impl Client {
         };
 
         tracing::trace!("socks5 client: ready for udp association w/ method: {selected_method}",);
+
+        stream
+            .extensions()
+            .insert(StreamTransformed { by: "rama-socks5::Socks5Client" });
 
         Ok(UdpSocketRelayBinder::new(stream))
     }
@@ -459,12 +472,13 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::ServiceInput;
     use rama_net::{address::Host, user};
     use rama_utils::str::non_empty_str;
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x01\x00")
             // server header
@@ -473,7 +487,7 @@ mod tests {
             .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
             // server reply
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
+            .build());
 
         let client = Client::new();
         let err = client
@@ -485,12 +499,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_auth_error_guest() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x01\x00")
             // server header
             .read(b"\x05\xff")
-            .build();
+            .build());
 
         let client = Client::default();
         let err = client
@@ -502,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_auth_not_used_by_server_failure_command_not_supported() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x02\x00\x02")
             // server header
@@ -511,7 +525,7 @@ mod tests {
             .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
             // server reply
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
+            .build());
 
         let client = Client::default().with_auth(user::Basic::new(
             non_empty_str!("john"),
@@ -526,7 +540,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_with_auth_flow_failure_command_not_supported() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x02\x00\x02")
             // server header
@@ -539,7 +553,7 @@ mod tests {
             .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
             // server reply
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
+            .build());
 
         let client = Client::default().with_auth(user::Basic::new(
             non_empty_str!("john"),
@@ -554,7 +568,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_with_auth_flow_failure_invalid_credentials() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x02\x00\x02")
             // server header
@@ -563,7 +577,7 @@ mod tests {
             .write("\x01\x04john\x06secret".as_bytes())
             // server username-password response
             .read(b"\x01\x01")
-            .build();
+            .build());
 
         let client = Client::default().with_auth(user::Basic::new(
             non_empty_str!("john"),
@@ -578,12 +592,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_failure_method_mismatch() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x01\x00")
             // server header
             .read(b"\x05\x02")
-            .build();
+            .build());
 
         let client = Client::default();
         let err = client
@@ -595,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_guest_connect_established() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x01\x00")
             // server header
@@ -607,7 +621,7 @@ mod tests {
             ])
             // server reply
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 65])
-            .build();
+            .build());
 
         let client = Client::default();
         let local_addr = client
@@ -619,7 +633,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_guest_connect_established_domain() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x01\x00")
             // server header
@@ -628,7 +642,7 @@ mod tests {
             .write("\x05\x01\x00\x03\x0bexample.com\x00\x01".as_bytes())
             // server reply
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
-            .build();
+            .build());
 
         let client = Client::default();
         let local_addr = client
@@ -640,7 +654,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_handshake_connect_guest_connect_established_domain_with_auth_flow() {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x02\x00\x02")
             // server header
@@ -653,7 +667,7 @@ mod tests {
             .write(b"\x05\x01\x00\x03\x0bexample.com\x00\x01")
             // server reply
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
-            .build();
+            .build());
 
         let client = Client::default().with_auth(user::Basic::new(
             non_empty_str!("john"),
@@ -669,7 +683,7 @@ mod tests {
     #[tokio::test]
     async fn test_client_handshake_connect_guest_connect_established_domain_with_auth_flow_username_only()
      {
-        let mut stream = tokio_test::io::Builder::new()
+        let mut stream = ServiceInput::new(tokio_test::io::Builder::new()
             // client header
             .write(b"\x05\x02\x00\x02")
             // server header
@@ -682,7 +696,7 @@ mod tests {
             .write(b"\x05\x01\x00\x03\x0bexample.com\x00\x01")
             // server reply
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
-            .build();
+            .build());
 
         let client = Client::default().with_auth(user::Basic::new_insecure(non_empty_str!("john")));
         let local_addr = client
