@@ -897,6 +897,21 @@ private final class TcpWritePumpCore: @unchecked Sendable {
 
     func isClosed() -> Bool { state.withLock { $0.closed } }
 
+    #if DEBUG
+        /// Test-only snapshot of the queue-only fields that should be
+        /// quiescent after `cancel()` cleanup runs. Used to verify the
+        /// post-cancel invariant
+        ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`
+        /// is preserved across the race window where a write's
+        /// completion lands after cleanup.  Must be called on `queue`.
+        fileprivate func testInvariantSnapshot()
+            -> (pendingEmpty: Bool, retryingNil: Bool, pendingBytes: Int)
+        {
+            let bytes = state.withLock { $0.pendingBytes }
+            return (pending.isEmpty, retrying == nil, bytes)
+        }
+    #endif
+
     /// Atomically marks the core closed and zeroes the byte budget.
     /// Returns a queue-side cleanup closure the caller must dispatch on
     /// `queue`.  Separating the atomic part from the queue work lets the
@@ -1012,6 +1027,23 @@ private final class TcpWritePumpCore: @unchecked Sendable {
         doWrite(chunk) { [weak self] error in
             guard let self else { return }
             self.queue.async {
+                // If `cancel()` ran while this write was in flight and
+                // its queue cleanup (`pending.removeAll`, `retrying = nil`,
+                // `pendingBytes = 0`) landed *before* this completion,
+                // the transient-retry branch below would silently revive
+                // those fields — pushing `chunk` back onto `pending`,
+                // re-incrementing `pendingBytes`, and re-arming
+                // `retrying`. No further write fires (the asyncAfter's
+                // `flush()` would bail on `isClosed()`), but the
+                // post-cancel invariant
+                // `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`
+                // would quietly break — a Heisenbug for any future code
+                // that reads those fields as a "pump is idle" signal.
+                // Drop the completion's result on the floor; we're done.
+                if self.isClosed() {
+                    self.writing = false
+                    return
+                }
                 self.writing = false
                 if let error {
                     if isTransientWriteBackpressure(error) {
@@ -1155,6 +1187,28 @@ final class TcpClientWritePump: @unchecked Sendable {
             completion?(wasOpened)
         }
     }
+
+    #if DEBUG
+        /// Test-only. Schedules a block on the core queue to snapshot
+        /// the post-cancel invariants
+        ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`.
+        /// The callback fires on the core queue and is therefore
+        /// strictly ordered after any blocks scheduled before this
+        /// call — including cancel's cleanup and any write completion
+        /// the test enqueued via `MockTcpFlow.completeNextWrite()`.
+        func testCoreInvariantSnapshot(
+            _ completion: @escaping (_ pendingEmpty: Bool, _ retryingNil: Bool, _ pendingBytes: Int) -> Void
+        ) {
+            core.queue.async { [weak self] in
+                guard let self else {
+                    completion(true, true, 0)
+                    return
+                }
+                let snap = self.core.testInvariantSnapshot()
+                completion(snap.pendingEmpty, snap.retryingNil, snap.pendingBytes)
+            }
+        }
+    #endif
 }
 
 extension TcpClientWritePump: TcpWritePumpCoreDelegate {
