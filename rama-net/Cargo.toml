@@ -29,13 +29,7 @@ default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
 # IDNA (internationalized domain names) support.
 #
-# Off by default. Without it, non-ASCII hostnames are rejected at parse
-# with [`DomainParseError`](crate::address::DomainParseError) / the
-# corresponding URI parse error variant. When on, hosts go through
-# UTS #46 / Punycode round-tripping — the ACE (`xn--…`) form is what
-# gets stored; the original Unicode form is recoverable via
-# [`as_unicode`](crate::address::Domain::as_unicode). Pulls a non-trivial
-# Unicode-table dependency; keep off if your traffic is ASCII-only.
+# Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.
 idna = ["dep:idna"]
 tls = ["dep:hex", "dep:md5", "dep:sha2"]
 opentelemetry = ["rama-core/opentelemetry"]
