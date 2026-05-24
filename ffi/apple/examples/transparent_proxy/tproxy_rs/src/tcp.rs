@@ -111,10 +111,23 @@ impl DemoTcpMitmService {
             self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
 
+        // `promote_passthrough` is ONLY safe on a raw kernel-flow ↔
+        // NWConnection bridge — see `PromoteHandle`'s safety contract.
+        // Inside TLS / HTTP MITM the bridge carries post-decryption
+        // cleartext, but the underlying kernel flow + NWConnection
+        // still carry mutually-undecryptable TLS bytes, so a cutover
+        // there would forward garbage. Wrap the outer fallbacks
+        // (non-TLS plain traffic, SNI-excluded TLS passthrough);
+        // leave the inner fallback (post-TLS-MITM cleartext) as plain
+        // `IoForwardService`.
+        let plain_passthrough = IoForwardService::new(exec.clone());
         let promote_passthrough =
-            PromoteLayer::new().into_layer(IoForwardService::new(exec.clone()));
+            PromoteLayer::new().into_layer(plain_passthrough.clone());
 
-        let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
+        let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
+            .with_peek_timeout(peek_duration)
+            .with_fallback(plain_passthrough);
+        let outer_http_router = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
             .with_fallback(promote_passthrough.clone());
 
@@ -126,10 +139,10 @@ impl DemoTcpMitmService {
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
             (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
-                .into_layer(maybe_http_mitm_svc.clone()),
+                .into_layer(inner_http_router),
         )
         .with_peek_timeout(peek_duration)
-        .with_fallback(maybe_http_mitm_svc);
+        .with_fallback(outer_http_router);
 
         if within_connect_tunnel {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
@@ -189,7 +202,10 @@ impl DemoTcpMitmService {
                         DemoTraceTrafficLayer.into_layer(MirrorService::new()),
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
-                        (ConsumeErrLayer::trace_as_debug(), PromoteLayer::new())
+                        // CONNECT tunnel inner stream — post-HTTP-decoding,
+                        // NOT a raw kernel-flow bridge. Do not promote here;
+                        // see `PromoteHandle`'s safety contract.
+                        ConsumeErrLayer::trace_as_debug()
                             .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {

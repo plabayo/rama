@@ -17,6 +17,28 @@ use tokio::sync::{Notify, mpsc, oneshot};
 /// Handle that lets a per-flow service hand the data path back to Swift.
 /// Available via `TcpFlow::extensions()` on every flow accepted via
 /// [`crate::tproxy::FlowAction::Intercept`]. Cheap to clone. Idempotent.
+///
+/// # Safety contract
+///
+/// The cutover hands the *raw* kernel-flow ↔ NWConnection byte path
+/// back to Swift. It MUST only fire while the service is still
+/// observing those raw bytes — i.e. **before any framing layer has
+/// been terminated**. Concretely:
+///
+/// * TCP / pre-TLS-peek: safe.
+/// * Inside TLS-MITM (post-decryption cleartext): **NEVER**. The
+///   kernel flow carries bytes encrypted under your forged session
+///   keys; the NWConnection carries bytes encrypted under the real
+///   upstream keys. A cutover here forwards mutually-undecryptable
+///   bytes in both directions and breaks the connection.
+/// * Inside HTTP-MITM (post-HTTP-decoding) / CONNECT tunnel inner
+///   stream: **NEVER**. Same reason — the wire framing and the
+///   inner stream you're handling no longer match.
+///
+/// Wrap [`PromoteLayer`] only around services that operate on the
+/// raw flow bridge (`BridgeIo<TcpFlow, NwTcpStream>`). Inside any
+/// MITM or framing-decoded context, use the plain non-promoting
+/// forwarder.
 #[derive(Clone)]
 pub struct PromoteHandle {
     inner: Arc<PromoteInner>,
@@ -470,6 +492,11 @@ impl PromoteRegistry {
 /// service. If no handle is in the bridge's extensions (e.g. unit-test
 /// without an engine) or promotion fails, the layer logs and falls through
 /// to the inner service unchanged.
+///
+/// **Placement matters** — only wrap services whose bridge is the raw
+/// kernel flow ↔ NWConnection. See [`PromoteHandle`]'s "Safety contract"
+/// for the full rule. Using this layer inside a TLS / HTTP / CONNECT
+/// MITM context breaks the connection.
 #[derive(Debug, Default, Clone)]
 pub struct PromoteLayer {
     _priv: (),
