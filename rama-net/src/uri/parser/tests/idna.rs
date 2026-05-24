@@ -10,7 +10,7 @@
 //! `ireg-name`.
 
 use super::parse_graceful;
-use crate::uri::Uri;
+use crate::{address::Host, uri::Uri};
 
 // ----------------------------------------------------------------------
 // With `idna` feature ON — host bytes are preserved verbatim; convert
