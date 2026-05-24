@@ -628,6 +628,10 @@ name = "http_connect_proxy"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_declarative_partial_updates"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_form"
 required-features = ["http-full"]
 

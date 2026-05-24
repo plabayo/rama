@@ -114,12 +114,52 @@ pub fn escape_into(output: &mut String, input: &str) {
     }
 }
 
-/// HTML-escape `input` and return the resulting `String`.
+/// HTML-escape `input`, returning a [`Cow::Borrowed`] of the original
+/// when nothing needs escaping — common in practice — and otherwise a
+/// freshly allocated [`Cow::Owned`] with the escaped form.
 #[inline]
-pub fn escape(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
+pub fn escape(input: &str) -> Cow<'_, str> {
+    // All escapables are ASCII, so a byte scan on UTF-8 is correct.
+    if !input
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
+    {
+        return Cow::Borrowed(input);
+    }
+    let mut output = String::with_capacity(input.len() + 8);
     escape_into(&mut output, input);
-    output
+    Cow::Owned(output)
+}
+
+/// Emit a `<?marker name="…">` processing instruction for use as a
+/// placeholder in a [Chrome declarative partial updates] shell. The name is
+/// HTML-escaped via [`escape_into`] on render.
+///
+/// [Chrome declarative partial updates]: https://developer.chrome.com/blog/declarative-partial-updates
+#[inline]
+pub fn marker<S: AsRef<str>>(name: S) -> Marker<S> {
+    Marker(name)
+}
+
+/// Renderer for [`marker`]. Holds the name by-value and writes the PI
+/// directly into the output buffer at render time.
+#[derive(Debug, Clone, Copy)]
+pub struct Marker<S>(pub S);
+
+impl<S: AsRef<str>> IntoHtml for Marker<S> {
+    #[inline]
+    fn into_html(self) -> impl IntoHtml {
+        self
+    }
+    fn escape_and_write(self, buf: &mut String) {
+        buf.push_str(r#"<?marker name=""#);
+        escape_into(buf, self.0.as_ref());
+        buf.push_str(r#"">"#);
+    }
+    fn size_hint(&self) -> usize {
+        // length of `<?marker name="">` + name; escape may grow it a bit.
+        17 + self.0.as_ref().len()
+    }
 }
 
 /// Wrapper that marks its inner value as already-escaped HTML — i.e. it
