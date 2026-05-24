@@ -13,6 +13,10 @@ inputs:
     description: Conditional save (forwarded to rust-cache)
     required: false
     default: "true"
+  cache-bin:
+    description: Whether to cache ~/.cargo/bin (forwarded to rust-cache)
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -28,6 +32,7 @@ runs:
           key: ${{ inputs.key }}
           env-vars: ${{ inputs.env-vars }}
           save-if: ${{ inputs.save-if }}
+          cache-bin: ${{ inputs.cache-bin }}
 
     - name: Rust cache
       if: runner.os != 'Windows'
@@ -36,3 +41,4 @@ runs:
         key: ${{ inputs.key }}
         env-vars: ${{ inputs.env-vars }}
         save-if: ${{ inputs.save-if }}
+        cache-bin: ${{ inputs.cache-bin }}

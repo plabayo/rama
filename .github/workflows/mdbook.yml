@@ -47,10 +47,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: doc-linux
-          cache-bin: false
+          cache-bin: "false"
       - name: cargo doc (linux)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -68,10 +68,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: doc-macos
-          cache-bin: false
+          cache-bin: "false"
       - name: cargo doc (macos)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -90,10 +90,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: nightly
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: doc-windows
-          cache-bin: false
+          cache-bin: "false"
       - name: cargo doc (windows)
         run: cargo +nightly doc --all-features --no-deps -p rama
         env:
@@ -117,10 +117,10 @@ jobs:
         with:
           toolchain: nightly
           targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: doc-android
-          cache-bin: false
+          cache-bin: "false"
       - name: Configure Android toolchain env
         shell: bash
         run: |
@@ -174,10 +174,10 @@ jobs:
         with:
           toolchain: nightly
           targets: aarch64-apple-ios
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: ./.github/actions/rust-cache
         with:
           key: doc-ios
-          cache-bin: false
+          cache-bin: "false"
       - name: cargo doc (ios)
         run: cargo +nightly doc --all-features --no-deps -p rama --target $TARGET_TRIPLE
         env:
