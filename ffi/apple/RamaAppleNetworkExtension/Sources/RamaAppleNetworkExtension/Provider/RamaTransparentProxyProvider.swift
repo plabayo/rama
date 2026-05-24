@@ -278,7 +278,13 @@ private let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 /// overrides. 5 seconds is generous enough for any healthy peer to
 /// FIN-ACK and short enough that 200 slow-closing flows cap at a few
 /// hundred concurrent FIN_WAIT_1 sockets rather than accumulating.
-let defaultLingerCloseMs: UInt32 = 5_000
+///
+/// `var` for tests that need a short linger to keep ARC-leak-check
+/// runtime bounded — same pattern as `defaultEgressWaitingToleranceMs`.
+/// The linger watchdog holds `connection` strongly until it fires;
+/// tests that assert `weakConn == nil` after teardown need to clamp
+/// this so the watchdog releases before the polling deadline.
+nonisolated(unsafe) var defaultLingerCloseMs: UInt32 = 5_000
 
 /// Default grace window between the egress read pump observing peer
 /// EOF / read error and the backstop `connection.cancel()` firing.

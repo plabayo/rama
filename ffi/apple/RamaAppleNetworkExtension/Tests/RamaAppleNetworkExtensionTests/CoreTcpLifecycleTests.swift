@@ -96,6 +96,57 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
     }
 
+    /// Drive a promote-aware clean teardown and wait for the flow
+    /// to be removed from the registry.
+    ///
+    /// After `peek_duration_s` (0.5s in TestFixtures) the demo's
+    /// in-Rust service falls through to the promote-aware
+    /// passthrough fallback, calls `into_passthrough`, and Swift
+    /// flips `ctx.mode` to `.promoted`. From that point on the
+    /// kernel flow + NWConnection are owned by Swift's
+    /// `TcpDirectForwarder`, which needs three things to terminate:
+    ///   1. EOF on BOTH directions (kernel C→S and connection S→C)
+    ///      routed through cancelForPromote's carryover sinks. We
+    ///      have to wait for the mode change before firing them
+    ///      because firing pre-cutover would either consume the
+    ///      EOFs via the in-Rust pumps' normal handlers (egress)
+    ///      or trip the `!saw_client_bytes → cancel` fast-path
+    ///      which suppresses Swift cleanup callbacks (ingress).
+    ///   2. The egress write pump's FIN send to actually complete.
+    ///      Real `NWConnection` auto-completes sends; the mock
+    ///      queues them on `_pendingSendCompletions` until the
+    ///      test fires `completePendingSend`. The helper runs a
+    ///      background completer for the duration of the wait so
+    ///      the FIN-drain path can transition C→S to `.finished`.
+    private func drainAndAwaitRemoval(
+        _ core: TransparentProxyCore,
+        flow: MockTcpFlow,
+        conn: MockNwConnection,
+        description: String = "flow removed",
+        timeout: TimeInterval = 5.0
+    ) {
+        guard let ctx = core.testInspectTcpContext(for: flow) else {
+            XCTFail("no ctx for flow — cutover wait impossible"); return
+        }
+        waitFor("cutover flips ctx.mode away from .viaRust", timeout: 3.0) {
+            ctx.mode != .viaRust
+        }
+
+        let completer = AtomicFlag()
+        DispatchQueue.global().async {
+            while !completer.load() {
+                _ = conn.completePendingSend(error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+
+        flow.completeRead(data: nil, error: nil)
+        _ = conn.completePendingReceive(isComplete: true)
+
+        waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
+    }
+
     // MARK: - Happy path
 
     func testHappyPath_ConnectionReadyFlowOpenBytesFlowEofClean() {
@@ -118,17 +169,16 @@ final class CoreTcpLifecycleTests: XCTestCase {
         // Client read pump should have started.
         waitFor("client read pump issued first read") { flow.pendingReadCount > 0 }
 
-        // Drive a peer-EOF on the egress side. The read pump fires
-        // `session.onEgressEof()`; the engine bridge propagates a
-        // server close which the core handles via on_server_closed,
-        // ultimately invoking cleanup.
-        conn.completePendingReceive(isComplete: true)
-
-        // The clean teardown drains the writer pump and then cancels.
-        // We have no buffered response so it should be near-instant.
-        waitFor("flow removed from registration map", timeout: 5.0) {
-            fx.core.tcpFlowCount == 0
-        }
+        // Demo `tproxy_rs` wraps its passthrough fallback with
+        // `PromoteLayer`, so after the in-Rust service peek-times
+        // out the cutover fires and the kernel flow + NWConnection
+        // are owned by Swift's `TcpDirectForwarder`. Drive both
+        // directions to EOF (via the carryover sinks) and run a
+        // send-completer for the FIN drain — see helper docstring.
+        drainAndAwaitRemoval(
+            fx.core, flow: flow, conn: conn,
+            description: "flow removed from registration map"
+        )
     }
 
     // MARK: - Pre-ready failure paths
@@ -235,9 +285,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertEqual(conn.cancelCount, 0, "no spurious cancel during waiting/recovery")
 
         // Drive a clean shutdown so the deferred tearDown does not
-        // leak the session.
-        conn.completePendingReceive(isComplete: true)
-        waitFor("flow removed", timeout: 5.0) { fx.core.tcpFlowCount == 0 }
+        // leak the session. See `drainAndAwaitRemoval` doc.
+        drainAndAwaitRemoval(fx.core, flow: flow, conn: conn)
     }
 
     func testPostReadyWaitingTimesOutAndTearsDownAsFailed() {
@@ -306,6 +355,16 @@ final class CoreTcpLifecycleTests: XCTestCase {
         // their own once they observe shutdown, which happens on
         // engine.stop(). Without this the test would race the
         // background tokio scheduler.
+        //
+        // Under .promoted mode the egress write pump's linger
+        // watchdog holds `connection` strongly until its deadline.
+        // The default (5s) races the test's 5s ARC poll. Clamp it
+        // so the watchdog releases its captured `conn` well within
+        // the poll window.
+        let savedLinger = defaultLingerCloseMs
+        defaultLingerCloseMs = 100
+        defer { defaultLingerCloseMs = savedLinger }
+
         let engine = makeEngine()
         let core = TransparentProxyCore()
         core.attachEngine(engine)
@@ -325,8 +384,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
             self.waitFor("flow.open") { flow.openWasInvoked }
             flow.completeOpen(error: nil)
             self.waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
-            conn.completePendingReceive(isComplete: true)
-            self.waitFor("flow removed", timeout: 5.0) { core.tcpFlowCount == 0 }
+            // Promote-aware teardown — see `drainAndAwaitRemoval`.
+            self.drainAndAwaitRemoval(core, flow: flow, conn: conn)
             // Mirror NWConnection's post-cancel `.cancelled` delivery
             // so the mock releases its stateUpdateHandler closure
             // graph. Real `NWConnection` does this automatically
@@ -387,7 +446,37 @@ final class CoreTcpLifecycleTests: XCTestCase {
             waitFor("each pump issued first receive", timeout: 5.0) {
                 conn.pendingReceiveCount > 0
             }
-            conn.completePendingReceive(isComplete: true)
+        }
+
+        // Wait for every flow's cutover, then drive both EOFs +
+        // run send-completers in parallel. We pull the cutover
+        // wait out of the per-flow helper so the test can wait
+        // ONCE for the batch instead of N times serially.
+        let contexts: [TcpFlowContext] = flows.compactMap {
+            fx.core.testInspectTcpContext(for: $0)
+        }
+        XCTAssertEqual(contexts.count, flows.count, "every flow must have a ctx")
+        waitFor("all \(flowCount) flows cutover", timeout: 5.0) {
+            contexts.allSatisfy { $0.mode != .viaRust }
+        }
+
+        // One background thread iterating all connections to keep
+        // the FIN-drain paths from stalling on the mock connection.
+        let completer = AtomicFlag()
+        let capturedConns = connections
+        DispatchQueue.global().async {
+            while !completer.load() {
+                for c in capturedConns {
+                    _ = c.completePendingSend(error: nil)
+                }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+
+        for (flow, conn) in zip(flows, connections) {
+            flow.completeRead(data: nil, error: nil)
+            _ = conn.completePendingReceive(isComplete: true)
         }
 
         waitFor("all flows removed from registration", timeout: 10.0) {

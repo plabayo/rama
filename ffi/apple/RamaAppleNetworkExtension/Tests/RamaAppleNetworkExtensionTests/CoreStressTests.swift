@@ -67,6 +67,59 @@ final class CoreStressTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
     }
 
+    /// Aggregate-wait variant of
+    /// `CoreTcpLifecycleTests.drainAndAwaitRemoval`. See that
+    /// docstring for the rationale. Waits for EVERY flow's ctx
+    /// to flip out of `.viaRust`, runs a single background
+    /// send-completer for all connections so the forwarders'
+    /// FIN-drain paths can complete, then drives both EOFs on
+    /// each pair and waits for the registration to drain.
+    private func drainBatchAndAwaitRemoval(
+        _ core: TransparentProxyCore,
+        flows: [MockTcpFlow],
+        conns: [MockNwConnection],
+        description: String,
+        timeout: TimeInterval = 30.0
+    ) {
+        precondition(
+            flows.count == conns.count,
+            "flows / conns must zip 1:1"
+        )
+        let contexts: [TcpFlowContext] = flows.compactMap {
+            core.testInspectTcpContext(for: $0)
+        }
+        XCTAssertEqual(
+            contexts.count, flows.count,
+            "every flow must have a ctx for cutover-wait"
+        )
+        waitFor(
+            "all \(flows.count) flows cutover away from .viaRust",
+            timeout: 30.0
+        ) {
+            contexts.allSatisfy { $0.mode != .viaRust }
+        }
+
+        // One background completer iterates every connection.
+        let completer = AtomicFlag()
+        let capturedConns = conns
+        DispatchQueue.global().async {
+            while !completer.load() {
+                for c in capturedConns {
+                    _ = c.completePendingSend(error: nil)
+                }
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+
+        for (flow, conn) in zip(flows, conns) {
+            flow.completeRead(data: nil, error: nil)
+            _ = conn.completePendingReceive(isComplete: true)
+        }
+
+        waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
+    }
+
     // MARK: - Parallel-driven happy path
 
     /// 100 TCP flows all driven through the happy path concurrently.
@@ -114,12 +167,17 @@ final class CoreStressTests: XCTestCase {
             connections.allSatisfy { $0.pendingReceiveCount > 0 }
         }
 
-        // Phase 3: drive a peer EOF on every egress, then wait
-        // for the aggregate registration count to drain.
-        for conn in connections { conn.completePendingReceive(isComplete: true) }
-        waitFor("all \(flowCount) flows cleaned up", timeout: 30.0) {
-            core.tcpFlowCount == 0
-        }
+        // Phase 3: drive a promote-aware teardown for the whole
+        // batch. The demo's `PromoteLayer`-wrapped passthrough
+        // fires the cutover after `peek_duration_s`; from that
+        // point on the kernel flow + NWConnection are owned by
+        // Swift's `TcpDirectForwarder`, and the FIN-drain path
+        // needs a send-completer to progress (the mock doesn't
+        // auto-complete sends).
+        drainBatchAndAwaitRemoval(
+            core, flows: flows, conns: connections,
+            description: "all \(flowCount) flows cleaned up"
+        )
     }
 
     // MARK: - Parallel-driven failure mix
@@ -192,16 +250,20 @@ final class CoreStressTests: XCTestCase {
             _ = entry  // silence unused-warning
         }
 
-        // happyPath: drive peer EOF.
-        for (entry, conn) in pairs where entry.1 == .happyPath {
-            conn.completePendingReceive(isComplete: true)
-            _ = entry
-        }
-
-        // Final invariant: every registration drained.
-        waitFor("all \(flows.count) flows cleaned up", timeout: 60.0) {
-            core.tcpFlowCount == 0
-        }
+        // happyPath: drive promote-aware teardown. The failure
+        // arms (.preReadyFailed / .postReadyFailed / .flowOpenError)
+        // tear down via dedicated state-machine arms BEFORE the
+        // peek timeout fires the cutover, so they don't need this
+        // treatment; the happy-path arm DOES because its flows
+        // sit through peek and transition to `.promoted` mode.
+        let happyPairs = pairs.filter { entry, _ in entry.1 == .happyPath }
+        let happyFlows = happyPairs.map { $0.0.0 }
+        let happyConns = happyPairs.map { $0.1 }
+        drainBatchAndAwaitRemoval(
+            core, flows: happyFlows, conns: happyConns,
+            description: "all \(flows.count) flows cleaned up",
+            timeout: 60.0
+        )
     }
 
     // MARK: - Parallel UDP churn
