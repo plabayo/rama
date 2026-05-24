@@ -12,6 +12,8 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::io::BridgeIo;
 use rama_core::telemetry::tracing;
+use rama_net::proxy::extensions::{StreamMultiplexed, StreamTransportDecoded};
+
 use tokio::sync::{Notify, mpsc, oneshot};
 
 /// Handle that lets a per-flow service hand the data path back to Swift.
@@ -497,6 +499,11 @@ impl PromoteRegistry {
 /// kernel flow ↔ NWConnection. See [`PromoteHandle`]'s "Safety contract"
 /// for the full rule. Using this layer inside a TLS / HTTP / CONNECT
 /// MITM context breaks the connection.
+///
+/// Defense-in-depth: the layer skips the cutover when the bridge's
+/// stream extensions carry [`StreamTransportDecoded`] or
+/// [`StreamMultiplexed`]. These are best-effort hints, not a hard
+/// guarantee — the safety contract above is still primary.
 #[derive(Debug, Default, Clone)]
 pub struct PromoteLayer {
     _priv: (),
@@ -532,13 +539,32 @@ where
     type Error = S::Error;
 
     async fn serve(&self, bridge: BridgeIo<T, NwIo>) -> Result<Self::Output, Self::Error> {
-        if let Some(handle) = bridge.0.extensions().get_ref::<PromoteHandle>().cloned()
-            && let Err(err) = handle.into_passthrough().await
-        {
-            tracing::warn!(
+        let extensions = bridge.0.extensions();
+        if let Some(marker) = extensions.get_ref::<StreamTransportDecoded>() {
+            tracing::debug!(
                 target: "rama_apple_ne::tproxy::promote",
-                error = %err,
-                "promote.into_passthrough failed; falling back to in-Rust data path",
+                by = marker.by,
+                "promote skipped: bridge wraps a decoded transport",
+            );
+        } else if let Some(marker) = extensions.get_ref::<StreamMultiplexed>() {
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy::promote",
+                by = marker.by,
+                "promote skipped: bridge wraps a multiplexed stream",
+            );
+        } else if let Some(handle) = extensions.get_ref::<PromoteHandle>().cloned() {
+            if let Err(err) = handle.into_passthrough().await {
+                tracing::warn!(
+                    target: "rama_apple_ne::tproxy::promote",
+                    error = %err,
+                    "promote.into_passthrough failed; falling back to in-Rust data path",
+                );
+            }
+        } else {
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy::promote",
+                "promote skipped: no PromoteHandle in extensions \
+                 (engine not attached, or extensions were stripped upstream)",
             );
         }
         self.inner.serve(bridge).await
@@ -600,6 +626,65 @@ mod tests {
             async { h3.into_passthrough().await.unwrap() },
         );
         assert_eq!(counter.load(Ordering::SeqCst), 1, "fire ran exactly once");
+    }
+
+    /// `StreamTransportDecoded` in extensions must skip the cutover.
+    /// `into_passthrough` is verified not to fire by counter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn promote_layer_skips_when_stream_transport_decoded_present() {
+        marker_skips_promote(rama_net::proxy::extensions::StreamTransportDecoded {
+            by: "test",
+        })
+        .await;
+    }
+
+    /// Symmetric coverage for `StreamMultiplexed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn promote_layer_skips_when_stream_multiplexed_present() {
+        marker_skips_promote(rama_net::proxy::extensions::StreamMultiplexed {
+            by: "test",
+        })
+        .await;
+    }
+
+    async fn marker_skips_promote<M: Extension>(marker: M) {
+        use rama_core::extensions::Extensions;
+        use rama_core::service::service_fn;
+        use std::sync::atomic::AtomicUsize;
+
+        struct TestIo {
+            extensions: Extensions,
+        }
+        impl ExtensionsRef for TestIo {
+            fn extensions(&self) -> &Extensions {
+                &self.extensions
+            }
+        }
+
+        let fires = Arc::new(AtomicUsize::new(0));
+        let fires_inner = fires.clone();
+        let handle = PromoteHandle::new_engine(tokio::runtime::Handle::current(), move || {
+            let f = fires_inner.clone();
+            async move {
+                f.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        let extensions = Extensions::new();
+        extensions.insert(handle);
+        extensions.insert(marker);
+        let bridge = BridgeIo(TestIo { extensions }, ());
+
+        let inner = service_fn(|_b: BridgeIo<TestIo, ()>| async { Ok::<_, std::convert::Infallible>(()) });
+        let wrapped = PromoteLayer::new().into_layer(inner);
+
+        wrapped.serve(bridge).await.unwrap();
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            0,
+            "PromoteLayer must skip the cutover when the marker is present",
+        );
     }
 
     #[tokio::test]

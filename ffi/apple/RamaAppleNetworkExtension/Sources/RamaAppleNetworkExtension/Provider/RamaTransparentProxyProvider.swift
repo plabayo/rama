@@ -230,7 +230,10 @@ let writeRetryMaxDelayMs: Int = 200
 /// itself alive until the kernel finally returns a non-transient
 /// error. 5 s is enough to ride out a real h2 stall while bounding
 /// the worst-case wedge.
-let writeRetryHardDeadlineMs: Int = 5_000
+///
+/// `var` for tests that need a short deadline to keep runtime bounded
+/// — same pattern as `defaultLingerCloseMs` / `defaultEgressWaitingToleranceMs`.
+nonisolated(unsafe) var writeRetryHardDeadlineMs: Int = 5_000
 
 /// Memory budget (in bytes) each writer pump (TCP response and TCP egress)
 /// keeps queued before it tells the Rust bridge to pause.

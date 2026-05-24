@@ -192,7 +192,15 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// failure mode that wedged the runtime: each retry strongly
     /// captured `self` via `asyncAfter`, so without a wall-clock
     /// deadline the writer had no terminating condition.
+    ///
+    /// Clamp the hard deadline so the test completes deterministically
+    /// in well under a second; the production default (5s) was the
+    /// source of CI-killing flakes on loaded test runners.
     func testTransientRetryLoopHonoursDeadline() {
+        let savedDeadline = writeRetryHardDeadlineMs
+        writeRetryHardDeadlineMs = 200
+        defer { writeRetryHardDeadlineMs = savedDeadline }
+
         let flow = MockTcpFlow()
         flow.handler = { _, _ in transientENOBUFS() }
 
@@ -211,8 +219,8 @@ final class TcpClientWritePumpTests: XCTestCase {
         pump.markOpened()
         XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)
 
-        // Deadline is 5s + per-attempt delays. Pad generously.
-        wait(for: [terminalError], timeout: 10.0)
+        // 200ms deadline + per-attempt delays + slack.
+        wait(for: [terminalError], timeout: 2.0)
         XCTAssertNotNil(observedError)
         XCTAssertGreaterThan(flow.writeCount, 1, "should have retried at least once before giving up")
     }
