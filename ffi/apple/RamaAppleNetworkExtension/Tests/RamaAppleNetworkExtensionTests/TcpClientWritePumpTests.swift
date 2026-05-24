@@ -233,7 +233,23 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// already knows the flow is dead.
     func testCancelStopsRetryImmediately() {
         let flow = MockTcpFlow()
-        flow.handler = { _, _ in transientENOBUFS() }
+
+        // Use an expectation to wait deterministically for at least
+        // one write to fire before we issue cancel(). The previous
+        // `Thread.sleep(0.05)` raced a starved dispatch queue on
+        // loaded CI runners — wake-up could land before any write
+        // had executed, leaving `beforeCancel = 0` and the cancel-
+        // vs-retry contract effectively unverifiable (the post-cancel
+        // bound `beforeCancel + 1 = 1` then trips on whatever the
+        // queue eventually drains).
+        let firstWriteFired = expectation(description: "first write fires")
+        // The retry loop fires many writes; we only need to observe
+        // the first one to know the pump is "mid-loop".
+        firstWriteFired.assertForOverFulfill = false
+        flow.handler = { _, _ in
+            firstWriteFired.fulfill()
+            return transientENOBUFS()
+        }
 
         let pump = TcpClientWritePump(
             flow: flow,
@@ -247,8 +263,10 @@ final class TcpClientWritePumpTests: XCTestCase {
         pump.markOpened()
         XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)
 
-        // Let one or two retries fire so the pump is mid-loop.
-        Thread.sleep(forTimeInterval: 0.05)
+        // Block until the pump is actually mid-loop. Generous timeout
+        // tolerates worst-case dispatch latency on loaded CI without
+        // crossing into "test is silently broken" territory.
+        wait(for: [firstWriteFired], timeout: 2.0)
         let beforeCancel = flow.writeCount
         XCTAssertGreaterThan(beforeCancel, 0)
 
