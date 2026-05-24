@@ -80,28 +80,32 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
             .and_then(|ext| ext.get_ref().copied())
             .unwrap_or_default();
 
-        let domain = match self.host {
-            Host::Name(domain) => domain,
-            Host::Address(ip) => {
-                //check if IP Version is allowed
-                return HappyEyeballIpStream::Once {
-                    stream: rama_core::stream::once(match (ip, ip_mode) {
-                        (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                            Err(OpaqueError::from_static_str("IPv4 address is not allowed")
-                                .into_opaque_error())
-                        }
-                        (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                            Err(OpaqueError::from_static_str("IPv6 address is not allowed")
-                                .into_opaque_error())
-                        }
-                        _ => {
-                            // if the host is already defined as an allowed IP address
-                            // we can directly connect to it
-                            Ok(ip)
-                        }
-                    }),
-                };
-            }
+        // Try as IP first (most common path — no DNS roundtrip); fall
+        // through to Domain otherwise. `Uninterpreted` bridges through
+        // both via pct-decode + IDN. Non-promotable hosts (sub-delim
+        // reg-name, IPvFuture) error — DNS can't resolve them.
+        if let Ok(ip) = self.host.try_as_ip() {
+            return HappyEyeballIpStream::Once {
+                stream: rama_core::stream::once(match (ip, ip_mode) {
+                    (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
+                        Err(OpaqueError::from_static_str("IPv4 address is not allowed")
+                            .into_opaque_error())
+                    }
+                    (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
+                        Err(OpaqueError::from_static_str("IPv6 address is not allowed")
+                            .into_opaque_error())
+                    }
+                    _ => Ok(ip),
+                }),
+            };
+        }
+        let Ok(domain) = self.host.try_into_domain() else {
+            return HappyEyeballIpStream::Once {
+                stream: rama_core::stream::once(Err(OpaqueError::from_static_str(
+                    "host is not resolvable as a domain",
+                )
+                .into_opaque_error())),
+            };
         };
 
         let maybe_dns_overwrite = self
@@ -216,5 +220,66 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
             Self::SingleIpV4 { stream } => stream.size_hint(),
             Self::SingleIpV6 { stream } => stream.size_hint(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::EmptyDnsResolver;
+    use rama_net::address::Host;
+
+    #[tokio::test]
+    async fn ip_host_returns_directly_without_dns_lookup() {
+        // IP-first path: an IP-shaped host short-circuits and emits the
+        // address directly without consulting the DNS resolver. Use the
+        // empty resolver to prove it: if the code fell through to the
+        // domain path, the stream would be empty.
+        let host: Host = "127.0.0.1".parse::<std::net::IpAddr>().unwrap().into();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = rama_core::futures::StreamExt::next(&mut stream)
+            .await
+            .expect("should emit the IP directly");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn pct_encoded_ip_host_bridges_via_try_as_ip() {
+        // `%31%32%37.0.0.1` lives in `Host::Uninterpreted` but decodes
+        // to `127.0.0.1`. The IP-first early-return must catch it
+        // BEFORE attempting DNS resolution as a Domain.
+        let host = rama_net::uri::Uri::parse("http://%31%32%37.0.0.1/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = stream
+            .next()
+            .await
+            .expect("pct-encoded IP must short-circuit to direct emit");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn non_promotable_host_errors() {
+        // Sub-delim reg-name promotes to neither IP nor Domain — the
+        // resolver emits a single Err.
+        let host = rama_net::uri::Uri::parse("http://tag,with,commas/")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = rama_core::futures::StreamExt::next(&mut stream)
+            .await
+            .expect("should emit an error");
+        first.expect_err("non-promotable host must surface an Err");
     }
 }

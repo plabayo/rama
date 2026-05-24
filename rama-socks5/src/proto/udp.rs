@@ -134,10 +134,10 @@ impl UdpHeader {
     /// Write the udp packet in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) -> Result<(), std::io::Error> {
         buf.put_u16(0 /* RSV */);
         buf.put_u8(self.fragment_number);
-        write_authority_to_buf(&self.destination, buf);
+        write_authority_to_buf(&self.destination, buf)
     }
 
     pub(crate) fn serialized_len(&self) -> usize {
@@ -161,7 +161,7 @@ mod tests {
             W: AsyncWrite + Unpin,
         {
             let mut buf = BytesMut::with_capacity(self.serialized_len());
-            self.write_to_buf(&mut buf);
+            self.write_to_buf(&mut buf)?;
             w.write_all(&buf).await
         }
 
@@ -171,7 +171,7 @@ mod tests {
             W: Write,
         {
             let mut buf = BytesMut::with_capacity(self.serialized_len());
-            self.write_to_buf(&mut buf);
+            self.write_to_buf(&mut buf)?;
             w.write_all(&buf)
         }
     }
@@ -221,7 +221,7 @@ mod tests {
 
         for h in cases {
             let mut buf = BytesMut::new();
-            h.write_to_buf(&mut buf);
+            h.write_to_buf(&mut buf).unwrap();
             assert_eq!(
                 buf.len(),
                 h.serialized_len(),

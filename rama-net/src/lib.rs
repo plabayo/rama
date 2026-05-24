@@ -28,6 +28,7 @@ pub mod test_utils;
 pub mod uri;
 pub mod user;
 
+pub(crate) mod byte_sets;
 pub(crate) mod proto;
 #[doc(inline)]
 pub use proto::Protocol;

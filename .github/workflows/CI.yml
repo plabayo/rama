@@ -149,6 +149,17 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
       - name: Run tests (cargo test)
         run: cargo nextest run --all-features --workspace
+      - name: Run tests (rama-net, no default features)
+        # Catches `#[cfg(not(feature = "X"))]`-gated tests that the
+        # `--all-features` run can't reach (e.g. behaviour expected when
+        # the `idna` feature is disabled).
+        #
+        # TODO: expand to `--workspace` once the pre-existing http-core
+        # tests that fail under `--no-default-features` (currently
+        # `ready_on_poll_stream::body_test` and
+        # `unbuffered_stream::body_test`) are gated to require their
+        # features.
+        run: cargo nextest run --no-default-features -p rama-net
       - name: Run doc tests (cargo test)
         run: cargo test --doc --all-features --workspace
       - name: Run example tests (cargo test)
@@ -717,6 +728,12 @@ jobs:
       - name: fuzz — http_header_x_robots_tag
         run: |
           cargo +nightly fuzz run http_header_x_robots_tag --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
+      - name: fuzz — uri_parse
+        run: |
+          cargo +nightly fuzz run uri_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
+      - name: fuzz — uri_resolve
+        run: |
+          cargo +nightly fuzz run uri_resolve --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
       - name: fuzz — h2
         run: |
           cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30

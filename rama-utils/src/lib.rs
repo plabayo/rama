@@ -42,6 +42,7 @@ pub mod time;
 
 pub mod bytes;
 pub mod collections;
+pub mod hex;
 pub mod info;
 pub mod latency;
 pub mod octets;

@@ -1,3 +1,23 @@
+/// Returns `true` if `lhs` and `rhs` are byte-for-byte equal under ASCII
+/// case folding. `const fn`, so usable in `const` contexts where std's
+/// [`<[u8]>::eq_ignore_ascii_case`] isn't yet available.
+#[must_use]
+pub const fn eq_ignore_ascii_case(lhs: &[u8], rhs: &[u8]) -> bool {
+    if lhs.len() != rhs.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < lhs.len() {
+        let l = lhs[i].to_ascii_lowercase();
+        let r = rhs[i].to_ascii_lowercase();
+        if l != r {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Returns `true` if `sub` occurs within `s`,
 /// using ASCII case insensitive comparison.
 ///

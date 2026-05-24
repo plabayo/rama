@@ -43,9 +43,23 @@ path = "fuzz_targets/h2_e2e.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "uri_parse"
+path = "fuzz_targets/uri_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uri_resolve"
+path = "fuzz_targets/uri_resolve.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["ua", "http"] }
+rama = { path = "../", features = ["ua", "http", "net"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]

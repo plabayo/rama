@@ -306,7 +306,9 @@ impl<S> Socks5ProxyConnector<S> {
                             .unwrap_or(Host::Name(domain))
                     }
                 },
-                Host::Address(ip_addr) => Host::Address(ip_addr),
+                // IPs and any non-Domain shape pass through unchanged —
+                // there's nothing to resolve.
+                _ => host,
             };
 
             let address = HostWithPort::new(host, port);
@@ -397,7 +399,7 @@ where
             network.peer.address = %proxy_address.address.host,
             network.peer.port = %proxy_address.address.port,
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "socks5 proxy connector: connected to proxy",
         );
 
@@ -409,7 +411,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
                 client.set_auth(basic.clone());
@@ -425,7 +427,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     "socks5 proxy connector: continue handshake without authorisation",
                 );
             }
@@ -448,7 +450,7 @@ where
                     network.peer.address = %proxy_address.address.host,
                     network.peer.port = %proxy_address.address.port,
                     server.address = %transport_ctx.authority.host,
-                    server.port = transport_ctx.authority.port,
+                    server.port = transport_ctx.authority.port_u16(),
                     %bind_addr,
                     "socks5 proxy connector: handshake complete",
                 )

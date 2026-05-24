@@ -215,7 +215,7 @@ where
         {
             tracing::trace!(
                 server.address = %transport_ctx.authority.host,
-                server.port = transport_ctx.authority.port,
+                server.port = transport_ctx.authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -224,8 +224,12 @@ where
             });
         }
 
+        // SNI is a DNS name. IP-first per RFC 6066 §3: drop SNI for
+        // IP-shaped hosts (including pct-encoded IP literals inside
+        // `Uninterpreted`). Otherwise bridge `Uninterpreted` to Domain.
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -234,7 +238,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
@@ -270,13 +274,14 @@ where
             .context("TlsConnector(auto): compute transport context")?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
             transport_ctx.app_protocol,
         );
 
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -306,12 +311,16 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
-            tunnel
-                .sni
-                .as_ref()
-                .and_then(|h| h.as_domain())
-                .or(self.kind.sni.as_ref())
+        // Same IP-first bridging on the tunnel SNI overwrite. Bind the
+        // owned/borrowed Cow to a local so its reference is valid for
+        // the duration of the connector_data call below.
+        let tunnel_sni_owned = input
+            .extensions()
+            .get_ref::<TlsTunnel>()
+            .and_then(|t| t.sni.as_ref())
+            .and_then(sni_domain_for);
+        let maybe_sni_overwrite = if input.extensions().get_ref::<TlsTunnel>().is_some() {
+            tunnel_sni_owned.as_deref().or(self.kind.sni.as_ref())
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -340,6 +349,23 @@ where
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }
+}
+
+/// SNI extraction with IP-first policy (RFC 6066 §3 forbids IP literals
+/// in SNI). Returns `None` for IP-shaped hosts (including pct-encoded
+/// IP literals inside `Uninterpreted`) and for non-promotable
+/// reg-names / IPvFuture; otherwise returns the bridged [`Domain`].
+///
+/// The IP-first guard exists because `Domain::try_from("127.0.0.1")`
+/// succeeds — RFC 1123 §2.1 permits all-digit DNS labels — so an
+/// IPv4-shaped reg-name (`Host::Uninterpreted("127.0.0.1")` or the
+/// pct-encoded form `%31%32%37.0.0.1`) would otherwise promote to a
+/// "domain" of `"127.0.0.1"` and ship as SNI. RFC 6066 forbids that.
+fn sni_domain_for(host: &rama_net::address::Host) -> Option<std::borrow::Cow<'_, Domain>> {
+    if host.try_as_ip().is_ok() {
+        return None;
+    }
+    host.try_as_domain().ok()
 }
 
 #[cfg(feature = "http")]
@@ -652,5 +678,25 @@ mod tests {
         use rama_utils::test_helpers::assert_sync;
 
         assert_sync::<TlsConnectorLayer>();
+    }
+
+    /// Regression for the IP-first guard in [`sni_domain_for`].
+    /// `Host::Uninterpreted("127.0.0.1")` could otherwise promote to
+    /// Domain `"127.0.0.1"` and ship as SNI in violation of RFC 6066 §3.
+    #[test]
+    fn sni_domain_for_drops_ip_shaped_uninterpreted() {
+        let host = rama_net::address::Host::try_from("127.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+        // Pct-encoded equivalent also resolves to IpAddr first.
+        let host = rama_net::address::Host::try_from("%31%32%37.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+    }
+
+    #[test]
+    fn sni_domain_for_keeps_pct_encoded_reg_name() {
+        // `exa%6Dple.com` bridges Uninterpreted → Domain "example.com".
+        let host = rama_net::address::Host::try_from("exa%6Dple.com").unwrap();
+        let domain = sni_domain_for(&host).expect("should bridge to Domain");
+        assert_eq!(domain.as_str(), "example.com");
     }
 }
