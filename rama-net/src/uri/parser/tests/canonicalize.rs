@@ -64,7 +64,9 @@ fn canonicalize_leaves_ipvfuture_as_uninterpreted() {
     let uri = Uri::parse("http://[v1.fe80::a]/").unwrap();
     let canonical = uri.canonicalize();
     let host = canonical.host().unwrap().into_owned();
-    let u = host.as_uninterpreted().unwrap();
+    let crate::address::Host::Uninterpreted(u) = &host else {
+        panic!("expected Host::Uninterpreted for IPvFuture");
+    };
     assert!(u.is_bracketed());
     assert_eq!(canonical.host().unwrap().to_str(), "[v1.fe80::a]");
 }

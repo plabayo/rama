@@ -105,31 +105,21 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
         // Try IP first; fall through to Domain. `Uninterpreted` bridges
-        // via the typed accessors. The borrowed `DnsName::try_from(&str)`
-        // arm only fires for the `Name` variant (zero-copy); the bridged
-        // path materializes an owned `String` anyway, so there's no
-        // borrow benefit on that branch.
+        // via the typed accessors.
         if let Ok(ip) = value.try_as_ip() {
             return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
         }
-        if let Some(name) = value.as_domain() {
-            return Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            ));
-        }
-        // Uninterpreted that bridges to Domain — must allocate.
-        {
-            let domain = value.try_as_domain().context(
-                "host is not a domain or IP for rustls ServerName (borrowed conversion)",
-            )?;
-            {
-                Ok(rustls::pki_types::ServerName::DnsName(
-                    rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
-                        .context("convert recovered domain to rustls (PKI) ServerName")?,
-                ))
-            }
-        }
+        let domain = value
+            .try_as_domain()
+            .context("host is not a domain or IP for rustls ServerName")?;
+        // `Cow::Borrowed` (Name) → `DnsName::try_from(&str)` zero-copy.
+        // `Cow::Owned` (Uninterpreted bridge) → pass through the same
+        // owned-string path. `Cow::as_ref().as_str()` produces the
+        // right `&str` for either branch.
+        Ok(rustls::pki_types::ServerName::DnsName(
+            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                .context("convert domain to rustls (PKI) ServerName")?,
+        ))
     }
 }
 

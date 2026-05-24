@@ -85,91 +85,6 @@ pub enum Host {
 
 impl Host {
     /// Returns `true` if this is the [`Host::Name`] variant.
-    /// **Variant-only check** — misses `Uninterpreted` reg-names that
-    /// would pct-decode to a valid domain. For the bridging predicate,
-    /// use `try_as_domain().is_ok()`.
-    #[must_use]
-    pub fn is_domain(&self) -> bool {
-        matches!(self, Self::Name(_))
-    }
-
-    /// Returns the inner [`Domain`] only when this is the
-    /// [`Host::Name`] variant. **Direct access — does not bridge
-    /// `Uninterpreted`.** For pct-encoded reg-names that should be
-    /// treated as domains (`exa%6Dple.com` → `example.com`), use
-    /// [`try_as_domain`](Self::try_as_domain) instead.
-    #[must_use]
-    pub fn as_domain(&self) -> Option<&Domain> {
-        match self {
-            Self::Name(domain) => Some(domain),
-            Self::Address(_) | Self::Uninterpreted(_) => None,
-        }
-    }
-
-    /// Consuming variant-only access — see [`as_domain`](Self::as_domain).
-    /// For the bridging form, use [`try_into_domain`](Self::try_into_domain).
-    #[must_use]
-    pub fn into_domain(self) -> Option<Domain> {
-        match self {
-            Self::Name(domain) => Some(domain),
-            Self::Address(_) | Self::Uninterpreted(_) => None,
-        }
-    }
-
-    /// Returns `true` if this is the [`Host::Address`] variant.
-    /// **Variant-only check** — misses pct-encoded IP literals
-    /// inside `Uninterpreted` (`%31%32%37.0.0.1` → `127.0.0.1`).
-    /// For the bridging predicate, use `try_as_ip().is_ok()`.
-    #[must_use]
-    pub fn is_ip(&self) -> bool {
-        matches!(self, Self::Address(_))
-    }
-
-    /// Returns the inner [`IpAddr`] only when this is the
-    /// [`Host::Address`] variant. **Direct access — does not bridge
-    /// `Uninterpreted`.** For pct-encoded IP literals, use
-    /// [`try_as_ip`](Self::try_as_ip) instead.
-    #[must_use]
-    pub fn as_ip(&self) -> Option<&IpAddr> {
-        match self {
-            Self::Name(_) | Self::Uninterpreted(_) => None,
-            Self::Address(addr) => Some(addr),
-        }
-    }
-
-    /// Consuming variant-only access — see [`as_ip`](Self::as_ip).
-    /// For the bridging form, use [`try_as_ip`](Self::try_as_ip).
-    #[must_use]
-    pub fn into_ip(self) -> Option<IpAddr> {
-        match self {
-            Self::Name(_) | Self::Uninterpreted(_) => None,
-            Self::Address(addr) => Some(addr),
-        }
-    }
-
-    /// Returns `true` if [`Host`] is an [`UninterpretedHost`] — preserved
-    /// reg-name / IP-literal bytes that aren't a typed [`Domain`] or [`IpAddr`].
-    #[must_use]
-    pub fn is_uninterpreted(&self) -> bool {
-        matches!(self, Self::Uninterpreted(_))
-    }
-
-    #[must_use]
-    pub fn as_uninterpreted(&self) -> Option<&UninterpretedHost> {
-        match self {
-            Self::Uninterpreted(host) => Some(host),
-            Self::Name(_) | Self::Address(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn into_uninterpreted(self) -> Option<UninterpretedHost> {
-        match self {
-            Self::Uninterpreted(host) => Some(host),
-            Self::Name(_) | Self::Address(_) => None,
-        }
-    }
-
     /// View as a [`Domain`], bridging the `Uninterpreted` variant.
     /// `Cow::Borrowed` for `Name`; `Cow::Owned` for an `Uninterpreted`
     /// whose pct-decoded (and IDN-normalized) bytes parse as a domain.
@@ -212,18 +127,6 @@ impl Host {
             .into_box_error()),
             Self::Uninterpreted(host) => IpAddr::try_from(host).map_err(Into::into),
         }
-    }
-
-    /// Returns `true` if [`Host`] is a [`IpAddr::V4`].
-    #[must_use]
-    pub fn is_ipv4(&self) -> bool {
-        matches!(self, Self::Address(IpAddr::V4(_)))
-    }
-
-    /// Returns `true` if [`Host`] is a [`IpAddr::V6`].
-    #[must_use]
-    pub fn is_ipv6(&self) -> bool {
-        matches!(self, Self::Address(IpAddr::V6(_)))
     }
 
     /// Borrowed view. Same shape as `From<&Self> for HostRef` but
