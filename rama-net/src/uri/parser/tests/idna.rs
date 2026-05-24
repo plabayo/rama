@@ -10,7 +10,7 @@
 //! `ireg-name`.
 
 use super::parse_graceful;
-use crate::{address::Host, uri::Uri};
+use crate::uri::Uri;
 
 // ----------------------------------------------------------------------
 // With `idna` feature ON — host bytes are preserved verbatim; convert
@@ -246,7 +246,7 @@ mod with_idna {
 #[cfg(not(feature = "idna"))]
 mod without_idna {
     use super::*;
-    use crate::address::Domain;
+    use crate::address::{Domain, Host};
 
     /// Parser preserves bytes regardless of feature flag — the M7
     /// reversal applies in both. `idna`-less builds error only when
