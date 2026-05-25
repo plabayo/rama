@@ -382,15 +382,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
 
         let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs =
-            egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-        let lingerCloseMs =
-            egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil }
-            ?? defaultLingerCloseMs
-        let egressEofGraceMs =
-            egressOpts.flatMap {
-                $0.has_egress_eof_grace_ms ? $0.egress_eof_grace_ms : nil
-            } ?? defaultEgressEofGraceMs
+        let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 30_000
+        let lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
+        let egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
@@ -857,7 +851,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 }
                 ctx.readState = .reading
                 flow.readDatagrams { [weak self, weak ctx] datagrams, endpoints, error in
-                    flowQueue.async { [weak ctx] in
+                    flowQueue.async { [weak self, weak ctx] in
                         guard let ctx, ctx.readState != .closed else { return }
                         let hadPendingDemand = ctx.readState == .readingWithDemand
                         ctx.readState = .idle

@@ -1,0 +1,71 @@
+import Foundation
+import Network
+
+/// `@unchecked Sendable` because every mutable field is read or written
+/// only from a block executing on the flow's dedicated serial
+/// `flowQueue`. The type system cannot see this invariant; the
+/// annotation makes it explicit so the per-flow closures that capture
+/// the context (flow.open / connection.receive completions, etc.) stay
+/// Swift-6-clean instead of forcing those closures to drop their
+/// `@Sendable` requirement.
+/// Per-flow data-path mode. Switches from `.viaRust` to
+/// `.promoted` when the in-Rust service calls
+/// `PromoteHandle::into_passthrough` — from that moment on
+/// the per-flow `TcpDirectForwarder` owns the kernel flow and
+/// the egress `NWConnection`.
+///
+/// Mode-aware close handlers (`onServerClosed`, `onCloseEgress`)
+/// use `mode != .viaRust` to skip teardown of the kernel flow /
+/// egress connection — they are owned by the forwarder until
+/// both directions finish.
+///
+/// Internally the forwarder distinguishes its OWN per-direction
+/// phases (buffering / active / finishing / finished) — see
+/// `TcpDirectForwarder.DirectionPhase`. Carrying that granularity
+/// on `TcpFlowContext.mode` too would be redundant: every other
+/// caller only cares about the binary "is the forwarder running
+/// or not" question, and the forwarder is the source of truth
+/// for the finer states.
+enum TcpFlowMode {
+    /// Bytes flow through the in-Rust service (default).
+    case viaRust
+    /// Promote cutover initiated. The `TcpDirectForwarder`
+    /// owns the kernel flow and the egress NWConnection
+    /// lifecycle from this point. Mode-aware close handlers
+    /// observe this and skip their own teardown.
+    case promoted
+}
+
+final class TcpFlowContext: @unchecked Sendable {
+    // Connection is held behind the injectable protocol so unit tests
+    // can drive the per-flow state machine via a mock instead of
+    // standing up a real NWConnection.
+    weak var session: RamaTcpSessionHandle?
+    /// Egress NWConnection, reachable from late callbacks that must
+    /// still be able to `cancel()` the flow.
+    var connection: (any NwConnectionLike)?
+    /// Read pumps reachable from the Rust → Swift demand callbacks.
+    var clientReadPump: TcpClientReadPump?
+    var egressReadPump: NwTcpConnectionReadPump?
+    /// Writer pumps retained until terminal teardown so we can
+    /// cancel them from dispatcher-owned close paths.
+    var clientWritePump: TcpClientWritePump?
+    var egressWritePump: NwTcpConnectionWritePump?
+    /// Mode of the per-flow data path. Mutated only on the
+    /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
+    var mode: TcpFlowMode = .viaRust
+    /// Active when `mode == .promoted`. Owns the kernel ↔
+    /// NWConnection direct read/write loops + cutover
+    /// buffer.
+    var directForwarder: TcpDirectForwarder?
+    /// Single source of truth for terminal-state cleanup.
+    /// Initialised once by `handleTcpFlow` immediately after
+    /// the context is constructed. Every closure that needs to
+    /// tear the flow down reaches it via `ctx?.teardown?`,
+    /// which is a no-op if the context has already been
+    /// dropped by a racing path. See `TcpFlowTeardown`.
+    var teardown: TcpFlowTeardown?
+
+    init() {
+    }
+}
