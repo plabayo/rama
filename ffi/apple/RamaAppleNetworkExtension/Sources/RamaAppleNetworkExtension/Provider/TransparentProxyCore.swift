@@ -108,6 +108,42 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
+    // MARK: - System sleep / wake
+
+    /// Drop every active flow on sleep. Held NWConnections wake up
+    /// already `.failed` and their kernel NECP entries are gone, so
+    /// keeping them is a leak. Completion fires once the registry
+    /// has been walked (the per-flow teardowns themselves are async
+    /// on their per-flow queues; we don't block on them — the
+    /// `closed` state is published synchronously so any in-flight
+    /// kernel callback already short-circuits).
+    func handleSystemSleep(completion: @escaping () -> Void) {
+        stopFlowCountReporting()
+        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in tcp { ctx.teardown?.applySystemSleep() }
+        let udp: [UdpFlowContext] = stateQueue.sync { Array(self.udpContexts.values) }
+        for ctx in udp { ctx.terminate?(systemSleepError()) }
+        // D5 wires this through to the Rust handler's `on_system_sleep`.
+        logInfo("system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows")
+        completion()
+    }
+
+    /// On wake, restart the flow-count telemetry timer. New flows
+    /// land via `handleNewFlow` as normal; we don't try to "resume"
+    /// the dropped ones — the OS would have torn them down anyway.
+    func handleSystemWake() {
+        logInfo("system wake")
+        if self.engine != nil {
+            startFlowCountReporting()
+        }
+    }
+
+    private func systemSleepError() -> NSError {
+        NSError(
+            domain: "rama.tproxy.system-sleep", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "system entered sleep; flow dropped"])
+    }
+
     // MARK: - Periodic flow-count telemetry
 
     /// Interval between live-flow-count reports. 60s is short enough
@@ -218,6 +254,19 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// gating rationale as the UDP accessor above.
         func testInspectTcpContext(for flow: AnyObject) -> TcpFlowContext? {
             stateQueue.sync { self.tcpContexts[ObjectIdentifier(flow)] }
+        }
+
+        /// Insert a TCP context into the registry directly, without
+        /// going through `registerTcpFlow` (which requires a real
+        /// `RamaTcpSessionHandle`). Lets tests drive engine-less
+        /// scenarios like `handleSystemSleep` walks.
+        func testInsertTcpContext(_ flowId: ObjectIdentifier, _ ctx: TcpFlowContext) {
+            stateQueue.sync { self.tcpContexts[flowId] = ctx }
+        }
+
+        /// Symmetric for UDP.
+        func testInsertUdpContext(_ flowId: ObjectIdentifier, _ ctx: UdpFlowContext) {
+            stateQueue.sync { self.udpContexts[flowId] = ctx }
         }
     #endif
 

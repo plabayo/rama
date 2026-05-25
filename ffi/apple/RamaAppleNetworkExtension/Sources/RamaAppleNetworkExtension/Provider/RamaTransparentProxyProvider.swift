@@ -752,6 +752,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         completionHandler?(core.handleAppMessage(messageData))
     }
 
+    public override func sleep(completionHandler: @escaping () -> Void) {
+        core.handleSystemSleep(completion: completionHandler)
+    }
+
+    public override func wake() {
+        core.handleSystemWake()
+    }
+
     public override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         // The adapter has one Apple-specific job here: extract the
         // NEFlowMetaData snapshot (and, for UDP, the local / remote
