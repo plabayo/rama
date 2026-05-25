@@ -691,35 +691,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
         core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
-        let settings = NETransparentProxyNetworkSettings(
-            tunnelRemoteAddress: startup.tunnelRemoteAddress
-        )
-        var includedRules: [NENetworkRule] = []
-        var excludedRules: [NENetworkRule] = []
-        for (idx, rule) in startup.rules.enumerated() {
-            let kind = rule.exclude ? "exclude" : "include"
-            let built = Self.makeNetworkRules(rule)
-            if built.isEmpty {
-                core.logError(
-                    "invalid \(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
-                )
-                continue
-            }
-            for one in built {
-                if rule.exclude {
-                    excludedRules.append(one)
-                } else {
-                    includedRules.append(one)
-                }
-            }
-            core.logInfo(
-                "\(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw) emitted=\(built.count)"
-            )
-        }
-        settings.includedNetworkRules = includedRules
-        settings.excludedNetworkRules = excludedRules.isEmpty ? nil : excludedRules
-        core.logInfo(
-            "network rules: included=\(includedRules.count) excluded=\(excludedRules.count)"
+        let settings = Self.buildNetworkSettings(
+            from: startup,
+            logInfo: { [core] msg in core.logInfo(msg) },
+            logError: { [core] msg in core.logError(msg) }
         )
 
         setTunnelNetworkSettings(settings) { [core] error in
@@ -782,6 +757,59 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         core.logDebug("handleNewFlow unsupported type=\(String(describing: type(of: flow)))")
         return false
+    }
+
+    /// Translate a transparent-proxy config (tunnel address +
+    /// list of rules) into the `NETransparentProxyNetworkSettings`
+    /// that `startProxy` hands to `setTunnelNetworkSettings`.
+    ///
+    /// Pure with respect to its inputs except for the two log
+    /// callbacks — extracted out of `startProxy` so the
+    /// rule-iteration loop (which is where most validation
+    /// edge cases live) can be exercised under unit tests
+    /// without standing up an Apple-runtime `NETransparentProxyProvider`.
+    /// Rules that `makeNetworkRules` rejects are logged via
+    /// `logError` and skipped; every other rule contributes one
+    /// or more entries to `includedNetworkRules` / `excludedNetworkRules`.
+    /// `excludedNetworkRules` is left `nil` (not `[]`) when no
+    /// exclude rules survive, matching Apple's documented
+    /// "absent" sentinel.
+    internal static func buildNetworkSettings(
+        from config: RamaTransparentProxyConfigBridge,
+        logInfo: (String) -> Void = { _ in },
+        logError: (String) -> Void = { _ in }
+    ) -> NETransparentProxyNetworkSettings {
+        let settings = NETransparentProxyNetworkSettings(
+            tunnelRemoteAddress: config.tunnelRemoteAddress
+        )
+        var includedRules: [NENetworkRule] = []
+        var excludedRules: [NENetworkRule] = []
+        for (idx, rule) in config.rules.enumerated() {
+            let kind = rule.exclude ? "exclude" : "include"
+            let built = makeNetworkRules(rule)
+            if built.isEmpty {
+                logError(
+                    "invalid \(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw)"
+                )
+                continue
+            }
+            for one in built {
+                if rule.exclude {
+                    excludedRules.append(one)
+                } else {
+                    includedRules.append(one)
+                }
+            }
+            logInfo(
+                "\(kind) rule[\(idx)] remote=\(rule.remoteNetwork ?? "<any>") remotePrefix=\(rule.remotePrefix.map(String.init) ?? "<none>") remotePort=\(rule.remotePort.map(String.init) ?? "<none>") local=\(rule.localNetwork ?? "<any>") localPrefix=\(rule.localPrefix.map(String.init) ?? "<none>") proto=\(rule.protocolRaw) emitted=\(built.count)"
+            )
+        }
+        settings.includedNetworkRules = includedRules
+        settings.excludedNetworkRules = excludedRules.isEmpty ? nil : excludedRules
+        logInfo(
+            "network rules: included=\(includedRules.count) excluded=\(excludedRules.count)"
+        )
+        return settings
     }
 
     /// Translate one Rust-side rule into one or more

@@ -191,4 +191,105 @@ final class ProviderStaticHelperTests: XCTestCase {
         // produce more than the documented "one rule" output here.
         XCTAssertLessThanOrEqual(built.count, 1)
     }
+
+    // MARK: - buildNetworkSettings
+
+    private func config(
+        _ rules: [RamaTransparentProxyRuleBridge],
+        tunnel: String = "240.0.0.1"
+    ) -> RamaTransparentProxyConfigBridge {
+        RamaTransparentProxyConfigBridge(
+            tunnelRemoteAddress: tunnel,
+            rules: rules,
+            tcpWritePumpMaxPendingBytes: 1_048_576)
+    }
+
+    func testBuildNetworkSettingsEmptyRules() {
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config([]))
+        XCTAssertEqual(settings.includedNetworkRules?.count ?? 0, 0)
+        XCTAssertNil(
+            settings.excludedNetworkRules,
+            "no excludes → property is nil, not an empty array")
+    }
+
+    func testBuildNetworkSettingsRoutesIncludesAndExcludes() {
+        // Two includes (one CIDR, one port-only that splits into v4+v6 = 2 entries),
+        // one exclude (CIDR).
+        let rules: [RamaTransparentProxyRuleBridge] = [
+            tcpRule(remoteNetwork: "10.0.0.0", remotePrefix: 8),
+            tcpRule(remotePort: 443),
+            tcpRule(remoteNetwork: "192.168.0.0", remotePrefix: 16, exclude: true),
+        ]
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config(rules))
+        XCTAssertEqual(
+            settings.includedNetworkRules?.count, 3,
+            "1 CIDR include + 2 (v4+v6) for port-only include")
+        XCTAssertEqual(settings.excludedNetworkRules?.count, 1)
+    }
+
+    func testBuildNetworkSettingsSkipsInvalidRulesAndLogsError() {
+        // The "domain + local-matcher without prefix" combo is the
+        // unresolvable case `makeNetworkRules` returns [] for.
+        let invalid = tcpRule(
+            remoteNetwork: "example.com",
+            localNetwork: "192.168.0.0", localPrefix: 16)
+        let valid = tcpRule(remoteNetwork: "10.0.0.0", remotePrefix: 8)
+        var errorLogs: [String] = []
+        var infoLogs: [String] = []
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config([invalid, valid]),
+            logInfo: { infoLogs.append($0) },
+            logError: { errorLogs.append($0) })
+        // Either the invalid rule is rejected (most common) or its
+        // domain happens to resolve in this environment. The
+        // observable contract: the valid rule always contributes
+        // exactly one entry, and any rejection is reported through
+        // `logError`. Don't pin against the v4/v6/domain decision
+        // `makeNetworkRules` makes — it's network-dependent.
+        let total = settings.includedNetworkRules?.count ?? 0
+        XCTAssertGreaterThanOrEqual(total, 1)
+        XCTAssertLessThanOrEqual(total, 2)
+        // If the invalid rule was actually rejected we must see exactly
+        // one error log entry — never silent drop.
+        if total == 1 {
+            XCTAssertEqual(errorLogs.count, 1)
+            XCTAssertTrue(errorLogs[0].contains("invalid include rule[0]"))
+        }
+        XCTAssertFalse(infoLogs.isEmpty, "valid rules always emit info log")
+    }
+
+    func testBuildNetworkSettingsPortOnlyExpansionReachesSettings() {
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config([tcpRule(remotePort: 443)]))
+        XCTAssertEqual(
+            settings.includedNetworkRules?.count, 2,
+            "port-only rule splits into v4 + v6 wildcard entries")
+    }
+
+    func testBuildNetworkSettingsTunnelAddressIsPassedThrough() {
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config([], tunnel: "203.0.113.7"))
+        XCTAssertEqual(settings.tunnelRemoteAddress, "203.0.113.7")
+    }
+
+    func testBuildNetworkSettingsOmitsExcludesWhenAllInvalid() {
+        // Single exclude rule that's unresolvable → no surviving
+        // excludes → property must be nil (not []), per Apple's
+        // documented sentinel.
+        let invalid = tcpRule(
+            remoteNetwork: "example.com",
+            localNetwork: "192.168.0.0", localPrefix: 16,
+            exclude: true)
+        let settings = RamaTransparentProxyProvider.buildNetworkSettings(
+            from: config([invalid]))
+        // If "example.com" happens to resolve and yields a non-empty
+        // build, the test still passes its primary assertion: when
+        // there ARE excludes, the property is non-nil; when there
+        // aren't, it's nil. We pin the nil-vs-empty contract either way.
+        if (settings.excludedNetworkRules?.count ?? 0) == 0 {
+            XCTAssertNil(settings.excludedNetworkRules)
+        }
+    }
 }
