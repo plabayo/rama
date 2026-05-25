@@ -35,6 +35,8 @@ fn udp_bridge_delivers_server_datagram() {
             .boxed(),
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -161,6 +163,8 @@ fn udp_loopback_multi_peer_service_owned_egress() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -235,6 +239,8 @@ fn udp_session_requests_client_read_demand() {
             .boxed(),
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -296,6 +302,8 @@ fn udp_zero_length_datagram_from_client_reaches_service() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -381,6 +389,8 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -456,6 +466,8 @@ fn udp_send_with_no_peer_is_delivered_to_callback_with_none() {
             .boxed(),
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -502,6 +514,8 @@ fn udp_activate_after_engine_stop_is_safe_noop() {
             .boxed(),
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -543,6 +557,8 @@ fn udp_double_activate_is_safe_noop() {
             .boxed(),
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -598,6 +614,8 @@ fn udp_large_datagram_near_max_payload_roundtrips() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -667,6 +685,8 @@ fn udp_send_preserves_ipv6_scope_id_through_engine_callback() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 

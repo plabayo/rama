@@ -55,6 +55,8 @@ fn intercept_flow_has_promote_handle_in_extensions() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine(handler);
@@ -150,6 +152,8 @@ fn promote_layer_wraps_inner_service_and_into_passthrough_completes() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine(handler);
@@ -239,6 +243,8 @@ fn handler_running_into_passthrough(
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     }
 }
 
@@ -543,6 +549,8 @@ fn engine_promote_callback_fires_at_most_once_under_concurrent_into_passthrough(
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine(handler);
@@ -646,6 +654,8 @@ fn engine_promote_ok_drains_inflight_bytes_then_emits_eof_to_service() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine(handler);
@@ -834,6 +844,8 @@ fn engine_promote_ok_drains_both_ingress_and_egress_for_bidirectional_service() 
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine(handler);

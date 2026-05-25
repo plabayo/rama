@@ -126,6 +126,8 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 

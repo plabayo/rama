@@ -557,6 +557,19 @@ RamaBytesOwned rama_transparent_proxy_engine_handle_app_message(
     RamaBytesView message
 );
 
+/// Notify the Rust handler that the system is going to sleep.
+/// Fire-and-forget; the handler's `on_system_sleep` runs detached
+/// on the engine runtime.  NULL engine is allowed and ignored.
+void rama_transparent_proxy_engine_notify_system_sleep(
+    RamaTransparentProxyEngine* engine
+);
+
+/// Symmetric counterpart of
+/// `rama_transparent_proxy_engine_notify_system_sleep`.
+void rama_transparent_proxy_engine_notify_system_wake(
+    RamaTransparentProxyEngine* engine
+);
+
 // TCP flow lifecycle
 
 /// Create a TCP session for one intercepted flow.

@@ -49,6 +49,8 @@ fn tcp_byte_stream_preserved_under_ingress_backpressure() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine_with_tcp_channel_capacity(handler, 1);
@@ -132,6 +134,8 @@ fn tcp_byte_stream_preserved_under_egress_backpressure() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
 
     let engine = build_engine_with_tcp_channel_capacity(handler, 1);

@@ -123,7 +123,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         for ctx in tcp { ctx.teardown?.applySystemSleep() }
         let udp: [UdpFlowContext] = stateQueue.sync { Array(self.udpContexts.values) }
         for ctx in udp { ctx.terminate?(systemSleepError()) }
-        // D5 wires this through to the Rust handler's `on_system_sleep`.
+        engine?.notifySystemSleep()
         logInfo("system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows")
         completion()
     }
@@ -132,6 +132,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// land via `handleNewFlow` as normal; we don't try to "resume"
     /// the dropped ones — the OS would have torn them down anyway.
     func handleSystemWake() {
+        engine?.notifySystemWake()
         logInfo("system wake")
         if self.engine != nil {
             startFlowCountReporting()

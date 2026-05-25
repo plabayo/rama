@@ -538,6 +538,23 @@ final class RamaTransparentProxyEngineHandle {
         }
     }
 
+    /// Notify the Rust handler that the system is going to sleep.
+    /// Fire-and-forget: Rust drives the handler on its runtime.
+    func notifySystemSleep() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let p = enginePtr else { return }
+        rama_transparent_proxy_engine_notify_system_sleep(p)
+    }
+
+    /// Symmetric to [`notifySystemSleep`].
+    func notifySystemWake() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let p = enginePtr else { return }
+        rama_transparent_proxy_engine_notify_system_wake(p)
+    }
+
     /// Forward a provider message into Rust and return the reply (or `nil` for
     /// "no reply").
     ///

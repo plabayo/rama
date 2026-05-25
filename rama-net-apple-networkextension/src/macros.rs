@@ -229,6 +229,28 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_notify_system_sleep(
+            engine: *mut RamaTransparentProxyEngine,
+        ) {
+            if engine.is_null() {
+                return;
+            }
+            let engine = unsafe { &*engine };
+            engine.notify_system_sleep();
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_notify_system_wake(
+            engine: *mut RamaTransparentProxyEngine,
+        ) {
+            if engine.is_null() {
+                return;
+            }
+            let engine = unsafe { &*engine };
+            engine.notify_system_wake();
+        }
+
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_engine_handle_app_message(
             engine: *mut RamaTransparentProxyEngine,
             message: $crate::ffi::BytesView,

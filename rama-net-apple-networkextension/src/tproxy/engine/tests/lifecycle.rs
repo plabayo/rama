@@ -166,6 +166,8 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     }
     .with_tcp_egress_options(move |_meta| Some(custom.clone()));
     let engine = build_engine(handler);
@@ -219,8 +221,65 @@ fn app_message_can_return_reply() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     });
 
     let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
     assert_eq!(reply.as_deref(), Some(&b"pong"[..]));
+}
+
+// ── on_system_sleep / on_system_wake plumbing ────────────────────────────────
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// `notify_system_sleep` drives `TransparentProxyHandler::on_system_sleep`
+/// through the engine's runtime.
+#[test]
+fn notify_system_sleep_invokes_handler_hook() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_in = counter.clone();
+    let engine = build_engine(
+        TestHandler::passthrough().with_on_sleep(move || {
+            counter_in.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    engine.notify_system_sleep();
+    // Detached: spin briefly until the handler observes the call.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while counter.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    engine.stop(0);
+}
+
+/// `notify_system_wake` drives `TransparentProxyHandler::on_system_wake`.
+#[test]
+fn notify_system_wake_invokes_handler_hook() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_in = counter.clone();
+    let engine = build_engine(
+        TestHandler::passthrough().with_on_wake(move || {
+            counter_in.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    engine.notify_system_wake();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while counter.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    engine.stop(0);
+}
+
+/// The default handler impl is a noop (just a trace log). Calling
+/// `notify_system_sleep` on a passthrough handler must not panic or
+/// affect engine state — the handler simply observes nothing.
+#[test]
+fn notify_system_sleep_with_default_handler_is_safe() {
+    let engine = build_engine(TestHandler::passthrough());
+    engine.notify_system_sleep();
+    engine.notify_system_wake();
+    engine.stop(0);
 }

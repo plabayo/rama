@@ -216,6 +216,32 @@ where
         self.handler.transparent_proxy_config()
     }
 
+    /// Fire-and-forget notification that the system is going to
+    /// sleep. Drives `TransparentProxyHandler::on_system_sleep` on
+    /// the engine's runtime. Returns once the dispatch is queued
+    /// — the handler's future runs detached so the Swift sleep
+    /// completion isn't gated on it.
+    pub fn notify_system_sleep(&self) {
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::trace!("notify_system_sleep ignored: engine already stopped");
+            return;
+        };
+        let exec = Executor::graceful(guard);
+        let handler = self.handler.clone();
+        self.rt.spawn(async move { handler.on_system_sleep(exec).await });
+    }
+
+    /// Symmetric counterpart of [`Self::notify_system_sleep`].
+    pub fn notify_system_wake(&self) {
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::trace!("notify_system_wake ignored: engine already stopped");
+            return;
+        };
+        let exec = Executor::graceful(guard);
+        let handler = self.handler.clone();
+        self.rt.spawn(async move { handler.on_system_wake(exec).await });
+    }
+
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
         let Some(guard) = self.shutdown_guard() else {
             tracing::error!(

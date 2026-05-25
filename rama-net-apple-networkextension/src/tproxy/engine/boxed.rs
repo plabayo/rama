@@ -29,6 +29,8 @@ pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
+    fn notify_system_sleep(&self);
+    fn notify_system_wake(&self);
     fn stop_box(self: Box<Self>, reason: i32);
     fn new_tcp_session(
         &self,
@@ -56,6 +58,14 @@ where
 
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
         self.handle_app_message(message)
+    }
+
+    fn notify_system_sleep(&self) {
+        self.notify_system_sleep();
+    }
+
+    fn notify_system_wake(&self) {
+        self.notify_system_wake();
     }
 
     fn stop_box(self: Box<Self>, reason: i32) {
@@ -104,6 +114,14 @@ impl BoxedTransparentProxyEngine {
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
         self.0.handle_app_message(message)
+    }
+
+    pub fn notify_system_sleep(&self) {
+        self.0.notify_system_sleep();
+    }
+
+    pub fn notify_system_wake(&self) {
+        self.0.notify_system_wake();
     }
 
     pub fn stop(self, reason: i32) {
