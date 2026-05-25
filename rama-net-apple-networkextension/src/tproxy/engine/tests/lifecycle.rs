@@ -239,11 +239,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 fn notify_system_sleep_invokes_handler_hook() {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_in = counter.clone();
-    let engine = build_engine(
-        TestHandler::passthrough().with_on_sleep(move || {
-            counter_in.fetch_add(1, Ordering::SeqCst);
-        }),
-    );
+    let engine = build_engine(TestHandler::passthrough().with_on_sleep(move || {
+        counter_in.fetch_add(1, Ordering::SeqCst);
+    }));
     engine.notify_system_sleep();
     // Detached: spin briefly until the handler observes the call.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -259,11 +257,9 @@ fn notify_system_sleep_invokes_handler_hook() {
 fn notify_system_wake_invokes_handler_hook() {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_in = counter.clone();
-    let engine = build_engine(
-        TestHandler::passthrough().with_on_wake(move || {
-            counter_in.fetch_add(1, Ordering::SeqCst);
-        }),
-    );
+    let engine = build_engine(TestHandler::passthrough().with_on_wake(move || {
+        counter_in.fetch_add(1, Ordering::SeqCst);
+    }));
     engine.notify_system_wake();
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while counter.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {

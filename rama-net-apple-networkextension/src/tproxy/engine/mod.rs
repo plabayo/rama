@@ -228,7 +228,8 @@ where
         };
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-        self.rt.spawn(async move { handler.on_system_sleep(exec).await });
+        self.rt
+            .spawn(async move { handler.on_system_sleep(exec).await });
     }
 
     /// Symmetric counterpart of [`Self::notify_system_sleep`].
@@ -239,7 +240,8 @@ where
         };
         let exec = Executor::graceful(guard);
         let handler = self.handler.clone();
-        self.rt.spawn(async move { handler.on_system_wake(exec).await });
+        self.rt
+            .spawn(async move { handler.on_system_wake(exec).await });
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {

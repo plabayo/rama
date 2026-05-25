@@ -90,15 +90,7 @@ pub(super) enum AlertDescription {
 ///   * `[5]`    = `level as u8` — AlertLevel
 ///   * `[6]`    = `desc  as u8` — AlertDescription
 pub(super) fn encode_plain_alert(level: AlertLevel, description: AlertDescription) -> [u8; 7] {
-    [
-        0x15,
-        0x03,
-        0x03,
-        0x00,
-        0x02,
-        level as u8,
-        description as u8,
-    ]
+    [0x15, 0x03, 0x03, 0x00, 0x02, level as u8, description as u8]
 }
 
 /// Best-effort write of a plaintext TLS Alert record to `w`,
@@ -182,9 +174,21 @@ mod tests {
     #[test]
     fn other_combinations_round_trip_through_encode() {
         for (level, desc, expected_last_two) in [
-            (AlertLevel::Warning, AlertDescription::CloseNotify, [0x01, 0x00]),
-            (AlertLevel::Fatal, AlertDescription::ProtocolVersion, [0x02, 0x46]),
-            (AlertLevel::Fatal, AlertDescription::InternalError, [0x02, 0x50]),
+            (
+                AlertLevel::Warning,
+                AlertDescription::CloseNotify,
+                [0x01, 0x00],
+            ),
+            (
+                AlertLevel::Fatal,
+                AlertDescription::ProtocolVersion,
+                [0x02, 0x46],
+            ),
+            (
+                AlertLevel::Fatal,
+                AlertDescription::InternalError,
+                [0x02, 0x50],
+            ),
         ] {
             let got = encode_plain_alert(level, desc);
             assert_eq!(

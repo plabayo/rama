@@ -535,7 +535,12 @@ where
                 // than the "Recv failure: Connection reset by peer"
                 // pathology a raw TCP close produces. Best-effort —
                 // the client may already be gone.
-                write_plain_alert(&mut ingress_stream, AlertLevel::Fatal, AlertDescription::HandshakeFailure).await;
+                write_plain_alert(
+                    &mut ingress_stream,
+                    AlertLevel::Fatal,
+                    AlertDescription::HandshakeFailure,
+                )
+                .await;
                 return Err(relay_err);
             }
         };
@@ -742,7 +747,12 @@ where
         let (acceptor, maybe_negotiated_params, egress_tls_stream) = match acceptor_build_result {
             Ok(t) => t,
             Err(e) => {
-                write_plain_alert(&mut ingress_stream, AlertLevel::Fatal, AlertDescription::HandshakeFailure).await;
+                write_plain_alert(
+                    &mut ingress_stream,
+                    AlertLevel::Fatal,
+                    AlertDescription::HandshakeFailure,
+                )
+                .await;
                 return Err(e);
             }
         };
