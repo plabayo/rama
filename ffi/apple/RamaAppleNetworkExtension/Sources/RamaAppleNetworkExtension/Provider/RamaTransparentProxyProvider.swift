@@ -2123,6 +2123,13 @@ final class TcpFlowContext: @unchecked Sendable {
     /// NWConnection direct read/write loops + cutover
     /// buffer.
     var directForwarder: TcpDirectForwarder?
+    /// Single source of truth for terminal-state cleanup.
+    /// Initialised once by `handleTcpFlow` immediately after
+    /// the context is constructed. Every closure that needs to
+    /// tear the flow down reaches it via `ctx?.teardown?`,
+    /// which is a no-op if the context has already been
+    /// dropped by a racing path. See `TcpFlowTeardown`.
+    var teardown: TcpFlowTeardown?
 
     init() {
     }

@@ -285,6 +285,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             label: "rama.tproxy.tcp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
             qos: .utility)
         let ctx = TcpFlowContext()
+        // Single source of truth for terminal-state cleanup. Every
+        // closure that needs to tear the flow down reaches this
+        // via `ctx?.teardown?.applyXxx(...)`. Sticky one-shot:
+        // first variant wins, subsequent calls are no-ops.
+        ctx.teardown = TcpFlowTeardown(ctx: ctx, core: self, flow: flow, flowId: flowId)
 
         let writer = TcpClientWritePump(
             flow: flow,
@@ -292,23 +297,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             logger: { [weak self] message in
                 self?.logFlowMessage(message)
             },
-            onTerminalError: { [weak self, weak ctx] error in
+            onTerminalError: { [weak ctx] error in
                 // [weak ctx] keeps the writer's onTerminalError closure
                 // from pinning the per-flow context graph alive after
-                // the session is removed.
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                ctx?.connection?.cancelAndDetach()
-                // Nil out so racing teardown paths (`onServerClosed`,
-                // `tearDownPostReady`, the hard-error terminal in
-                // the read loop) see `connection == nil` and skip
-                // their own cancelAndDetach — Apple logs the duplicate
-                // call as "is already cancelled, ignoring cancel"
-                // which under sustained churn is the bulk of the
-                // log-quarantine pressure (1,177 events / 5 min stress).
-                ctx?.connection = nil
-                ctx?.session?.cancel()
-                self?.removeTcpFlow(flowId)
+                // the session is removed. Teardown is sticky-idempotent
+                // so a race with another terminal path is safe.
+                ctx?.teardown?.applyWriterTerminal(error)
             },
             onDrained: { [weak ctx] in
                 // Mode-aware: post-cutover the forwarder owns
@@ -343,29 +337,18 @@ final class TransparentProxyCore: @unchecked Sendable {
                         ctx?.clientReadPump?.resume()
                     }
                 },
-                onServerClosed: { [weak self, weak ctx] in
+                onServerClosed: { [weak ctx] in
                     // Hop to flowQueue before touching ctx — fires
                     // from a Rust worker thread, and `ctx.mode`
                     // is queue-confined.
-                    flowQueue.async { [weak self, weak ctx] in
+                    flowQueue.async { [weak ctx] in
                         guard let ctx else { return }
                         if ctx.mode != .viaRust {
                             ctx.directForwarder?.markRustS2CDone()
                             return
                         }
                         ctx.clientWritePump?.closeWhenDrained { wasOpened in
-                            if wasOpened {
-                                flow.closeReadWithError(nil)
-                                flow.closeWriteWithError(nil)
-                            } else {
-                                let error = tcpUpstreamUnavailableError()
-                                flow.closeReadWithError(error)
-                                flow.closeWriteWithError(error)
-                            }
-                            ctx.connection?.cancelAndDetach()
-                            // Idempotency for racing teardown paths.
-                            ctx.connection = nil
-                            self?.removeTcpFlow(flowId)
+                            ctx.teardown?.applyDrainedClose(wasOpened: wasOpened)
                         }
                     }
                 }
@@ -445,11 +428,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             self?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)"
             )
-            ctx?.connection?.cancelAndDetach()
-            // Idempotency for racing teardown paths.
-            ctx?.connection = nil
-            ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
+            ctx?.teardown?.applyConnectTimeout()
         }
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
 
@@ -463,57 +442,14 @@ final class TransparentProxyCore: @unchecked Sendable {
         var waitingWork: DispatchWorkItem?
 
         // Post-ready teardown shared between the `.failed` arm and the
-        // `.waiting` tolerance timer. Idempotent — every step is safe
-        // to invoke twice, so a concurrent teardown path (the egress
-        // read pump's EOF backstop, the flow's hard-error terminal,
-        // an external `engine.stop`) that races with this closure
-        // does not corrupt state.
-        // Not `@Sendable` because it mutates `waitingWork`; all
-        // invocation sites run on `flowQueue` so single-threaded
-        // mutation is safe.
-        let tearDownPostReady: (Error?) -> Void = { [weak self, weak ctx] err in
+        // `.waiting` tolerance timer. Cancels the local `waitingWork`
+        // timer (closure-captured local; not in `TcpFlowTeardown`'s
+        // scope) then delegates the rest of the cleanup to the
+        // one-shot teardown class.
+        let tearDownPostReady: (Error?) -> Void = { [weak ctx] err in
             waitingWork?.cancel()
             waitingWork = nil
-            let nsErr =
-                err
-                ?? NSError(
-                    domain: "rama.tproxy.tcp",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"
-                    ]
-                )
-            // Cancel the client write pump BEFORE closing the kernel
-            // flow's write half. `prepareCancel` publishes
-            // `state.closed = true` synchronously, so any in-flight or
-            // queued `flow.write` short-circuits before reaching the
-            // kernel. Reversing this order causes libnetworkextension
-            // to emit "(N): flow is closed for writes, cannot write K
-            // bytes of data" for every pump write that races
-            // closeWriteWithError — 1,520 such log lines in 5 min of
-            // stress audit, the dominant contributor to macOS's
-            // unified-log quarantine fault on the system extension.
-            ctx?.clientWritePump?.cancel()
-            ctx?.clientWritePump = nil
-            flow.closeReadWithError(nsErr)
-            flow.closeWriteWithError(nsErr)
-            ctx?.connection?.cancelAndDetach()
-            ctx?.connection = nil
-            ctx?.egressReadPump?.cancel()
-            ctx?.egressReadPump = nil
-            ctx?.egressWritePump?.cancel()
-            ctx?.egressWritePump = nil
-            ctx?.clientReadPump = nil
-            // Drive the direct forwarder to terminal explicitly. In
-            // `.promoted` mode the forwarder owns the data path and
-            // would otherwise unwind nondeterministically via its
-            // own read-loop errors. Its `onTerminal` re-closes the
-            // flow with `nil` — harmless because Apple's
-            // `closeReadWithError` keeps the first error.
-            ctx?.directForwarder?.cancel()
-            ctx?.directForwarder = nil
-            ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
+            ctx?.teardown?.applyPostReadyFailure(err)
         }
 
         connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
@@ -589,16 +525,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                         flowQueue.async {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
-                                connection.cancelAndDetach()
-                                ctx?.connection = nil
-                                readPump.cancel()
-                                ctx?.egressReadPump = nil
-                                ctx?.egressWritePump?.cancel()
-                                ctx?.egressWritePump = nil
-                                ctx?.clientWritePump?.cancel()
-                                ctx?.clientWritePump = nil
-                                session.cancel()
-                                self?.removeTcpFlow(flowId)
+                                ctx?.teardown?.applyFlowOpenFailure(error)
                                 return
                             }
                             // The egress NWConnection or session may
@@ -645,32 +572,8 @@ final class TransparentProxyCore: @unchecked Sendable {
                                     readPump?.cancel()
                                     session?.onClientEof()
                                 },
-                                onHardError: {
-                                    [weak self, weak ctx, weak readPump, weak session] err in
-                                    // Cancel the client write pump before
-                                    // closing the kernel flow's write half;
-                                    // see `tearDownPostReady` for the
-                                    // libnetworkextension log-noise rationale.
-                                    ctx?.clientWritePump?.cancel()
-                                    flow.closeReadWithError(err)
-                                    flow.closeWriteWithError(err)
-                                    ctx?.connection?.cancelAndDetach()
-                                    ctx?.connection = nil
-                                    readPump?.cancel()
-                                    ctx?.egressWritePump?.cancel()
-                                    // Same rationale as
-                                    // `tearDownPostReady`: drive the
-                                    // direct forwarder to terminal so
-                                    // `.promoted`-mode teardown is
-                                    // deterministic.
-                                    ctx?.directForwarder?.cancel()
-                                    ctx?.directForwarder = nil
-                                    session?.cancel()
-                                    ctx?.clientReadPump = nil
-                                    ctx?.egressReadPump = nil
-                                    ctx?.clientWritePump = nil
-                                    ctx?.egressWritePump = nil
-                                    self?.removeTcpFlow(flowId)
+                                onHardError: { [weak ctx] err in
+                                    ctx?.teardown?.applyReadHardError(err)
                                 }
                             )
                             let flowReadPump = TcpClientReadPump(
@@ -711,18 +614,13 @@ final class TransparentProxyCore: @unchecked Sendable {
                     if !egressReady {
                         // Pre-ready failure — flow was never opened,
                         // pumps were never wired, session has no
-                        // bridges to drain. The minimal cleanup is
-                        // enough.
+                        // bridges to drain. The teardown class's
+                        // pre-ready variant handles it.
                         timeoutWork.cancel()
                         self?.logDebug(
                             "egress NWConnection failed before flow opened: \(String(describing: error))"
                         )
-                        // Explicit cancel() releases the kernel NECP flow slot.
-                        connection.cancelAndDetach()
-                        // Idempotency for racing teardown paths.
-                        ctx.connection = nil
-                        session.cancel()
-                        self?.removeTcpFlow(flowId)
+                        ctx.teardown?.applyPreReadyFailure()
                     } else {
                         // Post-ready failure — peer RST, TLS abort,
                         // NECP path drop, or anything else that takes
