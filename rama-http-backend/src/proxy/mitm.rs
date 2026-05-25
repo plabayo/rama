@@ -372,7 +372,7 @@ where
                         &uri,
                         version,
                         close_ingress.clone(),
-                        &relay_state,
+                        relay_state,
                     )
                     .await;
                     if let Ok(ref resp) = resp {

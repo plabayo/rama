@@ -42,7 +42,13 @@ use tokio::io::AsyncWriteExt;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AlertLevel {
-    #[allow(dead_code)] // kept for completeness; today's callers always send Fatal
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "kept for completeness; today's callers always send Fatal"
+        )
+    )]
     Warning = 1,
     Fatal = 2,
 }
@@ -58,7 +64,10 @@ pub(super) enum AlertDescription {
     /// Notify the peer that the sender is shutting down the
     /// connection cleanly. Sent by both sides as part of a normal
     /// close.
-    #[allow(dead_code)] // kept for symmetry; not used by today's callers
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "kept for symmetry; not used by today's callers")
+    )]
     CloseNotify = 0,
     /// Generic "we could not agree on handshake parameters". The
     /// right choice for "upstream rejected our ClientHello" — the
@@ -68,12 +77,21 @@ pub(super) enum AlertDescription {
     /// "The protocol version offered is not supported". Useful when
     /// the upstream returned a `protocol_version` alert at us and we
     /// want to surface the same shape downstream.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "available for upstream protocol_version surfaces")
+    )]
     ProtocolVersion = 70,
     /// Server-side problem, can't tell you what specifically. Use
     /// when our MITM machinery failed (cert mirror, acceptor build,
     /// …) for reasons that aren't the upstream's fault.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "available for non-upstream MITM machinery failures"
+        )
+    )]
     InternalError = 80,
 }
 
@@ -83,10 +101,9 @@ pub(super) enum AlertDescription {
 ///
 /// Wire format:
 ///   * `[0]`   = `0x15`        — record type Alert
-///   * `[1..3]` = `0x0303`      — legacy record version (TLS 1.2);
-///                                accepted by all 1.2/1.3 clients
-///                                in this pre-handshake position
-///   * `[3..5]` = `0x0002`      — record length 2
+///   * `[1..3]` = `0x0303` — legacy record version (TLS 1.2);
+///     accepted by all 1.2/1.3 clients in this pre-handshake position
+///   * `[3..5]` = `0x0002` — record length 2
 ///   * `[5]`    = `level as u8` — AlertLevel
 ///   * `[6]`    = `desc  as u8` — AlertDescription
 pub(super) fn encode_plain_alert(level: AlertLevel, description: AlertDescription) -> [u8; 7] {
@@ -112,8 +129,8 @@ pub(super) async fn write_plain_alert<W>(
     W: AsyncWriteExt + Unpin,
 {
     let bytes = encode_plain_alert(level, description);
-    let _ = w.write_all(&bytes).await;
-    let _ = w.flush().await;
+    _ = w.write_all(&bytes).await;
+    _ = w.flush().await;
 }
 
 #[cfg(test)]
