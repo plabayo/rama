@@ -30,6 +30,11 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
 
     /// Entry point. Returns `true` if the flow was claimed.
     func start() -> Bool {
+        // Anchor self via ctx so the closures we install can resolve
+        // `[weak self]` for as long as the flow is registered.
+        // Cleared in `installTerminate`'s terminate closure on
+        // teardown.
+        ctx.lifetimeAnchor = self
         installTerminate()
         buildClientWritePump()
         installRequestRead()
@@ -61,16 +66,26 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
     // MARK: - Phases
 
     func installTerminate() {
+        // Capture only what the closure needs — flow / queue / flowId
+        // strong, ctx / core weak. This keeps the closure independent
+        // of the session's lifetime so it stays callable even if no
+        // external framework anchors a reference back to the
+        // session.
         let flow = self.flow
-        ctx.terminate = { [weak self, weak ctx] error in
-            self?.flowQueue.async { [weak self, weak ctx] in
+        let flowQueue = self.flowQueue
+        let flowId = self.flowId
+        ctx.terminate = { [weak ctx, weak core = self.core] error in
+            flowQueue.async { [weak ctx, weak core] in
                 guard let ctx, ctx.readState != .closed else { return }
                 ctx.readState = .closed
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 ctx.session?.onClientClose()
-                self?.core?.removeUdpFlow(self?.flowId ?? ObjectIdentifier(flow))
+                core?.removeUdpFlow(flowId)
+                // Drop the session anchor so the per-flow session
+                // (and the closures it captured) deallocate promptly.
+                ctx.lifetimeAnchor = nil
             }
         }
     }
@@ -90,15 +105,21 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
 
     func installRequestRead() {
         let flow = self.flow
-        ctx.requestRead = { [weak self, weak ctx] in
-            self?.flowQueue.async { [weak self, weak ctx] in
+        let flowQueue = self.flowQueue
+        // Use a weak self capture only on the readDatagrams
+        // completion — that's the only branch that needs to call
+        // back into the session's `handleReadCompletion`. If self
+        // is gone by then the flow is being torn down and
+        // dropping the bytes is safe (the read pump is closed).
+        ctx.requestRead = { [weak ctx, weak self] in
+            flowQueue.async { [weak ctx, weak self] in
                 guard let ctx, ctx.readState != .closed else { return }
                 if ctx.readState == .reading || ctx.readState == .readingWithDemand {
                     ctx.readState = .readingWithDemand
                     return
                 }
                 ctx.readState = .reading
-                flow.readDatagrams { [weak self, weak ctx] datagrams, endpoints, error in
+                flow.readDatagrams { [weak self] datagrams, endpoints, error in
                     self?.handleReadCompletion(
                         datagrams: datagrams, endpoints: endpoints, error: error)
                 }

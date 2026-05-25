@@ -40,4 +40,8 @@ final class UdpFlowContext: @unchecked Sendable {
     /// take the strict-paired-only code path (surplus datagrams
     /// get `peer = nil`).
     var endpointMismatchLogged: Bool = false
+    /// Lifetime anchor for the per-flow `UdpFlowSession`. Set in
+    /// `UdpFlowSession.start`; cleared in `terminate` so the
+    /// session deallocates promptly on teardown.
+    var lifetimeAnchor: AnyObject?
 }

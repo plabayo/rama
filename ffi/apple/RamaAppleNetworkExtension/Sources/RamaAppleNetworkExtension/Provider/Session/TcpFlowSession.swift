@@ -173,9 +173,18 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
-        connection.stateUpdateHandler = { [weak self] state in
-            self?.flowQueue.async { [weak self] in
-                self?.handleEgressState(state)
+        // Strong self: the handler IS the lifetime anchor for the
+        // session. `handleTcpFlow` constructs the session and lets
+        // its local ref go out of scope; without this strong
+        // capture the session would deallocate and every later
+        // callback (promote, late-`.failed`, etc.) would no-op.
+        // The retain cycle (connection → handler → session →
+        // ctx.connection → connection) is broken by
+        // `cancelAndDetach()` on teardown, which sets the handler
+        // to nil.
+        connection.stateUpdateHandler = { state in
+            self.flowQueue.async {
+                self.handleEgressState(state)
             }
         }
     }
@@ -368,6 +377,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     func armPromoteCallback() {
         guard let session = sessionHandle else { return }
         let flow = self.flow
+        // Weak self: the Rust session keeps this closure alive until
+        // session.cancel() runs, which doesn't happen on the
+        // cutover-happy-path (the forwarder's onTerminal just closes
+        // the flow + removeTcpFlow). Strong self here would pin the
+        // session past every other anchor, leaking flow + connection.
+        // The state handler's strong self is sufficient: if the
+        // connection is alive, session is alive, weak self resolves.
         session.registerPromoteCallback { [weak self] in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
