@@ -52,9 +52,11 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private(set) var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
-    private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
+    /// Per-flow context registry. The session handle reaches into
+    /// the context via `ctx.session` so there is no separate
+    /// session map — one map per protocol, one entry per active
+    /// flow, removed exactly when teardown calls `removeXxxFlow`.
     private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
     private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
 
     /// Factory used to construct egress `NWConnection`s for intercepted
@@ -101,9 +103,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.engine?.stop(reason: reason)
         self.engine = nil
         stateQueue.sync {
-            self.tcpSessions.removeAll(keepingCapacity: false)
             self.tcpContexts.removeAll(keepingCapacity: false)
-            self.udpSessions.removeAll(keepingCapacity: false)
             self.udpContexts.removeAll(keepingCapacity: false)
         }
     }
@@ -195,10 +195,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         session: RamaTcpSessionHandle,
         context: TcpFlowContext
     ) {
-        stateQueue.sync {
-            self.tcpSessions[flowId] = session
-            self.tcpContexts[flowId] = context
-        }
+        stateQueue.sync { self.tcpContexts[flowId] = context }
     }
 
     func registerUdpFlow(
@@ -206,24 +203,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         session: RamaUdpSessionHandle,
         context: UdpFlowContext
     ) {
-        stateQueue.sync {
-            self.udpSessions[flowId] = session
-            self.udpContexts[flowId] = context
-        }
+        stateQueue.sync { self.udpContexts[flowId] = context }
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.tcpSessions.removeValue(forKey: flowId)
-            self.tcpContexts.removeValue(forKey: flowId)
-        }
+        stateQueue.sync { self.tcpContexts.removeValue(forKey: flowId) }
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.udpSessions.removeValue(forKey: flowId)
-            self.udpContexts.removeValue(forKey: flowId)
-        }
+        stateQueue.sync { self.udpContexts.removeValue(forKey: flowId) }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
