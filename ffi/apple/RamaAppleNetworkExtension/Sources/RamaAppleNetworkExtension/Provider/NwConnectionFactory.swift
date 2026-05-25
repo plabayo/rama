@@ -59,6 +59,40 @@ protocol NwConnectionLike: AnyObject {
 
 extension NWConnection: NwConnectionLike {}
 
+extension NwConnectionLike {
+    /// Cancel the connection AND release its `stateUpdateHandler` in
+    /// one atomic-by-discipline step. The handler closure transitively
+    /// retains the per-flow context graph (kernel `NEAppProxyTCPFlow`,
+    /// `tearDownPostReady`, the per-flow `DispatchQueue`); leaving it
+    /// attached after `cancel()` pins that graph alive until Apple's
+    /// framework gets around to deallocating its `NWConnection`
+    /// internals — which observably does NOT happen for hundreds of
+    /// connections under sustained churn (heap audit: `__NWPath`,
+    /// `MutableParametersStorage`, `Endpoint.addressStorage` grow
+    /// unboundedly; kernel emits 4,390 `nw_path_necp_check_for_updates
+    /// Failed (22)` per 5 min of stress while polling NECP sessions
+    /// the kernel has already destroyed).
+    ///
+    /// Dropping the handler before `cancel()` also suppresses Apple's
+    /// final `.cancelled` callback. None of the production teardown
+    /// paths depend on observing it — they already pivot to
+    /// `.cancelled` on the synchronous initiator side via
+    /// `ctx.connection = nil` and registry removal.
+    ///
+    /// **Use everywhere a teardown path cancels an egress connection
+    /// in this crate**. Plain `cancel()` is for protocol conformance;
+    /// production code paths should use this. The audit count of
+    /// "is already cancelled, ignoring cancel" log lines (1,177 over
+    /// 5 min of stress) tracks how often multiple paths race to tear
+    /// the same connection down; an idempotency wrapper is the next
+    /// layer of defense — see also the doc comment on `cancel()`'s
+    /// call sites in `TransparentProxyCore.handleTcpFlow`.
+    func cancelAndDetach() {
+        self.stateUpdateHandler = nil
+        self.cancel()
+    }
+}
+
 /// Factory used to construct egress `NWConnection`s.
 ///
 /// Returns `nil` when the connection cannot be constructed (e.g. invalid

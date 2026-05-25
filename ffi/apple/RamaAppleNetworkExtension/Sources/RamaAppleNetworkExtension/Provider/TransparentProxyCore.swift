@@ -298,7 +298,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // the session is removed.
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
-                ctx?.connection?.cancel()
+                ctx?.connection?.cancelAndDetach()
+                // Nil out so racing teardown paths (`onServerClosed`,
+                // `tearDownPostReady`, the hard-error terminal in
+                // the read loop) see `connection == nil` and skip
+                // their own cancelAndDetach — Apple logs the duplicate
+                // call as "is already cancelled, ignoring cancel"
+                // which under sustained churn is the bulk of the
+                // log-quarantine pressure (1,177 events / 5 min stress).
+                ctx?.connection = nil
                 ctx?.session?.cancel()
                 self?.removeTcpFlow(flowId)
             },
@@ -354,7 +362,9 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 flow.closeReadWithError(error)
                                 flow.closeWriteWithError(error)
                             }
-                            ctx.connection?.cancel()
+                            ctx.connection?.cancelAndDetach()
+                            // Idempotency for racing teardown paths.
+                            ctx.connection = nil
                             self?.removeTcpFlow(flowId)
                         }
                     }
@@ -435,7 +445,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             self?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)"
             )
-            ctx?.connection?.cancel()
+            ctx?.connection?.cancelAndDetach()
+            // Idempotency for racing teardown paths.
+            ctx?.connection = nil
             ctx?.session?.cancel()
             self?.removeTcpFlow(flowId)
         }
@@ -471,17 +483,27 @@ final class TransparentProxyCore: @unchecked Sendable {
                         NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"
                     ]
                 )
+            // Cancel the client write pump BEFORE closing the kernel
+            // flow's write half. `prepareCancel` publishes
+            // `state.closed = true` synchronously, so any in-flight or
+            // queued `flow.write` short-circuits before reaching the
+            // kernel. Reversing this order causes libnetworkextension
+            // to emit "(N): flow is closed for writes, cannot write K
+            // bytes of data" for every pump write that races
+            // closeWriteWithError — 1,520 such log lines in 5 min of
+            // stress audit, the dominant contributor to macOS's
+            // unified-log quarantine fault on the system extension.
+            ctx?.clientWritePump?.cancel()
+            ctx?.clientWritePump = nil
             flow.closeReadWithError(nsErr)
             flow.closeWriteWithError(nsErr)
-            ctx?.connection?.cancel()
+            ctx?.connection?.cancelAndDetach()
             ctx?.connection = nil
             ctx?.egressReadPump?.cancel()
             ctx?.egressReadPump = nil
             ctx?.egressWritePump?.cancel()
             ctx?.egressWritePump = nil
             ctx?.clientReadPump = nil
-            ctx?.clientWritePump?.cancel()
-            ctx?.clientWritePump = nil
             // Drive the direct forwarder to terminal explicitly. In
             // `.promoted` mode the forwarder owns the data path and
             // would otherwise unwind nondeterministically via its
@@ -567,7 +589,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                         flowQueue.async {
                             if let error {
                                 self?.logDebug("flow.open error after egress ready: \(error)")
-                                connection.cancel()
+                                connection.cancelAndDetach()
                                 ctx?.connection = nil
                                 readPump.cancel()
                                 ctx?.egressReadPump = nil
@@ -625,12 +647,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                                 },
                                 onHardError: {
                                     [weak self, weak ctx, weak readPump, weak session] err in
+                                    // Cancel the client write pump before
+                                    // closing the kernel flow's write half;
+                                    // see `tearDownPostReady` for the
+                                    // libnetworkextension log-noise rationale.
+                                    ctx?.clientWritePump?.cancel()
                                     flow.closeReadWithError(err)
                                     flow.closeWriteWithError(err)
-                                    ctx?.connection?.cancel()
+                                    ctx?.connection?.cancelAndDetach()
                                     ctx?.connection = nil
                                     readPump?.cancel()
-                                    ctx?.clientWritePump?.cancel()
                                     ctx?.egressWritePump?.cancel()
                                     // Same rationale as
                                     // `tearDownPostReady`: drive the
@@ -692,7 +718,9 @@ final class TransparentProxyCore: @unchecked Sendable {
                             "egress NWConnection failed before flow opened: \(String(describing: error))"
                         )
                         // Explicit cancel() releases the kernel NECP flow slot.
-                        connection.cancel()
+                        connection.cancelAndDetach()
+                        // Idempotency for racing teardown paths.
+                        ctx.connection = nil
                         session.cancel()
                         self?.removeTcpFlow(flowId)
                     } else {

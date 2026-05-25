@@ -26,6 +26,9 @@ use std::{
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
 
+mod alert;
+use self::alert::{AlertDescription, AlertLevel, write_plain_alert};
+
 pub mod issuer;
 
 mod service;
@@ -471,7 +474,7 @@ where
     /// Establish and MITM an handshake between the client (ingress) and server (egress).
     pub async fn handshake<Ingress, Egress>(
         &self,
-        BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
+        BridgeIo(mut ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
         connector_data: Option<client::TlsConnectorData>,
     ) -> Result<BridgeIo<TlsStream<Ingress>, TlsStream<Egress>>, TlsMitmRelayError>
     where
@@ -483,193 +486,266 @@ where
             .map(|cd| cd.store_server_certificate_chain)
             .unwrap_or_default();
 
-        let egress_tls_stream = crate::client::tls_connect(egress_stream, connector_data)
+        let egress_tls_stream = match crate::client::tls_connect(egress_stream, connector_data)
             .await
-            .map_err(|err| match err {
-                client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
-                    TlsMitmRelayErrorDirection::Egress,
-                    error.context("tls connect builder error"),
-                    None,
-                ),
-                client::TlsConnectError::Handshake { server_name, error } => {
-                    let maybe_ssl_code = error.code();
-                    if let Some(io_err) = error.as_io_error() {
-                        TlsMitmRelayError::handshake_io(
-                            TlsMitmRelayErrorDirection::Egress,
-                            BoxError::from(format!(
-                                "tls mitm relay: egress tls accept failed with io error: {io_err}"
-                            ))
-                            .context_debug_field("code", maybe_ssl_code)
-                            .context_debug_field("sni", server_name),
-                        )
-                    } else if let Some(err) = error.as_ssl_error_stack() {
-                        let mut relay_err = TlsMitmRelayError::handshake_ssl(
-                            TlsMitmRelayErrorDirection::Egress,
-                            err,
-                        );
-                        relay_err.sni = server_name;
-                        relay_err
-                    } else {
-                        TlsMitmRelayError::handshake(
-                            TlsMitmRelayErrorDirection::Egress,
-                            OpaqueError::from_static_str(
-                                "tls mitm relay: egress tls accept failed",
+        {
+            Ok(stream) => stream,
+            Err(err) => {
+                let relay_err = match err {
+                    client::TlsConnectError::Builder(error) => TlsMitmRelayError::handshake(
+                        TlsMitmRelayErrorDirection::Egress,
+                        error.context("tls connect builder error"),
+                        None,
+                    ),
+                    client::TlsConnectError::Handshake { server_name, error } => {
+                        let maybe_ssl_code = error.code();
+                        if let Some(io_err) = error.as_io_error() {
+                            TlsMitmRelayError::handshake_io(
+                                TlsMitmRelayErrorDirection::Egress,
+                                BoxError::from(format!(
+                                    "tls mitm relay: egress tls accept failed with io error: {io_err}"
+                                ))
+                                .context_debug_field("code", maybe_ssl_code)
+                                .context_debug_field("sni", server_name),
                             )
-                            .context_debug_field("code", maybe_ssl_code)
-                            .context_debug_field("sni", server_name),
-                            maybe_ssl_code,
-                        )
+                        } else if let Some(err) = error.as_ssl_error_stack() {
+                            let mut relay_err = TlsMitmRelayError::handshake_ssl(
+                                TlsMitmRelayErrorDirection::Egress,
+                                err,
+                            );
+                            relay_err.sni = server_name;
+                            relay_err
+                        } else {
+                            TlsMitmRelayError::handshake(
+                                TlsMitmRelayErrorDirection::Egress,
+                                OpaqueError::from_static_str(
+                                    "tls mitm relay: egress tls accept failed",
+                                )
+                                .context_debug_field("code", maybe_ssl_code)
+                                .context_debug_field("sni", server_name),
+                                maybe_ssl_code,
+                            )
+                        }
                     }
-                }
-            })?;
+                };
+                // Pre-ingress-handshake bail-out: we haven't written a
+                // byte on the ingress wire yet, so it's safe (and
+                // valuable) to send a plaintext TLS Alert. Firefox and
+                // other browsers surface this as a TLS error rather
+                // than the "Recv failure: Connection reset by peer"
+                // pathology a raw TCP close produces. Best-effort —
+                // the client may already be gone.
+                write_plain_alert(&mut ingress_stream, AlertLevel::Fatal, AlertDescription::HandshakeFailure).await;
+                return Err(relay_err);
+            }
+        };
         egress_tls_stream.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsMitmRelay",
         });
 
-        let egress_ssl_ref = egress_tls_stream.ssl_ref();
-        let source_cert = egress_ssl_ref
-            .peer_certificate()
-            .ok_or_else(|| {
-                OpaqueError::from_static_str("tls mitm relay: egress tls stream has no peer cert")
-            })
-            .map_err(TlsMitmRelayError::config)?;
-
-        let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
-            .issuer
-            .issue_mitm_x509_cert(source_cert)
-            .await
-            .context("tls mitm relay: mirror server certificate")
-            .map_err(TlsMitmRelayError::config)?;
-
-        let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
-            .context("tls mitm relay: create boring ssl acceptor")
-            .map_err(TlsMitmRelayError::config)?;
-        acceptor_builder.set_grease_enabled(self.grease_enabled);
-        acceptor_builder
-            .set_default_verify_paths()
-            .context("tls mitm relay: set default verify paths")
-            .map_err(TlsMitmRelayError::config)?;
-        for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
-            if i == 0 {
-                acceptor_builder
-                    .set_certificate(crt.as_ref())
-                    .context("tls mitm relay: set certificate")
-                    .map_err(TlsMitmRelayError::config)?;
-            } else {
-                acceptor_builder
-                    .add_extra_chain_cert(crt)
-                    .context("tls mitm relay: add chain certificate")
-                    .map_err(TlsMitmRelayError::config)?;
+        // Cert-mirror + acceptor-build phase. Any failure here is still
+        // pre-ingress-handshake — we haven't written a byte to the
+        // client yet, so the plaintext alert is valid. Wrap in an
+        // async block so every `?` propagates to a single point that
+        // emits the alert before returning the error.
+        //
+        // The block extracts everything it needs from `egress_tls_stream`
+        // into owned values *before* the cert-mirror `.await`; holding
+        // a borrow across that await would force `Egress: Sync` on the
+        // public signature, which the bridge stream type doesn't
+        // provide.
+        let acceptor_build_result: Result<
+            (SslAcceptor, Option<NegotiatedTlsParameters>, TlsStream<Egress>),
+            TlsMitmRelayError,
+        > = async move {
+            // Snapshot of every `egress_ssl_ref`-derived value the
+            // post-await build path needs. Bounded to a scope that
+            // ends before the `.await` so the borrow is released.
+            struct EgressHandshakeSnapshot {
+                source_cert: X509,
+                session_protocol_version: Option<rama_boring::ssl::SslVersion>,
+                alpn_proto: Option<ApplicationProtocol>,
+                peer_cert_chain: Option<rama_net::tls::DataEncoding>,
+                version_for_log: &'static str,
+                has_alpn: bool,
             }
-        }
-        acceptor_builder
-            .set_private_key(mirrored_leaf_key.as_ref())
-            .context("tls mitm relay: set mirrored leaf private key")
-            .map_err(TlsMitmRelayError::config)?;
-        acceptor_builder
-            .check_private_key()
-            .context("tls mitm relay: check mirrored private key")
-            .map_err(TlsMitmRelayError::config)?;
+            let snapshot = {
+                let egress_ssl_ref = egress_tls_stream.ssl_ref();
+                let source_cert = egress_ssl_ref
+                    .peer_certificate()
+                    .ok_or_else(|| {
+                        OpaqueError::from_static_str(
+                            "tls mitm relay: egress tls stream has no peer cert",
+                        )
+                    })
+                    .map_err(TlsMitmRelayError::config)?;
+                let session_protocol_version =
+                    egress_ssl_ref.session().map(|s| s.protocol_version());
+                let alpn_proto = egress_ssl_ref
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from);
+                let peer_cert_chain = if store_server_certificate_chain {
+                    match egress_ssl_ref.peer_cert_chain() {
+                        Some(chain) => Some(
+                            chain.rama_try_into().map_err(TlsMitmRelayError::config)?,
+                        ),
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let version_for_log = egress_ssl_ref.version_str();
+                let has_alpn = egress_ssl_ref.selected_alpn_protocol().is_some();
+                EgressHandshakeSnapshot {
+                    source_cert,
+                    session_protocol_version,
+                    alpn_proto,
+                    peer_cert_chain,
+                    version_for_log,
+                    has_alpn,
+                }
+            };
+            // `egress_ssl_ref` borrow is released here.
 
-        let maybe_negotiated_params = if let Some(ssl_session) = egress_ssl_ref.session() {
-            let protocol_version = ssl_session.protocol_version();
+            let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
+                .issuer
+                .issue_mitm_x509_cert(snapshot.source_cert)
+                .await
+                .context("tls mitm relay: mirror server certificate")
+                .map_err(TlsMitmRelayError::config)?;
 
+            let mut acceptor_builder =
+                SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
+                    .context("tls mitm relay: create boring ssl acceptor")
+                    .map_err(TlsMitmRelayError::config)?;
+            acceptor_builder.set_grease_enabled(self.grease_enabled);
             acceptor_builder
-                .set_min_proto_version(Some(protocol_version))
-                .context("tls mitm relay: set min tls proto version")
-                .context_field("protocol_version", protocol_version)
+                .set_default_verify_paths()
+                .context("tls mitm relay: set default verify paths")
+                .map_err(TlsMitmRelayError::config)?;
+            for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
+                if i == 0 {
+                    acceptor_builder
+                        .set_certificate(crt.as_ref())
+                        .context("tls mitm relay: set certificate")
+                        .map_err(TlsMitmRelayError::config)?;
+                } else {
+                    acceptor_builder
+                        .add_extra_chain_cert(crt)
+                        .context("tls mitm relay: add chain certificate")
+                        .map_err(TlsMitmRelayError::config)?;
+                }
+            }
+            acceptor_builder
+                .set_private_key(mirrored_leaf_key.as_ref())
+                .context("tls mitm relay: set mirrored leaf private key")
                 .map_err(TlsMitmRelayError::config)?;
             acceptor_builder
-                .set_max_proto_version(Some(protocol_version))
-                .context("tls mitm relay: set max tls proto version")
-                .context_field("protocol_version", protocol_version)
+                .check_private_key()
+                .context("tls mitm relay: check mirrored private key")
                 .map_err(TlsMitmRelayError::config)?;
 
-            let protocol_version = protocol_version
-                .rama_try_into()
-                .map_err(|v| {
-                    OpaqueError::from_static_str("boring ssl connector: cast min proto version")
-                        .context_field("protocol_version", v)
-                })
-                .map_err(TlsMitmRelayError::config)?;
+            let maybe_negotiated_params =
+                if let Some(protocol_version) = snapshot.session_protocol_version {
+                    acceptor_builder
+                        .set_min_proto_version(Some(protocol_version))
+                        .context("tls mitm relay: set min tls proto version")
+                        .context_field("protocol_version", protocol_version)
+                        .map_err(TlsMitmRelayError::config)?;
+                    acceptor_builder
+                        .set_max_proto_version(Some(protocol_version))
+                        .context("tls mitm relay: set max tls proto version")
+                        .context_field("protocol_version", protocol_version)
+                        .map_err(TlsMitmRelayError::config)?;
 
-            tracing::debug!(
-                "boring client (connector) protocol version: {protocol_version} (set as min/max)"
-            );
+                    let protocol_version = protocol_version
+                        .rama_try_into()
+                        .map_err(|v| {
+                            OpaqueError::from_static_str(
+                                "boring ssl connector: cast min proto version",
+                            )
+                            .context_field("protocol_version", v)
+                        })
+                        .map_err(TlsMitmRelayError::config)?;
 
-            let application_layer_protocol = egress_ssl_ref
-                .selected_alpn_protocol()
-                .map(ApplicationProtocol::from);
+                    tracing::debug!(
+                        "boring client (connector) protocol version: {protocol_version} (set as min/max)"
+                    );
 
-            if let Some(selected_alpn_protocol) = application_layer_protocol.clone() {
-                tracing::debug!(
-                    "boring client (connector) has selected ALPN {selected_alpn_protocol}"
-                );
+                    let application_layer_protocol = snapshot.alpn_proto.clone();
 
-                acceptor_builder.set_alpn_select_callback(
-                    move |_: &mut SslRef, client_alpns: &[u8]| {
-                        let mut reader = Cursor::new(client_alpns);
-                        loop {
-                            let n = reader.position() as usize;
-                            match ApplicationProtocol::decode_wire_format(&mut reader) {
-                                Ok(proto) => {
-                                    if proto == selected_alpn_protocol {
-                                        let m = reader.position() as usize;
-                                        return Ok(&client_alpns[n + 1..m]);
+                    if let Some(selected_alpn_protocol) = application_layer_protocol.clone() {
+                        tracing::debug!(
+                            "boring client (connector) has selected ALPN {selected_alpn_protocol}"
+                        );
+
+                        acceptor_builder.set_alpn_select_callback(
+                            move |_: &mut SslRef, client_alpns: &[u8]| {
+                                let mut reader = Cursor::new(client_alpns);
+                                loop {
+                                    let n = reader.position() as usize;
+                                    match ApplicationProtocol::decode_wire_format(&mut reader) {
+                                        Ok(proto) => {
+                                            if proto == selected_alpn_protocol {
+                                                let m = reader.position() as usize;
+                                                return Ok(&client_alpns[n + 1..m]);
+                                            }
+                                        }
+                                        Err(error) => {
+                                            return Err(if error.kind() == ErrorKind::UnexpectedEof
+                                            {
+                                                tracing::debug!(
+                                                    "failed to find ALPN (Unexpected EOF): {error}; NOACK"
+                                                );
+                                                AlpnError::NOACK
+                                            } else {
+                                                tracing::debug!(
+                                                    "failed to decode ALPN: {error}; ALERT_FATAL"
+                                                );
+                                                AlpnError::ALERT_FATAL
+                                            });
+                                        }
                                     }
                                 }
-                                Err(error) => {
-                                    return Err(if error.kind() == ErrorKind::UnexpectedEof {
-                                        tracing::debug!(
-                                            "failed to find ALPN (Unexpected EOF): {error}; NOACK"
-                                        );
-                                        AlpnError::NOACK
-                                    } else {
-                                        tracing::debug!(
-                                            "failed to decode ALPN: {error}; ALERT_FATAL"
-                                        );
-                                        AlpnError::ALERT_FATAL
-                                    });
-                                }
-                            }
-                        }
-                    },
-                );
+                            },
+                        );
+                    }
+
+                    Some(NegotiatedTlsParameters {
+                        protocol_version,
+                        application_layer_protocol,
+                        peer_certificate_chain: snapshot.peer_cert_chain,
+                    })
+                } else {
+                    None
+                };
+
+            if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
+                let handle = try_new_key_log_file_handle(keylog_filename)
+                    .map_err(TlsMitmRelayError::config)?;
+                acceptor_builder.set_keylog_callback(move |_, line| {
+                    let line = format!("{line}\n");
+                    handle.write_log_line(line);
+                });
             }
 
-            let server_certificate_chain = match store_server_certificate_chain
-                .then(|| egress_ssl_ref.peer_cert_chain())
-                .flatten()
-            {
-                Some(chain) => Some(chain.rama_try_into().map_err(TlsMitmRelayError::config)?),
-                None => None,
-            };
+            tracing::debug!(
+                protocol = ?snapshot.version_for_log,
+                has_alpn = snapshot.has_alpn,
+                "tls mitm relay: accepting ingress tls handshake with mirrored server hints",
+            );
 
-            Some(NegotiatedTlsParameters {
-                protocol_version,
-                application_layer_protocol,
-                peer_certificate_chain: server_certificate_chain,
-            })
-        } else {
-            None
-        };
-
-        if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
-            let handle =
-                try_new_key_log_file_handle(keylog_filename).map_err(TlsMitmRelayError::config)?;
-            acceptor_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{line}\n");
-                handle.write_log_line(line);
-            });
+            Ok((acceptor_builder.build(), maybe_negotiated_params, egress_tls_stream))
         }
+        .await;
 
-        tracing::debug!(
-            protocol = ?egress_ssl_ref.version(),
-            has_alpn = egress_ssl_ref.selected_alpn_protocol().is_some(),
-            "tls mitm relay: accepting ingress tls handshake with mirrored server hints",
-        );
-
-        let acceptor = acceptor_builder.build();
+        let (acceptor, maybe_negotiated_params, egress_tls_stream) = match acceptor_build_result {
+            Ok(t) => t,
+            Err(e) => {
+                write_plain_alert(&mut ingress_stream, AlertLevel::Fatal, AlertDescription::HandshakeFailure).await;
+                return Err(e);
+            }
+        };
         let ingress_boring_ssl_stream = rama_boring_tokio::accept(&acceptor, ingress_stream)
             .await
             .map_err(|err| {
@@ -734,6 +810,10 @@ mod tests {
         TlsMitmRelayErrorKind, classify_handshake_reasons, reason_is_cert_trust_signal,
     };
     use rama_boring::ssl::ErrorCode;
+
+    // The plaintext TLS Alert helpers (`encode_plain_alert`,
+    // `write_plain_alert`) and their wire-format pins live in
+    // `mitm::alert::tests` alongside the implementation.
 
     /// `reason_is_cert_trust_signal` is the load-bearing classifier for
     /// the [`CertTrust`] bucket — the only one that flips an SNI into

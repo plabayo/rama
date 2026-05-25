@@ -1801,7 +1801,7 @@ final class NwTcpConnectionReadPump {
                     // pump's linger watchdog.
                     let conn = self.connection
                     let work = DispatchWorkItem { [weak self] in
-                        conn.cancel()
+                        conn.cancelAndDetach()
                         self?.eofWork = nil
                     }
                     self.eofWork = work
@@ -2031,7 +2031,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // `[weak self]` would no-op and leak the NWConnection.
         let conn = connection
         let work = DispatchWorkItem { [weak self] in
-            conn.cancel()
+            conn.cancelAndDetach()
             self?.lingerWork = nil
         }
         lingerWork = work
