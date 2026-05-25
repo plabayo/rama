@@ -14,25 +14,20 @@ import Network
 /// The surface of `NWConnection` that the per-flow code in
 /// `RamaTransparentProxyProvider` actually uses.
 ///
-/// Abstracted behind a protocol so the per-flow state machine
-/// (`handleTcpFlow` / `handleUdpFlow`, the egress read / write pumps) can
-/// be unit-tested against a mock implementation that drives state
-/// transitions on demand. Real production code passes an `NWConnection`,
-/// which conforms via the trivial extension below.
+/// Abstracted behind a protocol so `TcpFlowSession` / `UdpFlowSession`
+/// can be driven by `MockNwConnection` in unit tests instead of by
+/// a real `NWConnection`. Production conforms via the trivial
+/// extension below.
 protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
     // The protocol's `stateUpdateHandler` is intentionally NOT marked
     // `@Sendable`. `NWConnection`'s real declaration *is* `@Sendable`, so
     // this is a contravariant relaxation that Swift currently accepts
-    // with a warning (and Swift 6 mode would reject). The relaxation
-    // keeps the assignment sites in `handleTcpFlow` / `handleUdpFlow`
-    // free of fresh `@Sendable` propagation onto every closure they
-    // capture into — those captures (the per-flow context, the session
-    // handle, the `NEAppProxyFlow`, …) are confined to the flow's
-    // serial `flowQueue` and are not actually Sendable. When the
-    // module migrates to Swift 6 those captures must be revisited
-    // together; until then, narrowing the protocol's sendability is
-    // the local cost.
+    // with a warning (Swift 6 strict mode would reject). The relaxation
+    // keeps the assignment sites in `TcpFlowSession` free of fresh
+    // `@Sendable` propagation onto every closure they capture — those
+    // captures are confined to the flow's serial `flowQueue` and are
+    // not actually Sendable. Revisit when migrating to Swift 6.
     var stateUpdateHandler: ((NWConnection.State) -> Void)? { get set }
 
     func start(queue: DispatchQueue)
@@ -81,12 +76,10 @@ extension NwConnectionLike {
     ///
     /// **Use everywhere a teardown path cancels an egress connection
     /// in this crate**. Plain `cancel()` is for protocol conformance;
-    /// production code paths should use this. The audit count of
-    /// "is already cancelled, ignoring cancel" log lines (1,177 over
-    /// 5 min of stress) tracks how often multiple paths race to tear
-    /// the same connection down; an idempotency wrapper is the next
-    /// layer of defense — see also the doc comment on `cancel()`'s
-    /// call sites in `TransparentProxyCore.handleTcpFlow`.
+    /// production code paths go through `TcpFlowTeardown` which
+    /// nilss `ctx.connection` after each call for idempotency, so the
+    /// "already cancelled" log noise (1,177 events / 5 min of stress
+    /// pre-fix) stays at zero.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
         self.cancel()

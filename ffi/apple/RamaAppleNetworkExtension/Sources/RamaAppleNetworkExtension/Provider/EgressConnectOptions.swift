@@ -24,7 +24,7 @@ extension RamaTcpEgressConnectOptions {
     /// Connect timeout for the egress NWConnection, in
     /// milliseconds. `nil` when the engine didn't set one
     /// (caller should fall back to a sensible default —
-    /// 30 000 ms in `handleTcpFlow`).
+    /// 30 000 ms in `TcpFlowSession.startEgressConnection`).
     var connectTimeoutMs: UInt32? {
         has_connect_timeout_ms ? connect_timeout_ms : nil
     }
