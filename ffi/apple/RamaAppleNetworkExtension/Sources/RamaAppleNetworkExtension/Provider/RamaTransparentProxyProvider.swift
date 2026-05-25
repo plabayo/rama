@@ -853,7 +853,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         )]
     }
 
-    private static func resolvedPrefix(
+    internal static func resolvedPrefix(
         endpoint: NWHostEndpoint?,
         networkText: String?,
         explicitPrefix: UInt8?
@@ -864,7 +864,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return inferredHostPrefix(networkText)
     }
 
-    private static func networkEndpoint(from network: String?, port: UInt16?) -> NWHostEndpoint? {
+    internal static func networkEndpoint(from network: String?, port: UInt16?) -> NWHostEndpoint? {
         guard let network, !network.isEmpty else { return nil }
         let portStr = port.map(String.init) ?? "0"
         return NWHostEndpoint(hostname: network, port: portStr)
@@ -894,7 +894,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// configuration), but Apple makes no guarantees that start
     /// options aren't logged either — the rule of thumb is the same:
     /// no secrets here.
-    private static func engineConfigJson(
+    internal static func engineConfigJson(
         protocolConfiguration: NETunnelProviderProtocol?,
         startOptions: [String: Any]?
     ) -> Data? {
@@ -916,7 +916,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
-    private static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
+    internal static func networkRuleProtocol(_ raw: UInt32) -> NENetworkRule.`Protocol` {
         switch raw {
         case UInt32(RAMA_RULE_PROTOCOL_TCP.rawValue): return .TCP
         case UInt32(RAMA_RULE_PROTOCOL_UDP.rawValue): return .UDP
@@ -924,7 +924,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
     }
 
-    private static func tcpMeta(flow: NEAppProxyTCPFlow) -> RamaTransparentProxyFlowMetaBridge {
+    internal static func tcpMeta(flow: NEAppProxyTCPFlow) -> RamaTransparentProxyFlowMetaBridge {
         let remote: Any?
         if #available(macOS 15.0, *) {
             remote = flow.remoteFlowEndpoint
@@ -947,7 +947,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         )
     }
 
-    private static func udpMeta(
+    internal static func udpMeta(
         flow: NEAppProxyUDPFlow?,
         remoteEndpoint: Any?,
         localEndpoint: Any?
@@ -968,7 +968,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         )
     }
 
-    private static func sourceAppMeta(_ flow: NEAppProxyFlow?) -> (
+    internal static func sourceAppMeta(_ flow: NEAppProxyFlow?) -> (
         signingIdentifier: String?, bundleIdentifier: String?, auditToken: Data?, pid: Int32?
     ) {
         guard let flow else { return (nil, nil, nil, nil) }
@@ -1033,14 +1033,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return String(String.UnicodeScalarView(scalars[bundleStart...]))
     }
 
-    private static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
+    internal static func udpLocalEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
         if #available(macOS 15.0, *) {
             return flow.localFlowEndpoint
         }
         return bestEffortLocalEndpoint(flow)
     }
 
-    private static func udpRemoteEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
+    internal static func udpRemoteEndpoint(flow: NEAppProxyUDPFlow) -> Any? {
         let object = flow as NSObject
         if object.responds(to: NSSelectorFromString("remoteFlowEndpoint")) {
             return object.value(forKey: "remoteFlowEndpoint")
@@ -1051,7 +1051,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
-    private static func bestEffortLocalEndpoint(_ flow: NEAppProxyFlow) -> Any? {
+    internal static func bestEffortLocalEndpoint(_ flow: NEAppProxyFlow) -> Any? {
         let object = flow as NSObject
         if object.responds(to: NSSelectorFromString("localEndpoint")) {
             return object.value(forKey: "localEndpoint")
@@ -1062,7 +1062,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return nil
     }
 
-    private static func endpointHostPort(_ endpoint: Any?) -> (host: String, port: UInt16)? {
+    internal static func endpointHostPort(_ endpoint: Any?) -> (host: String, port: UInt16)? {
         guard let endpoint else { return nil }
 
         // Fast path: NWHostEndpoint (NetworkExtension class, works on macOS ≤ 15).
