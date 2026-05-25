@@ -354,6 +354,10 @@ where
             })
         }
         RelayMode::Http2 => {
+            // Acquire-release: only briefly grab the state lock to
+            // ensure the egress h2 client is connected, then drop
+            // it. The actual upstream serve must NOT hold the lock
+            // (see `serve_relay_request` rationale).
             let client_and_req = {
                 let mut state = relay_state.lock().await;
                 relay_connect_http2_if_needed(&mut *state, req, guard, close_ingress.clone()).await
@@ -361,7 +365,6 @@ where
 
             match client_and_req {
                 Ok((client, req)) => {
-                    let mut state = relay_state.lock().await;
                     let resp = serve_relay_request(
                         &client,
                         req,
@@ -369,7 +372,7 @@ where
                         &uri,
                         version,
                         close_ingress.clone(),
-                        &mut *state,
+                        &relay_state,
                     )
                     .await;
                     if let Ok(ref resp) = resp {
@@ -618,13 +621,23 @@ async fn serve_relay_request<Egress, Middleware, Client>(
     uri: &Uri,
     version: Version,
     close_ingress: CancellationToken,
-    state: &mut RelayState<Egress, Middleware>,
+    relay_state: &Arc<Mutex<RelayState<Egress, Middleware>>>,
 ) -> Result<Response, BoxError>
 where
     Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<HttpClientService<Body>>,
     Client: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
+    // Do NOT hold `relay_state.lock()` across the upstream serve.
+    // For h2, multiple streams share one `RelayState` (one egress
+    // NWConnection multiplexed by the h2 client); locking across
+    // `client.serve(req).await` serialises every stream on the
+    // mutex and kills multiplexing. Audit data: 918ms / 908ms
+    // poll stalls on different workers within 10ms of each other,
+    // workers otherwise 0.4–3.4% busy — a textbook async-mutex-
+    // contention shape.
+    //
+    // The lock is only needed to mark state Closed on error.
     match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
@@ -635,7 +648,7 @@ where
                 ?version,
                 "upstream MITM relay request failed: {err}"
             );
-            *state = RelayState::Closed;
+            *relay_state.lock().await = RelayState::Closed;
             close_ingress.cancel();
             Err(err)
         }
