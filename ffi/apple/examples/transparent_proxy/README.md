@@ -321,6 +321,26 @@ org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
   | grep -E 'NEMach|TProxy|XpcService|BundleVersion'
 ```
 
+### Wire capture (for diagnosing TLS / handshake issues)
+
+`tcpdump` on `en0` captures the **egress** side (provider →
+upstream). The **ingress** side (browser → provider) lives in
+the kernel's NECP pipe — no interface, not visible to
+`tcpdump`. Egress is usually enough to spot a malformed
+ClientHello, missing SNI, wrong ALPN, or an upstream alert.
+
+```sh
+# Capture for 60 s, all packets to/from suspect hosts. Open the
+# .pcap in Wireshark with the TLS dissector for analysis.
+sudo tcpdump -i en0 -s 0 -n -G 60 -W 1 -w /tmp/rama-tproxy.pcap \
+  'tcp and (host fp.ramaproxy.org or host www.linkedin.com)'
+```
+
+To decrypt the egress TLS in Wireshark, point the boring
+client at a keylog file via the provider config
+(`keylog_intent`); Wireshark's TLS dissector then reads the
+keys and the egress handshake becomes plaintext.
+
 ### Reinstall recipes
 
 - `just install-tproxy-dev` — rebuilds + reinstalls everything, leaves
