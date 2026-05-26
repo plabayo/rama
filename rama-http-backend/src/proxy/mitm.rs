@@ -629,13 +629,9 @@ where
     Client: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
     // Do NOT hold `relay_state.lock()` across the upstream serve.
-    // For h2, multiple streams share one `RelayState` (one egress
-    // NWConnection multiplexed by the h2 client); locking across
+    // For h2, multiple streams share one `RelayState`; locking across
     // `client.serve(req).await` serialises every stream on the
-    // mutex and kills multiplexing. Audit data: 918ms / 908ms
-    // poll stalls on different workers within 10ms of each other,
-    // workers otherwise 0.4–3.4% busy — a textbook async-mutex-
-    // contention shape.
+    // mutex and kills multiplexing.
     //
     // The lock is only needed to mark state Closed on error.
     match client.serve(req).await {

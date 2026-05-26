@@ -81,39 +81,37 @@ impl DemoTcpMitmService {
         // 8 h retention) land in `<storage_dir>/keylog/` (Wireshark:
         // Preferences → Protocols → TLS → (Pre)-Master-Secret log
         // filename → pick the most recent file).
-        let (tls_keylog_intent, tls_keylog_toggle) = match crate::utils::storage_dir() {
-            Some(dir) => {
-                let keylog_dir = dir.join("keylog");
-                let rotating = RotatingFileKeyLogSink::try_open_with(
-                    &keylog_dir,
-                    "sslkeylog",
-                    RotationPeriod::HOURLY,
-                    Some(Duration::from_hours(8)),
-                )
-                .context("open rotating tls keylog sink")?;
-                let toggleable = Arc::new(ToggleableKeyLogSink::new(rotating));
-                let toggle = toggleable.toggle();
-                tracing::info!(
-                    dir = %keylog_dir.display(),
-                    "TLS keylog pipeline ready (OFF by default; toggle via XPC)",
-                );
-                (
-                    KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
-                    toggle,
-                )
-            }
-            None => {
-                tracing::warn!(
-                    "TLS keylog: no storage_dir → Noop sink; toggle XPC route exists but writes \
-                     go nowhere",
-                );
-                let toggleable = Arc::new(ToggleableKeyLogSink::new(NoopKeyLogSink));
-                let toggle = toggleable.toggle();
-                (
-                    KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
-                    toggle,
-                )
-            }
+        let (tls_keylog_intent, tls_keylog_toggle) = if let Some(dir) = crate::utils::storage_dir()
+        {
+            let keylog_dir = dir.join("keylog");
+            let rotating = RotatingFileKeyLogSink::try_open_with(
+                &keylog_dir,
+                "sslkeylog",
+                RotationPeriod::HOURLY,
+                Some(Duration::from_hours(8)),
+            )
+            .context("open rotating tls keylog sink")?;
+            let toggleable = Arc::new(ToggleableKeyLogSink::new(rotating));
+            let toggle = toggleable.toggle();
+            tracing::info!(
+                dir = %keylog_dir.display(),
+                "TLS keylog pipeline ready (OFF by default; toggle via XPC)",
+            );
+            (
+                KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                toggle,
+            )
+        } else {
+            tracing::warn!(
+                "TLS keylog: no storage_dir → Noop sink; toggle XPC route exists but writes \
+                    go nowhere",
+            );
+            let toggleable = Arc::new(ToggleableKeyLogSink::new(NoopKeyLogSink));
+            let toggle = toggleable.toggle();
+            (
+                KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                toggle,
+            )
         };
         let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
         tls_mitm_relay.set_keylog_intent(tls_keylog_intent);

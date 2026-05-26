@@ -18,6 +18,8 @@ final class ChaosTests: XCTestCase {
     private let variants: [TeardownVariant] = [
         .init(name: "preReady") { $0.applyPreReadyFailure() },
         .init(name: "connectTimeout") { $0.applyConnectTimeout() },
+        .init(name: "preReadyWaitingTimeout") { $0.applyPreReadyWaitingTimeout() },
+        .init(name: "systemWake") { $0.applySystemWake() },
         .init(name: "writerTerminal") {
             $0.applyWriterTerminal(NSError(domain: "chaos", code: 1))
         },

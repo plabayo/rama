@@ -313,6 +313,13 @@ let defaultEgressEofGraceMs: UInt32 = 2_000
 /// code paths read; tests override before invoking the lifecycle.
 nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
+/// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
+/// ever reaches `.ready` (path down at connect — boot, wake, VPN
+/// transition). Fail fast instead of hanging the 30 s connect timeout;
+/// a few seconds, not instant, rides out a sub-second connect blip that
+/// recovers to `.ready`. `var` for tests.
+nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000
+
 /// Default per-UDP-flow idle watchdog. Apple's `NEAppProxyUDPFlow`
 /// gives the extension no terminal signal for an idle peer (UDP has
 /// no FIN, and the kernel's `flow.readDatagrams` callback only

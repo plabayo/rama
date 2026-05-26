@@ -91,6 +91,18 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyPreOpenCleanup()
     }
 
+    /// Pre-ready `.waiting` exceeded its budget (path down at connect).
+    /// Pre-open cleanup; distinct name for trace attribution.
+    func applyPreReadyWaitingTimeout() {
+        applyPreOpenCleanup()
+    }
+
+    /// System-wake reconcile of a still-connecting egress (its NECP
+    /// flow is gone post-sleep). Pre-open cleanup — never opened.
+    func applySystemWake() {
+        applyPreOpenCleanup()
+    }
+
     /// Shared body for the two pre-open shapes: nothing was
     /// queued, nothing to drain, no pumps to cancel.
     private func applyPreOpenCleanup() {

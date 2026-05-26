@@ -136,11 +136,20 @@ final class TransparentProxyCore: @unchecked Sendable {
         completion()
     }
 
-    /// On wake, restart the flow-count telemetry timer. New flows
-    /// land via `handleNewFlow` as normal; we don't try to "resume"
-    /// the dropped ones — the OS would have torn them down anyway.
+    /// On wake, restart telemetry and reconcile any TCP flow whose
+    /// egress never reached `.ready` — a still-connecting flow won't
+    /// recover (its NECP path is gone) and would otherwise burn its
+    /// connect timer. Established flows are left to the post-ready path
+    /// so we don't kill ones the OS kept across a no-op sleep.
     func handleSystemWake() {
         engine?.notifySystemWake()
+        let stale: [TcpFlowContext] = stateQueue.sync {
+            self.tcpContexts.values.filter { !$0.egressReady }
+        }
+        for ctx in stale { ctx.teardown?.applySystemWake() }
+        if !stale.isEmpty {
+            logInfo("system wake: reconciled \(stale.count) not-ready tcp egress flow(s)")
+        }
         logInfo("system wake")
         if self.engine != nil {
             startFlowCountReporting()

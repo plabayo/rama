@@ -230,6 +230,107 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertEqual(conn.cancelCount, 0)
     }
 
+    // MARK: - Pre-ready waiting (path down at connect)
+
+    /// `.waiting` that never reaches `.ready` fails fast on the budget
+    /// (pre-open shape: connection cancelled, kernel flow untouched).
+    func testPreReadyWaitingFailsFastWithinBudget() {
+        let savedBudget = defaultEgressPreReadyWaitingBudgetMs
+        defaultEgressPreReadyWaitingBudgetMs = 200
+        defer { defaultEgressPreReadyWaitingBudgetMs = savedBudget }
+
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+
+        // Path down at connect: `.waiting` before ever reaching `.ready`.
+        conn.transition(to: .waiting(.posix(.EHOSTUNREACH)))
+
+        waitFor("pre-ready waiting budget fired teardown", timeout: 3.0) {
+            fx.core.tcpFlowCount == 0
+        }
+        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1, "stale connect must be cancelled")
+        XCTAssertFalse(flow.openWasInvoked, "flow.open must not be called on a failed connect")
+        XCTAssertEqual(
+            flow.closeReadCallCount, 0,
+            "pre-open teardown does not touch the kernel flow (parity with connect-timeout)"
+        )
+    }
+
+    /// A brief pre-ready `.waiting` that recovers to `.ready` before the
+    /// budget elapses is not torn down (budget cancelled on `.ready`).
+    func testPreReadyWaitingThatRecoversIsNotTornDown() {
+        let savedBudget = defaultEgressPreReadyWaitingBudgetMs
+        defaultEgressPreReadyWaitingBudgetMs = 5_000
+        defer { defaultEgressPreReadyWaitingBudgetMs = savedBudget }
+
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+
+        conn.transition(to: .waiting(.posix(.EHOSTUNREACH)))
+        Thread.sleep(forTimeInterval: 0.10)
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "brief pre-ready waiting must not tear down")
+        conn.transition(to: .ready)
+
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "recovery to .ready keeps the flow alive")
+
+        drainAndAwaitRemoval(fx.core, flow: flow, conn: conn)
+    }
+
+    // MARK: - System wake reconcile
+
+    /// On wake, a not-yet-`.ready` egress flow is dropped immediately.
+    func testSystemWakeReconcilesNotReadyEgressFlow() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+        XCTAssertEqual(fx.core.tcpFlowCount, 1)
+
+        // Connection is mid-connect (never `.ready`) when wake fires.
+        fx.core.handleSystemWake()
+
+        waitFor("wake reconciled the not-ready flow", timeout: 3.0) {
+            fx.core.tcpFlowCount == 0
+        }
+        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
+        XCTAssertFalse(flow.openWasInvoked)
+    }
+
+    /// On wake, an established (post-`.ready`) flow is left alone.
+    func testSystemWakeLeavesReadyEgressFlowAlone() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+
+        conn.transition(to: .ready)
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+
+        fx.core.handleSystemWake()
+        Thread.sleep(forTimeInterval: 0.20)
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "wake must not tear down an established flow")
+        XCTAssertEqual(conn.cancelCount, 0, "established egress connection not cancelled by wake")
+
+        drainAndAwaitRemoval(fx.core, flow: flow, conn: conn)
+    }
+
     // MARK: - Post-ready failure paths
 
     func testPostReadyConnectionFailedTearsDownCleanly() {

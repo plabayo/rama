@@ -330,10 +330,7 @@ the kernel's NECP pipe — no interface, not visible to
 ClientHello, missing SNI, wrong ALPN, or an upstream alert.
 
 ```sh
-# Capture for 60 s, all packets to/from suspect hosts. Open the
-# .pcap in Wireshark with the TLS dissector for analysis.
-sudo tcpdump -i en0 -s 0 -n -G 60 -W 1 -w /tmp/rama-tproxy.pcap \
-  'tcp and (host fp.ramaproxy.org or host www.linkedin.com)'
+sudo tcpdump -i en0 -s 0 -C 100 -W 5 -w /tmp/rama-tproxy.pcap
 ```
 
 To decrypt the egress TLS in Wireshark, point the boring

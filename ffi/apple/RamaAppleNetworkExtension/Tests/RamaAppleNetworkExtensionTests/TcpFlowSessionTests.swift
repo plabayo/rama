@@ -132,12 +132,32 @@ final class TcpFlowSessionTests: XCTestCase {
 
     // MARK: - handleEgressWaiting
 
-    /// `.waiting` before `.ready` is ignored — the connect-timeout
-    /// owns that window.
-    func testHandleEgressWaitingPreReadyIsNoop() {
+    /// `.waiting` before `.ready` arms a short fast-fail budget timer,
+    /// exactly once (a repeated pre-ready `.waiting` does not re-arm).
+    func testHandleEgressWaitingPreReadyArmsFastFailBudget() {
         let fx = Fixture()
+        XCTAssertFalse(fx.session.egressReady)
         fx.session.handleEgressWaiting(nil)
+        XCTAssertNotNil(fx.session.waitingWork, "pre-ready .waiting arms a fast-fail budget timer")
+        let firstWork = fx.session.waitingWork
+        fx.session.handleEgressWaiting(nil)
+        XCTAssertTrue(fx.session.waitingWork === firstWork, "duplicate pre-ready .waiting does not re-arm")
+        // Cancel so it can't fire after the test returns.
+        fx.session.waitingWork?.cancel()
+        fx.session.waitingWork = nil
+    }
+
+    /// `.ready` cancels a pending pre-ready waiting budget timer.
+    func testHandleEgressReadyCancelsPreReadyWaitingBudget() {
+        let fx = Fixture()
+        XCTAssertFalse(fx.session.egressReady)
+        fx.session.handleEgressWaiting(nil)
+        let budget = fx.session.waitingWork
+        XCTAssertNotNil(budget)
+        fx.session.handleEgressReady(connection: fx.conn)
+        XCTAssertTrue(budget?.isCancelled ?? false, "pre-ready waiting budget cancelled on .ready")
         XCTAssertNil(fx.session.waitingWork)
+        XCTAssertTrue(fx.session.egressReady)
     }
 
     /// `.waiting` after `.ready` arms a tolerance timer exactly once.

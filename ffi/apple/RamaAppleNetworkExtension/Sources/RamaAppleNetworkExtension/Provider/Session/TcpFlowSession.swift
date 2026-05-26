@@ -211,8 +211,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             return
         }
         egressReady = true
+        ctx.egressReady = true
         timeoutWork?.cancel()
         timeoutWork = nil
+        // Cancel any pre-ready waiting budget so it can't tear a
+        // now-healthy connection down.
+        waitingWork?.cancel()
+        waitingWork = nil
         guard let session = sessionHandle else { return }
 
         let writePump = buildEgressWritePump(connection: connection)
@@ -262,6 +267,9 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         if !egressReady {
             timeoutWork?.cancel()
             timeoutWork = nil
+            // Cancel any pre-ready waiting budget too.
+            waitingWork?.cancel()
+            waitingWork = nil
             core?.logDebug(
                 "egress NWConnection failed before flow opened: \(String(describing: error))"
             )
@@ -275,17 +283,43 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     }
 
     func handleEgressWaiting(_ error: NWError?) {
-        guard egressReady else { return }
+        // One timer at a time.
         if waitingWork != nil { return }
+
+        if egressReady {
+            // Post-ready: established connection lost its path. Tolerate
+            // a brief blip, then tear down as failed.
+            core?.logDebug(
+                "egress NWConnection waiting after flow opened: \(String(describing: error))"
+            )
+            let work = DispatchWorkItem { [weak self] in
+                self?.applyPostReadyTeardown(error: error)
+            }
+            waitingWork = work
+            flowQueue.asyncAfter(
+                deadline: .now() + .milliseconds(Int(defaultEgressWaitingToleranceMs)),
+                execute: work
+            )
+            return
+        }
+
+        // Pre-ready: connect never established, path is down (boot,
+        // wake, VPN transition). Fail fast so the app can retry the
+        // moment the path returns; the timer is cancelled on `.ready`.
         core?.logDebug(
-            "egress NWConnection waiting after flow opened: \(String(describing: error))"
+            "egress NWConnection waiting before ready (path down): \(String(describing: error))"
         )
         let work = DispatchWorkItem { [weak self] in
-            self?.applyPostReadyTeardown(error: error)
+            guard let self, !self.egressReady else { return }
+            self.core?.logDebug(
+                "egress NWConnection pre-ready waiting exceeded budget; failing fast "
+                    + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"
+            )
+            self.ctx.teardown?.applyPreReadyWaitingTimeout()
         }
         waitingWork = work
         flowQueue.asyncAfter(
-            deadline: .now() + .milliseconds(Int(defaultEgressWaitingToleranceMs)),
+            deadline: .now() + .milliseconds(Int(defaultEgressPreReadyWaitingBudgetMs)),
             execute: work
         )
     }

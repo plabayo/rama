@@ -51,6 +51,10 @@ final class TcpFlowContext: @unchecked Sendable {
     /// cancel them from dispatcher-owned close paths.
     var clientWritePump: TcpClientWritePump?
     var egressWritePump: NwTcpConnectionWritePump?
+    /// Egress `NWConnection` reached `.ready`. Set on `flowQueue`; read
+    /// off-queue by the stop-the-world wake reconcile (same relaxation
+    /// the sleep teardown already relies on).
+    var egressReady = false
     /// Mode of the per-flow data path. Mutated only on the
     /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
     var mode: TcpFlowMode = .viaRust
