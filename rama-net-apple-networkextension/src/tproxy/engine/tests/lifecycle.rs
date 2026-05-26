@@ -63,6 +63,29 @@ fn builder_without_udp_max_flow_lifetime_sets_none() {
 }
 
 #[test]
+fn default_udp_idle_timeout_constant_is_sixty_seconds() {
+    assert_eq!(DEFAULT_UDP_IDLE_TIMEOUT, Duration::from_secs(60));
+}
+
+#[test]
+fn builder_default_udp_idle_timeout_is_the_constant() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()));
+    assert_eq!(
+        builder.current_udp_idle_timeout(),
+        Some(DEFAULT_UDP_IDLE_TIMEOUT)
+    );
+}
+
+#[test]
+fn builder_without_udp_idle_timeout_sets_none() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .without_udp_idle_timeout();
+    assert_eq!(builder.current_udp_idle_timeout(), None);
+}
+
+#[test]
 fn default_tcp_paused_drain_max_wait_constant_is_one_minute() {
     assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(1));
 }

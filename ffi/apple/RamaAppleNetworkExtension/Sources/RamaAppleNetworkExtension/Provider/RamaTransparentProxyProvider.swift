@@ -313,6 +313,27 @@ let defaultEgressEofGraceMs: UInt32 = 2_000
 /// code paths read; tests override before invoking the lifecycle.
 nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
+/// Default per-UDP-flow idle watchdog. Apple's `NEAppProxyUDPFlow`
+/// gives the extension no terminal signal for an idle peer (UDP has
+/// no FIN, and the kernel's `flow.readDatagrams` callback only
+/// observes errors / EOF on explicit close). Without a watchdog, a
+/// flow that completes a few request/response datagrams and then
+/// goes quiet (DNS, mDNS probes, NAT-binding pings, …) is pinned
+/// alive by `UdpFlowContext.lifetimeAnchor` until the engine-side
+/// `udp_max_flow_lifetime` cap fires — 15 min by default, which is
+/// long enough to accumulate thousands of leaked sessions under
+/// normal device traffic.
+///
+/// 60 s is the smallest window that comfortably exceeds typical
+/// real-world UDP-flow idle gaps (DNS retry cadence, NAT-keepalive
+/// intervals, mDNS jitter); active flows — QUIC long-poll, WebRTC
+/// media — push the deadline forward on every datagram so they're
+/// unaffected.
+///
+/// `var` for tests that need a short timeout to keep ARC-leak-check
+/// runtime bounded — same pattern as `defaultLingerCloseMs`.
+nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt32 = 60_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields

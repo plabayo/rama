@@ -75,6 +75,20 @@ pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_mins(15);
 /// [`TransparentProxyEngineBuilder::without_udp_max_flow_lifetime`].
 pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 
+/// Default per-UDP-flow idle timeout — close the flow when no
+/// datagrams have been observed in either direction for this long.
+/// Distinct from [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: that is a hard
+/// wall-clock cap from flow start (whether active or idle); this
+/// resets on each datagram. Opt out via
+/// [`TransparentProxyEngineBuilder::without_udp_idle_timeout`].
+///
+/// 60 s is the smallest window that comfortably exceeds typical
+/// real-world UDP-flow idle gaps (DNS retry cadence, NAT-keepalive
+/// intervals, mDNS jitter). Active flows — QUIC long-poll, WebRTC
+/// media — push the deadline forward on every datagram so they're
+/// unaffected.
+pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Action taken when a flow handler exceeds the configured decision deadline.
 ///
 /// The deadline exists to prevent a hung handler from holding kernel flow
@@ -199,6 +213,7 @@ pub struct TransparentProxyEngine<H> {
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
@@ -352,6 +367,7 @@ where
 
         let udp_channel_capacity = self.udp_channel_capacity;
         let udp_max_flow_lifetime = self.udp_max_flow_lifetime;
+        let udp_idle_timeout = self.udp_idle_timeout;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
         let exec = Executor::graceful(guard.clone());
@@ -365,6 +381,7 @@ where
                 meta,
                 udp_channel_capacity,
                 udp_max_flow_lifetime,
+                udp_idle_timeout,
                 decision_deadline,
                 decision_deadline_action,
                 on_server_datagram,
@@ -1085,6 +1102,12 @@ pub struct TransparentProxyUdpSession {
     /// in-flight Rust task. See the `guarded_*_sink` helpers for the
     /// load-bearing pattern.
     callback_active: Arc<parking_lot::Mutex<bool>>,
+
+    /// Optional liveness signal for the engine-side UDP idle watcher.
+    /// Fired on every observed ingress (`on_client_datagram`) and
+    /// egress (the service's `Datagram` sink) datagram. `None` when
+    /// the builder opted out via `without_udp_idle_timeout`.
+    idle_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl TransparentProxyUdpSession {
@@ -1094,6 +1117,15 @@ impl TransparentProxyUdpSession {
     /// faithfully proxied. `None` is the safety-valve for paths that
     /// lack endpoint attribution.
     pub fn on_client_datagram(&mut self, bytes: &[u8], peer: Option<SocketAddr>) {
+        // Fire BEFORE the channel send: even if the channel is closed
+        // (session torn down) the activity itself happened, and the
+        // service task's idle watcher gets one consistent signal. The
+        // watcher's `notified()` resolves at most once per
+        // notify-then-notified pair, so back-to-back datagrams between
+        // iterations coalesce into a single wake — no thundering herd.
+        if let Some(notify) = self.idle_notify.as_ref() {
+            notify.notify_one();
+        }
         // Zero-length datagrams are valid per RFC 768; some protocols
         // (DTLS heartbeats, NAT-binding probes, keep-alives) rely on
         // them. Forward them through the bridge unchanged — the
@@ -1264,6 +1296,7 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     meta: TransparentProxyFlowMeta,
     udp_channel_capacity: usize,
     udp_max_flow_lifetime: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     on_server_datagram: OnDatagram,
@@ -1329,8 +1362,27 @@ where
     // the FFI box releases that happen right after `_session_free`
     // are race-free.
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
+
+    // Liveness signal for the engine-side idle watcher. Allocated
+    // only when an idle timeout is configured; the wrapped sink
+    // notifies on every service-emitted egress datagram, and
+    // `on_client_datagram` mirrors the wake for the ingress
+    // direction. The watcher races `serve_fut` in the service
+    // task — see the `IdleTimeout` arm below.
+    let idle_notify: Option<Arc<tokio::sync::Notify>> =
+        udp_idle_timeout.map(|_| Arc::new(tokio::sync::Notify::new()));
+
+    let on_server_datagram_with_idle: DatagramSink = if let Some(notify) = idle_notify.clone() {
+        let inner: DatagramSink = Arc::new(on_server_datagram);
+        Arc::new(move |d| {
+            notify.notify_one();
+            inner(d);
+        })
+    } else {
+        Arc::new(on_server_datagram)
+    };
     let datagram_sink: DatagramSink =
-        guarded_datagram_sink(callback_active.clone(), Arc::new(on_server_datagram));
+        guarded_datagram_sink(callback_active.clone(), on_server_datagram_with_idle);
     let closed_sink: ClosedSink =
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
     let user_demand_sink: DemandSink = Arc::new(on_client_read_demand);
@@ -1351,6 +1403,7 @@ where
     // is applied when the feature is on (see TCP path for context).
     let meta_for_close = meta_arc.clone();
     let flow_guard_for_task = flow_guard.clone();
+    let idle_notify_for_task = idle_notify.clone();
     let service_task = Executor::graceful(flow_guard).spawn_task(async move {
         let Ok(flow) = flow_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
@@ -1363,8 +1416,8 @@ where
             }
             return;
         };
-        // Drive `service.serve(flow)` to completion, but observe two
-        // additional terminators:
+        // Drive `service.serve(flow)` to completion, but observe up to
+        // three additional terminators:
         //
         //   * `flow_guard.cancelled()` — fires when Swift calls
         //     `on_client_close` (which sends through `flow_stop_tx`) or
@@ -1374,35 +1427,67 @@ where
         //     `closed_sink` / dial9 / structured-tracing close
         //     epilogue below — every clean Swift teardown would
         //     silently drop the close record.
-        //   * `udp_max_flow_lifetime` — when configured, a hard cap so
-        //     flows that never see an explicit close (Swift bug, app
-        //     death, kernel slot leaked, etc.) eventually free their
-        //     per-flow state. See builder doc for semantics.
+        //   * `udp_idle_timeout` — when configured, the per-flow idle
+        //     reaper. Resets on every datagram (ingress or egress);
+        //     trips when both sides have gone quiet. This is the
+        //     fast-feedback path for short-lived bursty flows
+        //     (DNS, mDNS, NAT-keepalive probes) that would otherwise
+        //     live until `udp_max_flow_lifetime`.
+        //   * `udp_max_flow_lifetime` — when configured, a hard cap
+        //     from flow start. Survives traffic; backstops a
+        //     misbehaving idle reaper or a service-side wedge that
+        //     keeps the idle signal alive without making real progress.
+        //     See builder doc for semantics.
         let mut serve_fut = std::pin::pin!(service.serve(flow));
-        let close_reason = if let Some(lifetime) = udp_max_flow_lifetime {
-            tokio::select! {
-                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
-                res = tokio::time::timeout(lifetime, &mut serve_fut) => {
-                    if res.is_ok() {
-                        BridgeCloseReason::PeerEofLeft
-                    } else {
-                        tracing::warn!(
-                            target: "rama_apple_ne::tproxy",
-                            flow_id = meta_for_close.flow_id,
-                            lifetime_ms = u64::try_from(lifetime.as_millis()).unwrap_or(u64::MAX),
-                            "transparent proxy udp flow exceeded max lifetime; closing",
-                        );
-                        BridgeCloseReason::IdleTimeout
-                    }
+        let lifetime_fut = async {
+            if let Some(lifetime) = udp_max_flow_lifetime {
+                tokio::time::sleep(lifetime).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let idle_fut = async {
+            let (Some(timeout), Some(notify)) =
+                (udp_idle_timeout, idle_notify_for_task.as_ref())
+            else {
+                std::future::pending::<()>().await;
+                return;
+            };
+            loop {
+                let notified = notify.notified();
+                match tokio::time::timeout(timeout, notified).await {
+                    Ok(()) => continue,
+                    Err(_) => return,
                 }
             }
-        } else {
-            tokio::select! {
-                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
-                res = &mut serve_fut => {
-                    _ = res;
-                    BridgeCloseReason::PeerEofLeft
-                }
+        };
+        let close_reason = tokio::select! {
+            () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+            res = &mut serve_fut => {
+                _ = res;
+                BridgeCloseReason::PeerEofLeft
+            }
+            () = idle_fut => {
+                tracing::debug!(
+                    target: "rama_apple_ne::tproxy",
+                    flow_id = meta_for_close.flow_id,
+                    idle_ms = udp_idle_timeout
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                    "transparent proxy udp flow idle; closing",
+                );
+                BridgeCloseReason::IdleTimeout
+            }
+            () = lifetime_fut => {
+                tracing::warn!(
+                    target: "rama_apple_ne::tproxy",
+                    flow_id = meta_for_close.flow_id,
+                    lifetime_ms = udp_max_flow_lifetime
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                    "transparent proxy udp flow exceeded max lifetime; closing",
+                );
+                BridgeCloseReason::IdleTimeout
             }
         };
         emit_udp_session_close_event(close_reason, &meta_for_close);
@@ -1429,6 +1514,7 @@ where
         pending: Some(pending),
         service_task: Some(service_task),
         callback_active,
+        idle_notify,
     })
 }
 

@@ -78,7 +78,8 @@ pub use self::{
     engine::{
         BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedServerDatagramSink,
         BoxedTransparentProxyEngine, DEFAULT_DECISION_DEADLINE, DEFAULT_TCP_IDLE_TIMEOUT,
-        DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, DEFAULT_UDP_MAX_FLOW_LIFETIME, DecisionDeadlineAction,
+        DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, DEFAULT_UDP_IDLE_TIMEOUT, DEFAULT_UDP_MAX_FLOW_LIFETIME,
+        DecisionDeadlineAction,
         DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, Promote, PromoteError,
         PromoteHandle, PromoteLayer, SessionFlowAction, TcpDeliverStatus,
         TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine,

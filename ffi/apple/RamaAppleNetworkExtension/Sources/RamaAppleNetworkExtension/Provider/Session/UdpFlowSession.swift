@@ -17,6 +17,19 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
 
     var sessionHandle: RamaUdpSessionHandle?
 
+    /// Wall-clock cap on per-flow idle (no datagrams in either
+    /// direction). 0 disables the watchdog. Defaults to
+    /// `defaultUdpIdleTimeoutMs`; override in tests by setting
+    /// this on the session before calling `start()`.
+    var idleTimeoutMs: UInt32 = defaultUdpIdleTimeoutMs
+
+    /// Pending one-shot idle work item, queue-confined.
+    /// `armIdleTimer` cancels and reschedules; the terminate
+    /// closure cancels and nils it. Tracked separately from
+    /// `ctx` so unit tests can observe whether the watchdog
+    /// has been armed without poking at internal state.
+    var idleWork: DispatchWorkItem?
+
     init(core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge) {
         self.core = core
         self.flow = flow
@@ -67,17 +80,22 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
 
     func installTerminate() {
         // Capture only what the closure needs — flow / queue / flowId
-        // strong, ctx / core weak. This keeps the closure independent
-        // of the session's lifetime so it stays callable even if no
-        // external framework anchors a reference back to the
-        // session.
+        // strong, ctx / core / session weak. This keeps the closure
+        // independent of the session's lifetime so it stays callable
+        // even if no external framework anchors a reference back to
+        // the session. `weak self` is used solely to reach the idle
+        // watchdog work item; nil-self just skips the cancel, which
+        // is fine because the work item itself captures `[weak self]`
+        // and no-ops on a dead session.
         let flow = self.flow
         let flowQueue = self.flowQueue
         let flowId = self.flowId
-        ctx.terminate = { [weak ctx, weak core = self.core] error in
-            flowQueue.async { [weak ctx, weak core] in
+        ctx.terminate = { [weak ctx, weak core = self.core, weak self] error in
+            flowQueue.async { [weak ctx, weak core, weak self] in
                 guard let ctx, ctx.readState != .closed else { return }
                 ctx.readState = .closed
+                self?.idleWork?.cancel()
+                self?.idleWork = nil
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -88,6 +106,36 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
                 ctx.lifetimeAnchor = nil
             }
         }
+    }
+
+    /// Cancel any pending idle work item and arm a fresh one. Called
+    /// after `flow.open` succeeds and on every datagram in either
+    /// direction. When the work item fires, it terminates the flow
+    /// with `nil` (clean idle close) so the lifetimeAnchor cycle is
+    /// broken and the session can deallocate.
+    ///
+    /// Must run on `flowQueue`. `idleTimeoutMs == 0` disables the
+    /// watchdog (used in tests that exercise other code paths).
+    func armIdleTimer() {
+        idleWork?.cancel()
+        idleWork = nil
+        let timeout = idleTimeoutMs
+        guard timeout > 0 else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // Observe the latest readState — a terminate that
+            // raced ahead between fire and execution would have
+            // cleared idleWork, but a fresh re-arm could have
+            // landed in between. Guarding here keeps the
+            // watchdog harmless against double-fire.
+            guard self.ctx.readState != .closed else { return }
+            self.core?.logDebug(
+                "udp flow idle for \(timeout) ms; closing (lifetimeAnchor cycle break)"
+            )
+            self.ctx.terminate?(nil)
+        }
+        idleWork = work
+        flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(timeout)), execute: work)
     }
 
     func buildClientWritePump() {
@@ -153,6 +201,9 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
                 return
             }
 
+            // Reset the idle deadline — Apple just gave us datagrams,
+            // the flow is alive.
+            self.armIdleTimer()
             self.forwardDatagrams(datagrams: datagrams, endpoints: endpoints, session: session)
             if hadPendingDemand { ctx.requestRead?() }
         }
@@ -189,8 +240,18 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
         guard let engine = core?.engine else { return nil }
         return engine.newUdpSession(
             meta: meta,
-            onServerDatagram: { [weak ctx] data, peer in
+            onServerDatagram: { [weak ctx, weak self] data, peer in
+                // Push the datagram synchronously (writer.enqueue is
+                // queue-internal) AND hop to flowQueue to bump the
+                // idle deadline. The hop is a few microseconds of
+                // additional latency on the rare path where the
+                // Rust → Swift datagram is the only liveness signal;
+                // worth it to avoid a UAF on `self.idleWork` from a
+                // background scheduler thread.
                 ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
+                self?.flowQueue.async { [weak self] in
+                    self?.armIdleTimer()
+                }
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
@@ -209,6 +270,15 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
                 self.core?.logTrace("flow.open ok (udp; egress on Rust-owned BSD socket)")
                 self.ctx.writer?.markOpened()
                 self.ctx.session?.activate()
+                // Arm the idle watchdog. Subsequent datagrams in
+                // either direction push the deadline forward; an
+                // idle peer (DNS that's answered and gone quiet,
+                // NAT-binding probe with no response, …) trips the
+                // watchdog and we terminate cleanly. Without this,
+                // `lifetimeAnchor` cycle would pin the session
+                // until the engine-side `udp_max_flow_lifetime`
+                // cap fires (15 min by default).
+                self.armIdleTimer()
                 self.ctx.requestRead?()
             }
         }
