@@ -359,13 +359,24 @@ final class TransparentProxyCore: @unchecked Sendable {
             // (e.g. test-only manual fire) lands here. No-op.
             return
         }
+        // Note `clientReadPump`: installed by `armReadTerminal`, which
+        // runs inside the `flow.open` completion callback. Its
+        // presence is the canonical "kernel flow is open" signal —
+        // the forwarder we build below issues `flow.readData` and
+        // expects the kernel side to honor it. Promoting before
+        // flow.open completes (only possible since we moved
+        // `armPromoteCallback` ahead of `session.activate` to fix
+        // the registration race) would start the forwarder on an
+        // unopened flow; refuse cleanly and let the service fall
+        // back to the in-Rust path.
         guard let session = ctx.session,
               let connection = ctx.connection,
               let clientWritePump = ctx.clientWritePump,
-              let egressWritePump = ctx.egressWritePump
+              let egressWritePump = ctx.egressWritePump,
+              ctx.clientReadPump != nil
         else {
             logDebug(
-                "promote: flow not in a promotable state (missing session/connection/pumps); confirming failed"
+                "promote: flow not in a promotable state (missing session/connection/pumps or flow.open not yet complete); confirming failed"
             )
             ctx.session?.confirmPromoted(
                 .failed, reason: "egress not ready")

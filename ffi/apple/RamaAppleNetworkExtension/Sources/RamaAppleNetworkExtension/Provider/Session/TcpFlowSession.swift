@@ -218,6 +218,22 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         let writePump = buildEgressWritePump(connection: connection)
         let readPump = buildEgressReadPump(connection: connection, session: session)
 
+        // Register the Rust→Swift promote callback BEFORE
+        // `session.activate(...)` hands the BridgeIo to the service
+        // task. The service can call `PromoteHandle::into_passthrough`
+        // on its very first poll; if no callback is registered at
+        // the moment `fire()` dispatches, the Rust side returns
+        // `EgressUnavailable` and `PromoteLayer` silently falls
+        // through to the in-Rust data path. Registering here closes
+        // that race window — the FFI registration completes
+        // synchronously before activate's `bridge_tx.send(...)`.
+        //
+        // The callback body still hops to `flowQueue` and guards on
+        // ctx state, so a promote firing before `flow.open` finishes
+        // is observed by `beginPromoteCutover`'s `clientReadPump != nil`
+        // gate and confirmed-failed cleanly. See `armPromoteCallback`.
+        armPromoteCallback()
+
         session.activate(
             onWriteToEgress: { [weak ctx] data in
                 ctx?.egressWritePump?.enqueue(data) ?? .closed
@@ -345,7 +361,9 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 self.ctx.clientWritePump?.markOpened()
                 readPump.start()
                 self.armReadTerminal(readPump: readPump, session: session)
-                self.armPromoteCallback()
+                // `armPromoteCallback()` was moved to `handleEgressReady`
+                // (before `session.activate`) to close the registration
+                // race with the service task — see the comment there.
                 self.ctx.clientReadPump?.requestRead()
             }
         }
