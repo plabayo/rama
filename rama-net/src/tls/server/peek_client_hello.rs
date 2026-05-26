@@ -121,7 +121,17 @@ where
     }
 
     let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
-    let record_size = (n + TLS_HEADER_PEEK_LEN).min(2048); // limit to 2k bytes, should be plenty for a record that's usually <=500 bytes
+    // Size the peek buffer to the declared TLS record body length,
+    // bounded by the TLS record-size ceiling (RFC 8446 §5.1: a record
+    // payload is at most 2^14 bytes). The previous 2 KiB cap silently
+    // truncated modern ClientHellos (Firefox/Chrome with post-quantum
+    // key shares, GREASE, ALPS, full cipher lists routinely exceed
+    // 2 KiB) — combined with a parser that masked a truncated read as
+    // "no extensions", that made us mirror a bare default ClientHello
+    // and get rejected by SNI-routed upstreams. The bound still guards
+    // against a malformed huge length triggering an unbounded alloc.
+    const MAX_TLS_RECORD_BODY: usize = 16 * 1024;
+    let record_size = (n + TLS_HEADER_PEEK_LEN).min(MAX_TLS_RECORD_BODY + TLS_HEADER_PEEK_LEN);
 
     let mut v = vec![0u8; record_size];
     v[..TLS_HEADER_PEEK_LEN].copy_from_slice(&peek_buf[..]);
