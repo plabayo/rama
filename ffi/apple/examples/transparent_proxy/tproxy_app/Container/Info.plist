@@ -16,7 +16,12 @@
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <!-- Must match Extension/Info.plist's NEMachServiceName (see comment
+       there). Embeds $(CURRENT_PROJECT_VERSION) to dodge Apple
+       FB21271237 — without the version suffix the launchd MachServices
+       table doesn't refresh on sysext replacement and XPC lookups fail
+       until the next reboot. -->
   <key>ProviderMachServiceName</key>
-  <string>$(APP_GROUP_ID).provider</string>
+  <string>$(APP_GROUP_ID).provider.$(CURRENT_PROJECT_VERSION)</string>
 </dict>
 </plist>
