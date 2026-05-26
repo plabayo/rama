@@ -112,7 +112,7 @@ compression-core = "0.4"
 const_format = "0.2"
 csv = "1.4"
 derive_more = "2.1"
-dial9-tokio-telemetry = "0.3.10"
+dial9-tokio-telemetry = "0.3.11"
 dial9-trace-format = "0.4"
 divan = "0.1"
 escargot = "0.5"
@@ -125,7 +125,7 @@ futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
-http = "1"
+http = "=1.4.0" # 1.4.1 regressed authority-form CONNECT URIs (hyperium/http#826); pin until we drop the dep
 http-body = "1"
 http-body-util = "0.1"
 http-range-header = "0.4"
@@ -138,7 +138,7 @@ iri-string = "0.7"
 itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-jiff = { version = "0.2.24", features = ["serde"] }
+jiff = { version = "0.2.27", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
