@@ -49,6 +49,10 @@ See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
 
+### Streaming HTML
+
+- [`http_declarative_partial_updates`](./http_declarative_partial_updates.rs) - stream an HTML shell with `<?marker …>` placeholders, then fill them in out-of-order via `<template for=…>` as each async fragment completes ([Chrome declarative partial updates](https://developer.chrome.com/blog/declarative-partial-updates))
+
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data
