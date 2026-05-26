@@ -53,10 +53,9 @@ impl RotationPeriod {
             Self::Minutes(n) | Self::Hours(n) => n,
         };
         if n == 0 {
-            return Err(OpaqueError::from_static_str(
-                "RotationPeriod must be non-zero",
-            )
-            .into_box_error());
+            return Err(
+                OpaqueError::from_static_str("RotationPeriod must be non-zero").into_box_error(),
+            );
         }
         Ok(self)
     }
@@ -84,11 +83,18 @@ impl RotationPeriod {
     }
 
     fn bucket_to_suffix(self, bucket: i64) -> String {
-        let ts = Timestamp::from_second(bucket * self.bucket_size_seconds())
-            .expect("bucket within jiff timestamp range");
-        ts.to_zoned(TimeZone::UTC)
-            .strftime(self.strftime_pattern())
-            .to_string()
+        // For any realistic wall-clock value `from_second` is safe
+        // (jiff covers years -9999..=9999). If the math ever blows
+        // past that range we still need *some* distinct filename;
+        // fall back to the raw bucket integer so the writer keeps
+        // making progress rather than panicking.
+        match Timestamp::from_second(bucket * self.bucket_size_seconds()) {
+            Ok(ts) => ts
+                .to_zoned(TimeZone::UTC)
+                .strftime(self.strftime_pattern())
+                .to_string(),
+            Err(_) => format!("bucket-{bucket}"),
+        }
     }
 
     fn parse_bucket_suffix(self, suffix: &str) -> Option<i64> {
@@ -113,10 +119,7 @@ pub struct RotatingFileKeyLogSink {
 
 impl RotatingFileKeyLogSink {
     /// Open with [`DEFAULT_PREFIX`] and no retention sweep.
-    pub fn try_open(
-        dir: impl Into<PathBuf>,
-        period: RotationPeriod,
-    ) -> Result<Self, BoxError> {
+    pub fn try_open(dir: impl Into<PathBuf>, period: RotationPeriod) -> Result<Self, BoxError> {
         Self::try_open_with(dir, DEFAULT_PREFIX, period, None)
     }
 
@@ -147,7 +150,7 @@ impl RotatingFileKeyLogSink {
         let dir_thread = dir.clone();
         let prefix_thread = prefix.to_owned();
         std::thread::spawn(move || {
-            writer_loop(dir_thread, prefix_thread, period, retention_buckets, rx)
+            writer_loop(&dir_thread, &prefix_thread, period, retention_buckets, &rx);
         });
         Ok(Self {
             tx,
@@ -188,11 +191,11 @@ impl KeyLogSink for RotatingFileKeyLogSink {
 }
 
 fn writer_loop(
-    dir: PathBuf,
-    prefix: String,
+    dir: &Path,
+    prefix: &str,
     period: RotationPeriod,
     retention_buckets: Option<i64>,
-    rx: flume::Receiver<String>,
+    rx: &flume::Receiver<String>,
 ) {
     tracing::trace!(
         ?dir,
@@ -211,16 +214,12 @@ fn writer_loop(
             // Drop previous file before opening the new one so any
             // OS-level buffered bytes flush via `File`'s Drop impl.
             current = None;
-            let new_path = make_path(&dir, &prefix, period, bucket);
-            match OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(&new_path)
-            {
+            let new_path = make_path(dir, prefix, period, bucket);
+            match OpenOptions::new().append(true).create(true).open(&new_path) {
                 Ok(file) => {
                     if let Some(retain) = retention_buckets {
                         let oldest_kept = bucket - retain + 1;
-                        sweep_older_than(&dir, &prefix, period, oldest_kept, &new_path);
+                        sweep_older_than(dir, prefix, period, oldest_kept, &new_path);
                     }
                     current = Some((bucket, file, new_path));
                 }
@@ -294,10 +293,10 @@ mod tests {
 
     #[test]
     fn period_zero_is_rejected() {
-        assert!(RotationPeriod::Hours(0).validate().is_err());
-        assert!(RotationPeriod::Minutes(0).validate().is_err());
-        assert!(RotationPeriod::Hours(1).validate().is_ok());
-        assert!(RotationPeriod::Minutes(15).validate().is_ok());
+        RotationPeriod::Hours(0).validate().unwrap_err();
+        RotationPeriod::Minutes(0).validate().unwrap_err();
+        RotationPeriod::Hours(1).validate().unwrap();
+        RotationPeriod::Minutes(15).validate().unwrap();
     }
 
     #[test]
@@ -336,18 +335,12 @@ mod tests {
     fn writes_land_in_current_bucket_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
-        let sink =
-            RotatingFileKeyLogSink::try_open(dir.path(), period).expect("open");
+        let sink = RotatingFileKeyLogSink::try_open(dir.path(), period).expect("open");
         sink.write_line("CLIENT_RANDOM a b\n");
         sink.write_line("CLIENT_RANDOM c d\n");
         drop(sink);
 
-        let expected_path = make_path(
-            dir.path(),
-            DEFAULT_PREFIX,
-            period,
-            period.current_bucket(),
-        );
+        let expected_path = make_path(dir.path(), DEFAULT_PREFIX, period, period.current_bucket());
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(content) = std::fs::read_to_string(&expected_path)
@@ -421,13 +414,8 @@ mod tests {
         let ancient = make_path(dir.path(), DEFAULT_PREFIX, period, 0);
         std::fs::write(&ancient, b"ancient\n").unwrap();
 
-        let sink = RotatingFileKeyLogSink::try_open_with(
-            dir.path(),
-            DEFAULT_PREFIX,
-            period,
-            None,
-        )
-        .expect("open");
+        let sink = RotatingFileKeyLogSink::try_open_with(dir.path(), DEFAULT_PREFIX, period, None)
+            .expect("open");
         sink.write_line("now\n");
         drop(sink);
 

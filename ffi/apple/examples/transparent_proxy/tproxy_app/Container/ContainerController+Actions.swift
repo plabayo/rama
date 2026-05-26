@@ -92,6 +92,16 @@ extension ContainerController {
             showProviderInactiveAlert(action: "Toggle TLS Keylog")
             return
         }
+        guard !xpcServiceName.isEmpty else {
+            logErrorText(
+                "toggleTlsKeylog: xpcServiceName is empty — check ProviderMachServiceName in Info.plist"
+            )
+            showCommandErrorAlert(
+                title: "TLS Keylog Toggle Failed",
+                message: "XPC service name is empty. Reinstall the container app."
+            )
+            return
+        }
 
         let requested = !demoSettings.tlsKeylogEnabled
         let client = ramaXpcClient

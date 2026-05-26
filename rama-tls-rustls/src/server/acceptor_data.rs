@@ -1,9 +1,9 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::RamaKeyLog;
-use rama_net::tls::keylog::open_intent_sink;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extension;
+use rama_net::tls::keylog::open_intent_sink;
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use std::pin::Pin;

@@ -4,7 +4,6 @@ use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     types::SecureTransport,
 };
-use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 use parking_lot::Mutex;
 use rama_core::{
     Service,
@@ -14,6 +13,7 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
+use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 use rama_net::{
     extensions::StreamTransformed,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
