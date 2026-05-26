@@ -26,8 +26,12 @@ use std::{
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
 
+// `alert` module retained (encode_plain_alert + write_plain_alert) so
+// the wire-format pin tests stay live and we can re-enable injection
+// later without resurrecting the byte layout. The `write_plain_alert`
+// call sites are reverted — see the comments at those sites.
+#[allow(dead_code)]
 mod alert;
-use self::alert::{AlertDescription, AlertLevel, write_plain_alert};
 
 pub mod issuer;
 
@@ -528,19 +532,21 @@ where
                         }
                     }
                 };
-                // Pre-ingress-handshake bail-out: we haven't written a
-                // byte on the ingress wire yet, so it's safe (and
-                // valuable) to send a plaintext TLS Alert. Firefox and
-                // other browsers surface this as a TLS error rather
-                // than the "Recv failure: Connection reset by peer"
-                // pathology a raw TCP close produces. Best-effort —
-                // the client may already be gone.
-                write_plain_alert(
-                    &mut ingress_stream,
-                    AlertLevel::Fatal,
-                    AlertDescription::HandshakeFailure,
-                )
-                .await;
+                // The plaintext TLS Alert injection that used to live
+                // here was reverted — empirical regression report
+                // (Firefox `SSL_ERROR_NO_CYPHER_OVERLAP` + Safari
+                // weird-redirect behavior on a tproxy that worked
+                // fine on `main`). Hypothesis: even though the
+                // alert path only fires on egress-handshake failure,
+                // emitting a fatal handshake-failure record changes
+                // how Firefox NSS classifies the connection close
+                // versus the previous transport-reset baseline, and
+                // somehow drops the client into a worse retry path.
+                // The right next step is a packet capture of one
+                // failing handshake; until then, restore the
+                // main-branch behavior of letting the transport
+                // close speak for itself.
+                let _ = &mut ingress_stream;
                 return Err(relay_err);
             }
         };
@@ -747,12 +753,9 @@ where
         let (acceptor, maybe_negotiated_params, egress_tls_stream) = match acceptor_build_result {
             Ok(t) => t,
             Err(e) => {
-                write_plain_alert(
-                    &mut ingress_stream,
-                    AlertLevel::Fatal,
-                    AlertDescription::HandshakeFailure,
-                )
-                .await;
+                // Same revert as the egress-handshake-failure path
+                // above. See that comment for the full rationale.
+                let _ = &mut ingress_stream;
                 return Err(e);
             }
         };
