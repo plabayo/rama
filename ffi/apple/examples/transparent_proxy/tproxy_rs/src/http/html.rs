@@ -215,8 +215,11 @@ fn is_html_rewrite_candidate<B>(response: &Response<B>) -> bool {
         return false;
     }
 
+    // Bail out when Content-Length is missing — that's the
+    // length-unknown / streaming case, and the rewrite path does a
+    // full `body.collect()` which would buffer indefinitely.
     let Some(content_length) = headers.typed_get::<ContentLength>() else {
-        return true;
+        return false;
     };
 
     content_length.0 <= MAX_CONTENT_LENGTH_BYTES as u64
@@ -424,6 +427,7 @@ mod tests {
     #[tokio::test]
     async fn html_badge_layer_rewrites_after_decompression_and_recompresses() {
         let html = format!("<html><body>{}</body></html>", "Hello ".repeat(16));
+        let html_len = html.len();
         let svc = (
             StreamCompressionLayer::new().with_compress_predicate(Always::new()),
             HtmlBadgeLayer::new(),
@@ -436,6 +440,9 @@ mod tests {
                     response
                         .headers_mut()
                         .typed_insert(ContentType::html_utf8());
+                    response
+                        .headers_mut()
+                        .typed_insert(ContentLength(html_len as u64));
                     Ok::<_, BoxError>(response)
                 }
             }));
@@ -479,6 +486,37 @@ mod tests {
                 .any(|w| w == badge_html.as_slice()),
             "output: {:?}",
             String::from_utf8_lossy(&decompressed)
+        );
+    }
+
+    /// Streaming HTML responses (no `Content-Length`) must pass through
+    /// without buffering. Before this fix the rewrite path treated them
+    /// as candidates and called `body.collect().await`, which stalled
+    /// the response until the upstream finished sending.
+    #[tokio::test]
+    async fn html_badge_layer_skips_unbounded_streaming_html() {
+        let body = Bytes::from_static(b"<html><body>chunk1");
+        let expected_body = body.clone();
+        let svc = HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| {
+            let body = body.clone();
+            async move {
+                // Stream-shaped response: ContentType set, but no
+                // Content-Length — the shape a chunked upstream emits.
+                let mut response = Response::new(Body::from(body));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }
+        }));
+
+        let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+
+        assert_eq!(
+            body_bytes.as_ref(),
+            expected_body.as_ref(),
+            "streaming HTML must pass through unmodified",
         );
     }
 }
