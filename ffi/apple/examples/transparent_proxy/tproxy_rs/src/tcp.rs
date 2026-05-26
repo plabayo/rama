@@ -1,5 +1,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+use rama::net::tls::KeyLogIntent;
+use rama::telemetry::tracing;
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -68,12 +70,49 @@ impl DemoTcpMitmService {
         )?;
         let ca_crt_pem: Bytes = Bytes::from(ca_crt.to_pem().context("encode root ca cert to pem")?);
 
+        // Build the MITM relay with optional SSLKEYLOG sink. The
+        // toggle lives in `DemoProxyConfig`; the path is fixed —
+        // `<storage_dir>/sslkeylog.txt` — chosen because the
+        // storage dir is the only path the sysext is guaranteed to
+        // be able to write to (App Group container would also
+        // work but adds entitlement plumbing the example doesn't
+        // need). When the flag is off we hard-disable rather than
+        // fall back to `KeyLogIntent::Environment`: a sysext can't
+        // see the user's shell env var anyway, and
+        // `Disabled` avoids silently inheriting whatever a
+        // `launchctl setenv SSLKEYLOGFILE …` left behind.
+        let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
+        if demo_config.tls_keylog_enabled {
+            match crate::utils::storage_dir() {
+                Some(dir) => {
+                    let path = dir.join("sslkeylog.txt");
+                    tracing::info!(
+                        path = %path.display(),
+                        "TLS keylog ENABLED — every relayed handshake's session keys will be \
+                         written to this file (Wireshark: Preferences → Protocols → TLS → \
+                         (Pre)-Master-Secret log filename)",
+                    );
+                    tls_mitm_relay
+                        .set_keylog_intent(KeyLogIntent::File(path.to_string_lossy().into_owned()));
+                }
+                None => {
+                    tracing::warn!(
+                        "TLS keylog requested but no storage_dir was passed to the engine; \
+                         falling back to disabled",
+                    );
+                    tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
+                }
+            }
+        } else {
+            tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
+        }
+
         let initial_settings = LiveSettings {
             html_badge_enabled: demo_config.html_badge_enabled,
             html_badge_label: demo_config.html_badge_label.clone(),
             exclude_domains: demo_config.exclude_domains.clone(),
             ca_crt_pem,
-            tls_mitm_relay: TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key),
+            tls_mitm_relay,
         };
         let state: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(initial_settings));
 
@@ -121,8 +160,7 @@ impl DemoTcpMitmService {
         // leave the inner fallback (post-TLS-MITM cleartext) as plain
         // `IoForwardService`.
         let plain_passthrough = IoForwardService::new(exec.clone());
-        let promote_passthrough =
-            PromoteLayer::new().into_layer(plain_passthrough.clone());
+        let promote_passthrough = PromoteLayer::new().into_layer(plain_passthrough.clone());
 
         let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
             .with_peek_timeout(peek_duration)
@@ -138,8 +176,7 @@ impl DemoTcpMitmService {
             .with_fallback(promote_passthrough);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
-            (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
-                .into_layer(inner_http_router),
+            (tls_mitm_relay_policy, settings.tls_mitm_relay.clone()).into_layer(inner_http_router),
         )
         .with_peek_timeout(peek_duration)
         .with_fallback(outer_http_router);

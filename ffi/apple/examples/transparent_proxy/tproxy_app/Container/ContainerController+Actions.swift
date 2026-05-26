@@ -80,6 +80,99 @@ extension ContainerController {
         applyDemoSettings()
     }
 
+    /// Flip the TLS keylog toggle. Baked at engine-construction time
+    /// (it's a `KeyLogIntent` on the `TlsMitmRelay`), so a change
+    /// while the proxy is connected requires the provider to
+    /// restart — confirm with the user first. While inactive the
+    /// change just goes into in-memory `demoSettings` and is
+    /// persisted via the normal `applyDemoSettings` path; it takes
+    /// effect on the next `Start Proxy`.
+    @objc func toggleTlsKeylogAction(_: Any?) {
+        let newValue = !demoSettings.tlsKeylogEnabled
+        // Sysext writes to its Application Support container; mention
+        // it in the dialog so users know where to grab the file from.
+        let pathHint =
+            "~root/Library/Application Support/rama/tproxy/sslkeylog.txt"
+
+        let isActive: Bool = {
+            guard let activeManager else { return false }
+            switch activeManager.connection.status {
+            case .connected, .connecting, .reasserting: return true
+            default: return false
+            }
+        }()
+
+        if !isActive {
+            demoSettings.tlsKeylogEnabled = newValue
+            updateDemoSettingsMenu()
+            if newValue {
+                log("TLS keylog ENABLED (proxy inactive); takes effect on next Start Proxy. Sysext path: \(pathHint)")
+            } else {
+                log("TLS keylog disabled (proxy inactive)")
+            }
+            applyDemoSettings()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText =
+            newValue
+            ? "Enable TLS Session Key Logging?"
+            : "Disable TLS Session Key Logging?"
+        let detail =
+            newValue
+            ? """
+              The MITM relay's keylog sink is baked at engine \
+              construction. Enabling it requires restarting the proxy \
+              (your connection will briefly drop).
+
+              Once enabled the sysext writes session keys to:
+
+                  \(pathHint)
+
+              Anyone with read access to that file can decrypt every \
+              relayed flow while logging is on. Disable it when done.
+              """
+            : """
+              Disabling the keylog requires restarting the proxy \
+              (your connection will briefly drop). The existing key \
+              file is not deleted.
+              """
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Restart Proxy")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            log("TLS keylog toggle cancelled")
+            return
+        }
+
+        guard let manager = activeManager else {
+            // Active flipped to nil between the check and the
+            // confirmation (manager invalidated). Fall through to
+            // the inactive path.
+            demoSettings.tlsKeylogEnabled = newValue
+            updateDemoSettingsMenu()
+            applyDemoSettings()
+            return
+        }
+
+        demoSettings.tlsKeylogEnabled = newValue
+        updateDemoSettingsMenu()
+        log(
+            newValue
+                ? "TLS keylog ENABLED; restarting provider. Sysext path: \(pathHint)"
+                : "TLS keylog disabled; restarting provider"
+        )
+
+        stopProxyAndWaitForDisconnect(manager: manager) { [weak self] in
+            guard let self else { return }
+            self.log("restarting provider after TLS keylog toggle")
+            self.startProxyAfterProviderReady()
+        }
+    }
+
     @objc func refreshAction(_: Any?) {
         refreshManagerAndStatus()
     }

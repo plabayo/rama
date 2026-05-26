@@ -9,6 +9,12 @@ struct DemoProxySettings: Equatable {
         "connectivitycheck.gstatic.com",
         "captive.apple.com",
     ]
+    /// When `true` the sysext MITM relay writes session keys to
+    /// `<storage_dir>/sslkeylog.txt` so Wireshark can decrypt the
+    /// egress (and mirrored-ingress) TLS traffic. Off by default;
+    /// flipping it while the proxy is active requires a provider
+    /// restart (the GUI handles the prompt + restart).
+    var tlsKeylogEnabled: Bool = false
 
     var isDefault: Bool {
         self == Self()
@@ -25,6 +31,7 @@ struct ProxyEngineConfigPayload: Encodable {
     /// the XPC listener via `PeerSecurityRequirement::TeamIdentity(Some(...))`
     /// — same Apple Developer team **and** this exact signing identifier.
     let containerSigningIdentifier: String
+    let tlsKeylogEnabled: Bool
 
     private enum CodingKeys: String, CodingKey {
         case htmlBadgeEnabled = "html_badge_enabled"
@@ -33,5 +40,6 @@ struct ProxyEngineConfigPayload: Encodable {
         case excludeDomains = "exclude_domains"
         case xpcServiceName = "xpc_service_name"
         case containerSigningIdentifier = "container_signing_identifier"
+        case tlsKeylogEnabled = "tls_keylog_enabled"
     }
 }

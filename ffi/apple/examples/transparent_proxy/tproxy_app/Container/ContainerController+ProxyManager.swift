@@ -414,6 +414,7 @@ extension ContainerController {
             // Forward our bundle ID so the sysext can lock the XPC listener to
             // this container only (same Apple Developer team + this identifier).
             containerSigningIdentifier: Bundle.main.bundleIdentifier ?? "",
+            tlsKeylogEnabled: demoSettings.tlsKeylogEnabled,
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -465,6 +466,9 @@ extension ContainerController {
             if !domains.isEmpty {
                 settings.excludeDomains = domains
             }
+        }
+        if let tlsKeylogEnabled = object["tls_keylog_enabled"] as? Bool {
+            settings.tlsKeylogEnabled = tlsKeylogEnabled
         }
         return settings
     }

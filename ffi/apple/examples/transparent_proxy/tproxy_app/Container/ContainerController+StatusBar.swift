@@ -92,6 +92,14 @@ extension ContainerController {
         pingProviderItem.target = self
         menu.addItem(pingProviderItem)
 
+        let tlsKeylogItem = NSMenuItem(
+            title: "Log TLS Session Keys",
+            action: #selector(toggleTlsKeylogAction(_:)),
+            keyEquivalent: ""
+        )
+        tlsKeylogItem.target = self
+        menu.addItem(tlsKeylogItem)
+
         menu.addItem(NSMenuItem.separator())
 
         let resetItem = NSMenuItem(
@@ -125,6 +133,7 @@ extension ContainerController {
         self.installCAMenuItem = installCAItem
         self.clearCAMenuItem = clearCAItem
         self.pingProviderMenuItem = pingProviderItem
+        self.tlsKeylogMenuItem = tlsKeylogItem
         self.resetMenuItem = resetItem
         updateDemoSettingsMenu()
     }
@@ -135,6 +144,7 @@ extension ContainerController {
         excludeDomainsMenuItem?.title =
             "Excluded Domains… (\(demoSettings.excludeDomains.count))"
         rotateCAMenuItem?.title = "Rotate CA"
+        tlsKeylogMenuItem?.state = demoSettings.tlsKeylogEnabled ? .on : .off
     }
 
     func setStatus(status: NEVPNStatus, detail: String?) {
