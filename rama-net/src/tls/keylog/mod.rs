@@ -14,9 +14,11 @@
 mod file;
 mod rotating;
 mod sink;
+mod toggle;
 
 pub use self::file::{FileKeyLogSink, normalize_path};
 pub use self::rotating::{
     DEFAULT_PREFIX as ROTATING_DEFAULT_PREFIX, RotatingFileKeyLogSink, RotationPeriod,
 };
 pub use self::sink::{KeyLogSink, NoopKeyLogSink};
+pub use self::toggle::{KeyLogToggle, ToggleableKeyLogSink};
