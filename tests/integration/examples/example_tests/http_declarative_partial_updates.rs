@@ -2,12 +2,16 @@ use super::utils;
 use rama::{
     futures::StreamExt,
     http::{
-        StatusCode,
+        BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt},
         mime,
     },
 };
 use std::time::{Duration, Instant};
+
+/// String that only ever appears inside the inline polyfill `<script>`,
+/// so its presence is an exact signal for `?polyfill=…` gating.
+const POLYFILL_NEEDLE: &str = "findMarker";
 
 #[tokio::test]
 #[ignore]
@@ -15,6 +19,45 @@ async fn test_http_declarative_partial_updates() {
     utils::init_tracing();
 
     let runner = utils::ExampleRunner::interactive("http_declarative_partial_updates", None);
+
+    // -- ?polyfill toggle --------------------------------------------------
+    //
+    // Fast pre-checks that exercise the Query extractor; done first so the
+    // 4s streaming run doesn't tie up the server.
+    for (url, want, why) in [
+        (
+            "http://127.0.0.1:64805/?polyfill=false",
+            false,
+            "explicit false must omit the polyfill",
+        ),
+        (
+            "http://127.0.0.1:64805/?polyfill=true",
+            true,
+            "explicit true must include the polyfill",
+        ),
+        (
+            "http://127.0.0.1:64805/?other=1",
+            true,
+            "unrelated query params must still default to on",
+        ),
+        (
+            "http://127.0.0.1:64805",
+            true,
+            "no query string must default to on",
+        ),
+    ] {
+        let body = runner
+            .get(url)
+            .send()
+            .await
+            .unwrap()
+            .try_into_string()
+            .await
+            .unwrap();
+        assert_eq!(body.contains(POLYFILL_NEEDLE), want, "{why}");
+    }
+
+    // -- streaming behaviour ----------------------------------------------
 
     let response = runner.get("http://127.0.0.1:64805").send().await.unwrap();
     assert_eq!(StatusCode::OK, response.status());

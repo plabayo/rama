@@ -31,7 +31,9 @@
 //! the streaming response closes, so every fragment would appear at once
 //! at the end. Chrome 148+ ships native support behind
 //! `chrome://flags/#enable-experimental-web-platform-features`; the inline
-//! polyfill is harmless when native already swapped.
+//! polyfill is harmless when native already swapped. Pass `?polyfill=false`
+//! on the request URL to skip the polyfill entirely (e.g. to test against
+//! native support, or measure the baseline shell).
 //!
 //! The pipeline also layers in [`StreamCompressionLayer`] (so each
 //! fragment chunk is compressed and flushed on its own, not held back
@@ -61,6 +63,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             Router,
+            extract::Query,
             response::{IntoResponse, PartialUpdates},
         },
     },
@@ -74,75 +77,35 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
+use serde::Deserialize;
 use std::time::Duration;
 
-const POLYFILL: &str = "\
-(()=>{\
-  /* Feature-detect native declarative-partial-updates: if the marker is\
-     consumed during fragment parsing, the firstChild of the parsed fragment\
-     is null. When that's the case we skip our marker->template swap and\
-     let the browser do it; we still run the mutation observer so the loaded\
-     state attributes get set the same way for both code paths. */\
-  let native=false;\
-  try{\
-    native=document.createRange()\
-      .createContextualFragment('<?marker name=__dpu_t><template for=__dpu_t></template>')\
-      .firstChild===null;\
-  }catch{}\
-  const findMarker=(name)=>{\
-    const it=document.createNodeIterator(document,NodeFilter.SHOW_COMMENT);\
-    let n;\
-    while((n=it.nextNode())){\
-      const d=n.data||'';\
-      if(/^\\?marker\\b/.test(d)){\
-        const m=d.match(/\\bname *= *\"?([^\"\\s]+)\"?/);\
-        if(m&&m[1]===name)return n;\
-      }\
-    }\
-    return null;\
-  };\
-  const swap=(t)=>{\
-    if(native)return;\
-    const name=t.getAttribute('for');\
-    if(!name)return;\
-    const m=findMarker(name);\
-    if(!m)return;\
-    m.replaceWith(t.content.cloneNode(true));\
-    t.remove();\
-  };\
-  const markLoaded=(panel)=>{\
-    if(panel.hasAttribute('data-dpu-loaded'))return;\
-    panel.setAttribute('data-dpu-loaded','');\
-    const ps=document.querySelectorAll('section.panel');\
-    const ld=document.querySelectorAll('section.panel[data-dpu-loaded]');\
-    if(ps.length>0&&ps.length===ld.length)\
-      document.body.setAttribute('data-dpu-done','');\
-  };\
-  if(!native)document.querySelectorAll('template[for]').forEach(swap);\
-  new MutationObserver(ms=>{\
-    for(const m of ms){\
-      if(!native)for(const n of m.addedNodes)\
-        if(n.nodeType===1&&n.tagName==='TEMPLATE'&&n.hasAttribute('for'))swap(n);\
-      if(m.target instanceof HTMLElement&&m.target.matches('section.panel'))\
-        for(const n of m.addedNodes)\
-          if(n.nodeType===1&&n.tagName!=='H2'&&!(n.classList&&n.classList.contains('spinner'))){\
-            markLoaded(m.target);break;\
-          }\
-    }\
-  }).observe(document,{childList:true,subtree:true});\
-})();\
-";
+const POLYFILL: &str = include_str!("http_declarative_partial_updates.js");
+const STYLE: &str = include_str!("http_declarative_partial_updates.css");
 
-async fn dashboard() -> Response {
+#[derive(Debug, Deserialize)]
+struct DashboardQuery {
+    /// `?polyfill=false` opts out of the inline polyfill — useful for
+    /// Chrome 148+ with the experimental flag, or for measuring the
+    /// non-polyfilled baseline. Anything else (including no query) keeps
+    /// the polyfill on.
+    polyfill: Option<bool>,
+}
+
+async fn dashboard(Query(q): Query<DashboardQuery>) -> Response {
+    let polyfill = q.polyfill.unwrap_or(true).then(|| {
+        // Synchronous so the MutationObserver is armed before any body
+        // content (and any `<template for=…>`) streams in.
+        script!(PreEscaped(POLYFILL))
+    });
+
     let shell = html!(
         lang = "en",
         head!(
             meta!(charset = "utf-8"),
             title!("🦙 rama partial updates"),
             style!(PreEscaped(STYLE)),
-            // Synchronous so the MutationObserver is armed before any
-            // body content (and any `<template for=…>`) streams in.
-            script!(PreEscaped(POLYFILL)),
+            polyfill,
         ),
         body!(
             div!(class = "banner", "loading dashboard… (this can take ~4s)"),
@@ -247,27 +210,3 @@ async fn main() {
         .await
         .expect("graceful shutdown");
 }
-
-const STYLE: &str = "\
-body { font-family: system-ui, sans-serif; max-width: 42rem; \
-       margin: 0 auto; padding: 3rem 1rem 2rem; }\
-.banner { position: fixed; top: 1rem; left: 50%; \
-          transform: translateX(-50%); padding: 0.4rem 1rem; \
-          background: #fff3a8; border: 1px solid #c9b400; \
-          border-radius: 999px; font-size: 0.9em; z-index: 100; \
-          transition: opacity 0.25s ease-out; }\
-.lede { color: #555; }\
-.panel { background: #f6f7f9; border-radius: 8px; padding: 1rem; \
-         margin: 1rem 0; min-height: 4rem; }\
-.spinner { display: flex; align-items: center; gap: 0.5em; color: #888; }\
-.spinner .llama { display: inline-block; font-size: 1.6em; \
-                  animation: spin 1.5s linear infinite; }\
-@keyframes spin { from { transform: rotate(0); } \
-                  to   { transform: rotate(360deg); } }\
-.metric { font-family: monospace; font-weight: bold; }\
-.ok { color: #096; }\
-\
-/* the inline polyfill sets these attributes as fragments swap in. */\
-.panel[data-dpu-loaded] .spinner { display: none; }\
-body[data-dpu-done] .banner { opacity: 0; pointer-events: none; }\
-";
