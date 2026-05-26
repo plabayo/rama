@@ -48,6 +48,14 @@ where
     type Error = TlsMitmRelayError;
 
     async fn serve(&self, input: BridgeIo<Ingress, Egress>) -> Result<Self::Output, Self::Error> {
+        // No-CH path: egress will send a default builder CH (no SNI /
+        // ALPN). Surface it so we can audit who's reaching this impl —
+        // in normal MITM setups everyone goes through the
+        // `InputWithClientHello` impl below.
+        tracing::warn!(
+            "tls mitm relay: BridgeIo (no ClientHello) impl invoked; \
+             egress will ship boring defaults"
+        );
         let maybe_connector_data = TlsConnectorDataBuilder::default()
             .with_server_verify_mode(ServerVerifyMode::Disable)
             .build()
@@ -93,8 +101,21 @@ where
         // TODO: in future have flow that works for SNI
         // as well as ECH target data??? If not already...
         let maybe_sni = client_hello.ext_server_name().cloned();
-        let maybe_connector_data = TlsConnectorDataBuilder::try_from(client_hello)
-            .unwrap_or_default()
+        // Split the mirror+default fallback so we can surface which
+        // CHs trip it. `try_from` failure here is the silent route to
+        // a default builder; that builder is what produces the
+        // ~133-byte SNI-less ClientHello seen on the wire.
+        let builder = match TlsConnectorDataBuilder::try_from(client_hello) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(
+                    ?maybe_sni,
+                    "tls mitm relay: TlsConnectorDataBuilder::try_from(ClientHello) failed: {err}; falling back to default builder (no SNI / ALPN)"
+                );
+                TlsConnectorDataBuilder::default()
+            }
+        };
+        let maybe_connector_data = builder
             .with_server_verify_mode(ServerVerifyMode::Disable)
             .build()
             .inspect_err(|err| {
