@@ -30,8 +30,7 @@ use crate::{TlsStream, client, keylog::try_new_key_log_file_handle};
 // the wire-format pin tests stay live and we can re-enable injection
 // later without resurrecting the byte layout. The `write_plain_alert`
 // call sites are reverted — see the comments at those sites.
-#[allow(dead_code)]
-mod alert;
+// mod alert;
 
 pub mod issuer;
 

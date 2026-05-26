@@ -1447,17 +1447,16 @@ where
             }
         };
         let idle_fut = async {
-            let (Some(timeout), Some(notify)) =
-                (udp_idle_timeout, idle_notify_for_task.as_ref())
+            let (Some(timeout), Some(notify)) = (udp_idle_timeout, idle_notify_for_task.as_ref())
             else {
                 std::future::pending::<()>().await;
                 return;
             };
             loop {
                 let notified = notify.notified();
-                match tokio::time::timeout(timeout, notified).await {
-                    Ok(()) => continue,
-                    Err(_) => return,
+                if let Err(err) = tokio::time::timeout(timeout, notified).await {
+                    tracing::debug!("UDP iddle notifier timed out after {err:?}");
+                    return;
                 }
             }
         };
