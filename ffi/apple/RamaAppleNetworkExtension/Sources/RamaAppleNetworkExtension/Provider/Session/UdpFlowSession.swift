@@ -1,13 +1,33 @@
 import Foundation
 import NetworkExtension
 
+/// Type-erased anchor that `TransparentProxyCore` retains for each
+/// intercepted UDP flow.
+///
+/// The core needs to keep the per-flow session alive while the flow
+/// is open (so its closures stay callable and the Rust session
+/// handle isn't dropped from under the running engine), but it
+/// shouldn't have to know about the session's generic flow type
+/// (`UdpFlowSession<NEAppProxyUDPFlow>` in production,
+/// `UdpFlowSession<MockUdpFlow>` in tests). This protocol is the
+/// minimal surface the core actually uses: the per-flow `ctx`,
+/// reached on sleep to fire `terminate`.
+///
+/// Replaces the previous `UdpFlowContext.lifetimeAnchor` cycle —
+/// the context no longer holds the session; the core holds the
+/// session, the session holds the context. One-way ownership, no
+/// cycle to break.
+protocol UdpFlowSessionAnchor: AnyObject {
+    var ctx: UdpFlowContext { get }
+}
+
 /// Per-UDP-flow state machine.
 ///
 /// Replaces the body of `TransparentProxyCore.handleUdpFlow`.
 /// Simpler than its TCP counterpart: no NWConnection (egress is
 /// Rust-owned BSD socket), no pumps beyond the client writer, no
 /// promote cutover.
-final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
+final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sendable {
     weak var core: TransparentProxyCore?
     let flow: F
     let meta: RamaTransparentProxyFlowMetaBridge
@@ -42,12 +62,16 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
     }
 
     /// Entry point. Returns `true` if the flow was claimed.
+    ///
+    /// Ownership model: this session is owned by its caller's local
+    /// variable for the duration of `start()`. The only path that
+    /// transfers ownership to the core is `.intercept`, via
+    /// `registerUdpFlow(_:anchor:)`. Every other path returns
+    /// without registering — the local variable goes out of scope
+    /// at the caller, the session deallocates, and the
+    /// `ctx`/`writer`/closure graph hanging off it deallocates with
+    /// it. No cycle to break, no anchor to clear.
     func start() -> Bool {
-        // Anchor self via ctx so the closures we install can resolve
-        // `[weak self]` for as long as the flow is registered.
-        // Cleared in `installTerminate`'s terminate closure on
-        // teardown.
-        ctx.lifetimeAnchor = self
         installTerminate()
         buildClientWritePump()
         installRequestRead()
@@ -61,7 +85,7 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerUdpFlow(flowId, session: session, context: ctx)
+            core?.registerUdpFlow(flowId, anchor: self)
             openKernelFlow()
             return true
         case .passthrough:
@@ -80,13 +104,12 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
 
     func installTerminate() {
         // Capture only what the closure needs — flow / queue / flowId
-        // strong, ctx / core / session weak. This keeps the closure
-        // independent of the session's lifetime so it stays callable
-        // even if no external framework anchors a reference back to
-        // the session. `weak self` is used solely to reach the idle
-        // watchdog work item; nil-self just skips the cancel, which
-        // is fine because the work item itself captures `[weak self]`
-        // and no-ops on a dead session.
+        // strong, ctx / core / session weak. The `removeUdpFlow`
+        // call at the end is what drops the session from the core's
+        // map; with no other strong ref, the session (and the
+        // `ctx`/`writer`/closure graph hanging off it, including
+        // this closure once it returns) deallocates. No
+        // `lifetimeAnchor` to nil — there is no cycle.
         let flow = self.flow
         let flowQueue = self.flowQueue
         let flowId = self.flowId
@@ -101,9 +124,6 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
                 flow.closeWriteWithError(error)
                 ctx.session?.onClientClose()
                 core?.removeUdpFlow(flowId)
-                // Drop the session anchor so the per-flow session
-                // (and the closures it captured) deallocate promptly.
-                ctx.lifetimeAnchor = nil
             }
         }
     }
@@ -111,8 +131,15 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
     /// Cancel any pending idle work item and arm a fresh one. Called
     /// after `flow.open` succeeds and on every datagram in either
     /// direction. When the work item fires, it terminates the flow
-    /// with `nil` (clean idle close) so the lifetimeAnchor cycle is
-    /// broken and the session can deallocate.
+    /// so the session leaves the core's map and deallocates.
+    ///
+    /// Apple's `NEAppProxyUDPFlow` gives the extension no terminal
+    /// signal for an idle peer (UDP has no FIN; the kernel's
+    /// `flow.readDatagrams` callback only observes errors / EOF on
+    /// explicit close). Without this watchdog a flow that completes
+    /// a few request/response datagrams and goes quiet stays
+    /// registered until the engine-side `udp_max_flow_lifetime`
+    /// cap fires.
     ///
     /// Must run on `flowQueue`. `idleTimeoutMs == 0` disables the
     /// watchdog (used in tests that exercise other code paths).
@@ -129,9 +156,7 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
             // landed in between. Guarding here keeps the
             // watchdog harmless against double-fire.
             guard self.ctx.readState != .closed else { return }
-            self.core?.logDebug(
-                "udp flow idle for \(timeout) ms; closing (lifetimeAnchor cycle break)"
-            )
+            self.core?.logDebug("udp flow idle for \(timeout) ms; closing")
             self.ctx.terminate?(nil)
         }
         idleWork = work
@@ -275,9 +300,9 @@ final class UdpFlowSession<F: UdpFlowLike>: @unchecked Sendable {
                 // idle peer (DNS that's answered and gone quiet,
                 // NAT-binding probe with no response, …) trips the
                 // watchdog and we terminate cleanly. Without this,
-                // `lifetimeAnchor` cycle would pin the session
-                // until the engine-side `udp_max_flow_lifetime`
-                // cap fires (15 min by default).
+                // the session stays registered until the engine-
+                // side `udp_max_flow_lifetime` cap fires (15 min
+                // by default).
                 self.armIdleTimer()
                 self.ctx.requestRead?()
             }

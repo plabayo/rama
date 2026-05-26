@@ -21,6 +21,14 @@ enum UdpFlowReadState {
 /// UDP egress lives entirely in Rust now (one unconnected
 /// `tokio::net::UdpSocket` per intercepted flow); there is no
 /// `NWConnection` or egress read pump to retain on the Swift side.
+///
+/// Ownership: `TransparentProxyCore` retains the per-flow
+/// `UdpFlowSession` directly; the session owns this context as a
+/// `let` member. There is no back-reference from context to
+/// session — when the session leaves the core's map, both objects
+/// deallocate together. The previous `lifetimeAnchor` scheme
+/// (context retaining session) was a cycle the watchdog was forced
+/// to break; the cycle no longer exists.
 final class UdpFlowContext: @unchecked Sendable {
     init() {
     }
@@ -40,8 +48,4 @@ final class UdpFlowContext: @unchecked Sendable {
     /// take the strict-paired-only code path (surplus datagrams
     /// get `peer = nil`).
     var endpointMismatchLogged: Bool = false
-    /// Lifetime anchor for the per-flow `UdpFlowSession`. Set in
-    /// `UdpFlowSession.start`; cleared in `terminate` so the
-    /// session deallocates promptly on teardown.
-    var lifetimeAnchor: AnyObject?
 }

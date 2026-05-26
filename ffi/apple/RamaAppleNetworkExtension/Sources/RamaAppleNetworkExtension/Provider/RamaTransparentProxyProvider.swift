@@ -318,11 +318,11 @@ nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 /// no FIN, and the kernel's `flow.readDatagrams` callback only
 /// observes errors / EOF on explicit close). Without a watchdog, a
 /// flow that completes a few request/response datagrams and then
-/// goes quiet (DNS, mDNS probes, NAT-binding pings, …) is pinned
-/// alive by `UdpFlowContext.lifetimeAnchor` until the engine-side
-/// `udp_max_flow_lifetime` cap fires — 15 min by default, which is
-/// long enough to accumulate thousands of leaked sessions under
-/// normal device traffic.
+/// goes quiet (DNS, mDNS probes, NAT-binding pings, …) stays
+/// registered in `TransparentProxyCore.udpSessions` until the
+/// engine-side `udp_max_flow_lifetime` cap fires — 15 min by
+/// default, which is long enough to accumulate thousands of
+/// pinned sessions under normal device traffic.
 ///
 /// 60 s is the smallest window that comfortably exceeds typical
 /// real-world UDP-flow idle gaps (DNS retry cadence, NAT-keepalive

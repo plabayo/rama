@@ -6,12 +6,12 @@ import XCTest
 
 /// Watchdog phase tests for `UdpFlowSession.armIdleTimer`.
 ///
-/// The lifetimeAnchor cycle on `UdpFlowContext` is the only thing
-/// keeping a per-flow session retained while the flow is open;
-/// the watchdog is what guarantees the cycle is broken even for
-/// flows where Apple never delivers a terminal datagram-read
-/// signal (DNS request/response, NAT keepalives, mDNS jitter, …).
-/// These tests pin the contract end-to-end.
+/// `TransparentProxyCore` retains the per-flow session strongly
+/// (via `UdpFlowSessionAnchor`); the watchdog is what tells the
+/// core when to drop it for flows where Apple never delivers a
+/// terminal datagram-read signal (DNS request/response, NAT
+/// keepalives, mDNS jitter, …). These tests pin the contract
+/// end-to-end.
 final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
 
     private final class Fixture {
@@ -74,15 +74,16 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
 
     /// After `idleTimeoutMs` elapses with no activity, the watchdog
     /// fires `ctx.terminate(nil)` — readState becomes `.closed`, the
-    /// flow's close-read/write hooks fire, and the lifetimeAnchor cycle
-    /// is broken (`ctx.lifetimeAnchor == nil`).
+    /// flow's close-read/write hooks fire, and the core's session
+    /// registry drops the anchor (verified via `udpFlowCount`).
     ///
     /// Uses a very short timeout (50 ms) to keep the test fast.
     func testIdleTimerFireTerminatesFlow() {
         let fx = Fixture(idleTimeoutMs: 50)
         fx.session.installTerminate()
-        // Pretend `start()` succeeded — set lifetimeAnchor + arm.
-        fx.session.ctx.lifetimeAnchor = fx.session
+        // Pretend `start()` succeeded — register the session anchor.
+        fx.core.registerUdpFlow(fx.session.flowId, anchor: fx.session)
+        XCTAssertEqual(fx.core.udpFlowCount, 1)
         fx.session.flowQueue.async { fx.session.armIdleTimer() }
 
         // Wait long enough for the 50 ms deadline + the cancellation
@@ -96,8 +97,8 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         XCTAssertEqual(fx.session.ctx.readState, .closed)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
-        XCTAssertNil(fx.session.ctx.lifetimeAnchor,
-                     "lifetimeAnchor must be cleared so the session can deallocate")
+        XCTAssertEqual(fx.core.udpFlowCount, 0,
+                       "core must drop the session anchor so it can deallocate")
     }
 
     /// The terminate closure cancels the pending idle work item so a
@@ -126,7 +127,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
     func testRearmExtendsDeadline() {
         let fx = Fixture(idleTimeoutMs: 100)
         fx.session.installTerminate()
-        fx.session.ctx.lifetimeAnchor = fx.session
+        fx.core.registerUdpFlow(fx.session.flowId, anchor: fx.session)
         fx.session.flowQueue.async { fx.session.armIdleTimer() }
 
         // Rearm at +70 ms.
@@ -151,6 +152,35 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         }
         wait(for: [lateCheck], timeout: 2.0)
         XCTAssertEqual(fx.session.ctx.readState, .closed)
-        XCTAssertNil(fx.session.ctx.lifetimeAnchor)
+        XCTAssertEqual(fx.core.udpFlowCount, 0)
+    }
+
+    /// Lifecycle invariant: when `start()` takes any non-intercept
+    /// path (engine unavailable, `.passthrough`, `.blocked`), the
+    /// session is never registered with the core, so the local
+    /// variable going out of scope is the only ref and the
+    /// session deallocates immediately. This is what made the
+    /// previous `lifetimeAnchor` cycle leak the 131 bypassed flows
+    /// observed in the 15-min stress bundle.
+    func testEarlyReturnPathsDeallocateSession() {
+        let core = TransparentProxyCore()
+        let flow = MockUdpFlow()
+        let meta = RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: 2, remoteHost: "example.com", remotePort: 53,
+            localHost: nil, localPort: 0,
+            sourceAppSigningIdentifier: nil,
+            sourceAppBundleIdentifier: nil,
+            sourceAppAuditToken: nil, sourceAppPid: 4242)
+        weak var weakSession: UdpFlowSession<MockUdpFlow>?
+        autoreleasepool {
+            let session = UdpFlowSession(core: core, flow: flow, meta: meta)
+            weakSession = session
+            // No engine attached → `requestEngineSession()` returns
+            // nil → `start()` falls through the bypass branch.
+            XCTAssertFalse(session.start())
+        }
+        XCTAssertNil(weakSession,
+                     "engine-unavailable path must not retain the session")
+        XCTAssertEqual(core.udpFlowCount, 0)
     }
 }

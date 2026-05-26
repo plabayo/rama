@@ -52,12 +52,20 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private(set) var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
-    /// Per-flow context registry. The session handle reaches into
-    /// the context via `ctx.session` so there is no separate
-    /// session map — one map per protocol, one entry per active
-    /// flow, removed exactly when teardown calls `removeXxxFlow`.
+    /// Per-TCP-flow context registry. The session handle reaches
+    /// into the context via `ctx.session` so there is no separate
+    /// session map — one entry per active flow, removed exactly
+    /// when teardown calls `removeTcpFlow`.
     private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
+    /// Per-UDP-flow session registry. Unlike the TCP side, this
+    /// holds the per-flow `UdpFlowSession` (type-erased via
+    /// `UdpFlowSessionAnchor`) rather than the bare context. The
+    /// session owns the context as a `let` member, so registering
+    /// the session keeps the whole graph (`ctx`, writer, closures,
+    /// `RamaUdpSessionHandle`) alive while the flow is open and
+    /// drops it deterministically when `removeUdpFlow` runs — no
+    /// context→session back-reference, no retain cycle.
+    private var udpSessions: [ObjectIdentifier: UdpFlowSessionAnchor] = [:]
 
     /// Factory used to construct egress `NWConnection`s for intercepted
     /// flows. Production leaves this at the default (a real
@@ -104,7 +112,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.engine = nil
         stateQueue.sync {
             self.tcpContexts.removeAll(keepingCapacity: false)
-            self.udpContexts.removeAll(keepingCapacity: false)
+            self.udpSessions.removeAll(keepingCapacity: false)
         }
     }
 
@@ -121,8 +129,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         stopFlowCountReporting()
         let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in tcp { ctx.teardown?.applySystemSleep() }
-        let udp: [UdpFlowContext] = stateQueue.sync { Array(self.udpContexts.values) }
-        for ctx in udp { ctx.terminate?(systemSleepError()) }
+        let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
+        for session in udp { session.ctx.terminate?(systemSleepError()) }
         engine?.notifySystemSleep()
         logInfo("system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows")
         completion()
@@ -165,7 +173,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             // `stateQueue`, so direct access to the maps is already
             // serialised correctly.
             let tcp = self.tcpContexts.count
-            let udp = self.udpContexts.count
+            let udp = self.udpSessions.count
             self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
         }
         timer.resume()
@@ -198,12 +206,13 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync { self.tcpContexts[flowId] = context }
     }
 
-    func registerUdpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaUdpSessionHandle,
-        context: UdpFlowContext
-    ) {
-        stateQueue.sync { self.udpContexts[flowId] = context }
+    /// Register the per-flow session as the owner-of-record for an
+    /// intercepted UDP flow. The anchor is the only strong reference
+    /// keeping the session alive while the flow is open; dropping
+    /// it via `removeUdpFlow` deallocates the session and the
+    /// `ctx`/writer/closure graph it owns.
+    func registerUdpFlow(_ flowId: ObjectIdentifier, anchor: UdpFlowSessionAnchor) {
+        stateQueue.sync { self.udpSessions[flowId] = anchor }
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
@@ -211,7 +220,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync { self.udpContexts.removeValue(forKey: flowId) }
+        stateQueue.sync { self.udpSessions.removeValue(forKey: flowId) }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
@@ -222,7 +231,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     /// Count of currently-registered UDP flows. Test-only signal.
     var udpFlowCount: Int {
-        stateQueue.sync { self.udpContexts.count }
+        stateQueue.sync { self.udpSessions.count }
     }
 
     #if DEBUG
@@ -233,7 +242,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// loop. Gated on `#if DEBUG` so production builds carry
         /// no test-only surface on `TransparentProxyCore`.
         func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
-            stateQueue.sync { self.udpContexts[ObjectIdentifier(flow)]?.writer }
+            stateQueue.sync { self.udpSessions[ObjectIdentifier(flow)]?.ctx.writer }
         }
 
         /// Test-only accessor for the per-flow TCP context. Used by
@@ -253,9 +262,16 @@ final class TransparentProxyCore: @unchecked Sendable {
             stateQueue.sync { self.tcpContexts[flowId] = ctx }
         }
 
-        /// Symmetric for UDP.
+        /// Symmetric for UDP. Wraps the bare ctx in a stub
+        /// `UdpFlowSessionAnchor` so the production map's
+        /// invariant (one anchor per registered flow) holds. The
+        /// stub captures the ctx as the live session would, so
+        /// `handleSystemSleep` reaches the same `ctx.terminate`
+        /// path.
         func testInsertUdpContext(_ flowId: ObjectIdentifier, _ ctx: UdpFlowContext) {
-            stateQueue.sync { self.udpContexts[flowId] = ctx }
+            stateQueue.sync {
+                self.udpSessions[flowId] = _TestUdpFlowSessionAnchor(ctx: ctx)
+            }
         }
     #endif
 
@@ -455,3 +471,15 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
 }
+
+#if DEBUG
+    /// Stub anchor used by `testInsertUdpContext` — wraps a bare
+    /// `UdpFlowContext` so the production registry's
+    /// `UdpFlowSessionAnchor` invariant holds in tests that drive
+    /// registry-walk code paths (`handleSystemSleep`,
+    /// `detachEngine`) without spinning up a full session.
+    final class _TestUdpFlowSessionAnchor: UdpFlowSessionAnchor {
+        let ctx: UdpFlowContext
+        init(ctx: UdpFlowContext) { self.ctx = ctx }
+    }
+#endif
