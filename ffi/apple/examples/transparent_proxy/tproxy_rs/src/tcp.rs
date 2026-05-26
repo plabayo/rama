@@ -83,25 +83,22 @@ impl DemoTcpMitmService {
         // `launchctl setenv SSLKEYLOGFILE …` left behind.
         let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
         if demo_config.tls_keylog_enabled {
-            match crate::utils::storage_dir() {
-                Some(dir) => {
-                    let path = dir.join("sslkeylog.txt");
-                    tracing::info!(
-                        path = %path.display(),
-                        "TLS keylog ENABLED — every relayed handshake's session keys will be \
-                         written to this file (Wireshark: Preferences → Protocols → TLS → \
-                         (Pre)-Master-Secret log filename)",
-                    );
-                    tls_mitm_relay
-                        .set_keylog_intent(KeyLogIntent::File(path.to_string_lossy().into_owned()));
-                }
-                None => {
-                    tracing::warn!(
-                        "TLS keylog requested but no storage_dir was passed to the engine; \
-                         falling back to disabled",
-                    );
-                    tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
-                }
+            if let Some(dir) = crate::utils::storage_dir() {
+                let path = dir.join("sslkeylog.txt");
+                tracing::info!(
+                    path = %path.display(),
+                    "TLS keylog ENABLED — every relayed handshake's session keys will be \
+                        written to this file (Wireshark: Preferences → Protocols → TLS → \
+                        (Pre)-Master-Secret log filename)",
+                );
+                tls_mitm_relay
+                    .set_keylog_intent(KeyLogIntent::File(path.to_string_lossy().into_owned()));
+            } else {
+                tracing::warn!(
+                    "TLS keylog requested but no storage_dir was passed to the engine; \
+                        falling back to disabled",
+                );
+                tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
             }
         } else {
             tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);

@@ -1,13 +1,13 @@
 use rama::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
+    error::BoxError,
     extensions::ExtensionsRef as _,
+    futures::async_stream::stream_fn,
     http::{
-        Body, Method, Request, Response,
-        body::util::BodyExt,
+        Body, Method, Request, Response, StreamingBody,
         header::CONTENT_ENCODING,
-        headers::{ContentLength, ContentType, HeaderMapExt},
+        headers::{ContentType, HeaderMapExt},
         layer::remove_header::{
             remove_cache_validation_response_headers, remove_payload_metadata_headers,
         },
@@ -16,7 +16,10 @@ use rama::{
     matcher::service::{ServiceMatch, ServiceMatcher},
     net::{address::Domain, http::RequestContext, proxy::ProxyTarget},
     telemetry::tracing,
-    utils::str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
+    utils::{
+        octets::kib,
+        str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
+    },
 };
 use std::{borrow::Cow, convert::Infallible};
 
@@ -24,8 +27,12 @@ use crate::policy::DomainExclusionList;
 
 const BADGE_MARKER: &[u8] = b"id=\"rama-proxy-badge\"";
 const BODY_OPEN: &[u8] = b"<body";
-const BODY_CLOSE: &[u8] = b"</body>";
-const MAX_CONTENT_LENGTH_BYTES: usize = 1024 * 1024;
+/// Hard cap on how many bytes we'll buffer once we've seen `<body`
+/// while waiting for the closing `>` of the opening tag. A real opening
+/// tag (`<body class="…" data-…>`) is tens of bytes; 4 KiB is comfortably
+/// above the worst real-world value and below any size that matters for
+/// streaming latency.
+const MAX_OPEN_TAG_SCAN: usize = kib(4);
 
 #[derive(Debug, Clone)]
 pub struct HtmlBadgeLayer {
@@ -114,7 +121,10 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HtmlBadgeService<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error = BoxError>,
     ReqBody: Send + 'static,
-    ResBody: rama::http::StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ResBody: rama::http::StreamingBody<Data = Bytes, Error: Into<BoxError> + Send>
+        + Send
+        + Sync
+        + 'static,
 {
     type Output = Response<Body>;
     type Error = BoxError;
@@ -161,27 +171,54 @@ where
         }
 
         let (mut parts, body) = response.into_parts();
-        let html = body
-            .collect()
-            .await
-            .context("collect HTML response body for badge injection")?
-            .to_bytes();
-
-        let updated_html = inject_badge(html.as_ref(), &self.badge_html);
-
-        if updated_html.is_none() {
-            return Ok(Response::from_parts(parts, Body::from(html)));
-        }
-
-        let updated_html = updated_html.expect("updated_html is_some above");
+        // Drop length / cache-validation headers up front: streaming
+        // injection may rewrite chunks, so the inbound Content-Length
+        // and ETag no longer match what we'll emit. Going chunked is
+        // safe regardless of whether the scan actually finds a `<body>`
+        // and injects.
         remove_payload_metadata_headers(&mut parts.headers);
         remove_cache_validation_response_headers(&mut parts.headers);
-        let updated_html_len = u64::try_from(updated_html.len())
-            .context("convert updated HTML response length to u64")?;
-        parts.headers.typed_insert(ContentLength(updated_html_len));
-
-        Ok(Response::from_parts(parts, Body::from(updated_html)))
+        let new_body = Body::from_stream(badge_inject_stream(body, self.badge_html.clone()));
+        Ok(Response::from_parts(parts, new_body))
     }
+}
+
+/// Wrap `body` in a streaming injector that emits the badge bytes right
+/// after the `<body…>` opening tag and passes the rest through
+/// unchanged. Buffered state is bounded — at most
+/// `MAX_OPEN_TAG_SCAN` bytes while waiting for the tag's closing `>`,
+/// otherwise just a small carry-over to catch `<body` / BADGE_MARKER
+/// straddling a chunk boundary.
+fn badge_inject_stream<B>(
+    body: B,
+    badge: Vec<u8>,
+) -> impl rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + 'static
+where
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError> + Send> + Send + 'static,
+{
+    stream_fn(async move |mut yielder| {
+        let mut state = BadgeScanState::new();
+        let mut body = std::pin::pin!(body);
+        loop {
+            let frame = match std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
+                Some(Ok(f)) => f,
+                Some(Err(e)) => {
+                    yielder.yield_item(Err(e.into())).await;
+                    return;
+                }
+                None => break,
+            };
+            let Ok(data) = frame.into_data() else {
+                continue;
+            };
+            for chunk in state.process(data, &badge) {
+                yielder.yield_item(Ok(chunk)).await;
+            }
+        }
+        if let Some(tail) = state.flush() {
+            yielder.yield_item(Ok(tail)).await;
+        }
+    })
 }
 
 fn should_rewrite<B>(response: &Response<B>) -> bool {
@@ -202,27 +239,12 @@ fn is_request_eligible_for_html_rewrite(
 }
 
 fn is_html_rewrite_candidate<B>(response: &Response<B>) -> bool {
-    let headers = response.headers();
-
-    let Some(content_type) = headers.typed_get::<ContentType>() else {
+    let Some(content_type) = response.headers().typed_get::<ContentType>() else {
         return false;
     };
-
     let mime = content_type.into_mime();
-    let is_html = (mime.type_() == mime::TEXT && mime.subtype() == mime::HTML)
-        || (mime.type_() == mime::APPLICATION && mime.subtype().as_str() == "xhtml+xml");
-    if !is_html {
-        return false;
-    }
-
-    // Bail out when Content-Length is missing — that's the
-    // length-unknown / streaming case, and the rewrite path does a
-    // full `body.collect()` which would buffer indefinitely.
-    let Some(content_length) = headers.typed_get::<ContentLength>() else {
-        return false;
-    };
-
-    content_length.0 <= MAX_CONTENT_LENGTH_BYTES as u64
+    (mime.type_() == mime::TEXT && mime.subtype() == mime::HTML)
+        || (mime.type_() == mime::APPLICATION && mime.subtype().as_str() == "xhtml+xml")
 }
 
 #[derive(Debug, Clone)]
@@ -282,31 +304,126 @@ where
     }
 }
 
-fn inject_badge(html: &[u8], badge_html: &[u8]) -> Option<Vec<u8>> {
-    if submatch_ignore_ascii_case(html, BADGE_MARKER) {
-        return None;
-    }
-
-    if let Some(body_start) = contains_ignore_ascii_case(html, BODY_OPEN)
-        && let Some(body_end) = html[body_start..].iter().position(|byte| *byte == b'>')
-    {
-        let insert_at = body_start + body_end + 1;
-        return Some(insert_bytes(html, insert_at, badge_html));
-    }
-
-    if let Some(body_end) = contains_ignore_ascii_case(html, BODY_CLOSE) {
-        return Some(insert_bytes(html, body_end, badge_html));
-    }
-
-    Some(insert_bytes(html, html.len(), badge_html))
+/// Streaming scanner that emits the badge right after the `<body…>`
+/// opening tag of an HTML stream and passes everything else through.
+///
+/// Bounded memory: the only state held is a short carry-over while
+/// scanning (at most `max(BODY_OPEN.len(), BADGE_MARKER.len()) - 1`
+/// bytes) plus, once `<body` is found, the partial opening tag up to
+/// `MAX_OPEN_TAG_SCAN`. Past either of those exits the scanner enters
+/// `PassThrough` and forwards every subsequent chunk unchanged.
+///
+/// Trade-offs vs. the previous buffer-everything implementation:
+/// * No `</body>` / end-of-doc fallback injection — those need the
+///   full body. A response with no `<body>` opening tag now gets no
+///   badge. Acceptable for the proxy-badge use case; the demo target
+///   is full HTML pages.
+/// * On EOF mid-scan the held-back carry / partial open-tag is flushed
+///   as-is, so we never truncate output.
+#[derive(Debug)]
+enum BadgeScanState {
+    /// Scanning input for `<body` or for an already-present
+    /// `BADGE_MARKER`. `carry` holds a few bytes at the boundary of
+    /// the previous chunk that might be the start of a match.
+    Scanning { carry: Vec<u8> },
+    /// Found `<body`; buffering until the opening tag's closing `>`.
+    InOpenTag { buf: Vec<u8> },
+    /// Injection done — or aborted because BADGE_MARKER was already
+    /// in the body, or the open tag exceeded `MAX_OPEN_TAG_SCAN`.
+    /// Subsequent chunks are emitted unchanged.
+    PassThrough,
 }
 
-fn insert_bytes(html: &[u8], index: usize, insertion: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(html.len() + insertion.len());
-    output.extend_from_slice(&html[..index]);
-    output.extend_from_slice(insertion);
-    output.extend_from_slice(&html[index..]);
-    output
+impl BadgeScanState {
+    fn new() -> Self {
+        Self::Scanning { carry: Vec::new() }
+    }
+
+    fn process(&mut self, chunk: Bytes, badge: &[u8]) -> Vec<Bytes> {
+        let mut out = Vec::new();
+        let mut input = chunk;
+        loop {
+            match self {
+                Self::PassThrough => {
+                    if !input.is_empty() {
+                        out.push(input);
+                    }
+                    return out;
+                }
+                Self::Scanning { carry } => {
+                    if input.is_empty() && carry.is_empty() {
+                        return out;
+                    }
+                    let combined: Vec<u8> = if carry.is_empty() {
+                        input.to_vec()
+                    } else {
+                        let mut v = std::mem::take(carry);
+                        v.extend_from_slice(&input);
+                        v
+                    };
+
+                    // Pre-existing badge → bail; forward and stop scanning.
+                    if submatch_ignore_ascii_case(&combined, BADGE_MARKER) {
+                        out.push(Bytes::from(combined));
+                        *self = Self::PassThrough;
+                        return out;
+                    }
+
+                    // Found `<body` → flush prefix, switch to InOpenTag.
+                    if let Some(idx) = contains_ignore_ascii_case(&combined, BODY_OPEN) {
+                        if idx > 0 {
+                            out.push(Bytes::copy_from_slice(&combined[..idx]));
+                        }
+                        let buf = combined[idx..].to_vec();
+                        *self = Self::InOpenTag { buf };
+                        input = Bytes::new();
+                        continue;
+                    }
+
+                    // No match yet — keep a tail large enough to catch a
+                    // pattern straddling the next chunk boundary.
+                    let max_tail = BADGE_MARKER.len().max(BODY_OPEN.len()) - 1;
+                    if combined.len() <= max_tail {
+                        *carry = combined;
+                    } else {
+                        let split = combined.len() - max_tail;
+                        out.push(Bytes::copy_from_slice(&combined[..split]));
+                        *carry = combined[split..].to_vec();
+                    }
+                    return out;
+                }
+                Self::InOpenTag { buf } => {
+                    if !input.is_empty() {
+                        buf.extend_from_slice(&input);
+                    }
+                    if let Some(close) = buf.iter().position(|&b| b == b'>') {
+                        let insert_at = close + 1;
+                        let mut output = Vec::with_capacity(buf.len() + badge.len());
+                        output.extend_from_slice(&buf[..insert_at]);
+                        output.extend_from_slice(badge);
+                        output.extend_from_slice(&buf[insert_at..]);
+                        out.push(Bytes::from(output));
+                        *self = Self::PassThrough;
+                        return out;
+                    }
+                    if buf.len() > MAX_OPEN_TAG_SCAN {
+                        // Malformed / hostile: give up and flush.
+                        out.push(Bytes::from(std::mem::take(buf)));
+                        *self = Self::PassThrough;
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+
+    fn flush(&mut self) -> Option<Bytes> {
+        match std::mem::replace(self, Self::PassThrough) {
+            Self::Scanning { carry } if !carry.is_empty() => Some(Bytes::from(carry)),
+            Self::InOpenTag { buf } if !buf.is_empty() => Some(Bytes::from(buf)),
+            _ => None,
+        }
+    }
 }
 
 fn badge_html(label: &str) -> Vec<u8> {
@@ -334,8 +451,12 @@ fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> 
 mod tests {
     use super::*;
     use rama::{
+        bytes::Bytes,
+        futures::async_stream::stream_fn,
         http::{
+            body::util::BodyExt,
             header::{CONTENT_ENCODING, ETAG},
+            headers::ContentLength,
             layer::{
                 compression::{predicate::Always, stream::StreamCompressionLayer},
                 decompression::DecompressionLayer,
@@ -343,30 +464,109 @@ mod tests {
         },
         service::service_fn,
     };
+    use std::{convert::Infallible, time::Duration};
 
     fn default_badge_html() -> Vec<u8> {
         badge_html("proxied by rama")
     }
 
+    /// Single-chunk happy path: badge lands right after the opening
+    /// `<body class="…">` tag, suffix is preserved.
     #[test]
-    fn inject_badge_after_body_open_tag() {
-        let html = b"<html><body class=\"demo\">\xffHello</body></html>";
-        let badge_html = default_badge_html();
-        let updated = inject_badge(html, &badge_html).expect("badge should be injected");
-
-        assert!(updated.starts_with(b"<html><body class=\"demo\">"));
-        assert!(updated.ends_with(b"\xffHello</body></html>"));
-        assert!(updated.windows(badge_html.len()).any(|w| w == badge_html));
+    fn scanner_injects_after_body_open_tag_single_chunk() {
+        let badge = default_badge_html();
+        let mut state = BadgeScanState::new();
+        let out = state.process(
+            Bytes::from_static(b"<html><body class=\"demo\">Hello</body></html>"),
+            &badge,
+        );
+        let joined: Vec<u8> = out.into_iter().flatten().collect();
+        let expected_prefix = b"<html><body class=\"demo\">";
+        assert!(joined.starts_with(expected_prefix));
+        let after_tag = &joined[expected_prefix.len()..];
+        assert!(after_tag.starts_with(badge.as_slice()));
+        assert!(joined.ends_with(b"Hello</body></html>"));
     }
 
+    /// Pre-existing badge → scanner bails into PassThrough; body
+    /// emerges byte-identical.
     #[test]
-    fn inject_badge_is_idempotent() {
+    fn scanner_is_idempotent_when_badge_already_present() {
+        let badge = default_badge_html();
         let html = format!(
             "<html><body>{}hello</body></html>",
-            String::from_utf8_lossy(&default_badge_html())
+            String::from_utf8_lossy(&badge),
         );
+        let mut state = BadgeScanState::new();
+        let out = state.process(Bytes::from(html.clone().into_bytes()), &badge);
+        let joined: Vec<u8> = out.into_iter().flatten().collect();
+        assert_eq!(joined, html.as_bytes());
+    }
 
-        assert!(inject_badge(html.as_bytes(), &default_badge_html()).is_none());
+    /// `<body` straddles a chunk boundary: scanner must still find it
+    /// via the carry-over and inject correctly.
+    #[test]
+    fn scanner_handles_body_open_tag_across_chunk_boundary() {
+        let badge = default_badge_html();
+        let mut state = BadgeScanState::new();
+        // Split mid-tag: `<bo` ends chunk 1, `dy>rest</body>` starts chunk 2.
+        let mut joined = Vec::new();
+        for chunk in [&b"<html><bo"[..], &b"dy>rest</body></html>"[..]] {
+            for emitted in state.process(Bytes::copy_from_slice(chunk), &badge) {
+                joined.extend_from_slice(&emitted);
+            }
+        }
+        if let Some(tail) = state.flush() {
+            joined.extend_from_slice(&tail);
+        }
+        let expected_prefix = b"<html><body>";
+        assert!(joined.starts_with(expected_prefix));
+        let after_tag = &joined[expected_prefix.len()..];
+        assert!(after_tag.starts_with(badge.as_slice()));
+        assert!(joined.ends_with(b"rest</body></html>"));
+    }
+
+    /// Opening tag with `>` arriving in a later chunk: scanner buffers
+    /// `<body…` until the `>` shows up, then injects + passes through.
+    #[test]
+    fn scanner_handles_open_tag_closing_bracket_in_later_chunk() {
+        let badge = default_badge_html();
+        let mut state = BadgeScanState::new();
+        let chunks: [&[u8]; 3] = [
+            b"<html><body class=\"foo",
+            b"\" data-x=\"y",
+            b"\">tail</body>",
+        ];
+        let mut joined = Vec::new();
+        for chunk in chunks {
+            for emitted in state.process(Bytes::copy_from_slice(chunk), &badge) {
+                joined.extend_from_slice(&emitted);
+            }
+        }
+        if let Some(tail) = state.flush() {
+            joined.extend_from_slice(&tail);
+        }
+        let expected_prefix = b"<html><body class=\"foo\" data-x=\"y\">";
+        assert!(joined.starts_with(expected_prefix));
+        assert!(joined[expected_prefix.len()..].starts_with(badge.as_slice()));
+        assert!(joined.ends_with(b"tail</body>"));
+    }
+
+    /// HTML with no `<body>` at all: scanner forwards everything
+    /// unchanged (no fallback append).
+    #[test]
+    fn scanner_passes_through_html_without_body_tag() {
+        let badge = default_badge_html();
+        let mut state = BadgeScanState::new();
+        let input = b"<div>just a fragment</div>";
+        let mut joined = Vec::new();
+        for emitted in state.process(Bytes::from_static(input), &badge) {
+            joined.extend_from_slice(&emitted);
+        }
+        if let Some(tail) = state.flush() {
+            joined.extend_from_slice(&tail);
+        }
+        assert_eq!(joined.as_slice(), input);
     }
 
     #[tokio::test]
@@ -388,16 +588,14 @@ mod tests {
             }));
 
         let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
-        let content_length = response
-            .headers()
-            .typed_get::<ContentLength>()
-            .expect("content-length should be set");
+        // Streaming-injection path strips both Content-Length (output is
+        // chunked) and ETag (body diverges from the original).
+        assert!(response.headers().typed_get::<ContentLength>().is_none());
         assert!(response.headers().get(ETAG).is_none());
 
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let badge_html = default_badge_html();
         assert!(body.windows(badge_html.len()).any(|w| w == badge_html));
-        assert_eq!(content_length.0, body.len() as u64);
     }
 
     #[tokio::test]
@@ -427,7 +625,6 @@ mod tests {
     #[tokio::test]
     async fn html_badge_layer_rewrites_after_decompression_and_recompresses() {
         let html = format!("<html><body>{}</body></html>", "Hello ".repeat(16));
-        let html_len = html.len();
         let svc = (
             StreamCompressionLayer::new().with_compress_predicate(Always::new()),
             HtmlBadgeLayer::new(),
@@ -440,9 +637,6 @@ mod tests {
                     response
                         .headers_mut()
                         .typed_insert(ContentType::html_utf8());
-                    response
-                        .headers_mut()
-                        .typed_insert(ContentLength(html_len as u64));
                     Ok::<_, BoxError>(response)
                 }
             }));
@@ -489,34 +683,74 @@ mod tests {
         );
     }
 
-    /// Streaming HTML responses (no `Content-Length`) must pass through
-    /// without buffering. Before this fix the rewrite path treated them
-    /// as candidates and called `body.collect().await`, which stalled
-    /// the response until the upstream finished sending.
+    /// Streaming HTML responses (no `Content-Length`, chunks arriving
+    /// over time) must (a) get the badge injected after the opening
+    /// `<body>` tag and (b) deliver subsequent chunks to the client
+    /// without buffering the whole upstream.
+    ///
+    /// Test shape: upstream yields three chunks separated by sleeps.
+    /// We measure the elapsed time to first byte of the rewritten
+    /// stream. If the layer buffered, it would wait for the upstream
+    /// to finish (~60ms+ in this test); streaming should deliver the
+    /// first byte essentially immediately after the first upstream
+    /// chunk arrives.
     #[tokio::test]
-    async fn html_badge_layer_skips_unbounded_streaming_html() {
-        let body = Bytes::from_static(b"<html><body>chunk1");
-        let expected_body = body.clone();
-        let svc = HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| {
-            let body = body.clone();
-            async move {
-                // Stream-shaped response: ContentType set, but no
-                // Content-Length — the shape a chunked upstream emits.
-                let mut response = Response::new(Body::from(body));
+    async fn html_badge_layer_streams_chunks_without_buffering() {
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                let upstream = stream_fn(async |mut y| {
+                    y.yield_item(Ok::<_, Infallible>(Bytes::from_static(
+                        b"<html><body>chunk-0",
+                    )))
+                    .await;
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    y.yield_item(Ok(Bytes::from_static(b"<p>chunk-1</p>")))
+                        .await;
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    y.yield_item(Ok(Bytes::from_static(b"<p>chunk-2</p></body></html>")))
+                        .await;
+                });
+                let mut response = Response::new(Body::from_stream(upstream));
                 response
                     .headers_mut()
                     .typed_insert(ContentType::html_utf8());
                 Ok::<_, BoxError>(response)
-            }
-        }));
+            }));
 
         let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
-        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-
-        assert_eq!(
-            body_bytes.as_ref(),
-            expected_body.as_ref(),
-            "streaming HTML must pass through unmodified",
+        let start = std::time::Instant::now();
+        let mut body = response.into_body();
+        let first_frame = body
+            .frame()
+            .await
+            .expect("at least one frame")
+            .expect("frame ok");
+        let first_at = start.elapsed();
+        // First chunk should arrive well before the upstream's 80 ms
+        // total. Generous bound to avoid flakes on slow CI.
+        assert!(
+            first_at < Duration::from_millis(30),
+            "first chunk should stream without waiting for upstream EOF: \
+             {first_at:?}",
         );
+        // Drain the rest and verify the badge made it in.
+        let mut joined = Vec::new();
+        if let Ok(data) = first_frame.into_data() {
+            joined.extend_from_slice(&data);
+        }
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame.expect("frame ok").into_data() {
+                joined.extend_from_slice(&data);
+            }
+        }
+        let badge_html = default_badge_html();
+        assert!(
+            joined.windows(badge_html.len()).any(|w| w == badge_html),
+            "badge must be present in joined output: {:?}",
+            String::from_utf8_lossy(&joined),
+        );
+        assert!(joined.windows(7).any(|w| w == b"chunk-0"));
+        assert!(joined.windows(7).any(|w| w == b"chunk-1"));
+        assert!(joined.windows(7).any(|w| w == b"chunk-2"));
     }
 }
