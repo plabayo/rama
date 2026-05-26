@@ -8,14 +8,6 @@ use super::sink::KeyLogSink;
 /// Wraps any [`KeyLogSink`] in an atomic on/off switch. When off,
 /// `write_line` is a single relaxed-cost atomic load that drops the
 /// argument. When on, it forwards to the inner sink.
-///
-/// Generic on `S` to avoid double dynamic dispatch — the only erasure
-/// in the keylog stack happens at the `KeyLogIntent::Custom` boundary.
-///
-/// The flip-from-elsewhere mechanism is [`KeyLogToggle`], obtained via
-/// [`Self::toggle`]. It holds only the shared `AtomicBool`, so the
-/// XPC route / config layer can flip without holding a reference to
-/// the sink chain.
 #[derive(Debug)]
 pub struct ToggleableKeyLogSink<S> {
     inner: S,
@@ -42,13 +34,13 @@ impl<S> ToggleableKeyLogSink<S> {
     /// Returns the current state.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        self.enabled.load(Ordering::Relaxed)
     }
 
     /// Sets the state directly (callers that hold the wrapper).
     /// Prefer [`Self::toggle`] from external components.
     pub fn set_enabled(&self, on: bool) {
-        self.enabled.store(on, Ordering::Release);
+        self.enabled.store(on, Ordering::Relaxed);
     }
 
     /// Borrow the wrapped sink (useful for tests / introspection).
@@ -61,7 +53,7 @@ impl<S> ToggleableKeyLogSink<S> {
 impl<S: KeyLogSink> KeyLogSink for ToggleableKeyLogSink<S> {
     #[inline]
     fn write_line(&self, line: &str) {
-        if self.enabled.load(Ordering::Acquire) {
+        if self.enabled.load(Ordering::Relaxed) {
             self.inner.write_line(line);
         }
     }
@@ -79,23 +71,23 @@ pub struct KeyLogToggle {
 impl KeyLogToggle {
     /// Flip on.
     pub fn enable(&self) {
-        self.enabled.store(true, Ordering::Release);
+        self.enabled.store(true, Ordering::Relaxed);
     }
 
     /// Flip off.
     pub fn disable(&self) {
-        self.enabled.store(false, Ordering::Release);
+        self.enabled.store(false, Ordering::Relaxed);
     }
 
     /// Set explicitly.
     pub fn set(&self, on: bool) {
-        self.enabled.store(on, Ordering::Release);
+        self.enabled.store(on, Ordering::Relaxed);
     }
 
     /// Read the current state.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+        self.enabled.load(Ordering::Relaxed)
     }
 }
 

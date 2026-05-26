@@ -1,6 +1,7 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::{self, ALL_VERSIONS};
 use crate::key_log::RamaKeyLog;
+use rama_net::tls::keylog::open_intent_sink;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_net::tls::server::SelfSignedData;
@@ -156,9 +157,8 @@ impl TlsAcceptorDataBuilder {
         /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
         /// and set it in the current config
         pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
-            if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-                let key_logger = Arc::new(RamaKeyLog::try_open_file(path)?);
-                self.server_config.key_log = key_logger;
+            if let Some(sink) = open_intent_sink(&KeyLogIntent::Environment)? {
+                self.server_config.key_log = Arc::new(RamaKeyLog::new(sink));
             };
             Ok(self)
         }

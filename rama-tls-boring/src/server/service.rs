@@ -4,7 +4,7 @@ use crate::{
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     types::SecureTransport,
 };
-use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
+use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 use parking_lot::Mutex;
 use rama_core::{
     Service,
@@ -158,8 +158,7 @@ where
             );
         }
 
-        if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
-            let sink = FileKeyLogSink::try_open(keylog_filename)?;
+        if let Some(sink) = open_intent_sink(&tls_config.keylog_intent)? {
             acceptor_builder.set_keylog_callback(move |_, line| {
                 let mut buf = String::with_capacity(line.len() + 1);
                 buf.push_str(line);

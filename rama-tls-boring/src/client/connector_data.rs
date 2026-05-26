@@ -39,7 +39,7 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 
-use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
+use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 
 /// [`TlsConnectorData`] that will be used by the connector
 ///
@@ -194,12 +194,15 @@ impl TlsConnectorDataBuilder {
         server_name: Option<Domain>,
     );
 
-    /// Return the SSL keylog file path if one exists.
-    pub fn keylog_filepath(&self) -> Option<Cow<'_, str>> {
-        if let Some(intent) = self.keylog_intent_inner() {
-            return intent.file_path();
+    /// Return the effective keylog intent: the builder's own intent
+    /// if set, else the deepest base-builder's; defaulting to
+    /// [`KeyLogIntent::Environment`] when none of them carry one.
+    #[must_use]
+    pub fn effective_keylog_intent(&self) -> Cow<'_, KeyLogIntent> {
+        match self.keylog_intent_inner() {
+            Some(i) => Cow::Borrowed(i),
+            None => Cow::Owned(KeyLogIntent::Environment),
         }
-        KeyLogIntent::env_file_path().map(Into::into)
     }
 
     fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
@@ -615,8 +618,7 @@ impl TlsConnectorDataBuilder {
             trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
         }
 
-        if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
-            let sink = FileKeyLogSink::try_open(keylog_filename)?;
+        if let Some(sink) = open_intent_sink(&self.effective_keylog_intent())? {
             cfg_builder.set_keylog_callback(move |_, line| {
                 let mut buf = String::with_capacity(line.len() + 1);
                 buf.push_str(line);

@@ -1,13 +1,10 @@
 use crate::dep::rustls::KeyLog;
-use rama_core::error::BoxError;
-use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
+use rama_net::tls::keylog::KeyLogSink;
 use std::fmt;
 use std::sync::Arc;
 
 /// Adapter that exposes a rama [`KeyLogSink`] as a rustls
-/// [`KeyLog`] consumer. Constructed either from a file path (the
-/// common case) or with a caller-supplied sink (custom rotation,
-/// toggling, in-memory test capture, …).
+/// [`KeyLog`] consumer.
 #[derive(Debug, Clone)]
 pub struct RamaKeyLog(Arc<dyn KeyLogSink>);
 
@@ -15,12 +12,6 @@ impl RamaKeyLog {
     /// Adapt any sink.
     pub fn new(sink: Arc<dyn KeyLogSink>) -> Self {
         Self(sink)
-    }
-
-    /// Convenience: open (or join an existing handle for) the file
-    /// at `path` and wrap it.
-    pub fn try_open_file(path: &str) -> Result<Self, BoxError> {
-        Ok(Self::new(Arc::new(FileKeyLogSink::try_open(path)?)))
     }
 }
 

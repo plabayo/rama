@@ -25,7 +25,7 @@ use std::{
 
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client};
-use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
+use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 
 // `alert` module retained (encode_plain_alert + write_plain_alert) so
 // the wire-format pin tests stay live and we can re-enable injection
@@ -731,9 +731,9 @@ where
                     None
                 };
 
-            if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
-                let sink = FileKeyLogSink::try_open(keylog_filename)
-                    .map_err(TlsMitmRelayError::config)?;
+            if let Some(sink) =
+                open_intent_sink(&self.keylog_intent).map_err(TlsMitmRelayError::config)?
+            {
                 acceptor_builder.set_keylog_callback(move |_, line| {
                     let mut buf = String::with_capacity(line.len() + 1);
                     buf.push_str(line);
