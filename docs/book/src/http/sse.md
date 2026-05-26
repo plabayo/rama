@@ -131,3 +131,11 @@ by introducing hicups while waiting for the next "flush".
 If you do need compression you are best to do it on a per-message base (e.g. compress
 the data property within an SSE event), which is also an extension that is possible
 in WebSockets.
+
+## See also
+
+If your goal is to render an initial HTML page whose slowest panels should not
+hold back the rest, see [Declarative Partial Updates](./declarative_partial_updates.md):
+the server streams an HTML shell first, then `<template for=…>` blocks fill in
+the markers out-of-order on a regular `text/html` response — no `EventSource`
+required.
