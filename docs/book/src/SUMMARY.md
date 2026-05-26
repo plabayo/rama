@@ -64,6 +64,7 @@
 - [Http Clients](./http/http_clients.md)
 - [gRPC](./http/grpc.md)
 - [Server-Sent Events (SSE)](./http/sse.md)
+- [Declarative Partial Updates](./http/declarative_partial_updates.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)
 - [Binary Bodies and Multipart Uploads](./http/multipart.md)
