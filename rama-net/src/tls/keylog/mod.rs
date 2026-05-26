@@ -12,7 +12,11 @@
 //! implementations persist bytes verbatim.
 
 mod file;
+mod rotating;
 mod sink;
 
 pub use self::file::{FileKeyLogSink, normalize_path};
+pub use self::rotating::{
+    DEFAULT_PREFIX as ROTATING_DEFAULT_PREFIX, RotatingFileKeyLogSink, RotationPeriod,
+};
 pub use self::sink::{KeyLogSink, NoopKeyLogSink};

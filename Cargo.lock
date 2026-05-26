@@ -3746,6 +3746,7 @@ dependencies = [
  "ipnet",
  "itertools 0.14.0",
  "itoa",
+ "jiff",
  "libc",
  "md5",
  "memchr",
