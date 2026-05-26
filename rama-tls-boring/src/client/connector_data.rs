@@ -39,7 +39,7 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 
-use crate::keylog::try_new_key_log_file_handle;
+use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
 
 /// [`TlsConnectorData`] that will be used by the connector
 ///
@@ -616,10 +616,12 @@ impl TlsConnectorDataBuilder {
         }
 
         if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
-            let handle = try_new_key_log_file_handle(keylog_filename)?;
+            let sink = FileKeyLogSink::try_open(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{line}\n");
-                handle.write_log_line(line);
+                let mut buf = String::with_capacity(line.len() + 1);
+                buf.push_str(line);
+                buf.push('\n');
+                sink.write_line(&buf);
             });
         }
 

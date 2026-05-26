@@ -1,21 +1,30 @@
 use crate::dep::rustls::KeyLog;
 use rama_core::error::BoxError;
-use rama_net::tls::keylog::{KeyLogFileHandle, try_new_key_log_file_handle};
+use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
 use std::fmt;
+use std::sync::Arc;
 
+/// Adapter that exposes a rama [`KeyLogSink`] as a rustls
+/// [`KeyLog`] consumer. Constructed either from a file path (the
+/// common case) or with a caller-supplied sink (custom rotation,
+/// toggling, in-memory test capture, …).
 #[derive(Debug, Clone)]
-/// [`KeyLog`] implementation that opens a file for the given path.
-pub struct KeyLogFile(KeyLogFileHandle);
+pub struct RamaKeyLog(Arc<dyn KeyLogSink>);
 
-impl KeyLogFile {
-    /// Makes a new [`KeyLogFile`].
-    pub fn try_new(path: &str) -> Result<Self, BoxError> {
-        let handle = try_new_key_log_file_handle(path)?;
-        Ok(Self(handle))
+impl RamaKeyLog {
+    /// Adapt any sink.
+    pub fn new(sink: Arc<dyn KeyLogSink>) -> Self {
+        Self(sink)
+    }
+
+    /// Convenience: open (or join an existing handle for) the file
+    /// at `path` and wrap it.
+    pub fn try_open_file(path: &str) -> Result<Self, BoxError> {
+        Ok(Self::new(Arc::new(FileKeyLogSink::try_open(path)?)))
     }
 }
 
-impl KeyLog for KeyLogFile {
+impl KeyLog for RamaKeyLog {
     #[inline]
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
         let line = format!(
@@ -26,7 +35,7 @@ impl KeyLog for KeyLogFile {
             },
             PlainHex { slice: secret },
         );
-        self.0.write_log_line(line);
+        self.0.write_line(&line);
     }
 }
 

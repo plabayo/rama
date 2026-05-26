@@ -1,7 +1,7 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
-use crate::key_log::KeyLogFile;
+use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
@@ -179,7 +179,7 @@ impl TlsConnectorDataBuilder {
         /// and set it in the current config
         pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
             if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-                let key_logger = Arc::new(KeyLogFile::try_new(path)?);
+                let key_logger = Arc::new(RamaKeyLog::try_open_file(path)?);
                 self.client_config.key_log = key_logger;
             };
             Ok(self)

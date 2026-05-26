@@ -2,9 +2,9 @@ use super::TlsAcceptorData;
 use crate::{
     TlsStream,
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-    keylog::try_new_key_log_file_handle,
     types::SecureTransport,
 };
+use rama_net::tls::keylog::{FileKeyLogSink, KeyLogSink};
 use parking_lot::Mutex;
 use rama_core::{
     Service,
@@ -159,10 +159,12 @@ where
         }
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
-            let handle = try_new_key_log_file_handle(keylog_filename)?;
+            let sink = FileKeyLogSink::try_open(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{line}\n");
-                handle.write_log_line(line);
+                let mut buf = String::with_capacity(line.len() + 1);
+                buf.push_str(line);
+                buf.push('\n');
+                sink.write_line(&buf);
             });
         }
 
