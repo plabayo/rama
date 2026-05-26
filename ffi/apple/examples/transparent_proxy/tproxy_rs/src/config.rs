@@ -32,15 +32,6 @@ pub struct DemoProxyConfig {
     // the XPC server (fail-closed) so unrestricted access to install/uninstall routes
     // is impossible.
     pub container_signing_identifier: Option<String>,
-    /// When `true` the MITM relay logs (Pre-)Master-Secret lines to
-    /// `<storage_dir>/sslkeylog.txt` so Wireshark / NSS-compatible tools
-    /// can decrypt egress (and mirrored ingress) TLS traffic for
-    /// debugging. **Security**: anyone with read access to that file can
-    /// decrypt every relayed flow while the toggle is on; keep it off
-    /// for normal use. Baked at engine-construction time — flipping it
-    /// while the proxy is connected requires a provider restart (the
-    /// container app prompts for that).
-    pub tls_keylog_enabled: bool,
 }
 
 impl Default for DemoProxyConfig {
@@ -71,7 +62,6 @@ impl Default for DemoProxyConfig {
             ca_key_pem: None,
             xpc_service_name: None,
             container_signing_identifier: None,
-            tls_keylog_enabled: false,
         }
     }
 }

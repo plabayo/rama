@@ -87,6 +87,15 @@ impl<Issuer> TlsMitmRelay<Issuer> {
             self
         }
     }
+
+    /// Borrow the currently-configured [`KeyLogIntent`]. Useful when
+    /// constructing a sibling relay (e.g. after a CA rotation) that
+    /// should share the same sink — a `Custom(Arc<dyn KeyLogSink>)`
+    /// cloned this way keeps writing through the same backing toggle.
+    #[must_use]
+    pub fn keylog_intent_ref(&self) -> &KeyLogIntent {
+        &self.keylog_intent
+    }
 }
 
 impl<Issuer> TlsMitmRelay<self::issuer::CachedBoringMitmCertIssuer<Issuer>> {

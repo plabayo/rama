@@ -1,6 +1,9 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::net::tls::KeyLogIntent;
+use rama::net::tls::keylog::{
+    KeyLogSink, NoopKeyLogSink, RotatingFileKeyLogSink, RotationPeriod, ToggleableKeyLogSink,
+};
 use rama::telemetry::tracing;
 use rama::{
     Layer, Service,
@@ -70,39 +73,50 @@ impl DemoTcpMitmService {
         )?;
         let ca_crt_pem: Bytes = Bytes::from(ca_crt.to_pem().context("encode root ca cert to pem")?);
 
-        // Build the MITM relay with optional SSLKEYLOG sink. The
-        // toggle lives in `DemoProxyConfig`; the path is fixed —
-        // `<storage_dir>/sslkeylog.txt` — chosen because the
-        // storage dir is the only path the sysext is guaranteed to
-        // be able to write to (App Group container would also
-        // work but adds entitlement plumbing the example doesn't
-        // need). When the flag is off we hard-disable rather than
-        // fall back to `KeyLogIntent::Environment`: a sysext can't
-        // see the user's shell env var anyway, and
-        // `Disabled` avoids silently inheriting whatever a
-        // `launchctl setenv SSLKEYLOGFILE …` left behind.
-        let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
-        if demo_config.tls_keylog_enabled {
-            if let Some(dir) = crate::utils::storage_dir() {
-                let path = dir.join("sslkeylog.txt");
+        // Build the keylog pipeline unconditionally and bake it into
+        // the relay as `KeyLogIntent::Custom`. Runtime on/off is a
+        // single AtomicBool flip via XPC — see
+        // `LiveSettings::tls_keylog_toggle`. Default is OFF; nothing
+        // is persisted across sysext restarts. Rotated files (hourly,
+        // 8 h retention) land in `<storage_dir>/keylog/` (Wireshark:
+        // Preferences → Protocols → TLS → (Pre)-Master-Secret log
+        // filename → pick the most recent file).
+        let (tls_keylog_intent, tls_keylog_toggle) = match crate::utils::storage_dir() {
+            Some(dir) => {
+                let keylog_dir = dir.join("keylog");
+                let rotating = RotatingFileKeyLogSink::try_open_with(
+                    &keylog_dir,
+                    "sslkeylog",
+                    RotationPeriod::HOURLY,
+                    Some(Duration::from_hours(8)),
+                )
+                .context("open rotating tls keylog sink")?;
+                let toggleable = Arc::new(ToggleableKeyLogSink::new(rotating));
+                let toggle = toggleable.toggle();
                 tracing::info!(
-                    path = %path.display(),
-                    "TLS keylog ENABLED — every relayed handshake's session keys will be \
-                        written to this file (Wireshark: Preferences → Protocols → TLS → \
-                        (Pre)-Master-Secret log filename)",
+                    dir = %keylog_dir.display(),
+                    "TLS keylog pipeline ready (OFF by default; toggle via XPC)",
                 );
-                tls_mitm_relay
-                    .set_keylog_intent(KeyLogIntent::File(path.to_string_lossy().into_owned()));
-            } else {
-                tracing::warn!(
-                    "TLS keylog requested but no storage_dir was passed to the engine; \
-                        falling back to disabled",
-                );
-                tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
+                (
+                    KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                    toggle,
+                )
             }
-        } else {
-            tls_mitm_relay.set_keylog_intent(KeyLogIntent::Disabled);
-        }
+            None => {
+                tracing::warn!(
+                    "TLS keylog: no storage_dir → Noop sink; toggle XPC route exists but writes \
+                     go nowhere",
+                );
+                let toggleable = Arc::new(ToggleableKeyLogSink::new(NoopKeyLogSink));
+                let toggle = toggleable.toggle();
+                (
+                    KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                    toggle,
+                )
+            }
+        };
+        let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
+        tls_mitm_relay.set_keylog_intent(tls_keylog_intent);
 
         let initial_settings = LiveSettings {
             html_badge_enabled: demo_config.html_badge_enabled,
@@ -110,6 +124,7 @@ impl DemoTcpMitmService {
             exclude_domains: demo_config.exclude_domains.clone(),
             ca_crt_pem,
             tls_mitm_relay,
+            tls_keylog_toggle,
         };
         let state: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(initial_settings));
 

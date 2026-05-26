@@ -179,6 +179,14 @@ extension ContainerController {
             } else {
                 log("status=\(statusText)")
             }
+            // On (re)entering `.connected`, refresh the menu's TLS-
+            // keylog checkmark from the sysext. The toggle never
+            // persists across sysext restarts, so the result is
+            // typically `false`, but the call keeps things truthful
+            // when the GUI restarts while the sysext stays up.
+            if status == .connected {
+                syncTlsKeylogStateFromSysext()
+            }
         }
         logDisconnectReasonIfNeeded(for: status)
         lastStatus = status
