@@ -83,6 +83,42 @@ impl std::fmt::Display for PromoteError {
 
 impl std::error::Error for PromoteError {}
 
+/// Shared shutdown signal between [`PromoteHandle`] and the
+/// [`PromoteRegistry`] that produced it. Held as `Arc` on both
+/// sides so a registry-side abort wakes every outstanding handle
+/// in one call.
+///
+/// `flag` is the synchronous companion to `notify`: a fresh
+/// `into_passthrough` arriving AFTER shutdown has nothing to
+/// `.await` on `notify` (the future is constructed too late to
+/// catch the prior `notify_waiters`), so it polls `flag` on
+/// entry and short-circuits there. Active waiters take the
+/// `notify` path.
+pub(super) struct PromoteShutdown {
+    pub(super) flag: AtomicBool,
+    pub(super) notify: Notify,
+}
+
+impl PromoteShutdown {
+    pub(super) fn new() -> Self {
+        Self {
+            flag: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    /// Trip the shutdown flag and wake every current waiter. Called
+    /// by [`PromoteRegistry::abort_pending`] (session cancel / drop).
+    pub(super) fn fire(&self) {
+        self.flag.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub(super) fn is_tripped(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+}
+
 struct PromoteInner {
     /// CAS to ensure the cutover fires exactly once across concurrent /
     /// repeated [`PromoteHandle::into_passthrough`] calls.
@@ -93,6 +129,17 @@ struct PromoteInner {
     result: parking_lot::Mutex<Option<Result<(), PromoteError>>>,
     /// Engine-supplied closure that drives the actual cutover.
     fire: Fire,
+    /// Shared with the [`PromoteRegistry`]. Lets `into_passthrough`
+    /// resolve with [`PromoteError::EngineShuttingDown`] instead of
+    /// parking indefinitely on `completed` if the engine's runtime
+    /// shut down between `spawn_fire` and the spawned task being
+    /// scheduled (tokio silently drops unstarted tasks on a dead
+    /// scheduler — the comment near `spawn_fire` flagged this as
+    /// the hang case), or if the handle was stashed past the
+    /// lifetime of the engine that produced it (now a public,
+    /// clonable extension surface that downstream services can
+    /// keep beyond the flow task).
+    shutdown: Arc<PromoteShutdown>,
 }
 
 /// `Fire` is the closure that performs the engine-side cutover when the
@@ -126,6 +173,16 @@ impl PromoteHandle {
     /// callers — they will observe whatever result the
     /// (still-running) detached task produces.
     pub async fn into_passthrough(&self) -> Result<(), PromoteError> {
+        // Fast-path: a caller arriving AFTER shutdown sees a tripped
+        // flag and never enters the spawn / wait dance. The flag
+        // pairs with `shutdown.notify` to cover both arrival orders:
+        // - already shut down: `flag.load() == true` → return now;
+        // - shutdown races us mid-wait: `notify` wakes the select
+        //   below and we observe the flag on the recheck.
+        if self.inner.shutdown.is_tripped() {
+            return Err(PromoteError::EngineShuttingDown);
+        }
+
         if !self.inner.requested.swap(true, Ordering::AcqRel) {
             self.spawn_fire();
         }
@@ -137,14 +194,29 @@ impl PromoteHandle {
         // task parked forever. (Today's tokio also tracks the
         // notify_waiters generation on `notified()` construction, but the
         // documented API surface is `enable()`.)
+        //
+        // The select! arm on `shutdown.notify` is what bounds the
+        // wait when the engine's runtime has died between `spawn_fire`
+        // and the fire task being scheduled — tokio silently drops
+        // unstarted tasks on a shut-down runtime, so the
+        // notify_waiters from `completed` never fires. The shutdown
+        // signal closes that hang.
         loop {
             let notified = self.inner.completed.notified();
-            tokio::pin!(notified);
+            let shutdown = self.inner.shutdown.notify.notified();
+            tokio::pin!(notified, shutdown);
             notified.as_mut().enable();
+            shutdown.as_mut().enable();
             if let Some(r) = self.inner.result.lock().clone() {
                 return r;
             }
-            notified.await;
+            if self.inner.shutdown.is_tripped() {
+                return Err(PromoteError::EngineShuttingDown);
+            }
+            tokio::select! {
+                _ = notified => {}
+                _ = shutdown => return Err(PromoteError::EngineShuttingDown),
+            }
         }
     }
 
@@ -159,6 +231,7 @@ impl PromoteHandle {
                 completed: Notify::new(),
                 result: parking_lot::Mutex::new(None),
                 fire: Fire::NoOp,
+                shutdown: Arc::new(PromoteShutdown::new()),
             }),
         }
     }
@@ -169,7 +242,17 @@ impl PromoteHandle {
     /// spawns the fire work via `rt.spawn` so the work survives
     /// drop of the awaiting future — cancel-safe by
     /// construction.
-    pub(super) fn new_engine<F, Fut>(rt: tokio::runtime::Handle, fire: F) -> Self
+    ///
+    /// `shutdown` is shared with the [`PromoteRegistry`] that
+    /// produced this handle; the registry signals it on session
+    /// cancel / drop so any awaiting `into_passthrough` resolves
+    /// with [`PromoteError::EngineShuttingDown`] instead of
+    /// hanging on a runtime that has since been torn down.
+    pub(super) fn new_engine<F, Fut>(
+        rt: tokio::runtime::Handle,
+        shutdown: Arc<PromoteShutdown>,
+        fire: F,
+    ) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), PromoteError>> + Send + 'static,
@@ -181,6 +264,7 @@ impl PromoteHandle {
                 completed: Notify::new(),
                 result: parking_lot::Mutex::new(None),
                 fire: Fire::Engine(fire, rt),
+                shutdown,
             }),
         }
     }
@@ -193,17 +277,23 @@ impl PromoteHandle {
     /// to completion and notifies the `Notify` so any other
     /// concurrent waiter on a cloned handle still observes the
     /// result.
-    /// Invariant: `self.inner.fire` (when `Engine`) holds a `Handle`
-    /// to a runtime that outlives every clone of this handle. The
-    /// engine enforces that — service tasks (the only callers of
-    /// `into_passthrough`) are spawned ON that runtime, so they
-    /// cannot outlive it. If callers ever leak a `PromoteHandle`
-    /// past the engine's runtime, `Handle::spawn` here silently
-    /// queues onto a dead scheduler (tokio does NOT panic, contrary
-    /// to its docs); the task never runs and `into_passthrough`
-    /// hangs forever on `Notify`. No FFI / production caller can
-    /// reach that shape today.
+    ///
+    /// Synchronous shutdown gate: when the registry's
+    /// `abort_pending` has already fired we publish
+    /// `EngineShuttingDown` directly onto `result` and never
+    /// touch the (possibly-dead) runtime. Tokio's `Handle::spawn`
+    /// silently queues onto a shut-down scheduler — the task
+    /// never runs and the awaiter parks on `Notify` forever
+    /// without the gate. The shared `shutdown` signal in
+    /// `PromoteInner` also catches the race where shutdown
+    /// races spawn (engine drops between check and spawn) by
+    /// waking awaiters via `into_passthrough`'s select arm.
     fn spawn_fire(&self) {
+        if self.inner.shutdown.is_tripped() {
+            *self.inner.result.lock() = Some(Err(PromoteError::EngineShuttingDown));
+            self.inner.completed.notify_waiters();
+            return;
+        }
         match &self.inner.fire {
             Fire::Engine(f, rt) => {
                 let inner = self.inner.clone();
@@ -281,6 +371,12 @@ pub(super) struct PromoteRegistry {
     /// memory — no `Box::leak`. Mutually exclusive with
     /// `raw_callback`: registering one clears the other.
     rust_callback: parking_lot::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Shared shutdown signal — fired by `abort_pending` so any
+    /// outstanding `PromoteHandle::into_passthrough` resolves
+    /// with [`PromoteError::EngineShuttingDown`] instead of
+    /// hanging on a dropped runtime. Built by `new` and handed
+    /// to `into_handle`.
+    shutdown: Arc<PromoteShutdown>,
     /// Set when the first `into_passthrough` fires; consumed by
     /// `confirm_promoted` (or dropped by a session cancel).
     pending_ack: parking_lot::Mutex<Option<oneshot::Sender<Result<(), PromoteError>>>>,
@@ -330,6 +426,7 @@ impl PromoteRegistry {
         Arc::new(Self {
             raw_callback: parking_lot::Mutex::new(None),
             rust_callback: parking_lot::Mutex::new(None),
+            shutdown: Arc::new(PromoteShutdown::new()),
             pending_ack: parking_lot::Mutex::new(None),
             client_tx,
             egress_tx,
@@ -391,8 +488,18 @@ impl PromoteRegistry {
     /// Drop the ACK sender so the awaiting `fire` future resolves
     /// with [`PromoteError::EngineShuttingDown`]. Called by the
     /// session on cancel.
+    ///
+    /// Also trips the shared shutdown signal so:
+    /// - any awaiting `PromoteHandle::into_passthrough` that hasn't
+    ///   yet entered `fire()` (e.g. its spawned task hasn't been
+    ///   scheduled because the runtime is gone) wakes up and
+    ///   returns `EngineShuttingDown`;
+    /// - any future `into_passthrough` short-circuits on the
+    ///   `is_tripped` fast path instead of trying to spawn into
+    ///   a dead scheduler.
     pub(super) fn abort_pending(&self) {
         let _ = self.pending_ack.lock().take();
+        self.shutdown.fire();
     }
 
     /// Test helper: is there an in-flight `fire` awaiting ACK?
@@ -416,7 +523,8 @@ impl PromoteRegistry {
     /// awaiting caller being dropped doesn't strand any
     /// concurrent `PromoteHandle::into_passthrough` waiters.
     pub(super) fn into_handle(self: Arc<Self>, rt: tokio::runtime::Handle) -> PromoteHandle {
-        PromoteHandle::new_engine(rt, move || {
+        let shutdown = self.shutdown.clone();
+        PromoteHandle::new_engine(rt, shutdown, move || {
             let registry = self.clone();
             async move { registry.fire().await }
         })
@@ -610,7 +718,8 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_inner = counter.clone();
         let rt = tokio::runtime::Handle::current();
-        let handle = PromoteHandle::new_engine(rt, move || {
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let handle = PromoteHandle::new_engine(rt, shutdown, move || {
             let c = counter_inner.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -657,13 +766,15 @@ mod tests {
 
         let fires = Arc::new(AtomicUsize::new(0));
         let fires_inner = fires.clone();
-        let handle = PromoteHandle::new_engine(tokio::runtime::Handle::current(), move || {
-            let f = fires_inner.clone();
-            async move {
-                f.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        });
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let handle =
+            PromoteHandle::new_engine(tokio::runtime::Handle::current(), shutdown, move || {
+                let f = fires_inner.clone();
+                async move {
+                    f.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            });
 
         let extensions = Extensions::new();
         extensions.insert(handle);
@@ -685,8 +796,10 @@ mod tests {
     #[tokio::test]
     async fn engine_fire_error_is_propagated_to_all_waiters() {
         let rt = tokio::runtime::Handle::current();
-        let handle =
-            PromoteHandle::new_engine(rt, || async { Err(PromoteError::EgressUnavailable) });
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let handle = PromoteHandle::new_engine(rt, shutdown, || async {
+            Err(PromoteError::EgressUnavailable)
+        });
         let h2 = handle.clone();
         let r1 = handle.into_passthrough().await;
         let r2 = h2.into_passthrough().await;
@@ -701,7 +814,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn engine_fire_panic_resolves_waiters_with_callback_panicked() {
         let rt = tokio::runtime::Handle::current();
-        let handle = PromoteHandle::new_engine(rt, || async {
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let handle = PromoteHandle::new_engine(rt, shutdown, || async {
             panic!("synthetic panic from fire body");
         });
         let r = tokio::time::timeout(std::time::Duration::from_secs(2), handle.into_passthrough())
@@ -722,7 +836,8 @@ mod tests {
     #[tokio::test]
     async fn engine_late_waiter_after_fire_completed_still_observes_result() {
         let rt = tokio::runtime::Handle::current();
-        let handle = PromoteHandle::new_engine(rt, || async { Ok(()) });
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let handle = PromoteHandle::new_engine(rt, shutdown, || async { Ok(()) });
         // Drive the fire to completion on this task.
         handle.into_passthrough().await.expect("first call ok");
         // Spawn a fresh waiter on a separate task. The fire is
@@ -735,5 +850,69 @@ mod tests {
             .expect("late waiter must not hang")
             .expect("task panicked");
         r.expect("late waiter sees Ok");
+    }
+
+    /// `into_passthrough` arriving AFTER `shutdown.fire()` must
+    /// short-circuit to `EngineShuttingDown` synchronously — never
+    /// touch the runtime. Pins the defense against a leaked /
+    /// stashed `PromoteHandle` outliving the engine that produced
+    /// it (the audit-flagged hang case).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_shutdown_before_into_passthrough_short_circuits() {
+        use std::sync::atomic::AtomicUsize;
+        let rt = tokio::runtime::Handle::current();
+        let shutdown = Arc::new(PromoteShutdown::new());
+        let fires = Arc::new(AtomicUsize::new(0));
+        let fires_inner = fires.clone();
+        let handle = PromoteHandle::new_engine(rt, shutdown.clone(), move || {
+            let f = fires_inner.clone();
+            async move {
+                f.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        });
+
+        // Trip shutdown BEFORE any caller arrives.
+        shutdown.fire();
+
+        let r = tokio::time::timeout(std::time::Duration::from_secs(2), handle.into_passthrough())
+            .await
+            .expect("shutdown-first must short-circuit");
+        assert!(matches!(r, Err(PromoteError::EngineShuttingDown)));
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            0,
+            "fire body must never run after shutdown",
+        );
+    }
+
+    /// `shutdown.fire()` called WHILE a waiter is parked must wake
+    /// it with `EngineShuttingDown`. Models the race where the
+    /// engine drops between `spawn_fire` and the spawned task
+    /// being scheduled — the spawned task never runs, but the
+    /// waiter's `select!` arm on `shutdown.notify` resolves it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_shutdown_wakes_parked_waiter() {
+        let rt = tokio::runtime::Handle::current();
+        let shutdown = Arc::new(PromoteShutdown::new());
+        // Fire body that never completes — models a dead runtime
+        // (or any "task never makes progress" shape).
+        let handle = PromoteHandle::new_engine(rt, shutdown.clone(), || async {
+            std::future::pending::<Result<(), PromoteError>>().await
+        });
+        let waiter = tokio::spawn({
+            let h = handle.clone();
+            async move { h.into_passthrough().await }
+        });
+
+        // Give the waiter time to park on `notified`.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        shutdown.fire();
+
+        let r = tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("parked waiter must be woken by shutdown")
+            .expect("task panicked");
+        assert!(matches!(r, Err(PromoteError::EngineShuttingDown)));
     }
 }
