@@ -58,6 +58,7 @@ where
         );
         let maybe_connector_data = TlsConnectorDataBuilder::default()
             .with_server_verify_mode(ServerVerifyMode::Disable)
+            .with_keylog_intent(self.relay.keylog_intent_ref().clone())
             .build()
             .inspect_err(|err| {
                 tracing::debug!(
@@ -117,6 +118,7 @@ where
         };
         let maybe_connector_data = builder
             .with_server_verify_mode(ServerVerifyMode::Disable)
+            .with_keylog_intent(self.relay.keylog_intent_ref().clone())
             .build()
             .inspect_err(|err| {
                 tracing::debug!("failed to build TlsConnectorData (from CH or default): {err}; try anyway without data")
