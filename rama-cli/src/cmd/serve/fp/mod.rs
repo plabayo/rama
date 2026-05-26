@@ -225,7 +225,12 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         .with_get("/assets/script.js", endpoints::get_assets_script)
         // Report and API
         .with_get("/report", endpoints::get_report)
-        .with_get("/api/ws", ws_service)
+        // WS
+        .with_match_route(
+            "/api/ws",
+            HttpMatcher::method_get().or_method_connect(),
+            ws_service,
+        )
         .with_post(
             "/api/fetch/number/{number}",
             endpoints::post_api_fetch_number,
@@ -319,11 +324,12 @@ where
                     network.local.port = %bind_address.port(),
                     "FP Service (auto) listening: bind interface = {}", cfg.bind,
                 );
+                let mut http_server = HttpServer::auto(exec);
+                // Advertise RFC 8441 so h2 clients can open WebSockets
+                // (Extended CONNECT) — see the `/api/ws` route.
+                http_server.h2_mut().set_enable_connect_protocol();
                 tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::auto(exec).service(http_service)),
-                    )
+                    .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
             }
             HttpVersion::H1 => {
@@ -345,11 +351,12 @@ where
                     network.local.port = %bind_address.port(),
                     "FP Service (H2) listening: bind interface = {}", cfg.bind,
                 );
+                let mut http_server = HttpServer::new_h2(exec);
+                // Advertise RFC 8441 so h2 clients can open WebSockets
+                // (Extended CONNECT) — see the `/api/ws` route.
+                http_server.h2_mut().set_enable_connect_protocol();
                 tcp_listener
-                    .serve(
-                        tcp_service_builder
-                            .into_layer(HttpServer::new_h2(exec).service(http_service)),
-                    )
+                    .serve(tcp_service_builder.into_layer(http_server.service(http_service)))
                     .await;
             }
         }
