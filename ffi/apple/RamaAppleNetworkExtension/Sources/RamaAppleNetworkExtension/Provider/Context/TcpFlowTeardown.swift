@@ -191,6 +191,19 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
+    /// Engine is being detached (stopProxy / re-attach). Drop the flow:
+    /// the egress NWConnection must be cancelled here, otherwise its
+    /// `stateUpdateHandler` keeps the per-flow graph alive and the
+    /// Rust→Swift close callbacks are suppressed once the engine is
+    /// gone — leaking the connection (and its NECP entry) until process
+    /// exit. Distinct `domain` so traces can attribute the cause.
+    func applyEngineDetached() {
+        let err = NSError(
+            domain: "rama.tproxy.engine-detached", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
     /// Shared body for full teardowns.
     ///
     /// **Order matters** — pump cancel BEFORE kernel flow close:

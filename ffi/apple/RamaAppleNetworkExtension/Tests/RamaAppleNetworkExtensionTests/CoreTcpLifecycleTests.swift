@@ -181,6 +181,33 @@ final class CoreTcpLifecycleTests: XCTestCase {
         )
     }
 
+    // MARK: - Engine detach
+
+    /// Regression (audit C): detaching the engine with a live flow must
+    /// tear that flow down — cancel its egress connection — not just
+    /// drop the registry maps. Pre-fix the connection leaked (its
+    /// stateUpdateHandler anchored the graph and the engine's stop
+    /// suppressed the close callbacks).
+    func testDetachEngineTearsDownLiveFlow() {
+        let fx = makeFixture()
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+        XCTAssertEqual(fx.core.tcpFlowCount, 1)
+
+        fx.core.detachEngine(reason: 0)
+
+        waitFor("detach cleared the registry") { fx.core.tcpFlowCount == 0 }
+        waitFor("detach cancelled the live egress connection (no leak)") {
+            conn.cancelCount >= 1
+        }
+    }
+
     // MARK: - Pre-ready failure paths
 
     func testPreReadyConnectionFailedTearsDownCleanly() {

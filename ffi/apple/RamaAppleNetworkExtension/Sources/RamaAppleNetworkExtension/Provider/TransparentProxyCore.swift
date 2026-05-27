@@ -108,6 +108,18 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Idempotent — safe to call twice.
     func detachEngine(reason: Int32) {
         stopFlowCountReporting()
+        // Tear down live flows BEFORE stopping the engine and clearing
+        // the registry. A live TcpFlowSession is lifetime-anchored by
+        // its NWConnection.stateUpdateHandler, and once the engine is
+        // stopped the Rust→Swift close callbacks are suppressed — so
+        // just dropping the maps would leak each egress NWConnection
+        // (and its kernel NECP entry) until process exit. Each teardown
+        // cancels its connection + session and removes itself from the
+        // registry; the removeAll below is then a no-op safety net.
+        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in tcp { ctx.teardown?.applyEngineDetached() }
+        let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
+        for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
         self.engine = nil
         stateQueue.sync {
@@ -160,6 +172,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         NSError(
             domain: "rama.tproxy.system-sleep", code: -1,
             userInfo: [NSLocalizedDescriptionKey: "system entered sleep; flow dropped"])
+    }
+
+    private func engineDetachedError() -> NSError {
+        NSError(
+            domain: "rama.tproxy.engine-detached", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
     }
 
     // MARK: - Periodic flow-count telemetry
