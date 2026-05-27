@@ -5,9 +5,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_net::{
-    address::Host, tls::client::ClientHelloExtension, transport::TryRefIntoTransportContext,
-};
+use rama_net::{tls::client::ClientHelloExtension, transport::TryRefIntoTransportContext};
 use rama_ua::profile::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
 use std::{borrow::Cow, sync::Arc};
@@ -64,28 +62,39 @@ where
                 .flatten()
                 .any(|e| matches!(e, ClientHelloExtension::ServerName(_)))
             {
-                match &transport_ctx.authority.host {
-                    Host::Name(domain) => {
-                        tracing::trace!(
-                            "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
-                        );
-                        domain_overwrite = Some(Arc::new(
-                            TlsConnectorDataBuilder::new().with_server_name(domain.clone()),
-                        ));
-                    }
-                    Host::Address(ip) => {
-                        tracing::trace!("ua tls emulator: drop SNI as target is IP: {ip}");
-                        let cfg = emulate_config.to_mut();
-                        let extensions: Vec<_> = cfg
-                            .extensions
-                            .take()
-                            .into_iter()
-                            .flatten()
-                            .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
-                            .collect();
-                        if !extensions.is_empty() {
-                            cfg.extensions = Some(extensions);
-                        }
+                let host = &transport_ctx.authority.host;
+                // SNI is a DNS name. IP-first: pct-encoded IP literals
+                // (`%31%32%37.0.0.1`) can promote to BOTH Domain and
+                // IpAddr — emitting them as SNI would be wrong per
+                // RFC 6066 §3 ("Literal IPv4 and IPv6 addresses are
+                // not permitted in [SNI]"). Drop SNI for any IP-shaped
+                // host. Otherwise, bridge `Uninterpreted` to Domain
+                // via `try_as_domain`.
+                let host_is_ip = host.try_as_ip().is_ok();
+                let domain_opt = if host_is_ip {
+                    None
+                } else {
+                    host.try_as_domain().ok()
+                };
+                if let Some(domain) = domain_opt {
+                    tracing::trace!(
+                        "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
+                    );
+                    domain_overwrite = Some(Arc::new(
+                        TlsConnectorDataBuilder::new().with_server_name(domain.into_owned()),
+                    ));
+                } else {
+                    tracing::trace!("ua tls emulator: drop SNI as target is not a domain: {host}");
+                    let cfg = emulate_config.to_mut();
+                    let extensions: Vec<_> = cfg
+                        .extensions
+                        .take()
+                        .into_iter()
+                        .flatten()
+                        .filter(|ext| !matches!(ext, ClientHelloExtension::ServerName(_)))
+                        .collect();
+                    if !extensions.is_empty() {
+                        cfg.extensions = Some(extensions);
                     }
                 }
             } else {

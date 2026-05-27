@@ -37,6 +37,10 @@ impl TraceField for Host {
         match self {
             Self::Name(domain) => enc.write_string(domain.as_str()),
             Self::Address(ip) => enc.write_string(&ip.to_string()),
+            // Wire-preserved reg-name / IP-literal — render through
+            // `Display`, which handles the bracketed IPvFuture case
+            // (re-adds `[...]`) and emits reg-name bytes verbatim.
+            Self::Uninterpreted(host) => enc.write_string(&host.to_string()),
         }
     }
 

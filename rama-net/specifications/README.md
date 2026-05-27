@@ -17,12 +17,35 @@ here; see the cross-references at the bottom.
 
 * [rfc3986.txt](./uri/rfc3986.txt) — URI generic syntax.
   Implemented in [`src/address/`](../src/address) (host, authority,
-  domain, IPv4/IPv6 parsers), [`src/uri.rs`](../src/uri.rs) and
+  domain, IPv4/IPv6 parsers), [`src/uri/`](../src/uri) and
   the scheme grammar in [`src/proto.rs`](../src/proto.rs).
 
 * [rfc3987.txt](./uri/rfc3987.txt) — Internationalized Resource
-  Identifiers (IRIs). Kept as reference; IRI/IDN handling is not
-  yet implemented (`address/domain/` is ASCII-only).
+  Identifiers (IRIs). Hosts go through IDNA when the `idna` feature
+  is enabled; paths/queries/fragments are UTF-8 + percent-encoding.
+
+* [rfc9110.txt](./uri/rfc9110.txt) — HTTP semantics. Defines the
+  `http` / `https` URI schemes, default ports, the userinfo
+  prohibition in transmitted request-targets, and effective
+  request URI reconstruction (§7.2).
+
+* [rfc9112.txt](./uri/rfc9112.txt) — HTTP/1.1 message syntax.
+  §3.2 specifies the four request-target forms (origin, absolute,
+  authority, asterisk) that [`src/uri/`](../src/uri) must round-trip.
+
+* [rfc9844.txt](./uri/rfc9844.txt) — IPv6 zone identifiers in user
+  interfaces. Obsoletes RFC 6874. Currently surfaced as a typed
+  rejection (`ParseError::IPv6ZoneNotSupported`); kept as reference
+  for the day we extend `Host` with a zone-bearing IPv6 variant.
+
+* [rfc5890.txt](./uri/rfc5890.txt) — IDNA 2008 framework
+  (A-label / U-label terminology, label-handling rules). Consumed
+  by the optional `idna` feature.
+
+* [rfc6265.txt](./uri/rfc6265.txt) — HTTP cookies. Kept here
+  because its host canonicalization rules (§5.1.2-§5.1.4) must
+  agree with the URI module's host normalization, otherwise
+  cookie binding silently drifts.
 
 ### TLS
 

@@ -166,23 +166,23 @@ enum LabelErrorKind {
 
 impl LabelError {
     #[inline]
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self(LabelErrorKind::Empty)
     }
     #[inline]
-    pub(crate) fn too_long(len: usize) -> Self {
+    pub(crate) const fn too_long(len: usize) -> Self {
         Self(LabelErrorKind::TooLong { len })
     }
     #[inline]
-    pub(crate) fn leading_hyphen() -> Self {
+    pub(crate) const fn leading_hyphen() -> Self {
         Self(LabelErrorKind::LeadingHyphen)
     }
     #[inline]
-    pub(crate) fn trailing_hyphen() -> Self {
+    pub(crate) const fn trailing_hyphen() -> Self {
         Self(LabelErrorKind::TrailingHyphen)
     }
     #[inline]
-    pub(crate) fn invalid_char(byte: u8, at: usize) -> Self {
+    pub(crate) const fn invalid_char(byte: u8, at: usize) -> Self {
         Self(LabelErrorKind::InvalidChar { byte, at })
     }
 }
@@ -209,7 +209,11 @@ impl std::error::Error for LabelError {}
 
 /// Shared validation: also used by [`Domain`](super::Domain)'s internal parser
 /// so error reporting agrees byte-for-byte between the two surfaces.
-pub(crate) fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError> {
+///
+/// `const` because both `Domain::from_static` (compile-time) and
+/// `Domain::try_from` (runtime) call through this — keeping the algorithm
+/// in one place avoids the validator-drift class of bug.
+pub(crate) const fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError> {
     if bytes.is_empty() {
         return Err(LabelError::empty());
     }
@@ -217,8 +221,9 @@ pub(crate) fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError> {
         return Err(LabelError::too_long(bytes.len()));
     }
 
-    // Wildcard label is the single byte `*`.
-    if bytes == b"*" {
+    // Wildcard label is the single byte `*`. Manual comparison because
+    // `<[u8] as PartialEq>::eq` is not const.
+    if bytes.len() == 1 && bytes[0] == b'*' {
         return Ok(());
     }
 
@@ -229,11 +234,13 @@ pub(crate) fn validate_label_bytes(bytes: &[u8]) -> Result<(), LabelError> {
         return Err(LabelError::trailing_hyphen());
     }
 
-    for (at, &c) in bytes.iter().enumerate() {
-        let ok = c.is_ascii_alphanumeric() || c == b'_' || c == b'-';
-        if !ok {
-            return Err(LabelError::invalid_char(c, at));
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if !crate::byte_sets::is_label_byte(c) {
+            return Err(LabelError::invalid_char(c, i));
         }
+        i += 1;
     }
     Ok(())
 }
@@ -328,5 +335,26 @@ mod tests {
         let l = unsafe { Label::from_str_unchecked(s) };
         assert_eq!(l.as_str(), s);
         assert_eq!(l.len(), s.len());
+    }
+
+    #[test]
+    fn label_byte_set_matches_predicate() {
+        // Drift guard: the LUT must agree byte-for-byte with the
+        // grammar `ALPHA / DIGIT / "_" / "-"` it claims to encode.
+        // If the table-build loop in `crate::byte_sets` ever drops a byte,
+        // this catches it on the label-grammar side too.
+        for b in 0u8..=255 {
+            let expected = b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+            assert_eq!(
+                crate::byte_sets::is_label_byte(b),
+                expected,
+                "byte 0x{b:02x} ({}) — LUT disagreed with predicate",
+                if b.is_ascii_graphic() {
+                    format!("{:?}", b as char)
+                } else {
+                    "non-graphic".to_owned()
+                }
+            );
+        }
     }
 }

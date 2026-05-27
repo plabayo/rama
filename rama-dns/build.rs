@@ -11,12 +11,12 @@ fn main() {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").ok();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").ok();
-    let uses_res_nquery = matches!(
+    let uses_res_nsearch = matches!(
         (target_os.as_deref(), target_env.as_deref()),
         (Some("linux"), Some("gnu")) | (Some("freebsd" | "openbsd" | "netbsd"), _)
     );
 
-    if !uses_res_nquery {
+    if !uses_res_nsearch {
         return;
     }
 

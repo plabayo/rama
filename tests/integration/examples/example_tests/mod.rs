@@ -15,6 +15,8 @@ mod http_anti_bot_zip_bomb;
 #[cfg(feature = "http-full")]
 mod http_connect_proxy;
 #[cfg(feature = "http-full")]
+mod http_declarative_partial_updates;
+#[cfg(feature = "http-full")]
 mod http_form;
 #[cfg(feature = "http-full")]
 mod http_har_replay;

@@ -196,7 +196,7 @@ where
         {
             tracing::trace!(
                 server.address = %transport_ctx.authority.host,
-                server.port = transport_ctx.authority.port,
+                server.port = transport_ctx.authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
@@ -210,7 +210,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(auto): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -223,7 +223,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(auto): protocol secure, established tls connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );
@@ -257,7 +257,7 @@ where
             .context("TlsConnector(auto): compute transport context")?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(secure): attempt to secure inner connection w/ app protcol: {:?}",
             transport_ctx.app_protocol,
         );

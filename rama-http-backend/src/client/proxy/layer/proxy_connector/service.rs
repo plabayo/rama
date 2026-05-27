@@ -186,7 +186,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "http proxy connector: connected to proxy",
         );
 
@@ -194,7 +194,9 @@ where
             .app_protocol
             .map(|p| p.is_secure())
             // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
-            .unwrap_or_else(|| transport_ctx.authority.port == Some(Protocol::HTTPS_DEFAULT_PORT))
+            .unwrap_or_else(|| {
+                transport_ctx.authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT)
+            })
         {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
@@ -205,7 +207,10 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        let mut connector = InnerHttpProxyConnector::new(
+            transport_ctx.authority.clone(),
+            input.extensions().clone(),
+        )?;
 
         if let Some(version) = self.version {
             connector.set_version(version);
@@ -231,7 +236,6 @@ where
                 }
                 map.push(name);
             }
-            connector.set_extension(map);
         }
 
         let (headers, conn) = connector
@@ -247,7 +251,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection { input, conn })
@@ -422,5 +426,62 @@ impl<Conn: AsyncRead> AsyncRead for MaybeHttpProxiedConnection<Conn> {
             }
             ConnectionProj::UpgradedProxy { conn } => conn.poll_read(cx, buf),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
+    use rama_core::{Layer, layer::MapOutputLayer, rt::Executor, service::service_fn};
+    use rama_http_types::{Body, Request, Response};
+    use rama_net::{
+        Protocol,
+        address::{HostWithPort, ProxyAddress},
+        test_utils::client::{MockConnectorService, MockSocket},
+    };
+    use std::convert::Infallible;
+
+    #[derive(Debug, Clone, Extension)]
+    #[extension(tags(http))]
+    struct ConnMarker(u32);
+
+    #[tokio::test]
+    async fn connection_extensions_preserved_across_proxy_connect_upgrade() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async |_req: Request| {
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let proxy_connector = (
+            HttpProxyConnectorLayer::required(),
+            MapOutputLayer::new(|out: EstablishedClientConnection<MockSocket, Request>| {
+                out.conn.extensions().insert(ConnMarker(42));
+                out
+            }),
+        )
+            .into_layer(MockConnectorService::new(move || http_server.clone()));
+
+        let req = Request::builder()
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        req.extensions().insert(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let EstablishedClientConnection { conn, .. } = proxy_connector
+            .serve(req)
+            .await
+            .expect("proxy CONNECT handshake succeeds");
+
+        let marker = conn
+            .extensions()
+            .get_ref::<ConnMarker>()
+            .expect("ConnMarker set on the pre-CONNECT connection must survive the upgrade");
+        assert_eq!(marker.0, 42);
     }
 }

@@ -444,6 +444,37 @@ impl RamaService {
         Ok(s)
     }
 
+    /// Run any rama cmd allowing failure — returns (exit_success,
+    /// stdout, stderr) so callers can assert on error diagnostics
+    /// without the harness panicking on non-zero exit.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_capture(
+        args: &[&str],
+    ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
+        let child = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command()
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .args(args)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
+            .spawn()
+            .unwrap();
+        let output = child.wait_with_output()?;
+        Ok((
+            output.status.success(),
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?,
+        ))
+    }
+
     /// Run the http command
     pub(super) fn http(
         input_args: Vec<&'static str>,

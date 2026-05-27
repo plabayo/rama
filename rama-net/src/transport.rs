@@ -34,6 +34,7 @@ impl TransportContext {
         let port = self
             .authority
             .port
+            .as_u16()
             .or_else(|| self.app_protocol.as_ref().and_then(|p| p.default_port()))
             .or_else(|| {
                 self.http_version

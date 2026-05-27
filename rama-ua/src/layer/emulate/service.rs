@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::{ChainableExtensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http::headers::{ClientHint, all_client_hints};
@@ -284,7 +284,10 @@ where
         let EstablishedClientConnection { conn, input: req } =
             self.inner.connect(req).await.into_box_error()?;
 
-        match (&conn, &req).get_ref().cloned() {
+        match req
+            .extensions()
+            .clone_to_if_absent::<HttpProfile>(conn.extensions())
+        {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -2150,7 +2153,7 @@ mod tests {
                     Host::Name(Domain::from_static("b.example.com")),
                     Protocol::HTTP_DEFAULT_PORT,
                 ),
-                expected_value: "none",
+                expected_value: "cross-site",
             },
         ];
 

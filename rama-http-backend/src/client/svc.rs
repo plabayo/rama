@@ -207,7 +207,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     tracing::trace!(
                         url.full = %req.uri(),
                         server.address = %authority.host,
-                        server.port = authority.port,
+                        server.port = authority.port_u16(),
                         "add host from authority as HOST header to req (was missing it)",
                     );
                     req.headers_mut().typed_insert(Host::from(authority));

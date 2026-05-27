@@ -332,14 +332,18 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
     let (i, v) = length_data(be_u16).parse(i)?;
-    let host = str::from_utf8(v)
+    let host: Host = str::from_utf8(v)
         .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
         .parse()
         .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
 
-    match host {
-        Host::Address(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
-        Host::Name(domain) => Ok((i, domain)),
+    // TLS SNI carries a DNS-shaped name (RFC 6066 §3). Anything that
+    // can promote to a Domain is accepted — including pct-encoded
+    // reg-names — via `try_into_domain`. IP literals and
+    // non-promotable bytes (sub-delim, IPvFuture) are rejected.
+    match host.try_into_domain() {
+        Ok(domain) => Ok((i, domain)),
+        Err(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
     }
 }
 

@@ -50,6 +50,10 @@ See [the gRPC examples README at ./grpc/README.md](./grpc/README.md).
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
 
+### Streaming HTML
+
+- [`http_declarative_partial_updates`](./http_declarative_partial_updates.rs) - stream an HTML shell with `<?marker …>` placeholders, then fill them in out-of-order via `<template for=…>` as each async fragment completes ([Chrome declarative partial updates](https://developer.chrome.com/blog/declarative-partial-updates))
+
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data
@@ -189,7 +193,7 @@ Other locations that demonstrate how to make and run a Transparent Proxy:
 - [`native_dns.rs`](./native_dns.rs) - Resolve domains using Rama's native DNS resolver,
   - with Apple-native DNS-SD support on Apple platforms
   - `DnsQueryEx` on Windows
-  - `res_nquery` on gnu/bsd
+  - `res_nsearch` on gnu/bsd
   - `getaddrinfo` on other Linux platforms,
   - and tokio's basic `lookup_host` on everything else
 - [`tcp_listener_fd_passing.rs`](./tcp_listener_fd_passing.rs) - FD passing via SCM_RIGHTS for zero-downtime restarts (Unix-only)

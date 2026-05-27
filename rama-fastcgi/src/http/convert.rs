@@ -103,6 +103,7 @@ fn derive_server_info(req_ctx: Option<&RequestContext>) -> ServerInfo {
         let port = ctx
             .authority
             .port
+            .as_u16()
             .or_else(|| ctx.protocol.default_port())
             .unwrap_or(default_port);
         (host, port)

@@ -61,6 +61,13 @@ pub mod sse;
 
 pub use sse::Sse;
 
+#[cfg(feature = "html")]
+#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
+pub mod partial_updates;
+#[cfg(feature = "html")]
+#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
+pub use partial_updates::PartialUpdates;
+
 /// An [`IntoResponse`]-based result type that uses [`ErrorResponse`] as the error type.
 ///
 /// All types which implement [`IntoResponse`] can be converted to an [`ErrorResponse`]. This makes

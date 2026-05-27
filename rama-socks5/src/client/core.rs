@@ -1,7 +1,7 @@
 use rama_core::error::BoxError;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
-use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress};
 use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
@@ -291,24 +291,25 @@ impl Client {
             port: selected_port,
         } = server_reply.bind_address;
 
-        let selected_addr = match select_host {
-            Host::Name(domain) => {
-                tracing::debug!(
-                    "bind command response does not accept domain {domain} as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        HandshakeError::io(err).with_context("read server response: bind failed")
-                    })?;
-                return Err(
-                    HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
-                        .with_context("selected bind addr cannot be a domain name"),
-                );
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // Bind reply MUST be an IP. `try_as_ip` bridges pct-encoded
+        // dotted-quad forms inside `Uninterpreted` for free; any host
+        // that doesn't promote (domain, sub-delim reg-name, IPvFuture)
+        // fails with AddressTypeNotSupported.
+        let Ok(selected_addr) = select_host.try_as_ip() else {
+            tracing::debug!(
+                "bind command response does not accept non-IP host {select_host} as bind address",
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut stream)
+                .await
+                .map_err(|err| {
+                    HandshakeError::io(err).with_context("read server response: bind failed")
+                })?;
+            return Err(
+                HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
+                    .with_context("selected bind addr must be an IP"),
+            );
         };
         let selected_bind_address = SocketAddress::new(selected_addr, selected_port);
 
