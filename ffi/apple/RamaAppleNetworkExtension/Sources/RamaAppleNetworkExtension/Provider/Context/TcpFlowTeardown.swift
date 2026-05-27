@@ -2,47 +2,21 @@ import Foundation
 
 /// Single source of truth for tearing down an intercepted TCP flow.
 ///
-/// `TransparentProxyCore.handleTcpFlow` orchestrates a state machine
-/// whose terminal-state transitions can race each other:
+/// Several terminal-state transitions can race each other (egress
+/// NWConnection `.failed`/`.waiting`/`.cancelled`, connect timeout,
+/// writer/read pump errors, `closeWhenDrained` completion, `flow.open`
+/// error, external `engine.stop`). Inlining a teardown sequence at
+/// each site let the sequences drift, which produced double-cancel /
+/// "flow is closed for writes" log spam under stress. This class
+/// consolidates them into one idempotent method per terminal-state
+/// shape (sticky `done` flag). All methods run on the per-flow
+/// `DispatchQueue` that owns `TcpFlowContext`'s slots, so `done`
+/// needs no lock.
 ///
-///   * the egress NWConnection state handler (`.failed` /
-///     `.waiting` past tolerance / `.cancelled`)
-///   * the connect-timeout work item
-///   * the writer pump's `onTerminalError` closure
-///   * the read pump's hard-error path
-///   * `onServerClosed` → `closeWhenDrained` completion
-///   * `flow.open` completion error
-///   * external `engine.stop`
-///
-/// Every one of those used to inline its own teardown sequence
-/// (close kernel flow R/W, cancel egress NWConnection, cancel each
-/// pump, drive the direct forwarder, cancel the Rust session,
-/// remove the per-flow registration). With seven sites the
-/// sequences drifted — the audit on the 5-min stress trace
-/// surfaced 1,177 `is already cancelled, ignoring cancel` Apple
-/// log lines and 1,520 `flow is closed for writes` errors from
-/// ordering mistakes, both feeding macOS's
-/// `QUARANTINED DUE TO HIGH LOGGING VOLUME` fault on the system
-/// extension.
-///
-/// This class makes the teardown a single method per
-/// terminal-state shape, idempotent by construction via the
-/// sticky `done` flag. All methods run on the per-flow
-/// `DispatchQueue` (the same queue that owns every mutation of
-/// `TcpFlowContext`'s pump / connection slots), so the
-/// single-threaded `done` flag needs no lock.
-///
-/// **Scoping intent**: the class deliberately captures `ctx` and
-/// `core` weakly. If the registry has already dropped the
-/// context (e.g. a fast-path teardown won the race), the methods
-/// no-op cleanly. The `flow` reference is strong — Apple owns
-/// the kernel `NEAppProxyTCPFlow`'s lifecycle and releases the
-/// reference graph (including us) once both sides are closed.
-///
-/// All `applyX` methods are no-ops on subsequent calls after the
-/// first one. Choose the variant that names the state transition
-/// that fired; the class encodes the exact pump / connection /
-/// session shape each transition needs to clean up.
+/// Scoping: `ctx`/`core` are captured weakly (a fast-path teardown
+/// that already dropped the context makes the methods no-op), `flow`
+/// strongly (Apple owns the kernel `NEAppProxyTCPFlow` lifecycle).
+/// Choose the `applyX` variant naming the transition that fired.
 final class TcpFlowTeardown: @unchecked Sendable {
     /// Weak: a fast-path teardown that already removed the
     /// context from the registry must not be re-pinned by a
