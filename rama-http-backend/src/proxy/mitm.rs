@@ -644,9 +644,36 @@ where
                 ?version,
                 "upstream MITM relay request failed: {err}"
             );
+            // A peer `RST_STREAM` is scoped to this one h2 stream; the
+            // shared egress connection and its sibling streams are
+            // unaffected. Fail only this stream so we don't escalate to
+            // tearing down the whole ingress connection (GOAWAY for all
+            // siblings) — which would happen via the `Closed` + cancel
+            // below. `GOAWAY` / transport errors are connection-scoped
+            // and still take that path.
+            if egress_error_is_stream_scoped(&err) {
+                return Ok(DefaultErrorResponse::response_for_version(version));
+            }
             *relay_state.lock().await = RelayState::Closed;
             close_ingress.cancel();
             Err(err)
         }
     }
+}
+
+/// Whether an egress request error is scoped to a single h2 stream (a
+/// `RST_STREAM`) rather than the whole connection. Walks the cause
+/// chain because the reset may be wrapped in a `rama_http_core::Error`.
+fn egress_error_is_stream_scoped(err: &BoxError) -> bool {
+    if let Some(h2) = err.downcast_ref::<rama_http_core::h2::Error>() {
+        return h2.is_reset();
+    }
+    let mut current = err.source();
+    while let Some(cause) = current {
+        if let Some(h2) = cause.downcast_ref::<rama_http_core::h2::Error>() {
+            return h2.is_reset();
+        }
+        current = cause.source();
+    }
+    false
 }
