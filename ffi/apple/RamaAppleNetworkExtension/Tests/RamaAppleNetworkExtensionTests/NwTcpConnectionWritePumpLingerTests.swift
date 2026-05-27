@@ -124,12 +124,20 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
             pump.closeWhenDrained()
             waitForQueueDrain(queue)
             XCTAssertEqual(mock.sentChunks.count, 1, "FIN was sent")
-            XCTAssertEqual(mock.cancelCount, 0, "linger not yet fired")
+            // No `cancelCount == 0` assertion here: the watchdog fires
+            // on a wall-clock deadline, so "not yet fired" races a
+            // loaded CI runner that can stall past the deadline before
+            // we reach this line. The regression (watchdog fires after
+            // the pump is deallocated) is asserted below.
             // `pump` goes out of scope → deallocated.
         }
 
-        // Wait past the linger deadline + slack.
-        Thread.sleep(forTimeInterval: 0.30)
+        // Poll for the watchdog to fire rather than asserting after a
+        // fixed sleep — robust to a loaded runner delaying the timer.
+        let firedBy = Date().addingTimeInterval(2.0)
+        while mock.cancelCount == 0 && Date() < firedBy {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
