@@ -41,7 +41,7 @@ arc-swap = { workspace = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 hickory-resolver = { workspace = true, optional = true }
-moka = { workspace = true, features = ["future"] }
+moka = { workspace = true, features = ["future", "sync"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
