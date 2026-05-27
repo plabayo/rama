@@ -48,6 +48,15 @@ body {
 .metric { font-family: monospace; font-weight: bold; }
 .ok { color: #096; }
 
-/* the inline polyfill sets these attributes as fragments swap in. */
-.panel[data-dpu-loaded] .spinner { display: none; }
-body[data-dpu-done] .banner { opacity: 0; pointer-events: none; }
+/* Clear loading chrome from DOM structure alone — zero JS on browsers with
+   native partial updates (e.g. ?polyfill=false on native Chrome), and works
+   under the polyfill too. A spinner hides once its fragment lands as a
+   sibling after it; the banner clears once no spinner is still waiting.
+   Both go through :has() rather than a bare :last-child: Firefox does not
+   restyle a bare :not(:last-child) when the `<?marker …>` comment is
+   swapped for an element mid-stream, but it does re-evaluate :has(). */
+.spinner:has(~ *) { display: none; }
+body:not(:has(.spinner:last-child)) .banner {
+  opacity: 0;
+  pointer-events: none;
+}

@@ -137,6 +137,9 @@ this is another good example to help better understand Rama's spirit:
 - the lower networking machinery remains reusable
 - the gRPC layer gives you typed RPC ergonomics on top
 
+A slightly modified client which uses dns loadbalancing and a connection pool live here:
+- [`examples/grpc/src/shared/tests/helloworld_loadbalance/mod.rs](https://github.com/plabayo/rama/blob/main/examples/grpc/src/shared/tests/helloworld_loadbalance/mod.rs)
+
 ## Code Generation and Protobuf
 
 If you work with protobuf-defined services,
