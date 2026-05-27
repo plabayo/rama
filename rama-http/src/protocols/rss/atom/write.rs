@@ -1,13 +1,9 @@
-use jiff::Timestamp;
 use quick_xml::{
     Writer,
     events::{BytesCData, BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::feed_ext::{
-    ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed, PodcastLocation, PodcastPerson,
-};
-use super::super::rss2::format_rss2_date;
+use super::super::ext_write;
 use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
@@ -84,30 +80,13 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     }
 
     if let Some(itunes) = &feed.extensions.itunes {
-        write_itunes_feed(w, itunes)?;
+        ext_write::write_itunes_feed(w, itunes)?;
     }
     if let Some(podcast) = &feed.extensions.podcast {
-        write_podcast_feed(w, podcast)?;
+        ext_write::write_podcast_feed(w, podcast)?;
     }
     if let Some(dc) = &feed.extensions.dublin_core {
-        write_dc_fields(
-            w,
-            dc.title.as_deref(),
-            dc.creator.as_deref(),
-            dc.subject.as_deref(),
-            dc.description.as_deref(),
-            dc.publisher.as_deref(),
-            dc.contributor.as_deref(),
-            dc.date.as_ref(),
-            dc.type_.as_deref(),
-            dc.format.as_deref(),
-            dc.identifier.as_deref(),
-            dc.source.as_deref(),
-            dc.language.as_deref(),
-            dc.relation.as_deref(),
-            dc.coverage.as_deref(),
-            dc.rights.as_deref(),
-        )?;
+        ext_write::write_dc_feed_fields(w, dc)?;
     }
 
     for entry in &feed.entries {
@@ -165,33 +144,16 @@ pub(in super::super) fn write_atom_entry<W: std::io::Write>(
     }
 
     if let Some(dc) = &entry.extensions.dublin_core {
-        write_dc_fields(
-            w,
-            dc.title.as_deref(),
-            dc.creator.as_deref(),
-            dc.subject.as_deref(),
-            dc.description.as_deref(),
-            dc.publisher.as_deref(),
-            dc.contributor.as_deref(),
-            dc.date.as_ref(),
-            dc.type_.as_deref(),
-            dc.format.as_deref(),
-            dc.identifier.as_deref(),
-            dc.source.as_deref(),
-            dc.language.as_deref(),
-            dc.relation.as_deref(),
-            dc.coverage.as_deref(),
-            dc.rights.as_deref(),
-        )?;
+        ext_write::write_dc_item_fields(w, dc)?;
     }
     if let Some(itunes) = &entry.extensions.itunes {
-        write_itunes_item(w, itunes)?;
+        ext_write::write_itunes_item(w, itunes)?;
     }
     if let Some(podcast) = &entry.extensions.podcast {
-        write_podcast_item(w, podcast)?;
+        ext_write::write_podcast_item(w, podcast)?;
     }
     if let Some(media) = &entry.extensions.media {
-        write_media_item(w, media)?;
+        ext_write::write_media_item(w, media)?;
     }
 
     w.write_event(Event::End(BytesEnd::new("entry")))?;
@@ -304,268 +266,6 @@ fn write_atom_category<W: std::io::Write>(
         tag.push_attribute(("label", label.as_str()));
     }
     w.write_event(Event::Empty(tag))?;
-    Ok(())
-}
-
-fn write_itunes_feed<W: std::io::Write>(
-    w: &mut Writer<W>,
-    itunes: &ITunesFeed,
-) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "itunes:title", itunes.title.as_deref())?;
-    write_opt_text_elem(w, "itunes:author", itunes.author.as_deref())?;
-    write_opt_text_elem(w, "itunes:subtitle", itunes.subtitle.as_deref())?;
-    write_opt_text_elem(w, "itunes:summary", itunes.summary.as_deref())?;
-    if let Some(img) = &itunes.image {
-        let mut tag = BytesStart::new("itunes:image");
-        tag.push_attribute(("href", img.as_str()));
-        w.write_event(Event::Empty(tag))?;
-    }
-    for cat in &itunes.categories {
-        let mut tag = BytesStart::new("itunes:category");
-        tag.push_attribute(("text", cat.as_str()));
-        w.write_event(Event::Empty(tag))?;
-    }
-    if let Some(explicit) = itunes.explicit {
-        write_text_elem(
-            w,
-            "itunes:explicit",
-            if explicit { "true" } else { "false" },
-        )?;
-    }
-    write_opt_text_elem(w, "itunes:type", itunes.type_.as_deref())?;
-    if itunes.owner_name.is_some() || itunes.owner_email.is_some() {
-        w.write_event(Event::Start(BytesStart::new("itunes:owner")))?;
-        write_opt_text_elem(w, "itunes:name", itunes.owner_name.as_deref())?;
-        write_opt_text_elem(w, "itunes:email", itunes.owner_email.as_deref())?;
-        w.write_event(Event::End(BytesEnd::new("itunes:owner")))?;
-    }
-    Ok(())
-}
-
-fn write_itunes_item<W: std::io::Write>(
-    w: &mut Writer<W>,
-    itunes: &ITunes,
-) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "itunes:title", itunes.title.as_deref())?;
-    write_opt_text_elem(w, "itunes:author", itunes.author.as_deref())?;
-    write_opt_text_elem(w, "itunes:subtitle", itunes.subtitle.as_deref())?;
-    write_opt_text_elem(w, "itunes:summary", itunes.summary.as_deref())?;
-    if let Some(img) = &itunes.image {
-        let mut tag = BytesStart::new("itunes:image");
-        tag.push_attribute(("href", img.as_str()));
-        w.write_event(Event::Empty(tag))?;
-    }
-    write_opt_text_elem(w, "itunes:duration", itunes.duration.as_deref())?;
-    if let Some(explicit) = itunes.explicit {
-        write_text_elem(
-            w,
-            "itunes:explicit",
-            if explicit { "true" } else { "false" },
-        )?;
-    }
-    if let Some(ep) = itunes.episode {
-        write_text_elem(w, "itunes:episode", &ep.to_string())?;
-    }
-    if let Some(s) = itunes.season {
-        write_text_elem(w, "itunes:season", &s.to_string())?;
-    }
-    write_opt_text_elem(w, "itunes:episodeType", itunes.episode_type.as_deref())?;
-    Ok(())
-}
-
-fn write_podcast_feed<W: std::io::Write>(
-    w: &mut Writer<W>,
-    podcast: &PodcastFeed,
-) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "podcast:guid", podcast.guid.as_deref())?;
-    if let Some(locked) = podcast.locked {
-        write_text_elem(w, "podcast:locked", if locked { "yes" } else { "no" })?;
-    }
-    write_opt_text_elem(w, "podcast:medium", podcast.medium.as_deref())?;
-    write_opt_text_elem(w, "podcast:license", podcast.license.as_deref())?;
-    for person in &podcast.persons {
-        write_podcast_person(w, person)?;
-    }
-    if let Some(loc) = &podcast.location {
-        write_podcast_location(w, loc)?;
-    }
-    for f in &podcast.fundings {
-        let mut tag = BytesStart::new("podcast:funding");
-        tag.push_attribute(("url", f.url.as_str()));
-        if let Some(title) = &f.title {
-            w.write_event(Event::Start(tag))?;
-            w.write_event(Event::Text(BytesText::new(title)))?;
-            w.write_event(Event::End(BytesEnd::new("podcast:funding")))?;
-        } else {
-            w.write_event(Event::Empty(tag))?;
-        }
-    }
-    for trailer in &podcast.trailers {
-        let mut tag = BytesStart::new("podcast:trailer");
-        tag.push_attribute(("url", trailer.url.as_str()));
-        if let Some(pd) = &trailer.pub_date {
-            tag.push_attribute(("pubDate", format_rss2_date(pd).as_str()));
-        }
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(&trailer.title)))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:trailer")))?;
-    }
-    Ok(())
-}
-
-fn write_podcast_item<W: std::io::Write>(
-    w: &mut Writer<W>,
-    podcast: &Podcast,
-) -> Result<(), XmlWriteError> {
-    for tr in &podcast.transcripts {
-        let mut tag = BytesStart::new("podcast:transcript");
-        tag.push_attribute(("url", tr.url.as_str()));
-        tag.push_attribute(("type", tr.type_.as_str()));
-        if let Some(lang) = &tr.language {
-            tag.push_attribute(("language", lang.as_str()));
-        }
-        w.write_event(Event::Empty(tag))?;
-    }
-    if let Some(ch) = &podcast.chapters {
-        let mut tag = BytesStart::new("podcast:chapters");
-        tag.push_attribute(("url", ch.url.as_str()));
-        tag.push_attribute(("type", ch.type_.as_str()));
-        w.write_event(Event::Empty(tag))?;
-    }
-    for person in &podcast.persons {
-        write_podcast_person(w, person)?;
-    }
-    if let Some(loc) = &podcast.location {
-        write_podcast_location(w, loc)?;
-    }
-    if let Some(season) = &podcast.season {
-        let mut tag = BytesStart::new("podcast:season");
-        if let Some(name) = &season.name {
-            tag.push_attribute(("name", name.as_str()));
-        }
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(&season.number.to_string())))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:season")))?;
-    }
-    if let Some(ep) = &podcast.episode {
-        let mut tag = BytesStart::new("podcast:episode");
-        if let Some(display) = &ep.display {
-            tag.push_attribute(("display", display.as_str()));
-        }
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(&ep.number.to_string())))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:episode")))?;
-    }
-    Ok(())
-}
-
-fn write_podcast_person<W: std::io::Write>(
-    w: &mut Writer<W>,
-    person: &PodcastPerson,
-) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("podcast:person");
-    if let Some(role) = &person.role {
-        tag.push_attribute(("role", role.as_str()));
-    }
-    if let Some(group) = &person.group {
-        tag.push_attribute(("group", group.as_str()));
-    }
-    if let Some(img) = &person.img {
-        tag.push_attribute(("img", img.as_str()));
-    }
-    if let Some(href) = &person.href {
-        tag.push_attribute(("href", href.as_str()));
-    }
-    w.write_event(Event::Start(tag))?;
-    w.write_event(Event::Text(BytesText::new(&person.name)))?;
-    w.write_event(Event::End(BytesEnd::new("podcast:person")))?;
-    Ok(())
-}
-
-fn write_podcast_location<W: std::io::Write>(
-    w: &mut Writer<W>,
-    loc: &PodcastLocation,
-) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("podcast:location");
-    if let Some(geo) = &loc.geo {
-        tag.push_attribute(("geo", geo.as_str()));
-    }
-    if let Some(osm) = &loc.osm {
-        tag.push_attribute(("osm", osm.as_str()));
-    }
-    w.write_event(Event::Start(tag))?;
-    w.write_event(Event::Text(BytesText::new(&loc.name)))?;
-    w.write_event(Event::End(BytesEnd::new("podcast:location")))?;
-    Ok(())
-}
-
-fn write_media_item<W: std::io::Write>(
-    w: &mut Writer<W>,
-    media: &MediaRss,
-) -> Result<(), XmlWriteError> {
-    for mc in &media.contents {
-        let mut tag = BytesStart::new("media:content");
-        if let Some(url) = &mc.url {
-            tag.push_attribute(("url", url.as_str()));
-        }
-        if let Some(t) = &mc.type_ {
-            tag.push_attribute(("type", t.as_str()));
-        }
-        if let Some(m) = &mc.medium {
-            tag.push_attribute(("medium", m.as_str()));
-        }
-        if let Some(d) = mc.duration {
-            tag.push_attribute(("duration", d.to_string().as_str()));
-        }
-        w.write_event(Event::Empty(tag))?;
-    }
-    if let Some(thumb) = &media.thumbnail {
-        let mut tag = BytesStart::new("media:thumbnail");
-        tag.push_attribute(("url", thumb.url.as_str()));
-        w.write_event(Event::Empty(tag))?;
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Dublin Core is 15 flat optional fields; grouping them adds no clarity"
-)]
-fn write_dc_fields<W: std::io::Write>(
-    w: &mut Writer<W>,
-    title: Option<&str>,
-    creator: Option<&str>,
-    subject: Option<&str>,
-    description: Option<&str>,
-    publisher: Option<&str>,
-    contributor: Option<&str>,
-    date: Option<&Timestamp>,
-    type_: Option<&str>,
-    format: Option<&str>,
-    identifier: Option<&str>,
-    source: Option<&str>,
-    language: Option<&str>,
-    relation: Option<&str>,
-    coverage: Option<&str>,
-    rights: Option<&str>,
-) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "dc:title", title)?;
-    write_opt_text_elem(w, "dc:creator", creator)?;
-    write_opt_text_elem(w, "dc:subject", subject)?;
-    write_opt_text_elem(w, "dc:description", description)?;
-    write_opt_text_elem(w, "dc:publisher", publisher)?;
-    write_opt_text_elem(w, "dc:contributor", contributor)?;
-    if let Some(d) = date {
-        write_text_elem(w, "dc:date", &d.to_string())?;
-    }
-    write_opt_text_elem(w, "dc:type", type_)?;
-    write_opt_text_elem(w, "dc:format", format)?;
-    write_opt_text_elem(w, "dc:identifier", identifier)?;
-    write_opt_text_elem(w, "dc:source", source)?;
-    write_opt_text_elem(w, "dc:language", language)?;
-    write_opt_text_elem(w, "dc:relation", relation)?;
-    write_opt_text_elem(w, "dc:coverage", coverage)?;
-    write_opt_text_elem(w, "dc:rights", rights)?;
     Ok(())
 }
 
