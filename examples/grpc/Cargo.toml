@@ -61,8 +61,10 @@ tokio = { workspace = true, features = ["full"] }
 rama = { workspace = true, features = ["grpc"] }
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 static_assertions = { workspace = true }
+tracing = { workspace = true }
 tracing-test = { workspace = true }
 trybuild = { workspace = true }
 
