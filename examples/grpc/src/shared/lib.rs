@@ -21,7 +21,10 @@ pub mod hello_world {
     };
 
     #[derive(Default)]
-    pub struct RamaGreeter {}
+    pub struct RamaGreeter {
+        /// Optional instance identifier prefixed onto every reply
+        pub instance_id: Option<u8>,
+    }
 
     impl Greeter for RamaGreeter {
         async fn say_hello(
@@ -36,10 +39,12 @@ pub mod hello_world {
                     .map(|info| info.peer_addr())
             );
 
-            let reply = HelloReply {
-                message: format!("Hello {}!", request.into_inner().name),
+            let name = request.into_inner().name;
+            let message = match self.instance_id {
+                Some(id) => format!("[instance={id}] Hello {name}!"),
+                None => format!("Hello {name}!"),
             };
-            Ok(Response::new(reply))
+            Ok(Response::new(HelloReply { message }))
         }
     }
 }
