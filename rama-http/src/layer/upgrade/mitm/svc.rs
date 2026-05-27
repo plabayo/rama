@@ -111,18 +111,24 @@ where
                 );
 
                 let on_upgrade_egress = crate::io::upgrade::handle_upgrade(&res);
-                // The relay service reads negotiated config from the upgraded
-                // EGRESS stream's extensions (e.g. a WS relay's
+                // The relay service reads its negotiated config from the
+                // upgraded EGRESS stream's extensions (a WS relay's
                 // `RelayWebSocketConfig`, carrying the agreed permessage-deflate
                 // params). On HTTP/1 the upgraded stream is fulfilled from the
                 // bare connection io and does NOT inherit the response
                 // extensions — only the h2 client threads `res.extensions()`
-                // into its upgraded io. Without grafting them on here, an h1 WS
-                // relay builds its sockets WITHOUT deflate while the peer sends
-                // RSV1-compressed frames, which the relay rejects ("Reserved
-                // bits are non-zero") and resets. Capture the response
-                // extensions and graft them onto the egress leg after the
-                // upgrade so h1 and h2 behave identically.
+                // into its upgraded io. Graft them on here so h1 and h2 behave
+                // identically; without it an h1 WS relay builds its sockets
+                // WITHOUT deflate and resets the first compressed frame.
+                //
+                // NOTE: this is grafted per call site rather than inside
+                // `handle_upgrade` ON PURPOSE — `res.extensions()` carries the
+                // connection's own `Egress`/`Ingress(self.io.extensions())`
+                // self-wrapper, so extending it onto the upgraded io (which IS
+                // that connection's io) would create a self-referential
+                // `Extensions` cycle → stack overflow on traversal. Here we
+                // graft only what the relay needs, onto a distinct upgraded
+                // stream, which is safe.
                 let egress_msg_ext = res.extensions().clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
@@ -139,10 +145,6 @@ where
                         }
                     };
 
-                    // Mirror the egress-negotiated config onto the egress leg
-                    // (see comment above). `extend` only appends, so on h2 —
-                    // where the upgraded io already carries these — the relay
-                    // still resolves the first (correct) entry.
                     egress_stream.extensions().extend(&egress_msg_ext);
 
                     tracing::trace!(

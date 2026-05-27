@@ -142,7 +142,13 @@ where
         let mut egress_socket =
             AsyncWebSocket::from_raw_socket(egress_stream, Role::Client, maybe_ws_config).await;
 
-        let mut relay_extensions = egress_socket.extensions().clone();
+        // Per-direction relay state, each `fork`ed from its own socket so the
+        // middleware sees the extensions of the side a message arrived on, and
+        // its inserts stay isolated (a child store) instead of leaking back
+        // onto the live ingress/egress WS sockets (which a shared `clone` of
+        // the egress store would have done for both directions).
+        let mut ingress_relay_extensions = ingress_socket.extensions().fork();
+        let mut egress_relay_extensions = egress_socket.extensions().fork();
 
         loop {
             tokio::select! {
@@ -171,13 +177,13 @@ where
                             match middleware.serve(WebSocketRelayInput {
                                 direction: WebSocketRelayDirection::Ingress,
                                 message: msg,
-                                extensions: relay_extensions,
+                                extensions: ingress_relay_extensions,
                             }).await.map(Into::into) {
                                 Ok(WebSocketRelayOutput {
                                     messages,
                                     extensions,
                                 }) => {
-                                    relay_extensions = extensions;
+                                    ingress_relay_extensions = extensions;
                                     tracing::trace!("relay text/binary ingress WS message(s)");
                                     for (message_index, message) in messages.into_iter().enumerate() {
                                         tracing::trace!("relay text/binary ingress WS message #{message_index}");
@@ -232,13 +238,13 @@ where
                             match middleware.serve(WebSocketRelayInput {
                                 direction: WebSocketRelayDirection::Egress,
                                 message: msg,
-                                extensions: relay_extensions,
+                                extensions: egress_relay_extensions,
                             }).await.map(Into::into) {
                                 Ok(WebSocketRelayOutput {
                                     messages,
                                     extensions,
                                 }) => {
-                                    relay_extensions = extensions;
+                                    egress_relay_extensions = extensions;
                                     tracing::trace!("relay text/binary egress WS message(s)");
                                     for (message_index, message) in messages.into_iter().enumerate() {
                                         tracing::trace!("relay text/binary egress WS message #{message_index}");
