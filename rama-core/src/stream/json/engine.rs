@@ -70,7 +70,7 @@ where
 {
     let should_ignore = match empty_line_handling {
         EmptyLineHandling::ParseAlways => false,
-        EmptyLineHandling::IgnoreEmpty => bytes.is_empty() || bytes == [b'\r'],
+        EmptyLineHandling::IgnoreEmpty => bytes.is_empty() || bytes == *b"\r",
         EmptyLineHandling::IgnoreBlank => str::from_utf8(bytes).is_ok_and(is_blank),
     };
 

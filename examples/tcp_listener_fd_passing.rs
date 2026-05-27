@@ -224,7 +224,7 @@ mod unix_example {
     /// - rama tracking: <https://github.com/plabayo/rama/issues/781>
     fn send_fd(sock_fd: RawFd, fd: RawFd) -> io::Result<()> {
         // Prepare iovec with dummy byte
-        let dummy = [b'F'];
+        let dummy = *b"F";
         let mut iov = libc::iovec {
             iov_base: dummy.as_ptr() as *mut libc::c_void,
             iov_len: 1,
