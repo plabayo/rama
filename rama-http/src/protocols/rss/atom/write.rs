@@ -8,8 +8,10 @@ use super::super::feed_ext::{
     ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed, PodcastLocation, PodcastPerson,
 };
 use super::super::rss2::format_rss2_date;
-use super::super::ser::{write_opt_text_elem, write_text_elem, XmlWriteError};
-use super::types::{AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText};
+use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
+use super::types::{
+    AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
+};
 
 pub(super) fn write_atom_feed<W: std::io::Write>(
     w: &mut Writer<W>,
@@ -23,7 +25,10 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     let needs_podcast = feed.extensions.podcast.is_some()
         || feed.entries.iter().any(|e| e.extensions.podcast.is_some());
     let needs_dc = feed.extensions.dublin_core.is_some()
-        || feed.entries.iter().any(|e| e.extensions.dublin_core.is_some());
+        || feed
+            .entries
+            .iter()
+            .any(|e| e.extensions.dublin_core.is_some());
     let needs_media = feed.entries.iter().any(|e| e.extensions.media.is_some());
 
     if needs_itunes {
@@ -113,7 +118,7 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     Ok(())
 }
 
-fn write_atom_entry<W: std::io::Write>(
+pub(in super::super) fn write_atom_entry<W: std::io::Write>(
     w: &mut Writer<W>,
     entry: &AtomEntry,
 ) -> Result<(), XmlWriteError> {
@@ -205,14 +210,7 @@ fn write_atom_content<W: std::io::Write>(
     } else {
         tag.push_attribute(("type", content.value.type_attr()));
         w.write_event(Event::Start(tag))?;
-        match &content.value {
-            AtomText::Html(s) => {
-                w.write_event(Event::CData(BytesCData::new(s)))?;
-            }
-            AtomText::Text(s) | AtomText::Xhtml(s) => {
-                w.write_event(Event::Text(BytesText::new(s)))?;
-            }
-        }
+        write_atom_text_body(w, &content.value)?;
         w.write_event(Event::End(BytesEnd::new("content")))?;
     }
     Ok(())
@@ -226,15 +224,32 @@ fn write_atom_text<W: std::io::Write>(
     let mut tag = BytesStart::new(name);
     tag.push_attribute(("type", text.type_attr()));
     w.write_event(Event::Start(tag))?;
+    write_atom_text_body(w, text)?;
+    w.write_event(Event::End(BytesEnd::new(name)))?;
+    Ok(())
+}
+
+fn write_atom_text_body<W: std::io::Write>(
+    w: &mut Writer<W>,
+    text: &AtomText,
+) -> Result<(), XmlWriteError> {
     match text {
+        AtomText::Text(s) => {
+            w.write_event(Event::Text(BytesText::new(s)))?;
+        }
         AtomText::Html(s) => {
             w.write_event(Event::CData(BytesCData::new(s)))?;
         }
-        AtomText::Text(s) | AtomText::Xhtml(s) => {
-            w.write_event(Event::Text(BytesText::new(s)))?;
+        AtomText::Xhtml(s) => {
+            // RFC 4287 §3.1.1.3: xhtml content is a single XHTML-namespaced
+            // <div> whose children are real markup, emitted verbatim.
+            let mut div = BytesStart::new("div");
+            div.push_attribute(("xmlns", "http://www.w3.org/1999/xhtml"));
+            w.write_event(Event::Start(div))?;
+            w.write_event(Event::Text(BytesText::from_escaped(s.as_str())))?;
+            w.write_event(Event::End(BytesEnd::new("div")))?;
         }
     }
-    w.write_event(Event::End(BytesEnd::new(name)))?;
     Ok(())
 }
 
@@ -311,7 +326,11 @@ fn write_itunes_feed<W: std::io::Write>(
         w.write_event(Event::Empty(tag))?;
     }
     if let Some(explicit) = itunes.explicit {
-        write_text_elem(w, "itunes:explicit", if explicit { "true" } else { "false" })?;
+        write_text_elem(
+            w,
+            "itunes:explicit",
+            if explicit { "true" } else { "false" },
+        )?;
     }
     write_opt_text_elem(w, "itunes:type", itunes.type_.as_deref())?;
     if itunes.owner_name.is_some() || itunes.owner_email.is_some() {
@@ -338,7 +357,11 @@ fn write_itunes_item<W: std::io::Write>(
     }
     write_opt_text_elem(w, "itunes:duration", itunes.duration.as_deref())?;
     if let Some(explicit) = itunes.explicit {
-        write_text_elem(w, "itunes:explicit", if explicit { "true" } else { "false" })?;
+        write_text_elem(
+            w,
+            "itunes:explicit",
+            if explicit { "true" } else { "false" },
+        )?;
     }
     if let Some(ep) = itunes.episode {
         write_text_elem(w, "itunes:episode", &ep.to_string())?;
@@ -504,7 +527,10 @@ fn write_media_item<W: std::io::Write>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Dublin Core is 15 flat optional fields; grouping them adds no clarity"
+)]
 fn write_dc_fields<W: std::io::Write>(
     w: &mut Writer<W>,
     title: Option<&str>,
@@ -591,5 +617,26 @@ mod tests {
         let text = AtomText::html("<b>bold</b>");
         assert_eq!(text.type_attr(), "html");
         assert_eq!(text.value(), "<b>bold</b>");
+    }
+
+    #[test]
+    fn xhtml_content_wrapped_in_namespaced_div() {
+        let ts = Timestamp::UNIX_EPOCH;
+        let feed = AtomFeed::builder()
+            .id("urn:f")
+            .title("T")
+            .updated(ts)
+            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+                value: AtomText::xhtml("<p>hi</p>"),
+                src: None,
+            }))
+            .build();
+        let xml = feed.to_string();
+        assert!(
+            xml.contains(
+                r#"<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>hi</p></div></content>"#
+            ),
+            "{xml}"
+        );
     }
 }

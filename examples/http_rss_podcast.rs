@@ -19,6 +19,11 @@
 //! curl http://127.0.0.1:62051/podcast-stream.rss
 //! ```
 
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use jiff::Timestamp;
@@ -81,7 +86,7 @@ async fn podcast_feed() -> impl IntoResponse {
             }),
             ..Default::default()
         })
-        .items(EPISODES.iter().map(|ep| make_episode_item(ep)))
+        .items(EPISODES.iter().map(make_episode_item))
         .build()
 }
 
@@ -114,7 +119,11 @@ fn make_episode_item(ep: &Episode) -> Rss2Item {
         .with_guid(Rss2Guid::permalink(ep.url))
         .with_link(ep.url)
         .with_pub_date(ep.pub_date)
-        .with_enclosure(Rss2Enclosure::new(ep.audio_url, ep.audio_bytes, ep.audio_type))
+        .with_enclosure(Rss2Enclosure::new(
+            ep.audio_url,
+            ep.audio_bytes,
+            ep.audio_type,
+        ))
         .with_extensions(ItemExtensions {
             itunes: Some(ITunes {
                 title: Some(ep.title.into()),

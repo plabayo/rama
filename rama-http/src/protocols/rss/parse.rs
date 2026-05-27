@@ -1,9 +1,8 @@
 //! Lenient (default) and strict RSS 2.0 / Atom 1.0 parsing.
 //!
-//! The entry points are [`Feed::from_str`] (lenient) and
-//! [`Feed::from_str_strict`] (strict).  Lenient parsing silently skips
-//! elements it cannot understand; strict parsing returns an error for any
-//! structural violation.
+//! The entry points are [`Feed::parse`] (lenient) and [`Feed::parse_strict`]
+//! (strict). Lenient parsing silently skips elements it cannot understand;
+//! strict parsing returns an error for any structural violation.
 
 use jiff::Timestamp;
 use quick_xml::{Reader, events::Event};
@@ -11,9 +10,7 @@ use rama_core::telemetry::tracing;
 
 use super::atom::{AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText};
 use super::feed::Feed;
-use super::feed_ext::{
-    Content, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-};
+use super::feed_ext::{Content, FeedExtensions, ITunes, ITunesFeed, ItemExtensions};
 use super::rss2::{Rss2Category, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item};
 
 // ---------------------------------------------------------------------------
@@ -64,20 +61,33 @@ pub(super) fn parse_feed(input: &str, strict: bool) -> Result<Feed, FeedParseErr
         // Try RSS 2.0 as a fallback
         parse_rss2(input, false)
             .map(Feed::Rss2)
-            .or_else(|_| parse_atom(input, false).map(Feed::Atom))
-            .map_err(|_| FeedParseError::new("unrecognized feed format"))
+            .or_else(|_err| parse_atom(input, false).map(Feed::Atom))
+            .map_err(|_err| FeedParseError::new("unrecognized feed format"))
     }
 }
 
 fn detect_atom(s: &str) -> bool {
     // Look for `<feed` with the Atom namespace within the first few KB.
-    let probe = &s[..s.len().min(2048)];
+    let probe = probe_prefix(s, 2048);
     probe.contains("<feed") && (probe.contains("w3.org/2005/Atom") || probe.contains("<feed>"))
 }
 
 fn detect_rss(s: &str) -> bool {
-    let probe = &s[..s.len().min(1024)];
+    let probe = probe_prefix(s, 1024);
     probe.contains("<rss") || probe.contains("<channel")
+}
+
+/// Largest prefix of `s` no longer than `max` bytes, never splitting a
+/// multi-byte UTF-8 char (plain byte slicing would panic on a non-boundary).
+fn probe_prefix(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +110,13 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut last_build_date: Option<Timestamp> = None;
     let mut generator: Option<String> = None;
     let mut ttl: Option<u32> = None;
-    let image: Option<Rss2Image> = None;
+    let mut image: Option<Rss2Image> = None;
+    let mut image_url = String::new();
+    let mut image_title = String::new();
+    let mut image_link = String::new();
+    let mut image_width: Option<u32> = None;
+    let mut image_height: Option<u32> = None;
+    let mut image_description: Option<String> = None;
     let mut items: Vec<Rss2Item> = Vec::new();
     let mut feed_ext = FeedExtensions::default();
     let mut itunes_feed = ITunesFeed::default();
@@ -114,15 +130,12 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut current_item_has_itunes = false;
     let mut current_item_content: Option<Content> = None;
 
-    let mut stack: Vec<String> = Vec::new();
     let mut text_buf = String::new();
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                let tag = String::from_utf8_lossy(e.local_name().as_ref()).to_string();
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                stack.push(full_tag.clone());
                 text_buf.clear();
 
                 match full_tag.as_str() {
@@ -144,29 +157,37 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                             .unwrap_or_default();
                         let type_ = attr_value(&e, b"type").unwrap_or_default();
                         if in_item {
-                            current_item.enclosure = Some(Rss2Enclosure { url: url.unwrap_or_default(), length, type_ });
+                            current_item.enclosure = Some(Rss2Enclosure {
+                                url: url.unwrap_or_default(),
+                                length,
+                                type_,
+                            });
                         }
                     }
-                    "guid" => {
-                        if in_item {
-                            let permalink = attr_value(&e, b"isPermaLink")
-                                .map(|v| v != "false")
-                                .unwrap_or(true);
-                            // value captured on text event
-                            current_item.guid = Some(Rss2Guid { value: String::new(), permalink });
-                        }
+                    "guid" if in_item => {
+                        let permalink = attr_value(&e, b"isPermaLink")
+                            .map(|v| v != "false")
+                            .unwrap_or(true);
+                        // value is captured later on the text event
+                        current_item.guid = Some(Rss2Guid {
+                            value: String::new(),
+                            permalink,
+                        });
                     }
                     "itunes:image" => {
                         let href = attr_value(&e, b"href");
                         if in_item {
-                            if let Some(v) = href { current_item_itunes.image = Some(v); current_item_has_itunes = true; }
-                        } else {
-                            if let Some(v) = href { itunes_feed.image = Some(v); has_itunes = true; }
+                            if let Some(v) = href {
+                                current_item_itunes.image = Some(v);
+                                current_item_has_itunes = true;
+                            }
+                        } else if let Some(v) = href {
+                            itunes_feed.image = Some(v);
+                            has_itunes = true;
                         }
                     }
                     _ => {}
                 }
-                let _ = tag;
             }
             Ok(Event::Empty(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
@@ -178,15 +199,23 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                             .unwrap_or_default();
                         let type_ = attr_value(&e, b"type").unwrap_or_default();
                         if in_item {
-                            current_item.enclosure = Some(Rss2Enclosure { url: url.unwrap_or_default(), length, type_ });
+                            current_item.enclosure = Some(Rss2Enclosure {
+                                url: url.unwrap_or_default(),
+                                length,
+                                type_,
+                            });
                         }
                     }
                     "itunes:image" => {
                         let href = attr_value(&e, b"href");
                         if in_item {
-                            if let Some(v) = href { current_item_itunes.image = Some(v); current_item_has_itunes = true; }
-                        } else {
-                            if let Some(v) = href { itunes_feed.image = Some(v); has_itunes = true; }
+                            if let Some(v) = href {
+                                current_item_itunes.image = Some(v);
+                                current_item_has_itunes = true;
+                            }
+                        } else if let Some(v) = href {
+                            itunes_feed.image = Some(v);
+                            has_itunes = true;
                         }
                     }
                     "itunes:category" => {
@@ -210,7 +239,6 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
             }
             Ok(Event::End(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                stack.pop();
 
                 let text = std::mem::take(&mut text_buf);
 
@@ -232,11 +260,26 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                         "category" => {
                             current_item.categories.push(Rss2Category::new(text));
                         }
-                        "itunes:title" => { current_item_itunes.title = Some(text); current_item_has_itunes = true; }
-                        "itunes:author" => { current_item_itunes.author = Some(text); current_item_has_itunes = true; }
-                        "itunes:subtitle" => { current_item_itunes.subtitle = Some(text); current_item_has_itunes = true; }
-                        "itunes:summary" => { current_item_itunes.summary = Some(text); current_item_has_itunes = true; }
-                        "itunes:duration" => { current_item_itunes.duration = Some(text); current_item_has_itunes = true; }
+                        "itunes:title" => {
+                            current_item_itunes.title = Some(text);
+                            current_item_has_itunes = true;
+                        }
+                        "itunes:author" => {
+                            current_item_itunes.author = Some(text);
+                            current_item_has_itunes = true;
+                        }
+                        "itunes:subtitle" => {
+                            current_item_itunes.subtitle = Some(text);
+                            current_item_has_itunes = true;
+                        }
+                        "itunes:summary" => {
+                            current_item_itunes.summary = Some(text);
+                            current_item_has_itunes = true;
+                        }
+                        "itunes:duration" => {
+                            current_item_itunes.duration = Some(text);
+                            current_item_has_itunes = true;
+                        }
                         "itunes:explicit" => {
                             current_item_itunes.explicit = Some(text == "true" || text == "yes");
                             current_item_has_itunes = true;
@@ -254,7 +297,9 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                             current_item_has_itunes = true;
                         }
                         "content:encoded" => {
-                            current_item_content = Some(Content { encoded: Some(text) });
+                            current_item_content = Some(Content {
+                                encoded: Some(text),
+                            });
                         }
                         "item" => {
                             if current_item_has_itunes {
@@ -269,8 +314,25 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                         _ => {}
                     }
                 } else if in_image_block {
-                    if full_tag.as_str() == "image" {
-                        in_image_block = false;
+                    match full_tag.as_str() {
+                        "url" => image_url = text,
+                        "title" => image_title = text,
+                        "link" => image_link = text,
+                        "width" => image_width = text.parse().ok(),
+                        "height" => image_height = text.parse().ok(),
+                        "description" => image_description = Some(text),
+                        "image" => {
+                            in_image_block = false;
+                            image = Some(Rss2Image {
+                                url: std::mem::take(&mut image_url),
+                                title: std::mem::take(&mut image_title),
+                                link: std::mem::take(&mut image_link),
+                                width: image_width.take(),
+                                height: image_height.take(),
+                                description: image_description.take(),
+                            });
+                        }
+                        _ => {}
                     }
                 } else {
                     // Channel-level
@@ -286,11 +348,26 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                         "lastBuildDate" => last_build_date = parse_rss2_date(&text),
                         "generator" => generator = Some(text),
                         "ttl" => ttl = text.parse().ok(),
-                        "itunes:author" => { itunes_feed.author = Some(text); has_itunes = true; }
-                        "itunes:title" => { itunes_feed.title = Some(text); has_itunes = true; }
-                        "itunes:subtitle" => { itunes_feed.subtitle = Some(text); has_itunes = true; }
-                        "itunes:summary" => { itunes_feed.summary = Some(text); has_itunes = true; }
-                        "itunes:type" => { itunes_feed.type_ = Some(text); has_itunes = true; }
+                        "itunes:author" => {
+                            itunes_feed.author = Some(text);
+                            has_itunes = true;
+                        }
+                        "itunes:title" => {
+                            itunes_feed.title = Some(text);
+                            has_itunes = true;
+                        }
+                        "itunes:subtitle" => {
+                            itunes_feed.subtitle = Some(text);
+                            has_itunes = true;
+                        }
+                        "itunes:summary" => {
+                            itunes_feed.summary = Some(text);
+                            has_itunes = true;
+                        }
+                        "itunes:type" => {
+                            itunes_feed.type_ = Some(text);
+                            has_itunes = true;
+                        }
                         "itunes:explicit" => {
                             itunes_feed.explicit = Some(text == "true" || text == "yes");
                             has_itunes = true;
@@ -312,10 +389,14 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     }
 
     if strict && title.is_empty() {
-        return Err(FeedParseError::new("RSS 2.0 channel missing required <title>"));
+        return Err(FeedParseError::new(
+            "RSS 2.0 channel missing required <title>",
+        ));
     }
     if strict && link.is_empty() {
-        return Err(FeedParseError::new("RSS 2.0 channel missing required <link>"));
+        return Err(FeedParseError::new(
+            "RSS 2.0 channel missing required <link>",
+        ));
     }
 
     if has_itunes {
@@ -369,6 +450,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
     let mut current_entry_updated = Timestamp::UNIX_EPOCH;
     let mut current_entry_authors: Vec<AtomPerson> = Vec::new();
     let mut current_entry_links: Vec<AtomLink> = Vec::new();
+    let mut current_entry_categories: Vec<AtomCategory> = Vec::new();
     let mut current_entry_summary: Option<AtomText> = None;
     let mut current_entry_content: Option<AtomContent> = None;
     let mut current_entry_published: Option<Timestamp> = None;
@@ -376,15 +458,14 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
     let mut current_author = AtomPerson::new("");
     let mut current_content_type = String::from("text");
     let mut current_title_type = String::from("text");
+    let mut current_summary_type = String::from("text");
 
     let mut text_buf = String::new();
-    let mut _stack: Vec<String> = Vec::new();
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                _stack.push(full_tag.clone());
                 text_buf.clear();
 
                 match full_tag.as_str() {
@@ -395,6 +476,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         current_entry_updated = Timestamp::UNIX_EPOCH;
                         current_entry_authors = Vec::new();
                         current_entry_links = Vec::new();
+                        current_entry_categories = Vec::new();
                         current_entry_summary = None;
                         current_entry_content = None;
                         current_entry_published = None;
@@ -402,28 +484,57 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                     }
                     "author" => {
                         current_author = AtomPerson::new("");
-                        if in_entry { in_author = true; } else { in_feed_author = true; }
+                        if in_entry {
+                            in_author = true;
+                        } else {
+                            in_feed_author = true;
+                        }
                     }
                     "link" => {
                         let href = attr_value(&e, b"href").unwrap_or_default();
                         let rel = attr_value(&e, b"rel");
                         let type_ = attr_value(&e, b"type");
                         let length = attr_value(&e, b"length").and_then(|v| v.parse().ok());
-                        let link = AtomLink { href, rel, type_, hreflang: None, title: None, length };
-                        if in_entry { current_entry_links.push(link); } else { feed_links.push(link); }
+                        let link = AtomLink {
+                            href,
+                            rel,
+                            type_,
+                            hreflang: None,
+                            title: None,
+                            length,
+                        };
+                        if in_entry {
+                            current_entry_links.push(link);
+                        } else {
+                            feed_links.push(link);
+                        }
                     }
                     "category" => {
                         let term = attr_value(&e, b"term").unwrap_or_default();
                         let scheme = attr_value(&e, b"scheme");
                         let label = attr_value(&e, b"label");
-                        let cat = AtomCategory { term, scheme, label };
-                        if !in_entry { feed_categories.push(cat); }
+                        let cat = AtomCategory {
+                            term,
+                            scheme,
+                            label,
+                        };
+                        if in_entry {
+                            current_entry_categories.push(cat);
+                        } else {
+                            feed_categories.push(cat);
+                        }
                     }
                     "title" => {
-                        current_title_type = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        current_title_type =
+                            attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                    }
+                    "summary" => {
+                        current_summary_type =
+                            attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                     }
                     "content" => {
-                        current_content_type = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        current_content_type =
+                            attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                     }
                     _ => {}
                 }
@@ -436,15 +547,34 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         let rel = attr_value(&e, b"rel");
                         let type_ = attr_value(&e, b"type");
                         let length = attr_value(&e, b"length").and_then(|v| v.parse().ok());
-                        let link = AtomLink { href, rel, type_, hreflang: None, title: None, length };
-                        if in_entry { current_entry_links.push(link); } else { feed_links.push(link); }
+                        let link = AtomLink {
+                            href,
+                            rel,
+                            type_,
+                            hreflang: None,
+                            title: None,
+                            length,
+                        };
+                        if in_entry {
+                            current_entry_links.push(link);
+                        } else {
+                            feed_links.push(link);
+                        }
                     }
                     "category" => {
                         let term = attr_value(&e, b"term").unwrap_or_default();
                         let scheme = attr_value(&e, b"scheme");
                         let label = attr_value(&e, b"label");
-                        let cat = AtomCategory { term, scheme, label };
-                        if !in_entry { feed_categories.push(cat); }
+                        let cat = AtomCategory {
+                            term,
+                            scheme,
+                            label,
+                        };
+                        if in_entry {
+                            current_entry_categories.push(cat);
+                        } else {
+                            feed_categories.push(cat);
+                        }
                     }
                     _ => {}
                 }
@@ -461,7 +591,6 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
             }
             Ok(Event::End(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                _stack.pop();
                 let text = std::mem::take(&mut text_buf);
 
                 if in_author {
@@ -470,7 +599,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         "email" => current_author.email = Some(text),
                         "uri" => current_author.uri = Some(text),
                         "author" => {
-                            current_entry_authors.push(std::mem::replace(&mut current_author, AtomPerson::new("")));
+                            current_entry_authors
+                                .push(std::mem::replace(&mut current_author, AtomPerson::new("")));
                             in_author = false;
                         }
                         _ => {}
@@ -481,7 +611,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         "email" => current_author.email = Some(text),
                         "uri" => current_author.uri = Some(text),
                         "author" => {
-                            feed_authors.push(std::mem::replace(&mut current_author, AtomPerson::new("")));
+                            feed_authors
+                                .push(std::mem::replace(&mut current_author, AtomPerson::new("")));
                             in_feed_author = false;
                         }
                         _ => {}
@@ -493,29 +624,36 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                             current_entry_title = make_atom_text(&current_title_type, text);
                         }
                         "updated" => {
-                            current_entry_updated = parse_rfc3339_lax(&text)
-                                .unwrap_or(Timestamp::UNIX_EPOCH);
+                            current_entry_updated =
+                                parse_rfc3339_lax(&text).unwrap_or(Timestamp::UNIX_EPOCH);
                         }
                         "published" => {
                             current_entry_published = parse_rfc3339_lax(&text);
                         }
                         "summary" => {
-                            current_entry_summary = Some(AtomText::text(text));
+                            current_entry_summary =
+                                Some(make_atom_text(&current_summary_type, text));
                         }
                         "content" => {
                             let at = make_atom_text(&current_content_type, text);
-                            current_entry_content = Some(AtomContent { value: at, src: None });
+                            current_entry_content = Some(AtomContent {
+                                value: at,
+                                src: None,
+                            });
                         }
                         "entry" => {
                             let entry = AtomEntry {
                                 id: std::mem::take(&mut current_entry_id),
-                                title: std::mem::replace(&mut current_entry_title, AtomText::text("")),
+                                title: std::mem::replace(
+                                    &mut current_entry_title,
+                                    AtomText::text(""),
+                                ),
                                 updated: current_entry_updated,
                                 authors: std::mem::take(&mut current_entry_authors),
                                 content: current_entry_content.take(),
                                 links: std::mem::take(&mut current_entry_links),
                                 summary: current_entry_summary.take(),
-                                categories: Vec::new(),
+                                categories: std::mem::take(&mut current_entry_categories),
                                 contributors: Vec::new(),
                                 published: current_entry_published,
                                 rights: None,
@@ -534,8 +672,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                             feed_title = make_atom_text(&current_title_type, text);
                         }
                         "updated" => {
-                            feed_updated = parse_rfc3339_lax(&text)
-                                .unwrap_or(Timestamp::UNIX_EPOCH);
+                            feed_updated =
+                                parse_rfc3339_lax(&text).unwrap_or(Timestamp::UNIX_EPOCH);
                         }
                         "subtitle" => feed_subtitle = Some(AtomText::text(text)),
                         "rights" => feed_rights = Some(AtomText::text(text)),
@@ -582,14 +720,15 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn attr_value(
-    e: &quick_xml::events::BytesStart<'_>,
-    name: &[u8],
-) -> Option<String> {
+fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     e.attributes()
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == name)
-        .and_then(|a| std::str::from_utf8(a.value.as_ref()).ok().map(str::to_owned))
+        .and_then(|a| {
+            std::str::from_utf8(a.value.as_ref())
+                .ok()
+                .map(str::to_owned)
+        })
 }
 
 fn parse_rss2_date(s: &str) -> Option<Timestamp> {
@@ -654,7 +793,9 @@ mod tests {
     #[test]
     fn detects_and_parses_rss2() {
         let feed = parse_feed(SAMPLE_RSS2, false).unwrap();
-        let Feed::Rss2(rss) = feed else { panic!("expected RSS 2.0") };
+        let Feed::Rss2(rss) = feed else {
+            panic!("expected RSS 2.0")
+        };
         assert_eq!(rss.title, "My Blog");
         assert_eq!(rss.link, "https://example.com");
         assert_eq!(rss.items.len(), 1);
@@ -664,7 +805,9 @@ mod tests {
     #[test]
     fn detects_and_parses_atom() {
         let feed = parse_feed(SAMPLE_ATOM, false).unwrap();
-        let Feed::Atom(atom) = feed else { panic!("expected Atom") };
+        let Feed::Atom(atom) = feed else {
+            panic!("expected Atom")
+        };
         assert_eq!(atom.id, "https://example.com/feed");
         assert_eq!(atom.entries.len(), 1);
         assert_eq!(atom.entries[0].id, "https://example.com/1");
@@ -672,7 +815,67 @@ mod tests {
 
     #[test]
     fn strict_errors_on_missing_rss2_required_fields() {
-        let result = parse_feed("<rss><channel><description>x</description></channel></rss>", true);
-        assert!(result.is_err());
+        parse_feed(
+            "<rss><channel><description>x</description></channel></rss>",
+            true,
+        )
+        .unwrap_err();
+    }
+
+    #[test]
+    fn parse_does_not_panic_on_utf8_boundary() {
+        // Regression: format detection used to byte-slice at index 2048/1024,
+        // panicking when that index fell inside a multi-byte UTF-8 char.
+        let mut s = String::from("<?xml version=\"1.0\"?>\n");
+        while s.len() < 2047 {
+            s.push('a');
+        }
+        s.push('€'); // 3 bytes spanning index 2047..2050
+        while s.len() < 4096 {
+            s.push('b');
+        }
+        _ = parse_feed(&s, false);
+        _ = parse_feed(&s, true);
+    }
+
+    #[test]
+    fn rss2_parses_channel_image() {
+        let xml = r#"<rss version="2.0"><channel>
+            <title>T</title><link>https://e.com</link><description>D</description>
+            <image>
+                <url>https://e.com/i.png</url>
+                <title>Logo</title>
+                <link>https://e.com</link>
+                <width>88</width>
+            </image>
+        </channel></rss>"#;
+        let Feed::Rss2(rss) = parse_feed(xml, false).unwrap() else {
+            panic!("expected RSS 2.0")
+        };
+        let img = rss.image.expect("channel image should be parsed");
+        assert_eq!(img.url, "https://e.com/i.png");
+        assert_eq!(img.title, "Logo");
+        assert_eq!(img.width, Some(88));
+        // the image's inner <title>/<link> must not clobber the channel's
+        assert_eq!(rss.title, "T");
+    }
+
+    #[test]
+    fn atom_parses_entry_category_and_typed_summary() {
+        let xml = r#"<feed xmlns="http://www.w3.org/2005/Atom">
+            <id>urn:f</id><title>T</title><updated>2024-01-01T00:00:00Z</updated>
+            <entry>
+                <id>urn:1</id><title>E</title><updated>2024-01-01T00:00:00Z</updated>
+                <category term="rust" label="Rust"/>
+                <summary type="html">&lt;b&gt;hi&lt;/b&gt;</summary>
+            </entry>
+        </feed>"#;
+        let Feed::Atom(atom) = parse_feed(xml, false).unwrap() else {
+            panic!("expected Atom")
+        };
+        let entry = &atom.entries[0];
+        assert_eq!(entry.categories.len(), 1, "entry category should be parsed");
+        assert_eq!(entry.categories[0].term, "rust");
+        assert!(matches!(entry.summary, Some(AtomText::Html(_))));
     }
 }

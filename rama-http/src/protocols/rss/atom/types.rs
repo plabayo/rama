@@ -253,7 +253,10 @@ impl AtomFeed {
     }
 
     pub fn to_xml(&self) -> Result<Vec<u8>, super::super::ser::XmlWriteError> {
-        use quick_xml::{Writer, events::{BytesDecl, Event}};
+        use quick_xml::{
+            Writer,
+            events::{BytesDecl, Event},
+        };
         let mut buf = Vec::with_capacity(4096);
         let mut w = Writer::new(&mut buf);
         w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
@@ -264,8 +267,8 @@ impl AtomFeed {
 
 impl std::fmt::Display for AtomFeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let xml = self.to_xml().map_err(|_| std::fmt::Error)?;
-        f.write_str(std::str::from_utf8(&xml).map_err(|_| std::fmt::Error)?)
+        let xml = self.to_xml().map_err(|_err| std::fmt::Error)?;
+        f.write_str(std::str::from_utf8(&xml).map_err(|_err| std::fmt::Error)?)
     }
 }
 
@@ -289,11 +292,7 @@ pub struct AtomEntry {
 
 impl AtomEntry {
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        title: impl Into<AtomText>,
-        updated: Timestamp,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, title: impl Into<AtomText>, updated: Timestamp) -> Self {
         Self {
             id: id.into(),
             title: title.into(),

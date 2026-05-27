@@ -7,3 +7,4 @@ pub use types::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson,
     AtomSource, AtomText,
 };
+pub(super) use write::write_atom_entry;

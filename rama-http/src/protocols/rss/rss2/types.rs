@@ -38,7 +38,10 @@ impl Rss2Feed {
     }
 
     pub fn to_xml(&self) -> Result<Vec<u8>, super::super::ser::XmlWriteError> {
-        use quick_xml::{Writer, events::{BytesDecl, Event}};
+        use quick_xml::{
+            Writer,
+            events::{BytesDecl, Event},
+        };
         let mut buf = Vec::with_capacity(4096);
         let mut w = Writer::new(&mut buf);
         w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
@@ -49,8 +52,8 @@ impl Rss2Feed {
 
 impl std::fmt::Display for Rss2Feed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let xml = self.to_xml().map_err(|_| std::fmt::Error)?;
-        f.write_str(std::str::from_utf8(&xml).map_err(|_| std::fmt::Error)?)
+        let xml = self.to_xml().map_err(|_err| std::fmt::Error)?;
+        f.write_str(std::str::from_utf8(&xml).map_err(|_err| std::fmt::Error)?)
     }
 }
 

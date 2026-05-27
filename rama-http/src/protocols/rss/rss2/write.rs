@@ -7,7 +7,7 @@ use quick_xml::{
 use super::super::feed_ext::{
     ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed, PodcastLocation, PodcastPerson,
 };
-use super::super::ser::{write_opt_text_elem, write_text_elem, XmlWriteError};
+use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
 use super::types::{Rss2Feed, Rss2Item};
 
 pub(super) fn write_rss2_feed<W: std::io::Write>(
@@ -22,7 +22,10 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
     let needs_podcast = feed.extensions.podcast.is_some()
         || feed.items.iter().any(|i| i.extensions.podcast.is_some());
     let needs_dc = feed.extensions.dublin_core.is_some()
-        || feed.items.iter().any(|i| i.extensions.dublin_core.is_some());
+        || feed
+            .items
+            .iter()
+            .any(|i| i.extensions.dublin_core.is_some());
     let needs_content = feed.items.iter().any(|i| i.extensions.content.is_some());
     let needs_media = feed.items.iter().any(|i| i.extensions.media.is_some());
 
@@ -243,7 +246,11 @@ fn write_itunes_feed<W: std::io::Write>(
         w.write_event(Event::Empty(tag))?;
     }
     if let Some(explicit) = itunes.explicit {
-        write_text_elem(w, "itunes:explicit", if explicit { "true" } else { "false" })?;
+        write_text_elem(
+            w,
+            "itunes:explicit",
+            if explicit { "true" } else { "false" },
+        )?;
     }
     write_opt_text_elem(w, "itunes:type", itunes.type_.as_deref())?;
     write_opt_text_elem(w, "itunes:new-feed-url", itunes.new_feed_url.as_deref())?;
@@ -277,7 +284,11 @@ fn write_itunes_item<W: std::io::Write>(
     }
     write_opt_text_elem(w, "itunes:duration", itunes.duration.as_deref())?;
     if let Some(explicit) = itunes.explicit {
-        write_text_elem(w, "itunes:explicit", if explicit { "true" } else { "false" })?;
+        write_text_elem(
+            w,
+            "itunes:explicit",
+            if explicit { "true" } else { "false" },
+        )?;
     }
     if let Some(ep) = itunes.episode {
         write_text_elem(w, "itunes:episode", &ep.to_string())?;
@@ -443,7 +454,10 @@ fn write_podcast_location<W: std::io::Write>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Dublin Core is 15 flat optional fields; grouping them adds no clarity"
+)]
 fn write_dc_fields<W: std::io::Write>(
     w: &mut Writer<W>,
     title: Option<&str>,

@@ -47,7 +47,10 @@ async fn test_http_rss_podcast() {
         .typed_get::<ContentType>()
         .map(|ct| ct.mime().to_string())
         .unwrap_or_default();
-    assert!(stream_ct.contains("rss+xml"), "expected rss+xml, got {stream_ct}");
+    assert!(
+        stream_ct.contains("rss+xml"),
+        "expected rss+xml, got {stream_ct}"
+    );
     let stream_body = stream_resp.try_into_string().await.unwrap();
     assert!(stream_body.contains("<rss"));
     assert!(stream_body.contains("<channel>"));

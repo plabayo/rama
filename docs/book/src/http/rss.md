@@ -174,6 +174,14 @@ println!("Feed title: {}", feed.title());
 parses leniently.  Use `Feed::from_body_strict` if you need structural errors
 to surface.
 
+> **Note on parsing scope.** The parser is intentionally lenient: unknown
+> elements are skipped and lenient mode never errors (a non-feed document
+> yields an empty feed). Core RSS 2.0 / Atom fields plus the `itunes:` and
+> `content:encoded` extensions are parsed; the Podcasting 2.0, Media RSS, and
+> Dublin Core extensions are currently **serialize-only** and are not read back
+> when parsing. Round-tripping a feed through parse → serialize therefore drops
+> those extension fields.
+
 ## Examples
 
 - [`http_rss_blog`](https://github.com/plabayo/rama/blob/main/examples/http_rss_blog.rs) — RSS 2.0 and Atom blog feed server

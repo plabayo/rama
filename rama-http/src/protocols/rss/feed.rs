@@ -3,9 +3,9 @@
 
 use std::str::FromStr;
 
-use crate::{Body, Response, StatusCode};
 use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
+use crate::{Body, Response, StatusCode};
 
 use super::atom::AtomFeed;
 use super::parse::{FeedParseError, parse_feed};
@@ -39,20 +39,18 @@ impl Feed {
     /// Parse a feed from a [`Body`], consuming it entirely.
     pub async fn from_body(body: Body) -> Result<Self, FeedParseError> {
         use crate::BodyExtractExt as _;
-        let text = body
-            .try_into_string()
-            .await
-            .map_err(|e| FeedParseError { message: e.to_string() })?;
+        let text = body.try_into_string().await.map_err(|e| FeedParseError {
+            message: e.to_string(),
+        })?;
         Self::parse(&text)
     }
 
     /// Parse a feed from a [`Body`] in strict mode.
     pub async fn from_body_strict(body: Body) -> Result<Self, FeedParseError> {
         use crate::BodyExtractExt as _;
-        let text = body
-            .try_into_string()
-            .await
-            .map_err(|e| FeedParseError { message: e.to_string() })?;
+        let text = body.try_into_string().await.map_err(|e| FeedParseError {
+            message: e.to_string(),
+        })?;
         Self::parse_strict(&text)
     }
 

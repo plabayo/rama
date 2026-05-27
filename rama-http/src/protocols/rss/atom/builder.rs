@@ -202,7 +202,10 @@ impl AtomFeedBuilder<Present, Present, Present> {
         AtomFeed {
             id: self.id,
             title: self.title,
-            #[allow(clippy::expect_used)]
+            #[expect(
+                clippy::expect_used,
+                reason = "type-state guarantees `updated` is Present once build() is callable"
+            )]
             updated: self.updated.expect("updated is Present"),
             authors: self.authors,
             links: self.links,

@@ -201,21 +201,18 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn rss() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
-            Mime::from_str("application/rss+xml")
-                .expect("application/rss+xml to be a valid mime"),
-        )
+        Self(Mime::from_str("application/rss+xml").expect("application/rss+xml to be a valid mime"))
     }
 
     /// A constructor to easily create a `Content-Type: application/atom+xml` header.
     #[inline]
     #[must_use]
     pub fn atom() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
@@ -352,12 +349,12 @@ mod tests {
 
     #[test]
     fn rss_is_valid() {
-        let _ = ContentType::rss();
+        _ = ContentType::rss();
     }
 
     #[test]
     fn atom_is_valid() {
-        let _ = ContentType::atom();
+        _ = ContentType::atom();
     }
 
     #[test]

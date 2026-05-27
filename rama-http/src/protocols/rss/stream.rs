@@ -13,17 +13,17 @@ use std::borrow::Cow;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use jiff::Timestamp;
 use pin_project_lite::pin_project;
 use quick_xml::{
     Writer,
     events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event},
 };
+use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 
-use super::atom::AtomEntry;
+use super::atom::{AtomEntry, write_atom_entry};
 use super::rss2::{Rss2Item, write_rss2_item};
 use super::ser::XmlWriteError;
 
@@ -130,7 +130,10 @@ where
 {
     type Item = Result<Bytes, BoxError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Bytes, BoxError>>> {
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Bytes, BoxError>>> {
         let mut this = self.project();
 
         loop {
@@ -144,26 +147,24 @@ where
                     let chunk = this.scratch.split().freeze();
                     return Poll::Ready(Some(Ok(chunk)));
                 }
-                Rss2Phase::Items => {
-                    match this.items.as_mut().poll_next(cx) {
-                        Poll::Pending => return Poll::Pending,
-                        Poll::Ready(None) => {
-                            *this.phase = Rss2Phase::Footer;
-                        }
-                        Poll::Ready(Some(Err(e))) => {
-                            return Poll::Ready(Some(Err(e.into())));
-                        }
-                        Poll::Ready(Some(Ok(item))) => {
-                            this.scratch.clear();
-                            let mut w = Writer::new(this.scratch.writer());
-                            if let Err(e) = write_rss2_item(&mut w, &item) {
-                                return Poll::Ready(Some(Err(BoxError::from(e))));
-                            }
-                            let chunk = this.scratch.split().freeze();
-                            return Poll::Ready(Some(Ok(chunk)));
-                        }
+                Rss2Phase::Items => match this.items.as_mut().poll_next(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(None) => {
+                        *this.phase = Rss2Phase::Footer;
                     }
-                }
+                    Poll::Ready(Some(Err(e))) => {
+                        return Poll::Ready(Some(Err(e.into())));
+                    }
+                    Poll::Ready(Some(Ok(item))) => {
+                        this.scratch.clear();
+                        let mut w = Writer::new(this.scratch.writer());
+                        if let Err(e) = write_rss2_item(&mut w, &item) {
+                            return Poll::Ready(Some(Err(BoxError::from(e))));
+                        }
+                        let chunk = this.scratch.split().freeze();
+                        return Poll::Ready(Some(Ok(chunk)));
+                    }
+                },
                 Rss2Phase::Footer => {
                     this.scratch.clear();
                     if let Err(e) = write_rss2_footer(this.scratch) {
@@ -184,6 +185,14 @@ fn write_rss2_header(buf: &mut BytesMut, meta: &Rss2FeedMeta) -> Result<(), XmlW
     w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
     let mut rss_tag = BytesStart::new("rss");
     rss_tag.push_attribute(("version", "2.0"));
+    // A streaming header is written before any item is seen, so it cannot know
+    // which extension prefixes the items will use. Declare the supported ones
+    // up front to keep the document namespace-well-formed regardless.
+    rss_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
+    rss_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
+    rss_tag.push_attribute(("xmlns:content", "http://purl.org/rss/1.0/modules/content/"));
+    rss_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
+    rss_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
     w.write_event(Event::Start(rss_tag))?;
     w.write_event(Event::Start(BytesStart::new("channel")))?;
     write_text_elem_to(&mut w, "title", &meta.title)?;
@@ -275,27 +284,24 @@ where
                     let chunk = this.scratch.split().freeze();
                     return Poll::Ready(Some(Ok(chunk)));
                 }
-                AtomPhase::Entries => {
-                    match this.entries.as_mut().poll_next(cx) {
-                        Poll::Pending => return Poll::Pending,
-                        Poll::Ready(None) => {
-                            *this.phase = AtomPhase::Footer;
-                        }
-                        Poll::Ready(Some(Err(e))) => {
-                            return Poll::Ready(Some(Err(e.into())));
-                        }
-                        Poll::Ready(Some(Ok(entry))) => {
-                            this.scratch.clear();
-                            // Serialize the entry by building a minimal feed around it
-                            // and extracting the entry XML.
-                            if let Err(e) = write_atom_entry_chunk(this.scratch, &entry) {
-                                return Poll::Ready(Some(Err(e.into())));
-                            }
-                            let chunk = this.scratch.split().freeze();
-                            return Poll::Ready(Some(Ok(chunk)));
-                        }
+                AtomPhase::Entries => match this.entries.as_mut().poll_next(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(None) => {
+                        *this.phase = AtomPhase::Footer;
                     }
-                }
+                    Poll::Ready(Some(Err(e))) => {
+                        return Poll::Ready(Some(Err(e.into())));
+                    }
+                    Poll::Ready(Some(Ok(entry))) => {
+                        this.scratch.clear();
+                        let mut w = Writer::new(this.scratch.writer());
+                        if let Err(e) = write_atom_entry(&mut w, &entry) {
+                            return Poll::Ready(Some(Err(BoxError::from(e))));
+                        }
+                        let chunk = this.scratch.split().freeze();
+                        return Poll::Ready(Some(Ok(chunk)));
+                    }
+                },
                 AtomPhase::Footer => {
                     this.scratch.clear();
                     if let Err(e) = write_atom_footer(this.scratch) {
@@ -316,6 +322,12 @@ fn write_atom_header(buf: &mut BytesMut, meta: &AtomFeedMeta) -> Result<(), XmlW
     w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
     let mut feed_tag = BytesStart::new("feed");
     feed_tag.push_attribute(("xmlns", "http://www.w3.org/2005/Atom"));
+    // Declared up front because entries are streamed after this header and may
+    // carry extension-namespaced elements (see Rss2StreamWriter header).
+    feed_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
+    feed_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
+    feed_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
+    feed_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
     w.write_event(Event::Start(feed_tag))?;
     write_text_elem_to(&mut w, "id", &meta.id)?;
     {
@@ -340,47 +352,6 @@ fn write_atom_header(buf: &mut BytesMut, meta: &AtomFeedMeta) -> Result<(), XmlW
     Ok(())
 }
 
-fn write_atom_entry_chunk(buf: &mut BytesMut, entry: &AtomEntry) -> Result<(), XmlWriteError> {
-    // Build a temporary feed containing only this entry and extract the
-    // <entry>...</entry> fragment by serializing just the entry.
-    let mut w = Writer::new(buf.writer());
-    w.write_event(Event::Start(BytesStart::new("entry")))?;
-    write_text_elem_to(&mut w, "id", &entry.id)?;
-    {
-        let mut title_tag = BytesStart::new("title");
-        title_tag.push_attribute(("type", entry.title.type_attr()));
-        w.write_event(Event::Start(title_tag))?;
-        w.write_event(Event::Text(BytesText::new(entry.title.value())))?;
-        w.write_event(Event::End(BytesEnd::new("title")))?;
-    }
-    write_text_elem_to(&mut w, "updated", &entry.updated.to_string())?;
-    for author in &entry.authors {
-        w.write_event(Event::Start(BytesStart::new("author")))?;
-        write_text_elem_to(&mut w, "name", &author.name)?;
-        w.write_event(Event::End(BytesEnd::new("author")))?;
-    }
-    for link in &entry.links {
-        let mut link_tag = BytesStart::new("link");
-        link_tag.push_attribute(("href", link.href.as_str()));
-        if let Some(rel) = &link.rel {
-            link_tag.push_attribute(("rel", rel.as_str()));
-        }
-        w.write_event(Event::Empty(link_tag))?;
-    }
-    if let Some(summary) = &entry.summary {
-        let mut tag = BytesStart::new("summary");
-        tag.push_attribute(("type", summary.type_attr()));
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(summary.value())))?;
-        w.write_event(Event::End(BytesEnd::new("summary")))?;
-    }
-    if let Some(published) = &entry.published {
-        write_text_elem_to(&mut w, "published", &published.to_string())?;
-    }
-    w.write_event(Event::End(BytesEnd::new("entry")))?;
-    Ok(())
-}
-
 fn write_atom_footer(buf: &mut BytesMut) -> Result<(), XmlWriteError> {
     let mut w = Writer::new(buf.writer());
     w.write_event(Event::End(BytesEnd::new("feed")))?;
@@ -398,7 +369,78 @@ fn write_text_elem_to<W: std::io::Write>(
     Ok(())
 }
 
-// Bring in the unused imports for the zero-copy ref types.
-// They are used by callers in the parsing path.
-#[allow(unused_imports)]
-pub(super) use super::atom::{AtomFeed as _, AtomEntry as _};
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocols::rss::AtomContent;
+    use crate::protocols::rss::feed_ext::{ITunes, ItemExtensions};
+    use rama_core::futures::StreamExt as _;
+
+    async fn drain<S>(mut s: S) -> String
+    where
+        S: Stream<Item = Result<Bytes, BoxError>> + Unpin,
+    {
+        let mut out = Vec::new();
+        while let Some(chunk) = s.next().await {
+            out.extend_from_slice(&chunk.unwrap());
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[tokio::test]
+    async fn rss2_stream_declares_extension_namespaces() {
+        let meta = Rss2FeedMeta {
+            title: "T".into(),
+            link: "https://e.com".into(),
+            description: "D".into(),
+            language: None,
+            generator: None,
+        };
+        let item = Rss2Item::new()
+            .with_title("Ep1")
+            .with_extensions(ItemExtensions {
+                itunes: Some(ITunes {
+                    author: Some("A".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        let items = rama_core::futures::stream::iter(vec![Ok::<_, std::convert::Infallible>(item)]);
+        let xml = drain(Rss2StreamWriter::new(meta, items)).await;
+        assert!(
+            xml.contains("xmlns:itunes="),
+            "namespace not declared: {xml}"
+        );
+        assert!(xml.contains("<itunes:author>A</itunes:author>"), "{xml}");
+        assert!(
+            xml.contains("</channel>") && xml.contains("</rss>"),
+            "{xml}"
+        );
+    }
+
+    #[tokio::test]
+    async fn atom_stream_keeps_content_and_declares_namespaces() {
+        let meta = AtomFeedMeta {
+            id: "urn:x".into(),
+            title: "T".into(),
+            updated: Timestamp::UNIX_EPOCH,
+            author_name: None,
+            link_href: None,
+        };
+        let entry = AtomEntry::new("urn:1", "E1", Timestamp::UNIX_EPOCH)
+            .with_content(AtomContent::html("<p>hi</p>"));
+        let entries =
+            rama_core::futures::stream::iter(vec![Ok::<_, std::convert::Infallible>(entry)]);
+        let xml = drain(AtomStreamWriter::new(meta, entries)).await;
+        assert!(
+            xml.contains("xmlns:itunes="),
+            "namespace not declared: {xml}"
+        );
+        // content used to be dropped by the streaming writer
+        assert!(
+            xml.contains("<![CDATA[<p>hi</p>]]>"),
+            "content missing: {xml}"
+        );
+        assert!(xml.contains("</feed>"), "{xml}");
+    }
+}

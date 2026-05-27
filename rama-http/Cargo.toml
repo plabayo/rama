@@ -56,12 +56,12 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
-quick-xml = { workspace = true }
 matchit = { workspace = true }
 mime_guess = { workspace = true, optional = true }
 multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+quick-xml = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }

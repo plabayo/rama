@@ -19,6 +19,11 @@
 //! curl http://127.0.0.1:62050/feed.atom
 //! ```
 
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use std::{sync::Arc, time::Duration};
 
 use jiff::Timestamp;
@@ -27,8 +32,8 @@ use rama::{
     http::{
         layer::trace::TraceLayer,
         protocols::rss::{
-            AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText, Rss2Feed,
-            Rss2Guid, Rss2Item,
+            AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText, Rss2Feed, Rss2Guid,
+            Rss2Item,
             feed_ext::{Content, ItemExtensions},
         },
         server::HttpServer,
