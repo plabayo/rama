@@ -44,20 +44,20 @@ fn main() {
         // Watch every rama* crate's `src` so a change to any of them
         // (rama-ws, rama-http, rama-net-apple-networkextension, ...) re-runs
         // this script and rebuilds the staticlib.
-        if let Some(repo_root) = transparent_proxy_dir.ancestors().nth(4) {
-            if let Ok(entries) = std::fs::read_dir(repo_root) {
-                for entry in entries.flatten() {
-                    if entry.file_name().to_string_lossy().starts_with("rama") {
-                        let src = entry.path().join("src");
-                        if src.is_dir() {
-                            println!("cargo:rerun-if-changed={}", src.display());
-                        }
-                    }
+        if let Some(repo_root) = transparent_proxy_dir.ancestors().nth(4)
+            && let Ok(entries) = std::fs::read_dir(repo_root)
+        {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with("rama")
+                    && let src = entry.path().join("src")
+                    && src.is_dir()
+                {
+                    println!("cargo:rerun-if-changed={}", src.display());
                 }
             }
         }
 
-        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
         let status = std::process::Command::new(cargo)
             .current_dir(&tproxy_rs_dir)
             .arg("build")
