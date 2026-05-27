@@ -117,7 +117,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // cancels its connection + session and removes itself from the
         // registry; the removeAll below is then a no-op safety net.
         let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
-        for ctx in tcp { ctx.flowQueue?.async { ctx.teardown?.applyEngineDetached() } }
+        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applyEngineDetached() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
@@ -125,6 +125,22 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync {
             self.tcpContexts.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
+        }
+    }
+
+    /// Run a teardown for a registered flow on its own `flowQueue`
+    /// when it has one — production contexts always do (set by
+    /// `TcpFlowSession.init`), and routing there keeps the teardown
+    /// single-threaded with that flow's kernel / NWConnection
+    /// callbacks (the `done` flag + slots are flow-queue-confined).
+    /// A context with no queue (engine-less unit-test contexts, or
+    /// any that never got one) runs inline: better to tear it down
+    /// than to silently skip it.
+    private func runFlowTeardown(_ ctx: TcpFlowContext, _ body: @escaping () -> Void) {
+        if let queue = ctx.flowQueue {
+            queue.async(execute: body)
+        } else {
+            body()
         }
     }
 
@@ -140,7 +156,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleSystemSleep(completion: @escaping () -> Void) {
         stopFlowCountReporting()
         let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
-        for ctx in tcp { ctx.flowQueue?.async { ctx.teardown?.applySystemSleep() } }
+        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applySystemSleep() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(systemSleepError()) }
         engine?.notifySystemSleep()
@@ -165,7 +181,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // no-op sleep.
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
-            ctx.flowQueue?.async {
+            runFlowTeardown(ctx) {
                 guard !ctx.egressReady else { return }
                 ctx.teardown?.applySystemWake()
             }
