@@ -20,15 +20,11 @@ import Network
 /// extension below.
 protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
-    // The protocol's `stateUpdateHandler` is intentionally NOT marked
-    // `@Sendable`. `NWConnection`'s real declaration *is* `@Sendable`, so
-    // this is a contravariant relaxation that Swift currently accepts
-    // with a warning (Swift 6 strict mode would reject). The relaxation
-    // keeps the assignment sites in `TcpFlowSession` free of fresh
-    // `@Sendable` propagation onto every closure they capture — those
-    // captures are confined to the flow's serial `flowQueue` and are
-    // not actually Sendable. Revisit when migrating to Swift 6.
-    var stateUpdateHandler: ((NWConnection.State) -> Void)? { get set }
+    // Matches `NWConnection`'s real `@Sendable` declaration so the
+    // conformance is Swift-6 clean. Assigned closures capture the
+    // per-flow session (an `@unchecked Sendable` class), so `@Sendable`
+    // holds without further propagation.
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? { get set }
 
     func start(queue: DispatchQueue)
     func cancel()
