@@ -305,11 +305,12 @@ impl TransparentProxyConfig {
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
     /// Rust → Swift: deliver response bytes to the intercepted client flow.
-    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
-    /// pause when Swift's writer pump (`TcpClientWritePump`) is full and
-    /// resume only after the matching `signal_server_drain` call from Swift.
-    pub on_server_bytes:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
+    /// Returns the raw `u8` of a [`crate::tproxy::TcpDeliverStatus`]
+    /// (0=Accepted, 1=Paused, 2=Closed) — Rust decodes it via
+    /// `TcpDeliverStatus::from_ffi_u8`, so an out-of-range byte can't
+    /// materialize an invalid enum discriminant (UB). The C header /
+    /// Swift side use the typed `uint8_t`-backed enum.
+    pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView) -> u8>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow ingress channel has space again
     /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `Paused`.
@@ -506,6 +507,21 @@ pub enum PromoteConfirmStatus {
     Failed = 1,
 }
 
+impl PromoteConfirmStatus {
+    /// Decode a raw byte received across the FFI boundary. The exported
+    /// confirm fn takes `u8` (not this enum) so an out-of-range value
+    /// can never materialize an invalid discriminant (UB). Unknown
+    /// values fail safe to `Failed` — never claim a cutover succeeded
+    /// on a corrupt status.
+    #[must_use]
+    pub fn from_ffi_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Ok,
+            _ => Self::Failed,
+        }
+    }
+}
+
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
 ///
 /// These are Rust→Swift channels: Rust calls these when it has data for the
@@ -519,11 +535,11 @@ pub enum PromoteConfirmStatus {
 pub struct TransparentProxyTcpEgressCallbacks {
     pub context: *mut c_void,
     /// Rust calls this to send bytes from the service to the egress NWConnection.
-    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
-    /// pause when Swift's `NwTcpConnectionWritePump` is full and resume only
-    /// after the matching `signal_egress_drain` call from Swift.
-    pub on_write_to_egress:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
+    /// Returns the raw `u8` of a [`crate::tproxy::TcpDeliverStatus`]
+    /// (0=Accepted, 1=Paused, 2=Closed) — Rust decodes it via
+    /// `TcpDeliverStatus::from_ffi_u8` to avoid UB on an out-of-range
+    /// discriminant. The C header / Swift side use the typed enum.
+    pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView) -> u8>,
     /// Rust calls this when the service is done writing to the egress NWConnection.
     pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow egress channel has space again
@@ -622,9 +638,26 @@ mod tests {
     };
 
     use super::{
-        NwEgressParameters, TransparentFlowEndpoint, TransparentProxyConfig,
+        NwEgressParameters, PromoteConfirmStatus, TransparentFlowEndpoint, TransparentProxyConfig,
         TransparentProxyFlowMeta,
     };
+
+    #[test]
+    fn ffi_enum_decoders_fail_safe_on_bad_byte() {
+        use crate::tproxy::TcpDeliverStatus;
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(0), TcpDeliverStatus::Accepted);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(1), TcpDeliverStatus::Paused);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(2), TcpDeliverStatus::Closed);
+        // Out-of-range bytes must not be UB — they fail safe to Closed.
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(3), TcpDeliverStatus::Closed);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(255), TcpDeliverStatus::Closed);
+
+        assert_eq!(PromoteConfirmStatus::from_ffi_u8(0), PromoteConfirmStatus::Ok);
+        assert_eq!(PromoteConfirmStatus::from_ffi_u8(1), PromoteConfirmStatus::Failed);
+        // Out-of-range bytes fail safe to Failed (never claim success).
+        assert_eq!(PromoteConfirmStatus::from_ffi_u8(2), PromoteConfirmStatus::Failed);
+        assert_eq!(PromoteConfirmStatus::from_ffi_u8(255), PromoteConfirmStatus::Failed);
+    }
 
     /// Alloc → free round-trip for the FFI config struct. Designed so
     /// that under LeakSanitizer (`just test-e2e-asan`) any heap field

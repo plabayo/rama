@@ -340,7 +340,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                     if bytes.is_empty() {
                         return RamaTcpDeliverStatus::Accepted;
                     }
-                    unsafe {
+                    let raw: u8 = unsafe {
                         callback(
                             context as *mut ::std::ffi::c_void,
                             $crate::ffi::BytesView {
@@ -348,7 +348,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         )
-                    }
+                    };
+                    RamaTcpDeliverStatus::from_ffi_u8(raw)
                 }),
                 ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_client_read_demand {
@@ -485,14 +486,17 @@ macro_rules! __transparent_proxy_ffi_emit {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_confirm_promoted(
             session: *mut RamaTransparentProxyTcpSession,
-            status: RamaPromoteConfirmStatus,
+            status: u8,
             reason_ptr: *const ::std::ffi::c_char,
             reason_len: usize,
         ) {
             if session.is_null() {
                 return;
             }
-            let result = match status {
+            // Decode the raw byte defensively: taking `u8` (not the enum)
+            // at the boundary avoids UB if a caller passes an
+            // out-of-range discriminant.
+            let result = match RamaPromoteConfirmStatus::from_ffi_u8(status) {
                 RamaPromoteConfirmStatus::Ok => Ok(()),
                 RamaPromoteConfirmStatus::Failed => {
                     let reason = if reason_ptr.is_null() || reason_len == 0 {
@@ -734,7 +738,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                         if bytes.is_empty() {
                             return RamaTcpDeliverStatus::Accepted;
                         }
-                        unsafe {
+                        let raw: u8 = unsafe {
                             callback(
                                 context as *mut ::std::ffi::c_void,
                                 $crate::ffi::BytesView {
@@ -742,7 +746,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                                     len: bytes.len(),
                                 },
                             )
-                        }
+                        };
+                        RamaTcpDeliverStatus::from_ffi_u8(raw)
                     },
                     move || {
                         if let Some(callback) = on_egress_read_demand {

@@ -204,6 +204,27 @@ pub enum TcpDeliverStatus {
 // compile time instead of corrupting return values at runtime.
 const _: () = assert!(std::mem::size_of::<TcpDeliverStatus>() == 1);
 
+impl TcpDeliverStatus {
+    /// Decode a raw byte received across the FFI boundary. The FFI
+    /// callbacks are declared to return `u8` (not this enum) so an
+    /// out-of-range value from a foreign caller can never materialize
+    /// an invalid discriminant (which would be UB). Unknown values
+    /// fail safe to `Closed` — stop the pump rather than act on a
+    /// corrupt status.
+    #[must_use]
+    pub fn from_ffi_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Accepted,
+            1 => Self::Paused,
+            2 => Self::Closed,
+            other => {
+                tracing::error!(raw = other, "TcpDeliverStatus: invalid FFI value; treating as Closed");
+                Self::Closed
+            }
+        }
+    }
+}
+
 pub struct TransparentProxyEngine<H> {
     rt: TransparentProxyAsyncRuntime,
     handler: H,

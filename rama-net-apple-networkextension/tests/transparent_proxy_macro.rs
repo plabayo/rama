@@ -76,7 +76,7 @@ fn macro_generates_promote_ffi_symbols() {
     _ = rama_transparent_proxy_tcp_session_confirm_promoted
         as unsafe extern "C" fn(
             *mut RamaTransparentProxyTcpSession,
-            RamaPromoteConfirmStatus,
+            u8,
             *const ::std::ffi::c_char,
             usize,
         );

@@ -220,7 +220,7 @@ unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
     let bx = unsafe { &*(ctx as *const SwiftPromoteBox) };
     bx.fires.fetch_add(1, Ordering::SeqCst);
     let session = bx.session;
-    let (status, reason) = (bx.ack.0, bx.ack.1.clone());
+    let (status, reason) = (bx.ack.0 as u8, bx.ack.1.clone());
     // The "Swift" cutover work would happen here. For the test
     // we just ACK directly. Mirrors the simplest valid Swift
     // implementation.
@@ -249,22 +249,16 @@ unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
 
 // Stub Rust→"Swift" session callbacks. The test doesn't care
 // about response bytes; we just need valid C ABI fn pointers.
-unsafe extern "C" fn noop_on_server_bytes(
-    _ctx: *mut c_void,
-    _bytes: BytesView,
-) -> RamaTcpDeliverStatus {
-    RamaTcpDeliverStatus::Accepted
+unsafe extern "C" fn noop_on_server_bytes(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
+    RamaTcpDeliverStatus::Accepted as u8
 }
 
 unsafe extern "C" fn noop_on_client_read_demand(_ctx: *mut c_void) {}
 unsafe extern "C" fn noop_on_server_closed(_ctx: *mut c_void) {}
 
 // Egress callbacks (passed to `_session_activate`).
-unsafe extern "C" fn noop_on_write_to_egress(
-    _ctx: *mut c_void,
-    _bytes: BytesView,
-) -> RamaTcpDeliverStatus {
-    RamaTcpDeliverStatus::Accepted
+unsafe extern "C" fn noop_on_write_to_egress(_ctx: *mut c_void, _bytes: BytesView) -> u8 {
+    RamaTcpDeliverStatus::Accepted as u8
 }
 
 unsafe extern "C" fn noop_on_egress_read_demand(_ctx: *mut c_void) {}
