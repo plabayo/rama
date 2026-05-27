@@ -19,6 +19,58 @@ fn main() {
     let lib_dir = env::var_os("RAMA_TPROXY_EXAMPLE_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| transparent_proxy_dir.join("tproxy_rs/target/debug"));
+
+    // Keep the linked engine staticlib fresh w.r.t. the rama sources.
+    //
+    // The e2e links the `librama_tproxy_example.a` produced by the SEPARATE
+    // `tproxy_rs` crate; the e2e's own `rama` path-dep only feeds the test
+    // harness (clients/servers). So editing any rama crate would otherwise
+    // recompile only the harness while the *engine under test* kept running a
+    // STALE `.a` — silently. Re-run this script when any rama crate (or the
+    // engine glue) changes, and rebuild the staticlib from current sources.
+    //
+    // Skipped when an explicit prebuilt dir is provided via
+    // `RAMA_TPROXY_EXAMPLE_LIB_DIR` (e.g. CI that builds the lib itself).
+    if env::var_os("RAMA_TPROXY_EXAMPLE_LIB_DIR").is_none() {
+        let tproxy_rs_dir = transparent_proxy_dir.join("tproxy_rs");
+        println!(
+            "cargo:rerun-if-changed={}",
+            tproxy_rs_dir.join("src").display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            tproxy_rs_dir.join("Cargo.toml").display()
+        );
+        // Watch every rama* crate's `src` so a change to any of them
+        // (rama-ws, rama-http, rama-net-apple-networkextension, ...) re-runs
+        // this script and rebuilds the staticlib.
+        if let Some(repo_root) = transparent_proxy_dir.ancestors().nth(4) {
+            if let Ok(entries) = std::fs::read_dir(repo_root) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("rama") {
+                        let src = entry.path().join("src");
+                        if src.is_dir() {
+                            println!("cargo:rerun-if-changed={}", src.display());
+                        }
+                    }
+                }
+            }
+        }
+
+        let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let status = std::process::Command::new(cargo)
+            .current_dir(&tproxy_rs_dir)
+            .arg("build")
+            // Build into tproxy_rs's own target dir, not the e2e's.
+            .env_remove("CARGO_TARGET_DIR")
+            .status()
+            .expect("spawn cargo build for tproxy_rs staticlib");
+        assert!(
+            status.success(),
+            "failed to rebuild tproxy_rs staticlib (librama_tproxy_example.a)"
+        );
+    }
+
     let static_lib = lib_dir.join("librama_tproxy_example.a");
     if static_lib.exists() {
         println!("cargo:rerun-if-changed={}", static_lib.display());
