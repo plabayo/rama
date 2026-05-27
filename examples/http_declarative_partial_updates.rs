@@ -33,7 +33,10 @@
 //! `chrome://flags/#enable-experimental-web-platform-features`; the inline
 //! polyfill is harmless when native already swapped. Pass `?polyfill=false`
 //! on the request URL to skip the polyfill entirely (e.g. to test against
-//! native support, or measure the baseline shell).
+//! native support, or measure the baseline shell). The loading chrome
+//! (skeleton spinners + banner) is cleared by structural CSS
+//! (`:last-child` / `:has()`) off the swapped fragments, so it disappears
+//! with or without the polyfill.
 //!
 //! The pipeline also layers in [`StreamCompressionLayer`] (so each
 //! fragment chunk is compressed and flushed on its own, not held back
@@ -80,8 +83,8 @@ use rama::{
 use serde::Deserialize;
 use std::time::Duration;
 
-const POLYFILL: &str = include_str!("http_declarative_partial_updates.js");
-const STYLE: &str = include_str!("http_declarative_partial_updates.css");
+const POLYFILL: &str = include_str!("assets/http_declarative_partial_updates.js");
+const STYLE: &str = include_str!("assets/http_declarative_partial_updates.css");
 
 #[derive(Debug, Deserialize)]
 struct DashboardQuery {
