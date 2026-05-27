@@ -83,14 +83,18 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 ctx?.teardown?.applyWriterTerminal(error)
             },
             onDrained: { [weak ctx] in
-                // Mode-aware: post-cutover the forwarder owns the
-                // S→C write path and needs the drain edge to replay
-                // any `.paused` chunk it buffered.
-                if let fwd = ctx?.directForwarder {
-                    fwd.onClientPumpDrained()
-                } else {
-                    ctx?.session?.signalServerDrain()
-                }
+                // Always wake the Rust ingress bridge first: during the
+                // promote cutover window Rust may still be draining
+                // buffered S→C bytes through this pump and parked on a
+                // `.paused`, while the forwarder direction is still
+                // `.buffering` (its drain hook no-ops until `.active`).
+                // Swallowing the edge would stall Rust until its
+                // paused-drain timeout and then drop the in-flight
+                // chunk. Harmless once Rust has unwound (no waiter).
+                // Post-cutover the forwarder additionally owns the
+                // `.paused` replay it buffered.
+                ctx?.session?.signalServerDrain()
+                ctx?.directForwarder?.onClientPumpDrained()
             }
         )
         ctx.clientWritePump = writer
@@ -356,11 +360,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             lingerCloseDeadline: .milliseconds(Int(lingerCloseMs)),
             onDrained: { [weak self] in
                 guard let self else { return }
-                if let fwd = self.ctx.directForwarder {
-                    fwd.onEgressPumpDrained()
-                } else {
-                    self.ctx.session?.signalEgressDrain()
-                }
+                // Always wake the Rust egress bridge first; the
+                // forwarder additionally owns its `.paused` replay
+                // post-cutover. See `buildClientWritePump` for why
+                // swallowing this edge during the cutover window
+                // would stall Rust and drop a chunk.
+                self.ctx.session?.signalEgressDrain()
+                self.ctx.directForwarder?.onEgressPumpDrained()
             }
         )
         ctx.egressWritePump = pump

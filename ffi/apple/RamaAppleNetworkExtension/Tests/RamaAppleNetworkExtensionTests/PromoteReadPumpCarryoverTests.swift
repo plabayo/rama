@@ -387,6 +387,64 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
             "isComplete on in-flight receive must surface as `nil`")
     }
 
+    /// Regression (audit Finding C): an in-flight `connection.receive`
+    /// that lands AFTER `cancelForPromote` with EMPTY bytes,
+    /// `isComplete: false`, and NO error — an empty, non-terminal,
+    /// error-free receive — must STILL fire the carryover sink with
+    /// `.none` so the cutover's `onComplete` barrier
+    /// (`markEgressReadDrained`) runs.
+    ///
+    /// Before the fix the `.closed`-branch sink only fired for
+    /// non-empty data OR a terminal/error completion
+    /// (`else if isComplete || error != nil`). An empty non-terminal
+    /// receive fell through BOTH arms: neither `onCarryover` nor
+    /// `onComplete` fired, so the forwarder's S→C drain barrier never
+    /// resolved and the promoted flow leaked in the registry. This is
+    /// the egress-direction analogue of the behavior `TcpClientReadPump`
+    /// already had — the asymmetry is exactly what the audit caught.
+    func testEgressReadPumpCarryoverEmptyNonTerminalReceiveStillCompletes() {
+        let engine = makeEngine(); defer { engine.stop(reason: 0) }
+        let session = interceptSession(engine)
+        let conn = MockNwConnection()
+        let queue = makeQueue("egress.empty.nonterminal")
+
+        let pump = NwTcpConnectionReadPump(
+            connection: conn, session: session, queue: queue,
+            eofGraceDeadline: .milliseconds(50))
+        pump.start()
+
+        let issued = expectation(description: "pump issued receive")
+        DispatchQueue.global().async {
+            let deadline = Date(timeIntervalSinceNow: 1.0)
+            while Date() < deadline {
+                if conn.pendingReceiveCount > 0 {
+                    issued.fulfill(); return
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+            XCTFail("pump never issued connection.receive")
+        }
+        wait(for: [issued], timeout: 1.5)
+
+        let carryoverFired = expectation(description: "carryover fired")
+        let completeFired = expectation(description: "onComplete fired")
+        var sawNone = false
+        pump.cancelForPromote(
+            onCarryover: { data in
+                sawNone = (data == nil)
+                carryoverFired.fulfill()
+            },
+            onComplete: { completeFired.fulfill() })
+
+        // Empty buffer, NOT complete, NO error — the exact case the
+        // fix added. The `onComplete` barrier MUST still run.
+        _ = conn.completePendingReceive(data: Data(), isComplete: false, error: nil)
+        wait(for: [carryoverFired, completeFired], timeout: 2.0,
+             enforceOrder: true)
+        XCTAssertTrue(sawNone,
+            "empty non-terminal receive must surface as `nil` so the onComplete barrier can't wedge")
+    }
+
     /// External `cancel()` (the existing non-promote API) then
     /// `cancelForPromote(...)` — the second call must be a no-op,
     /// no carryover firing on the already-closed pump.

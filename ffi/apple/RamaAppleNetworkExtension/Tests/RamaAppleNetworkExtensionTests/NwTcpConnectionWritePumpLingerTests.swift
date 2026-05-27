@@ -146,7 +146,80 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         )
     }
 
-    func testDrainOnNonReadyConnectionDoesNotSendFinOrArmWatchdog() {
+    /// Regression (broader self-scan, audit theme): a terminal write
+    /// error DURING the drain closes the core via
+    /// `pumpCore(_:didTerminateWith:)`, NOT via the FIN path
+    /// (`pumpCoreDidFinishDraining`). That handler must STILL fire the
+    /// pending `closeWhenDrained` callback and force-cancel the
+    /// connection.
+    ///
+    /// Before the fix `didTerminateWith` was a silent no-op. In the
+    /// promoted `TcpDirectForwarder` hot path the C→S
+    /// `.finishing → .finished` transition is gated SOLELY on this
+    /// callback, so it wedged forever: `onTerminal` never fired and the
+    /// per-flow ctx (which strongly holds the pump) leaked in the
+    /// registry — `deinit` can't rescue it because the ctx is pinned
+    /// waiting for the `.finished` only this callback delivers. The
+    /// NWConnection registration leaked too: the nastiest trigger is the
+    /// transient-backpressure retry hard-deadline, which terminates while
+    /// the connection is still `.ready`, so the egress state handler
+    /// never observes `.failed`/`.cancelled` and there is no other
+    /// teardown path. `TcpClientWritePump` already fired its drain
+    /// completion on terminate — this restores the egress-side symmetry.
+    func testTerminalWriteErrorDuringDrainFiresCallbackAndForceCancels() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let drained = expectation(description: "closeWhenDrained callback fired")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(300),
+            onDrained: {}
+        )
+
+        // Queue a chunk so the drain has an in-flight send to fail.
+        // With no pending bytes, `closeWhenDrained` would send the FIN
+        // immediately and never reach the terminate path.
+        pump.enqueue(Data([0x01, 0x02, 0x03]))
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.sentChunks.count, 1, "the data chunk was sent")
+        XCTAssertEqual(
+            mock.pendingSendCount, 1, "its send completion is still outstanding")
+
+        pump.closeWhenDrained { drained.fulfill() }
+        waitForQueueDrain(queue)
+        // Still draining — the in-flight send hasn't completed, so no
+        // FIN and no terminal yet.
+        XCTAssertEqual(mock.cancelCount, 0)
+
+        // Fail the in-flight send with a NON-transient error
+        // (ECONNRESET is not in the {ENOBUFS, EAGAIN} retry set) → the
+        // core terminates instead of finishing the drain.
+        mock.completePendingSend(error: .posix(.ECONNRESET))
+
+        wait(for: [drained], timeout: 2.0)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "terminal write error must force-cancel the connection so it can't leak"
+        )
+        // No FIN was ever sent — the drain terminated on error before
+        // the FIN send (a FIN is a send with nil content).
+        XCTAssertNil(
+            mock.sentChunks.first(where: { $0.content == nil }),
+            "no FIN on the terminal-error path"
+        )
+
+        // Past the would-be linger deadline: still exactly one cancel.
+        // The watchdog was never armed (that happens only on the FIN
+        // path); `didTerminateWith` invalidated it defensively anyway.
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
+    }
+
+    func testDrainOnNonReadyConnectionForceCancelsInsteadOfLeaking() {
         let mock = MockNwConnection()
         mock.transition(to: .preparing)
         let queue = makeQueue()
@@ -160,17 +233,25 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         pump.closeWhenDrained()
         waitForQueueDrain(queue)
 
-        // Past the linger deadline.
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
+        // No FIN can be sent on a non-`.ready` connection...
         XCTAssertEqual(
             mock.sentChunks.count, 0,
             "FIN must not be sent when the connection is not in .ready state"
         )
+        // ...but the connection MUST be force-cancelled right away —
+        // not left for a watchdog this branch never arms. The promoted
+        // terminal path delegates connection cancel to this pump, so
+        // bailing without cancelling leaks the NWConnection + its NECP
+        // entry. Immediate, not deadline-gated.
         XCTAssertEqual(
-            mock.cancelCount, 0,
-            "no watchdog should arm when the drain hook bailed before sending the FIN"
+            mock.cancelCount, 1,
+            "non-ready drain must force-cancel the connection so it can't leak"
         )
+
+        // Past the would-be linger deadline: still exactly one cancel
+        // (no watchdog armed; cancelAndDetach is idempotent).
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
     }
 }

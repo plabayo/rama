@@ -148,8 +148,45 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
 
 extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     internal func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
-        // NWConnection write errors are surfaced via the connection state
-        // handler; the write pump terminates silently.
+        // A terminal write error closes the core WITHOUT reaching
+        // `pumpCoreDidFinishDraining` — so no FIN is sent and no linger
+        // watchdog is armed. Two things must still happen, mirroring
+        // `TcpClientWritePump.pumpCore(_:didTerminateWith:)` and the
+        // `cancel()` path. Without them the promoted (`TcpDirectForwarder`)
+        // hot path leaks:
+        //
+        //  1. Fire any pending `closeWhenDrained` callback. The forwarder's
+        //     C→S `.finishing → .finished` transition is gated SOLELY on
+        //     this callback (`finishC2SLocked`). If it never fires the
+        //     forwarder wedges in `.finishing`, `onTerminal` never fires,
+        //     and the per-flow ctx — which strongly holds this pump — leaks
+        //     in the registry. `deinit` can't rescue it: the ctx is pinned
+        //     waiting for the very `.finished` this callback unblocks.
+        //
+        //  2. Force-cancel the connection so its NECP registration is
+        //     released. The FIN → linger watchdog sequence that normally
+        //     owns connection teardown is skipped on the error path, and
+        //     `fireTerminalLocked` deliberately does NOT cancel the
+        //     connection (it delegates to that watchdog). The nastiest
+        //     trigger makes this load-bearing: the transient-backpressure
+        //     retry hard-deadline (`TcpWritePumpCore`) terminates while the
+        //     NWConnection is still `.ready`, so the egress state handler
+        //     never observes `.failed`/`.cancelled` and there is NO other
+        //     teardown path. `cancelAndDetach` is idempotent and nils the
+        //     state handler, so it won't re-enter teardown and any later
+        //     cancel from `onTerminal` is a no-op.
+        //
+        // In `viaRust` mode `onDrainedCallback` is nil (the `onCloseEgress`
+        // hook calls `closeWhenDrained()` with no callback) so step 1 is a
+        // no-op there; the force-cancel is still correct — a terminal write
+        // error means the egress is broken/abandoned either way.
+        lingerWork?.cancel()
+        lingerWork = nil
+        connection.cancelAndDetach()
+        if let cb = onDrainedCallback {
+            onDrainedCallback = nil
+            cb()
+        }
     }
 
     internal func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
@@ -161,8 +198,16 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         let cb = self.onDrainedCallback
         self.onDrainedCallback = nil
         guard connection.state == .ready else {
-            // Can't FIN — fire the callback so the caller
-            // unblocks, then bail.
+            // Can't FIN on a non-`.ready` connection (e.g. the path
+            // dropped to `.waiting`). The promoted terminal path
+            // (`TcpDirectForwarder.fireTerminalLocked`) delegates the
+            // NWConnection cancel to the linger watchdog armed below —
+            // which we skip in this branch — so force-cancel here.
+            // Otherwise the connection (and the `connection → session →
+            // ctx → connection` cycle + its NECP entry) leaks: a later
+            // duplicate `.ready` even disarms the state handler's
+            // tolerance teardown. `cancelAndDetach` is idempotent.
+            connection.cancelAndDetach()
             cb?()
             return
         }

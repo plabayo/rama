@@ -130,8 +130,18 @@ final class NwTcpConnectionReadPump {
                     self.onPromoteCarryover = nil
                     if let sink {
                         if let data, !data.isEmpty {
+                            // Forward the bytes. A final receive that
+                            // also carries `isComplete` loses its EOF
+                            // bit here, but the forwarder rediscovers
+                            // it with one benign direct `receive`.
                             sink(.some(data))
-                        } else if isComplete || error != nil {
+                        } else {
+                            // No bytes: EOF / error / (defensively) an
+                            // empty non-terminal receive. Always fire
+                            // the sink so the carryover `onComplete`
+                            // barrier (`markEgressReadDrained`) runs and
+                            // the S→C direction can't wedge. Mirrors
+                            // `TcpClientReadPump`.
                             sink(.none)
                         }
                     }
