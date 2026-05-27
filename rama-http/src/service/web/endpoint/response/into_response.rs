@@ -573,7 +573,7 @@ mod tests {
             ContentType::octet_stream()
         );
         test_content_length_content_type!(b"&[u8]", 5, ContentType::octet_stream());
-        test_content_length_content_type!([b'[', b'u', b'8', b']'], 4, ContentType::octet_stream());
+        test_content_length_content_type!(*b"[u8]", 4, ContentType::octet_stream());
         test_content_length_content_type!(b"Vec<u8>".to_vec(), 7, ContentType::octet_stream());
         test_content_length_content_type!(
             Cow::Borrowed(b"Cow::Borrowed::<u8>"),
