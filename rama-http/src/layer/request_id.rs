@@ -376,7 +376,8 @@ impl MakeRequestId for MakeRequestNanoid {
 
 fn make_nano_id() -> HeaderValue {
     const ALPHABET_LEN: usize = 64;
-    const ALPHABET: [u8; ALPHABET_LEN] = *b"_-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const ALPHABET: [u8; ALPHABET_LEN] =
+        *b"_-0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const ID_LEN: usize = 21;
     const STEP: usize = 8 * ID_LEN / 5;
     const MASK: usize = (ALPHABET_LEN * 2) - 1;
