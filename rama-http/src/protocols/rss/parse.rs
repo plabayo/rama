@@ -8,10 +8,15 @@ use jiff::Timestamp;
 use quick_xml::{Reader, events::Event};
 use rama_core::telemetry::tracing;
 
-use super::atom::{AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText};
+use super::atom::{
+    AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson,
+    AtomSource, AtomText,
+};
 use super::ext_parse::{FeedExtAcc, ItemExtAcc};
 use super::feed::Feed;
-use super::rss2::{Rss2Category, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item};
+use super::rss2::{
+    Rss2Category, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source,
+};
 
 // ---------------------------------------------------------------------------
 // Public error type
@@ -49,21 +54,35 @@ pub(super) fn parse_feed(input: &str, strict: bool) -> Result<Feed, FeedParseErr
     let is_atom = detect_atom(trimmed);
     let is_rss = !is_atom && detect_rss(trimmed);
 
+    // Each parser reports whether it actually saw a recognized root element
+    // (`<rss>`/`<channel>` or `<feed>`); without one the input is not a feed,
+    // so even lenient parsing returns an error rather than an empty feed.
     if is_atom {
-        parse_atom(input, strict).map(Feed::Atom)
+        let (feed, saw_root) = parse_atom(input, strict)?;
+        if saw_root {
+            return Ok(Feed::Atom(feed));
+        }
     } else if is_rss {
-        parse_rss2(input, strict).map(Feed::Rss2)
-    } else if strict {
-        Err(FeedParseError::new(
-            "document is neither RSS 2.0 nor Atom 1.0",
-        ))
-    } else {
-        // Try RSS 2.0 as a fallback
-        parse_rss2(input, false)
-            .map(Feed::Rss2)
-            .or_else(|_err| parse_atom(input, false).map(Feed::Atom))
-            .map_err(|_err| FeedParseError::new("unrecognized feed format"))
+        let (feed, saw_root) = parse_rss2(input, strict)?;
+        if saw_root {
+            return Ok(Feed::Rss2(feed));
+        }
     }
+
+    if strict {
+        return Err(FeedParseError::new(
+            "document is neither RSS 2.0 nor Atom 1.0",
+        ));
+    }
+
+    // Lenient fallback: accept only if a recognized feed root is present.
+    if let Ok((feed, true)) = parse_rss2(input, false) {
+        return Ok(Feed::Rss2(feed));
+    }
+    if let Ok((feed, true)) = parse_atom(input, false) {
+        return Ok(Feed::Atom(feed));
+    }
+    Err(FeedParseError::new("unrecognized feed format"))
 }
 
 fn detect_atom(s: &str) -> bool {
@@ -94,9 +113,11 @@ fn probe_prefix(s: &str, max: usize) -> &str {
 // RSS 2.0 parser
 // ---------------------------------------------------------------------------
 
-fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
+fn parse_rss2(input: &str, strict: bool) -> Result<(Rss2Feed, bool), FeedParseError> {
     let mut reader = Reader::from_str(input);
     reader.config_mut().trim_text(true);
+
+    let mut saw_root = false;
 
     // Channel state
     let mut title = String::new();
@@ -128,8 +149,10 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut current_item = Rss2Item::default();
     let mut item_acc = ItemExtAcc::default();
 
-    // Pending `<category domain="..">name</category>` domain attribute.
+    // Pending `<category domain="..">name</category>` domain attribute and
+    // `<source url="..">title</source>` url attribute.
     let mut pending_category_domain: Option<String> = None;
+    let mut pending_source_url: Option<String> = None;
 
     let mut text_buf = String::new();
 
@@ -145,6 +168,7 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                 };
                 if !consumed {
                     match full_tag.as_str() {
+                        "rss" | "channel" => saw_root = true,
                         "item" => {
                             in_item = true;
                             current_item = Rss2Item::default();
@@ -164,6 +188,7 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                                 permalink,
                             });
                         }
+                        "source" if in_item => pending_source_url = attr_value(&e, b"url"),
                         "category" => pending_category_domain = attr_value(&e, b"domain"),
                         _ => {}
                     }
@@ -180,16 +205,24 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                     current_item.enclosure = Some(enclosure_from_attrs(&e));
                 }
             }
-            Ok(Event::Text(e)) => {
-                if let Ok(t) = e.unescape() {
-                    text_buf.push_str(&t);
+            Ok(Event::Text(e)) => match e.unescape() {
+                Ok(t) => text_buf.push_str(&t),
+                Err(err) => {
+                    if strict {
+                        return Err(FeedParseError::new(format!("invalid text content: {err}")));
+                    }
+                    tracing::debug!("feed unescape error (lenient): {err}");
                 }
-            }
-            Ok(Event::CData(e)) => {
-                if let Ok(t) = std::str::from_utf8(e.as_ref()) {
-                    text_buf.push_str(t);
+            },
+            Ok(Event::CData(e)) => match std::str::from_utf8(e.as_ref()) {
+                Ok(t) => text_buf.push_str(t),
+                Err(err) => {
+                    if strict {
+                        return Err(FeedParseError::new(format!("invalid CDATA content: {err}")));
+                    }
+                    tracing::debug!("feed cdata utf8 error (lenient): {err}");
                 }
-            }
+            },
             Ok(Event::End(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let text = std::mem::take(&mut text_buf);
@@ -214,6 +247,12 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                             name: text,
                             domain: pending_category_domain.take(),
                         }),
+                        "source" => {
+                            current_item.source = Some(Rss2Source {
+                                title: text,
+                                url: pending_source_url.take().unwrap_or_default(),
+                            });
+                        }
                         "item" => {
                             current_item.extensions = std::mem::take(&mut item_acc).finish();
                             items.push(std::mem::take(&mut current_item));
@@ -290,64 +329,90 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
         ));
     }
 
-    Ok(Rss2Feed {
-        title,
-        link,
-        description,
-        language,
-        copyright,
-        managing_editor,
-        web_master,
-        pub_date,
-        last_build_date,
-        categories,
-        generator,
-        docs,
-        ttl,
-        image,
-        items,
-        extensions: feed_acc.finish(),
-    })
+    Ok((
+        Rss2Feed {
+            title,
+            link,
+            description,
+            language,
+            copyright,
+            managing_editor,
+            web_master,
+            pub_date,
+            last_build_date,
+            categories,
+            generator,
+            docs,
+            ttl,
+            image,
+            items,
+            extensions: feed_acc.finish(),
+        },
+        saw_root,
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // Atom parser
 // ---------------------------------------------------------------------------
 
-fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
+fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseError> {
     let mut reader = Reader::from_str(input);
     reader.config_mut().trim_text(true);
 
+    let mut saw_root = false;
+
+    // Feed state
     let mut feed_id = String::new();
     let mut feed_title = AtomText::text("");
     let mut feed_updated = Timestamp::UNIX_EPOCH;
     let mut feed_updated_set = false;
     let mut feed_authors: Vec<AtomPerson> = Vec::new();
+    let mut feed_contributors: Vec<AtomPerson> = Vec::new();
     let mut feed_links: Vec<AtomLink> = Vec::new();
     let mut feed_categories: Vec<AtomCategory> = Vec::new();
-    let mut feed_subtitle: Option<AtomText> = None;
-    let mut feed_rights: Option<AtomText> = None;
+    let mut feed_generator: Option<AtomGenerator> = None;
+    let mut feed_icon: Option<String> = None;
     let mut feed_logo: Option<String> = None;
+    let mut feed_rights: Option<AtomText> = None;
+    let mut feed_subtitle: Option<AtomText> = None;
     let mut entries: Vec<AtomEntry> = Vec::new();
     let mut feed_acc = FeedExtAcc::default();
 
+    // Entry state
     let mut in_entry = false;
     let mut in_author = false;
     let mut in_feed_author = false;
+    let mut in_contributor = false;
+    let mut in_feed_contributor = false;
+    let mut in_source = false;
     let mut current_entry_id = String::new();
     let mut current_entry_title = AtomText::text("");
     let mut current_entry_updated = Timestamp::UNIX_EPOCH;
     let mut current_entry_authors: Vec<AtomPerson> = Vec::new();
+    let mut current_entry_contributors: Vec<AtomPerson> = Vec::new();
     let mut current_entry_links: Vec<AtomLink> = Vec::new();
     let mut current_entry_categories: Vec<AtomCategory> = Vec::new();
     let mut current_entry_summary: Option<AtomText> = None;
     let mut current_entry_content: Option<AtomContent> = None;
     let mut current_entry_published: Option<Timestamp> = None;
+    let mut current_entry_rights: Option<AtomText> = None;
+    let mut current_entry_source: Option<AtomSource> = None;
     let mut entry_acc = ItemExtAcc::default();
+
+    // Shared sub-element state
     let mut current_author = AtomPerson::new("");
+    let mut current_contributor = AtomPerson::new("");
+    let mut current_source = AtomSource {
+        id: None,
+        title: None,
+        updated: None,
+    };
+    let mut pending_generator: Option<AtomGenerator> = None;
     let mut current_content_type = String::from("text");
     let mut current_title_type = String::from("text");
     let mut current_summary_type = String::from("text");
+    let mut current_rights_type = String::from("text");
 
     let mut text_buf = String::new();
 
@@ -367,17 +432,21 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                 }
 
                 match full_tag.as_str() {
+                    "feed" => saw_root = true,
                     "entry" => {
                         in_entry = true;
                         current_entry_id = String::new();
                         current_entry_title = AtomText::text("");
                         current_entry_updated = Timestamp::UNIX_EPOCH;
                         current_entry_authors = Vec::new();
+                        current_entry_contributors = Vec::new();
                         current_entry_links = Vec::new();
                         current_entry_categories = Vec::new();
                         current_entry_summary = None;
                         current_entry_content = None;
                         current_entry_published = None;
+                        current_entry_rights = None;
+                        current_entry_source = None;
                         entry_acc = ItemExtAcc::default();
                     }
                     "author" => {
@@ -388,19 +457,31 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                             in_feed_author = true;
                         }
                     }
-                    "link" => {
-                        let href = attr_value(&e, b"href").unwrap_or_default();
-                        let rel = attr_value(&e, b"rel");
-                        let type_ = attr_value(&e, b"type");
-                        let length = attr_value(&e, b"length").and_then(|v| v.parse().ok());
-                        let link = AtomLink {
-                            href,
-                            rel,
-                            type_,
-                            hreflang: None,
+                    "contributor" => {
+                        current_contributor = AtomPerson::new("");
+                        if in_entry {
+                            in_contributor = true;
+                        } else {
+                            in_feed_contributor = true;
+                        }
+                    }
+                    "source" if in_entry => {
+                        in_source = true;
+                        current_source = AtomSource {
+                            id: None,
                             title: None,
-                            length,
+                            updated: None,
                         };
+                    }
+                    "generator" => {
+                        pending_generator = Some(AtomGenerator {
+                            value: String::new(),
+                            uri: attr_value(&e, b"uri"),
+                            version: attr_value(&e, b"version"),
+                        });
+                    }
+                    "link" => {
+                        let link = atom_link_from_attrs(&e);
                         if in_entry {
                             current_entry_links.push(link);
                         } else {
@@ -408,14 +489,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         }
                     }
                     "category" => {
-                        let term = attr_value(&e, b"term").unwrap_or_default();
-                        let scheme = attr_value(&e, b"scheme");
-                        let label = attr_value(&e, b"label");
-                        let cat = AtomCategory {
-                            term,
-                            scheme,
-                            label,
-                        };
+                        let cat = atom_category_from_attrs(&e);
                         if in_entry {
                             current_entry_categories.push(cat);
                         } else {
@@ -432,6 +506,10 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                     }
                     "content" => {
                         current_content_type =
+                            attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                    }
+                    "rights" => {
+                        current_rights_type =
                             attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                     }
                     _ => {}
@@ -451,18 +529,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
 
                 match full_tag.as_str() {
                     "link" => {
-                        let href = attr_value(&e, b"href").unwrap_or_default();
-                        let rel = attr_value(&e, b"rel");
-                        let type_ = attr_value(&e, b"type");
-                        let length = attr_value(&e, b"length").and_then(|v| v.parse().ok());
-                        let link = AtomLink {
-                            href,
-                            rel,
-                            type_,
-                            hreflang: None,
-                            title: None,
-                            length,
-                        };
+                        let link = atom_link_from_attrs(&e);
                         if in_entry {
                             current_entry_links.push(link);
                         } else {
@@ -470,33 +537,44 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         }
                     }
                     "category" => {
-                        let term = attr_value(&e, b"term").unwrap_or_default();
-                        let scheme = attr_value(&e, b"scheme");
-                        let label = attr_value(&e, b"label");
-                        let cat = AtomCategory {
-                            term,
-                            scheme,
-                            label,
-                        };
+                        let cat = atom_category_from_attrs(&e);
                         if in_entry {
                             current_entry_categories.push(cat);
                         } else {
                             feed_categories.push(cat);
                         }
                     }
+                    "content" if in_entry => {
+                        // Out-of-line content: <content src=".." type=".."/>
+                        if let Some(src) = attr_value(&e, b"src") {
+                            let type_ = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                            current_entry_content = Some(AtomContent {
+                                value: AtomText::Text(type_),
+                                src: Some(src),
+                            });
+                        }
+                    }
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => {
-                if let Ok(t) = e.unescape() {
-                    text_buf.push_str(&t);
+            Ok(Event::Text(e)) => match e.unescape() {
+                Ok(t) => text_buf.push_str(&t),
+                Err(err) => {
+                    if strict {
+                        return Err(FeedParseError::new(format!("invalid text content: {err}")));
+                    }
+                    tracing::debug!("feed unescape error (lenient): {err}");
                 }
-            }
-            Ok(Event::CData(e)) => {
-                if let Ok(t) = std::str::from_utf8(e.as_ref()) {
-                    text_buf.push_str(t);
+            },
+            Ok(Event::CData(e)) => match std::str::from_utf8(e.as_ref()) {
+                Ok(t) => text_buf.push_str(t),
+                Err(err) => {
+                    if strict {
+                        return Err(FeedParseError::new(format!("invalid CDATA content: {err}")));
+                    }
+                    tracing::debug!("feed cdata utf8 error (lenient): {err}");
                 }
-            }
+            },
             Ok(Event::End(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 let text = std::mem::take(&mut text_buf);
@@ -525,6 +603,54 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         }
                         _ => {}
                     }
+                } else if in_contributor {
+                    match full_tag.as_str() {
+                        "name" => current_contributor.name = text,
+                        "email" => current_contributor.email = Some(text),
+                        "uri" => current_contributor.uri = Some(text),
+                        "contributor" => {
+                            current_entry_contributors.push(std::mem::replace(
+                                &mut current_contributor,
+                                AtomPerson::new(""),
+                            ));
+                            in_contributor = false;
+                        }
+                        _ => {}
+                    }
+                } else if in_feed_contributor {
+                    match full_tag.as_str() {
+                        "name" => current_contributor.name = text,
+                        "email" => current_contributor.email = Some(text),
+                        "uri" => current_contributor.uri = Some(text),
+                        "contributor" => {
+                            feed_contributors.push(std::mem::replace(
+                                &mut current_contributor,
+                                AtomPerson::new(""),
+                            ));
+                            in_feed_contributor = false;
+                        }
+                        _ => {}
+                    }
+                } else if in_source {
+                    match full_tag.as_str() {
+                        "id" => current_source.id = Some(text),
+                        "title" => {
+                            current_source.title = Some(make_atom_text(&current_title_type, text));
+                        }
+                        "updated" => current_source.updated = parse_rfc3339_lax(&text),
+                        "source" => {
+                            current_entry_source = Some(std::mem::replace(
+                                &mut current_source,
+                                AtomSource {
+                                    id: None,
+                                    title: None,
+                                    updated: None,
+                                },
+                            ));
+                            in_source = false;
+                        }
+                        _ => {}
+                    }
                 } else if in_entry {
                     let Some(text) = entry_acc.on_end(&full_tag, text) else {
                         continue;
@@ -546,11 +672,13 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                                 Some(make_atom_text(&current_summary_type, text));
                         }
                         "content" => {
-                            let at = make_atom_text(&current_content_type, text);
                             current_entry_content = Some(AtomContent {
-                                value: at,
+                                value: make_atom_text(&current_content_type, text),
                                 src: None,
                             });
+                        }
+                        "rights" => {
+                            current_entry_rights = Some(make_atom_text(&current_rights_type, text));
                         }
                         "entry" => {
                             let entry = AtomEntry {
@@ -565,10 +693,10 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                                 links: std::mem::take(&mut current_entry_links),
                                 summary: current_entry_summary.take(),
                                 categories: std::mem::take(&mut current_entry_categories),
-                                contributors: Vec::new(),
+                                contributors: std::mem::take(&mut current_entry_contributors),
                                 published: current_entry_published,
-                                rights: None,
-                                source: None,
+                                rights: current_entry_rights.take(),
+                                source: current_entry_source.take(),
                                 extensions: std::mem::take(&mut entry_acc).finish(),
                             };
                             entries.push(entry);
@@ -591,8 +719,15 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                             feed_updated_set = true;
                         }
                         "subtitle" => feed_subtitle = Some(AtomText::text(text)),
-                        "rights" => feed_rights = Some(AtomText::text(text)),
+                        "rights" => feed_rights = Some(make_atom_text(&current_rights_type, text)),
                         "logo" => feed_logo = Some(text),
+                        "icon" => feed_icon = Some(text),
+                        "generator" => {
+                            if let Some(mut g) = pending_generator.take() {
+                                g.value = text;
+                                feed_generator = Some(g);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -621,22 +756,44 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
         }
     }
 
-    Ok(AtomFeed {
-        id: feed_id,
-        title: feed_title,
-        updated: feed_updated,
-        authors: feed_authors,
-        links: feed_links,
-        categories: feed_categories,
-        contributors: Vec::new(),
-        generator: None,
-        icon: None,
-        logo: feed_logo,
-        rights: feed_rights,
-        subtitle: feed_subtitle,
-        entries,
-        extensions: feed_acc.finish(),
-    })
+    Ok((
+        AtomFeed {
+            id: feed_id,
+            title: feed_title,
+            updated: feed_updated,
+            authors: feed_authors,
+            links: feed_links,
+            categories: feed_categories,
+            contributors: feed_contributors,
+            generator: feed_generator,
+            icon: feed_icon,
+            logo: feed_logo,
+            rights: feed_rights,
+            subtitle: feed_subtitle,
+            entries,
+            extensions: feed_acc.finish(),
+        },
+        saw_root,
+    ))
+}
+
+fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
+    AtomLink {
+        href: attr_value(e, b"href").unwrap_or_default(),
+        rel: attr_value(e, b"rel"),
+        type_: attr_value(e, b"type"),
+        hreflang: attr_value(e, b"hreflang"),
+        title: attr_value(e, b"title"),
+        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
+    }
+}
+
+fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
+    AtomCategory {
+        term: attr_value(e, b"term").unwrap_or_default(),
+        scheme: attr_value(e, b"scheme"),
+        label: attr_value(e, b"label"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,5 +1294,121 @@ mod tests {
             entry.media().unwrap().contents[0].url.as_deref(),
             Some("https://m")
         );
+    }
+
+    #[test]
+    fn atom_full_fields_round_trip() {
+        let ts = jiff::Timestamp::UNIX_EPOCH;
+        let mut entry = AtomEntry::new("urn:e1", AtomText::text("Entry Title"), ts);
+        entry
+            .contributors
+            .push(AtomPerson::new("Carol").with_email("carol@example.com"));
+        entry.rights = Some(AtomText::text("CC-BY"));
+        entry.source = Some(AtomSource {
+            id: Some("urn:src".into()),
+            title: Some(AtomText::text("Origin")),
+            updated: Some(ts),
+        });
+        entry.links.push(AtomLink {
+            href: "https://e.com/x".into(),
+            rel: Some("related".into()),
+            type_: Some("text/html".into()),
+            hreflang: Some("en".into()),
+            title: Some("X".into()),
+            length: Some(7),
+        });
+        entry.content = Some(AtomContent::out_of_line(
+            "https://cdn/x.bin",
+            "application/octet-stream",
+        ));
+
+        let feed = AtomFeed::builder()
+            .id("urn:f")
+            .title("Feed")
+            .updated(ts)
+            .generator(AtomGenerator {
+                value: "rama".into(),
+                uri: Some("https://r".into()),
+                version: Some("1".into()),
+            })
+            .icon("https://e.com/icon.png")
+            .contributor(AtomPerson::new("Dave"))
+            .rights(AtomText::text("Public"))
+            .entry(entry)
+            .build();
+
+        let xml = feed.to_string();
+        let Feed::Atom(got) = parse_feed(&xml, false).unwrap() else {
+            panic!("expected Atom")
+        };
+
+        let g = got.generator.expect("generator");
+        assert_eq!(g.value, "rama");
+        assert_eq!(g.uri.as_deref(), Some("https://r"));
+        assert_eq!(g.version.as_deref(), Some("1"));
+        assert_eq!(got.icon.as_deref(), Some("https://e.com/icon.png"));
+        assert_eq!(got.contributors.len(), 1);
+        assert_eq!(got.contributors[0].name, "Dave");
+        assert!(got.rights.is_some());
+
+        let e = &got.entries[0];
+        // critically: <source> children must NOT overwrite the entry's own id/title/updated
+        assert_eq!(e.id, "urn:e1");
+        assert_eq!(e.title, AtomText::text("Entry Title"));
+        assert_eq!(e.updated, ts);
+        assert_eq!(e.contributors.len(), 1);
+        assert_eq!(e.contributors[0].name, "Carol");
+        assert_eq!(
+            e.contributors[0].email.as_deref(),
+            Some("carol@example.com")
+        );
+        assert!(e.rights.is_some());
+        let src = e.source.as_ref().expect("entry source");
+        assert_eq!(src.id.as_deref(), Some("urn:src"));
+        assert_eq!(src.title.as_ref().map(AtomText::value), Some("Origin"));
+        assert_eq!(src.updated, Some(ts));
+        let link = e
+            .links
+            .iter()
+            .find(|l| l.hreflang.is_some())
+            .expect("link with hreflang");
+        assert_eq!(link.hreflang.as_deref(), Some("en"));
+        assert_eq!(link.title.as_deref(), Some("X"));
+        assert_eq!(link.length, Some(7));
+        let content = e.content.as_ref().expect("content");
+        assert_eq!(content.src.as_deref(), Some("https://cdn/x.bin"));
+        assert_eq!(content.value.value(), "application/octet-stream");
+    }
+
+    #[test]
+    fn rss2_item_source_round_trips() {
+        let feed = Rss2Feed::builder()
+            .title("T")
+            .link("https://e.com")
+            .description("D")
+            .item(Rss2Item::new().with_title("I").with_source(Rss2Source {
+                title: "Origin".into(),
+                url: "https://origin".into(),
+            }))
+            .build();
+        let xml = feed.to_string();
+        let Feed::Rss2(got) = parse_feed(&xml, false).unwrap() else {
+            panic!("expected RSS 2.0")
+        };
+        let src = got.items[0].source.as_ref().expect("item source");
+        assert_eq!(src.title, "Origin");
+        assert_eq!(src.url, "https://origin");
+    }
+
+    #[test]
+    fn lenient_rejects_non_feed() {
+        parse_feed("<html><body>not a feed</body></html>", false).unwrap_err();
+        parse_feed("just some text, definitely not xml", false).unwrap_err();
+        // a real feed still parses fine in lenient mode
+        parse_feed(
+            r#"<rss version="2.0"><channel><title>T</title><link>l</link><description>d</description></channel></rss>"#,
+            false,
+        )
+        .unwrap();
     }
 }

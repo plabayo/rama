@@ -204,7 +204,14 @@ fn write_atom_text_body<W: std::io::Write>(
         }
         AtomText::Xhtml(s) => {
             // RFC 4287 §3.1.1.3: xhtml content is a single XHTML-namespaced
-            // <div> whose children are real markup, emitted verbatim.
+            // <div> whose children are real markup, emitted verbatim. Guard
+            // against malformed input so we never emit a broken document.
+            if !xhtml_well_formed(s) {
+                return Err(XmlWriteError::from(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "atom xhtml content is not well-formed XML",
+                )));
+            }
             let mut div = BytesStart::new("div");
             div.push_attribute(("xmlns", "http://www.w3.org/1999/xhtml"));
             w.write_event(Event::Start(div))?;
@@ -213,6 +220,20 @@ fn write_atom_text_body<W: std::io::Write>(
         }
     }
     Ok(())
+}
+
+/// Returns `true` if `fragment` is balanced, well-formed XML, so it is safe to
+/// embed verbatim inside an Atom `type="xhtml"` `<div>`.
+fn xhtml_well_formed(fragment: &str) -> bool {
+    let wrapped = format!("<x>{fragment}</x>");
+    let mut reader = quick_xml::Reader::from_str(&wrapped);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => return true,
+            Err(_) => return false,
+            Ok(_) => {}
+        }
+    }
 }
 
 fn write_atom_person<W: std::io::Write>(
@@ -317,6 +338,33 @@ mod tests {
         let text = AtomText::html("<b>bold</b>");
         assert_eq!(text.type_attr(), "html");
         assert_eq!(text.value(), "<b>bold</b>");
+    }
+
+    #[test]
+    fn xhtml_malformed_content_errors() {
+        let ts = Timestamp::UNIX_EPOCH;
+        let bad = AtomFeed::builder()
+            .id("urn:f")
+            .title("T")
+            .updated(ts)
+            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+                value: AtomText::xhtml("<p>broken"),
+                src: None,
+            }))
+            .build();
+        bad.to_xml()
+            .expect_err("malformed xhtml should fail to serialize");
+
+        let ok = AtomFeed::builder()
+            .id("urn:f")
+            .title("T")
+            .updated(ts)
+            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+                value: AtomText::xhtml("<p>ok</p>"),
+                src: None,
+            }))
+            .build();
+        ok.to_xml().expect("valid xhtml should serialize");
     }
 
     #[test]
