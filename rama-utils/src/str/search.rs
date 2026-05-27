@@ -77,10 +77,7 @@ where
         } else {
             memchr::memchr2(first_lo, first_up, haystack)
         };
-        let candidate = match off {
-            Some(off) => start + off,
-            None => return None,
-        };
+        let candidate = start + off?;
         if candidate > last_start {
             return None;
         }
