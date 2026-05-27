@@ -16,6 +16,10 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -27,6 +31,12 @@ use super::sink::KeyLogSink;
 
 /// Default filename prefix.
 pub const DEFAULT_PREFIX: &str = "sslkeylog";
+
+/// Bound on the writer queue. Keylog is debug plumbing — if the disk
+/// can't keep up we drop lines (a few sessions won't decrypt) rather
+/// than let an unbounded queue grow RAM without limit. ~16k lines at
+/// ~150 B each caps the backlog around a few MB.
+const WRITE_QUEUE_CAPACITY: usize = 16 * 1024;
 
 /// Bucket size for [`RotatingFileKeyLogSink`].
 ///
@@ -112,6 +122,9 @@ impl RotationPeriod {
 #[derive(Debug, Clone)]
 pub struct RotatingFileKeyLogSink {
     tx: flume::Sender<String>,
+    /// Cumulative count of lines dropped because the bounded queue was
+    /// full (disk too slow). Shared across clones.
+    dropped: Arc<AtomicU64>,
     dir: PathBuf,
     prefix: String,
     period: RotationPeriod,
@@ -146,7 +159,7 @@ impl RotatingFileKeyLogSink {
             secs.div_euclid(period.bucket_size_seconds()).max(1)
         });
 
-        let (tx, rx) = flume::unbounded::<String>();
+        let (tx, rx) = flume::bounded::<String>(WRITE_QUEUE_CAPACITY);
         let dir_thread = dir.clone();
         let prefix_thread = prefix.to_owned();
         std::thread::spawn(move || {
@@ -154,6 +167,7 @@ impl RotatingFileKeyLogSink {
         });
         Ok(Self {
             tx,
+            dropped: Arc::new(AtomicU64::new(0)),
             dir,
             prefix: prefix.to_owned(),
             period,
@@ -177,15 +191,38 @@ impl RotatingFileKeyLogSink {
     pub fn period(&self) -> RotationPeriod {
         self.period
     }
+
+    /// Cumulative number of lines dropped because the writer queue was
+    /// full (disk too slow to keep up).
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
 impl KeyLogSink for RotatingFileKeyLogSink {
     fn write_line(&self, line: &str) {
-        if let Err(err) = self.tx.send(line.to_owned()) {
-            tracing::error!(
-                error = %err,
-                "RotatingFileKeyLogSink[tx]: failed to enqueue: {err:?}",
-            );
+        // Non-blocking: this runs on the TLS handshake callback, which
+        // must never block on disk I/O. If the bounded queue is full we
+        // drop the line and count it (rate-limited warn) — a full queue
+        // means the disk can't keep up, and dropping is preferable to
+        // unbounded RAM growth or stalling the handshake.
+        match self.tx.try_send(line.to_owned()) {
+            Ok(()) => {}
+            Err(flume::TrySendError::Full(_)) => {
+                let n = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if n.is_power_of_two() {
+                    tracing::warn!(
+                        dropped_total = n,
+                        "RotatingFileKeyLogSink: write queue full; dropping keylog line(s) (disk too slow?)",
+                    );
+                }
+            }
+            Err(flume::TrySendError::Disconnected(_)) => {
+                tracing::error!(
+                    "RotatingFileKeyLogSink[tx]: writer thread gone; dropping keylog line",
+                );
+            }
         }
     }
 }
@@ -329,6 +366,26 @@ mod tests {
         assert!(p.parse_bucket_suffix("").is_none());
         // Wrong granularity: a minute-shaped suffix won't parse as hour.
         assert!(p.parse_bucket_suffix("2026-05-19-12-05").is_none());
+    }
+
+    #[test]
+    fn bounded_queue_drops_when_full_without_blocking() {
+        // Tiny-capacity sink whose receiver is held but never drained,
+        // so the queue fills and further writes drop instead of block.
+        let (tx, _rx) = flume::bounded::<String>(2);
+        let sink = RotatingFileKeyLogSink {
+            tx,
+            dropped: Arc::new(AtomicU64::new(0)),
+            dir: PathBuf::from("/nonexistent"),
+            prefix: DEFAULT_PREFIX.to_owned(),
+            period: RotationPeriod::HOURLY,
+        };
+        for _ in 0..5 {
+            sink.write_line("CLIENT_RANDOM a b\n");
+        }
+        assert_eq!(sink.dropped(), 3, "3 lines dropped after the 2-slot queue filled");
+        // Keep `_rx` alive so the channel is Full (not Disconnected).
+        drop(_rx);
     }
 
     #[test]
