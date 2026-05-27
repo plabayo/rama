@@ -45,6 +45,7 @@
 pub mod feed_ext;
 
 mod atom;
+mod ext_parse;
 mod ext_write;
 mod feed;
 mod parse;

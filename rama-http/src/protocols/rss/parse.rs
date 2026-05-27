@@ -9,13 +9,8 @@ use quick_xml::{Reader, events::Event};
 use rama_core::telemetry::tracing;
 
 use super::atom::{AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText};
+use super::ext_parse::{FeedExtAcc, ItemExtAcc};
 use super::feed::Feed;
-use super::feed_ext::{
-    Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
-    PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
-    PodcastSoundbite, PodcastTrailer, PodcastTranscript,
-};
 use super::rss2::{Rss2Category, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item};
 
 // ---------------------------------------------------------------------------
@@ -103,7 +98,7 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut reader = Reader::from_str(input);
     reader.config_mut().trim_text(true);
 
-    // Working state
+    // Channel state
     let mut title = String::new();
     let mut link = String::new();
     let mut description = String::new();
@@ -116,6 +111,7 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut generator: Option<String> = None;
     let mut docs: Option<String> = None;
     let mut ttl: Option<u32> = None;
+    let mut categories: Vec<Rss2Category> = Vec::new();
     let mut image: Option<Rss2Image> = None;
     let mut image_url = String::new();
     let mut image_title = String::new();
@@ -124,40 +120,16 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
     let mut image_height: Option<u32> = None;
     let mut image_description: Option<String> = None;
     let mut items: Vec<Rss2Item> = Vec::new();
-    let mut feed_ext = FeedExtensions::default();
-    let mut itunes_feed = ITunesFeed::default();
-    let mut has_itunes = false;
-    let mut dc_feed = DublinCoreFeed::default();
-    let mut has_dc_feed = false;
-    let mut podcast_feed = PodcastFeed::default();
-    let mut has_podcast_feed = false;
-    let mut in_itunes_owner = false;
+    let mut feed_acc = FeedExtAcc::default();
 
-    // Item working state
+    // Item state
     let mut in_item = false;
     let mut in_image_block = false;
     let mut current_item = Rss2Item::default();
-    let mut current_item_itunes = ITunes::default();
-    let mut current_item_has_itunes = false;
-    let mut current_item_content: Option<Content> = None;
-    let mut current_item_dc = DublinCore::default();
-    let mut current_item_has_dc = false;
-    let mut current_item_media = MediaRss::default();
-    let mut current_item_has_media = false;
-    let mut current_item_podcast = Podcast::default();
-    let mut current_item_has_podcast = false;
+    let mut item_acc = ItemExtAcc::default();
 
-    // Pending attribute-bearing extension elements whose text/children arrive
-    // between their start and end events.
-    let mut in_media_content = false;
-    let mut pending_media: Option<MediaContent> = None;
-    let mut pending_person: Option<PodcastPerson> = None;
-    let mut pending_location: Option<PodcastLocation> = None;
-    let mut pending_funding: Option<PodcastFunding> = None;
-    let mut pending_trailer: Option<PodcastTrailer> = None;
-    let mut pending_soundbite: Option<PodcastSoundbite> = None;
-    let mut pending_season: Option<PodcastSeason> = None;
-    let mut pending_episode: Option<PodcastEpisode> = None;
+    // Pending `<category domain="..">name</category>` domain attribute.
+    let mut pending_category_domain: Option<String> = None;
 
     let mut text_buf = String::new();
 
@@ -166,235 +138,46 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
             Ok(Event::Start(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 text_buf.clear();
-
-                match full_tag.as_str() {
-                    "item" => {
-                        in_item = true;
-                        current_item = Rss2Item::default();
-                        current_item_itunes = ITunes::default();
-                        current_item_has_itunes = false;
-                        current_item_content = None;
-                        current_item_dc = DublinCore::default();
-                        current_item_has_dc = false;
-                        current_item_media = MediaRss::default();
-                        current_item_has_media = false;
-                        current_item_podcast = Podcast::default();
-                        current_item_has_podcast = false;
-                    }
-                    "image" if !in_item => {
-                        in_image_block = true;
-                    }
-                    "enclosure" => {
-                        // enclosure is an empty element with attributes
-                        let url = attr_value(&e, b"url");
-                        let length = attr_value(&e, b"length")
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or_default();
-                        let type_ = attr_value(&e, b"type").unwrap_or_default();
-                        if in_item {
-                            current_item.enclosure = Some(Rss2Enclosure {
-                                url: url.unwrap_or_default(),
-                                length,
-                                type_,
+                let consumed = if in_item {
+                    item_acc.on_start(&full_tag, &e)
+                } else {
+                    feed_acc.on_start(&full_tag, &e)
+                };
+                if !consumed {
+                    match full_tag.as_str() {
+                        "item" => {
+                            in_item = true;
+                            current_item = Rss2Item::default();
+                            item_acc = ItemExtAcc::default();
+                        }
+                        "image" if !in_item => in_image_block = true,
+                        "enclosure" if in_item => {
+                            current_item.enclosure = Some(enclosure_from_attrs(&e));
+                        }
+                        "guid" if in_item => {
+                            let permalink = attr_value(&e, b"isPermaLink")
+                                .map(|v| v != "false")
+                                .unwrap_or(true);
+                            // value is captured later on the text event
+                            current_item.guid = Some(Rss2Guid {
+                                value: String::new(),
+                                permalink,
                             });
                         }
+                        "category" => pending_category_domain = attr_value(&e, b"domain"),
+                        _ => {}
                     }
-                    "guid" if in_item => {
-                        let permalink = attr_value(&e, b"isPermaLink")
-                            .map(|v| v != "false")
-                            .unwrap_or(true);
-                        // value is captured later on the text event
-                        current_item.guid = Some(Rss2Guid {
-                            value: String::new(),
-                            permalink,
-                        });
-                    }
-                    "itunes:image" => {
-                        let href = attr_value(&e, b"href");
-                        if in_item {
-                            if let Some(v) = href {
-                                current_item_itunes.image = Some(v);
-                                current_item_has_itunes = true;
-                            }
-                        } else if let Some(v) = href {
-                            itunes_feed.image = Some(v);
-                            has_itunes = true;
-                        }
-                    }
-                    "itunes:owner" if !in_item => {
-                        in_itunes_owner = true;
-                        has_itunes = true;
-                    }
-                    "media:content" => {
-                        pending_media = Some(media_content_from_attrs(&e));
-                        in_media_content = true;
-                    }
-                    "podcast:person" => {
-                        pending_person = Some(podcast_person_from_attrs(&e));
-                    }
-                    "podcast:location" => {
-                        pending_location = Some(podcast_location_from_attrs(&e));
-                    }
-                    "podcast:funding" => {
-                        pending_funding = Some(PodcastFunding {
-                            url: attr_value(&e, b"url").unwrap_or_default(),
-                            title: None,
-                        });
-                    }
-                    "podcast:trailer" => {
-                        pending_trailer = Some(podcast_trailer_from_attrs(&e));
-                    }
-                    "podcast:soundbite" => {
-                        pending_soundbite = Some(PodcastSoundbite {
-                            start_time: attr_value(&e, b"startTime")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or_default(),
-                            duration: attr_value(&e, b"duration")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or_default(),
-                            title: None,
-                        });
-                    }
-                    "podcast:season" => {
-                        pending_season = Some(PodcastSeason {
-                            number: 0,
-                            name: attr_value(&e, b"name"),
-                        });
-                    }
-                    "podcast:episode" => {
-                        pending_episode = Some(PodcastEpisode {
-                            number: 0.0,
-                            display: attr_value(&e, b"display"),
-                        });
-                    }
-                    _ => {}
                 }
             }
             Ok(Event::Empty(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                match full_tag.as_str() {
-                    "enclosure" => {
-                        let url = attr_value(&e, b"url");
-                        let length = attr_value(&e, b"length")
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or_default();
-                        let type_ = attr_value(&e, b"type").unwrap_or_default();
-                        if in_item {
-                            current_item.enclosure = Some(Rss2Enclosure {
-                                url: url.unwrap_or_default(),
-                                length,
-                                type_,
-                            });
-                        }
-                    }
-                    "itunes:image" => {
-                        let href = attr_value(&e, b"href");
-                        if in_item {
-                            if let Some(v) = href {
-                                current_item_itunes.image = Some(v);
-                                current_item_has_itunes = true;
-                            }
-                        } else if let Some(v) = href {
-                            itunes_feed.image = Some(v);
-                            has_itunes = true;
-                        }
-                    }
-                    "itunes:category" => {
-                        if let Some(v) = attr_value(&e, b"text") {
-                            itunes_feed.categories.push(v);
-                            has_itunes = true;
-                        }
-                    }
-                    "media:content" if in_item => {
-                        current_item_media
-                            .contents
-                            .push(media_content_from_attrs(&e));
-                        current_item_has_media = true;
-                    }
-                    "media:thumbnail" if in_item => {
-                        current_item_media.thumbnail = Some(media_thumbnail_from_attrs(&e));
-                        current_item_has_media = true;
-                    }
-                    "podcast:transcript" if in_item => {
-                        current_item_podcast.transcripts.push(PodcastTranscript {
-                            url: attr_value(&e, b"url").unwrap_or_default(),
-                            type_: attr_value(&e, b"type").unwrap_or_default(),
-                            language: attr_value(&e, b"language"),
-                            rel: attr_value(&e, b"rel"),
-                        });
-                        current_item_has_podcast = true;
-                    }
-                    "podcast:chapters" if in_item => {
-                        current_item_podcast.chapters = Some(PodcastChapters {
-                            url: attr_value(&e, b"url").unwrap_or_default(),
-                            type_: attr_value(&e, b"type").unwrap_or_default(),
-                        });
-                        current_item_has_podcast = true;
-                    }
-                    "podcast:remoteItem" if !in_item => {
-                        podcast_feed
-                            .remote_items
-                            .push(podcast_remote_item_from_attrs(&e));
-                        has_podcast_feed = true;
-                    }
-                    "podcast:person" => {
-                        let p = podcast_person_from_attrs(&e);
-                        if in_item {
-                            current_item_podcast.persons.push(p);
-                            current_item_has_podcast = true;
-                        } else {
-                            podcast_feed.persons.push(p);
-                            has_podcast_feed = true;
-                        }
-                    }
-                    "podcast:location" => {
-                        let l = podcast_location_from_attrs(&e);
-                        if in_item {
-                            current_item_podcast.location = Some(l);
-                            current_item_has_podcast = true;
-                        } else {
-                            podcast_feed.location = Some(l);
-                            has_podcast_feed = true;
-                        }
-                    }
-                    "podcast:funding" if !in_item => {
-                        podcast_feed.fundings.push(PodcastFunding {
-                            url: attr_value(&e, b"url").unwrap_or_default(),
-                            title: None,
-                        });
-                        has_podcast_feed = true;
-                    }
-                    "podcast:trailer" if !in_item => {
-                        podcast_feed.trailers.push(podcast_trailer_from_attrs(&e));
-                        has_podcast_feed = true;
-                    }
-                    "podcast:soundbite" if in_item => {
-                        current_item_podcast.soundbites.push(PodcastSoundbite {
-                            start_time: attr_value(&e, b"startTime")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or_default(),
-                            duration: attr_value(&e, b"duration")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or_default(),
-                            title: None,
-                        });
-                        current_item_has_podcast = true;
-                    }
-                    "podcast:season" if in_item => {
-                        current_item_podcast.season = Some(PodcastSeason {
-                            number: 0,
-                            name: attr_value(&e, b"name"),
-                        });
-                        current_item_has_podcast = true;
-                    }
-                    "podcast:episode" if in_item => {
-                        current_item_podcast.episode = Some(PodcastEpisode {
-                            number: 0.0,
-                            display: attr_value(&e, b"display"),
-                        });
-                        current_item_has_podcast = true;
-                    }
-                    _ => {}
+                let consumed = if in_item {
+                    item_acc.on_empty(&full_tag, &e)
+                } else {
+                    feed_acc.on_empty(&full_tag, &e)
+                };
+                if !consumed && in_item && full_tag == "enclosure" {
+                    current_item.enclosure = Some(enclosure_from_attrs(&e));
                 }
             }
             Ok(Event::Text(e)) => {
@@ -409,249 +192,30 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
             }
             Ok(Event::End(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-
                 let text = std::mem::take(&mut text_buf);
 
                 if in_item {
+                    let Some(text) = item_acc.on_end(&full_tag, text) else {
+                        continue;
+                    };
                     match full_tag.as_str() {
                         "title" => current_item.title = Some(text),
                         "link" => current_item.link = Some(text),
                         "description" => current_item.description = Some(text),
                         "author" => current_item.author = Some(text),
                         "comments" => current_item.comments = Some(text),
-                        "pubDate" => {
-                            current_item.pub_date = parse_rss2_date(&text);
-                        }
+                        "pubDate" => current_item.pub_date = parse_rss2_date(&text),
                         "guid" => {
                             if let Some(guid) = &mut current_item.guid {
                                 guid.value = text;
                             }
                         }
-                        "category" => {
-                            current_item.categories.push(Rss2Category::new(text));
-                        }
-                        "itunes:title" => {
-                            current_item_itunes.title = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:author" => {
-                            current_item_itunes.author = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:subtitle" => {
-                            current_item_itunes.subtitle = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:summary" => {
-                            current_item_itunes.summary = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:duration" => {
-                            current_item_itunes.duration = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:explicit" => {
-                            current_item_itunes.explicit = Some(text == "true" || text == "yes");
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:episode" => {
-                            current_item_itunes.episode = text.parse().ok();
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:season" => {
-                            current_item_itunes.season = text.parse().ok();
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:episodeType" => {
-                            current_item_itunes.episode_type = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:keywords" => {
-                            current_item_itunes.keywords = Some(text);
-                            current_item_has_itunes = true;
-                        }
-                        "itunes:block" => {
-                            current_item_itunes.block = Some(is_truthy(&text));
-                            current_item_has_itunes = true;
-                        }
-                        "content:encoded" => {
-                            current_item_content = Some(Content {
-                                encoded: Some(text),
-                            });
-                        }
-                        "dc:title" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "title",
-                            text,
-                        ),
-                        "dc:creator" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "creator",
-                            text,
-                        ),
-                        "dc:subject" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "subject",
-                            text,
-                        ),
-                        "dc:description" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "description",
-                            text,
-                        ),
-                        "dc:publisher" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "publisher",
-                            text,
-                        ),
-                        "dc:contributor" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "contributor",
-                            text,
-                        ),
-                        "dc:date" => {
-                            set_dc(&mut current_item_dc, &mut current_item_has_dc, "date", text)
-                        }
-                        "dc:type" => {
-                            set_dc(&mut current_item_dc, &mut current_item_has_dc, "type", text)
-                        }
-                        "dc:format" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "format",
-                            text,
-                        ),
-                        "dc:identifier" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "identifier",
-                            text,
-                        ),
-                        "dc:source" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "source",
-                            text,
-                        ),
-                        "dc:language" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "language",
-                            text,
-                        ),
-                        "dc:relation" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "relation",
-                            text,
-                        ),
-                        "dc:coverage" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "coverage",
-                            text,
-                        ),
-                        "dc:rights" => set_dc(
-                            &mut current_item_dc,
-                            &mut current_item_has_dc,
-                            "rights",
-                            text,
-                        ),
-                        "media:content" => {
-                            if let Some(m) = pending_media.take() {
-                                current_item_media.contents.push(m);
-                                current_item_has_media = true;
-                            }
-                            in_media_content = false;
-                        }
-                        "media:title" => {
-                            if in_media_content {
-                                if let Some(m) = &mut pending_media {
-                                    m.title = Some(text);
-                                }
-                            } else {
-                                current_item_media.title = Some(text);
-                                current_item_has_media = true;
-                            }
-                        }
-                        "media:description" => {
-                            if in_media_content {
-                                if let Some(m) = &mut pending_media {
-                                    m.description = Some(text);
-                                }
-                            } else {
-                                current_item_media.description = Some(text);
-                                current_item_has_media = true;
-                            }
-                        }
-                        "media:keywords" => {
-                            current_item_media.keywords = Some(text);
-                            current_item_has_media = true;
-                        }
-                        "media:rating" => {
-                            current_item_media.rating = Some(text);
-                            current_item_has_media = true;
-                        }
-                        "podcast:person" => {
-                            if let Some(mut p) = pending_person.take() {
-                                p.name = text;
-                                current_item_podcast.persons.push(p);
-                                current_item_has_podcast = true;
-                            }
-                        }
-                        "podcast:location" => {
-                            if let Some(mut l) = pending_location.take() {
-                                l.name = text;
-                                current_item_podcast.location = Some(l);
-                                current_item_has_podcast = true;
-                            }
-                        }
-                        "podcast:soundbite" => {
-                            if let Some(mut s) = pending_soundbite.take() {
-                                if !text.is_empty() {
-                                    s.title = Some(text);
-                                }
-                                current_item_podcast.soundbites.push(s);
-                                current_item_has_podcast = true;
-                            }
-                        }
-                        "podcast:season" => {
-                            if let Some(mut s) = pending_season.take() {
-                                s.number = text.trim().parse().unwrap_or(0);
-                                current_item_podcast.season = Some(s);
-                                current_item_has_podcast = true;
-                            }
-                        }
-                        "podcast:episode" => {
-                            if let Some(mut ep) = pending_episode.take() {
-                                ep.number = text.trim().parse().unwrap_or(0.0);
-                                current_item_podcast.episode = Some(ep);
-                                current_item_has_podcast = true;
-                            }
-                        }
+                        "category" => current_item.categories.push(Rss2Category {
+                            name: text,
+                            domain: pending_category_domain.take(),
+                        }),
                         "item" => {
-                            if current_item_has_itunes {
-                                current_item.extensions.itunes = Some(current_item_itunes.clone());
-                            }
-                            if let Some(c) = current_item_content.take() {
-                                current_item.extensions.content = Some(c);
-                            }
-                            if current_item_has_dc {
-                                current_item.extensions.dublin_core = Some(current_item_dc.clone());
-                            }
-                            if current_item_has_media {
-                                current_item.extensions.media = Some(current_item_media.clone());
-                            }
-                            if current_item_has_podcast {
-                                current_item.extensions.podcast =
-                                    Some(current_item_podcast.clone());
-                            }
+                            current_item.extensions = std::mem::take(&mut item_acc).finish();
                             items.push(std::mem::take(&mut current_item));
                             in_item = false;
                         }
@@ -679,7 +243,9 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                         _ => {}
                     }
                 } else {
-                    // Channel-level
+                    let Some(text) = feed_acc.on_end(&full_tag, text) else {
+                        continue;
+                    };
                     match full_tag.as_str() {
                         "title" => title = text,
                         "link" => link = text,
@@ -692,131 +258,11 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
                         "lastBuildDate" => last_build_date = parse_rss2_date(&text),
                         "generator" => generator = Some(text),
                         "ttl" => ttl = text.parse().ok(),
-                        "itunes:author" => {
-                            itunes_feed.author = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:title" => {
-                            itunes_feed.title = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:subtitle" => {
-                            itunes_feed.subtitle = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:summary" => {
-                            itunes_feed.summary = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:type" => {
-                            itunes_feed.type_ = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:explicit" => {
-                            itunes_feed.explicit = Some(text == "true" || text == "yes");
-                            has_itunes = true;
-                        }
                         "docs" => docs = Some(text),
-                        "itunes:new-feed-url" => {
-                            itunes_feed.new_feed_url = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:block" => {
-                            itunes_feed.block = Some(is_truthy(&text));
-                            has_itunes = true;
-                        }
-                        "itunes:complete" => {
-                            itunes_feed.complete = Some(is_truthy(&text));
-                            has_itunes = true;
-                        }
-                        "itunes:name" if in_itunes_owner => {
-                            itunes_feed.owner_name = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:email" if in_itunes_owner => {
-                            itunes_feed.owner_email = Some(text);
-                            has_itunes = true;
-                        }
-                        "itunes:owner" => in_itunes_owner = false,
-                        "dc:title" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "title", text),
-                        "dc:creator" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "creator", text)
-                        }
-                        "dc:subject" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "subject", text)
-                        }
-                        "dc:description" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "description", text)
-                        }
-                        "dc:publisher" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "publisher", text)
-                        }
-                        "dc:contributor" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "contributor", text)
-                        }
-                        "dc:date" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "date", text),
-                        "dc:type" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "type", text),
-                        "dc:format" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "format", text),
-                        "dc:identifier" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "identifier", text)
-                        }
-                        "dc:source" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "source", text),
-                        "dc:language" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "language", text)
-                        }
-                        "dc:relation" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "relation", text)
-                        }
-                        "dc:coverage" => {
-                            set_dc_feed(&mut dc_feed, &mut has_dc_feed, "coverage", text)
-                        }
-                        "dc:rights" => set_dc_feed(&mut dc_feed, &mut has_dc_feed, "rights", text),
-                        "podcast:guid" => {
-                            podcast_feed.guid = Some(text);
-                            has_podcast_feed = true;
-                        }
-                        "podcast:locked" => {
-                            podcast_feed.locked = Some(is_truthy(&text));
-                            has_podcast_feed = true;
-                        }
-                        "podcast:medium" => {
-                            podcast_feed.medium = Some(text);
-                            has_podcast_feed = true;
-                        }
-                        "podcast:license" => {
-                            podcast_feed.license = Some(text);
-                            has_podcast_feed = true;
-                        }
-                        "podcast:person" => {
-                            if let Some(mut p) = pending_person.take() {
-                                p.name = text;
-                                podcast_feed.persons.push(p);
-                                has_podcast_feed = true;
-                            }
-                        }
-                        "podcast:location" => {
-                            if let Some(mut l) = pending_location.take() {
-                                l.name = text;
-                                podcast_feed.location = Some(l);
-                                has_podcast_feed = true;
-                            }
-                        }
-                        "podcast:funding" => {
-                            if let Some(mut f) = pending_funding.take() {
-                                if !text.is_empty() {
-                                    f.title = Some(text);
-                                }
-                                podcast_feed.fundings.push(f);
-                                has_podcast_feed = true;
-                            }
-                        }
-                        "podcast:trailer" => {
-                            if let Some(mut t) = pending_trailer.take() {
-                                t.title = text;
-                                podcast_feed.trailers.push(t);
-                                has_podcast_feed = true;
-                            }
-                        }
+                        "category" => categories.push(Rss2Category {
+                            name: text,
+                            domain: pending_category_domain.take(),
+                        }),
                         _ => {}
                     }
                 }
@@ -844,16 +290,6 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
         ));
     }
 
-    if has_itunes {
-        feed_ext.itunes = Some(itunes_feed);
-    }
-    if has_dc_feed {
-        feed_ext.dublin_core = Some(dc_feed);
-    }
-    if has_podcast_feed {
-        feed_ext.podcast = Some(podcast_feed);
-    }
-
     Ok(Rss2Feed {
         title,
         link,
@@ -864,13 +300,13 @@ fn parse_rss2(input: &str, strict: bool) -> Result<Rss2Feed, FeedParseError> {
         web_master,
         pub_date,
         last_build_date,
-        categories: Vec::new(),
+        categories,
         generator,
         docs,
         ttl,
         image,
         items,
-        extensions: feed_ext,
+        extensions: feed_acc.finish(),
     })
 }
 
@@ -893,6 +329,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
     let mut feed_rights: Option<AtomText> = None;
     let mut feed_logo: Option<String> = None;
     let mut entries: Vec<AtomEntry> = Vec::new();
+    let mut feed_acc = FeedExtAcc::default();
 
     let mut in_entry = false;
     let mut in_author = false;
@@ -906,7 +343,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
     let mut current_entry_summary: Option<AtomText> = None;
     let mut current_entry_content: Option<AtomContent> = None;
     let mut current_entry_published: Option<Timestamp> = None;
-    let mut current_entry_ext = ItemExtensions::default();
+    let mut entry_acc = ItemExtAcc::default();
     let mut current_author = AtomPerson::new("");
     let mut current_content_type = String::from("text");
     let mut current_title_type = String::from("text");
@@ -920,6 +357,15 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 text_buf.clear();
 
+                let consumed = if in_entry {
+                    entry_acc.on_start(&full_tag, &e)
+                } else {
+                    feed_acc.on_start(&full_tag, &e)
+                };
+                if consumed {
+                    continue;
+                }
+
                 match full_tag.as_str() {
                     "entry" => {
                         in_entry = true;
@@ -932,7 +378,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         current_entry_summary = None;
                         current_entry_content = None;
                         current_entry_published = None;
-                        current_entry_ext = ItemExtensions::default();
+                        entry_acc = ItemExtAcc::default();
                     }
                     "author" => {
                         current_author = AtomPerson::new("");
@@ -993,6 +439,16 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
             }
             Ok(Event::Empty(e)) => {
                 let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+
+                let consumed = if in_entry {
+                    entry_acc.on_empty(&full_tag, &e)
+                } else {
+                    feed_acc.on_empty(&full_tag, &e)
+                };
+                if consumed {
+                    continue;
+                }
+
                 match full_tag.as_str() {
                     "link" => {
                         let href = attr_value(&e, b"href").unwrap_or_default();
@@ -1070,6 +526,9 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         _ => {}
                     }
                 } else if in_entry {
+                    let Some(text) = entry_acc.on_end(&full_tag, text) else {
+                        continue;
+                    };
                     match full_tag.as_str() {
                         "id" => current_entry_id = text,
                         "title" => {
@@ -1110,7 +569,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                                 published: current_entry_published,
                                 rights: None,
                                 source: None,
-                                extensions: std::mem::take(&mut current_entry_ext),
+                                extensions: std::mem::take(&mut entry_acc).finish(),
                             };
                             entries.push(entry);
                             in_entry = false;
@@ -1118,6 +577,9 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         _ => {}
                     }
                 } else {
+                    let Some(text) = feed_acc.on_end(&full_tag, text) else {
+                        continue;
+                    };
                     match full_tag.as_str() {
                         "id" => feed_id = text,
                         "title" => {
@@ -1173,7 +635,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
         rights: feed_rights,
         subtitle: feed_subtitle,
         entries,
-        extensions: FeedExtensions::default(),
+        extensions: feed_acc.finish(),
     })
 }
 
@@ -1181,7 +643,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
+pub(super) fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     e.attributes()
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == name)
@@ -1192,7 +654,7 @@ fn attr_value(e: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<Stri
         })
 }
 
-fn parse_rss2_date(s: &str) -> Option<Timestamp> {
+pub(super) fn parse_rss2_date(s: &str) -> Option<Timestamp> {
     use jiff::fmt::rfc2822;
     let s = s.trim();
     rfc2822::parse(s)
@@ -1201,106 +663,17 @@ fn parse_rss2_date(s: &str) -> Option<Timestamp> {
         .or_else(|| parse_rfc3339_lax(s))
 }
 
-type Attrs<'a> = quick_xml::events::BytesStart<'a>;
+pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
 
-fn media_content_from_attrs(e: &Attrs<'_>) -> MediaContent {
-    MediaContent {
-        url: attr_value(e, b"url"),
-        type_: attr_value(e, b"type"),
-        medium: attr_value(e, b"medium"),
-        duration: attr_value(e, b"duration").and_then(|v| v.parse().ok()),
-        width: attr_value(e, b"width").and_then(|v| v.parse().ok()),
-        height: attr_value(e, b"height").and_then(|v| v.parse().ok()),
-        file_size: attr_value(e, b"fileSize").and_then(|v| v.parse().ok()),
-        bitrate: attr_value(e, b"bitrate").and_then(|v| v.parse().ok()),
-        title: None,
-        description: None,
-    }
-}
-
-fn media_thumbnail_from_attrs(e: &Attrs<'_>) -> MediaThumbnail {
-    MediaThumbnail {
+fn enclosure_from_attrs(e: &Attrs<'_>) -> Rss2Enclosure {
+    Rss2Enclosure {
         url: attr_value(e, b"url").unwrap_or_default(),
-        width: attr_value(e, b"width").and_then(|v| v.parse().ok()),
-        height: attr_value(e, b"height").and_then(|v| v.parse().ok()),
+        length: attr_value(e, b"length")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or_default(),
+        type_: attr_value(e, b"type").unwrap_or_default(),
     }
 }
-
-fn podcast_person_from_attrs(e: &Attrs<'_>) -> PodcastPerson {
-    PodcastPerson {
-        name: String::new(),
-        role: attr_value(e, b"role"),
-        group: attr_value(e, b"group"),
-        img: attr_value(e, b"img"),
-        href: attr_value(e, b"href"),
-    }
-}
-
-fn podcast_location_from_attrs(e: &Attrs<'_>) -> PodcastLocation {
-    PodcastLocation {
-        name: String::new(),
-        geo: attr_value(e, b"geo"),
-        osm: attr_value(e, b"osm"),
-    }
-}
-
-fn podcast_trailer_from_attrs(e: &Attrs<'_>) -> PodcastTrailer {
-    PodcastTrailer {
-        title: String::new(),
-        url: attr_value(e, b"url").unwrap_or_default(),
-        pub_date: attr_value(e, b"pubDate").and_then(|v| parse_rss2_date(&v)),
-        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
-        type_: attr_value(e, b"type"),
-        season: attr_value(e, b"season").and_then(|v| v.parse().ok()),
-    }
-}
-
-fn podcast_remote_item_from_attrs(e: &Attrs<'_>) -> PodcastRemoteItem {
-    PodcastRemoteItem {
-        feed_guid: attr_value(e, b"feedGuid").unwrap_or_default(),
-        item_guid: attr_value(e, b"itemGuid"),
-        feed_url: attr_value(e, b"feedUrl"),
-        title: attr_value(e, b"title"),
-        medium: attr_value(e, b"medium"),
-    }
-}
-
-/// `true` for the case-insensitive `"yes"`/`"true"` values used by the iTunes
-/// and Podcasting boolean elements.
-fn is_truthy(text: &str) -> bool {
-    text.eq_ignore_ascii_case("yes") || text.eq_ignore_ascii_case("true")
-}
-
-// `DublinCore` (item) and `DublinCoreFeed` (feed) share the same flat field set;
-// one macro generates a setter for each so the parser stays single-sourced.
-macro_rules! impl_set_dc {
-    ($name:ident, $t:ty) => {
-        fn $name(dc: &mut $t, has: &mut bool, field: &str, text: String) {
-            *has = true;
-            match field {
-                "title" => dc.title = Some(text),
-                "creator" => dc.creator = Some(text),
-                "subject" => dc.subject = Some(text),
-                "description" => dc.description = Some(text),
-                "publisher" => dc.publisher = Some(text),
-                "contributor" => dc.contributor = Some(text),
-                "date" => dc.date = parse_rss2_date(&text),
-                "type" => dc.type_ = Some(text),
-                "format" => dc.format = Some(text),
-                "identifier" => dc.identifier = Some(text),
-                "source" => dc.source = Some(text),
-                "language" => dc.language = Some(text),
-                "relation" => dc.relation = Some(text),
-                "coverage" => dc.coverage = Some(text),
-                "rights" => dc.rights = Some(text),
-                _ => {}
-            }
-        }
-    };
-}
-
-impl_set_dc!(set_dc, DublinCore);
-impl_set_dc!(set_dc_feed, DublinCoreFeed);
 
 fn parse_rfc3339_lax(s: &str) -> Option<Timestamp> {
     s.trim().parse::<Timestamp>().ok()
@@ -1468,7 +841,8 @@ mod tests {
         use super::super::feed_ext::{
             Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed,
             ItemExtensions, MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastEpisode,
-            PodcastFunding, PodcastPerson, PodcastSeason, PodcastSoundbite, PodcastTranscript,
+            PodcastFeed, PodcastFunding, PodcastPerson, PodcastSeason, PodcastSoundbite,
+            PodcastTranscript,
         };
 
         let feed = Rss2Feed::builder()
@@ -1626,5 +1000,142 @@ mod tests {
         assert_eq!(media.keywords.as_deref(), Some("mk"));
 
         assert_eq!(item.content().unwrap().encoded.as_deref(), Some("<p>x</p>"));
+    }
+
+    #[test]
+    fn rss2_category_domain_round_trips() {
+        let feed = Rss2Feed::builder()
+            .title("T")
+            .link("https://e.com")
+            .description("D")
+            .category(Rss2Category::new("Tech").with_domain("https://taxonomy"))
+            .item(
+                Rss2Item::new()
+                    .with_title("I")
+                    .with_category(Rss2Category::new("Sub").with_domain("https://d2")),
+            )
+            .build();
+        let xml = feed.to_string();
+        let Feed::Rss2(got) = parse_feed(&xml, false).unwrap() else {
+            panic!("expected RSS 2.0")
+        };
+        assert_eq!(got.categories.len(), 1);
+        assert_eq!(got.categories[0].name, "Tech");
+        assert_eq!(
+            got.categories[0].domain.as_deref(),
+            Some("https://taxonomy")
+        );
+        assert_eq!(got.items[0].categories[0].name, "Sub");
+        assert_eq!(
+            got.items[0].categories[0].domain.as_deref(),
+            Some("https://d2")
+        );
+    }
+
+    #[test]
+    fn atom_extensions_round_trip() {
+        use super::super::feed_ext::{
+            DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
+            MediaContent, MediaRss, Podcast, PodcastFeed, PodcastPerson,
+        };
+
+        let ts = jiff::Timestamp::UNIX_EPOCH;
+        let feed = AtomFeed::builder()
+            .id("urn:f")
+            .title("F")
+            .updated(ts)
+            .feed_extensions(FeedExtensions {
+                itunes: Some(ITunesFeed {
+                    author: Some("Host".into()),
+                    owner_name: Some("O".into()),
+                    categories: vec!["Tech".into()],
+                    explicit: Some(true),
+                    ..Default::default()
+                }),
+                podcast: Some(PodcastFeed {
+                    guid: Some("g".into()),
+                    locked: Some(true),
+                    persons: vec![PodcastPerson {
+                        name: "Jane".into(),
+                        role: Some("host".into()),
+                        group: None,
+                        img: None,
+                        href: None,
+                    }],
+                    ..Default::default()
+                }),
+                dublin_core: Some(DublinCoreFeed {
+                    creator: Some("DC".into()),
+                    ..Default::default()
+                }),
+            })
+            .entry(
+                AtomEntry::new("urn:1", "E", ts).with_extensions(ItemExtensions {
+                    itunes: Some(ITunes {
+                        duration: Some("9:00".into()),
+                        episode: Some(3),
+                        ..Default::default()
+                    }),
+                    podcast: Some(Podcast {
+                        persons: vec![PodcastPerson {
+                            name: "Bob".into(),
+                            role: Some("guest".into()),
+                            group: None,
+                            img: None,
+                            href: None,
+                        }],
+                        ..Default::default()
+                    }),
+                    dublin_core: Some(DublinCore {
+                        creator: Some("W".into()),
+                        ..Default::default()
+                    }),
+                    media: Some(MediaRss {
+                        contents: vec![MediaContent {
+                            url: Some("https://m".into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+            )
+            .build();
+
+        let xml = feed.to_string();
+        let Feed::Atom(got) = parse_feed(&xml, false).unwrap() else {
+            panic!("expected Atom")
+        };
+
+        let fit = got.extensions.itunes.as_ref().expect("feed itunes");
+        assert_eq!(fit.author.as_deref(), Some("Host"));
+        assert_eq!(fit.owner_name.as_deref(), Some("O"));
+        assert_eq!(fit.explicit, Some(true));
+        let fp = got.extensions.podcast.as_ref().expect("feed podcast");
+        assert_eq!(fp.guid.as_deref(), Some("g"));
+        assert_eq!(fp.locked, Some(true));
+        assert_eq!(fp.persons.len(), 1);
+        assert_eq!(fp.persons[0].name, "Jane");
+        assert_eq!(
+            got.extensions
+                .dublin_core
+                .as_ref()
+                .unwrap()
+                .creator
+                .as_deref(),
+            Some("DC")
+        );
+
+        let entry = &got.entries[0];
+        assert_eq!(entry.itunes().expect("entry itunes").episode, Some(3));
+        assert_eq!(
+            entry.podcast().expect("entry podcast").persons[0].name,
+            "Bob"
+        );
+        assert_eq!(entry.dublin_core().unwrap().creator.as_deref(), Some("W"));
+        assert_eq!(
+            entry.media().unwrap().contents[0].url.as_deref(),
+            Some("https://m")
+        );
     }
 }
