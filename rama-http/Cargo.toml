@@ -39,6 +39,7 @@ compression = [
 ]
 multipart = ["dep:multer", "dep:mime_guess"]
 html = ["dep:rama-http-macros"]
+rss = ["dep:quick-xml"]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -61,7 +62,7 @@ mime_guess = { workspace = true, optional = true }
 multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-quick-xml = { workspace = true }
+quick-xml = { workspace = true, optional = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }

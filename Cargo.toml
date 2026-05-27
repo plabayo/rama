@@ -435,11 +435,13 @@ http-full = [
     "compression",
     "multipart",
     "html",
+    "rss",
     "dep:tokio",
     "rama-grpc?/transport",
 ]
 multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
+rss = ["http", "rama-http?/rss"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
