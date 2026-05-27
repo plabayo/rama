@@ -73,7 +73,7 @@ extension NwConnectionLike {
     /// **Use everywhere a teardown path cancels an egress connection
     /// in this crate**. Plain `cancel()` is for protocol conformance;
     /// production code paths go through `TcpFlowTeardown` which
-    /// nilss `ctx.connection` after each call for idempotency, so the
+    /// nils `ctx.connection` after each call for idempotency, so the
     /// "already cancelled" log noise (1,177 events / 5 min of stress
     /// pre-fix) stays at zero.
     func cancelAndDetach() {

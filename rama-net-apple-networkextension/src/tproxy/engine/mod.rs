@@ -1476,7 +1476,7 @@ where
             loop {
                 let notified = notify.notified();
                 if let Err(err) = tokio::time::timeout(timeout, notified).await {
-                    tracing::debug!("UDP iddle notifier timed out after {err:?}");
+                    tracing::debug!("UDP idle notifier timed out after {err:?}");
                     return;
                 }
             }
