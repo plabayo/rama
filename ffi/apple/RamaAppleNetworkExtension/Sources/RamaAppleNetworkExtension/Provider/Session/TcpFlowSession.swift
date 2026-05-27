@@ -367,6 +367,19 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 // would stall Rust and drop a chunk.
                 self.ctx.session?.signalEgressDrain()
                 self.ctx.directForwarder?.onEgressPumpDrained()
+            },
+            onTerminal: { [weak self] _ in
+                guard let self else { return }
+                // Promoted mode only: the forwarder owns teardown, so
+                // drive it to terminal — its onTerminal closes the
+                // kernel flow + drops the registry entry. (The
+                // connection is already force-cancelled by the pump.)
+                // In viaRust mode the egress write pump's `.closed`
+                // return propagates to Rust on its next write, which
+                // unwinds the bridge — so no action is needed (and
+                // routing through teardown here would just race that).
+                guard self.ctx.mode != .viaRust else { return }
+                self.ctx.directForwarder?.cancel()
             }
         )
         ctx.egressWritePump = pump

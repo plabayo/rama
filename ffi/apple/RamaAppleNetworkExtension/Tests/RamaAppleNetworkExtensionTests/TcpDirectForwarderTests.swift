@@ -76,7 +76,11 @@ final class TcpDirectForwarderTests: XCTestCase {
             egressWritePump = NwTcpConnectionWritePump(
                 connection: conn, queue: queue,
                 lingerCloseDeadline: .milliseconds(100),
-                onDrained: { forwarderRef?.onEgressPumpDrained() })
+                onDrained: { forwarderRef?.onEgressPumpDrained() },
+                // Mirror production's promoted-mode wiring
+                // (`TcpFlowSession.buildEgressWritePump`): a terminal
+                // egress write error drives the forwarder to terminal.
+                onTerminal: { _ in forwarderRef?.cancel() })
             // Mark client write pump opened so it accepts enqueues.
             clientWritePump.markOpened()
 
@@ -781,6 +785,74 @@ final class TcpDirectForwarderTests: XCTestCase {
         // Drain the second send so the pump's lifecycle wraps up.
         _ = h.conn.completePendingSend(error: nil)
         h.drain()
+    }
+
+    // MARK: - PROBE: egress write-pump terminal while C→S paused
+
+    /// PROBE (audit): the egress write pump can hit a TERMINAL state
+    /// (`pumpCore(_:didTerminateWith:)`) — a non-transient
+    /// `NWConnection.send` error, or transient backpressure that
+    /// exceeds `writeRetryHardDeadlineMs` — while the forwarder's
+    /// C→S direction is `.active` AND holding a chunk it could not
+    /// enqueue (`c2sWritePaused == true`).
+    ///
+    /// In that state the forwarder is NOT issuing a `flow.readData`
+    /// (the read loop is gated off while paused) and is waiting
+    /// SOLELY on the pump's drain edge (`onEgressPumpDrained`) to
+    /// replay the buffered chunk. But the pump's terminal path only
+    /// (1) force-cancels the connection and (2) fires the pending
+    /// `closeWhenDrained` callback — which is nil unless C→S already
+    /// reached `.finishing`. It does NOT fire the drain edge and does
+    /// NOT drive C→S to terminal. So C→S wedges in `.active` forever,
+    /// `onTerminal` never fires, and the kernel flow + per-flow ctx
+    /// leak in the registry.
+    ///
+    /// We set S→C up to finish cleanly so the ONLY thing blocking
+    /// `onTerminal` is the wedged C→S direction.
+    func testEgressWritePumpTerminalWhileC2SPausedWedgesForwarder() {
+        let h = Harness("probe.egress.terminal.paused", autoCompleter: false)
+
+        // ── C→S: drive into .active with a paused, buffered chunk. ──
+        // `big` > writePumpMaxPendingBytes (256 KiB) so the FIRST
+        // chunk is accepted (first-chunk-always-passes) and bumps
+        // pendingBytes over the cap; `small` is then rejected `.paused`
+        // and parked at the head of c2sBuffer with c2sWritePaused=true.
+        let big = Data(repeating: 0xAB, count: 300 * 1024)
+        let small = Data([0xCD, 0xEF])
+        h.forwarder.acceptClientCarryover(big)
+        h.forwarder.acceptClientCarryover(small)
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        waitFor("big chunk dispatched to connection", timeout: 1.0) {
+            h.conn.pendingSendCount == 1
+        }
+
+        // ── S→C: drive cleanly to .finished so it can't be what
+        //    blocks onTerminal. ──
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true, error: nil)
+        waitFor("s2c reaches .finished", timeout: 2.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+
+        // ── Kill the egress write pump via a NON-transient send error
+        //    while big is in flight. This terminates the pump core
+        //    (`didTerminateWith`) while C→S is paused. ──
+        _ = h.conn.completePendingSend(error: NWError.posix(.ECONNREFUSED))
+        h.drain()
+
+        // The forwarder should recover: the dead egress means C→S can
+        // make no further progress, so it MUST reach `.finished` and
+        // (with S→C already finished) fire onTerminal so the flow is
+        // released. Pre-fix this never happens → leak.
+        waitFor("c2s recovers to .finished after egress pump death", timeout: 2.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+        XCTAssertEqual(
+            h.queue.sync { h.terminalCount }, 1,
+            "onTerminal must fire so the flow is released; a wedged C→S leaks the kernel flow + ctx"
+        )
     }
 
     // MARK: - Helpers

@@ -6,6 +6,15 @@ import RamaAppleNEFFI
 final class NwTcpConnectionWritePump: @unchecked Sendable {
     private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
+    /// Fired (on `core.queue`, at most once) when the pump hits a
+    /// terminal write error. Symmetric to
+    /// `TcpClientWritePump.onTerminalError`: the egress write pump
+    /// has no other teardown hook, so without this a promoted-mode
+    /// forwarder whose C→S direction is parked (blocked on
+    /// `flow.readData`, or holding a `.paused` chunk) never learns
+    /// the egress is dead and wedges → flow leak. See
+    /// `pumpCore(_:didTerminateWith:)`.
+    private let onTerminal: (Error) -> Void
     /// Wall-clock cap on how long the egress NWConnection lingers after
     /// the local side has sent its FIN (an empty `send` with
     /// `isComplete: true`) before this pump force-cancels the
@@ -31,10 +40,12 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         connection: any NwConnectionLike,
         queue: DispatchQueue,
         lingerCloseDeadline: DispatchTimeInterval,
-        onDrained: @escaping () -> Void
+        onDrained: @escaping () -> Void,
+        onTerminal: @escaping (Error) -> Void = { _ in }
     ) {
         self.connection = connection
         self.lingerCloseDeadline = lingerCloseDeadline
+        self.onTerminal = onTerminal
         let core = TcpWritePumpCore(
             queue: queue,
             initialLifecycle: .open,
@@ -187,6 +198,19 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
             onDrainedCallback = nil
             cb()
         }
+        // Drive the owner's teardown. In promoted mode the forwarder
+        // owns the kernel flow + connection lifecycle; its C→S
+        // direction can be parked indefinitely — blocked on a
+        // `flow.readData` (idle/slow client) or holding a `.paused`
+        // chunk — neither of which is woken by the connection cancel
+        // above (that only unwinds the S→C `receive` loop). The
+        // pending-callback fire only helps if C→S already reached
+        // `.finishing`. Without an explicit terminal hook the forwarder
+        // wedges and `onTerminal` never fires → the kernel flow + ctx
+        // leak in the registry. This mirrors
+        // `TcpClientWritePump.onTerminalError`, the equivalent hook on
+        // the sibling write pump.
+        onTerminal(error)
     }
 
     internal func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
