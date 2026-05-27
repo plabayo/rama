@@ -652,11 +652,23 @@ mod tests {
         assert_eq!(TcpDeliverStatus::from_ffi_u8(3), TcpDeliverStatus::Closed);
         assert_eq!(TcpDeliverStatus::from_ffi_u8(255), TcpDeliverStatus::Closed);
 
-        assert_eq!(PromoteConfirmStatus::from_ffi_u8(0), PromoteConfirmStatus::Ok);
-        assert_eq!(PromoteConfirmStatus::from_ffi_u8(1), PromoteConfirmStatus::Failed);
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(0),
+            PromoteConfirmStatus::Ok
+        );
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(1),
+            PromoteConfirmStatus::Failed
+        );
         // Out-of-range bytes fail safe to Failed (never claim success).
-        assert_eq!(PromoteConfirmStatus::from_ffi_u8(2), PromoteConfirmStatus::Failed);
-        assert_eq!(PromoteConfirmStatus::from_ffi_u8(255), PromoteConfirmStatus::Failed);
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(2),
+            PromoteConfirmStatus::Failed
+        );
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(255),
+            PromoteConfirmStatus::Failed
+        );
     }
 
     /// Alloc → free round-trip for the FFI config struct. Designed so

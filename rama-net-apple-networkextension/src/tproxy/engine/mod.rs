@@ -218,7 +218,10 @@ impl TcpDeliverStatus {
             1 => Self::Paused,
             2 => Self::Closed,
             other => {
-                tracing::error!(raw = other, "TcpDeliverStatus: invalid FFI value; treating as Closed");
+                tracing::error!(
+                    raw = other,
+                    "TcpDeliverStatus: invalid FFI value; treating as Closed"
+                );
                 Self::Closed
             }
         }

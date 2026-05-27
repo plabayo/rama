@@ -383,7 +383,11 @@ mod tests {
         for _ in 0..5 {
             sink.write_line("CLIENT_RANDOM a b\n");
         }
-        assert_eq!(sink.dropped(), 3, "3 lines dropped after the 2-slot queue filled");
+        assert_eq!(
+            sink.dropped(),
+            3,
+            "3 lines dropped after the 2-slot queue filled"
+        );
         // Keep `_rx` alive so the channel is Full (not Disconnected).
         drop(_rx);
     }
