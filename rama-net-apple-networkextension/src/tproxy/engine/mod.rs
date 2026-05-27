@@ -1577,6 +1577,13 @@ where
     //
     // catch_unwind logs handler-future panics before the extern "C"
     // boundary forces abort.
+    //
+    // NOTE (fail-fast vs isolate): we deliberately resume_unwind →
+    // abort the whole sysext rather than swallow the panic and return
+    // a fail-safe decision (`Block`). Loud + no poisoned-state class,
+    // but blast radius = every flow. If a single panicking flow taking
+    // the tunnel down ever proves worse than the recovery risk,
+    // reconsider isolating just the decision path here.
     let inner = rt.tokio_runtime();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {

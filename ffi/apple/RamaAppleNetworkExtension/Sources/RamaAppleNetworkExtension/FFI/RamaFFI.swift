@@ -588,6 +588,14 @@ final class RamaTransparentProxyEngineHandle {
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyTcpSessionDecision {
+        // NOTE (lock held across the blocking decision): the FFI call
+        // below blocks until Rust decides (≤ decision_deadline, 3s), so
+        // a slow handler can stall stop()/sleep behind this lock. Fine
+        // today — the lock is a lifetime guard (stop() frees enginePtr
+        // under it) and Apple delivers handleNewFlow serially, so TCP
+        // decisions don't contend. If a slow decision ever stalls
+        // sleep/stop in practice, reconsider an RwLock (readers = FFI
+        // calls, writer = stop) to drop the cross-path blocking.
         lock.lock()
         defer { lock.unlock() }
         guard let p = enginePtr else { return .passthrough }
