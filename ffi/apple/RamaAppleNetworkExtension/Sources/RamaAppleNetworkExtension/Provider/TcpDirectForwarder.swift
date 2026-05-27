@@ -90,10 +90,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// (the `.paused` replay buffer and any in-flight `readData`
     /// result). Flushed in FIFO order on the `.active`
     /// transition.
-    private var c2sBuffer: [Data] = []
+    private var c2sBuffer = ChunkQueue<Data>()
     /// Same for S→C — bytes captured by
     /// `NwTcpConnectionReadPump.cancelForPromote`.
-    private var s2cBuffer: [Data] = []
+    private var s2cBuffer = ChunkQueue<Data>()
     /// `true` if a carryover handler signalled EOF for this
     /// direction during the buffering phase (e.g. an in-flight
     /// `readData` returned `(nil, nil)`). On the `.active`
@@ -178,7 +178,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             switch self.c2sPhase {
             case .buffering:
                 if let data = payload, !data.isEmpty {
-                    self.c2sBuffer.append(data)
+                    self.c2sBuffer.pushBack(data)
                 } else {
                     self.c2sEofBuffered = true
                 }
@@ -216,7 +216,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             switch self.s2cPhase {
             case .buffering:
                 if let data = payload, !data.isEmpty {
-                    self.s2cBuffer.append(data)
+                    self.s2cBuffer.pushBack(data)
                 } else {
                     self.s2cEofBuffered = true
                 }
@@ -313,13 +313,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// for every C→S write in the `.active` phase so the paused/
     /// buffered-replay logic lives in exactly one place.
     private func writeC2SLocked(_ data: Data) {
-        c2sBuffer.append(data)
+        c2sBuffer.pushBack(data)
         flushC2SBufferLocked()
     }
 
     /// S→C counterpart.
     private func writeS2CLocked(_ data: Data) {
-        s2cBuffer.append(data)
+        s2cBuffer.pushBack(data)
         flushS2CBufferLocked()
     }
 
@@ -330,11 +330,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// EOF/read transitions.
     private func flushC2SBufferLocked() {
         guard !cancelled, c2sPhase == .active else { return }
-        while let chunk = c2sBuffer.first {
+        while let chunk = c2sBuffer.first() {
             let status = egressWritePump.enqueue(chunk)
             switch status {
             case .accepted:
-                c2sBuffer.removeFirst()
+                _ = c2sBuffer.popFront()
             case .paused:
                 // Head stays in buffer. Pump's drain edge will
                 // re-enter via `onEgressPumpDrained`.
@@ -367,11 +367,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// S→C counterpart.
     private func flushS2CBufferLocked() {
         guard !cancelled, s2cPhase == .active else { return }
-        while let chunk = s2cBuffer.first {
+        while let chunk = s2cBuffer.first() {
             let status = clientWritePump.enqueue(chunk)
             switch status {
             case .accepted:
-                s2cBuffer.removeFirst()
+                _ = s2cBuffer.popFront()
             case .paused:
                 s2cWritePaused = true
                 return
