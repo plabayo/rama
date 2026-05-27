@@ -405,7 +405,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 self.core?.logTrace("flow.open ok (tcp, egress pre-connected)")
                 self.ctx.clientWritePump?.markOpened()
                 readPump.start()
-                self.armReadTerminal(readPump: readPump, session: session)
+                self.armReadTerminal(session: session)
                 // `armPromoteCallback()` was moved to `handleEgressReady`
                 // (before `session.activate`) to close the registration
                 // race with the service task — see the comment there.
@@ -414,13 +414,19 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         }
     }
 
-    func armReadTerminal(readPump: NwTcpConnectionReadPump, session: RamaTcpSessionHandle) {
+    func armReadTerminal(session: RamaTcpSessionHandle) {
         let flow = self.flow
         let terminal = TcpReadTerminal(
-            onNaturalEof: { [weak self, weak readPump, weak session] in
-                self?.core?.logTrace("tcp natural EOF: deferring teardown to closeWhenDrained")
+            // Client upload half-close (SHUT_WR → kernel readData EOF):
+            // close our read side of the kernel flow and forward EOF to
+            // the egress, but do NOT cancel the egress read pump — the
+            // server→client direction must keep flowing until the server
+            // closes. Cancelling it here truncated downloads on every
+            // half-close and matched the Rust engine's asymmetric
+            // on_client_eof / on_egress_eof contract incorrectly.
+            onNaturalEof: { [weak self, weak session] in
+                self?.core?.logTrace("tcp client read EOF (half-close): forward to egress, keep download open")
                 flow.closeReadWithError(nil)
-                readPump?.cancel()
                 session?.onClientEof()
             },
             onHardError: { [weak self] err in
