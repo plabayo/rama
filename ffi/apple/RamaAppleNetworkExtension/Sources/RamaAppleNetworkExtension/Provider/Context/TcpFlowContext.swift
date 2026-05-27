@@ -69,6 +69,13 @@ final class TcpFlowContext: @unchecked Sendable {
     /// already been dropped by a racing path. See
     /// `TcpFlowTeardown`.
     var teardown: TcpFlowTeardown?
+    /// The per-flow serial queue that confines every mutation of this
+    /// context (and the teardown's `done` flag). Set once by
+    /// `TcpFlowSession.init`. Lifecycle paths that originate off this
+    /// queue — system sleep/wake and engine detach — dispatch their
+    /// teardown onto it so it stays single-threaded with the kernel /
+    /// NWConnection callbacks rather than racing them.
+    var flowQueue: DispatchQueue?
 
     init() {
     }

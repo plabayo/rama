@@ -117,7 +117,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // cancels its connection + session and removes itself from the
         // registry; the removeAll below is then a no-op safety net.
         let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
-        for ctx in tcp { ctx.teardown?.applyEngineDetached() }
+        for ctx in tcp { ctx.flowQueue?.async { ctx.teardown?.applyEngineDetached() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
@@ -132,19 +132,19 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     /// Drop every active flow on sleep. Held NWConnections wake up
     /// already `.failed` and their kernel NECP entries are gone, so
-    /// keeping them is a leak. Completion fires once the registry
-    /// has been walked (the per-flow teardowns themselves are async
-    /// on their per-flow queues; we don't block on them — the
-    /// `closed` state is published synchronously so any in-flight
-    /// kernel callback already short-circuits).
+    /// keeping them is a leak. Each TCP teardown is dispatched onto its
+    /// own flow queue so it runs single-threaded with that flow's
+    /// kernel / NWConnection callbacks — the teardown's `done` flag and
+    /// slot mutations are flow-queue-confined, so this avoids racing
+    /// them. We don't block on the teardowns before `completion`.
     func handleSystemSleep(completion: @escaping () -> Void) {
         stopFlowCountReporting()
         let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
-        for ctx in tcp { ctx.teardown?.applySystemSleep() }
+        for ctx in tcp { ctx.flowQueue?.async { ctx.teardown?.applySystemSleep() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(systemSleepError()) }
         engine?.notifySystemSleep()
-        logInfo("system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows")
+        logInfo("system sleep: draining tcp=\(tcp.count) udp=\(udp.count) flows")
         completion()
     }
 
@@ -155,12 +155,20 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// so we don't kill ones the OS kept across a no-op sleep.
     func handleSystemWake() {
         engine?.notifySystemWake()
-        let stale: [TcpFlowContext] = stateQueue.sync {
-            self.tcpContexts.values.filter { !$0.egressReady }
-        }
-        for ctx in stale { ctx.teardown?.applySystemWake() }
-        if !stale.isEmpty {
-            logInfo("system wake: reconciled \(stale.count) not-ready tcp egress flow(s)")
+        // Reconcile on each flow's own queue: both the `egressReady`
+        // read and the teardown run there, so they stay single-threaded
+        // with that flow's kernel / NWConnection callbacks instead of
+        // racing them (and reading `egressReady`, written on the flow
+        // queue, off-queue). A still-connecting flow won't recover (its
+        // NECP path is gone); established flows are left to the
+        // post-ready path so we don't kill ones the OS kept across a
+        // no-op sleep.
+        let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in all {
+            ctx.flowQueue?.async {
+                guard !ctx.egressReady else { return }
+                ctx.teardown?.applySystemWake()
+            }
         }
         logInfo("system wake")
         if self.engine != nil {

@@ -38,6 +38,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             label: "rama.tproxy.tcp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
             qos: .utility)
         self.ctx = TcpFlowContext()
+        self.ctx.flowQueue = self.flowQueue
         self.teardown = TcpFlowTeardown(ctx: ctx, core: core, flow: flow, flowId: flowId)
         self.ctx.teardown = teardown
     }
