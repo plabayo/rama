@@ -165,7 +165,7 @@ mod tests {
         let (mut tx, rx) = tokio::io::duplex(64);
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let cancel = async move {
-            let _ = cancel_rx.await;
+            _ = cancel_rx.await;
         };
 
         let mut io = std::pin::pin!(GracefulIo::new(cancel, rx));
@@ -175,7 +175,7 @@ mod tests {
         io.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"abc");
 
-        let _ = cancel_tx.send(());
+        _ = cancel_tx.send(());
 
         let mut eof_buf = [0_u8; 1];
         let n = io.read(&mut eof_buf).await.unwrap();
@@ -187,11 +187,11 @@ mod tests {
         let (tx, _rx) = tokio::io::duplex(64);
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         let cancel = async move {
-            let _ = cancel_rx.await;
+            _ = cancel_rx.await;
         };
 
         let mut io = std::pin::pin!(GracefulIo::new(cancel, tx));
-        let _ = cancel_tx.send(());
+        _ = cancel_tx.send(());
 
         let err = io.write_all(b"abc").await.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);

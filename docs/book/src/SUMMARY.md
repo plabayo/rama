@@ -7,7 +7,6 @@
 - [Do It Yourself](./diy.md)
 - [Web Servers](./web_servers.md)
 - [Transport Protocols](./transport.md)
-- [dns](./dns.md)
 
 # Rama 101
 
@@ -26,6 +25,16 @@
     - [🔭 Telemetry](./intro/telemetry.md)
     - [👤 User Agent](./intro/user_agent.md)
     - [🏗 Patterns used inside rama](./intro/patterns.md)
+
+# Protocols
+
+- [dns](./dns.md)
+- [🍎 Apple XPC](./xpc.md)
+
+# Gateways
+
+- [Gateway](./gateway/intro.md)
+  - [FastCGI](./gateway/fastcgi.md)
 
 # Intro to Proxies
 
@@ -55,9 +64,11 @@
 - [Http Clients](./http/http_clients.md)
 - [gRPC](./http/grpc.md)
 - [Server-Sent Events (SSE)](./http/sse.md)
+- [Declarative Partial Updates](./http/declarative_partial_updates.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)
 - [RSS and Atom Feeds](./http/rss.md)
+- [Binary Bodies and Multipart Uploads](./http/multipart.md)
 
 # Deploy
 
@@ -68,6 +79,7 @@
 # Appendices
 
 - [📣 Ecosystem](./ecosystem.md)
+- [🐕 dial9](./dial9.md)
 - [🎧 Netstack.FM](./netstackfm.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)

@@ -34,7 +34,7 @@ impl fmt::Display for CloseFrame {
 }
 
 /// A struct representing a WebSocket frame header.
-#[allow(missing_copy_implementations)]
+#[expect(missing_copy_implementations)]
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FrameHeader {
     /// Indicates that the frame is the last one of a possibly fragmented message.
@@ -89,7 +89,6 @@ impl FrameHeader {
     }
 
     /// Get the size of the header formatted with given payload length.
-    #[allow(clippy::len_without_is_empty)]
     #[must_use]
     pub fn len(&self, length: u64) -> usize {
         2 + LengthFormat::for_length(length).extra_bytes() + if self.mask.is_some() { 4 } else { 0 }
@@ -143,8 +142,10 @@ impl FrameHeader {
     fn parse_internal(cursor: &mut impl Read) -> Result<Option<(Self, u64)>, ProtocolError> {
         let (first, second) = {
             let mut head = [0u8; 2];
-            if cursor.read(&mut head)? != 2 {
-                return Ok(None);
+            match cursor.read_exact(&mut head) {
+                Err(ref err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+                Err(err) => return Err(err.into()),
+                Ok(()) => (),
             }
             trace!("Parsed headers {:?}", head);
             (head[0], head[1])
@@ -185,10 +186,10 @@ impl FrameHeader {
 
         let mask = if masked {
             let mut mask_bytes = [0u8; 4];
-            if cursor.read(&mut mask_bytes)? != 4 {
-                return Ok(None);
-            } else {
-                Some(mask_bytes)
+            match cursor.read_exact(&mut mask_bytes) {
+                Err(ref err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(None),
+                Err(err) => return Err(err.into()),
+                Ok(()) => Some(mask_bytes),
             }
         } else {
             None

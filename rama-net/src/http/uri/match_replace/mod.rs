@@ -226,7 +226,7 @@ rama_core::combinators::impl_either!(impl_uri_match_replace_either);
 
 /// Private trait used by this module to easily create patterns from
 /// owned or static byte-like objects.
-#[allow(private_bounds)]
+#[expect(private_bounds)]
 pub trait TryIntoPattern: private_ptn::TryIntoPatternPriv {}
 
 impl TryIntoPattern for &'static str {}
@@ -243,7 +243,7 @@ struct Pattern {
 
 /// Private trait used by this module to easily create Uri formatters
 /// from owned or static byte-like objects.
-#[allow(private_bounds)]
+#[expect(private_bounds)]
 pub trait TryIntoUriFmt: private_fmt::TryIntoUriFmtPriv {}
 
 impl TryIntoUriFmt for &'static str {}

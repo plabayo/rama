@@ -51,7 +51,7 @@ impl<B, E> Policy<B, E> for Limited {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Request, Uri};
+    use crate::{Method, Request, Uri};
 
     #[test]
     fn works() {
@@ -82,7 +82,9 @@ mod tests {
 
             let attempt = Attempt {
                 status: Default::default(),
+                method: &Method::GET,
                 location: uri,
+                previous_method: &Method::GET,
                 previous: uri,
             };
             assert!(
@@ -97,7 +99,9 @@ mod tests {
 
         let attempt = Attempt {
             status: Default::default(),
+            method: &Method::GET,
             location: uri,
+            previous_method: &Method::GET,
             previous: uri,
         };
         assert!(

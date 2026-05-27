@@ -180,7 +180,7 @@ impl<'de> serde::Deserialize<'de> for DomainAddress {
 mod tests {
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {
         assert_eq!(domain_address.domain.as_str(), domain, "parsing: {s}");
         assert_eq!(domain_address.port, port, "parsing: {s}");

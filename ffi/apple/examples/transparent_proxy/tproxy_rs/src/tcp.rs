@@ -2,6 +2,7 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::{
     Layer, Service,
+    bytes::Bytes,
     combinators::Either,
     error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef,
@@ -24,71 +25,61 @@ use rama::{
         },
     },
     io::{BridgeIo, Io},
-    layer::{ArcLayer, ConsumeErrLayer, HijackLayer, TimeoutLayer},
+    layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
-        apple::networkextension::{TcpFlow, tproxy::TransparentProxyServiceContext},
-        client::{ConnectorService, EstablishedClientConnection},
+        apple::networkextension::{NwTcpStream, TcpFlow, tproxy::TransparentProxyServiceContext},
         http::server::HttpPeekRouter,
-        proxy::{IoForwardService, ProxyTarget},
-        socket::{SocketOptions, opts::TcpKeepAlive},
+        proxy::IoForwardService,
         tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
     service::MirrorService,
-    tcp::client::service::TcpConnector,
-    telemetry::tracing,
-    tls::boring::proxy::{
-        TlsMitmRelay,
-        cert_issuer::{CachedBoringMitmCertIssuer, InMemoryBoringMitmCertIssuer},
-    },
+    tls::boring::proxy::TlsMitmRelay,
 };
 
 use crate::{
-    concurrency::ConcurrencyReservation, config::DemoProxyConfig,
-    demo_trace_traffic::DemoTraceTrafficLayer, tls::mitm_relay_policy::TlsMitmRelayPolicyLayer,
+    concurrency::ConcurrencyReservation,
+    demo_trace_traffic::DemoTraceTrafficLayer,
+    state::{LiveSettings, SharedState},
+    tls::mitm_relay_policy::TlsMitmRelayPolicyLayer,
 };
 
 const HIJACK_DOMAIN: Domain = Domain::from_static("mitm.ramaproxy.org");
 
-const TCP_KEEPALIVE_TIME: Duration = Duration::from_mins(1);
-const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const TCP_KEEPALIVE_RETRIES: u32 = 5;
-
-type DemoTlsMitmRelay = TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>;
-
 #[derive(Clone)]
 pub(super) struct DemoTcpMitmService {
-    demo_config: DemoProxyConfig,
-    tls_mitm_relay_policy: TlsMitmRelayPolicyLayer,
-    tls_mitm_relay: DemoTlsMitmRelay,
-    ca_crt_pem_bytes: &'static [u8],
-    connect_timeout: Duration,
+    state: SharedState,
+    peek_duration_s: f64,
 }
 
 impl DemoTcpMitmService {
-    pub(super) async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, BoxError> {
-        let demo_config = DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
-        let (ca_crt, ca_key) = crate::tls::certs::load_or_create_mitm_ca_crt_key_pair()
-            .context("load/create MITM CA Crt/Key pair")?;
-        let ca_crt_pem_bytes: &[u8] = ca_crt
-            .to_pem()
-            .context("encode root ca cert to pem")?
-            .leak();
+    pub(super) async fn try_new(
+        ctx: TransparentProxyServiceContext,
+    ) -> Result<(Self, SharedState), BoxError> {
+        let demo_config = crate::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        let (ca_crt, ca_key) = crate::tls::load_or_create_mitm_ca(
+            demo_config.ca_cert_pem.as_deref(),
+            demo_config.ca_key_pem.as_deref(),
+        )?;
+        let ca_crt_pem: Bytes = Bytes::from(ca_crt.to_pem().context("encode root ca cert to pem")?);
 
-        let excluded_domains =
-            crate::policy::DomainExclusionList::new(demo_config.exclude_domains.iter());
-        let tls_mitm_relay_policy =
-            TlsMitmRelayPolicyLayer::new().with_excluded_domains(excluded_domains);
-
-        Ok(Self {
-            connect_timeout: Duration::from_millis(demo_config.tcp_connect_timeout_ms.max(50)),
-            demo_config,
-            tls_mitm_relay_policy,
+        let initial_settings = LiveSettings {
+            html_badge_enabled: demo_config.html_badge_enabled,
+            html_badge_label: demo_config.html_badge_label.clone(),
+            exclude_domains: demo_config.exclude_domains.clone(),
+            ca_crt_pem,
             tls_mitm_relay: TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key),
-            ca_crt_pem_bytes,
-        })
+        };
+        let state: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(initial_settings));
+
+        let service = Self {
+            state: state.clone(),
+            peek_duration_s: demo_config.peek_duration_s,
+        };
+
+        Ok((service, state))
     }
 
     pub(super) fn new_intercept_service(
@@ -110,20 +101,24 @@ impl DemoTcpMitmService {
         Ingress: Io + Unpin + ExtensionsRef,
         Egress: Io + Unpin + ExtensionsRef,
     {
-        let peek_duration = Duration::from_secs_f64(self.demo_config.peek_duration_s.max(0.5));
+        let settings = self.state.load_full();
+        let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
 
-        let http_mitm_svc = HttpMitmRelay::new(exec.clone())
-            .with_http_middleware(self.http_relay_middleware(exec, within_connect_tunnel));
+        let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
+            self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
+        );
 
         let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::new());
+            .with_fallback(IoForwardService::new(exec.clone()));
+
+        let excluded_domains =
+            crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
+        let tls_mitm_relay_policy =
+            TlsMitmRelayPolicyLayer::new(exec.clone()).with_excluded_domains(excluded_domains);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
-            (
-                self.tls_mitm_relay_policy.clone(),
-                self.tls_mitm_relay.clone(),
-            )
+            (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
                 .into_layer(maybe_http_mitm_svc.clone()),
         )
         .with_peek_timeout(peek_duration)
@@ -133,7 +128,7 @@ impl DemoTcpMitmService {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
         }
 
-        let socks5_mitm_relay = Socks5MitmRelayService::new(app_mitm_layer.clone());
+        let socks5_mitm_relay = Socks5MitmRelayService::new(exec, app_mitm_layer.clone());
         let mitm_svc = Socks5PeekRouter::new(socks5_mitm_relay)
             .with_peek_timeout(peek_duration)
             .with_fallback(app_mitm_layer);
@@ -141,10 +136,12 @@ impl DemoTcpMitmService {
         Either::B(ConsumeErrLayer::trace_as_debug().into_layer(mitm_svc))
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn http_relay_middleware<S>(
         &self,
         exec: Executor,
         within_connect_tunnel: bool,
+        settings: Arc<LiveSettings>,
     ) -> impl Layer<S, Service: Service<Request, Output = Response, Error = BoxError> + Clone>
     + Send
     + Sync
@@ -154,14 +151,15 @@ impl DemoTcpMitmService {
         S: Service<Request, Output = Response, Error = BoxError>,
     {
         let excluded_domains =
-            crate::policy::DomainExclusionList::new(self.demo_config.exclude_domains.iter());
+            crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
         let html_badge_layer = crate::http::html::HtmlBadgeLayer::new()
-            .with_enabled(self.demo_config.html_badge_enabled)
-            .with_badge_label(&self.demo_config.html_badge_label)
+            .with_enabled(settings.html_badge_enabled)
+            .with_badge_label(&settings.html_badge_label)
             .with_excluded_domains(excluded_domains);
 
         let decompressor_matcher = html_badge_layer.decompression_matcher();
         let nested_mitm = self.clone();
+        let ca_crt_pem = settings.ca_crt_pem.clone();
 
         (
             MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -185,7 +183,7 @@ impl DemoTcpMitmService {
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
                         ConsumeErrLayer::trace_as_debug()
-                            .into_layer(IoForwardService::new())
+                            .into_layer(IoForwardService::new(exec))
                             .boxed()
                     } else {
                         nested_mitm.new_bridge_service(exec, true).boxed()
@@ -195,7 +193,7 @@ impl DemoTcpMitmService {
             DpiProxyCredentialExtractorLayer::new(),
             HijackLayer::new(
                 DomainMatcher::exact(HIJACK_DOMAIN),
-                Arc::new(crate::http::hijack::new_service(self.ca_crt_pem_bytes)),
+                Arc::new(crate::http::hijack::new_service(ca_crt_pem)),
             ),
             ArcLayer::new(),
         )
@@ -208,60 +206,23 @@ pub(super) struct TcpInterceptService {
     reservation: ConcurrencyReservation,
 }
 
-impl Service<TcpFlow> for TcpInterceptService {
+impl Service<BridgeIo<TcpFlow, NwTcpStream>> for TcpInterceptService {
     type Output = ();
     type Error = Infallible;
 
-    async fn serve(&self, ingress: TcpFlow) -> Result<Self::Output, Self::Error> {
-        let Some(ProxyTarget(egress_addr)) = ingress.extensions().get_ref().cloned() else {
-            tracing::debug!("missing ProxyTarget in transparent proxy example tcp service");
-            return Ok(());
-        };
+    async fn serve(
+        &self,
+        bridge: BridgeIo<TcpFlow, NwTcpStream>,
+    ) -> Result<Self::Output, Self::Error> {
+        let BridgeIo(ingress, egress) = bridge;
 
+        // The egress NWConnection is already established by Swift — no TcpConnector needed.
         let permit = self.reservation.activate();
-
-        let flow_exec = ingress.executor().cloned().unwrap_or_default();
-        let connector = tcp_connector_service(flow_exec.clone(), self.mitm.connect_timeout);
-        let tcp_req = rama::tcp::client::Request::new_with_extensions(
-            egress_addr.clone(),
-            ingress.extensions().clone(),
-        );
-
-        let EstablishedClientConnection { conn: egress, .. } = match connector
-            .connect(tcp_req)
-            .await
-            .context("establish tcp connection")
-            .context_field("address", egress_addr.clone())
-        {
-            Ok(connection) => connection,
-            Err(err) => {
-                tracing::debug!(error = ?err, address = %egress_addr, "transparent proxy tcp connect failed");
-                return Ok(());
-            }
-        };
-
         ingress.extensions().insert(permit);
 
+        let flow_exec = ingress.executor().cloned().unwrap_or_default();
         let mitm_svc = self.mitm.new_bridge_service(flow_exec, false);
-        let _ = mitm_svc.serve(BridgeIo(ingress, egress)).await;
-        Ok(())
-    }
-}
 
-fn tcp_connector_service(
-    exec: Executor,
-    connect_timeout: Duration,
-) -> impl ConnectorService<rama::tcp::client::Request, Connection: Io + Unpin + ExtensionsRef> + Clone
-{
-    TimeoutLayer::new(connect_timeout).into_layer(TcpConnector::new(exec).with_connector(Arc::new(
-        SocketOptions {
-            keep_alive: Some(true),
-            tcp_keep_alive: Some(TcpKeepAlive {
-                time: Some(TCP_KEEPALIVE_TIME),
-                interval: Some(TCP_KEEPALIVE_INTERVAL),
-                retries: Some(TCP_KEEPALIVE_RETRIES),
-            }),
-            ..SocketOptions::default_tcp()
-        },
-    )))
+        mitm_svc.serve(BridgeIo(ingress, egress)).await
+    }
 }

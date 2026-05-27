@@ -1666,7 +1666,7 @@ async fn reject_informational_status_header_in_request() {
     let (io, mut client) = mock::new();
 
     let client = async move {
-        let _ = client.assert_server_handshake().await;
+        _ = client.assert_server_handshake().await;
 
         let status_code = 128;
         assert!(

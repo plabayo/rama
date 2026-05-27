@@ -1,3 +1,9 @@
+#![expect(
+    clippy::unwrap_used,
+    clippy::print_stdout,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     ServiceInput,
     bytes::Bytes,
@@ -60,7 +66,7 @@ async fn handle_request(
     let body = request.body_mut();
     while let Some(data) = body.data().await {
         let data = data?;
-        let _ = body.flow_control().release_capacity(data.len());
+        _ = body.flow_control().release_capacity(data.len());
     }
     let response = rama::http::Response::new(());
     let mut send = respond.send_response(response, false)?;

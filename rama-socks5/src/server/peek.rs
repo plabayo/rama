@@ -219,7 +219,7 @@ mod test {
 
             async fn other_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
-                let _ = stream.read_to_end(&mut v).await?;
+                _ = stream.read_to_end(&mut v).await?;
                 Ok(v)
             }
             let other_service = service_fn(other_service_fn);

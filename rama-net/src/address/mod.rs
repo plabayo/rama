@@ -11,15 +11,26 @@ pub mod ip;
 
 mod host;
 #[doc(inline)]
-pub use host::Host;
+pub use host::{Host, HostRef};
 
-mod domain;
+mod uninterpreted_host;
 #[doc(inline)]
-pub use domain::{AsDomainRef, Domain, IntoDomain};
+pub use uninterpreted_host::{UninterpretedHost, UninterpretedHostRef};
+
+pub mod domain;
+#[doc(inline)]
+pub use domain::{
+    AsDomainRef, Domain, DomainBuilder, DomainLabelIter, DomainLabels, DomainRef, IntoDomain,
+    Label, LabelError, PushError, SuffixIter,
+};
 
 mod host_with_port;
 #[doc(inline)]
 pub use host_with_port::HostWithPort;
+
+mod opt_port;
+#[doc(inline)]
+pub use opt_port::OptPort;
 
 mod host_with_opt_port;
 #[doc(inline)]
@@ -27,7 +38,11 @@ pub use host_with_opt_port::HostWithOptPort;
 
 mod authority;
 #[doc(inline)]
-pub use authority::Authority;
+pub use authority::{Authority, AuthorityRef};
+
+mod user_info;
+#[doc(inline)]
+pub use user_info::{UserInfo, UserInfoRef};
 
 mod socket_address;
 #[doc(inline)]
@@ -46,4 +61,4 @@ pub use domain_address::DomainAddress;
 
 mod domain_trie;
 #[doc(inline)]
-pub use domain_trie::{DomainParentMatch, DomainTrie};
+pub use domain_trie::{DomainMatch, DomainTrie, MatchKind};

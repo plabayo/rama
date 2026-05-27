@@ -39,7 +39,6 @@ impl Default for BoringMitmCertIssuerCacheConfig {
 
 const CACHE_DEFAULT_TTL: Duration = Duration::from_hours(24 * 89); // 89 DAYS
 
-#[allow(clippy::expect_used, reason = "32_000 != 0 🧌")]
 const CACHE_KIND_DEFAULT_MAX_SIZE: NonZeroU64 =
     NonZeroU64::new(32_000).expect("NonZeroU64: 32_000 != 0");
 

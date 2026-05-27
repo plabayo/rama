@@ -9,7 +9,7 @@ pub mod service;
 
 mod socket;
 #[doc(inline)]
-pub use socket::{ClientSocketInfo, Socket, SocketInfo};
+pub use socket::{Socket, SocketInfo};
 
 pub mod dep {
     //! Dependencies for rama stream modules.

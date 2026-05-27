@@ -83,7 +83,7 @@ impl FromStr for UserAgent {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(UserAgent)
-            .map_err(|_| InvalidUserAgent)
+            .map_err(|_e| InvalidUserAgent)
     }
 }
 

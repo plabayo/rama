@@ -36,6 +36,11 @@
 //!
 //! You can now use tools like Grafana to collect metrics from the collector running at 127.0.0.1:4317 over gRPC.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     extensions::{Extension, Extensions},
@@ -109,9 +114,10 @@ async fn main() {
         .init();
 
     let exporter_grpc_svc = EasyHttpWebClient::default();
-    let exporter_grpc_client = grpc::service::opentelemetry::OtelExporter::new(exporter_grpc_svc)
-        .with_endpoint(rama::http::Uri::from_static("http://localhost:4317"))
-        .with_timeout(Duration::from_secs(10));
+    let exporter_grpc_client =
+        grpc::service::opentelemetry::OtelExporter::new_grpc(exporter_grpc_svc)
+            .with_endpoint(rama::http::Uri::from_static("http://localhost:4317"))
+            .with_timeout(Duration::from_secs(10));
 
     let meter_reader = PeriodicReader::builder(exporter_grpc_client)
         .with_interval(Duration::from_secs(3))

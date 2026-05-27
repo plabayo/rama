@@ -375,7 +375,7 @@ async fn errors_if_recv_frame_exceeds_max_frame_size() {
     srv.codec_mut().set_max_send_frame_size(16_384 * 4);
 
     let srv = async move {
-        let _ = srv.assert_client_handshake().await;
+        _ = srv.assert_client_handshake().await;
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://example.com/")
@@ -417,7 +417,7 @@ async fn configure_max_frame_size() {
     srv.codec_mut().set_max_send_frame_size(16_384 * 2);
 
     let srv = async move {
-        let _ = srv.assert_client_handshake().await;
+        _ = srv.assert_client_handshake().await;
         srv.recv_frame(
             frames::headers(1)
                 .request("GET", "https://example.com/")
@@ -948,7 +948,7 @@ async fn rst_while_closing() {
         };
         let mut stream = conn.drive(req).await;
         // Enqueue trailers frame.
-        let _ = stream.send_trailers(HeaderMap::new(), OriginalHttp1Headers::new());
+        _ = stream.send_trailers(HeaderMap::new(), OriginalHttp1Headers::new());
         // Signal the server mock to send RST_FRAME
         let _: () = tx.send(()).unwrap();
         drop(stream);

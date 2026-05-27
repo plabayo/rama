@@ -15,11 +15,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 #[doc(inline)]
 pub use ::rama_http_types::{
@@ -29,11 +24,16 @@ pub use ::rama_http_types::{
     request, response, sse, status, uri, version,
 };
 
+#[doc(inline)]
 pub use ::rama_http_headers as headers;
 
 pub mod body;
 
 pub mod convert;
+
+#[cfg(feature = "html")]
+#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
+pub mod html;
 
 pub mod matcher;
 

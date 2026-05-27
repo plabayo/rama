@@ -153,7 +153,7 @@ impl Decoder {
                 if *remaining == 0 {
                     Poll::Ready(Ok(Frame::data(Bytes::new())))
                 } else {
-                    let to_read = *remaining as usize;
+                    let to_read = usize::try_from(*remaining).unwrap_or(usize::MAX);
                     let buf = ready!(body.read_mem(cx, to_read))?;
                     let num = buf.as_ref().len() as u64;
                     if num > *remaining {
@@ -307,7 +307,6 @@ impl ChunkedState {
     }
 
     // TODO: in future see if we can avoid this many arguments
-    #[allow(clippy::too_many_arguments)]
     fn step<R: MemRead>(
         self,
         cx: &mut Context<'_>,
@@ -489,12 +488,7 @@ impl ChunkedState {
         trace!("Chunked read, remaining={:?}", rem);
 
         // cap remaining bytes at the max capacity of usize
-        let rem_cap = match *rem {
-            r if r > usize::MAX as u64 => usize::MAX,
-            r => r as usize,
-        };
-
-        let to_read = rem_cap;
+        let to_read = usize::try_from(*rem).unwrap_or(usize::MAX);
         let slice = ready!(rdr.read_mem(cx, to_read))?;
         let count = slice.len();
 
@@ -651,8 +645,11 @@ impl ChunkedState {
     }
 }
 
-// TODO: disallow Transfer-Encoding, Content-Length, Trailer, etc in trailers ??
-#[allow(clippy::needless_pass_by_ref_mut)]
+// Filter trailer fields per RFC 9110 §6.5.1: framing/control fields, auth
+// fields, and `Set-Cookie` MUST NOT appear in trailers. Allowing them
+// through would let an attacker desync downstream peers that merge trailers
+// into the header section (classic trailer-based smuggling).
+#[expect(clippy::needless_pass_by_ref_mut)]
 fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Error> {
     let mut trailers = HeaderMap::new();
     let mut headers = vec![httparse::EMPTY_HEADER; count];
@@ -667,6 +664,11 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
                         format!("Invalid header name: {:?}", &header),
                     ));
                 };
+
+                if !super::encode::is_valid_trailer_field(&name) {
+                    debug!("dropping disallowed trailer field: {name:?}");
+                    continue;
+                }
 
                 let Ok(value) = HeaderValue::from_bytes(header.value) else {
                     return Err(io::Error::new(
@@ -1097,6 +1099,36 @@ mod tests {
             "Wed, 21 Oct 2015 07:28:00 GMT"
         );
         assert_eq!(headers.get("X-Stream-Error").unwrap(), "failed to decode");
+    }
+
+    /// RFC 9110 §6.5.1: framing/control fields (Content-Length, Trailer,
+    /// Transfer-Encoding, TE, Host, Authorization, Set-Cookie, etc.) MUST
+    /// NOT appear in trailers. They must be silently dropped on decode so
+    /// they cannot be smuggled past a downstream peer that merges trailers
+    /// into the header section.
+    #[test]
+    fn test_decode_trailers_drops_framing_fields() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(
+            b"X-Custom: ok\r\n\
+              Content-Length: 9999\r\n\
+              Transfer-Encoding: chunked\r\n\
+              Host: evil.example\r\n\
+              Authorization: Bearer x\r\n\
+              Set-Cookie: a=b\r\n\
+              Trailer: x\r\n\
+              TE: trailers\r\n\
+              \r\n",
+        );
+        let headers = decode_trailers(&mut buf, 8).expect("decode_trailers");
+        assert!(headers.get("X-Custom").is_some());
+        assert!(headers.get("content-length").is_none());
+        assert!(headers.get("transfer-encoding").is_none());
+        assert!(headers.get("host").is_none());
+        assert!(headers.get("authorization").is_none());
+        assert!(headers.get("set-cookie").is_none());
+        assert!(headers.get("trailer").is_none());
+        assert!(headers.get("te").is_none());
     }
 
     #[tokio::test]

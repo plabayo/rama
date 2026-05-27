@@ -35,8 +35,9 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
         Ok((i, hello)) => {
             if !i.is_empty() {
                 tracing::debug!(
-                    "parse_client_hello: parse client hello handshake message: unexpected trailer content"
-                )
+                    ech = hello.has_encrypted_client_hello(),
+                    "parse_client_hello: parse client hello handshake message: unexpected trailer content",
+                );
             }
             Ok(hello)
         }
@@ -56,8 +57,9 @@ pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
         Ok((i, hello)) => {
             if !i.is_empty() {
                 tracing::debug!(
-                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content"
-                )
+                    ech = hello.has_encrypted_client_hello(),
+                    "parse_client_hello_handshake: parse client hello handshake message: unexpected trailer content",
+                );
             }
             Ok(hello)
         }
@@ -330,14 +332,18 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
     let (i, v) = length_data(be_u16).parse(i)?;
-    let host = str::from_utf8(v)
-        .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
+    let host: Host = str::from_utf8(v)
+        .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
         .parse()
-        .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
+        .map_err(|_e| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
 
-    match host {
-        Host::Address(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
-        Host::Name(domain) => Ok((i, domain)),
+    // TLS SNI carries a DNS-shaped name (RFC 6066 §3). Anything that
+    // can promote to a Domain is accepted — including pct-encoded
+    // reg-names — via `try_into_domain`. IP literals and
+    // non-promotable bytes (sub-delim, IPvFuture) are rejected.
+    match host.try_into_domain() {
+        Ok(domain) => Ok((i, domain)),
+        Err(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
     }
 }
 
@@ -432,13 +438,18 @@ fn parse_tls_extension_certificate_compression_content(
 }
 
 fn parse_protocol_name_list(mut i: &[u8]) -> IResult<&[u8], Vec<ApplicationProtocol>> {
+    // The loop consumes `i` until it is empty, so `i` at the end of the loop
+    // is the actual (empty) residual — return it verbatim. The original
+    // version hard-coded `Ok((&[], v))`, which masked any future bug in the
+    // loop's accounting and was inconsistent with the rest of the parser
+    // (other helpers surface the unconsumed tail).
     let mut v = vec![];
     while !i.is_empty() {
         let (n, alpn) = map_parser(length_data(be_u8), parse_protocol_name).parse(i)?;
         v.push(alpn);
         i = n;
     }
-    Ok((&[], v))
+    Ok((i, v))
 }
 
 fn parse_protocol_name(i: &[u8]) -> IResult<&[u8], ApplicationProtocol> {
@@ -540,14 +551,16 @@ mod tests {
             let result = parse_tls_extension_sni_hostname(input.as_bytes());
             match expected_output {
                 Some(domain) => assert_eq!(domain, result.unwrap().1),
-                None => assert!(result.is_err()),
+                None => {
+                    result.unwrap_err();
+                }
             }
         }
     }
 
     #[test]
     fn test_parse_client_hello_zero_bytes_failure() {
-        assert!(parse_client_hello(&[]).is_err());
+        parse_client_hello(&[]).unwrap_err();
     }
 
     #[test]
@@ -855,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_extract_sni_from_client_hello_handshake() {
-        #[allow(clippy::single_element_loop)]
+        #[expect(clippy::single_element_loop)]
         for (content, expected_sni) in [(
             &[
                 0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03, 0x02, 0x15, 0xfd,
@@ -905,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_extract_sni_from_client_hello_record() {
-        #[allow(clippy::single_element_loop)]
+        #[expect(clippy::single_element_loop)]
         for (content, expected_sni) in [(
             &[
                 0x03, 0x03, 0x74, 0xbd, 0x2a, 0x45, 0x51, 0x29, 0x95, 0x42, 0x61, 0x17, 0xab, 0x20,
@@ -955,7 +968,7 @@ mod tests {
 
     #[test]
     fn parse_alps_from_client_hello() {
-        #[allow(clippy::single_element_loop)]
+        #[expect(clippy::single_element_loop)]
         for (content, expected_alps) in [(
             &[
                 0x3, 0x3, 0x16, 0xbc, 0xa5, 0xcd, 0xa6, 0xa, 0x97, 0x8f, 0xde, 0x13, 0x7f, 0x5e,

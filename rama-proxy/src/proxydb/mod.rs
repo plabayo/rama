@@ -383,7 +383,7 @@ mod memdb {
             self.data.is_empty()
         }
 
-        #[allow(clippy::needless_pass_by_value)]
+        #[expect(clippy::needless_pass_by_value)]
         fn query_from_filter(
             &self,
             ctx: ProxyContext,

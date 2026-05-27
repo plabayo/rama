@@ -20,7 +20,7 @@
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
 [actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
-[loc-badge]: https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/plabayo/rama/badge?filter=.rs$&style=flat&logoColor=white&label=LoC
+[loc-badge]: https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/plabayo/rama/badge?filter=.rs,.swift,.c,.h$&style=flat&logoColor=white&label=LoC
 [loc-url]: https://github.com/plabayo/rama
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
@@ -75,7 +75,6 @@ Read further below or skip to one of the following chapters instead:
 
 - [Who is rama for](#who-is-rama-for)
 - [For organisations](#for-organisations)
-- [Experimental](#--experimental)
 - [Proxies and other use cases](#-proxies-and-other-use-cases)
 - [rama binary](#rama-binary)
 - [rama ecosystem](#--rama-ecosystem)
@@ -105,33 +104,28 @@ middleware, services and stacks you'll build yourself:
 | category | support list |
 |-|-|
 | ✅ [transports](https://ramaproxy.org/docs/rama/net/stream/index.html) | ✅ [tcp](https://ramaproxy.org/docs/rama/tcp/index.html) ⸱ ✅ [udp](https://ramaproxy.org/docs/rama/udp/index.html) ⸱ ✅ [Unix (UDS)](https://ramaproxy.org/docs/rama/unix/index.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/net/stream/layer/index.html) |
-| ✅ [http](https://ramaproxy.org/docs/rama/http/index.html) | ✅ [auto](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto) ⸱ ✅ [http/1.1](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.http1) ⸱ ✅ [h2](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
+| ✅ [http](https://ramaproxy.org/docs/rama/http/index.html) | ✅ [auto](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto) ⸱ ✅ [http/1.1](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.http1) ⸱ ✅ [h2](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.h2) ⸱ 🏗️ h3 ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
 | ✅ web server | ✅ [fs](https://ramaproxy.org/docs/rama/http/service/fs/index.html) ⸱ ✅ [router](https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html) ⸱ ✅ [dyn router](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html) ⸱ ✅ [static router](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html) ⸱ ✅ [handler extractors](https://ramaproxy.org/docs/rama/http/service/web/extract/index.html) ⸱ ✅ [k8s healthcheck](https://ramaproxy.org/docs/rama/http/service/web/k8s/index.html) |
-| ✅ [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [easy client](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) ⸱ ✅ [BoringSSL Connect](https://ramaproxy.org/docs/rama/tls/boring/client/struct.TlsConnectorLayer.html) ⸱ ✅ [Rustls Connect](https://ramaproxy.org/docs/rama/tls/rustls/client/struct.TlsConnectorLayer.html) ⸱ ✅ [HTTP Proxy Connect](https://ramaproxy.org/docs/rama/http/client/proxy/layer/struct.HttpProxyConnector.html) ⸱ ✅ [Socks5 Proxy Connect](https://ramaproxy.org/docs/rama/proxy/socks5/struct.Socks5ProxyConnectorLayer.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
-| ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
+| ✅ [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [easy client](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) ⸱ ✅ [BoringSSL Connect](https://ramaproxy.org/docs/rama/tls/boring/client/struct.TlsConnectorLayer.html) ⸱ ✅ [Rustls Connect](https://ramaproxy.org/docs/rama/tls/rustls/client/struct.TlsConnectorLayer.html) ⸱ ✅ [HTTP Proxy Connect](https://ramaproxy.org/docs/rama/http/client/proxy/layer/struct.HttpProxyConnector.html) ⸱ ✅ [Socks5 Proxy Connect](https://ramaproxy.org/docs/rama/proxy/socks5/struct.Socks5ProxyConnectorLayer.html) ⸱ ✅ [Follow Redirects](https://ramaproxy.org/docs/rama/http/layer/follow_redirect/index.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) |
+| ✅ HTTP middleware | ✅ [CORS](https://ramaproxy.org/docs/rama/http/layer/cors/index.html) ⸱ ✅ [Auth](https://ramaproxy.org/docs/rama/http/layer/auth/index.html) ⸱ ✅ [Retry](https://ramaproxy.org/docs/rama/http/layer/retry/index.html) ⸱ ✅ [Rate Limiting](https://ramaproxy.org/docs/rama/layer/limit/index.html) ⸱ ✅ [Compression](https://ramaproxy.org/docs/rama/http/layer/compression/index.html) |
+| ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ✅ [ACME](https://ramaproxy.org/docs/rama/tls/acme/index.html) ⸱ ✅ [mTLS](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs) ⸱ ✅ [Dynamic Certs](https://github.com/plabayo/rama/blob/main/examples/tls_boring_dynamic_certs.rs) ⸱ ❌ NSS |
 | ✅ [dns client](https://ramaproxy.org/docs/rama/dns/client/index.html) | ✅ [DNS Address Resolver](https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsAddressResolver.html) ⸱ ✅ [DNS Txt Resolver](https://ramaproxy.org/docs/rama/dns/client/resolver/trait.DnsTxtResolver.html) |
-| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
-| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport <sup>(1)</sup> ⸱ ✅ [gRPC](https://ramaproxy.org/docs/rama/http/grpc/index.html) |
+| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) ⸱ ✅ [Linux TPROXY](https://github.com/plabayo/rama/blob/main/examples/linux_tproxy_tcp.rs) |
+| ✅ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ ✅ [Datastar](https://ramaproxy.org/docs/rama/http/sse/datastar/index.html) ⸱ ✅ [WS](https://ramaproxy.org/docs/rama/http/ws/index.html) ⸱ ❌ Web Transport ⸱ ✅ [gRPC](https://ramaproxy.org/docs/rama/http/grpc/index.html) ⸱ ✅ [FastCGI](https://ramaproxy.org/docs/rama/gateway/fastcgi/index.html) |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [extensions](https://ramaproxy.org/docs/rama/extensions/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
-| ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
+| ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) ⸱ ✅ [dial9 runtime telemetry](https://ramaproxy.org/book/dial9.html) |
 | ✅ Diagnostics | ✅ [curl export](https://ramaproxy.org/docs/rama/http/convert/curl/index.html) ⸱ ✅ [HAR](https://ramaproxy.org/docs/rama/http/layer/har/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) ⸱ ✅ [Tls Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) ⸱ ✅ [Akamai passive h2](https://ramaproxy.org/docs/rama/net/fingerprint/struct.AkamaiH2.html) ⸱ ✅ [Peetprint (tls)](https://ramaproxy.org/docs/rama/net/fingerprint/struct.PeetPrint.html) |
-| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(1)</sup> |
-| 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(3)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(3)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-| ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(3)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
-| 🏗️ data scraping | 🏗️ Html Processor <sup>(3)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
-| ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
+| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc |
+| ✅ Apple platform | ✅ [Network Extension](https://github.com/plabayo/rama/tree/main/rama-net-apple-networkextension) ⸱ ✅ [XPC](https://github.com/plabayo/rama/tree/main/rama-net-apple-xpc) |
+| 🏗️ Graphical Interface | 🏗️ traffic logger ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) ⸱ ❌ traffic intercept ⸱ ❌ traffic replay |
+| ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config ⸱ ✅ http client ⸱ ❌ WASM Plugins |
+| 🏗️ data scraping | 🏗️ Html Processor ⸱ ❌ Json Processor |
+| ❌ browser | ❌ JS Engine ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation |
 
-> 🗒️ _Footnotes_
->
-> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2026 Q1)](https://github.com/plabayo/rama/milestone/3)
-> * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
->
-> Starting from `v0.3.0` we'll switch things up. Releases will be in frequent ~ 6 week release trains,
-> with no more alpha releases in between.
+> 🗒️ _Note_: ❌ items are on our radar but have no immediate plans. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 ## Commercial support and services
 
@@ -147,24 +141,6 @@ For up to date information about available
 service contracts and commercial offerings, please visit:
 
 👉 <https://ramaproxy.com>
-
-## 🧪 | Experimental
-
-🦙 rama (ラマ) is to be considered experimental software for the foreseeable future.
-In the meanwhile it is already used in production by ourselves and others alike.
-This gives us real world feedback to improve the framework. If you run Rama in production,
-your feedback is very valuable. As such,
-if you use rama do let us know feedback over
-[Discord][discord-url], [email](mailto:hello@plabayo.tech)
-or a [GitHub issue](https://github.com/plabayo/rama/issues).
-
-> [!TIP]
-> Contact us at [hello@plabayo.tech](mailto:hello@plabayo.tech) to arrange a service contract.
-> Among other benefits, this allows you to request migration of rama versions within
-> your own codebase and stay up to date without hassle, even when major releases introduce
-> breaking changes. While these changes are typically minimal and mechanical,
-> this service can be especially helpful for organisations that do not have
-> the developer resources to handle them directly.
 
 # Proxies and other use cases
 
@@ -293,6 +269,7 @@ Here is a list of all `rama` crates:
 - [`rama-crypto`](https://crates.io/crates/rama-crypto): rama crypto primitives and dependencies
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 - [`rama-net-apple-networkextension`](https://crates.io/crates/rama-net-apple-networkextension): Apple Network Extension support for rama
+- [`rama-net-apple-xpc`](https://crates.io/crates/rama-net-apple-xpc): Apple XPC support for rama
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
@@ -302,6 +279,7 @@ Here is a list of all `rama` crates:
 - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
+- [`rama-fastcgi`](https://crates.io/crates/rama-fastcgi): FastCGI support for rama
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HAProxy support
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
@@ -309,6 +287,7 @@ Here is a list of all `rama` crates:
 - [`rama-grpc`](https://crates.io/crates/rama-grpc): Grpc support for rama
 - [`rama-grpc-build`](https://crates.io/crates/rama-grpc-build): Grpc codegen support for rama
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
+- [`rama-http-macros`](https://crates.io/crates/rama-http-macros): proc-macros powering the type-safe HTML templating in `rama-http::html`
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`

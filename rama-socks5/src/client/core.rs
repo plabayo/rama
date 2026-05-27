@@ -1,7 +1,7 @@
 use rama_core::error::BoxError;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
-use rama_net::address::{Host, HostWithPort, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress};
 use rama_utils::collections::smallvec::smallvec;
 use std::fmt;
 
@@ -129,18 +129,18 @@ impl fmt::Display for HandshakeError {
         let context = self.context.unwrap_or("no context");
         match &self.kind {
             HandshakeErrorKind::IO(error) => {
-                write!(f, "client: handshake eror: I/O: {error} ({context})")
+                write!(f, "client: handshake error: I/O: {error} ({context})")
             }
             HandshakeErrorKind::Protocol(error) => {
                 write!(
                     f,
-                    "client: handshake eror: protocol error: {error} ({context})"
+                    "client: handshake error: protocol error: {error} ({context})"
                 )
             }
             HandshakeErrorKind::MethodMismatch(method) => {
                 write!(
                     f,
-                    "client: handshake error: method mistmatch: {method:?} ({context})"
+                    "client: handshake error: method mismatch: {method:?} ({context})"
                 )
             }
             HandshakeErrorKind::Reply(reply) => {
@@ -156,7 +156,7 @@ impl fmt::Display for HandshakeError {
                 )
             }
             HandshakeErrorKind::Other(error) => {
-                write!(f, "client: handshake eror: other: {error} ({context})")
+                write!(f, "client: handshake error: other: {error} ({context})")
             }
         }
     }
@@ -189,10 +189,19 @@ impl Client {
         stream: &mut S,
         destination: &HostWithPort,
     ) -> Result<HostWithPort, HandshakeError> {
-        let selected_method = match self.auth.as_ref() {
-            Some(auth) => self.handshake_headers_auth(stream, auth).await?,
-            None => self.handshake_headers_no_auth(stream).await?,
+        let auth_outcome = match self.auth.as_ref() {
+            Some(auth) => self.handshake_headers_auth(stream, auth).await,
+            None => self.handshake_headers_no_auth(stream).await,
         };
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_auth(
+            match &auth_outcome {
+                Ok(m) => u8::from(*m),
+                Err(_) => 0xff,
+            },
+            auth_outcome.is_ok(),
+        );
+        let selected_method = auth_outcome?;
 
         let request = RequestRef::new(Command::Connect, destination);
         request
@@ -209,6 +218,14 @@ impl Client {
         let server_reply = server::Reply::read_from(stream)
             .await
             .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
+
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_handshake_connect(
+            destination.host.clone(),
+            destination.port,
+            server_reply.reply.into(),
+        );
+
         if server_reply.reply != ReplyKind::Succeeded {
             return Err(HandshakeError::reply_kind(server_reply.reply)
                 .with_context("server responded with non-success reply"));
@@ -274,24 +291,25 @@ impl Client {
             port: selected_port,
         } = server_reply.bind_address;
 
-        let selected_addr = match select_host {
-            Host::Name(domain) => {
-                tracing::debug!(
-                    "bind command response does not accept domain {domain} as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        HandshakeError::io(err).with_context("read server response: bind failed")
-                    })?;
-                return Err(
-                    HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
-                        .with_context("selected bind addr cannot be a domain name"),
-                );
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // Bind reply MUST be an IP. `try_as_ip` bridges pct-encoded
+        // dotted-quad forms inside `Uninterpreted` for free; any host
+        // that doesn't promote (domain, sub-delim reg-name, IPvFuture)
+        // fails with AddressTypeNotSupported.
+        let Ok(selected_addr) = select_host.try_as_ip() else {
+            tracing::debug!(
+                "bind command response does not accept non-IP host {select_host} as bind address",
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut stream)
+                .await
+                .map_err(|err| {
+                    HandshakeError::io(err).with_context("read server response: bind failed")
+                })?;
+            return Err(
+                HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
+                    .with_context("selected bind addr must be an IP"),
+            );
         };
         let selected_bind_address = SocketAddress::new(selected_addr, selected_port);
 

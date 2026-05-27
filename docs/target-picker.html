@@ -1,0 +1,109 @@
+<!--
+  Target picker injected into every rustdoc page via `--html-before-content`.
+  Detects which target's docs the user is currently viewing from the URL
+  (`/docs/`, `/docs/macos/`, `/docs/windows/`, …) and offers a dropdown to jump
+  to the equivalent path on a different target. Stays in sync without any
+  per-target customisation — pure JS, no build-time substitution.
+-->
+<style>
+    body {
+        top: 20px;
+    }
+
+    .rama-target-picker {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        z-index: 2000;
+
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        background: #fafafa;
+        border-bottom: 1px solid #ddd;
+        padding: 4px 12px;
+
+        font:
+            12px/1.2 system-ui,
+            -apple-system,
+            sans-serif;
+        color: #333;
+    }
+    .rama-target-picker[hidden] {
+        display: none;
+    }
+    .rama-target-picker label {
+        font-weight: 600;
+    }
+    .rama-target-picker select {
+        margin-left: 8px;
+        padding: 2px 6px;
+        font: inherit;
+    }
+    @media (prefers-color-scheme: dark) {
+        .rama-target-picker {
+            background: #1f1f1f;
+            border-bottom-color: #333;
+            color: #ddd;
+        }
+        .rama-target-picker select {
+            background: #2a2a2a;
+            color: #ddd;
+            border: 1px solid #444;
+        }
+    }
+</style>
+<div class="rama-target-picker" id="rama-target-picker" hidden>
+    <label for="rama-target-select">Platform:</label>
+    <select id="rama-target-select"></select>
+</div>
+<script>
+    (function () {
+        var TARGETS = [
+            { name: "linux", subpath: "" },
+            { name: "macos", subpath: "macos/" },
+            { name: "windows", subpath: "windows/" },
+            { name: "android", subpath: "android/" },
+            { name: "ios", subpath: "ios/" },
+        ];
+
+        var DOCS_MARKER = "/docs/";
+        var path = window.location.pathname;
+        var docsIdx = path.indexOf(DOCS_MARKER);
+        if (docsIdx < 0) return;
+
+        var prefix = path.substring(0, docsIdx + DOCS_MARKER.length);
+        var rest = path.substring(docsIdx + DOCS_MARKER.length);
+
+        var current = TARGETS[0];
+        for (var i = 1; i < TARGETS.length; i++) {
+            if (rest.indexOf(TARGETS[i].subpath) === 0) {
+                current = TARGETS[i];
+                rest = rest.substring(TARGETS[i].subpath.length);
+                break;
+            }
+        }
+
+        var sel = document.getElementById("rama-target-select");
+        for (var i = 0; i < TARGETS.length; i++) {
+            var opt = document.createElement("option");
+            opt.value = TARGETS[i].name;
+            opt.text = TARGETS[i].name;
+            if (TARGETS[i].name === current.name) opt.selected = true;
+            sel.appendChild(opt);
+        }
+        sel.addEventListener("change", function () {
+            var next = TARGETS.find(function (t) {
+                return t.name === sel.value;
+            });
+            var newPath = prefix + next.subpath + rest;
+            // Try the equivalent path; if it 404s the user can fall back to that
+            // target's root manually.
+            window.location.pathname = newPath;
+        });
+
+        document.getElementById("rama-target-picker").hidden = false;
+    })();
+</script>

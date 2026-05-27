@@ -191,8 +191,8 @@ mod tests {
             stream, config
         ));
 
-        assert!(ndjson_stream.next().await.unwrap().is_ok());
-        assert!(ndjson_stream.next().await.unwrap().is_err());
+        ndjson_stream.next().await.unwrap().unwrap();
+        ndjson_stream.next().await.unwrap().unwrap_err();
     }
 
     #[tokio::test]
@@ -204,7 +204,7 @@ mod tests {
             stream, config
         ));
 
-        assert!(ndjson_stream.next().await.unwrap().is_ok());
+        ndjson_stream.next().await.unwrap().unwrap();
         assert!(ndjson_stream.next().await.is_none());
     }
 
@@ -231,7 +231,7 @@ mod tests {
             stream, config
         ));
 
-        assert!(ndjson_stream.next().await.unwrap().is_err());
+        ndjson_stream.next().await.unwrap().unwrap_err();
         assert!(ndjson_stream.next().await.is_none());
     }
 
@@ -260,8 +260,8 @@ mod tests {
 
         let mut iter = tokio_test::block_on(fallible_ndjson_stream.collect::<Vec<_>>()).into_iter();
 
-        assert!(iter.next().unwrap().is_err());
-        assert!(iter.next().unwrap().is_err());
+        iter.next().unwrap().unwrap_err();
+        iter.next().unwrap().unwrap_err();
         assert_eq!(
             TestStruct { key: 11, value: 22 },
             iter.next().unwrap().unwrap()
@@ -270,8 +270,8 @@ mod tests {
             TestStruct { key: 33, value: 44 },
             iter.next().unwrap().unwrap()
         );
-        assert!(iter.next().unwrap().is_err());
-        assert!(iter.next().unwrap().is_err());
+        iter.next().unwrap().unwrap_err();
+        iter.next().unwrap().unwrap_err();
         assert_eq!(
             TestStruct { key: 55, value: 66 },
             iter.next().unwrap().unwrap()

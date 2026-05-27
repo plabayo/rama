@@ -15,17 +15,16 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 
 #[non_exhaustive]
 /// CrateMarker type which is used to identify this crate when working around the orphan rule
 ///
 /// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
 pub struct RamaTlsRustlsCrateMarker;
+
+#[cfg(feature = "dial9")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+pub mod dial9;
 
 pub mod client;
 pub mod server;
@@ -89,6 +88,7 @@ pub mod dep {
     }
 
     #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    #[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
     pub mod rcgen {
         //! Re-export of the [`rcgen`] crate.
         //!

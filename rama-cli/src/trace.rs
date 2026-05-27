@@ -6,7 +6,7 @@ use rama::{
     telemetry::{
         opentelemetry::{
             KeyValue,
-            collector::HttpExporter,
+            collector::OtelExporter,
             sdk::{Resource, trace::SdkTracerProvider},
             semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION},
             trace::TracerProvider,
@@ -58,7 +58,7 @@ fn init_structured(default_directive: impl Into<Directive>) -> Result<(), BoxErr
         .try_with_connection_pool(HttpPooledConnectorConfig::default())
         .context("build http exporter client service")?
         .build_client();
-    let exportor = HttpExporter::from_env(svc).context("build OTLP HTTP span exporter")?;
+    let exportor = OtelExporter::from_env_http(svc).context("build OTLP HTTP span exporter")?;
 
     let resource = Resource::builder()
         .with_attribute(KeyValue::new(

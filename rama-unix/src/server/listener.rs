@@ -93,6 +93,10 @@ impl UnixListenerBuilder {
     ///
     /// The returned listener is ready for accepting connections.
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     pub async fn bind_socket_opts(
         self,
         opts: SocketOptions,
@@ -147,6 +151,10 @@ impl UnixListener {
 
     #[inline]
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+    )]
     /// Creates a new UnixListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
@@ -266,7 +274,7 @@ impl UnixListener {
                             socket.extensions().insert(UnixSocketInfo::new(local_addr, peer_addr));
 
                             self.exec.spawn_task(async move {
-                                let _ = service.serve(socket).await;
+                                _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
                         Err(err) => {

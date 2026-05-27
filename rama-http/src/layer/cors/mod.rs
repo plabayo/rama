@@ -604,6 +604,18 @@ where
         }
 
         headers.typed_insert(&self.layer.vary);
+        // When `Access-Control-Allow-Origin` is computed from the request's
+        // `Origin`, the response MUST advertise `Vary: Origin` so shared
+        // caches don't serve one client's CORS allowance to another. The
+        // user-supplied `Vary` may not contain `Origin`; in that case
+        // append an additional `Vary: origin` directive — multiple
+        // `Vary` field-values are merged per RFC 9110 §5.3.5.
+        if let Some(allow_origin) = self.layer.allow_origin.as_ref()
+            && allow_origin.is_request_dependent()
+            && !vary_contains_origin(&self.layer.vary)
+        {
+            headers.append(header::VARY, HeaderValue::from_static("origin"));
+        }
 
         if let Some(allow_origin) = self.layer.allow_origin.as_ref() {
             allow_origin.extend_headers(&mut headers, origin, &parts);
@@ -626,15 +638,7 @@ where
                 let req = Request::from_parts(parts, body);
 
                 let mut response: Response<ResBody> = self.inner.serve(req).await?;
-                let response_headers = response.headers_mut();
-
-                // vary header can have multiple values, don't overwrite
-                // previously-set value(s).
-                if let Some(vary) = headers.remove(header::VARY) {
-                    response_headers.append(header::VARY, vary);
-                }
-                // extend will overwrite previous headers of remaining names
-                response_headers.extend(headers.drain());
+                merge_cors_headers(response.headers_mut(), headers);
 
                 response.map(OptionalBody::some)
             } else {
@@ -652,17 +656,54 @@ where
             let req = Request::from_parts(parts, body);
 
             let mut response: Response<ResBody> = self.inner.serve(req).await?;
-            let response_headers = response.headers_mut();
-
-            // vary header can have multiple values, don't overwrite
-            // previously-set value(s).
-            if let Some(vary) = headers.remove(header::VARY) {
-                response_headers.append(header::VARY, vary);
-            }
-            // extend will overwrite previous headers of remaining names
-            response_headers.extend(headers.drain());
+            merge_cors_headers(response.headers_mut(), headers);
 
             Ok(response.map(OptionalBody::some))
+        }
+    }
+}
+
+/// Whether `vary` advertises a dependency on the `Origin` request header.
+/// `Vary: *` is treated as covering everything, which satisfies the
+/// dynamic-origin invariant.
+fn vary_contains_origin(vary: &Vary) -> bool {
+    match vary.iter_strs() {
+        None => true, // Vary: *
+        Some(mut iter) => iter.any(|name| name == header::ORIGIN),
+    }
+}
+
+/// Merge the locally-built CORS headers into the inner handler's response,
+/// preserving any CORS headers the inner handler already set. `Vary` is
+/// merged via append; everything else is `entry().or_insert(_)` so an
+/// explicit per-handler override always wins over the layer default.
+fn merge_cors_headers(response_headers: &mut HeaderMap, mut cors_headers: HeaderMap) {
+    // Drain all Vary values from the local map and append each to the
+    // response, preserving any Vary entries the inner handler already set.
+    let vary_values: Vec<HeaderValue> =
+        cors_headers.get_all(header::VARY).iter().cloned().collect();
+    cors_headers.remove(header::VARY);
+    for value in vary_values {
+        response_headers.append(header::VARY, value);
+    }
+
+    // For all remaining CORS headers, let the inner handler win — the
+    // CORS layer only supplies the default when no explicit value was set.
+    let mut last_name: Option<header::HeaderName> = None;
+    for (name, value) in cors_headers.drain() {
+        let entry_name = match name {
+            Some(n) => {
+                last_name = Some(n.clone());
+                n
+            }
+            // Continuation of the previous header name in `drain`'s order.
+            None => match last_name.clone() {
+                Some(n) => n,
+                None => continue,
+            },
+        };
+        if !response_headers.contains_key(&entry_name) {
+            response_headers.insert(entry_name, value);
         }
     }
 }

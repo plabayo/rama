@@ -45,14 +45,18 @@ struct UdpCallbackContext {
     sender: mpsc::UnboundedSender<Vec<u8>>,
 }
 
-unsafe extern "C" fn on_udp_server_datagram(ctx: *mut c_void, bytes: bindings::RamaBytesView) {
+unsafe extern "C" fn on_udp_server_datagram(
+    ctx: *mut c_void,
+    bytes: bindings::RamaBytesView,
+    _peer: bindings::RamaUdpPeerView,
+) {
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
         Vec::new()
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    let _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(payload);
 }
 
 unsafe extern "C" fn on_udp_server_closed(_ctx: *mut c_void) {}
@@ -160,6 +164,20 @@ pub(crate) async fn fetch_response(
     builder.send().await.expect("send request")
 }
 
+pub(crate) async fn post_with_body(
+    client: &ClientService,
+    url: &str,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+    body: Vec<u8>,
+) -> Response {
+    let builder = client.post(url).body(body);
+    let builder = apply_http_version(builder, version);
+    let builder = apply_proxy_extensions(builder, proxy_kind, proxy_addr);
+    builder.send().await.expect("send post request")
+}
+
 pub(crate) async fn websocket_echo(
     client: &ClientService,
     url: String,
@@ -200,7 +218,7 @@ pub(crate) async fn websocket_echo(
 
     tracing::info!(?version, ?proxy_kind, %proxy_addr, "ws reply received");
 
-    let _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
+    _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
 }
 
 pub(crate) async fn roundtrip_custom_protocol(
@@ -319,6 +337,13 @@ where
     buf
 }
 
+/// One-shot UDP echo round-trip through the FFI proxy engine.
+///
+/// Rust owns the egress UDP socket (one unconnected `tokio::net::UdpSocket`
+/// per intercepted flow); the harness no longer simulates Swift's
+/// `NWConnection`. We just intercept the flow, activate, push one
+/// datagram tagged with the upstream peer, and wait for the reply on
+/// `on_server_datagram`.
 pub(crate) async fn udp_roundtrip(
     engine: Arc<EngineHandle>,
     remote_addr: std::net::SocketAddr,
@@ -373,12 +398,33 @@ pub(crate) async fn udp_roundtrip(
     };
 
     unsafe {
+        bindings::rama_transparent_proxy_udp_session_activate(
+            session as *mut bindings::RamaTransparentProxyUdpSession,
+        );
+    }
+
+    // Build a peer view tagged with `remote_addr`. The engine's send
+    // pump uses this as the `send_to` destination.
+    let peer_host = remote_addr.ip().to_string().into_bytes();
+    let scope_id = match remote_addr {
+        std::net::SocketAddr::V6(v6) => v6.scope_id(),
+        std::net::SocketAddr::V4(_) => 0,
+    };
+    let peer_view = bindings::RamaUdpPeerView {
+        present: true,
+        host_utf8: peer_host.as_ptr().cast(),
+        host_utf8_len: peer_host.len(),
+        port: remote_addr.port(),
+        scope_id,
+    };
+    unsafe {
         bindings::rama_transparent_proxy_udp_session_on_client_datagram(
             session as *mut bindings::RamaTransparentProxyUdpSession,
             bindings::RamaBytesView {
                 ptr: payload.as_ptr(),
                 len: payload.len(),
             },
+            peer_view,
         );
     }
 

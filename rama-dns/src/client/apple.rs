@@ -9,7 +9,8 @@
 //! - Resolving and socket-loop integration (`DNSServiceRefSockFD` + `DNSServiceProcessResult`):
 //!   <https://developer.apple.com/library/archive/documentation/Networking/Conceptual/dns_discovery_api/Articles/resolving.html>
 //! - DNS-SD C API reference / `dns_sd.h` landing page:
-//!   <https://developer.apple.com/documentation/dnssd/dns_sd_h>
+//!   - <https://developer.apple.com/documentation/dnssd>
+//!   - <https://developer.apple.com/documentation/dnssd/dns_sd_h>
 //!
 //! Implementation notes:
 //! - `A`, `AAAA`, and `TXT` lookups are all backed by `DNSServiceQueryRecord`.
@@ -146,6 +147,24 @@ where
 
         tracing::debug!(?timeout, rrtype, %domain, "dns::apple: query");
 
+        // SAFETY (drop order, callback lifetime):
+        //
+        // The DNS-SD daemon invokes `query_record_callback` with the `state`
+        // pointer below as its context. The callback is **only** dispatched
+        // from inside `DNSServiceProcessResult` (called by this stream while
+        // the socket is readable). When the stream is dropped, locals here
+        // unwind in reverse declaration order:
+        //
+        //   1. `service_ref: ServiceRef` (declared below) drops first and its
+        //      `Drop` impl calls `DNSServiceRefDeallocate`, which Apple
+        //      documents as synchronously canceling any pending callbacks
+        //      for this `DNSServiceRef`.
+        //   2. `state: Box<QueryState<T, P>>` drops afterwards, by which
+        //      point no further callbacks can fire.
+        //
+        // Do **not** reorder these declarations: the boxed state must outlive
+        // the `ServiceRef` for the context pointer to remain valid for as long
+        // as the daemon may dispatch into it.
         let mut state = Box::new(QueryState {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
@@ -268,7 +287,7 @@ where
 
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
     let name = domain.trim_end_matches('.');
-    CString::new(name).map_err(|_| {
+    CString::new(name).map_err(|_e| {
         AppleDnsResolverError::message(format!("domain contains interior NUL byte: {name}")).into()
     })
 }
@@ -301,7 +320,9 @@ const fn is_empty_result_error(code: ffi::DNSServiceErrorType) -> bool {
     )
 }
 
-/// SAFETY: `ptr` must either be null or point to a valid NUL-terminated C string
+/// # Safety
+///
+/// `ptr` must either be null or point to a valid NUL-terminated C string
 /// for the duration of this call.
 unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a, str> {
     if ptr.is_null() {
@@ -312,7 +333,8 @@ unsafe fn c_char_ptr_to_str_lossy<'a>(ptr: *const c_char) -> std::borrow::Cow<'a
     unsafe { CStr::from_ptr(ptr) }.to_string_lossy()
 }
 
-/// SAFETY:
+/// # Safety
+///
 /// - `context` must be either null or a pointer to a live `QueryState<T, P>`.
 /// - `fullname` must be either null or a valid NUL-terminated C string.
 /// - `rdata` must point to `rdlen` bytes whenever it is non-null.

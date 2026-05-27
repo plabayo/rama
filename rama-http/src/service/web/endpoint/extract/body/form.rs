@@ -109,7 +109,7 @@ mod test {
     #[tokio::test]
     async fn test_form_post_form_urlencoded_missing_data_fail() {
         #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         struct Input {
             name: String,
             age: u8,
@@ -131,7 +131,7 @@ mod test {
     #[tokio::test]
     async fn test_form_get_form_urlencoded_fail() {
         #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         struct Input {
             name: String,
             age: u8,
@@ -175,7 +175,7 @@ mod test {
     #[tokio::test]
     async fn test_form_get_fail_missing_data() {
         #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         struct Input {
             name: String,
             age: u8,

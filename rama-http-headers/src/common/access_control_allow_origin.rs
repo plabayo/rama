@@ -91,7 +91,7 @@ impl TryFrom<&str> for AccessControlAllowOrigin {
     type Error = Error;
 
     fn try_from(s: &str) -> Result<Self, Error> {
-        let header_value = HeaderValue::from_str(s).map_err(|_| Error::invalid())?;
+        let header_value = HeaderValue::from_str(s).map_err(|_e| Error::invalid())?;
         let origin = OriginOrAny::try_from(&header_value)?;
         Ok(Self(origin))
     }

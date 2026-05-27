@@ -32,7 +32,7 @@ fn main() {
 
 //     rt.spawn(async move {
 //         loop {
-//             let _ = listener.accept().await;
+//             _ = listener.accept().await;
 //         }
 //     });
 

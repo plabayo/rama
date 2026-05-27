@@ -1,13 +1,8 @@
 //! Connection utilities
 
 use rama_core::extensions::Extension;
-use std::{
-    io,
-    sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
-    },
-};
+use std::io;
+use tokio::sync::watch;
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.
@@ -25,45 +20,66 @@ pub fn is_connection_error(e: &io::Error) -> bool {
     )
 }
 
-#[derive(Clone, Default, Extension)]
+#[derive(Clone, Debug, Extension)]
 #[extension(tags(net))]
-/// Health of this connection
+/// Watcher that can update and read the [`ConnectionHealth`]
 ///
 /// Note: this should only be added once to extensions and
-/// be edited by all connection / health checks.
-pub struct ConnectionHealth {
-    status: Arc<AtomicU8>,
+/// be used by all connection / health checks.
+pub struct ConnectionHealthWatcher {
+    sender: watch::Sender<ConnectionHealth>,
+    receiver: watch::Receiver<ConnectionHealth>,
 }
 
-impl ConnectionHealth {
-    #[must_use]
-    /// Get the [`ConnectionHealthStatus`]
-    pub fn status(&self) -> ConnectionHealthStatus {
-        let val = self.status.load(Ordering::Relaxed);
-        // SAFETY: ConnectionHealthStatus is stored with repr u8
-        unsafe { std::mem::transmute::<u8, ConnectionHealthStatus>(val) }
+impl ConnectionHealthWatcher {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Set status to provided [`ConnectionHealthStatus`]
-    pub fn set_status(&self, status: ConnectionHealthStatus) {
-        // SAFETY: ConnectionHealthStatus is stored with repr u8
-        let val = unsafe { std::mem::transmute::<ConnectionHealthStatus, u8>(status) };
-        self.status.store(val, Ordering::Relaxed);
+    /// Set the [`ConnectionHealth`] to health
+    pub fn mark_healthy(&self) {
+        self.update_health(ConnectionHealth::Healthy);
+    }
+
+    /// Set the [`ConnectionHealth`] to broken
+    pub fn mark_broken(&self) {
+        self.update_health(ConnectionHealth::Broken);
+    }
+
+    /// Set the [`ConnectionHealth`]
+    pub fn update_health(&self, health: ConnectionHealth) {
+        self.sender.send_replace(health);
+    }
+
+    /// Get the [`ConnectionHealth`]
+    pub fn health(&self) -> ConnectionHealth {
+        *self.receiver.borrow()
+    }
+
+    /// Reference the [`watch::Sender<ConnectionHealth>`]
+    pub fn sender(&self) -> &watch::Sender<ConnectionHealth> {
+        &self.sender
+    }
+
+    /// Reference the [`watch::Sender<ConnectionHealth>`]
+    ///
+    /// Note: for keeping track of changes, prefer to clone this
+    /// receiver so it has it's own subscribe logic
+    pub fn receiver(&self) -> &watch::Receiver<ConnectionHealth> {
+        &self.receiver
     }
 }
 
-impl std::fmt::Debug for ConnectionHealth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnectionHealth")
-            .field("status", &self.status())
-            .finish()
+impl Default for ConnectionHealthWatcher {
+    fn default() -> Self {
+        let (sender, receiver) = watch::channel(ConnectionHealth::Healthy);
+        Self { sender, receiver }
     }
 }
 
-#[repr(u8)]
 #[derive(Debug, PartialEq, Clone, Copy, Eq)]
-pub enum ConnectionHealthStatus {
-    Unknown = 0,
-    Broken = 1,
-    Healthy = 2,
+/// Health of the connection
+pub enum ConnectionHealth {
+    Broken,
+    Healthy,
 }

@@ -12,7 +12,6 @@ use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
 
 macro_rules! dns_resolve_tuple_impl {
     ($($ty:ident),+ $(,)?) => {
-        #[allow(non_snake_case)]
         impl<$($ty,)+> DnsAddressResolver for ($($ty,)+)where
             $(
                 $ty: DnsAddressResolver,
@@ -129,7 +128,6 @@ macro_rules! dns_resolve_tuple_impl {
             }
         }
 
-        #[allow(non_snake_case)]
         impl<$($ty,)+> DnsTxtResolver for ($($ty,)+)
         where
             $(

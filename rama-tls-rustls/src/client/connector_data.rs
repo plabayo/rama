@@ -280,6 +280,7 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
+#[cfg_attr(docsrs, doc(cfg(not(any(feature = "aws-lc", feature = "ring")))))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     use rama_core::error::{ErrorExt, extra::OpaqueError};
@@ -291,6 +292,7 @@ pub fn self_signed_client_auth()
 }
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
     // Create a client end entity cert.

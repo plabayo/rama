@@ -122,7 +122,7 @@ impl Send {
         Ok(())
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(super) fn send_headers<B>(
         &mut self,
         frame: frame::Headers,
@@ -360,7 +360,7 @@ impl Send {
         self.prioritize.reserve_capacity(capacity, stream, counts)
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(super) fn poll_capacity(
         &mut self,
         cx: &Context,
@@ -385,7 +385,7 @@ impl Send {
         stream.capacity(self.prioritize.max_buffer_size())
     }
 
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self)]
     pub(super) fn poll_reset(
         &self,
         cx: &Context,
@@ -610,7 +610,7 @@ impl Send {
 
     pub(super) fn ensure_next_stream_id(&self) -> Result<StreamId, UserError> {
         self.next_stream_id
-            .map_err(|_| UserError::OverflowedStreamId)
+            .map_err(|_e| UserError::OverflowedStreamId)
     }
 
     pub(super) fn peek_next_id(&self) -> Option<StreamId> {

@@ -207,7 +207,7 @@ impl UriMatchReplaceRule {
     /// assert_eq!(out.to_string(), "https://a/b?x=1");
     /// ```
     pub fn http_to_https() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "this is a valid static pattern which is verified to not fail in doc+unit tests"
         )]
@@ -296,7 +296,7 @@ pub(super) fn uri_to_small_vec_with_buffer(
     let path = uri.path().trim_matches('/');
 
     if let Some(authority) = uri.authority() {
-        let _ = write!(
+        _ = write!(
             output,
             "{}://{authority}{}{path}{}{query}",
             uri.scheme_str().unwrap_or("http"),
@@ -304,7 +304,7 @@ pub(super) fn uri_to_small_vec_with_buffer(
             if query.is_empty() { "" } else { "?" },
         );
     } else {
-        let _ = write!(
+        _ = write!(
             output,
             "{}{path}{}{query}",
             if path.is_empty() { "" } else { "/" },

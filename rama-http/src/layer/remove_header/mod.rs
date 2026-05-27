@@ -50,7 +50,7 @@ pub fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
                 );
             }
         }
-        let _ = headers.remove(header::CONNECTION);
+        _ = headers.remove(header::CONNECTION);
     }
     for header in [
         &header::CONNECTION,
@@ -93,7 +93,7 @@ pub fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
                 );
             }
         }
-        let _ = headers.remove(header::CONNECTION);
+        _ = headers.remove(header::CONNECTION);
     }
     for header in [
         &header::CONNECTION,

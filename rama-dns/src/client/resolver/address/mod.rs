@@ -41,18 +41,38 @@ pub trait DnsAddressResolver: Sized + Send + Sync + 'static {
         &self,
         domain: Domain,
     ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
+        #[cfg(feature = "dial9")]
+        let dial9_domain = domain.clone();
+        #[cfg(feature = "dial9")]
+        crate::dial9::record_lookup_started(dial9_domain.clone(), 4);
+        #[cfg(feature = "dial9")]
+        let dial9_started = Instant::now();
         let stream = self.lookup_ipv4(domain);
         async move {
             let mut stream = std::pin::pin!(stream);
 
             let mut last_err = None;
+            let mut found_ok = None;
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(addr) => return Some(Ok(addr)),
+                    Ok(addr) => {
+                        found_ok = Some(addr);
+                        break;
+                    }
                     Err(err) => last_err = Some(Err(err)),
                 }
             }
-            last_err
+            #[cfg(feature = "dial9")]
+            crate::dial9::record_lookup_resolved(
+                dial9_domain,
+                4,
+                u64::try_from(dial9_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                found_ok.is_some(),
+            );
+            match found_ok {
+                Some(addr) => Some(Ok(addr)),
+                None => last_err,
+            }
         }
     }
 

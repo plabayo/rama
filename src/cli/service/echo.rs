@@ -26,7 +26,7 @@ use crate::{
         },
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
-        server::{HttpServer, layer::upgrade::UpgradeLayer},
+        server::HttpServer,
         service::web::{extract::Json, response::IntoResponse},
         ws::handshake::{
             matcher::WebSocketMatcher,
@@ -47,6 +47,7 @@ use crate::{
 };
 
 use rama_core::error::{ErrorExt as _, extra::OpaqueError};
+use rama_http::layer::upgrade::UpgradeLayer;
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -240,7 +241,7 @@ impl<H> EchoServiceBuilder<H>
 where
     H: Layer<EchoService, Service: Service<Request, Output = Response, Error = BoxError>>,
 {
-    #[allow(unused_mut)]
+    #[expect(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,

@@ -84,7 +84,7 @@ async fn handle_request(
     while let Some(data) = body.data().await {
         let data = data?;
         tracing::info!("<<<< recv {data:?}");
-        let _ = body.flow_control().release_capacity(data.len());
+        _ = body.flow_control().release_capacity(data.len());
     }
 
     let response = rama_http_types::Response::new(());

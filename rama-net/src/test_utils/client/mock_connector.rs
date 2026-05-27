@@ -65,6 +65,10 @@ where
             .clone()
             .unwrap_or_default()
             .into_spawn_task(async move {
+                #[expect(
+                    clippy::panic,
+                    reason = "test helper: failures must surface loudly to invalidate the test run"
+                )]
                 if let Err(err) = server.serve(server_socket).await {
                     panic!("created mock server failed: {}", err.into())
                 }

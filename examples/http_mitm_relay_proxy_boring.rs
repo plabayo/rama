@@ -25,6 +25,11 @@
 //! curl -k -v -x http://127.0.0.1:62049 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
+#![expect(
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext},
@@ -154,7 +159,7 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
         ArcLayer::new(),
     ));
     let maybe_http_relay =
-        HttpPeekRouter::new(http_mitm_relay).with_fallback(IoForwardService::new());
+        HttpPeekRouter::new(http_mitm_relay).with_fallback(IoForwardService::new(exec.clone()));
 
     let tls_mitm_relay = TlsMitmRelay::try_new_with_cached_self_signed_issuer(&SelfSignedData {
         organisation_name: Some("HTTP MITM Relay Proxy Boring Example".to_owned()),

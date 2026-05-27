@@ -53,7 +53,7 @@ impl HeaderValueGetter for HeaderMap {
         match self.get(key) {
             Some(value) => value
                 .to_str()
-                .map_err(|_| HeaderValueErr::HeaderInvalid(key.as_str().to_owned())),
+                .map_err(|_e| HeaderValueErr::HeaderInvalid(key.as_str().to_owned())),
             None => Err(HeaderValueErr::HeaderMissing(key.as_str().to_owned())),
         }
     }

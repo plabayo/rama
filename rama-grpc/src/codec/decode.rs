@@ -264,7 +264,7 @@ impl StreamingInner {
                     return Poll::Ready(Ok(None));
                 }
 
-                let _ = std::mem::replace(&mut self.state, State::Error(Some(status.clone())));
+                _ = std::mem::replace(&mut self.state, State::Error(Some(status.clone())));
                 debug!("decoder inner stream error: {:?}", status);
                 return Poll::Ready(Err(status));
             }

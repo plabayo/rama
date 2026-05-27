@@ -42,10 +42,9 @@ impl HeaderEncode for SecWebSocketKey {
     }
 }
 
-#[allow(clippy::fallible_impl_from)]
 impl From<[u8; 16]> for SecWebSocketKey {
     fn from(bytes: [u8; 16]) -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = " ASSUMPTION standard base64 encoding of 16 bytes is always valid http header"
         )]
@@ -63,6 +62,6 @@ mod tests {
     #[test]
     fn from_bytes() {
         let bytes: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
-        let _ = SecWebSocketKey::from(bytes);
+        _ = SecWebSocketKey::from(bytes);
     }
 }

@@ -10,10 +10,14 @@ use rama::{
         proxy::{IoForwardService, ProxyTarget},
         tls::server::InputWithClientHello,
     },
+    rt::Executor,
     telemetry::tracing,
     tls::boring::{
         TlsStream,
-        proxy::{TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer},
+        proxy::{
+            HandshakeRelayClassification, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+            TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer,
+        },
     },
 };
 
@@ -35,9 +39,19 @@ pub struct TlsMitmRelayPolicyLayer<F = IoForwardService> {
 }
 
 impl TlsMitmRelayPolicyLayer {
-    #[inline(always)]
-    pub fn new() -> Self {
-        Self::default()
+    /// Build a [`TlsMitmRelayPolicyLayer`] whose default fallback relay
+    /// observes graceful shutdown via the given [`Executor`].
+    #[must_use]
+    pub fn new(exec: Executor) -> Self {
+        let cache = moka::sync::CacheBuilder::new(4096)
+            .time_to_live(Duration::from_mins(5))
+            .build();
+        let excluded_domains = DomainExclusionList::default();
+        Self {
+            cache,
+            excluded_domains,
+            fallback: IoForwardService::new(exec),
+        }
     }
 
     pub fn with_excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
@@ -51,21 +65,6 @@ impl TlsMitmRelayPolicyLayer {
             cache: self.cache,
             excluded_domains: self.excluded_domains,
             fallback,
-        }
-    }
-}
-
-impl Default for TlsMitmRelayPolicyLayer {
-    #[inline(always)]
-    fn default() -> Self {
-        let cache = moka::sync::CacheBuilder::new(4096)
-            .time_to_live(Duration::from_mins(5))
-            .build();
-        let excluded_domains = DomainExclusionList::default();
-        Self {
-            cache,
-            excluded_domains,
-            fallback: IoForwardService::new(),
         }
     }
 }
@@ -188,17 +187,23 @@ where
                 client_hello,
             })
             .await
-            && err.is_handshake_relay_issue()
+            && matches!(
+                err.kind(),
+                TlsMitmRelayErrorKind::Handshake {
+                    classification: HandshakeRelayClassification::CertTrust,
+                    direction: TlsMitmRelayErrorDirection::Ingress,
+                }
+            )
         {
             if let Some(sni) = err.sni().cloned() {
                 tracing::debug!(
-                    "adding SNI ({sni}) exception for follow-up tls relay inputs due to Relay Cert Issue"
+                    "adding SNI ({sni}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
                 );
                 self.cache.insert(PolicyKey::Sni(sni), ());
             }
             if let Some(target) = err.proxy_target() {
                 tracing::debug!(
-                    "adding ProxyTarget ({target}) exception for follow-up tls relay inputs due to Relay Cert Issue"
+                    "adding ProxyTarget ({target}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
                 );
                 self.cache
                     .insert(PolicyKey::Target(target.host.clone()), ());

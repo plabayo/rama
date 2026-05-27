@@ -14,6 +14,12 @@
 
 // rama provides everything out of the box to build a complete web service.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     error::{BoxError, ErrorExt, extra::OpaqueError},
@@ -87,7 +93,7 @@ async fn main() {
     let client = EasyHttpWebClient::default();
     let result = client.get(format!("http://{ADDRESS}/")).send().await;
 
-    let _ = result.unwrap_err();
+    _ = result.unwrap_err();
 }
 
 fn setup_tracing() {

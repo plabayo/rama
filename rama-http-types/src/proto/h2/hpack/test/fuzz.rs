@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unreachable,
+    reason = "vendored fuzz harness: panic-on-bad-state is the standard quickcheck pattern"
+)]
+
 use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
 use crate::{HeaderName, HeaderValue};
@@ -28,7 +33,7 @@ fn hpack_fuzz() {
 // If wanting to test with a specific feed, uncomment and fill in the seed.
 #[test]
 fn hpack_fuzz_seeded() {
-    let _ = env_logger::try_init();
+    _ = env_logger::try_init();
     let seed = [/* fill me in*/];
     FuzzHpack::new(seed).run();
 }

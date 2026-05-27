@@ -32,15 +32,15 @@ where
     let shutdown = Shutdown::new(async move {
         tokio::select! {
             _ = graceful::default_signal() => {
-                let _ = tx_final.send(Ok(()));
+                _ = tx_final.send(Ok(()));
             }
             result = rx => {
                 match result {
                     Ok(result) => {
-                        let _ = tx_final.send(result);
+                        _ = tx_final.send(result);
                     }
                     Err(_) => {
-                        let _ = tx_final.send(Ok(()));
+                        _ = tx_final.send(Ok(()));
                     }
                 }
             }
@@ -50,10 +50,10 @@ where
     shutdown.spawn_task_fn(async move |guard| {
         let mut app = app;
         let result = app.run(guard).await;
-        let _ = tx.send(result);
+        _ = tx.send(result);
     });
 
-    let _ = shutdown.shutdown_with_limit(Duration::from_secs(1)).await;
+    _ = shutdown.shutdown_with_limit(Duration::from_secs(1)).await;
 
     rx_final.await?
 }

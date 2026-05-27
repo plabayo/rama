@@ -22,6 +22,14 @@
 //!
 //! This only works on Unix systems (Linux, macOS, BSDs).
 
+#![cfg_attr(
+    target_family = "unix",
+    expect(
+        clippy::unwrap_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
+)]
+
 #[cfg(target_family = "unix")]
 mod unix_example {
     use std::{
@@ -33,9 +41,19 @@ mod unix_example {
     };
 
     use rama::{
-        error::BoxError, graceful::Shutdown, http::Request, http::server::HttpServer,
-        http::service::web::response::Json, rt::Executor, service::service_fn,
+        error::BoxError,
+        graceful::Shutdown,
+        http::Request,
+        http::server::HttpServer,
+        http::service::web::response::Json,
+        rt::Executor,
+        service::service_fn,
         tcp::server::TcpListener,
+        telemetry::tracing::{
+            self,
+            level_filters::LevelFilter,
+            subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+        },
     };
     use serde_json::json;
 
@@ -63,29 +81,36 @@ mod unix_example {
     }
 
     async fn parent_process() -> Result<(), BoxError> {
-        tracing_subscriber::fmt::init();
+        tracing::subscriber::registry()
+            .with(fmt::layer())
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .init();
 
-        println!("=== Parent Process ===");
-        println!("Creating TCP listener...");
+        tracing::info!("=== Parent Process ===");
+        tracing::info!("Creating TCP listener...");
 
         // Create listener
         let listener = TcpListener::bind_address("127.0.0.1:62046", Executor::default()).await?;
         let addr = listener.local_addr()?;
-        println!("✓ Listening on {addr}");
+        tracing::info!("✓ Listening on {addr}");
 
         // Clean up old socket file
-        let _ = std::fs::remove_file(SOCKET_PATH);
+        _ = std::fs::remove_file(SOCKET_PATH);
 
         // Create Unix socket for FD passing (std blocking socket required for libc sendmsg)
         let unix_listener = std::os::unix::net::UnixListener::bind(SOCKET_PATH)?;
-        println!("✓ Created control socket at {SOCKET_PATH}");
+        tracing::info!("✓ Created control socket at {SOCKET_PATH}");
 
         // Convert to std listener for FD passing
         let std_listener = listener.into_std()?;
-        println!("✓ Converted to std::net::TcpListener");
+        tracing::info!("✓ Converted to std::net::TcpListener");
 
         // Spawn child process
-        println!("\nSpawning child process...");
+        tracing::info!("\nSpawning child process...");
         let exe = env::current_exe()?;
         let mut child = Command::new(exe)
             .env(ROLE_ENV, "child")
@@ -94,17 +119,17 @@ mod unix_example {
             .stderr(Stdio::inherit())
             .spawn()?;
 
-        println!("✓ Child spawned (PID: {})", child.id());
+        tracing::info!("✓ Child spawned (PID: {})", child.id());
 
         // Wait for child to connect (blocking)
-        println!("\nWaiting for child to connect...");
+        tracing::info!("\nWaiting for child to connect...");
         let (stream, _) = unix_listener.accept()?;
-        println!("✓ Child connected");
+        tracing::info!("✓ Child connected");
 
         // Send the FD via SCM_RIGHTS (libc required - no stable Rust API for ancillary data)
-        println!("\nTransferring listener FD...");
+        tracing::info!("\nTransferring listener FD...");
         send_fd(stream.as_raw_fd(), std_listener.as_raw_fd())?;
-        println!("✓ FD transferred");
+        tracing::info!("✓ FD transferred");
 
         // Close our copy of the listener
         drop(std_listener);
@@ -112,52 +137,61 @@ mod unix_example {
         // Wait a bit for child to start serving
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        println!("\n=== Parent exiting - child now serving ===");
-        println!("Test with: curl http://127.0.0.1:62046\n");
+        tracing::info!("\n=== Parent exiting - child now serving ===");
+        tracing::info!("Test with: curl http://127.0.0.1:62046\n");
 
         // Wait for child to finish (it will run for 10 seconds)
-        let _ = child.wait();
+        _ = child.wait();
 
         // Cleanup
-        let _ = std::fs::remove_file(SOCKET_PATH);
+        _ = std::fs::remove_file(SOCKET_PATH);
 
         Ok(())
     }
 
     async fn child_process() -> Result<(), BoxError> {
+        tracing::subscriber::registry()
+            .with(fmt::layer())
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .init();
+
         // Give parent time to set up
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let shutdown = Shutdown::default();
         let guard = shutdown.guard();
 
-        println!("\n=== Child Process ===");
-        println!("Connecting to parent...");
+        tracing::info!("\n=== Child Process ===");
+        tracing::info!("Connecting to parent...");
 
         // Connect to parent's Unix socket (std blocking socket required for libc recvmsg)
         let stream = std::os::unix::net::UnixStream::connect(SOCKET_PATH)?;
-        println!("✓ Connected to parent");
+        tracing::info!("✓ Connected to parent");
 
         // Receive the FD via SCM_RIGHTS (libc required - no stable Rust API for ancillary data)
-        println!("Receiving listener FD...");
+        tracing::info!("Receiving listener FD...");
         let fd = recv_fd(stream.as_raw_fd())?;
-        println!("✓ Received FD: {fd}");
+        tracing::info!("✓ Received FD: {fd}");
 
         // Reconstruct std listener from FD
         let std_listener = unsafe { std::net::TcpListener::from_raw_fd(fd) };
         let addr = std_listener.local_addr()?;
-        println!("✓ Reconstructed listener on {addr}");
+        tracing::info!("✓ Reconstructed listener on {addr}");
 
         // Convert to rama listener
         let listener = TcpListener::try_from_std_tcp_listener(
             std_listener,
             Executor::graceful(guard.clone()),
         )?;
-        println!("✓ Converted to rama::tcp::TcpListener");
+        tracing::info!("✓ Converted to rama::tcp::TcpListener");
 
         // Start serving
-        println!("\n=== Child now serving ===");
-        println!("Will serve for 10 seconds, then exit\n");
+        tracing::info!("\n=== Child now serving ===");
+        tracing::info!("Will serve for 10 seconds, then exit\n");
 
         let http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(service_fn(
             |_req: Request| async move {
@@ -172,12 +206,12 @@ mod unix_example {
         // Shutdown after 10 seconds
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            println!("\n=== Child shutting down ===");
+            tracing::info!("\n=== Child shutting down ===");
             shutdown.shutdown().await;
         });
 
         listener.serve(http_service).await;
-        println!("✓ Child shutdown complete\n");
+        tracing::info!("✓ Child shutdown complete\n");
 
         Ok(())
     }
@@ -213,6 +247,10 @@ mod unix_example {
             return Err(io::Error::other("Failed to get CMSG_FIRSTHDR"));
         }
 
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "single CMSG header initialization sequence: level/type/len + copy_nonoverlapping is one logical write"
+        )]
         unsafe {
             (*cmsg).cmsg_level = libc::SOL_SOCKET;
             (*cmsg).cmsg_type = libc::SCM_RIGHTS;
@@ -266,6 +304,10 @@ mod unix_example {
             return Err(io::Error::other("No control message received"));
         }
 
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "single CMSG header read sequence: deref + CMSG_DATA + ptr deref is one logical read"
+        )]
         unsafe {
             if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
                 let fd_ptr = libc::CMSG_DATA(cmsg) as *const RawFd;
@@ -282,7 +324,9 @@ use unix_example::run;
 
 #[cfg(not(target_family = "unix"))]
 fn run() {
-    println!("tcp_listener_fd_passing example is Unix-only (requires SCM_RIGHTS)");
+    rama::telemetry::tracing::info!(
+        "tcp_listener_fd_passing example is Unix-only (requires SCM_RIGHTS)"
+    );
 }
 
 fn main() {

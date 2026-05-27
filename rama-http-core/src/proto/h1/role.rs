@@ -8,7 +8,8 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::HeaderName;
 use rama_http::proto::h1::ext::ReasonPhrase;
-use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
+use rama_http::proto::{HeaderByteLength, RequestHeaders};
+
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
@@ -209,12 +210,12 @@ impl Http1Transaction for Server {
                 .inspect_err(|err| {
                     debug!("invalid http1 header: {err:?}");
                 })
-                .map_err(|_| crate::error::Parse::Internal)?;
+                .map_err(|_e| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
             match *name.header_name() {
                 header::TRANSFER_ENCODING => {
-                    // https://tools.ietf.org/html/rfc7230#section-3.3.3
+                    // RFC 9112 §6.1 / §6.3:
                     // If Transfer-Encoding header is present, and 'chunked' is
                     // not the final encoding, and this is a Request, then it is
                     // malformed. A server should respond with 400 Bad Request.
@@ -223,19 +224,40 @@ impl Http1Transaction for Server {
                         return Err(Parse::transfer_encoding_unexpected());
                     }
                     is_te = true;
+                    // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
+                    if headers::has_duplicate_chunked(&value) {
+                        debug!("rejecting Transfer-Encoding with duplicate `chunked`");
+                        return Err(Parse::transfer_encoding_invalid());
+                    }
                     if headers::is_chunked_(&value) {
                         is_te_chunked = true;
                         decoder = DecodedLength::CHUNKED;
+                        // RFC 9112 §6.1: when TE and CL are both present, the
+                        // recipient MUST process per Transfer-Encoding alone.
+                        // For a forwarding proxy this means CL MUST NOT travel
+                        // downstream — strip any CL that was already appended
+                        // earlier in the header block to close the CL.TE
+                        // request smuggling vector.
+                        if con_len.take().is_some() {
+                            let removed = headers.remove_all(&header::CONTENT_LENGTH);
+                            debug!(
+                                "stripped {removed} Content-Length header(s) after Transfer-Encoding: chunked (RFC 9112 §6.1)"
+                            );
+                        }
                     } else {
                         is_te_chunked = false;
                     }
                 }
                 header::CONTENT_LENGTH => {
-                    if is_te {
-                        continue;
-                    }
+                    // Always validate the CL value syntactically, even if TE
+                    // was already seen — a malformed CL is a malformed message
+                    // regardless of TE presence (RFC 9112 §6.1).
                     let len = headers::content_length_parse(&value)
                         .ok_or_else(Parse::content_length_invalid)?;
+                    if is_te {
+                        // TE wins per RFC 9112 §6.1; do not retain CL.
+                        continue;
+                    }
                     if let Some(prev) = con_len {
                         if prev != len {
                             debug!(
@@ -282,9 +304,9 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let extensions = ctx.extensions.take().unwrap_or_else(|| {
+        let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
             warn!(
-                "extensions should always be set in ParseContext: was None: use default instead..."
+                "prepared_extensions should always be set in ParseContext: was None: use default instead..."
             );
             Default::default()
         });
@@ -444,8 +466,6 @@ impl Server {
         Self::can_have_content_length(method, status) && method != Some(&Method::HEAD)
     }
 
-    #[cold]
-    #[inline(never)]
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
         ext: &Extensions,
@@ -916,6 +936,8 @@ impl Http1Transaction for Client {
             let mut keep_alive = version == Version::HTTP_11;
 
             let mut headers = Http1HeaderMap::with_capacity(headers_len);
+            let mut resp_is_te_chunked = false;
+            let mut resp_has_cl = false;
 
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
@@ -925,37 +947,59 @@ impl Http1Transaction for Client {
                         .inspect_err(|err| {
                             debug!("invalid http1 header: {err:?}");
                         })
-                        .map_err(|_| crate::error::Parse::Internal)?;
+                        .map_err(|_e| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-                if header::CONNECTION == name.header_name() {
-                    // keep_alive was previously set to default for Version
-                    if keep_alive {
-                        // HTTP/1.1
-                        keep_alive = !headers::connection_close(&value);
-                    } else {
-                        // HTTP/1.0
-                        keep_alive = headers::connection_keep_alive(&value);
+                match *name.header_name() {
+                    header::CONNECTION => {
+                        // keep_alive was previously set to default for Version
+                        if keep_alive {
+                            // HTTP/1.1
+                            keep_alive = !headers::connection_close(&value);
+                        } else {
+                            // HTTP/1.0
+                            keep_alive = headers::connection_keep_alive(&value);
+                        }
                     }
+                    header::TRANSFER_ENCODING => {
+                        // RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
+                        if headers::has_duplicate_chunked(&value) {
+                            debug!(
+                                "response: rejecting Transfer-Encoding with duplicate `chunked`"
+                            );
+                            return Err(Parse::transfer_encoding_invalid());
+                        }
+                        if headers::is_chunked_(&value) {
+                            resp_is_te_chunked = true;
+                        }
+                    }
+                    header::CONTENT_LENGTH => {
+                        resp_has_cl = true;
+                    }
+                    _ => {}
                 }
 
                 headers.append(name, value);
             }
 
-            // TODO we can do this without cloning in a lot of cases, but we need
-            // to be careful with things like http 100
-            let extensions = ctx
-                .extensions
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| {
-                    warn!("extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama");
-                    Default::default()
-                });
+            // RFC 9112 §6.1: if a response carries both Content-Length and
+            // `Transfer-Encoding: chunked`, the recipient MUST process per
+            // Transfer-Encoding and the CL MUST NOT be forwarded. Strip it
+            // here so a downstream proxy hop cannot be desynced.
+            if resp_is_te_chunked && resp_has_cl {
+                let removed = headers.remove_all(&header::CONTENT_LENGTH);
+                debug!(
+                    "response: stripped {removed} Content-Length header(s) alongside Transfer-Encoding: chunked (RFC 9112 §6.1)"
+                );
+            }
 
-            // TODO remove but maybe needed for backwards comp for now...
-            let req_ext = RequestExtensions::from(extensions.clone());
-            extensions.insert(req_ext);
+            // Extensions are ready for use and dont need to do any special wrapping here
+            let extensions = ctx.prepared_extensions.take().unwrap_or_else(|| {
+                warn!(
+                    "prepared_extensions should always be set in ParseContext but it was missing; falling back to default; report bug in rama"
+                );
+                Default::default()
+            });
 
             let headers = headers.consume(&extensions);
 
@@ -1016,7 +1060,7 @@ impl Http1Transaction for Client {
         extend(dst, msg.head.subject.0.as_str().as_bytes());
         extend(dst, b" ");
         //TODO: add API to http::Uri to encode without std::fmt
-        let _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
+        _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
 
         match msg.head.version {
             Version::HTTP_10 => extend(dst, b"HTTP/1.0"),
@@ -1059,7 +1103,7 @@ impl Client {
     /// Returns Some(length, wants_upgrade) if successful.
     ///
     /// Returns None if this message head should be skipped (like a 100 status).
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     fn decoder(
         inc: &MessageHead<StatusCode>,
         method: &mut Option<Method>,
@@ -1410,7 +1454,6 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
     }
 }
 
-#[cold]
 fn write_h1_headers(
     headers: HeaderMap,
     title_case_headers: bool,
@@ -1483,7 +1526,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(Extensions::default()),
+                prepared_extensions: &mut Some(Extensions::default()),
             },
         )
         .unwrap()
@@ -1506,7 +1549,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1525,7 +1568,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1541,7 +1584,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: true,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1559,7 +1602,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1581,7 +1624,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1600,7 +1643,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1620,7 +1663,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let msg = Server::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1641,7 +1684,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1656,7 +1699,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
-            extensions: &mut Some(Extensions::default()),
+            prepared_extensions: &mut Some(Extensions::default()),
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1682,7 +1725,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect("parse ok")
@@ -1699,7 +1742,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect_err(comment)
@@ -1909,11 +1952,139 @@ mod tests {
         );
     }
 
+    /// RFC 9112 §6.1: when a request carries both Content-Length and
+    /// `Transfer-Encoding: chunked`, the CL MUST NOT survive the parse —
+    /// forwarding it downstream is a classic CL.TE request-smuggling vector.
+    #[test]
+    fn test_strip_content_length_when_te_chunked_cl_first() {
+        fn parse(s: &str) -> ParsedMessage<RequestLine> {
+            let mut bytes = BytesMut::from(s);
+            Server::parse(
+                &mut bytes,
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .expect("parse ok")
+            .expect("parse complete")
+        }
+
+        // CL before TE chunked — CL must be stripped from the HeaderMap
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             host: x\r\n\
+             content-length: 10\r\n\
+             transfer-encoding: chunked\r\n\
+             \r\n\
+             ",
+        );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(
+            !msg.head.headers.contains_key("content-length"),
+            "Content-Length must be stripped when TE chunked is also present"
+        );
+        // And it must not survive in the original-order tracker either
+        let originals = msg
+            .head
+            .extensions
+            .get_ref::<OriginalHttp1Headers>()
+            .unwrap();
+        assert!(
+            originals
+                .iter()
+                .all(|h| h.header_name() != header::CONTENT_LENGTH),
+            "Content-Length must not be present in OriginalHttp1Headers"
+        );
+
+        // TE chunked before CL — same expectation
+        let msg = parse(
+            "\
+             POST / HTTP/1.1\r\n\
+             host: x\r\n\
+             transfer-encoding: chunked\r\n\
+             content-length: 10\r\n\
+             \r\n\
+             ",
+        );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(
+            !msg.head.headers.contains_key("content-length"),
+            "Content-Length must not be appended after TE chunked"
+        );
+    }
+
+    /// RFC 9112 §6.1: `chunked` MUST NOT be applied more than once.
+    #[test]
+    fn test_reject_duplicate_chunked_transfer_encoding() {
+        fn parse_err(s: &str, comment: &str) -> crate::error::Parse {
+            let mut bytes = BytesMut::from(s);
+            Server::parse(
+                &mut bytes,
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .expect_err(comment)
+        }
+
+        parse_err(
+            "\
+             POST / HTTP/1.1\r\n\
+             transfer-encoding: chunked, chunked\r\n\
+             \r\n\
+             ",
+            "duplicate chunked in single TE value",
+        );
+    }
+
+    /// Even when TE is seen before CL we still validate CL syntactically;
+    /// a malformed CL is a malformed message regardless of TE.
+    #[test]
+    fn test_malformed_cl_still_rejected_after_te() {
+        fn parse_err(s: &str, comment: &str) -> crate::error::Parse {
+            let mut bytes = BytesMut::from(s);
+            Server::parse(
+                &mut bytes,
+                ParseContext {
+                    req_method: &mut None,
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .expect_err(comment)
+        }
+
+        parse_err(
+            "\
+             POST / HTTP/1.1\r\n\
+             transfer-encoding: chunked\r\n\
+             content-length: +10\r\n\
+             \r\n\
+             ",
+            "malformed CL after TE must still be rejected",
+        );
+    }
+
     #[test]
     fn test_decoder_response_request_extensions() {
         let request_exts = Extensions::new();
-
         request_exts.insert(UpstreamRequestId(42));
+
+        let prepared = request_exts.fork();
 
         let mut bytes = BytesMut::from(
             "\
@@ -1929,7 +2100,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(request_exts),
+                prepared_extensions: &mut Some(prepared),
             },
         )
         .expect("parse ok")
@@ -1939,8 +2110,6 @@ mod tests {
             42u64,
             msg.head
                 .extensions
-                .get_ref::<RequestExtensions>()
-                .unwrap()
                 .get_ref::<UpstreamRequestId>()
                 .map(|request_id| request_id.0)
                 .unwrap()
@@ -1967,7 +2136,7 @@ mod tests {
                         h1_max_headers: None,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     }
                 )
                 .expect("parse ok")
@@ -1985,7 +2154,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect("parse ok")
@@ -2002,7 +2171,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
-                    extensions: &mut Some(Extensions::default()),
+                    prepared_extensions: &mut Some(Extensions::default()),
                 },
             )
             .expect_err("parse should err")
@@ -2596,7 +2765,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                extensions: &mut Some(Extensions::default()),
+                prepared_extensions: &mut Some(Extensions::default()),
             },
         )
         .expect("parse ok")
@@ -2635,7 +2804,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
                 if should_success {
@@ -2655,7 +2824,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
-                        extensions: &mut Some(Extensions::default()),
+                        prepared_extensions: &mut Some(Extensions::default()),
                     },
                 );
                 if should_success {
@@ -2795,5 +2964,84 @@ mod tests {
         assert!(values.next().is_none());
 
         assert_eq!(dst, b"X-Empty: a\r\nX-EMPTY: b\r\n");
+    }
+
+    /// RFC 9112 §6.1: a *response* carrying both `Content-Length` and
+    /// `Transfer-Encoding: chunked` must process per Transfer-Encoding and
+    /// MUST NOT forward the CL — same smuggling-prevention rule as the
+    /// request side, but on the proxy's downstream return path.
+    #[test]
+    fn test_response_strip_content_length_when_te_chunked() {
+        fn parse(s: &str) -> ParsedMessage<StatusCode> {
+            let mut bytes = BytesMut::from(s);
+            Client::parse(
+                &mut bytes,
+                ParseContext {
+                    req_method: &mut Some(Method::GET),
+                    h1_parser_config: Default::default(),
+                    h1_max_headers: None,
+                    h09_responses: false,
+                    on_informational: &mut None,
+                    prepared_extensions: &mut Some(Extensions::default()),
+                },
+            )
+            .expect("parse ok")
+            .expect("parse complete")
+        }
+
+        // TE chunked before CL
+        let msg = parse(
+            "\
+             HTTP/1.1 200 OK\r\n\
+             transfer-encoding: chunked\r\n\
+             content-length: 9999\r\n\
+             \r\n\
+             ",
+        );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(
+            !msg.head.headers.contains_key("content-length"),
+            "Content-Length must be stripped from response when TE chunked is present"
+        );
+
+        // CL before TE chunked
+        let msg = parse(
+            "\
+             HTTP/1.1 200 OK\r\n\
+             content-length: 9999\r\n\
+             transfer-encoding: chunked\r\n\
+             \r\n\
+             ",
+        );
+        assert_eq!(msg.decode, DecodedLength::CHUNKED);
+        assert!(
+            !msg.head.headers.contains_key("content-length"),
+            "Content-Length must be stripped from response when TE chunked appears after CL"
+        );
+    }
+
+    /// RFC 9112 §6.1: `chunked` MUST NOT be applied more than once — same
+    /// rule on response parsing.
+    #[test]
+    fn test_response_reject_duplicate_chunked() {
+        let mut bytes = BytesMut::from(
+            "\
+             HTTP/1.1 200 OK\r\n\
+             transfer-encoding: chunked, chunked\r\n\
+             \r\n\
+             ",
+        );
+        Client::parse(
+            &mut bytes,
+            ParseContext {
+                req_method: &mut Some(Method::GET),
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut Some(Extensions::default()),
+            },
+        )
+        .expect_err("response with duplicate chunked must be rejected");
     }
 }

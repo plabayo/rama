@@ -6,6 +6,7 @@ use rama::{
     futures::async_stream::stream_fn,
     http::{
         Body, Request, Response, StatusCode,
+        body::util::BodyExt as _,
         header::SEC_WEBSOCKET_VERSION,
         headers::ContentType,
         layer::{
@@ -120,6 +121,72 @@ fn http_app(
                     }
                 }
             })
+            .with_get("/large", {
+                let observations = Arc::clone(observations);
+                move |req: Request| {
+                    let observations = Arc::clone(&observations);
+                    async move {
+                        record_http_observation(observations, &req).await;
+                        // Pseudo-random body sized via `?kb=N` (default 4096 = 4 MiB).
+                        // Used to exercise the symmetric-backpressure path that fired
+                        // ENOBUFS for large h2 responses (`go mod download` etc.) before
+                        // the writer pumps were bounded with drain signaling.
+                        let size_kb = req
+                            .uri()
+                            .query()
+                            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("kb=")))
+                            .and_then(|v| v.parse::<usize>().ok())
+                            .unwrap_or(4096)
+                            .min(64 * 1024); // cap at 64 MiB to keep test runtime sane
+                        let total = size_kb * 1024;
+                        let body = Body::from_stream(stream_fn(move |mut yielder| async move {
+                            // 16 KiB chunks — same shape as the bridge's read buffer.
+                            let chunk_size: usize = 16 * 1024;
+                            let mut sent: usize = 0;
+                            let mut counter: u8 = 0;
+                            while sent < total {
+                                let remaining = total - sent;
+                                let n = remaining.min(chunk_size);
+                                let chunk: Vec<u8> = (0..n)
+                                    .map(|i| counter.wrapping_add(i as u8))
+                                    .collect();
+                                counter = counter.wrapping_add(n as u8);
+                                sent += n;
+                                yielder
+                                    .yield_item(Ok::<_, io::Error>(RamaBytes::from(chunk)))
+                                    .await;
+                            }
+                        }));
+                        (Headers::single(ContentType::octet_stream()), body).into_response()
+                    }
+                }
+            })
+            .with_post("/echo", {
+                let observations = Arc::clone(observations);
+                move |req: Request| {
+                    let observations = Arc::clone(&observations);
+                    async move {
+                        record_http_observation(observations, &req).await;
+                        // Drain the request body and report the byte count back as a
+                        // header. Used to exercise the ingress→service backpressure
+                        // path with a large upload while other small flows run in
+                        // parallel — pre-#887 a slow drain here would stall every
+                        // other flow on the bridge.
+                        let body = req.into_body();
+                        let bytes = body
+                            .collect()
+                            .await
+                            .map(|c| c.to_bytes())
+                            .unwrap_or_default();
+                        let len = bytes.len();
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("x-echo-len", len.to_string())
+                            .body(Body::empty())
+                            .expect("build echo response")
+                    }
+                }
+            })
             .with_get("/sse", {
                 let observations = Arc::clone(observations);
                 move |req: Request| {
@@ -158,18 +225,24 @@ fn http_app(
     )
 }
 
-pub(crate) async fn spawn_http_server(observations: SharedObservations) -> u16 {
+pub(crate) async fn spawn_http_server(
+    observations: SharedObservations,
+) -> (u16, tokio::task::JoinHandle<()>) {
     let mut server = HttpServer::auto(Executor::default());
     server.h2_mut().set_enable_connect_protocol();
     let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .expect("bind plain http server");
     let port = listener.local_addr().expect("plain http local addr").port();
-    tokio::spawn(listener.serve(server.service(http_app(&observations))));
-    port
+    let handle = tokio::spawn(async move {
+        let _ = listener.serve(server.service(http_app(&observations))).await;
+    });
+    (port, handle)
 }
 
-pub(crate) async fn spawn_https_server(observations: SharedObservations) -> u16 {
+pub(crate) async fn spawn_https_server(
+    observations: SharedObservations,
+) -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
@@ -185,10 +258,12 @@ pub(crate) async fn spawn_https_server(observations: SharedObservations) -> u16 
         .await
         .expect("bind https server");
     let port = listener.local_addr().expect("https local addr").port();
-    tokio::spawn(listener.serve(
-        TlsAcceptorLayer::new(tls_data).into_layer(server.service(http_app(&observations))),
-    ));
-    port
+    let handle = tokio::spawn(async move {
+        let _ = listener
+            .serve(TlsAcceptorLayer::new(tls_data).into_layer(server.service(http_app(&observations))))
+            .await;
+    });
+    (port, handle)
 }
 
 async fn record_http_observation(observations: SharedObservations, req: &Request) {
@@ -202,12 +277,12 @@ async fn record_http_observation(observations: SharedObservations, req: &Request
     });
 }
 
-pub(crate) async fn spawn_raw_tcp_echo() -> u16 {
+pub(crate) async fn spawn_raw_tcp_echo() -> (u16, tokio::task::JoinHandle<()>) {
     let listener = TokioTcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind raw tcp echo");
     let port = listener.local_addr().expect("raw tcp local addr").port();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
@@ -224,10 +299,10 @@ pub(crate) async fn spawn_raw_tcp_echo() -> u16 {
             });
         }
     });
-    port
+    (port, handle)
 }
 
-pub(crate) async fn spawn_raw_tls_echo() -> u16 {
+pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
@@ -240,12 +315,14 @@ pub(crate) async fn spawn_raw_tls_echo() -> u16 {
         .await
         .expect("bind raw tls echo");
     let port = listener.local_addr().expect("raw tls local addr").port();
-    tokio::spawn(
-        listener.serve(TlsAcceptorLayer::new(tls_data).into_layer(service_fn(
-            |stream| async move { tls_echo_service(stream).await },
-        ))),
-    );
-    port
+    let handle = tokio::spawn(async move {
+        let _ = listener
+            .serve(TlsAcceptorLayer::new(tls_data).into_layer(service_fn(
+                |stream| async move { tls_echo_service(stream).await },
+            )))
+            .await;
+    });
+    (port, handle)
 }
 
 async fn tls_echo_service<S>(mut stream: S) -> Result<(), io::Error>
@@ -262,10 +339,10 @@ where
     }
 }
 
-pub(crate) async fn spawn_udp_echo() -> u16 {
+pub(crate) async fn spawn_udp_echo() -> (u16, tokio::task::JoinHandle<()>) {
     let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind udp echo");
     let port = socket.local_addr().expect("udp local addr").port();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         let mut buf = [0_u8; 2048];
         loop {
             let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
@@ -280,10 +357,10 @@ pub(crate) async fn spawn_udp_echo() -> u16 {
             }
         }
     });
-    port
+    (port, handle)
 }
 
-pub(crate) async fn spawn_combined_proxy() -> u16 {
+pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>) {
     let exec = Executor::default();
     let mut http_server = HttpServer::auto(exec.clone());
     http_server.h2_mut().set_enable_connect_protocol();
@@ -297,7 +374,7 @@ pub(crate) async fn spawn_combined_proxy() -> u16 {
             DefaultHttpProxyConnectReplyService::new(),
             ConsumeErrLayer::trace_as_debug().into_layer(
                 IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
-                    .into_layer(IoForwardService::new()),
+                    .into_layer(IoForwardService::new(exec.clone())),
             ),
         )
         .into_layer(service_fn(http_plain_proxy)),
@@ -308,10 +385,12 @@ pub(crate) async fn spawn_combined_proxy() -> u16 {
         .expect("bind proxy listener");
     let port = listener.local_addr().expect("proxy local addr").port();
 
-    tokio::spawn(
-        listener.serve(Socks5PeekRouter::new(Socks5Acceptor::default()).with_fallback(http_proxy)),
-    );
-    port
+    let handle = tokio::spawn(async move {
+        let _ = listener
+            .serve(Socks5PeekRouter::new(Socks5Acceptor::default()).with_fallback(http_proxy))
+            .await;
+    });
+    (port, handle)
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
@@ -327,7 +406,7 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         let ws_client = HttpUpgradeMitmRelayLayer::new(
             Executor::default(),
             HttpWebSocketRelayServiceRequestMatcher::new(
-                ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::new()),
+                ConsumeErrLayer::trace_as_debug().into_layer(IoForwardService::default()),
             ),
         )
         .into_layer(inner_client);

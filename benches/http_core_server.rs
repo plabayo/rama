@@ -1,3 +1,9 @@
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::allow_attributes,
+    reason = "bench: panic-on-error is the standard pattern for harnesses"
+)]
 #![deny(warnings)]
 
 use std::io::{Read, Write};
@@ -63,7 +69,7 @@ macro_rules! bench_server {
                 });
 
                 addr_tx.send(addr).unwrap();
-                rt.block_on(until_rx).ok();
+                _ = rt.block_on(until_rx);
             });
 
             addr_rx.recv().unwrap()
@@ -157,7 +163,7 @@ fn raw_tcp_throughput_small_payload(b: divan::Bencher) {
 
         let mut buf = [0u8; 8192];
         while rx.try_recv().is_err() {
-            let _ = sock.read(&mut buf).unwrap();
+            _ = sock.read(&mut buf).unwrap();
             sock.write_all(
                 b"\
                 HTTP/1.1 200 OK\r\n\

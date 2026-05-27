@@ -1,3 +1,10 @@
+#![expect(
+    clippy::panic,
+    clippy::unreachable,
+    clippy::allow_attributes,
+    reason = "vendored from upstream `h2`: matches upstream invariant-violation panicking style"
+)]
+
 use super::{Header, header::BytesStr, huffman};
 use crate::proto::h2::frame;
 use crate::{

@@ -66,13 +66,20 @@ impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerNa
     type Error = BoxError;
 
     fn rama_try_from(value: Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str().to_owned())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
+        // Try IP first (cheaper — no allocation, no IDN). `Uninterpreted`
+        // bridges via the typed accessors; non-promotable inputs
+        // (sub-delim reg-name, IPvFuture) error — rustls's ServerName
+        // grammar doesn't model them.
+        if let Ok(ip) = value.try_as_ip() {
+            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
         }
+        let domain = value
+            .try_into_domain()
+            .context("host is not a domain or IP for rustls ServerName")?;
+        Ok(rustls::pki_types::ServerName::DnsName(
+            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                .context("convert domain to rustls (PKI) ServerName")?,
+        ))
     }
 }
 
@@ -97,13 +104,22 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
     type Error = BoxError;
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress((*ip).into())),
+        // Try IP first; fall through to Domain. `Uninterpreted` bridges
+        // via the typed accessors.
+        if let Ok(ip) = value.try_as_ip() {
+            return Ok(rustls::pki_types::ServerName::IpAddress(ip.into()));
         }
+        let domain = value
+            .try_as_domain()
+            .context("host is not a domain or IP for rustls ServerName")?;
+        // `Cow::Borrowed` (Name) → `DnsName::try_from(&str)` zero-copy.
+        // `Cow::Owned` (Uninterpreted bridge) → pass through the same
+        // owned-string path. `Cow::as_ref().as_str()` produces the
+        // right `&str` for either branch.
+        Ok(rustls::pki_types::ServerName::DnsName(
+            rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
+                .context("convert domain to rustls (PKI) ServerName")?,
+        ))
     }
 }
 
@@ -173,5 +189,47 @@ mod tests {
         assert_eq!(p, ProtocolVersion::TLSv1_3);
         let p = rustls::ProtocolVersion::rama_from(p);
         assert_eq!(p, rustls::ProtocolVersion::TLSv1_3);
+    }
+
+    // ---- Uninterpreted host promotion fallback (audit M3 / C13) ----------
+    //
+    // Both the owned and borrowed `Host → ServerName` conversions retry
+    // `Domain::try_from` on `Uninterpreted` hosts so a pct-encoded or
+    // IDN reg-name reaches the TLS layer as a proper `DnsName` rather
+    // than tripping the AddressTypeNotSupported / OpaqueError path.
+
+    #[test]
+    fn owned_host_uninterpreted_recovers_to_dns_name() {
+        let host = Host::try_from("exa%6Dple.com").unwrap();
+        assert!(matches!(host, Host::Uninterpreted(_)));
+        let sn = rustls::pki_types::ServerName::rama_try_from(host).unwrap();
+        match sn {
+            rustls::pki_types::ServerName::DnsName(dns) => {
+                assert_eq!(dns.as_ref(), "example.com");
+            }
+            other => panic!("expected DnsName from pct-encoded Uninterpreted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn borrowed_host_uninterpreted_recovers_to_dns_name() {
+        let host = Host::try_from("exa%6Dple.com").unwrap();
+        // Borrowed-input conversion (the audit added this recovery
+        // branch — used to error unconditionally).
+        let sn = rustls::pki_types::ServerName::rama_try_from(&host).unwrap();
+        match sn {
+            rustls::pki_types::ServerName::DnsName(dns) => {
+                assert_eq!(dns.as_ref(), "example.com");
+            }
+            other => panic!("expected DnsName from pct-encoded Uninterpreted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn host_uninterpreted_bracketed_ipvfuture_still_errors() {
+        // No typed recovery is possible for IPvFuture — must surface
+        // the conversion error rather than emitting a bogus DnsName.
+        let host = Host::try_from("[v1.fe80::a]").unwrap();
+        rustls::pki_types::ServerName::rama_try_from(host).unwrap_err();
     }
 }

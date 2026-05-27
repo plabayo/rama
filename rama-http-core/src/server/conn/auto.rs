@@ -619,7 +619,7 @@ mod tests {
         let addr = start_server(false, true).await;
         let mut sender = connect_h1(addr).await;
 
-        let _ = sender
+        _ = sender
             .send_request(Request::new(Empty::<Bytes>::new()))
             .await
             .expect_err("should fail");
@@ -647,7 +647,7 @@ mod tests {
         let addr = start_server(true, false).await;
         let mut sender = connect_h2(addr).await;
 
-        let _ = sender
+        _ = sender
             .send_request(Request::new(Empty::<Bytes>::new()))
             .await
             .expect_err("should fail");

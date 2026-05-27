@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic,
+    reason = "vendored from upstream `http`: matches upstream invariant-violation panicking style"
+)]
+
 use ahash::HashMap;
 use std::borrow::Cow;
 
@@ -115,6 +120,24 @@ impl Http1HeaderMap {
         self.headers.append(header_name, value);
         self.original_headers.push(original_header);
         Ok(())
+    }
+
+    /// Remove every entry matching `name` from both the underlying
+    /// [`HeaderMap`] and the [`OriginalHttp1Headers`] order list.
+    ///
+    /// Returns the number of entries removed.
+    pub fn remove_all(&mut self, name: &HeaderName) -> usize {
+        let removed = match self.headers.entry(name) {
+            header::Entry::Occupied(occ) => {
+                let (_, values) = occ.remove_entry_mult();
+                values.count()
+            }
+            header::Entry::Vacant(_) => 0,
+        };
+        if removed > 0 {
+            self.original_headers.retain(|h| h.header_name() != name);
+        }
+        removed
     }
 }
 
@@ -483,12 +506,12 @@ mod tests {
         map.insert(header::CONTENT_TYPE, "json".parse().unwrap());
 
         let mut iter = map.into_iter().peekable();
-        let _ = iter.peek();
+        _ = iter.peek();
         assert_eq!(
             iter.next(),
             Some((Some(header::CONTENT_LENGTH), "123".parse().unwrap()))
         );
-        let _ = iter.peek();
+        _ = iter.peek();
         assert_eq!(
             iter.next(),
             Some((Some(header::CONTENT_TYPE), "json".parse().unwrap()))
@@ -578,5 +601,29 @@ mod tests {
         }, {
             "x-Hello": "world",
         })
+    }
+
+    #[test]
+    fn remove_all_clears_both_map_and_order() {
+        let mut map = Http1HeaderMap::default();
+        map.append(header::CONTENT_LENGTH, HeaderValue::from_static("10"));
+        map.append(header::HOST, HeaderValue::from_static("x"));
+        map.append(header::CONTENT_LENGTH, HeaderValue::from_static("20"));
+
+        assert_eq!(map.remove_all(&header::CONTENT_LENGTH), 2);
+        assert!(!map.contains_key(header::CONTENT_LENGTH));
+        // host survives
+        assert!(map.contains_key(header::HOST));
+        // OriginalHttp1Headers retains only host
+        let (_h, order) = map.into_parts();
+        let names: Vec<_> = order.iter().map(|h| h.as_str().to_owned()).collect();
+        assert_eq!(names, vec!["host".to_owned()]);
+    }
+
+    #[test]
+    fn remove_all_on_missing_is_zero() {
+        let mut map = Http1HeaderMap::default();
+        map.append(header::HOST, HeaderValue::from_static("x"));
+        assert_eq!(map.remove_all(&header::CONTENT_LENGTH), 0);
     }
 }

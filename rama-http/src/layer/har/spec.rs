@@ -39,7 +39,7 @@ mod mime_serde {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
     use std::{borrow::Cow, str::FromStr};
 
-    #[allow(clippy::ref_option)]
+    #[expect(clippy::ref_option)]
     pub(super) fn serialize<S>(mime: &Option<Mime>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,

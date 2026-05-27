@@ -33,7 +33,7 @@ where
     ) -> Result<Self, Self::Rejection> {
         Ok(Self(
             RequestContext::try_from(parts)
-                .map_err(|_| MissingAuthority)?
+                .map_err(|_e| MissingAuthority)?
                 .authority,
         ))
     }

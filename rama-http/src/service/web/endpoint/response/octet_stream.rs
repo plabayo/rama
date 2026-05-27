@@ -158,7 +158,7 @@ impl<S> OctetStream<S> {
     {
         let body = Body::from_stream(self.stream);
         let content_range =
-            ContentRange::bytes(range, self.content_size).map_err(|_| Error::invalid())?;
+            ContentRange::bytes(range, self.content_size).map_err(|_e| Error::invalid())?;
 
         let mut response = (
             StatusCode::PARTIAL_CONTENT,

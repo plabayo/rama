@@ -63,7 +63,7 @@ impl RequestContext {
     /// Check if the authority is using the default port for the [`Protocol`] set in this [`RequestContext`]
     #[must_use]
     pub fn authority_has_default_port(&self) -> bool {
-        self.protocol.default_port() == self.authority.port
+        self.protocol.default_port() == self.authority.port.as_u16()
     }
 }
 
@@ -111,7 +111,11 @@ pub fn try_request_ctx_from_http_parts(
                 .extensions()
                 .get_ref::<ProxyTarget>()
                 .and_then(|t| {
-                    t.0.host.is_domain().then(|| {
+                    // Bridge `Uninterpreted` reg-names (`exa%6Dple.com`)
+                    // to Domain so they participate in the proxy-target
+                    // fallback. `is_domain()` was variant-only and
+                    // missed these.
+                    t.0.host.try_as_domain().ok().map(|_| {
                         let authority = t.0.clone().into();
                         tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
                         authority
@@ -132,7 +136,7 @@ pub fn try_request_ctx_from_http_parts(
             parts.extensions().get_ref::<Forwarded>().and_then(|f| {
                 f.client_host().map(|fauth| {
                     let HostWithOptPort { host, port } = fauth.0.clone();
-                    let port = port.unwrap_or(default_port);
+                    let port = port.as_u16().unwrap_or(default_port);
                     tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
                     (host, port).into()
                 })
@@ -173,7 +177,6 @@ pub fn try_request_ctx_from_http_parts(
     })
 }
 
-#[allow(clippy::unnecessary_lazy_evaluations)]
 fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
     uri.scheme().map(Protocol::from).or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
@@ -200,6 +203,7 @@ impl RequestContext {
         let port = self
             .authority
             .port
+            .as_u16()
             .or_else(|| self.protocol.default_port())
             .unwrap_or(Protocol::HTTP_DEFAULT_PORT);
         let host = self.authority.host.clone();

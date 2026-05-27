@@ -18,14 +18,14 @@ mod tests {
     async fn decompress_accepted_encoding() {
         let req = request_gzip();
         let svc = RequestDecompression::new(service_fn(assert_request_is_decompressed));
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn support_unencoded_body() {
         let req = Request::builder().body(Body::from("Hello?")).unwrap();
         let svc = RequestDecompression::new(service_fn(assert_request_is_decompressed));
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -42,7 +42,7 @@ mod tests {
         let svc = RequestDecompression::new(service_fn(assert_request_is_passed_through))
             .with_pass_through_unaccepted(true)
             .with_gzip(false);
-        let _ = svc.serve(req).await.unwrap();
+        _ = svc.serve(req).await.unwrap();
     }
 
     async fn assert_request_is_decompressed(

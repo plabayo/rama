@@ -112,8 +112,10 @@
 //! increase on both the `output` and `prerouting` rules.
 
 #[cfg(not(target_os = "linux"))]
-fn main() {
-    eprintln!("the linux_tproxy_tcp example only supports Linux");
+fn main() -> Result<(), rama::error::extra::OpaqueError> {
+    Err(rama::error::extra::OpaqueError::from_static_str(
+        "the linux_tproxy_tcp example only supports Linux",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -191,8 +193,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("make sure Linux policy routing and TPROXY rules are installed first");
 
     let service = ProxyTargetFromGetSocketnameLayer::new().into_layer(service_fn({
-        let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec)
-            .into_layer(IoForwardService::new());
+        let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
+            .into_layer(IoForwardService::new(exec));
         move |stream: TcpStream| {
             let forward = forward.clone();
             async move {

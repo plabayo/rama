@@ -147,7 +147,12 @@ where
     )
     .await;
 
-    let new_peek_size = peek_size - TLS_HEADER_PEEK_LEN;
+    // `saturating_sub`: `peek_input_until_with_offset` is expected to return
+    // a `peek_size` greater than or equal to the offset we passed in
+    // (`TLS_HEADER_PEEK_LEN`), but treating the boundary defensively matches
+    // the convention used at line 110 above and avoids an arithmetic
+    // underflow if that contract is ever broken.
+    let new_peek_size = peek_size.saturating_sub(TLS_HEADER_PEEK_LEN);
     if new_peek_size != n {
         tracing::trace!(
             peek_size = new_peek_size,
@@ -360,7 +365,7 @@ mod test {
             }: InputWithClientHello<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
-            let _ = input.read_to_end(&mut v).await?;
+            _ = input.read_to_end(&mut v).await?;
             assert_eq!(CH_ONE_ONE_ONE_ONE, v);
             assert!(client_hello.ext_server_name().is_some());
             assert_eq!(
@@ -399,7 +404,7 @@ mod test {
 
             async fn plain_service_fn(mut stream: impl Io + Unpin) -> Result<Vec<u8>, BoxError> {
                 let mut v = Vec::default();
-                let _ = stream.read_to_end(&mut v).await?;
+                _ = stream.read_to_end(&mut v).await?;
                 Ok(v)
             }
             let plain_service = service_fn(plain_service_fn);
@@ -427,7 +432,7 @@ mod test {
             }: InputWithClientHello<impl Io + Unpin>,
         ) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
-            let _ = input.read_to_end(&mut v).await?;
+            _ = input.read_to_end(&mut v).await?;
             assert_eq!(TLS_BUT_NO_SNI, v);
             assert!(client_hello.ext_server_name().is_none());
             Ok("ok")

@@ -140,7 +140,10 @@ fn decode_frame(
     tracing::trace!("decoding frame from {}B", bytes.len());
 
     // Parse the head
-    let head = frame::Head::parse(&bytes);
+    let head = frame::Head::parse(&bytes).map_err(|e| {
+        proto_err!(conn: "failed to parse frame head; err={:?}", e);
+        Error::library_go_away(Reason::PROTOCOL_ERROR)
+    })?;
 
     if partial_inout.is_some() && head.kind() != Kind::Continuation {
         proto_err!(conn: "expected CONTINUATION, got {:?}", head.kind());
@@ -211,7 +214,13 @@ fn decode_frame(
 
             res.map_err(|e| {
                 proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
-                Error::library_go_away(Reason::PROTOCOL_ERROR)
+                // RFC 9113 §6.5.2: SETTINGS_INITIAL_WINDOW_SIZE > 2^31-1
+                // MUST be treated as a FLOW_CONTROL_ERROR.
+                let reason = match e {
+                    frame::Error::InvalidInitialWindowSize => Reason::FLOW_CONTROL_ERROR,
+                    _ => Reason::PROTOCOL_ERROR,
+                };
+                Error::library_go_away(reason)
             })?
             .into()
         }
@@ -406,7 +415,7 @@ where
                 partial,
                 bytes,
             )? {
-                tracing::debug!("frame received: {frame:?}");
+                tracing::trace!("frame received: {frame:?}");
                 return Poll::Ready(Some(Ok(frame)));
             }
         }

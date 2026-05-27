@@ -1,5 +1,7 @@
 mod utils;
 
+#[cfg(all(feature = "fastcgi", feature = "http-full"))]
+mod fastcgi_reverse_proxy;
 #[cfg(all(feature = "haproxy", feature = "http-full"))]
 mod haproxy_client_ip;
 #[cfg(feature = "http-full")]
@@ -10,6 +12,8 @@ mod http_anti_bot_infinite_resource;
 mod http_anti_bot_zip_bomb;
 #[cfg(feature = "http-full")]
 mod http_connect_proxy;
+#[cfg(feature = "http-full")]
+mod http_declarative_partial_updates;
 #[cfg(feature = "http-full")]
 mod http_form;
 #[cfg(feature = "http-full")]
@@ -52,6 +56,8 @@ mod http_mitm_proxy_rustls;
     feature = "boring"
 ))]
 mod http_mitm_relay_proxy_boring;
+#[cfg(feature = "http-full")]
+mod http_multipart;
 #[cfg(feature = "http-full")]
 mod http_nd_json;
 #[cfg(feature = "http-full")]
@@ -114,6 +120,8 @@ mod tls_sni_proxy_mitm;
 mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
+#[cfg(all(feature = "udp", feature = "tcp"))]
+mod udp_over_tcp;
 #[cfg(feature = "http-full")]
 mod ws_chat_server;
 #[cfg(feature = "http-full")]
@@ -177,3 +185,8 @@ mod tls_boring_termination;
     feature = "http-full"
 ))]
 mod tls_rustls_termination;
+
+#[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
+mod xpc_ca_exchange;
+#[cfg(all(feature = "net-apple-xpc", target_vendor = "apple"))]
+mod xpc_echo;

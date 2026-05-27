@@ -5,7 +5,6 @@ use std::borrow::Cow;
 
 macro_rules! impl_uri_match_replace_on_tuple {
     ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
         impl<$($ty),+> UriMatchReplace for ($($ty),+,)
         where
             $(

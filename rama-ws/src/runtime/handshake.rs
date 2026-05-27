@@ -39,7 +39,7 @@ where
     type Output = WebSocket<AllowStd<S>>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "Polling convention makes this semi-ok; we can always revisit later if needed"
         )]

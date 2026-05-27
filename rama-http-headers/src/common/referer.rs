@@ -59,7 +59,7 @@ impl FromStr for Referer {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(Referer)
-            .map_err(|_| InvalidReferer)
+            .map_err(|_e| InvalidReferer)
     }
 }
 

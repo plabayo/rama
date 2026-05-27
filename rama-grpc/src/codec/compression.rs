@@ -234,7 +234,6 @@ fn split_by_comma(s: &str) -> impl Iterator<Item = &str> {
 
 /// Compress `len` bytes from `decompressed_buf` into `out_buf`.
 /// buffer_size_increment is a hint to control the growth of out_buf versus the cost of resizing it.
-#[allow(unused_variables, unreachable_code)]
 pub(crate) fn compress(
     settings: CompressionSettings,
     decompressed_buf: &mut BytesMut,
@@ -282,7 +281,6 @@ pub(crate) fn compress(
 }
 
 /// Decompress `len` bytes from `compressed_buf` into `out_buf`.
-#[allow(unused_variables, unreachable_code)]
 pub(crate) fn decompress(
     settings: CompressionSettings,
     compressed_buf: &mut BytesMut,

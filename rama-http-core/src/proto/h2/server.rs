@@ -90,7 +90,7 @@ pin_project! {
 
 // TODO: revisit later to see if we really want this
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
         ping_config: ping::Config,
@@ -222,7 +222,7 @@ impl<T> Serving<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + ExtensionsRef,
 {
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     fn poll_server<S>(
         &mut self,
         cx: &mut Context<'_>,
@@ -249,6 +249,7 @@ where
                     ping.record_non_data();
 
                     let is_connect = req.method() == Method::CONNECT;
+                    let is_head = req.method() == Method::HEAD;
                     let (parts, stream) = req.into_parts();
                     let (req, connect_parts) = if !is_connect {
                         (
@@ -298,6 +299,7 @@ where
                         connect_parts,
                         respond,
                         self.date_header,
+                        is_head,
                         exec.clone(),
                     );
 
@@ -345,7 +347,6 @@ where
 }
 
 pin_project! {
-    #[allow(missing_debug_implementations)]
     pub struct H2Stream<F, B>
     where
         B: StreamingBody,
@@ -360,6 +361,7 @@ pin_project! {
         #[pin]
         state: H2StreamState<F, B>,
         date_header: bool,
+        is_head: bool,
         exec: Executor,
     }
 }
@@ -403,12 +405,14 @@ where
         connect_parts: Option<ConnectParts>,
         respond: SendResponse<SendBuf<B::Data>>,
         date_header: bool,
+        is_head: bool,
         exec: Executor,
     ) -> Self {
         Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
             date_header,
+            is_head,
             exec,
         }
     }
@@ -502,6 +506,18 @@ where
                             .pending
                             .fulfill(Upgraded::new(h2_up, Bytes::new()));
                         self.exec.spawn_task(up_task);
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    // RFC 9110 §9.3.2: the server MUST NOT send a message body
+                    // for HEAD responses. Forward Content-Length so the client
+                    // knows what a GET would return, but close the stream with
+                    // END_STREAM immediately (no DATA frames).
+                    if *me.is_head {
+                        if let Some(len) = body.size_hint().exact() {
+                            headers::set_content_length_if_missing(res.headers_mut(), len);
+                        }
+                        reply!(me, res, true);
                         return Poll::Ready(Ok(()));
                     }
 

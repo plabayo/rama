@@ -35,7 +35,14 @@ pub use typed_header::TypedHeader;
 
 pub mod body;
 #[doc(inline)]
-pub use body::{Body, Bytes, Csv, Form, Json, Text};
+pub use body::{Body, Bytes, Csv, Form, Json, OctetStream, Text};
+
+#[cfg(feature = "multipart")]
+#[doc(inline)]
+pub use body::multipart;
+#[cfg(feature = "multipart")]
+#[doc(inline)]
+pub use body::multipart::Multipart;
 
 pub mod datastar;
 

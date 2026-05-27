@@ -196,7 +196,7 @@ impl AsyncRead for H2Upgraded {
         let cnt = std::cmp::min(self.buf.len(), read_buf.remaining());
         read_buf.put_slice(&self.buf[..cnt]);
         self.buf.advance(cnt);
-        let _ = self.recv_stream.flow_control().release_capacity(cnt);
+        _ = self.recv_stream.flow_control().release_capacity(cnt);
         Poll::Ready(Ok(()))
     }
 }

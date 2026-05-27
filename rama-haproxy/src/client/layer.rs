@@ -5,7 +5,7 @@ use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::{ChainableExtensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     io::Io,
 };
 use rama_net::{
@@ -75,13 +75,62 @@ impl HaProxyLayer<protocol::Udp> {
 
 impl<P> HaProxyLayer<P> {
     rama_utils::macros::generate_set_and_with! {
-        /// Attach a custom bytes payload to the PROXY header.
+        /// Attach a raw bytes payload to the PROXY v2 header, written
+        /// verbatim after the address block.
+        ///
+        /// **Wire-format hazard.** Spec section 2.2 says everything after the
+        /// address block is a sequence of TLVs. If your bytes are not valid
+        /// TLV encoding, conforming receivers (including rama's server) will
+        /// either reject the connection or mis-parse the data. Prefer
+        /// [`Self::tlv`] for anything spec-compliant; treat `payload` as a
+        /// raw escape hatch for testing.
+        ///
+        /// In particular, **combining `payload` with [`Self::crc32c`] is
+        /// rejected at send time**: the CRC32C TLV would be appended after
+        /// the raw payload, which means the receiver would try to interpret
+        /// the payload as TLVs, fail, and the CRC would be computed over a
+        /// header the receiver can't validate. Use TLVs instead.
         ///
         /// NOTE this is only possible in Version two of the PROXY Protocol.
         /// In case you downgrade this [`HaProxyLayer`] to version one later
         /// using [`Self::v1`] this payload will be dropped.
         pub fn payload(mut self, payload: impl Into<Bytes>) -> Self {
             self.version.payload = Some(payload.into());
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a Type-Length-Value entry to the emitted v2 header.
+        ///
+        /// Call this once per TLV; entries are written in insertion order.
+        /// Queuing a [`v2::Type::CRC32C`] entry here is rejected at send
+        /// time — a CRC value must be computed over the final header bytes,
+        /// so use [`Self::crc32c`] instead.
+        ///
+        /// NOTE this is only possible in Version two of the PROXY Protocol.
+        /// On downgrade to v1 via [`Self::v1`] all TLVs are dropped.
+        pub fn tlv(mut self, kind: v2::Type, value: impl Into<Bytes>) -> Self {
+            self.version.tlvs.push((kind, value.into()));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle automatic emission of a valid `PP2_TYPE_CRC32C` TLV.
+        ///
+        /// When enabled, the CRC is computed over the final header (with the
+        /// CRC field zeroed during computation, per spec section 2.2.5) and
+        /// appended as the last TLV. Receivers that enforce CRC verification
+        /// (rama's server default) will accept the header.
+        ///
+        /// Incompatible with [`Self::payload`]: setting both is rejected at
+        /// send time because the raw payload would sit between the TLVs and
+        /// the CRC32C TLV, which standards-conforming receivers cannot parse.
+        ///
+        /// NOTE this is only possible in Version two of the PROXY Protocol.
+        pub fn crc32c(mut self, enabled: bool) -> Self {
+            self.version.crc32c = enabled;
             self
         }
     }
@@ -178,6 +227,24 @@ impl<S, P> HaProxyService<S, P> {
             self
         }
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a Type-Length-Value entry to the emitted v2 header.
+        /// See [`HaProxyLayer::with_tlv`] for details.
+        pub fn tlv(mut self, kind: v2::Type, value: impl Into<Bytes>) -> Self {
+            self.version.tlvs.push((kind, value.into()));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle automatic emission of a valid `PP2_TYPE_CRC32C` TLV.
+        /// See [`HaProxyLayer::crc32c`] for details.
+        pub fn crc32c(mut self, enabled: bool) -> Self {
+            self.version.crc32c = enabled;
+            self
+        }
+    }
 }
 
 impl<S: fmt::Debug, P, V: fmt::Debug> fmt::Debug for HaProxyService<S, P, V> {
@@ -216,20 +283,19 @@ where
         let EstablishedClientConnection { input, mut conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let src = {
-            let ext_chain = (&conn, &input);
-            ext_chain
-                .get_ref::<Forwarded>()
-                .and_then(|f| f.client_socket_addr())
-                .or_else(|| {
-                    ext_chain
-                        .get_ref::<SocketInfo>()
-                        .map(|info| info.peer_addr())
-                })
-                .ok_or_else(|| {
-                    OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
-                })?
-        };
+        let src = input
+            .extensions()
+            .clone_to_if_absent::<Forwarded>(conn.extensions())
+            .and_then(|f| f.client_socket_addr())
+            .or_else(|| {
+                input
+                    .extensions()
+                    .clone_to_if_absent::<SocketInfo>(conn.extensions())
+                    .map(|info| info.peer_addr())
+            })
+            .ok_or_else(|| {
+                OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
+            })?;
 
         let peer_addr = conn.peer_addr()?;
         let addresses = match (src.ip_addr, peer_addr.ip_addr) {
@@ -269,13 +335,14 @@ where
             self.inner.connect(input).await.into_box_error()?;
 
         let src = {
-            let ext_chain = (&conn, &input);
-            ext_chain
-                .get_ref::<Forwarded>()
+            input
+                .extensions()
+                .clone_to_if_absent::<Forwarded>(conn.extensions())
                 .and_then(|f| f.client_socket_addr())
                 .or_else(|| {
-                    ext_chain
-                        .get_ref::<SocketInfo>()
+                    input
+                        .extensions()
+                        .clone_to_if_absent::<SocketInfo>(conn.extensions())
                         .map(|info| info.peer_addr())
                 })
                 .ok_or_else(|| {
@@ -303,13 +370,52 @@ where
             }
         };
 
-        let builder = if let Some(payload) = self.version.payload.as_deref() {
-            builder
+        if self.version.crc32c && self.version.payload.is_some() {
+            // The raw `payload` bytes sit between the TLVs and the CRC32C TLV
+            // — receivers parse the entire post-address area as TLVs, so the
+            // payload would be mis-interpreted (or rejected) and the CRC
+            // would be computed over a header the peer can't validate.
+            return Err(OpaqueError::from_static_str(
+                "PROXY client (v2): `payload` and `crc32c` cannot be combined; \
+                 use typed TLVs instead",
+            )
+            .into_box_error());
+        }
+
+        // A CRC32C TLV value is never something a sender should compute by
+        // hand: it has to be computed over the *final* header bytes, which
+        // only the builder can see. If the user manually queued one via
+        // `with_tlv(Type::CRC32C, ...)`, reject — `crc32c(true)` is the
+        // only correct way to emit a CRC32C TLV.
+        if self
+            .version
+            .tlvs
+            .iter()
+            .any(|(kind, _)| *kind == v2::Type::CRC32C)
+        {
+            return Err(OpaqueError::from_static_str(
+                "PROXY client (v2): manual `with_tlv(Type::CRC32C, ...)` is not supported; \
+                 use `with_crc32c(true)` instead",
+            )
+            .into_box_error());
+        }
+
+        let mut builder = builder;
+        for (kind, value) in &self.version.tlvs {
+            builder = builder
+                .write_tlv(*kind, value.as_ref())
+                .context("PROXY client (v2): write TLV")?;
+        }
+        if let Some(payload) = self.version.payload.as_deref() {
+            builder = builder
                 .write_payload(payload)
-                .context("PROXY client (v2): write custom binary payload to to header")?
-        } else {
-            builder
-        };
+                .context("PROXY client (v2): write custom binary payload to header")?;
+        }
+        if self.version.crc32c {
+            // Spec section 2.2.5: build() will append the CRC32C TLV last
+            // (covering every other TLV) and patch in the computed value.
+            builder = builder.with_crc32c(true);
+        }
 
         let header = builder
             .build()
@@ -340,6 +446,8 @@ pub mod version {
     /// See [`crate::protocol`] for more information.
     pub struct Two {
         pub(crate) payload: Option<Bytes>,
+        pub(crate) tlvs: Vec<(crate::protocol::v2::Type, Bytes)>,
+        pub(crate) crc32c: bool,
     }
 }
 

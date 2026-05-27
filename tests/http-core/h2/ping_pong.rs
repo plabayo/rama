@@ -16,7 +16,7 @@ async fn recv_single_ping() {
     };
 
     let mock = async move {
-        let _ = mock.assert_client_handshake().await;
+        _ = mock.assert_client_handshake().await;
         let frame = frame::Ping::new(Default::default());
         mock.send(frame.into()).await.unwrap();
         let frame = mock.next().await.unwrap();

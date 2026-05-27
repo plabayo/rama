@@ -58,6 +58,10 @@ pub struct Builder {
     addresses: Addresses,
     length: Option<u16>,
     additional_capacity: usize,
+    /// When `true`, [`Builder::build`] appends a `PP2_TYPE_CRC32C` TLV with
+    /// the correct value (computed over the entire serialised header with
+    /// the CRC field treated as zeros, per spec section 2.2.5).
+    with_crc32c: bool,
 }
 
 impl Writer {
@@ -139,7 +143,7 @@ impl WriteToHeader for TypeLengthValue<'_> {
             return Err(io::ErrorKind::WriteZero.into());
         }
 
-        writer.write_all([self.kind].as_slice())?;
+        writer.write_all([u8::from(self.kind)].as_slice())?;
         writer.write_all((self.value.len() as u16).to_be_bytes().as_slice())?;
         writer.write_all(self.value.as_ref())?;
 
@@ -242,6 +246,7 @@ impl Builder {
             addresses: Addresses::Unspecified,
             length: None,
             additional_capacity: 0,
+            with_crc32c: false,
         }
     }
 
@@ -262,6 +267,7 @@ impl Builder {
             addresses,
             length: None,
             additional_capacity: 0,
+            with_crc32c: false,
         }
     }
 
@@ -321,8 +327,24 @@ impl Builder {
     /// No surrounding bytes (terminal or otherwise) are added by this `Builder`.
     /// The length is determined by the length of the slice.
     /// An error is returned when the length of the slice exceeds `u16::MAX`.
-    pub fn write_tlv(self, kind: impl Into<u8>, value: &[u8]) -> io::Result<Self> {
+    pub fn write_tlv(self, kind: impl Into<Type>, value: &[u8]) -> io::Result<Self> {
         self.write_payload(TypeLengthValue::new(kind, value))
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Toggle automatic emission of a valid `PP2_TYPE_CRC32C` TLV.
+        ///
+        /// When set, [`Builder::build`] appends the CRC32C TLV as the last
+        /// thing in the header (so it covers every other TLV) and patches in
+        /// the correct value, computed over the entire serialised header with
+        /// the CRC field treated as zeros (spec section 2.2.5).
+        ///
+        /// Callers should never write a CRC32C TLV themselves — the value
+        /// depends on the final byte layout, which only the builder sees.
+        pub fn crc32c(mut self, enabled: bool) -> Self {
+            self.with_crc32c = enabled;
+            self
+        }
     }
 
     /// Writes to the underlying buffer without first writing the header bytes.
@@ -362,23 +384,60 @@ impl Builder {
     }
 
     /// Builds the header and returns the underlying buffer.
-    /// If no length was explicitly set, returns an error when the length of the payload portion exceeds `u16::MAX`.
+    /// If no length was explicitly set, returns an error when the length of
+    /// the payload portion exceeds `u16::MAX`.
+    ///
+    /// If [`Builder::with_crc32c`] is enabled, a `PP2_TYPE_CRC32C` TLV is appended
+    /// as the last thing in the header and patched with the value computed
+    /// over the entire serialised header (with the CRC field zeroed during
+    /// computation, per spec section 2.2.5).
     pub fn build(mut self) -> io::Result<Vec<u8>> {
         self.write_header()?;
 
+        // Append the CRC TLV at the very end, after every other TLV/payload
+        // the caller already wrote — this is what gives the flag-based API
+        // its order-independence. The value stays at zero for now; we patch
+        // it once the rest of the header (including the length field) is
+        // finalised.
+        let crc_value_offset = if self.with_crc32c {
+            self = self.write_tlv(Type::CRC32C, &[0u8; 4])?;
+            let header_len = self.header.as_ref().map(Vec::len).unwrap_or_default();
+            // TLV trailer layout: [kind:1][length_be:2][value:4] at end.
+            Some(header_len - 4)
+        } else {
+            None
+        };
+
         let mut header = self.header.take().unwrap_or_default();
 
-        if self.length.is_some() {
-            return Ok(header);
-        }
-
-        if let Ok(payload_length) = u16::try_from(header[MINIMUM_LENGTH..].len()) {
+        // Patch the advertised payload length (unless the caller explicitly
+        // set one) before computing the CRC, so the CRC covers a header that
+        // is byte-for-byte identical to what will be transmitted.
+        if self.length.is_none() {
+            let Ok(payload_length) = u16::try_from(header[MINIMUM_LENGTH..].len()) else {
+                return Err(io::ErrorKind::WriteZero.into());
+            };
             let length = payload_length.to_be_bytes();
             header[LENGTH..LENGTH + length.len()].copy_from_slice(length.as_slice());
-            Ok(header)
-        } else {
-            Err(io::ErrorKind::WriteZero.into())
         }
+
+        if let Some(value_offset) = crc_value_offset {
+            // Defensive bounds check: we just wrote 4 zero bytes ourselves,
+            // so this should always hold — guard against future refactors
+            // that might violate the invariant.
+            if value_offset + 4 > header.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CRC32C value offset out of bounds",
+                ));
+            }
+            let mut hasher = super::Crc32cHasher::new();
+            hasher.update(&header);
+            let crc = hasher.finalize();
+            header[value_offset..value_offset + 4].copy_from_slice(&crc.to_be_bytes());
+        }
+
+        Ok(header)
     }
 }
 

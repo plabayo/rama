@@ -269,7 +269,7 @@ impl EcdsaKey {
     /// Create a [`JWK`] for this [`EcdsaKey`]
     #[must_use]
     pub fn create_jwk(&self) -> JWK {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "`new_for_escdsa_keypair` can only fail if curve is not elliptic but we already check that in `new`"
         )]
@@ -445,8 +445,8 @@ mod tests {
         let JWKType::RSA { n, e } = jwk.key_type else {
             panic!("JWK type not RSA")
         };
-        assert!(BASE64_URL_SAFE_NO_PAD.decode(n).is_ok());
-        assert!(BASE64_URL_SAFE_NO_PAD.decode(e).is_ok());
+        BASE64_URL_SAFE_NO_PAD.decode(n).unwrap();
+        BASE64_URL_SAFE_NO_PAD.decode(e).unwrap();
     }
 
     /// This example is taken from the [RFC 7517](https://datatracker.ietf.org/doc/html/rfc7517#appendix-A.1)

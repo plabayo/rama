@@ -37,6 +37,9 @@ pub mod sse;
 mod infinite;
 pub use infinite::InfiniteReader;
 
+mod on_drop;
+pub use on_drop::OnDropBody;
+
 mod optional;
 pub use optional::OptionalBody;
 
@@ -97,7 +100,7 @@ where
     try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
 
-#[allow(clippy::unwrap_used)]
+#[expect(clippy::unwrap_used)]
 pub(crate) fn try_downcast<T, K>(k: K) -> Result<T, K>
 where
     T: 'static,
@@ -153,6 +156,18 @@ impl Body {
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
         Self::new(util::Limited::new(self.0, limit))
+    }
+
+    /// Wrap this body so that `on_drop` is called if the body is dropped before
+    /// being fully consumed (e.g. because the client disconnected mid-response).
+    ///
+    /// The closure fires exactly once and only on early drops — it is disarmed
+    /// when [`StreamingBody::poll_frame`] returns `Poll::Ready(None)`.
+    pub fn on_drop<F>(self, on_drop: F) -> Self
+    where
+        F: FnOnce() + Send + Sync + 'static,
+    {
+        Self::new(OnDropBody::new(self.0, on_drop))
     }
 
     /// Attach a headermap as trailer headers to this body.

@@ -266,7 +266,7 @@ impl CompressData {
             self.output_buffer.reserve(Self::INTERNAL_BUF_CAPACITY);
             let mut output =
                 util::WriteBuffer::new_uninitialized(self.output_buffer.spare_capacity_mut());
-            let _ = self.encoder.flush(&mut output)?;
+            _ = self.encoder.flush(&mut output)?;
             let written = output.written_len();
             unsafe {
                 self.output_buffer

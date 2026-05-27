@@ -16,10 +16,17 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [features]
 default = ["protobuf", "vendor-protoc"]
-full = ["protobuf", "transport", "compression"]
+full = ["protobuf", "transport", "compression", "vendor-protoc"]
 protobuf = ["dep:prost", "dep:prost-types", "rama-grpc-build/protobuf"]
 vendor-protoc = ["rama-grpc-build/vendor-protoc"]
 transport = ["dep:rama-http-core"]

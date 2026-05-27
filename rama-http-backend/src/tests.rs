@@ -468,7 +468,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
             ))
             .await
             .unwrap();
-        let _ = relay_done_tx.send(());
+        _ = relay_done_tx.send(());
     });
 
     let request = create_test_request(Version::HTTP_11);
@@ -486,7 +486,7 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let _ = response.into_body().collect().await.unwrap();
+    _ = response.into_body().collect().await.unwrap();
 
     drop(conn);
 

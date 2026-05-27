@@ -64,7 +64,7 @@ impl FromStr for Server {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         HeaderValueString::from_str(src)
             .map(Server)
-            .map_err(|_| InvalidServer)
+            .map_err(|_e| InvalidServer)
     }
 }
 

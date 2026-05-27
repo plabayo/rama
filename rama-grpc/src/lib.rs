@@ -57,11 +57,6 @@
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(
-    not(test),
-    warn(clippy::print_stdout, clippy::dbg_macro),
-    deny(clippy::unwrap_used, clippy::expect_used)
-)]
 #![recursion_limit = "256"]
 #![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap
 
@@ -90,11 +85,13 @@ pub use response::Response;
 pub use status::{Code, ConnectError, Status, TimeoutExpired};
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
 #[doc(hidden)]
 pub mod codegen;
 
+#[doc(inline)]
 pub use ::rama_grpc_build as build;
 
 /// `Result` is a type that represents either success ([`Ok`]) or failure ([`Err`]).

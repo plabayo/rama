@@ -97,7 +97,7 @@ impl StreamDependency {
         }
 
         // Parse the stream ID and exclusive flag
-        let (dependency_id, is_exclusive) = StreamId::parse(&src[..4]);
+        let (dependency_id, is_exclusive) = StreamId::parse(&src[..4])?;
 
         // Read the weight
         let weight = src[4];

@@ -1,5 +1,10 @@
 //! WebSocket client types and utilities
 
+#![expect(
+    clippy::unreachable,
+    reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
+)]
+
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
@@ -272,11 +277,9 @@ pub fn validate_http_server_response<Body>(
                 return Err(ResponseValidateError::MissingConnectionUpgradeHeader);
             }
 
-            // Sec-WebSocket-Key / Accept is only used in h2 responses
+            // Sec-WebSocket-Key / Accept is only used in h1 responses.
             //
-            // ...
-            //
-            // if the response lacks a |Sec-WebSocket-Accept| header field or
+            // If the response lacks a |Sec-WebSocket-Accept| header field or
             // the |Sec-WebSocket-Accept| contains a value other than the
             // base64-encoded SHA-1 of ... the client MUST _Fail the WebSocket
             // Connection_. (RFC 6455)
@@ -284,14 +287,14 @@ pub fn validate_http_server_response<Body>(
                 let sec_websocket_accept_header = response
                     .headers()
                     .typed_get::<headers::SecWebSocketAccept>();
-                let expected_accept = headers::SecWebSocketAccept::try_from(key)
-                    .inspect_err(|err| {
+                let expected_accept =
+                    headers::SecWebSocketAccept::try_from(key).map_err(|err| {
                         tracing::debug!("failed to create WS accept header from key: {err}");
-                    })
-                    .ok();
-                if sec_websocket_accept_header != expected_accept {
+                        ResponseValidateError::SecWebSocketAcceptKeyMismatch
+                    })?;
+                if sec_websocket_accept_header != Some(expected_accept) {
                     tracing::trace!(
-                        "unexpected websocket accept key: {sec_websocket_accept_header:?} (expected: {expected_accept:?})"
+                        "unexpected websocket accept key: {sec_websocket_accept_header:?}"
                     );
                     return Err(ResponseValidateError::SecWebSocketAcceptKeyMismatch);
                 }
@@ -401,8 +404,14 @@ pub fn validate_http_server_response<Body>(
         protocols,
     ) {
         (None, None) => (),
-        (None, Some(_)) => {
-            return Err(ResponseValidateError::ProtocolMismatch(None));
+        (None, Some(allowed_protocols)) => {
+            // RFC 6455 only mandates failure when the server selects a protocol
+            // not in the client's offer — a server may legitimately decline to
+            // select any subprotocol even when the client proposed one.
+            tracing::trace!(
+                ws.protocols = ?allowed_protocols,
+                "server selected no WS subprotocol despite client proposing some (valid, proceed without)",
+            );
         }
         (Some(header), None) => {
             return Err(ResponseValidateError::ProtocolMismatch(Some(header.0)));

@@ -113,19 +113,19 @@ mod tests {
 
         let event_fields =
             parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-        assert_eq!(event_fields.get("data").unwrap(), "one");
-        assert_eq!(event_fields.get("comment").unwrap(), "this is a comment");
+        assert_eq!(&event_fields["data"], "one");
+        assert_eq!(&event_fields["comment"], "this is a comment");
 
         let event_fields =
             parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-        assert_eq!(event_fields.get("data").unwrap(), "{\"foo\":\"bar\"}");
+        assert_eq!(&event_fields["data"], "{\"foo\":\"bar\"}");
         assert!(!event_fields.contains_key("comment"));
 
         let event_fields =
             parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-        assert_eq!(event_fields.get("event").unwrap(), "three");
-        assert_eq!(event_fields.get("retry").unwrap(), "30000");
-        assert_eq!(event_fields.get("id").unwrap(), "unique-id");
+        assert_eq!(&event_fields["event"], "three");
+        assert_eq!(&event_fields["retry"], "30000");
+        assert_eq!(&event_fields["id"], "unique-id");
         assert!(!event_fields.contains_key("comment"));
 
         assert!(stream.chunk().await.unwrap().is_none());
@@ -161,7 +161,7 @@ mod tests {
             // first message should be an event
             let event_fields =
                 parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-            assert_eq!(event_fields.get("data").unwrap(), "msg");
+            assert_eq!(&event_fields["data"], "msg");
 
             // then 4 seconds of keep-alive messages
             for _ in 0..4 {
@@ -169,7 +169,7 @@ mod tests {
                 let event_fields = parse_event(
                     std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap(),
                 );
-                assert_eq!(event_fields.get("comment").unwrap(), "keep-alive-text");
+                assert_eq!(&event_fields["comment"], "keep-alive-text");
             }
         }
     }
@@ -204,20 +204,20 @@ mod tests {
         // first message should be an event
         let event_fields =
             parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-        assert_eq!(event_fields.get("data").unwrap(), "msg");
+        assert_eq!(&event_fields["data"], "msg");
 
         // then 4 seconds of keep-alive messages
         for _ in 0..4 {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let event_fields =
                 parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-            assert_eq!(event_fields.get("comment").unwrap(), "keep-alive-text");
+            assert_eq!(&event_fields["comment"], "keep-alive-text");
         }
 
         // then the last event
         let event_fields =
             parse_event(std::str::from_utf8(&stream.chunk().await.unwrap().unwrap()).unwrap());
-        assert_eq!(event_fields.get("data").unwrap(), "msg");
+        assert_eq!(&event_fields["data"], "msg");
 
         // then no more events or keep-alive messages
         assert!(stream.chunk().await.unwrap().is_none());

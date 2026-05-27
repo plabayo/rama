@@ -175,9 +175,9 @@ impl HostWithPort {
     }
 
     generate_set_and_with! {
-        /// Set [`Host`] of [`HostWithPort`]
-        pub fn host(mut self, host: Host) -> Self {
-            self.host = host;
+        /// Set [`Host`] of [`HostWithPort`]. Accepts any [`Into<Host>`].
+        pub fn host(mut self, host: impl Into<Host>) -> Self {
+            self.host = host.into();
             self
         }
     }
@@ -297,6 +297,9 @@ impl fmt::Display for HostWithPort {
                 IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
                 IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
             },
+            // `UninterpretedHost`'s Display already wraps bracketed
+            // IP-literals in `[...]`; reg-name bytes render verbatim.
+            Host::Uninterpreted(host) => write!(f, "{}:{}", host, self.port),
         }
     }
 }
@@ -377,7 +380,7 @@ impl<'de> serde::Deserialize<'de> for HostWithPort {
 mod tests {
     use super::*;
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, host_with_port: HostWithPort, host: &str, port: u16) {
         assert_eq!(host_with_port.host, host, "parsing: {s}");
         assert_eq!(host_with_port.port, port, "parsing: {s}");
@@ -465,5 +468,31 @@ mod tests {
             let host_with_port: HostWithPort = s.parse().expect(&msg);
             assert_eq!(host_with_port.to_string(), expected, "{msg}");
         }
+    }
+
+    #[test]
+    fn host_with_port_roundtrips_pct_encoded_reg_name() {
+        // Auditor's regression: `Display` emits the reg-name verbatim,
+        // `try_from` must reconstruct it as `Uninterpreted`.
+        let host = crate::uri::Uri::parse_authority_form("exa%6Dple.com:443")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let hwp = HostWithPort::new(host, 443);
+        let round: HostWithPort = hwp.to_string().parse().expect("roundtrip");
+        assert_eq!(hwp, round);
+    }
+
+    #[test]
+    fn host_with_port_roundtrips_bracketed_ipvfuture() {
+        let host = crate::uri::Uri::parse_authority_form("[v1.fe80::a]:443")
+            .unwrap()
+            .host()
+            .unwrap()
+            .into_owned();
+        let hwp = HostWithPort::new(host, 443);
+        let round: HostWithPort = hwp.to_string().parse().expect("roundtrip");
+        assert_eq!(hwp, round);
     }
 }

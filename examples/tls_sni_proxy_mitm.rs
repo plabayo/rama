@@ -297,7 +297,7 @@ where
                     port: Protocol::HTTPS_DEFAULT_PORT,
                 },
             )
-            .into_layer(IoForwardService::new())
+            .into_layer(IoForwardService::new(self.exec.clone()))
             .serve(stream)
             .await
             .context("forward data")
@@ -335,7 +335,7 @@ where
                         tracing::error!("failed to fetch request context for http req: {err}");
                     })
                     .ok()
-                    .and_then(|ctx| ctx.authority.host.into_domain())
+                    .and_then(|ctx| ctx.authority.host.try_into_domain().ok())
             })
         else {
             // In a production proxy you might go a bit more advanced here,

@@ -62,7 +62,7 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn ndjson() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
@@ -183,7 +183,7 @@ impl ContentType {
         // TOOD: we need to invest in mime, either contribute,
         // or fork it, to support all our mime needs better...
         // e.g. we also have similar issues for ndjson and more
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "valid mim,e in future this should be better"
         )]
@@ -229,13 +229,28 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn jose_json() -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
         Self(
             Mime::from_str("application/jose+json")
                 .expect("application/jose+json to be a valid mime"),
+        )
+    }
+
+    /// A constructor to easily create a `Content-Type: application/manifest+json` header,
+    /// as defined by the [W3C Web App Manifest spec](https://www.w3.org/TR/appmanifest/#media-type-registration).
+    #[inline]
+    #[must_use]
+    pub fn manifest_json() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/manifest+json")
+                .expect("application/manifest+json to be a valid mime"),
         )
     }
 
@@ -303,7 +318,7 @@ impl std::str::FromStr for ContentType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<Mime>()
             .map(|m| m.into())
-            .map_err(|_| Error::invalid())
+            .map_err(|_e| Error::invalid())
     }
 }
 
@@ -314,12 +329,25 @@ mod tests {
 
     #[test]
     fn jose_json_is_valid() {
-        let _ = ContentType::jose_json();
+        _ = ContentType::jose_json();
     }
 
     #[test]
     fn ndjson_is_valid() {
-        let _ = ContentType::ndjson();
+        _ = ContentType::ndjson();
+    }
+
+    #[test]
+    fn manifest_json_is_valid() {
+        _ = ContentType::manifest_json();
+    }
+
+    #[test]
+    fn manifest_json_roundtrip() {
+        assert_eq!(
+            test_decode::<ContentType>(&["application/manifest+json"]),
+            Some(ContentType::manifest_json()),
+        );
     }
 
     #[test]
@@ -346,7 +374,7 @@ mod tests {
             "application/json".parse::<ContentType>().unwrap(),
             ContentType::json(),
         );
-        assert!("invalid-mimetype".parse::<ContentType>().is_err());
+        "invalid-mimetype".parse::<ContentType>().unwrap_err();
     }
 
     bench_header!(bench_plain, ContentType, "text/plain");

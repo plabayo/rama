@@ -19,6 +19,12 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
 //! the peer address, the path of the request and the stats of the bytes read and written.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     bytes::Bytes,

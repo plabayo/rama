@@ -53,6 +53,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
+use rama_utils::macros::generate_set_and_with;
 
 /// An upgraded HTTP connection.
 ///
@@ -110,7 +111,8 @@ pub struct Parts<T> {
 pub fn handle_upgrade<T: ExtensionsRef>(
     msg: T,
 ) -> impl Future<Output = Result<Upgraded, BoxError>> + 'static {
-    let on_upgrade = match msg.extensions().get_ref::<OnUpgrade>().cloned() {
+    let msg_ext = msg.extensions().clone();
+    let on_upgrade = match msg_ext.get_ref::<OnUpgrade>().cloned() {
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
@@ -125,11 +127,12 @@ pub fn handle_upgrade<T: ExtensionsRef>(
         None => Err(OpaqueError::from_static_str("no pending update found").into_box_error()),
     };
 
-    async {
-        match on_upgrade {
-            Ok(on_upgrade) => on_upgrade.await,
-            Err(err) => Err(err),
-        }
+    async move {
+        let upgraded = match on_upgrade {
+            Ok(on_upgrade) => on_upgrade.await?,
+            Err(err) => return Err(err),
+        };
+        Ok(upgraded)
     }
 }
 
@@ -155,6 +158,12 @@ pub fn pending() -> (Pending, OnUpgrade) {
 
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
+    ///
+    /// The [`Upgraded`] starts with the io [`Extensions`]s. When
+    /// driven through [`handle_upgrade`] the parent is set to the message
+    /// that triggered the upgrade (which already encodes the underlying
+    /// connection through its `Ingress` / `Egress` wrapper), so the upgraded
+    /// blob inherits everything reachable from that message.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Io + Unpin + ExtensionsRef,
@@ -162,6 +171,13 @@ impl Upgraded {
         Self {
             extensions: io.extensions().clone(),
             io: Rewind::new_buffered(Box::new(io), read_buf),
+        }
+    }
+
+    generate_set_and_with! {
+        pub fn extensions(mut self, extensions: Extensions) -> Self {
+            self.extensions = extensions;
+            self
         }
     }
 
@@ -311,14 +327,14 @@ impl Pending {
     /// fulfill the pending upgrade with the given [`Upgraded`] stream.
     pub fn fulfill(self, upgraded: Upgraded) {
         trace!("pending upgrade fulfill");
-        let _ = self.tx.send(Ok(upgraded));
+        _ = self.tx.send(Ok(upgraded));
     }
 
     /// Don't fulfill the pending Upgrade, but instead signal that
     /// upgrades are handled manually.
     pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        let _ = self.tx.send(Err(OpaqueError::from_static_str(
+        _ = self.tx.send(Err(OpaqueError::from_static_str(
             "OnUpgrade: manual upgrade failed",
         )
         .into_box_error()));

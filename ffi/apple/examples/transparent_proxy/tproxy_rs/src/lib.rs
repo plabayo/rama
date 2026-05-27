@@ -1,9 +1,10 @@
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 use rama::{
     Service,
+    bytes::Bytes,
     net::{
-        address::{Host, HostWithPort, ip::private::is_private_ip},
+        address::{HostWithPort, ip::private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -14,8 +15,10 @@ use rama::{
             },
         },
     },
+    rt::Executor,
     telemetry::tracing,
 };
+use serde::{Deserialize, Serialize};
 
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
@@ -23,8 +26,11 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 mod concurrency;
 mod config;
 mod demo_trace_traffic;
+mod demo_xpc_server;
+mod dial9;
 mod http;
 mod policy;
+mod state;
 mod tcp;
 mod tls;
 mod udp;
@@ -36,10 +42,6 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
         if let Some(path) = unsafe { config.storage_dir() } {
             tracing::debug!(path = %path.display(), "received storage directory: pass to set_storage_dir");
             self::utils::set_storage_dir(Some(path));
-        }
-        // SAFETY: pointer + length validity is guaranteed by FFI contract.
-        if let Some(app_group_dir) = unsafe { config.app_group_dir() } {
-            tracing::debug!(path = %app_group_dir.display(), "received app-group directory");
         }
     }
 
@@ -56,17 +58,13 @@ fn flow_action_for_remote_endpoint(
         return TransparentProxyFlowAction::Passthrough;
     };
 
-    match &target.host {
-        Host::Name(_) => TransparentProxyFlowAction::Intercept,
-        Host::Address(addr) => {
-            if is_private_ip(*addr) && !addr.is_loopback() {
-                // non-loopback private ip addreses,
-                // as to ensure e2e ffi tests do still run :)
-                TransparentProxyFlowAction::Passthrough
-            } else {
-                TransparentProxyFlowAction::Intercept
-            }
+    // IP-first: intercept domain/uninterpreted hosts; for IPs, passthrough
+    // non-loopback private addresses (keeps e2e tests local).
+    match target.host.try_as_ip() {
+        Ok(addr) if is_private_ip(addr) && !addr.is_loopback() => {
+            TransparentProxyFlowAction::Passthrough
         }
+        _ => TransparentProxyFlowAction::Intercept,
     }
 }
 
@@ -93,10 +91,40 @@ struct DemoTransparentProxyHandler {
     udp_service: rama::service::BoxService<apple_ne::UdpFlow, (), Infallible>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AppMessageRequest {
+    op: Option<String>,
+    sent_at: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AppMessageReply {
+    op: &'static str,
+    source: &'static str,
+    received_bytes: usize,
+    acknowledged_source: Option<String>,
+    acknowledged_sent_at: Option<String>,
+}
+
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
-        let tcp_mitm_service = self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
-        let udp_service = self::udp::try_new_service(ctx).await?.boxed();
+        let (tcp_mitm_service, shared_state) =
+            self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
+        let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
+
+        let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
+        if let Some(xpc_service_name) = demo_config.xpc_service_name {
+            self::demo_xpc_server::spawn_xpc_server(
+                xpc_service_name,
+                demo_config.container_signing_identifier,
+                shared_state,
+                ctx.executor.clone(),
+            )
+            .unwrap_or_else(|err| {
+                tracing::error!(%err, "failed to spawn xpc server");
+            });
+        }
 
         let proxy_config = TransparentProxyConfig::new().with_rules(vec![
             TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
@@ -120,12 +148,78 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         self.config.clone()
     }
 
+    async fn handle_app_message(&self, _exec: Executor, message: Bytes) -> Option<Bytes> {
+        let message_len = message.len();
+        let request = match serde_json::from_slice::<AppMessageRequest>(&message) {
+            Ok(request) => request,
+            Err(err) => {
+                tracing::debug!(
+                    ?err,
+                    message_len,
+                    "transparent proxy demo failed to decode app message as JSON"
+                );
+                return None;
+            }
+        };
+
+        let Some(op) = request.op.as_deref() else {
+            tracing::debug!(message_len, "transparent proxy demo app message missing op");
+            return None;
+        };
+
+        // The provider-message channel is reserved for the simple ping demo.
+        // Richer commands (settings updates, CA install/uninstall) are
+        // exposed as typed XPC routes — see `demo_xpc_server.rs`.
+        if op == "ping" {
+            let reply = AppMessageReply {
+                op: "pong",
+                source: "transparent-proxy-provider",
+                received_bytes: message_len,
+                acknowledged_source: request.source,
+                acknowledged_sent_at: request.sent_at,
+            };
+
+            match serde_json::to_vec(&reply) {
+                Ok(reply_bytes) => {
+                    tracing::debug!(
+                        request_op = op,
+                        message_len,
+                        reply_len = reply_bytes.len(),
+                        "transparent proxy demo replying to app message"
+                    );
+                    Some(Bytes::from(reply_bytes))
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        ?err,
+                        request_op = op,
+                        "transparent proxy demo failed to encode app message reply"
+                    );
+                    None
+                }
+            }
+        } else {
+            tracing::debug!(
+                request_op = op,
+                message_len,
+                "transparent proxy demo ignoring app message op (use XPC for non-ping commands)"
+            );
+            None
+        }
+    }
+
     fn match_tcp_flow(
         &self,
         _exec: rama::rt::Executor,
         meta: TransparentProxyFlowMeta,
     ) -> impl Future<
-        Output = FlowAction<impl rama::Service<apple_ne::TcpFlow, Output = (), Error = Infallible>>,
+        Output = FlowAction<
+            impl rama::Service<
+                rama::io::BridgeIo<apple_ne::TcpFlow, apple_ne::NwTcpStream>,
+                Output = (),
+                Error = Infallible,
+            >,
+        >,
     > + Send
     + '_ {
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
@@ -170,8 +264,9 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
-        // Pass through DNS (port 53), the NE sandbox cannot bind raw UDP sockets,
-        // so DNS forwarding fails with EPERM. Let DNS go directly.
+        // Pass through DNS (port 53) — letting the system resolver
+        // hit the wire directly avoids a circular dependency between
+        // the proxy service and the resolver it might itself use.
         if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
             return std::future::ready(FlowAction::Passthrough);
         }
@@ -190,5 +285,13 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
 
 apple_ne::transparent_proxy_ffi! {
     init = init,
-    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory),
+    // Engine defaults (15 min TCP idle backstop, 15 min UDP max-lifetime,
+    // 3s decision deadline) are applied automatically. Opt out via
+    // `.without_tcp_idle_timeout()` / `.without_udp_max_flow_lifetime()`.
+    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory)
+        // dial9 runtime telemetry. Enabled when the FFI init handed
+        // us a storage directory (the production code path); falls
+        // back to a plain tokio runtime when no storage dir is
+        // wired through. See `src/dial9.rs` and the example README.
+        .with_runtime_factory(crate::dial9::make_runtime_factory()),
 }

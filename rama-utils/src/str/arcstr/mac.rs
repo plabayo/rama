@@ -33,7 +33,6 @@ macro_rules! __arcstr {
         // (note that consts in macros dont have hygene the way let does).
         const __ARC_STR_TEXT: &$crate::str::arcstr::_private::str = $text;
         {
-            #[allow(clippy::declare_interior_mutable_const)]
             const __ARC_STR_SI: &$crate::str::arcstr::_private::StaticArcStrInner<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]> = unsafe {
                 &$crate::str::arcstr::_private::StaticArcStrInner {
                     len_flag: match $crate::str::arcstr::_private::StaticArcStrInner::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>::encode_len(__ARC_STR_TEXT.len()) {
@@ -50,7 +49,6 @@ macro_rules! __arcstr {
                     // data: __ARC_STR_TEXT.as_ptr().cast::<[$crate::str::arcstr::_private::u8; __ARC_STR_TEXT.len()]>().read(),
                 }
             };
-            #[allow(clippy::declare_interior_mutable_const)]
             const __ARC_STR_FINAL: $crate::str::arcstr::ArcStr = unsafe { $crate::str::arcstr::ArcStr::_private_new_from_static_data(__ARC_STR_SI) };
             __ARC_STR_FINAL
         }

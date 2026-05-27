@@ -150,12 +150,12 @@ impl Display for DirectiveDateTime {
         match self.parsed_format {
             Some(ParsedFormat::RFC2822) | None => {
                 rfc2822::to_string(&self.value.to_zoned(TimeZone::UTC))
-                    .map_err(|_| std::fmt::Error)?
+                    .map_err(|_e| std::fmt::Error)?
                     .fmt(f)
             }
             Some(ParsedFormat::RFC3339) => DateTimePrinter::new()
                 .print_timestamp_with_offset(&self.value, Offset::UTC, StdFmtWrite(f))
-                .map_err(|_| std::fmt::Error),
+                .map_err(|_e| std::fmt::Error),
             Some(ParsedFormat::RFC850) => self
                 .value
                 .to_zoned(TimeZone::UTC)

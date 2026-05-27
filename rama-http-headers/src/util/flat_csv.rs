@@ -54,7 +54,7 @@ where
                 .to_str()
                 .context("header value is not a valid utf-8 str")?;
             Ok::<_, BoxError>(s.split(move |c| {
-                #[allow(clippy::collapsible_else_if)]
+                #[expect(clippy::collapsible_else_if)]
                 if in_quotes {
                     if c == '"' {
                         in_quotes = false;
@@ -99,12 +99,12 @@ where
 
     let sep_byte = sep.as_byte();
 
-    let _ = write!(&mut v, "{}", values.head);
+    _ = write!(&mut v, "{}", values.head);
 
     for value in values.tail.iter() {
         v.push(sep_byte);
         v.push(b' ');
-        let _ = write!(&mut v, "{value}");
+        _ = write!(&mut v, "{value}");
     }
 
     HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")
@@ -154,7 +154,7 @@ where
                 .to_str()
                 .context("header value is not a valid utf-8 str")?;
             Ok::<_, BoxError>(s.split(move |c| {
-                #[allow(clippy::collapsible_else_if)]
+                #[expect(clippy::collapsible_else_if)]
                 if in_quotes {
                     if c == '"' {
                         in_quotes = false;
@@ -199,12 +199,12 @@ where
 
     let sep_byte = sep.as_byte();
 
-    let _ = write!(&mut v, "{}", values.head);
+    _ = write!(&mut v, "{}", values.head);
 
     for value in values.tail.iter() {
         v.push(sep_byte);
         v.push(b' ');
-        let _ = write!(&mut v, "{value}");
+        _ = write!(&mut v, "{value}");
     }
 
     HeaderValue::try_from(v).context("turn encoded bytes into HeaderValue")

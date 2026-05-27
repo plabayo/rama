@@ -38,7 +38,7 @@
 //!
 //!     let service = WebService::default().with_get("/", home_handler);
 //!
-//!     let _ = service.serve(Request::builder()
+//!     _ = service.serve(Request::builder()
 //!         .method("GET")
 //!         .uri("/")
 //!         .body(Body::empty())

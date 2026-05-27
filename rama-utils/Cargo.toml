@@ -16,6 +16,13 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [features]
 default = ["std"]
@@ -30,6 +37,7 @@ std = [
 
 [dependencies]
 const_format = { workspace = true }
+memchr = { workspace = true }
 parking_lot = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
@@ -38,6 +46,7 @@ serde = { workspace = true, features = ["derive"] }
 smallvec = { workspace = true, features = ["serde", "const_generics", "const_new"] }
 smol_str = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["time", "macros"], optional = true }
+tracing = { workspace = true }
 wildcard = { workspace = true }
 
 [dev-dependencies]

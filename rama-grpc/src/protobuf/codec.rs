@@ -144,7 +144,7 @@ impl<U: Message + Default> Decoder for ProstDecoder<U> {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 fn from_decode_error(error: prost::DecodeError) -> Status {
     // Map Protobuf parse errors to an INTERNAL status code, as per
     // https://github.com/grpc/grpc/blob/master/doc/statuscodes.md

@@ -16,7 +16,7 @@ fn test_paste_doc() {
     struct Paste;
     m!(Paste);
 
-    let _ = new;
+    _ = new;
 }
 
 macro_rules! get_doc {
@@ -75,5 +75,5 @@ fn test_stringify() {
 
     forward!(documentation);
 
-    let _ = Struct;
+    _ = Struct;
 }

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "build script: panicking on codegen failure aborts the build, which is the desired behavior"
+)]
+
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
 
@@ -16,6 +21,7 @@ fn main() {
                 &[
                     "proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
                     "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                    "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
                 ],
                 &["proto/"],
             )

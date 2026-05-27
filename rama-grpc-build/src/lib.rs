@@ -7,7 +7,13 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
-#![allow(clippy::disallowed_types)] // for interfacing with protobuf it is easier to allow things like std HashMap)]
+#![expect(
+    clippy::disallowed_types,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::allow_attributes,
+    reason = "build-time codegen helper (tonic-build style): panic-on-bad-input is the standard pattern; protobuf interop needs std HashMap/HashSet; codegen uses many `#[allow]` attrs internally"
+)]
 
 use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream};
 use quote::TokenStreamExt;
@@ -15,6 +21,7 @@ use quote::TokenStreamExt;
 pub mod manual;
 
 #[cfg(feature = "protobuf")]
+#[cfg_attr(docsrs, doc(cfg(feature = "protobuf")))]
 pub mod protobuf;
 
 /// Service code generation for client

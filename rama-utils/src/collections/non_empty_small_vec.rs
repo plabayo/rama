@@ -700,7 +700,7 @@ mod tests {
         let non_empty_smallvec: NonEmptySmallVec<3, _> =
             NonEmptySmallVec::from((0, smallvec![1, 2, 3]));
         for n in &non_empty_smallvec {
-            let _ = *n; // Prove that we're dealing with references.
+            _ = *n; // Prove that we're dealing with references.
         }
         for _ in non_empty_smallvec {}
     }

@@ -247,7 +247,7 @@ where
         let span = tracing::trace_span!("FramedWrite::buffer", frame = ?item);
         let _e = span.enter();
 
-        tracing::debug!("send: frame = {item:?}");
+        tracing::trace!("send: frame = {item:?}");
 
         match item {
             Frame::Data(mut v) => {
@@ -316,7 +316,13 @@ where
                 v.encode(self.buf.get_mut());
                 tracing::trace!("encoded priority; rem = {:?}", self.buf.remaining());
                 */
-                unimplemented!();
+                #[expect(
+                    clippy::unimplemented,
+                    reason = "vendored from upstream `h2`: priority frame encoding intentionally unimplemented; matches upstream behavior"
+                )]
+                {
+                    unimplemented!()
+                }
             }
             Frame::Reset(v) => {
                 v.encode(self.buf.get_mut());

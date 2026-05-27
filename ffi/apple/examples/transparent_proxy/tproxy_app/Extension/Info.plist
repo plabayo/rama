@@ -18,7 +18,6 @@
   <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
   <key>NSSystemExtensionUsageDescription</key>
   <string>Installs the transparent proxy system extension used by the demo.</string>
-
   <key>NetworkExtension</key>
   <dict>
     <key>NEProviderClasses</key>
@@ -26,6 +25,8 @@
       <key>com.apple.networkextension.app-proxy</key>
       <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
     </dict>
+    <key>NEMachServiceName</key>
+    <string>$(APP_GROUP_ID).provider</string>
   </dict>
 </dict>
 </plist>

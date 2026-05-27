@@ -13,3 +13,7 @@ implemented in this crate directly but are here mostly for reference.
 
 * [rfc1035.txt](./rfc1035.txt)  
   Defines DNS implementation and message formats.
+
+* [rfc3596.txt](./rfc3596.txt)  
+  Defines the `AAAA` resource record for IPv6 address resolution
+  (obsoletes RFC 1886 and RFC 3152).

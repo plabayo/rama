@@ -4,6 +4,7 @@ use rama::{
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
         headers::ContentType,
+        html::*,
         proto::h2,
         service::web::{
             extract::{Path, State as StateParam},
@@ -34,12 +35,6 @@ use super::{
     },
 };
 
-type Html = response::Html<String>;
-
-fn html<T: Into<String>>(inner: T) -> Html {
-    inner.into().into()
-}
-
 //------------------------------------------
 // endpoints: navigations
 //------------------------------------------
@@ -47,64 +42,141 @@ fn html<T: Into<String>>(inner: T) -> Html {
 pub(super) async fn get_consent() -> impl IntoResponse {
     (
         [("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")],
-        render_page(
-            "🕵️ Fingerprint Consent",
-            "",
-            r##"<div class="consent">
-            <div class="controls">
-                <a class="button" href="/report">Get Fingerprint Report</a>
-            </div>
-            <div class="section">
-                <p>
-                    This fingerprinting service is available using the following links:
-                    <ul>
-                        <li><a href="http://fp.ramaproxy.org:80">http://fp.ramaproxy.org</a>: auto HTTP, plain-text</li>
-                        <li><a href="https://fp.ramaproxy.org:443">https://fp.ramaproxy.org</a>: auto HTTP, TLS</li>
-                        <li><a href="http://h1.fp.ramaproxy.org:80">http://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, plain-text</li>
-                        <li><a href="https://h1.fp.ramaproxy.org:443">https://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, TLS</li>
-                    </ul>
-                </p>
-                </p>
-                    You can also make use of the echo service for developers at:
-                    <ul>
-                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text (incl. WS support)</li>
-                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS (incl. WSS support)</li>
-                    </ul>
-                </p>
-                </p>
-                    Need to lookup your IP Address in html/txt/json:
-                    <ul>
-                        <li><a href="https://ipv4.ramaproxy.org">https://ipv4.ramaproxy.org</a>: return your pubic IPv4 address</li>
-                        <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
-                    </ul>
-                </p>
-                <p>
-                    We also have a small HTTP(S) test service:
-                    <ul>
-                        <li><a href="http://http-test.ramaproxy.org:80">http://http-test.ramaproxy.org</a>: http test service, plain-text</li>
-                        <li><a href="https://http-test.ramaproxy.org:443">https://http-test.ramaproxy.org</a>: https test service, TLS</li>
-                    </ul>
-                </p>
-                <p>You can learn move about rama at in
-                    <a href="https://ramaproxy.org/book">the rama book</a>.
-                    And the source code for this service is available at
-                    <a href="https://github.com/plabayo/rama">https://github.com/plabayo/rama</a>.
-                </p>
-            </div>
-            <div class="small">
-                <p>
-                    By clicking on the button above, you agree that we will store fingerprint information about your network traffic. We are only interested in the HTTP and TLS traffic sent by you. This information will be stored in a database for later processing.
-                </p>
-                <p>
-                    Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
-                </p>
-                <div>
-                <p>
-                    Hosting for this service is sponsored by
-                    <a href="https://fly.io">fly.io</a>.
-                </p>
-            </div>
-        </div>"##,
+        page("🕵️ Fingerprint Consent", (), consent_body()),
+    )
+}
+
+fn consent_body() -> impl IntoHtml {
+    div!(
+        class = "consent",
+        div!(
+            class = "controls",
+            a!(class = "button", href = "/report", "Get Fingerprint Report"),
+        ),
+        div!(
+            class = "section",
+            p!(
+                "This fingerprinting service is available using the following links:",
+                ul!(
+                    li!(
+                        a!(
+                            href = "http://fp.ramaproxy.org:80",
+                            "http://fp.ramaproxy.org"
+                        ),
+                        ": auto HTTP, plain-text",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://fp.ramaproxy.org:443",
+                            "https://fp.ramaproxy.org"
+                        ),
+                        ": auto HTTP, TLS",
+                    ),
+                    li!(
+                        a!(
+                            href = "http://h1.fp.ramaproxy.org:80",
+                            "http://h1.fp.ramaproxy.org"
+                        ),
+                        ": HTTP/1.1 and below only, plain-text",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://h1.fp.ramaproxy.org:443",
+                            "https://h1.fp.ramaproxy.org"
+                        ),
+                        ": HTTP/1.1 and below only, TLS",
+                    ),
+                ),
+            ),
+            p!(
+                "You can also make use of the echo service for developers at:",
+                ul!(
+                    li!(
+                        a!(
+                            href = "http://echo.ramaproxy.org:80",
+                            "http://echo.ramaproxy.org"
+                        ),
+                        ": echo service, plain-text (incl. WS support)",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://echo.ramaproxy.org:443",
+                            "https://echo.ramaproxy.org"
+                        ),
+                        ": echo service, TLS (incl. WSS support)",
+                    ),
+                ),
+            ),
+            p!(
+                "Need to lookup your IP Address in html/txt/json:",
+                ul!(
+                    li!(
+                        a!(
+                            href = "https://ipv4.ramaproxy.org",
+                            "https://ipv4.ramaproxy.org"
+                        ),
+                        ": return your pubic IPv4 address",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://ipv6.ramaproxy.org",
+                            "https://ipv6.ramaproxy.org"
+                        ),
+                        ": return your pubic IPv6 address",
+                    ),
+                ),
+            ),
+            p!(
+                "We also have a small HTTP(S) test service:",
+                ul!(
+                    li!(
+                        a!(
+                            href = "http://http-test.ramaproxy.org:80",
+                            "http://http-test.ramaproxy.org"
+                        ),
+                        ": http test service, plain-text",
+                    ),
+                    li!(
+                        a!(
+                            href = "https://http-test.ramaproxy.org:443",
+                            "https://http-test.ramaproxy.org"
+                        ),
+                        ": https test service, TLS",
+                    ),
+                ),
+            ),
+            p!(
+                "You can learn move about rama at in ",
+                a!(href = "https://ramaproxy.org/book", "the rama book"),
+                ". And the source code for this service is available at ",
+                a!(
+                    href = "https://github.com/plabayo/rama",
+                    "https://github.com/plabayo/rama"
+                ),
+                ".",
+            ),
+        ),
+        div!(
+            class = "small",
+            p!(
+                "By clicking on the button above, you agree that we will store \
+                 fingerprint information about your network traffic. We are only \
+                 interested in the HTTP and TLS traffic sent by you. This information \
+                 will be stored in a database for later processing."
+            ),
+            p!(
+                "Please note that we do not store IP information and we do not use \
+                 third-party tracking cookies. However, it is possible that the \
+                 telecom or hosting services used by you or us may track some \
+                 personalized information, over which we have no control or desire. \
+                 You can use utilities like the Unix `dig` command to analyze the \
+                 traffic and determine what might be tracked."
+            ),
+            p!(
+                "Hosting for this service is sponsored by ",
+                a!(href = "https://fly.io", "fly.io"),
+                "."
+            ),
         ),
     )
 }
@@ -112,7 +184,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
 pub(super) async fn get_report(
     StateParam(state): StateParam<State>,
     req: Request,
-) -> Result<Html, Response> {
+) -> Result<Response, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -140,8 +212,6 @@ pub(super) async fn get_report(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
-
-    let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
         state.data_source.clone().into(),
@@ -188,12 +258,12 @@ pub(super) async fn get_report(
         tables.append(&mut tls_tables);
     }
 
-    Ok(render_report(
+    Ok(page(
         "🕵️ Fingerprint Report",
-        head,
-        String::new(),
-        tables,
-    ))
+        script!(src = "/assets/script.js"),
+        report_body(None::<&str>, tables),
+    )
+    .into_response())
 }
 
 fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
@@ -484,7 +554,7 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(
     StateParam(state): StateParam<State>,
     req: Request,
-) -> Result<Html, Response> {
+) -> Result<Response, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -512,25 +582,6 @@ pub(super) async fn form(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
-
-    let mut content = String::new();
-
-    content.push_str(r##"<a href="/report" title="Back to Home">🏠 Back to Home...</a>"##);
-
-    if parts.method == "POST" {
-        content.push_str(
-            r##"<div id="input"><form method="GET" action="/form">
-    <input type="hidden" name="source" value="web">
-    <label for="turtles">Do you like turtles?</label>
-    <select id="turtles" name="turtles">
-        <option value="yes">Yes</option>
-        <option value="no">No</option>
-        <option value="maybe">Maybe</option>
-    </select>
-    <button type="submit">Submit</button>
-</form></div>"##,
-        );
-    }
 
     let mut tables = vec![
         state.data_source.clone().into(),
@@ -577,12 +628,45 @@ pub(super) async fn form(
         tables.append(&mut tls_tables);
     }
 
-    Ok(render_report(
+    let show_form = parts.method == "POST";
+
+    Ok(page(
         "🕵️ Fingerprint Report » Form",
-        "",
-        content,
-        tables,
-    ))
+        (),
+        report_body(Some(form_top(show_form)), tables),
+    )
+    .into_response())
+}
+
+fn form_top(show_form: bool) -> impl IntoHtml {
+    (
+        a!(
+            href = "/report",
+            title = "Back to Home",
+            "🏠 Back to Home..."
+        ),
+        if show_form {
+            Some(div!(
+                id = "input",
+                form!(
+                    method = "GET",
+                    action = "/form",
+                    input!(r#type = "hidden", name = "source", value = "web"),
+                    label!(r#for = "turtles", "Do you like turtles?"),
+                    select!(
+                        id = "turtles",
+                        name = "turtles",
+                        option!(value = "yes", "Yes"),
+                        option!(value = "no", "No"),
+                        option!(value = "maybe", "Maybe"),
+                    ),
+                    button!(r#type = "submit", "Submit"),
+                ),
+            ))
+        } else {
+            None
+        },
+    )
 }
 
 //------------------------------------------
@@ -597,7 +681,7 @@ pub(super) async fn ws_api(state: State, ws: ServerWebSocket) -> Result<(), BoxE
 
     let user_agent = user_agent_info.user_agent.clone();
 
-    let _ = get_and_store_http_info(
+    _ = get_and_store_http_info(
         &state,
         parts.headers,
         &parts.extensions,
@@ -667,76 +751,120 @@ pub(super) async fn get_assets_script() -> impl IntoResponse {
 // render utilities
 //------------------------------------------
 
-fn render_report(title: &'static str, head: &str, mut html: String, tables: Vec<Table>) -> Html {
-    html.push_str(r##"<div class="report">"##);
-    for table in tables {
-        html.push_str(&format!("<h2>{}</h2>", table.title));
-        html.push_str("<table>");
-        for (key, value) in table.rows {
-            html.push_str(&format!(
-                r##"<tr><td class="key">{key}</td><td><code>{value}</code></td></tr>"##,
-            ));
-        }
-        html.push_str("</table>");
-    }
-    html.push_str("</div>");
-    render_page(title, head, &html)
+/// Inline SVG llama, served as a `data:` URL for the page favicon.
+const FAVICON_DATA_URL: PreEscaped<&str> = PreEscaped(
+    "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22>\
+     <text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>",
+);
+
+const CH_HEADERS: &str = "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, \
+                          ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, \
+                          Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, \
+                          Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, \
+                          Device-Memory, RTT, Sec-GPC";
+
+/// Render the standard page chrome (head + body shell) with the given
+/// per-page h1 title, optional extra `<head>` content, and body content.
+///
+/// All `IntoHtml` inputs are escaped automatically by virtue of the
+/// `html!`-macro family. Static literals come through `PreEscaped`.
+fn page<H, B>(
+    h1_title: &'static str,
+    extra_head: H,
+    body_content: B,
+) -> impl IntoHtml + IntoResponse
+where
+    H: IntoHtml,
+    B: IntoHtml,
+{
+    html!(
+        lang = "en",
+        head!(
+            meta!(charset = "UTF-8"),
+            meta!(
+                name = "viewport",
+                content = "width=device-width, initial-scale=1.0"
+            ),
+            title!("ラマ | FP"),
+            link!(rel = "icon", href = FAVICON_DATA_URL),
+            meta!(
+                name = "description",
+                content = "rama proxy fingerprinting service"
+            ),
+            meta!(name = "robots", content = "none"),
+            link!(rel = "canonical", href = "https://ramaproxy.org/"),
+            meta!(property = "og:title", content = "ramaproxy.org"),
+            meta!(property = "og:locale", content = "en_US"),
+            meta!(property = "og:type", content = "website"),
+            meta!(
+                property = "og:description",
+                content = "rama proxy fingerprinting service"
+            ),
+            meta!(property = "og:url", content = "https://ramaproxy.org/"),
+            meta!(property = "og:site_name", content = "ramaproxy.org"),
+            meta!(
+                property = "og:image",
+                content =
+                    "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg"
+            ),
+            meta!("http-equiv" = "Accept-CH", content = CH_HEADERS),
+            link!(
+                rel = "stylesheet",
+                r#type = "text/css",
+                href = "/assets/style.css"
+            ),
+            extra_head,
+        ),
+        body!(main!(
+            h1!(
+                a!(href = "/", title = "rama-fp home", "ラマ"),
+                PreEscaped(" &nbsp; | &nbsp; "),
+                h1_title,
+            ),
+            div!(id = "content", body_content),
+            // `#input` is populated dynamically by `script.js`; we keep it
+            // present-but-hidden so the JS' `getElementById("input")` lookup
+            // works on every page.
+            div!(id = "input", hidden? = true),
+            div!(
+                id = "banner",
+                a!(
+                    href = "https://ramaproxy.org",
+                    title = "rama proxy website",
+                    img!(
+                        src = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg",
+                        alt = "rama banner",
+                    ),
+                ),
+            ),
+        )),
+    )
 }
 
-fn render_page(title: &'static str, head: &str, content: &str) -> Html {
-    html(format!(
-        r#"
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+/// Wraps optional top-of-content (e.g. the form's back-link + submit form)
+/// and the rendered fingerprint tables inside the standard `report`
+/// container.
+fn report_body<T>(top: Option<T>, tables: Vec<Table>) -> impl IntoHtml
+where
+    T: IntoHtml,
+{
+    (top, div!(class = "report", render_tables(tables)))
+}
 
-            <title>ラマ | FP</title>
-
-            <link rel="icon"
-                href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>">
-
-            <meta name="description" content="rama proxy fingerprinting service">
-            <meta name="robots" content="none">
-
-            <link rel="canonical" href="https://ramaproxy.org/">
-
-            <meta property="og:title" content="ramaproxy.org" />
-            <meta property="og:locale" content="en_US" />
-            <meta property="og:type" content="website">
-            <meta property="og:description" content="rama proxy fingerprinting service" />
-            <meta property="og:url" content="https://ramaproxy.org/" />
-            <meta property="og:site_name" content="ramaproxy.org" />
-            <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg">
-
-            <meta http-equiv="Accept-CH" content="Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC" />
-
-            <link rel="stylesheet" type="text/css" href="/assets/style.css">
-
-            {head}
-        </head>
-        <body>
-            <main>
-                <h1>
-                    <a href="/" title="rama-fp home">ラマ</a>
-                    &nbsp;
-                    |
-                    &nbsp;
-                    {title}
-                </h1>
-                <div id="content">{content}</div>
-                <div id="input" hidden></div>
-                <div id="banner">
-                    <a href="https://ramaproxy.org" title="rama proxy website">
-                        <img src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg" alt="rama banner" />
-                    </a>
-                </div>
-            </main>
-        </body>
-        </html>
-    "#
-    ))
+/// Render a list of [`Table`]s as a flat sequence of `<h2>` + `<table>`
+/// pairs. All user-supplied table titles, keys, and values are emitted
+/// through the `html!`-macro escape pipeline.
+fn render_tables(tables: Vec<Table>) -> impl IntoHtml {
+    tables
+        .into_iter()
+        .map(|t| {
+            let rows = t
+                .rows
+                .into_iter()
+                .map(|(key, value)| tr!(td!(class = "key", key), td!(code!(value)),));
+            (h2!(t.title), table!(rows.collect::<Vec<_>>()))
+        })
+        .collect::<Vec<_>>()
 }
 
 impl From<TlsDisplayInfo> for Vec<Table> {
@@ -849,4 +977,112 @@ impl From<DataSource> for Table {
 struct Table {
     title: String,
     rows: Vec<(String, String)>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Header values, table titles, and table row keys/values all flow into
+    /// HTML via the `html!`-macro pipeline, which escapes `<`, `>`, `&`,
+    /// `"`, and `'`. Verifies an attacker controlling any of these cannot
+    /// break out of the surrounding text node into executable JS.
+    #[test]
+    fn render_tables_escapes_text_content_xss_payloads() {
+        let tables = vec![Table {
+            title: "<script>alert('title')</script>".to_owned(),
+            rows: vec![
+                (
+                    "<img src=x onerror=alert(1)>".to_owned(),
+                    "value & co".to_owned(),
+                ),
+                (
+                    "key with \"quote\"".to_owned(),
+                    "</code><script>alert('val')</script>".to_owned(),
+                ),
+            ],
+        }];
+
+        let out = render_tables(tables).into_string();
+
+        // No live tags should appear from user input.
+        assert!(!out.contains("<script>"));
+        assert!(!out.contains("<img"));
+        // The escaped forms must be present.
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(out.contains("&lt;img"));
+        assert!(out.contains("&amp;"));
+        assert!(out.contains("&quot;"));
+    }
+
+    /// The fingerprint page wraps tables inside a `<div class="report">` and
+    /// is served from the `/report` endpoint via `page(...)`. This check
+    /// pins the surrounding structure so a regression in either the chrome
+    /// or the table rendering surfaces immediately.
+    #[test]
+    fn report_body_wraps_tables_in_report_div() {
+        let tables = vec![Table {
+            title: "T".to_owned(),
+            rows: vec![("k".to_owned(), "v".to_owned())],
+        }];
+        let out = report_body(None::<&str>, tables).into_string();
+        assert!(out.contains(r#"<div class="report">"#));
+        assert!(out.contains("<h2>T</h2>"));
+        assert!(out.contains(r#"<tr><td class="key">k</td><td><code>v</code></td></tr>"#));
+    }
+
+    /// Unicode (the 🦙 emoji and friends) must pass through the escape
+    /// pipeline unchanged — only `<>&"'` are rewritten.
+    #[test]
+    fn render_tables_unicode_passes_through() {
+        let tables = vec![Table {
+            title: "🦙".to_owned(),
+            rows: vec![("世界".to_owned(), "🕵️".to_owned())],
+        }];
+        let out = render_tables(tables).into_string();
+        assert!(out.contains("🦙"));
+        assert!(out.contains("世界"));
+        assert!(out.contains("🕵️"));
+    }
+
+    /// Sanity check that `page(...)` produces a valid HTML5 document with
+    /// the per-page h1 title and that the body content slot receives the
+    /// supplied content.
+    #[test]
+    fn page_emits_doctype_and_renders_h1_title() {
+        let out = page("My Title", (), p!("body")).into_string();
+        assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
+        assert!(out.contains("<title>ラマ | FP</title>"));
+        assert!(out.contains("My Title"));
+        assert!(out.contains(r#"<div id="content"><p>body</p></div>"#));
+        assert!(out.contains(r#"<div id="input" hidden></div>"#));
+    }
+
+    /// h1 titles are static (compile-time `&'static str`) and so cannot be
+    /// attacker-supplied — but verify any future change that funnels
+    /// untrusted titles into `page(...)` would still be escaped.
+    #[test]
+    fn page_escapes_dynamic_title_slot() {
+        let evil = "<script>alert(1)</script>";
+        // page takes `&'static str` so we leak — only for the test.
+        let leaked: &'static str = Box::leak(evil.to_owned().into_boxed_str());
+        let out = page(leaked, (), ()).into_string();
+        assert!(!out.contains("<script>alert(1)</script>"));
+        assert!(out.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
+
+    /// The form-top fragment toggles a visible submission form when the
+    /// caller signals a POST request. Verify both rendered shapes.
+    #[test]
+    fn form_top_includes_form_when_post() {
+        let out = form_top(true).into_string();
+        assert!(out.contains(r#"<a href="/report""#));
+        assert!(out.contains(r#"<form method="GET" action="/form">"#));
+        assert!(out.contains(r#"<select id="turtles" name="turtles">"#));
+
+        let out_get = form_top(false).into_string();
+        assert!(out_get.contains(r#"<a href="/report""#));
+        assert!(!out_get.contains("<form"));
+        assert!(!out_get.contains("<select"));
+    }
 }

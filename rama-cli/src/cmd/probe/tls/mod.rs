@@ -47,7 +47,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         host,
         port: maybe_port,
     } = cfg.address;
-    let port = maybe_port.unwrap_or(Protocol::HTTPS_DEFAULT_PORT);
+    let port = maybe_port.as_u16().unwrap_or(Protocol::HTTPS_DEFAULT_PORT);
     let authority = HostWithPort { host, port };
 
     tracing::info!(

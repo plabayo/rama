@@ -5,11 +5,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Service, error::BoxError, io::Io, layer::timeout::DefaultTimeout};
 use rama_net::address::HostWithPort;
-use rama_net::{
-    address::{Host, SocketAddress},
-    proxy::IoForwardService,
-    socket::SocketService,
-};
+use rama_net::{address::SocketAddress, proxy::IoForwardService, socket::SocketService};
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_set_and_with;
 
@@ -206,12 +202,21 @@ impl Acceptor for TcpListener {
     }
 }
 
-impl Default for DefaultBinder {
-    fn default() -> Self {
+impl DefaultBinder {
+    /// Create a [`DefaultBinder`] whose forward bridge observes graceful
+    /// shutdown via the given [`Executor`].
+    #[must_use]
+    pub fn default_with_exec(exec: Executor) -> Self {
         Self::new(
             DefaultTimeout::new(DefaultAcceptorFactory::default(), Duration::from_secs(30)),
-            IoForwardService::default(),
+            IoForwardService::new(exec),
         )
+    }
+}
+
+impl Default for DefaultBinder {
+    fn default() -> Self {
+        Self::default_with_exec(Executor::default())
     }
 }
 
@@ -234,19 +239,18 @@ where
             port: requested_port,
         } = requested_bind_address;
 
-        let requested_addr = match requested_host {
-            Host::Name(domain) => {
-                tracing::debug!("bind command does not accept domain {domain} as bind address",);
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut ingress_stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: bind failed")
-                    })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // Bind target MUST be an IP. `try_as_ip` bridges pct-encoded
+        // IPv4 inside `Uninterpreted`; anything else is rejected.
+        let Ok(requested_addr) = requested_host.try_as_ip() else {
+            tracing::debug!(
+                "bind command does not accept non-IP host {requested_host} as bind address"
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut ingress_stream)
+                .await
+                .map_err(|err| Error::io(err).with_context("write server reply: bind failed"))?;
+            return Err(Error::aborted("bind failed").with_context(reply_kind));
         };
         let requested_address = SocketAddress::new(requested_addr, requested_port);
 
@@ -371,6 +375,11 @@ pub(crate) use test::MockBinder;
 
 #[cfg(test)]
 mod test {
+    #![expect(
+        clippy::unreachable,
+        reason = "test fixtures: arms gated on the mock variants the test sets up"
+    )]
+
     use super::*;
     use rama_net::address::HostWithPort;
     use std::{ops::DerefMut, sync::Arc};

@@ -97,8 +97,9 @@ pub fn now_unix_ms() -> i64 {
 /// Optimized for high-frequency calls. The underlying wall clock skew is refreshed
 /// roughly once per hour.
 pub fn now_unix() -> i64 {
-    let ms = now_unix_ms();
-    (ms + (1000 - 1)) / 1000
+    // floor-division so that 999 ms -> 0 s, -1 ms -> -1 s; matches the unix-seconds
+    // contract `floor(ms/1000)` even for pre-epoch (negative) timestamps.
+    now_unix_ms().div_euclid(1000)
 }
 
 #[inline]
@@ -166,6 +167,18 @@ mod tests {
     #[test]
     fn modulo_index_zero_len() {
         assert_eq!(time_modulo_index(0), 0);
+    }
+
+    #[test]
+    fn now_unix_floor_division() {
+        // Sanity: now_unix must equal floor(now_unix_ms / 1000) and must not exceed
+        // the system clock's seconds value at the call site.
+        let sys_s = unix_timestamp_millis() / 1000;
+        let approx_s = now_unix();
+        let ms = now_unix_ms();
+        assert_eq!(approx_s, ms.div_euclid(1000));
+        // Allow a small drift either way (cached clock).
+        assert!((sys_s - approx_s).abs() <= 1);
     }
 
     #[test]

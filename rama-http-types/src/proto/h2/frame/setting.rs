@@ -1,3 +1,4 @@
+use super::Error;
 use rama_core::bytes::{BufMut as _, BytesMut};
 use rama_core::telemetry::tracing;
 use rama_utils::collections::smallvec::{self, SmallVec};
@@ -138,18 +139,18 @@ impl Setting {
     /// contains the raw byte representation of the setting, according to the
     /// "SETTINGS format" defined in section 6.5.1.
     ///
-    /// The `raw` parameter should have length at least 6 bytes, since the
-    /// length of the raw setting is exactly 6 bytes.
-    ///
-    /// # Panics
-    ///
-    /// If given a buffer shorter than 6 bytes, the function will panic.
-    #[must_use]
-    pub fn load(raw: &[u8]) -> Self {
+    /// Errors with [`Error::ShortBuffer`] when `raw.len() < 6`.
+    pub fn load(raw: &[u8]) -> Result<Self, Error> {
+        if raw.len() < 6 {
+            return Err(Error::ShortBuffer {
+                needed: 6,
+                got: raw.len(),
+            });
+        }
         let id: u16 = unpack_octets_as_u16(raw, 0);
         let val: u32 = unpack_octets_as_u32(raw, 2);
 
-        Self::new(id, val)
+        Ok(Self::new(id, val))
     }
 
     pub fn encode(&self, dst: &mut BytesMut) {

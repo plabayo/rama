@@ -29,6 +29,13 @@ mod form;
 #[doc(inline)]
 pub use form::*;
 
+mod octet_stream;
+#[doc(inline)]
+pub use octet_stream::*;
+
+#[cfg(feature = "multipart")]
+pub mod multipart;
+
 /// Extractor to get the response body.
 #[derive(Debug)]
 pub struct Body(pub crate::Body);

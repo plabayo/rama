@@ -100,7 +100,7 @@ pub use codec::UserError;
 mod proto;
 
 #[cfg(feature = "unstable")]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub mod proto;
 

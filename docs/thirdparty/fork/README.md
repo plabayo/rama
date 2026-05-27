@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/dbc204e57e0f96ea25d023c82d8a16340675b271>
+- h2: <https://github.com/hyperium/h2/tree/e2826c54601a2afd5083e496a6e021408cc2a11f>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/dbc204e57e0f96ea25d023c82d8a16340675b271/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/e2826c54601a2afd5083e496a6e021408cc2a11f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0>
+- hyper: <https://github.com/hyperium/hyper/tree/e9be344f16c8a996ccf3a9f69a66408437885f31>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/0d6c7d5469baa09e2fb127ee3758a79b3271a4f0/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/e9be344f16c8a996ccf3a9f69a66408437885f31/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -44,13 +44,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/251296dc54a044383dffd16d2179b443e2615672/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/0d608fdbb0e62fcaa9d3e7b5205207337f223831>
+- <https://github.com/tower-rs/tower-http/tree/7551a9b8b9706ca1e11c035659b243f688b136bd>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/0d608fdbb0e62fcaa9d3e7b5205207337f223831/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/7551a9b8b9706ca1e11c035659b243f688b136bd/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -78,6 +78,33 @@ but still directly in function of Rama.
       - Original: <https://github.com/cloudflare/boring/blob/e71b24328f1cd787f64036d8208a4470ae58e200/tokio-boring/LICENSE-MIT>
       - Type: MIT
       - Copy: [./licenses/tokio-boring](./licenses/tokio-boring)
+
+## Permanent Forks
+
+These are permanent forks that we have taken into the rama ecosystem so we
+can shape them to fit naturally into the rest of the codebase. They will
+not be kept in sync with upstream — they are now part of `rama`.
+
+- <https://github.com/JonahLund/vy/tree/1280174f54774c24fa478475af17fd7f5814c91a>
+  - Forked into [`rama-http-macros`](https://github.com/plabayo/rama/tree/main/rama-http-macros)
+    (the proc-macros) and into private modules under
+    [`rama-http/src/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/html)
+    (the `IntoHtml` trait, escaping, scalar / numeric / tuple impls).
+  - Reasons for forking:
+    - Better integration with the rest of the rama ecosystem — in
+      particular dropping vy's bespoke `Either*` types in favour of the
+      already-existing [`rama_core::combinators::Either`] family.
+    - Adding a `custom!` macro for runtime tag names (web components).
+    - Letting the macro output (`HtmlBuf`) implement `IntoResponse`
+      directly so handler code can return HTML without any extra wrapper.
+    - Dropping `no_std` support and `itoap` / `ryu` deps in favour of the
+      standard library — this crate is `std`-only anyway via `rama-http`.
+  - License:
+    - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/vy](./licenses/vy)
+
+[`rama_core::combinators::Either`]: https://docs.rs/rama-core/latest/rama_core/combinators/enum.Either.html
 
 ## Relative Forks
 

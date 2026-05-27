@@ -1,12 +1,13 @@
 use rama::{
-    error::{BoxError, ErrorExt, extra::OpaqueError},
-    net::{address::ProxyAddress, user::Basic},
-    utils::str::{NonEmptyStr, starts_with_ignore_ascii_case},
+    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    net::{Protocol, address::ProxyAddress, uri::Uri, user::Basic},
+    utils::str::NonEmptyStr,
 };
 
 use clap::Args;
 use std::path::PathBuf;
 
+pub mod file;
 pub mod http;
 
 mod arg;
@@ -17,22 +18,27 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
         return Err(OpaqueError::from_static_str("empty URI is not valid").into_box_error());
     }
 
-    let uri_scheme_raw = cfg
-        .uri
-        .split_once("://")
-        .map(|t| t.0.trim())
-        .unwrap_or("http");
-
-    if ["http", "https", "ws", "wss"]
-        .into_iter()
-        .any(|scheme| uri_scheme_raw.eq_ignore_ascii_case(scheme))
-    {
-        let is_ws = starts_with_ignore_ascii_case(uri_scheme_raw.as_bytes(), b"ws");
-        http::run(cfg, is_ws).await
+    // Canonical URI parse — relies on rama's RFC 3986 parser instead
+    // of an ad-hoc `split_once("://")`. Inputs without a scheme are
+    // treated as `http://` (curl-compatible default).
+    let normalized: std::borrow::Cow<'_, str> = if cfg.uri.contains("://") {
+        std::borrow::Cow::Borrowed(cfg.uri.as_str())
     } else {
-        Err(OpaqueError::from_static_str("scheme is not supported")
-            .context_str_field("raw_value", uri_scheme_raw))
+        std::borrow::Cow::Owned(format!("http://{}", cfg.uri))
+    };
+    let uri = Uri::parse_canonical(normalized.as_ref()).context("parse request URI")?;
+    let scheme = uri.scheme().cloned().unwrap_or(Protocol::HTTP);
+
+    if scheme == Protocol::FILE {
+        return file::run(&uri).await;
     }
+
+    let is_ws = scheme.is_ws();
+    if scheme.is_http() || is_ws {
+        return http::run(cfg, is_ws).await;
+    }
+    Err(OpaqueError::from_static_str("scheme is not supported")
+        .context_str_field("scheme", scheme.as_str()))
 }
 
 #[derive(Debug, Args)]
@@ -86,6 +92,30 @@ pub struct SendCommand {
     #[arg(long, default_value_t = false)]
     /// (HTTP) Shorthand to specify the content-type as -H "Content-Type: application/octet-stream".
     binary: bool,
+
+    #[arg(long, short = 'F')]
+    /// (HTTP) Send a `multipart/form-data` part.
+    ///
+    /// Each `-F` flag adds one part. Spec syntax (compatible with curl `-F`
+    /// and httpie):
+    ///
+    ///   name=value                              text part
+    ///   name=@path                              file upload (mime guessed)
+    ///   name=@-                                 file upload from stdin
+    ///   name=<path                              file content as text part
+    ///   name=<-                                 text part from stdin
+    ///
+    /// Optional modifiers, separated by `;`:
+    ///
+    ///   ;type=mime/sub      override the part's Content-Type
+    ///   ;filename=name      override the filename
+    ///
+    /// Example:
+    ///
+    ///   --form-data 'avatar=@./photo.png;type=image/png;filename=me.png'
+    ///
+    /// Mutually exclusive with --data, --json, --binary.
+    form_data: Option<Vec<String>>,
 
     #[arg(long, short = 'x')]
     /// upstream proxy to use (can also be specified using PROXY env variable)

@@ -111,17 +111,51 @@ struct LogfmtEscaper<'a, 'b> {
 
 impl<'a, 'b> fmt::Write for LogfmtEscaper<'a, 'b> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        for ch in s.chars() {
-            match ch {
-                '\\' => self.f.write_str("\\\\")?,
-                '"' => self.f.write_str("\\\"")?,
-                '\n' => self.f.write_str("\\n")?,
-                '\r' => self.f.write_str("\\r")?,
-                '\t' => self.f.write_str("\\t")?,
-                c => self.f.write_char(c)?,
+        // Emit runs of "clean" characters in a single write_str, only breaking
+        // out for characters that need escaping. This keeps formatter overhead
+        // low while ensuring control characters (incl. ANSI ESC \x1b and other
+        // C0/C1 controls) are neutralized to prevent terminal-escape / log
+        // injection when error context contains attacker-controlled data.
+        let mut rest = s;
+        loop {
+            let mut found = None;
+            for (i, ch) in rest.char_indices() {
+                if needs_escape(ch) {
+                    found = Some((i, ch));
+                    break;
+                }
             }
+            let Some((i, ch)) = found else {
+                if !rest.is_empty() {
+                    self.f.write_str(rest)?;
+                }
+                return Ok(());
+            };
+            if i > 0 {
+                self.f.write_str(&rest[..i])?;
+            }
+            write_escaped(self.f, ch)?;
+            rest = &rest[i + ch.len_utf8()..];
         }
-        Ok(())
+    }
+}
+
+#[inline]
+fn needs_escape(ch: char) -> bool {
+    // Backslash and quote are the logfmt structural escapes; everything that
+    // is a Unicode control (C0, DEL, C1) is escaped to avoid terminal-escape
+    // injection and to keep log records single-line and printable.
+    matches!(ch, '\\' | '"') || ch.is_control()
+}
+
+fn write_escaped(f: &mut fmt::Formatter<'_>, ch: char) -> fmt::Result {
+    match ch {
+        '\\' => f.write_str("\\\\"),
+        '"' => f.write_str("\\\""),
+        '\n' => f.write_str("\\n"),
+        '\r' => f.write_str("\\r"),
+        '\t' => f.write_str("\\t"),
+        c => write!(f, "\\u{{{:x}}}", c as u32),
     }
 }
 
@@ -211,12 +245,19 @@ impl fmt::Display for ErrorWithContext {
             }
         }
 
+        // Cap the cause-chain walk so a malformed Error impl that returns a
+        // cycle from .source() cannot produce an unbounded loop here.
+        const MAX_CAUSE_DEPTH: usize = 64;
         let mut idx = 0usize;
         let mut cur = self.source.as_ref().source();
         if cur.is_some() {
             writeln!(f, "Caused by:")?;
         }
         while let Some(err) = cur {
+            if idx >= MAX_CAUSE_DEPTH {
+                writeln!(f, "  ... (truncated)")?;
+                break;
+            }
             writeln!(f, "  {idx}: {err}")?;
             idx += 1;
             cur = err.source();
@@ -389,5 +430,71 @@ mod tests {
 
         let src_ref = err.source().expect("source should exist");
         assert_eq!(src_ref.to_string(), "boom");
+    }
+
+    #[test]
+    fn logfmt_escapes_ansi_and_control_chars() {
+        // ANSI ESC (\x1b), NUL, DEL, BEL, C1 CSI — none of these may appear
+        // literally in formatted output, to prevent terminal-escape / log
+        // injection when error context contains attacker-controlled bytes.
+        let src = BoomError;
+        let mut err = ErrorWithContext::new(BoxError::from(src));
+
+        err.insert_key_value("ansi", "\x1b[31mred\x1b[0m");
+        err.insert_key_value("nul", "a\x00b");
+        err.insert_key_value("del", "a\x7fb");
+        err.insert_key_value("bel", "a\x07b");
+        err.insert_key_value("c1", "a\u{9b}b");
+
+        let s = format!("{err}");
+
+        // No literal control bytes leaked through.
+        for bad in ['\x00', '\x07', '\x1b', '\x7f', '\u{9b}'] {
+            assert!(
+                !s.contains(bad),
+                "raw control char {bad:?} leaked into output: {s:?}"
+            );
+        }
+
+        // Escaped forms are present.
+        assert!(s.contains(r"\u{1b}"), "got: {s:?}");
+        assert!(s.contains(r"\u{0}"), "got: {s:?}");
+        assert!(s.contains(r"\u{7f}"), "got: {s:?}");
+        assert!(s.contains(r"\u{7}"), "got: {s:?}");
+        assert!(s.contains(r"\u{9b}"), "got: {s:?}");
+
+        // Existing structural escapes still work.
+        let src2 = BoomError;
+        let mut err2 = ErrorWithContext::new(BoxError::from(src2));
+        err2.insert_key_value("q", "a\"b\\c");
+        let s2 = format!("{err2}");
+        assert!(s2.contains(r#"q="a\"b\\c""#), "got: {s2:?}");
+    }
+
+    #[test]
+    fn cause_chain_is_capped_to_avoid_unbounded_loops() {
+        // A malicious Error impl can return a cycle from .source(); make sure
+        // alternate Display still terminates.
+        struct Cycle;
+        impl fmt::Debug for Cycle {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("cycle")
+            }
+        }
+        impl fmt::Display for Cycle {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("cycle")
+            }
+        }
+        impl StdError for Cycle {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                // Self-cycle: returns itself as its own source.
+                Some(self)
+            }
+        }
+
+        let err = ErrorWithContext::new(Box::new(Cycle));
+        let s = format!("{err:#}");
+        assert!(s.contains("(truncated)"), "got: {s:?}");
     }
 }

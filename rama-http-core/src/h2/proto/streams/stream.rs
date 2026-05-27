@@ -75,8 +75,14 @@ pub(super) struct Stream {
     /// Set to true when a push is pending for this stream
     pub is_pending_push: bool,
 
-    /// The extensions of this stream
+    /// The stream's own extensions
+    ///
+    /// An h2 stream is a sub-connection layered on the multiplexer/TCP.
     pub extensions: Extensions,
+
+    /// Captured at `send_request` time and carried so the response builder can fork
+    /// it to create the response extensions
+    pub req_extensions: Option<Extensions>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
@@ -128,7 +134,7 @@ impl fmt::Debug for Stream {
             .field("state", &self.state)
             .field("is_counted", &self.is_counted)
             .field("ref_count", &self.ref_count)
-            .h2_field_some("next_pending_send", &self.next_pending_send)
+            .h2_field_some("next_pending_send", self.next_pending_send.as_ref())
             .h2_field_if("is_pending_send", self.is_pending_send)
             .field("send_flow", &self.send_flow)
             .field("requested_send_capacity", &self.requested_send_capacity)
@@ -141,27 +147,27 @@ impl fmt::Debug for Stream {
             )
             .h2_field_if("is_pending_send_capacity", self.is_pending_send_capacity)
             .h2_field_if("send_capacity_inc", self.send_capacity_inc)
-            .h2_field_some("next_open", &self.next_open)
+            .h2_field_some("next_open", self.next_open.as_ref())
             .h2_field_if("is_pending_open", self.is_pending_open)
             .h2_field_if("is_pending_push", self.is_pending_push)
             // DO NOT expose extensions as-is to debug, depending on what's there it can blow up logs
             // .field("extensions", &self.extensions)
-            .h2_field_some("next_pending_accept", &self.next_pending_accept)
+            .h2_field_some("next_pending_accept", self.next_pending_accept.as_ref())
             .h2_field_if("is_pending_accept", self.is_pending_accept)
             .field("recv_flow", &self.recv_flow)
             .field("in_flight_recv_data", &self.in_flight_recv_data)
-            .h2_field_some("next_window_update", &self.next_window_update)
+            .h2_field_some("next_window_update", self.next_window_update.as_ref())
             .h2_field_if("is_pending_window_update", self.is_pending_window_update)
-            .h2_field_some("reset_at", &self.reset_at)
-            .h2_field_some("next_reset_expire", &self.next_reset_expire)
+            .h2_field_some("reset_at", self.reset_at.as_ref())
+            .h2_field_some("next_reset_expire", self.next_reset_expire.as_ref())
             .h2_field_if_then(
                 "pending_recv",
                 !self.pending_recv.is_empty(),
                 &self.pending_recv,
             )
             .h2_field_if("is_recv", self.is_recv)
-            .h2_field_some("recv_task", &self.recv_task.as_ref().map(|_| ()))
-            .h2_field_some("push_task", &self.push_task.as_ref().map(|_| ()))
+            .h2_field_some("recv_task", self.recv_task.as_ref().map(|_| &()))
+            .h2_field_some("push_task", self.push_task.as_ref().map(|_| &()))
             .h2_field_if_then(
                 "pending_push_promises",
                 !self.pending_push_promises.is_empty(),
@@ -203,7 +209,7 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-        extensions: Extensions,
+        connection_extensions: &Extensions,
     ) -> Result<Self, Reason> {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
@@ -229,10 +235,14 @@ impl Stream {
             return Err(reason);
         }
 
+        // Create extensions for this specific stream
+        let extensions = connection_extensions.fork();
+
         Ok(Self {
             id,
             state: State::default(),
             extensions,
+            req_extensions: None,
             ref_count: 0,
             is_counted: false,
 
@@ -457,9 +467,10 @@ impl Stream {
 
     rama_utils::macros::generate_set_and_with! {
         /// Set the stream's state to `Closed` with the given reason and initiator.
-        /// Notify the send and receive tasks, if they exist.
+        /// Notify the send, receive, and push tasks, if they exist.
         pub(super) fn reset(mut self, reason: Reason, initiator: Initiator) -> Self {
             self.state.set_reset(self.id, reason, initiator);
+            self.notify_send();
             self.notify_push();
             self.notify_recv();
             self

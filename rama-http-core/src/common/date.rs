@@ -75,14 +75,14 @@ impl CachedDate {
 
     fn render(&mut self, now: SystemTime) {
         self.pos = 0;
-        let _ = write!(self, "{}", HttpDate::from(now));
+        _ = write!(self, "{}", HttpDate::from(now));
         debug_assert!(self.pos == DATE_VALUE_LENGTH);
         self.render_http2();
     }
 
     fn render_http2(&mut self) {
         self.header_value = {
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "input is controlled and we trust http date to always be a valid header value"
             )]

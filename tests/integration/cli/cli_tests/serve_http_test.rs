@@ -6,16 +6,18 @@ use rama::{
     futures::StreamExt as _,
     http::{
         Body, BodyExtractExt, Method, Request, Response, StatusCode, Version,
+        body::util::BodyExt,
         client::EasyHttpWebClient,
         header::{ACCEPT_ENCODING, CONTENT_ENCODING},
         headers::{ContentLength, HeaderMapExt, encoding::AcceptEncoding},
         layer::decompression::DecompressionLayer,
-        service::client::HttpClientExt,
+        service::client::{HttpClientExt, multipart},
     },
     net::tls::client::ServerVerifyMode,
     rt::Executor,
     service::BoxService,
     tls::boring::client::TlsConnectorDataBuilder,
+    utils::str::any_submatch_ignore_ascii_case,
 };
 
 use super::utils;
@@ -58,6 +60,10 @@ async fn run_http_tests(base_uri: &'static str) {
         run_http_test_endpoint_response_stream_compression(client.clone(), base_uri, http_version)
             .await;
         run_http_test_endpoint_sse(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_octet_stream(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_multipart(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_bytes(client.clone(), base_uri, http_version).await;
+        run_http_test_endpoint_sink(client.clone(), base_uri, http_version).await;
     }
 }
 
@@ -263,4 +269,217 @@ async fn run_http_test_endpoint_sse(
     }
 
     assert!(stream.next().await.is_none());
+}
+
+async fn run_http_test_endpoint_octet_stream(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    let payload: Vec<u8> = (0u8..=200).collect();
+    let resp = client
+        .post(format!("{base_uri}/octet-stream"))
+        .version(http_version)
+        .octet_stream(payload.clone())
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(StatusCode::OK, resp.status());
+    assert_eq!(
+        Some("application/octet-stream"),
+        resp.headers()
+            .get(rama::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let echoed = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(payload.as_slice(), echoed.as_ref());
+}
+
+async fn run_http_test_endpoint_multipart(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    let form = multipart::Form::new().text("username", "glen").part(
+        "attachment",
+        multipart::Part::bytes(b"hello rama".as_slice())
+            .with_file_name("note.txt")
+            .try_with_mime_str("text/plain")
+            .unwrap(),
+    );
+
+    let resp = client
+        .post(format!("{base_uri}/multipart"))
+        .version(http_version)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(StatusCode::OK, resp.status());
+
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    let parts = body.get("parts").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(parts.len(), 2);
+
+    let username = &parts[0];
+    assert_eq!(username["name"].as_str(), Some("username"));
+    assert!(username["filename"].is_null());
+    assert_eq!(username["size"].as_u64(), Some(4));
+    assert_eq!(username["text"].as_str(), Some("glen"));
+
+    let attachment = &parts[1];
+    assert_eq!(attachment["name"].as_str(), Some("attachment"));
+    assert_eq!(attachment["filename"].as_str(), Some("note.txt"));
+    assert_eq!(attachment["content_type"].as_str(), Some("text/plain"));
+    assert_eq!(attachment["size"].as_u64(), Some(10));
+    assert_eq!(attachment["text"].as_str(), Some("hello rama"));
+
+    // Per-field cap (256 KiB) — sending a single field larger than that
+    // should produce 413 Payload Too Large.
+    //
+    // The server detects the overflow mid-stream, returns 413, and
+    // closes the connection. Whether the client observes the 413 or a
+    // transport error (BrokenPipe / ConnectionReset / connection
+    // aborted) depends on whether it finishes writing the body before
+    // the server's close reaches it — a fundamental HTTP race for
+    // early-error responses. Either outcome proves the cap was
+    // enforced; we accept both to keep the test stable across CI
+    // load.
+    let big = vec![b'x'; 300 * 1024];
+    let oversized = multipart::Form::new().part("blob", multipart::Part::bytes(big));
+    match client
+        .post(format!("{base_uri}/multipart"))
+        .version(http_version)
+        .multipart(oversized)
+        .send()
+        .await
+    {
+        Ok(resp) => assert_eq!(StatusCode::PAYLOAD_TOO_LARGE, resp.status()),
+        Err(err) => {
+            let msg = format!("{err:#}");
+            assert!(
+                any_submatch_ignore_ascii_case(
+                    &msg,
+                    [
+                        "broken pipe",
+                        "connection reset",
+                        "connection aborted",
+                        "connection closed",
+                    ],
+                ),
+                "expected 413 response or transport-close error, got: {msg}",
+            );
+        }
+    }
+}
+
+async fn run_http_test_endpoint_bytes(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    // default size (1 KiB)
+    let resp = client
+        .get(format!("{base_uri}/bytes"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(1024, body.len());
+    assert!(body.iter().all(|&b| b == 0));
+
+    // explicit size, default chunk
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=4096"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(4096, body.len());
+
+    // small chunk so we exercise multi-chunk streaming without delay
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=4096&chunk=512"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(4096, body.len());
+
+    // size=0 is valid (empty body)
+    let resp = client
+        .get(format!("{base_uri}/bytes?size=0"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(0, body.len());
+
+    // invalid parameters → 400
+    for bad_url in [
+        format!("{base_uri}/bytes?size=abc"),
+        format!("{base_uri}/bytes?chunk=0"),
+        format!("{base_uri}/bytes?delay_ms=99999999"),
+    ] {
+        let resp = client
+            .get(bad_url)
+            .version(http_version)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::BAD_REQUEST, resp.status());
+    }
+}
+
+async fn run_http_test_endpoint_sink(
+    client: BoxService<Request, Response, OpaqueError>,
+    base_uri: &'static str,
+    http_version: Version,
+) {
+    // empty body
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(0));
+
+    // small body
+    let payload = b"hello rama sink";
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .octet_stream(payload.as_slice())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(payload.len() as u64));
+
+    // larger body (1 MiB) — exercises multi-frame draining
+    let big = vec![0u8; 1024 * 1024];
+    let resp = client
+        .post(format!("{base_uri}/sink"))
+        .version(http_version)
+        .octet_stream(big.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, resp.status());
+    let body: serde_json::Value = resp.try_into_json().await.unwrap();
+    assert_eq!(body["bytes"].as_u64(), Some(big.len() as u64));
 }

@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
 #![deny(warnings)]
 
 use std::convert::Infallible;
@@ -65,7 +70,7 @@ fn hello_world_16(b: divan::Bencher) {
             });
 
             addr_tx.send(addr).unwrap();
-            rt.block_on(until_rx).ok();
+            _ = rt.block_on(until_rx);
         });
 
         addr_rx.recv().unwrap()

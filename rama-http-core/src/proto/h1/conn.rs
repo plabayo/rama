@@ -7,14 +7,15 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef, Ingress};
+use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::proto::h1::ext::informational::OnInformational;
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
-use rama_net::conn::{ConnectionHealth, ConnectionHealthStatus};
+use rama_net::conn::ConnectionHealthWatcher;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
 
@@ -47,6 +48,9 @@ where
     T: Http1Transaction,
 {
     pub(crate) fn new(io: I) -> Self {
+        io.extensions()
+            .get_ref_or_insert(ConnectionHealthWatcher::default);
+
         Self {
             io: Buffered::new(io),
             state: State {
@@ -199,16 +203,25 @@ where
             }
         }
 
-        let extensions = if T::is_client() {
-            if self.state.encoded_request_extensions.is_none() {
-                panic!(
-                    "encoded_request_extensions should never be none when receiving response headers"
-                )
-            }
-            &mut self.state.encoded_request_extensions
+        let prepared = if T::is_client() {
+            // Client receiving a response
+            // Client receiving a response
+            self.state.encoded_request_extensions
+                    .as_ref()
+                    .map(|req_ext| req_ext.fork())
+                    .unwrap_or_else(|| {
+                        tracing::warn!(
+                            "encoded_request_extensions should always be set in poll_read_head but it was missing; falling back to default; report bug in rama"
+                        );
+                        Extensions::new()
+                    })
         } else {
-            &mut Some(self.io.extensions().clone())
+            // Server receiving a request
+            let ext = Extensions::new();
+            ext.insert(Ingress(self.io.extensions().clone()));
+            ext
         };
+        let mut prepared_extensions = Some(prepared);
 
         let msg = match self.io.parse::<T>(
             cx,
@@ -218,7 +231,7 @@ where
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
-                extensions,
+                prepared_extensions: &mut prepared_extensions,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
@@ -791,9 +804,11 @@ where
     }
 
     pub(crate) fn poll_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if let Some(health) = self.io.extensions().get_ref::<ConnectionHealth>() {
-            health.set_status(ConnectionHealthStatus::Broken);
-        }
+        self.io
+            .extensions()
+            .get_ref_or_insert(ConnectionHealthWatcher::default)
+            .mark_broken();
+
         match ready!(Pin::new(self.io.io_mut()).poll_shutdown(cx)) {
             Ok(()) => {
                 trace!("shut down IO complete");
@@ -814,7 +829,7 @@ where
             self.state.reading = Reading::Body(decoder.clone());
         }
 
-        let _ = self.poll_read_body(cx);
+        _ = self.poll_read_body(cx);
 
         // If still in Reading::Body, just give up
         match self.state.reading {

@@ -1136,7 +1136,7 @@ mod tests {
     fn test_iter_syntax() {
         let non_empty_vec = NonEmptyVec::from((0, vec![1, 2, 3]));
         for n in &non_empty_vec {
-            let _ = *n; // Prove that we're dealing with references.
+            _ = *n; // Prove that we're dealing with references.
         }
         for _ in non_empty_vec {}
     }

@@ -19,6 +19,14 @@
 //!
 //! You should receive `olleh` back, which is "hello" reversed.
 
+#![cfg_attr(
+    target_family = "unix",
+    expect(
+        clippy::expect_used,
+        reason = "example: panic-on-error is the standard pattern for demos"
+    )
+)]
+
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
@@ -128,7 +136,7 @@ use unix_example::run;
 
 #[cfg(not(target_family = "unix"))]
 async fn run() {
-    println!("unix_socket example is a unix-only example, bye now!");
+    eprintln!("unix_socket example is a unix-only example, bye now!");
 }
 
 #[tokio::main]

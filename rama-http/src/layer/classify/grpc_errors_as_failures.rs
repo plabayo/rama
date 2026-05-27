@@ -1,3 +1,8 @@
+#![expect(
+    clippy::allow_attributes,
+    reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
+)]
+
 use super::{ClassifiedResponse, ClassifyEos, ClassifyResponse, SharedClassifier};
 use crate::{HeaderMap, Response};
 use bitflags::bitflags;
@@ -67,6 +72,43 @@ impl GrpcCode {
             Self::DataLoss => GrpcCodeBitmask::DATA_LOSS,
             Self::Unauthenticated => GrpcCodeBitmask::UNAUTHENTICATED,
         }
+    }
+}
+
+/// Converts an `i32` gRPC status code into a [`GrpcCode`].
+///
+/// Unrecognized codes (outside 0-16) map to [`GrpcCode::Unknown`].
+impl From<i32> for GrpcCode {
+    fn from(value: i32) -> Self {
+        if value == 2 {
+            return Self::Unknown;
+        }
+
+        match value {
+            0 => Self::Ok,
+            1 => Self::Cancelled,
+            3 => Self::InvalidArgument,
+            4 => Self::DeadlineExceeded,
+            5 => Self::NotFound,
+            6 => Self::AlreadyExists,
+            7 => Self::PermissionDenied,
+            8 => Self::ResourceExhausted,
+            9 => Self::FailedPrecondition,
+            10 => Self::Aborted,
+            11 => Self::OutOfRange,
+            12 => Self::Unimplemented,
+            13 => Self::Internal,
+            14 => Self::Unavailable,
+            15 => Self::DataLoss,
+            16 => Self::Unauthenticated,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl From<NonZeroI32> for GrpcCode {
+    fn from(value: NonZeroI32) -> Self {
+        Self::from(value.get())
     }
 }
 
@@ -357,5 +399,30 @@ mod tests {
         status: "16",
         success_flags: GrpcCodeBitmask::OK | GrpcCodeBitmask::INVALID_ARGUMENT,
         expected: ParsedGrpcStatus::NonSuccess(NonZeroI32::new(16).unwrap()),
+    }
+
+    #[test]
+    fn grpc_code_from_i32_known_codes() {
+        assert!(matches!(GrpcCode::from(0), GrpcCode::Ok));
+        assert!(matches!(GrpcCode::from(1), GrpcCode::Cancelled));
+        assert!(matches!(GrpcCode::from(4), GrpcCode::DeadlineExceeded));
+        assert!(matches!(GrpcCode::from(13), GrpcCode::Internal));
+        assert!(matches!(GrpcCode::from(16), GrpcCode::Unauthenticated));
+    }
+
+    #[test]
+    fn grpc_code_from_i32_unknown_codes() {
+        assert!(matches!(GrpcCode::from(17), GrpcCode::Unknown));
+        assert!(matches!(GrpcCode::from(-1), GrpcCode::Unknown));
+        assert!(matches!(GrpcCode::from(9999), GrpcCode::Unknown));
+    }
+
+    #[test]
+    fn grpc_code_from_non_zero_i32() {
+        let code = NonZeroI32::new(7).unwrap();
+        assert!(matches!(GrpcCode::from(code), GrpcCode::PermissionDenied));
+
+        let code = NonZeroI32::new(99).unwrap();
+        assert!(matches!(GrpcCode::from(code), GrpcCode::Unknown));
     }
 }

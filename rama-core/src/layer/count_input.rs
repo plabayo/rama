@@ -85,7 +85,7 @@ impl InputCounterExtension {
     /// Uses acquire release ordering for sensible cross thread visibility without locks.
     fn new(data: Arc<DefaultInputCounterData>) -> Self {
         let input_count = data.total_inputs.fetch_add(1, atomic::Ordering::AcqRel) + 1;
-        let _ = data
+        _ = data
             .concurrent_inputs
             .fetch_add(1, atomic::Ordering::AcqRel);
 

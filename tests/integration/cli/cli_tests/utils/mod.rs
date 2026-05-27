@@ -408,7 +408,7 @@ impl RamaService {
     }
 
     /// Run any rama cmd
-    pub(super) fn run(args: Vec<&'static str>) -> Result<String, Box<dyn std::error::Error>> {
+    pub(super) fn run(args: &[&'static str]) -> Result<String, Box<dyn std::error::Error>> {
         let child = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -427,10 +427,52 @@ impl RamaService {
             .unwrap();
 
         let output = child.wait_with_output()?;
-        assert!(output.status.success());
+        if !output.status.success() {
+            // Surface the child's own diagnostics — otherwise the test
+            // panic only carries the args, which is rarely enough to
+            // pinpoint what went wrong (TLS handshake? bind in use?
+            // bad CLI flag?).
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            panic!(
+                "rama exited unsuccessfully\n  args: {args:?}\n  status: {status}\n  --- stderr ---\n{stderr}\n  --- stdout ---\n{stdout}",
+                status = output.status,
+            );
+        }
         let mut s = String::from_utf8(output.stderr)?;
         s.push_str(&String::from_utf8(output.stdout)?);
         Ok(s)
+    }
+
+    /// Run any rama cmd allowing failure — returns (exit_success,
+    /// stdout, stderr) so callers can assert on error diagnostics
+    /// without the harness panicking on non-zero exit.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn run_capture(
+        args: &[&str],
+    ) -> Result<(bool, String, String), Box<dyn std::error::Error>> {
+        let child = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command()
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .args(args)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
+            .spawn()
+            .unwrap();
+        let output = child.wait_with_output()?;
+        Ok((
+            output.status.success(),
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?,
+        ))
     }
 
     /// Run the http command
@@ -439,19 +481,19 @@ impl RamaService {
     ) -> Result<String, Box<dyn std::error::Error>> {
         let mut args = vec!["--verbose", "-L", "-k"];
         args.extend(input_args);
-        Self::run(args)
+        Self::run(&args)
     }
 
     /// Run the probe tls command
     pub(super) fn probe_tls(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
         let args = vec!["probe", "tls", "-k", addr];
-        Self::run(args)
+        Self::run(&args)
     }
 
     /// Run the probe tcp command
     pub(super) fn probe_tcp(addr: &'static str) -> Result<String, Box<dyn std::error::Error>> {
         let args = vec!["probe", "tcp", addr];
-        Self::run(args)
+        Self::run(&args)
     }
 
     /// Run the resolve command
@@ -463,7 +505,7 @@ impl RamaService {
         if let Some(rt) = record_type {
             args.push(rt);
         }
-        Self::run(args)
+        Self::run(&args)
     }
 
     /// Start the rama serve service with the given port and content path.
@@ -643,7 +685,7 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        let _ = subscriber::registry()
+        _ = subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()

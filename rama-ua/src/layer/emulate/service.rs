@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    extensions::{ChainableExtensions, ExtensionsRef},
+    extensions::ExtensionsRef,
     telemetry::tracing,
 };
 use rama_http::headers::{ClientHint, all_client_hints};
@@ -284,7 +284,10 @@ where
         let EstablishedClientConnection { conn, input: req } =
             self.inner.connect(req).await.into_box_error()?;
 
-        match (&conn, &req).get_ref().cloned() {
+        match req
+            .extensions()
+            .clone_to_if_absent::<HttpProfile>(conn.extensions())
+        {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -595,7 +598,7 @@ fn get_base_http_headers_from_req_init(
 
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[expect(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn merge_http_headers<'a>(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,
@@ -2150,7 +2153,7 @@ mod tests {
                     Host::Name(Domain::from_static("b.example.com")),
                     Protocol::HTTP_DEFAULT_PORT,
                 ),
-                expected_value: "none",
+                expected_value: "cross-site",
             },
         ];
 

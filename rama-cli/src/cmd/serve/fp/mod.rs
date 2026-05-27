@@ -171,6 +171,23 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         .parse::<HeaderValue>()
         .context("parse header value")?;
 
+    // --- defence-in-depth response headers ---
+    //
+    // Even though the FP HTML pipeline now goes through the `html!`
+    // macros (which escape all interpolated content), we layer on a
+    // strict Content-Security-Policy plus the usual hardening headers
+    // so any future regression or third-party reverse-proxy injection
+    // is contained. We widen the strict-self baseline by:
+    //   * allowing the banner image hosted on raw.githubusercontent.com
+    //     and the favicon's inline `data:` SVG, and
+    //   * permitting the same-origin WebSocket on `/api/ws` (the bare
+    //     `'self'` keyword is scheme-aware in CSP3 and covers `ws:` /
+    //     `wss:` to the same origin, so no scheme wildcard is needed).
+    let fp_csp = rama::cli::service::http_security::rama_html_csp()
+        .with_connect_src(rama::http::headers::SourceList::self_origin());
+    let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
+        rama::cli::service::http_security::defence_in_depth_layer(fp_csp);
+
     let middlewares = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
@@ -181,6 +198,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),
         ),
+        csp_layer,
+        nosniff_layer,
+        referrer_layer,
+        frame_layer,
         StorageAuthLayer::new(&state),
         SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("accept-ch"),
@@ -410,7 +431,7 @@ where
             if !cookie.is_empty() {
                 match HeaderValue::try_from(cookie) {
                     Ok(value) => {
-                        let _ = req.headers_mut().insert(COOKIE, value);
+                        _ = req.headers_mut().insert(COOKIE, value);
                     }
                     Err(err) => {
                         tracing::error!(

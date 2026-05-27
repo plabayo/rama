@@ -8,5 +8,3 @@ pub mod service;
 pub use service::HttpServer;
 
 mod core_conn;
-
-pub mod layer;

@@ -68,9 +68,10 @@ impl XForwardedHost {
 
     #[inline]
     /// Get a copy of the `port` of this [`XForwardedHost`] if it is set.
+    /// Empty (`:` with no digits) maps to `None` along with truly absent.
     #[must_use]
     pub fn port(&self) -> Option<u16> {
-        self.0.0.port
+        self.0.0.port.as_u16()
     }
 
     /// Return a reference to the inner data of this header.

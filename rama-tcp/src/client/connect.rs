@@ -114,6 +114,10 @@ impl TcpStreamConnector for SocketAddress {
 }
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))
+)]
 impl TcpStreamConnector for rama_net::socket::DeviceName {
     type Error = BoxError;
 
@@ -449,7 +453,7 @@ mod tests {
     {
         let extensions = extensions.unwrap_or_default();
 
-        let _ = tcp_connect(
+        _ = tcp_connect(
             &extensions,
             HostWithPort::example_domain_http(),
             dns,
@@ -492,6 +496,10 @@ mod tests {
     impl TcpStreamConnector for PanicTcpConnector {
         type Error = Infallible;
 
+        #[expect(
+            clippy::unreachable,
+            reason = "test fixture: this connector is wired up but the tested code path never invokes it"
+        )]
         async fn connect(&self, _: SocketAddr) -> Result<TcpStream, Self::Error> {
             unreachable!()
         }
@@ -545,7 +553,7 @@ mod tests {
     async fn tcp_connect_returns_when_graceful_executor_is_stopped() {
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         let shutdown = Shutdown::new(async move {
-            let _ = stop_rx.await;
+            _ = stop_rx.await;
         });
         let exec = Executor::graceful(shutdown.guard());
 
@@ -561,7 +569,7 @@ mod tests {
             .await
         });
 
-        let _ = stop_tx.send(());
+        _ = stop_tx.send(());
 
         tokio::time::timeout(std::time::Duration::from_secs(1), shutdown.shutdown())
             .await
@@ -597,6 +605,11 @@ mod unix_windows_tests {
     impl TcpStreamConnector for DummyTcpConnector {
         type Error = Infallible;
 
+        #[expect(
+            clippy::expect_used,
+            clippy::unwrap_used,
+            reason = "test-only impl: the test module covers cfg(test), but clippy's allow-*-in-tests detection doesn't propagate through this trait impl"
+        )]
         async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
             let domain = match addr.ip() {
                 IpAddr::V4(_) => socket::core::Domain::IPV4,
@@ -615,13 +628,17 @@ mod unix_windows_tests {
         }
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
+    )]
     async fn test_generic_ok<Dns>(dns: Dns, extensions: Option<Extensions>)
     where
         Dns: DnsAddressResolver,
     {
         let extensions = extensions.unwrap_or_default();
 
-        let _ = tcp_connect(
+        tcp_connect(
             &extensions,
             HostWithPort::example_domain_http(),
             dns,

@@ -1,0 +1,14 @@
+# Workspace-wide build flags.
+#
+# `tokio_unstable` is set so that any rama crate which opts into the
+# `dial9` cargo feature can depend on `dial9-tokio-telemetry` and emit
+# events from its own lifecycle hooks. dial9 hooks into Tokio's unstable
+# runtime APIs and refuses to compile without this flag.
+#
+# It is benign for crates that do not reference unstable Tokio APIs —
+# the flag only widens the API surface; it does not change behaviour
+# of the stable surface. We rely on `cargo clippy -D warnings` and
+# code review to keep accidental unstable-API usage out of crates that
+# don't intentionally opt into it.
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

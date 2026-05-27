@@ -5,7 +5,7 @@ use rama_core::{
     layer::timeout::DefaultTimeout, telemetry::tracing,
 };
 use rama_net::{
-    address::{Host, HostWithPort, SocketAddress},
+    address::{HostWithPort, SocketAddress},
     socket::SocketService,
 };
 use rama_udp::{UdpSocket, bind_udp_with_address};
@@ -129,8 +129,8 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             dns_resolver: None,
             bind_north_address: SocketAddress::default_ipv4(0),
             bind_south_address: SocketAddress::default_ipv4(0),
-            north_buffer_size: 2048,
-            south_buffer_size: 2048,
+            north_buffer_size: 4096,
+            south_buffer_size: 4096,
             relay_timeout: None,
         }
     }
@@ -167,7 +167,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
 }
 
 impl<B, I> UdpRelay<B, I> {
-    /// Overwrite the [`UdpRelay`]'s bind [`SocketService],
+    /// Overwrite the [`UdpRelay`]'s bind [`SocketService`],
     /// used to open a socket, return the address and
     /// wait for an incoming connection which it will return.
     pub fn with_binder<T>(self, binder: T) -> UdpRelay<T, I> {
@@ -280,6 +280,7 @@ impl Default for DefaultUdpRelay {
             Duration::from_secs(30),
         ))
         .with_default_dns_resolver()
+        .with_relay_timeout(Duration::from_secs(300))
     }
 }
 
@@ -305,21 +306,20 @@ where
             port: dest_port,
         } = destination;
 
-        let dest_addr = match dest_host {
-            Host::Name(domain) => {
-                tracing::debug!(
-                    "udp associate command does not accept domain {domain} as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: udp relay failed")
-                    })?;
-                return Err(Error::aborted("udp relay failed").with_context(reply_kind));
-            }
-            Host::Address(ip_addr) => ip_addr,
+        // UDP-associate bind address MUST be an IP. `try_as_ip` bridges
+        // pct-encoded IPv4 inside `Uninterpreted`; anything else fails.
+        let Ok(dest_addr) = dest_host.try_as_ip() else {
+            tracing::debug!(
+                "udp associate command does not accept non-IP host {dest_host} as bind address",
+            );
+            let reply_kind = ReplyKind::AddressTypeNotSupported;
+            Reply::error_reply(reply_kind)
+                .write_to(&mut stream)
+                .await
+                .map_err(|err| {
+                    Error::io(err).with_context("write server reply: udp relay failed")
+                })?;
+            return Err(Error::aborted("udp relay failed").with_context(reply_kind));
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
 

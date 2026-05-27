@@ -70,15 +70,17 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelayBinder<S> {
         }
 
         let HostWithPort { host, port } = server_reply.bind_address;
-        let bind_address: SocketAddress = match host {
-            rama_net::address::Host::Name(_) => {
+        // UDP bind reply MUST be an IP. `try_as_ip` bridges pct-encoded
+        // IPv4 inside `Uninterpreted`; everything else fails.
+        let bind_address: SocketAddress = match host.try_as_ip() {
+            Ok(ip) => (ip, port).into(),
+            Err(_) => {
                 return Err(
                     HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported).with_context(
-                        "server responded with named address: incompatible for udp bind",
+                        "server responded with non-IP address: incompatible for udp bind",
                     ),
                 );
             }
-            rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
         };
 
         socket
@@ -153,7 +155,7 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
 
         self.write_buffer.truncate(0);
 
-        header.write_to_buf(&mut self.write_buffer);
+        header.write_to_buf(&mut self.write_buffer)?;
         self.write_buffer.extend_from_slice(b);
 
         Ok(self.socket.send(&self.write_buffer[..]).await?)
@@ -174,13 +176,13 @@ impl<S: rama_core::io::Io + Unpin> UdpSocketRelay<S> {
 
         self.write_buffer.truncate(0);
 
-        header.write_to_buf(&mut self.write_buffer);
+        header.write_to_buf(&mut self.write_buffer)?;
         self.write_buffer.extend_from_slice(b);
 
         self.socket
             .poll_send(cx, &self.write_buffer[..])
             .map_err(Into::into)
-            .map_ok(|n| n - header.serialized_len() + 1)
+            .map_ok(|n| n - header.serialized_len())
     }
 
     /// Receives a single datagram message from the socks5 udp associate proxy.
@@ -251,17 +253,17 @@ fn validate_udp_header(header: UdpHeader) -> Result<(usize, SocketAddress), BoxE
         .context_field("fragment_number", header.fragment_number));
     }
 
-    let header_offset = header.serialized_len() - 1;
+    let header_offset = header.serialized_len();
 
     let HostWithPort { host, port } = header.destination;
-    let from: SocketAddress = match host {
-        rama_net::address::Host::Name(domain) => {
+    let from: SocketAddress = match host.try_as_ip() {
+        Ok(ip) => (ip, port).into(),
+        Err(_) => {
             return Err(OpaqueError::from_static_str(
-                "server responded with named address: incompatible for udp bind",
+                "server responded with non-IP host: incompatible for udp bind",
             )
-            .context_field("domain", domain));
+            .context_field("host", host.to_string()));
         }
-        rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
     };
 
     Ok((header_offset, from))

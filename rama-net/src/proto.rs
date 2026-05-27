@@ -22,6 +22,7 @@ use rama_http_types::Scheme;
 pub struct Protocol(ProtocolKind);
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 enum ProtocolKind {
     /// The `http` protocol.
     Http,
@@ -48,6 +49,13 @@ enum ProtocolKind {
     ///
     /// The difference with [`Self::Socks5`] is that the proxy resolves the URL hostname.
     Socks5h,
+    /// The `file` protocol. Local-filesystem URI scheme — the
+    /// `hier-part` is an absolute path on the host running the URI
+    /// consumer; nothing is sent over the network. Defined by
+    /// [RFC 8089](https://datatracker.ietf.org/doc/html/rfc8089).
+    ///
+    /// Has no default port — `file:` is not a network protocol.
+    File,
     /// Custom protocol.
     Custom(SmolStr),
 }
@@ -95,6 +103,14 @@ impl Protocol {
     /// `SOCKS5H` protocol.
     pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
+    /// `FILE` protocol scheme. RFC 8089 — `file:///path/to/x`.
+    pub const FILE_SCHEME: &str = "file";
+    /// The `file` protocol. Local-filesystem URI scheme: the URI
+    /// references a path on the host running the URI consumer.
+    /// Consumers (CLI tools, file fetchers) open the path directly
+    /// rather than dialing a network endpoint.
+    pub const FILE: Self = Self(ProtocolKind::File);
+
     /// Creates a Protocol from a str a compile time.
     ///
     /// This function requires the static string to be a valid protocol.
@@ -107,13 +123,17 @@ impl Protocol {
     ///
     /// This function panics at **compile time** when the static string is not a valid protocol.
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: panic at compile time when the static is not a valid protocol"
+    )]
     pub const fn from_static(s: &'static str) -> Self {
         // NOTE: once unwrapping is possible in const we can piggy back on
         // `try_to_convert_str_to_non_custom_protocol`
 
         Self(if eq_ignore_ascii_case!(s, Self::HTTPS_SCHEME) {
             ProtocolKind::Https
-        } else if s.is_empty() || eq_ignore_ascii_case!(s, Self::HTTP_SCHEME) {
+        } else if eq_ignore_ascii_case!(s, Self::HTTP_SCHEME) {
             ProtocolKind::Http
         } else if eq_ignore_ascii_case!(s, Self::SOCKS5_SCHEME) {
             ProtocolKind::Socks5
@@ -123,6 +143,8 @@ impl Protocol {
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Self::WSS_SCHEME) {
             ProtocolKind::Wss
+        } else if eq_ignore_ascii_case!(s, Self::FILE_SCHEME) {
+            ProtocolKind::File
         } else if validate_scheme_str(s) {
             ProtocolKind::Custom(SmolStr::new_static(s))
         } else {
@@ -139,6 +161,7 @@ impl Protocol {
             | ProtocolKind::Wss
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -152,6 +175,7 @@ impl Protocol {
             | ProtocolKind::Https
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -165,6 +189,7 @@ impl Protocol {
             | ProtocolKind::Https
             | ProtocolKind::Ws
             | ProtocolKind::Wss
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
@@ -178,11 +203,22 @@ impl Protocol {
             | ProtocolKind::Http
             | ProtocolKind::Socks5
             | ProtocolKind::Socks5h
+            | ProtocolKind::File
             | ProtocolKind::Custom(_) => false,
         }
     }
 
-    /// Returns the default port for this [`Protocol`]
+    /// Returns the default port for this [`Protocol`].
+    ///
+    /// Registered defaults: `http=80`, `https=443`, `ws=80`, `wss=443`,
+    /// `socks5=1080`, `socks5h=1080`. Other schemes (`ftp:21`, `ssh:22`,
+    /// `ldap:389`, …) return `None` — `Protocol`'s scope is the
+    /// web-protocol set rama actively models.
+    /// [`crate::uri::Uri::canonicalize`] only drops ports that match a
+    /// registered default, so `ftp://host:21/` keeps its `:21`. This
+    /// diverges from WHATWG-URL (which strips `ftp:21`).
+    ///
+    /// The set of supported protocols grows with the needs that justify them.
     #[must_use]
     pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
@@ -192,7 +228,8 @@ impl Protocol {
             ProtocolKind::Ws => Some(Self::WS_DEFAULT_PORT),
             ProtocolKind::Socks5 => Some(Self::SOCKS5_DEFAULT_PORT),
             ProtocolKind::Socks5h => Some(Self::SOCKS5H_DEFAULT_PORT),
-            ProtocolKind::Custom(_) => None,
+            // `file:` is not a network protocol — no default port.
+            ProtocolKind::File | ProtocolKind::Custom(_) => None,
         }
     }
 
@@ -200,12 +237,13 @@ impl Protocol {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match &self.0 {
-            ProtocolKind::Http => "http",
-            ProtocolKind::Https => "https",
-            ProtocolKind::Ws => "ws",
-            ProtocolKind::Wss => "wss",
-            ProtocolKind::Socks5 => "socks5",
-            ProtocolKind::Socks5h => "socks5h",
+            ProtocolKind::Http => Self::HTTP_SCHEME,
+            ProtocolKind::Https => Self::HTTPS_SCHEME,
+            ProtocolKind::Ws => Self::WS_SCHEME,
+            ProtocolKind::Wss => Self::WSS_SCHEME,
+            ProtocolKind::Socks5 => Self::SOCKS5_SCHEME,
+            ProtocolKind::Socks5h => Self::SOCKS5H_SCHEME,
+            ProtocolKind::File => Self::FILE_SCHEME,
             ProtocolKind::Custom(s) => s.as_ref(),
         }
     }
@@ -222,7 +260,7 @@ fn try_to_convert_str_to_non_custom_protocol(
     Ok(Some(Protocol(
         if eq_ignore_ascii_case!(s, Protocol::HTTPS_SCHEME) {
             ProtocolKind::Https
-        } else if s.is_empty() || eq_ignore_ascii_case!(s, Protocol::HTTP_SCHEME) {
+        } else if eq_ignore_ascii_case!(s, Protocol::HTTP_SCHEME) {
             ProtocolKind::Http
         } else if eq_ignore_ascii_case!(s, Protocol::SOCKS5_SCHEME) {
             ProtocolKind::Socks5
@@ -232,6 +270,8 @@ fn try_to_convert_str_to_non_custom_protocol(
             ProtocolKind::Ws
         } else if eq_ignore_ascii_case!(s, Protocol::WSS_SCHEME) {
             ProtocolKind::Wss
+        } else if eq_ignore_ascii_case!(s, Protocol::FILE_SCHEME) {
+            ProtocolKind::File
         } else if validate_scheme_str(s) {
             return Ok(None);
         } else {
@@ -244,8 +284,12 @@ impl TryFrom<&str> for Protocol {
     type Error = InvalidProtocolStr;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
+        // `SmolStr::new` — *not* `new_inline`. `new_inline` panics if the
+        // input exceeds the 23-byte inline cap; the URI parser does not
+        // cap scheme length (RFC 3986 doesn't either), so a custom scheme
+        // > 23 bytes is a valid graceful input and must not abort.
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new_inline(s)))))
+            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 
@@ -276,10 +320,11 @@ impl FromStr for Protocol {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl From<Scheme> for Protocol {
     #[inline]
     fn from(s: Scheme) -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
         )]
@@ -290,9 +335,10 @@ impl From<Scheme> for Protocol {
 }
 
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 impl From<&Scheme> for Protocol {
     fn from(s: &Scheme) -> Self {
-        #[allow(
+        #[expect(
             clippy::expect_used,
             reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
         )]
@@ -311,6 +357,7 @@ impl PartialEq<str> for Protocol {
             ProtocolKind::Socks5h => other.eq_ignore_ascii_case(Self::SOCKS5H_SCHEME),
             ProtocolKind::Ws => other.eq_ignore_ascii_case(Self::WS_SCHEME),
             ProtocolKind::Wss => other.eq_ignore_ascii_case(Self::WSS_SCHEME),
+            ProtocolKind::File => other.eq_ignore_ascii_case(Self::FILE_SCHEME),
             ProtocolKind::Custom(s) => other.eq_ignore_ascii_case(s),
         }
     }
@@ -456,7 +503,6 @@ mod tests {
     #[test]
     fn test_from_str() {
         assert_eq!("http".parse(), Ok(Protocol::HTTP));
-        assert_eq!("".parse(), Ok(Protocol::HTTP));
         assert_eq!("https".parse(), Ok(Protocol::HTTPS));
         assert_eq!("ws".parse(), Ok(Protocol::WS));
         assert_eq!("wss".parse(), Ok(Protocol::WSS));
@@ -465,14 +511,50 @@ mod tests {
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
     }
 
+    #[test]
+    fn empty_scheme_rejected() {
+        // Per RFC 3986 §3.1 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-"
+        // / "." )` — empty is not valid. Reject explicitly rather than
+        // silently defaulting to HTTP.
+        "".parse::<Protocol>().unwrap_err();
+        Protocol::try_from("").unwrap_err();
+    }
+
+    #[test]
+    fn try_from_rejects_non_ascii_scheme() {
+        // RFC 3986 §3.1: scheme is ASCII only. `validate_scheme_str`
+        // catches non-ASCII bytes via the byte-set LUT (all entries
+        // above 0x7F are 0). Confirms the typed constructor enforces
+        // the same constraint as the parser's per-byte byte-set check.
+        Protocol::try_from("müncheme").unwrap_err();
+        Protocol::try_from("ab cd").unwrap_err();
+        Protocol::try_from("ab\0").unwrap_err();
+        // Valid: ASCII alpha + sub-delims allowed by the scheme grammar.
+        Protocol::try_from("git+ssh").unwrap();
+        Protocol::try_from("coap+tcp").unwrap();
+    }
+
+    #[test]
+    fn regression_custom_scheme_over_smolstr_inline_cap_does_not_panic() {
+        // Uri-fuzzer regression: a 25-byte all-ASCII custom scheme is a
+        // perfectly valid RFC 3986 scheme but exceeds `SmolStr`'s 23-byte
+        // inline cap. `Protocol::try_from(&str)` previously used
+        // `SmolStr::new_inline`, which panics over the cap. Now uses
+        // `SmolStr::new`, which heap-allocates beyond the cap.
+        let long = "hhhhhhahhhhhhhhhhhhhhhhhh"; // 25 bytes
+        assert_eq!(long.len(), 25);
+        let proto: Protocol = long.try_into().unwrap();
+        assert_eq!(proto.as_str(), long);
+
+        // Also exercise the parser path that the fuzzer hit.
+        let uri: crate::uri::Uri = format!("{long}:/aq").parse().unwrap();
+        assert_eq!(uri.scheme().unwrap().as_str(), long);
+    }
+
     #[cfg(feature = "http")]
     #[test]
     fn test_from_http_scheme() {
-        for s in [
-            "http", "https", "ws", "wss", "socks5", "socks5h", "", "custom",
-        ]
-        .iter()
-        {
+        for s in ["http", "https", "ws", "wss", "socks5", "socks5h", "custom"].iter() {
             let uri =
                 rama_http_types::Uri::from_str(format!("{s}://example.com").as_str()).unwrap();
             assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);

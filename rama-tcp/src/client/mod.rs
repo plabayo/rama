@@ -14,5 +14,6 @@ pub use connect::{
 #[cfg(feature = "http")]
 mod request;
 #[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 #[doc(inline)]
 pub use request::Request;

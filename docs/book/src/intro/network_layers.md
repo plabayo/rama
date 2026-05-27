@@ -52,3 +52,6 @@ Here are some examples that demonstrate working with transport layer services:
   example demonstrating how to serve a ndjson (Newline Delimited JSON) stream of data over TCP
 - [/examples/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/udp_codec.rs):
   an example showing how to work with UDP using codecs for message framing;
+- [/examples/udp_over_tcp.rs](https://github.com/plabayo/rama/tree/main/examples/udp_over_tcp.rs):
+  tunnels UDP datagrams over a single TCP connection — inspired by Jon Gjengset's
+  [`udp-over-tcp`](https://github.com/jonhoo/udp-over-tcp); built on `ConnectedUdpFramed` + `StreamForwardService`;

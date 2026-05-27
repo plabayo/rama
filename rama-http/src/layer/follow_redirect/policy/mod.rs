@@ -17,7 +17,7 @@ pub use self::{
     redirect_fn::{RedirectFn, redirect_fn},
     same_origin::SameOrigin,
 };
-use crate::{Request, Scheme, StatusCode, Uri};
+use crate::{Method, Request, Scheme, StatusCode, Uri};
 
 /// Trait for the policy on handling redirection responses.
 ///
@@ -31,20 +31,26 @@ use crate::{Request, Scheme, StatusCode, Uri};
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use rama_http::{Request, Uri};
+/// use rama_http::{Method, Request, Uri};
 /// use rama_http::layer::follow_redirect::policy::{Action, Attempt, Policy};
 ///
 /// #[derive(Clone)]
 /// pub struct DetectCycle {
-///     uris: HashSet<Uri>,
+///     requests: HashSet<(Method, Uri)>,
 /// }
 ///
 /// impl< B, E> Policy< B, E> for DetectCycle {
 ///     fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
-///         if self.uris.contains(attempt.location()) {
+///         if self
+///             .requests
+///             .contains(&(attempt.method().clone(), attempt.location().clone()))
+///         {
 ///             Ok(Action::Stop)
 ///         } else {
-///             self.uris.insert(attempt.previous().clone());
+///             self.requests.insert((
+///                 attempt.previous_method().clone(),
+///                 attempt.previous().clone(),
+///             ));
 ///             Ok(Action::Follow)
 ///         }
 ///     }
@@ -185,7 +191,9 @@ pub type Standard = And<Limited, FilterCredentials>;
 #[derive(Debug)]
 pub struct Attempt<'a> {
     pub(crate) status: StatusCode,
+    pub(crate) method: &'a Method,
     pub(crate) location: &'a Uri,
+    pub(crate) previous_method: &'a Method,
     pub(crate) previous: &'a Uri,
 }
 
@@ -196,10 +204,22 @@ impl<'a> Attempt<'a> {
         self.status
     }
 
+    /// Returns the request method for the next request.
+    #[must_use]
+    pub fn method(&self) -> &'a Method {
+        self.method
+    }
+
     /// Returns the destination URI of the redirection.
     #[must_use]
     pub fn location(&self) -> &'a Uri {
         self.location
+    }
+
+    /// Returns the request method for the original request.
+    #[must_use]
+    pub fn previous_method(&self) -> &'a Method {
+        self.previous_method
     }
 
     /// Returns the URI of the original request.

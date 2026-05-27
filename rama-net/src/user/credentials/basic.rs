@@ -5,14 +5,39 @@ use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
 
+use rama_utils::bytes::ct::ct_eq_bytes;
+
 use crate::user::authority::StaticAuthorizer;
 
-#[derive(Clone, PartialEq, Eq, Extension)]
+#[derive(Clone, Eq, Extension)]
 #[extension(tags(net))]
 /// Basic credentials.
 pub struct Basic {
     username: NonEmptyStr,
     password: Option<NonEmptyStr>,
+}
+
+impl PartialEq for Basic {
+    /// Constant-time comparison over the credential bytes.
+    //
+    // Why: `Basic` is used by `StaticAuthorizer`, so a short-circuiting
+    // byte compare leaks the matching prefix length to an attacker who
+    // can probe authentication latency. Verified by
+    // `tests::regression_basic_constant_time_eq`.
+    fn eq(&self, other: &Self) -> bool {
+        let user_eq = ct_eq_bytes(self.username.as_bytes(), other.username.as_bytes());
+        let pwd_eq = match (&self.password, &other.password) {
+            (Some(a), Some(b)) => ct_eq_bytes(a.as_bytes(), b.as_bytes()),
+            (None, None) => true,
+            // The "one side has a password and the other does not" case still
+            // performs a fixed-cost compare so we don't reveal which side it is.
+            (Some(a), None) | (None, Some(a)) => {
+                let _ = ct_eq_bytes(a.as_bytes(), a.as_bytes());
+                false
+            }
+        };
+        user_eq & pwd_eq
+    }
 }
 
 /// Create a [`Basic`] value at const-compile time.
@@ -136,10 +161,38 @@ impl std::hash::Hash for Basic {
     }
 }
 
+/// Reject control bytes that have no legitimate place inside HTTP Basic
+/// credentials.
+//
+// Why: an unvalidated CR / LF or NUL byte that round-trips back into an
+// Authorization header lets an attacker inject extra header fields (CRLF
+// injection) or terminate a C-string prematurely in downstream handlers.
+// RFC 7617 (HTTP Basic) does not enumerate these as forbidden, but no
+// real-world deployment relies on them either, so we reject by default
+// for every entry point that constructs a [`Basic`] from external input.
+//
+// Regression: `tests::regression_basic_rejects_crlf_nul`.
+fn validate_basic_field(field: &str, value: &str) -> Result<(), BoxError> {
+    if let Some(idx) = value
+        .as_bytes()
+        .iter()
+        .position(|b| matches!(*b, b'\r' | b'\n' | 0))
+    {
+        return Err(OpaqueError::from_static_str(
+            "basic credential contains forbidden control byte",
+        )
+        .context_str_field("field", field)
+        .context_field("byte_index", idx)
+        .into_box_error());
+    }
+    Ok(())
+}
+
 impl TryFrom<&str> for Basic {
     type Error = BoxError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        validate_basic_field("credential blob", value)?;
         match value.find(':') {
             Some(0) => Err(
                 OpaqueError::from_static_str("missing username in basic credential")
@@ -181,5 +234,65 @@ impl fmt::Display for Basic {
             self.username(),
             self.password().unwrap_or_default()
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic(user: &str, pwd: Option<&str>) -> Basic {
+        let username = NonEmptyStr::try_from(user).unwrap();
+        match pwd {
+            Some(p) => Basic::new(username, NonEmptyStr::try_from(p).unwrap()),
+            None => Basic::new_insecure(username),
+        }
+    }
+
+    #[test]
+    fn regression_basic_constant_time_eq() {
+        // Equal credentials match.
+        assert_eq!(
+            basic("alice", Some("hunter2")),
+            basic("alice", Some("hunter2"))
+        );
+        // Differing only in the last byte of the password.
+        assert_ne!(
+            basic("alice", Some("hunter2")),
+            basic("alice", Some("hunter3"))
+        );
+        // Differing only in the first byte of the password.
+        assert_ne!(
+            basic("alice", Some("hunter2")),
+            basic("alice", Some("xunter2"))
+        );
+        // One side has a password, the other does not.
+        assert_ne!(basic("alice", Some("hunter2")), basic("alice", None));
+        assert_ne!(basic("alice", None), basic("alice", Some("hunter2")));
+        // Different usernames, same password.
+        assert_ne!(
+            basic("alice", Some("hunter2")),
+            basic("bob", Some("hunter2"))
+        );
+        // Insecure pair compares.
+        assert_eq!(basic("alice", None), basic("alice", None));
+        assert_ne!(basic("alice", None), basic("bob", None));
+    }
+
+    #[test]
+    fn regression_basic_rejects_crlf_nul() {
+        // CRLF in the username section enables Authorization-header CRLF
+        // injection if the value round-trips back into a header. RFC 7617
+        // does not enumerate this; we reject by default.
+        Basic::try_from("ali\rce:hunter2").unwrap_err();
+        Basic::try_from("ali\nce:hunter2").unwrap_err();
+        // Password section.
+        Basic::try_from("alice:hun\rter2").unwrap_err();
+        Basic::try_from("alice:hun\nter2").unwrap_err();
+        // NUL byte (C-string terminator) in either side.
+        Basic::try_from("ali\0ce:hunter2").unwrap_err();
+        Basic::try_from("alice:hun\0ter2").unwrap_err();
+        // Normal credential still parses.
+        Basic::try_from("alice:hunter2").unwrap();
     }
 }

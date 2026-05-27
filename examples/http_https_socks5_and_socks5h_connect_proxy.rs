@@ -23,9 +23,15 @@
 //!
 //! You should see in all the above examples the responses from the server.
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer, Service,
-    extensions::{ExtensionsRef, InputExtensions},
+    extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -41,7 +47,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::{
         proxy::IoForwardService,
-        stream::ClientSocketInfo,
+        stream::SocketInfo,
         tls::server::{SelfSignedData, TlsPeekRouter},
         user::credentials::basic,
     },
@@ -133,9 +139,9 @@ async fn main() {
                 DefaultHttpProxyConnectReplyService::new(),
                 (
                     ConsumeErrLayer::default(),
-                    IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+                    IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
                 )
-                    .into_layer(IoForwardService::new()),
+                    .into_layer(IoForwardService::new(exec)),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
@@ -161,10 +167,12 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(req).await {
         Ok(resp) => {
+            // We can also just directly fetch SocketInfo and it will traverse into egress/ingress chains,
+            // however to be clear and to avoid confusion in a MITM setup we access the egress one directly.
             if let Some(client_socket_info) = resp
                 .extensions()
-                .get_ref()
-                .and_then(|InputExtensions(ext)| ext.get_ref::<ClientSocketInfo>())
+                .egress()
+                .and_then(|e| e.get_ref::<SocketInfo>())
             {
                 tracing::info!(
                     http.response.status_code = %resp.status(),

@@ -548,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_csv_row_reader_failure_invalid_row() {
         let mut reader = ProxyCsvRowReader::raw(",,,,,,,,,,,");
-        assert!(reader.next().await.is_err());
+        reader.next().await.unwrap_err();
     }
 
     #[test]

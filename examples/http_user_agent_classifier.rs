@@ -16,6 +16,11 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
 
+#![expect(
+    clippy::unwrap_used,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     Layer,
     extensions::Extensions,

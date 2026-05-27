@@ -175,7 +175,7 @@ impl Connection {
     /// assert!(conn.contains_header("Keep-Alive"));
     /// ```
     #[inline]
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     pub fn contains_header(&self, name: impl PartialEq<HeaderName>) -> bool {
         match &self.0 {
             Directive::Close => false,

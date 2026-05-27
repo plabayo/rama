@@ -1418,7 +1418,7 @@ async fn reject_none_zero_content_length_header_with_end_stream() {
             .body(())
             .unwrap();
         let (response, _) = client.send_request(request, true).unwrap();
-        let _ = response.await.unwrap_err();
+        _ = response.await.unwrap_err();
     };
 
     join(srv, h2).await;
@@ -2096,14 +2096,14 @@ async fn reset_before_headers_reaches_peer_without_headers() {
 
         // Now start driving the connection so the queued frames get written.
         let conn_task = tokio::spawn(async move {
-            let _ = conn.await;
+            _ = conn.await;
         });
 
         // Give the connection a moment to flush frames.
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         drop(send_stream);
-        let _ = conn_task.await;
+        _ = conn_task.await;
     };
 
     join(srv, client).await;

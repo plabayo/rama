@@ -214,7 +214,7 @@ where
         {
             tracing::trace!(
                 server.address = %transport_ctx.authority.host,
-                server.port = transport_ctx.authority.port,
+                server.port = transport_ctx.authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -223,8 +223,12 @@ where
             });
         }
 
+        // SNI is a DNS name. IP-first per RFC 6066 §3: drop SNI for
+        // IP-shaped hosts (including pct-encoded IP literals inside
+        // `Uninterpreted`). Otherwise bridge `Uninterpreted` to Domain.
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -233,7 +237,7 @@ where
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
@@ -267,13 +271,14 @@ where
             .context("TlsConnector(auto): compute transport context")?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port,
+            server.port = transport_ctx.authority.port_u16(),
             "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
             transport_ctx.app_protocol,
         );
 
+        let sni_domain = sni_domain_for(&transport_ctx.authority.host);
         let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), transport_ctx.authority.host.as_domain())?;
+            self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         // We dont have to insert, but it's nice to have...
         input.extensions().insert(connector_data_builder);
@@ -301,12 +306,16 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let maybe_sni_overwrite = if let Some(tunnel) = input.extensions().get_ref::<TlsTunnel>() {
-            tunnel
-                .sni
-                .as_ref()
-                .and_then(|h| h.as_domain())
-                .or(self.kind.sni.as_ref())
+        // Same IP-first bridging on the tunnel SNI overwrite. Bind the
+        // owned/borrowed Cow to a local so its reference is valid for
+        // the duration of the connector_data call below.
+        let tunnel_sni_owned = input
+            .extensions()
+            .get_ref::<TlsTunnel>()
+            .and_then(|t| t.sni.as_ref())
+            .and_then(sni_domain_for);
+        let maybe_sni_overwrite = if input.extensions().get_ref::<TlsTunnel>().is_some() {
+            tunnel_sni_owned.as_deref().or(self.kind.sni.as_ref())
         } else {
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
@@ -333,6 +342,23 @@ where
         tracing::trace!("TlsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection { input, conn })
     }
+}
+
+/// SNI extraction with IP-first policy (RFC 6066 §3 forbids IP literals
+/// in SNI). Returns `None` for IP-shaped hosts (including pct-encoded
+/// IP literals inside `Uninterpreted`) and for non-promotable
+/// reg-names / IPvFuture; otherwise returns the bridged [`Domain`].
+///
+/// The IP-first guard exists because `Domain::try_from("127.0.0.1")`
+/// succeeds — RFC 1123 §2.1 permits all-digit DNS labels — so an
+/// IPv4-shaped reg-name (`Host::Uninterpreted("127.0.0.1")` or the
+/// pct-encoded form `%31%32%37.0.0.1`) would otherwise promote to a
+/// "domain" of `"127.0.0.1"` and ship as SNI. RFC 6066 forbids that.
+fn sni_domain_for(host: &rama_net::address::Host) -> Option<std::borrow::Cow<'_, Domain>> {
+    if host.try_as_ip().is_ok() {
+        return None;
+    }
+    host.try_as_domain().ok()
 }
 
 #[cfg(feature = "http")]
@@ -475,10 +501,39 @@ where
     T: Io + Unpin + ExtensionsRef,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let TlsStream { inner: stream } =
-        tls_connect(stream, Some(connector_data))
-            .await
-            .map_err(|err| match err {
+    #[cfg(feature = "dial9")]
+    let dial9_server_name = connector_data.server_name.clone();
+    #[cfg(feature = "dial9")]
+    crate::dial9::record_handshake_started(dial9_server_name.clone());
+    let TlsStream { inner: stream } = match tls_connect(stream, Some(connector_data)).await {
+        Ok(s) => s,
+        Err(err) => {
+            #[cfg(feature = "dial9")]
+            {
+                use crate::dial9::tls_handshake_error_kind as kind;
+                let (error_kind, io_error_kind) = match &err {
+                    TlsConnectError::Builder(_) => (kind::BUILDER, None),
+                    TlsConnectError::Handshake { error, .. } => {
+                        let io_error_kind = error
+                            .as_io_error()
+                            .map(|error| rama_net::dial9::io_error_kind_code(error.kind()));
+                        let error_kind = if io_error_kind.is_some() {
+                            kind::HANDSHAKE_IO
+                        } else if error.as_ssl_error_stack().is_some() {
+                            kind::HANDSHAKE_SSL_STACK
+                        } else {
+                            kind::HANDSHAKE_OTHER
+                        };
+                        (error_kind, io_error_kind)
+                    }
+                };
+                crate::dial9::record_handshake_failed(
+                    dial9_server_name.clone(),
+                    error_kind,
+                    io_error_kind,
+                );
+            }
+            return Err(match err {
                 TlsConnectError::Builder(error) => error.context("tls connect builder error"),
                 TlsConnectError::Handshake { error, server_name } => {
                     let maybe_ssl_code = error.code();
@@ -501,7 +556,9 @@ where
                         .context_debug_field("code", maybe_ssl_code)
                     }
                 }
-            })?;
+            });
+        }
+    };
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
@@ -541,6 +598,29 @@ where
             .into_box_error());
         }
     };
+
+    #[cfg(feature = "dial9")]
+    {
+        use rama_net::tls::DataEncoding;
+        // Approximate cert-chain depth: opaque single Der/Pem counts as
+        // 1 (we don't parse PEM here), an explicit DerStack contributes
+        // its real length, no chain stored yields 0. Used for telemetry
+        // bucketing only — exact length lives in the structured chain.
+        let depth = match params.peer_certificate_chain.as_ref() {
+            Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
+            Some(DataEncoding::DerStack(stack)) => stack.len(),
+            None => 0,
+        };
+        crate::dial9::record_handshake_completed(
+            dial9_server_name,
+            params.protocol_version,
+            stream
+                .ssl()
+                .selected_alpn_protocol()
+                .map(rama_net::tls::ApplicationProtocol::from),
+            depth,
+        );
+    }
 
     Ok((stream, params))
 }
@@ -591,5 +671,25 @@ mod tests {
         use rama_utils::test_helpers::assert_sync;
 
         assert_sync::<TlsConnectorLayer>();
+    }
+
+    /// Regression for the IP-first guard in [`sni_domain_for`].
+    /// `Host::Uninterpreted("127.0.0.1")` could otherwise promote to
+    /// Domain `"127.0.0.1"` and ship as SNI in violation of RFC 6066 §3.
+    #[test]
+    fn sni_domain_for_drops_ip_shaped_uninterpreted() {
+        let host = rama_net::address::Host::try_from("127.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+        // Pct-encoded equivalent also resolves to IpAddr first.
+        let host = rama_net::address::Host::try_from("%31%32%37.0.0.1").unwrap();
+        assert!(sni_domain_for(&host).is_none());
+    }
+
+    #[test]
+    fn sni_domain_for_keeps_pct_encoded_reg_name() {
+        // `exa%6Dple.com` bridges Uninterpreted → Domain "example.com".
+        let host = rama_net::address::Host::try_from("exa%6Dple.com").unwrap();
+        let domain = sni_domain_for(&host).expect("should bridge to Domain");
+        assert_eq!(domain.as_str(), "example.com");
     }
 }

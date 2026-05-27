@@ -137,7 +137,7 @@ where
 // and see to be smarter about async fns in general
 
 /// The full result of a limit policy.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum PolicyResult<R, E> {
     /// The result should not be retried,
     /// and the result should be returned to the caller.

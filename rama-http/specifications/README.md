@@ -10,15 +10,31 @@ and even rama net crates.
 
 ### RFCs
 
+* [rfc2046.txt](./rfc2046.txt)  
+  MIME Part Two: Media Types. Defines the `multipart/*` and
+  `application/octet-stream` media types.
+
 * [rfc6265.txt](./rfc6265.txt)  
   HTTP State Management Mechanism (Cookies)
+
+* [rfc6266.txt](./rfc6266.txt)  
+  Use of the Content-Disposition Header Field in HTTP, including
+  the `attachment` and `filename`/`filename*` parameters.
 
 * [rfc6648.txt](./rfc6648.txt)  
   Deprecating the "X-" Prefix
   and Similar Constructs in Application Protocols
 
+* [rfc7578.txt](./rfc7578.txt)  
+  Returning Values from Forms: `multipart/form-data`. Obsoletes
+  RFC 2388.
+
 * [rfc7838.txt](./rfc7838.txt)  
   HTTP Alternative Services (ALTSVC / Alt-Svc)
+
+* [rfc8187.txt](./rfc8187.txt)  
+  Indicating Character Encoding and Language for HTTP Header Field
+  Parameters (the `filename*` ext-value form).
 
 * [rfc9111.txt](./rfc9111.txt)  
   HTTP Caching. This document defines HTTP caches and the associated header

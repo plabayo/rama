@@ -1,3 +1,8 @@
+#![expect(
+    clippy::print_stdout,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use rama::{
     error::BoxError,
     http::{Uri, client::EasyHttpWebClient, grpc},

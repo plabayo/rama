@@ -459,7 +459,7 @@ impl Builder {
 
 /// A future binding a connection with a Service with Upgrade support.
 #[must_use = "futures do nothing unless polled"]
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations)]
 pub struct UpgradeableConnection<T, S>
 where
     S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,

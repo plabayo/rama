@@ -3,6 +3,7 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
     extensions,
     io::{BridgeIo, Io},
+    rt::Executor,
 };
 use rama_net::proxy::IoForwardService;
 
@@ -18,17 +19,18 @@ pub struct Socks5MitmRelayService<I, F = IoForwardService> {
 }
 
 impl<I> Socks5MitmRelayService<I> {
-    /// Create a new [`Socks5MitmRelayService`] using the given
-    /// provided inspector servicew to continue the DPI of (socks5) handshaked traffic with a
+    /// Create a new [`Socks5MitmRelayService`] using the given inspector
+    /// service to continue the DPI of (socks5) handshaked traffic with a
     /// [`Socks5MitmHandshakeOutcome::ContinueInspection`] outcome.
     ///
-    /// Use [`Self::with_fallback`] to define a custom [`Service`]
-    /// if you wish behaviour for unsupported flows other than
-    /// mindlessly proxying bytes using [`IoForwardService`] (the default).
-    pub fn new(dpi_svc: I) -> Self {
+    /// The fallback service used for
+    /// [`Socks5MitmHandshakeOutcome::UnsupportedFlow`] outcomes is an
+    /// [`IoForwardService`] graceful with respect to the given [`Executor`];
+    /// override it via [`Self::with_fallback`].
+    pub fn new(exec: Executor, dpi_svc: I) -> Self {
         Self {
             dpi_svc,
-            fallback_svc: IoForwardService::new(),
+            fallback_svc: IoForwardService::new(exec),
         }
     }
 

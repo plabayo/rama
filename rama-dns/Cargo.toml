@@ -16,6 +16,13 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
 
 [package.metadata.cargo-machete]
 ignored = ["bindgen"]
@@ -23,8 +30,14 @@ ignored = ["bindgen"]
 [features]
 default = []
 hickory = ["dep:hickory-resolver"]
+# Optional [dial9] runtime telemetry support.
+#
+# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
 
 [dependencies]
+dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9-trace-format = { workspace = true, optional = true }
 hickory-resolver = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }

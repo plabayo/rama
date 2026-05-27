@@ -3,6 +3,7 @@
 #[cfg(feature = "compression")]
 mod zip_bomb;
 #[cfg(feature = "compression")]
+#[cfg_attr(docsrs, doc(cfg(feature = "compression")))]
 pub use zip_bomb::ZipBomb;
 
 #[doc(inline)]

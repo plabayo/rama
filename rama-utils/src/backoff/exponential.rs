@@ -171,6 +171,10 @@ impl<F, R: Rng> ExponentialBackoff<F, R> {
             let rand_jitter = jitter_factor * self.jitter;
             let secs = (base.as_secs() as f64) * rand_jitter;
             let nanos = (base.subsec_nanos() as f64) * rand_jitter;
+            #[expect(
+                clippy::unchecked_time_subtraction,
+                reason = "base is produced by self.base() which caps at self.max via .min(self.max), so this subtraction cannot underflow"
+            )]
             let remaining = self.max - base;
             let result = Duration::new(secs as u64, nanos as u32);
             if remaining.is_zero() || result.is_zero() {

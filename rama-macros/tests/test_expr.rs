@@ -70,7 +70,7 @@ fn test_underscore() {
 #[test]
 fn test_lifetime() {
     paste! {
-        #[allow(dead_code)]
+        #[expect(dead_code, reason = "synthesized test struct with intentionally unused fields")]
         struct S<[<'d e>]> {
             q: &[<'d e>] str,
         }
@@ -82,17 +82,17 @@ fn test_keyword() {
     paste! {
         struct [<F move>];
 
-        let _ = Fmove;
+        _ = Fmove;
     }
 }
 
 #[test]
 fn test_literal_str() {
     paste! {
-        #[allow(non_camel_case_types)]
+        #[expect(non_camel_case_types, reason = "paste! synthesizes type names from string literals")]
         struct [<Foo "Bar-Baz">];
 
-        let _ = FooBar_Baz;
+        _ = FooBar_Baz;
     }
 }
 
@@ -101,17 +101,20 @@ fn test_env_literal() {
     paste! {
         struct [<Lib env bar>];
 
-        let _ = Libenvbar;
+        _ = Libenvbar;
     }
 }
 
 #[test]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_present() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME")>];
 
-        let _ = Librama_macros;
+        _ = Librama_macros;
     }
 }
 
@@ -120,7 +123,7 @@ fn test_raw_identifier() {
     paste! {
         struct [<F r#move>];
 
-        let _ = Fmove;
+        _ = Fmove;
     }
 }
 
@@ -162,12 +165,15 @@ fn test_empty() {
 }
 
 #[test]
-#[allow(non_camel_case_types)]
+#[expect(
+    non_camel_case_types,
+    reason = "paste! synthesizes type names from string literals"
+)]
 fn test_env_to_lower() {
     paste! {
         struct [<Lib env!("CARGO_PKG_NAME"):lower>];
 
-        let _ = Librama_macros;
+        _ = Librama_macros;
     }
 }
 
@@ -176,7 +182,7 @@ fn test_env_to_upper() {
     paste! {
         const [<LIB_ env!("CARGO_PKG_NAME"):upper>]: &str = "libpaste";
 
-        let _ = LIB_RAMA_MACROS;
+        _ = LIB_RAMA_MACROS;
     }
 }
 
@@ -185,17 +191,17 @@ fn test_env_to_snake() {
     paste! {
         const [<LIB_ env!("CARGO_PKG_NAME"):snake:upper>]: &str = "libpaste";
 
-        let _ = LIB_RAMA_MACROS;
+        _ = LIB_RAMA_MACROS;
     }
 }
 
 #[test]
 fn test_env_to_camel() {
     paste! {
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals, reason = "paste! synthesizes const names from string literals")]
         const [<LIB env!("CARGO_PKG_NAME"):camel>]: &str = "libpaste";
 
-        let _ = LIBRamaMacros;
+        _ = LIBRamaMacros;
     }
 }
 
@@ -210,7 +216,7 @@ mod test_x86_feature_literal {
             paste! {
                 #[test]
                 fn test() {
-                    let _ = is_x86_feature_detected!($feat);
+                    _ = is_x86_feature_detected!($feat);
                 }
             }
         };
@@ -280,7 +286,7 @@ fn test_top_level_none_delimiter() {
 
     impl A {
         fn consume_self(self) {
-            let _ = self;
+            _ = self;
         }
     }
 

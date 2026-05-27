@@ -2,6 +2,13 @@
 //! cargo bench --bench e2e_http_client_server --features http-full,rustls,aws-lc,boring,socks5
 //! ```
 
+#![expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
+)]
+
 use std::{convert::Infallible, slice, sync::mpsc, time::Duration};
 
 use rama::{
@@ -177,7 +184,7 @@ where
     let handler = move |req: Request| {
         let body_content = body_content.clone();
         async move {
-            let _ = req.into_body().collect().await;
+            _ = req.into_body().collect().await;
             Ok::<_, Infallible>(body_content.clone().into_response())
         }
     };
@@ -265,7 +272,7 @@ where
                 ConsumeErrLayer::default(),
                 IoToProxyBridgeIoLayer::extension_proxy_target(Executor::default()),
             )
-                .into_layer(IoForwardService::new()),
+                .into_layer(IoForwardService::new(Executor::default())),
         ),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
@@ -304,6 +311,7 @@ fn spawn_http_proxy(params: TestParameters) -> SocketAddress {
                         .with_default_connector();
                     async_listener.serve(socks5_acceptor).await
                 }
+                #[expect(clippy::unreachable, reason = "proxy listener only spawned for non-None Proxy variants — see the filter above")]
                 Proxy::None => unreachable!("proxy listener only spawned for proxy rows"),
             }
         });
@@ -501,7 +509,7 @@ fn bench_http_transport(bencher: divan::Bencher, params: TestParameters) {
                     .await
                     .expect("request timed out")
                     .expect("Request failed");
-                let _ = tokio::time::timeout(REQUEST_TIMEOUT, resp.into_body().collect())
+                _ = tokio::time::timeout(REQUEST_TIMEOUT, resp.into_body().collect())
                     .await
                     .expect("response body collection timed out");
             });

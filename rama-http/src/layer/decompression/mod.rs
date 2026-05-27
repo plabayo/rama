@@ -266,7 +266,7 @@ mod tests {
         .with_insert_accept_encoding_header(false);
 
         let req = Request::new(Body::empty());
-        let _ = client.serve(req).await.unwrap();
+        _ = client.serve(req).await.unwrap();
     }
 
     #[tokio::test]

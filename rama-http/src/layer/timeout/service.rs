@@ -1,9 +1,25 @@
 use super::TimeoutBody;
 use crate::{Request, Response, StatusCode};
-use rama_core::{Layer, Service};
+use rama_core::extensions::{Extension, ExtensionsRef};
+use rama_core::{Layer, Service, telemetry::tracing};
 use rama_http_types::body::OptionalBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::time::Duration;
+
+/// Cause attached as a response extension when [`Timeout`] synthesises a
+/// timeout response.
+///
+/// The timeout layer maps a request that did not complete in time to a
+/// configured status code (default `408 Request Timeout`). The original
+/// timing information is preserved here so callers can log or react to the
+/// cause without parsing the response status.
+#[derive(Debug, Clone, Copy, Extension)]
+#[extension(tags(http))]
+pub struct TimeoutCause {
+    /// Configured timeout that elapsed before the inner service produced
+    /// a response.
+    pub elapsed: Duration,
+}
 
 /// Layer that applies the [`Timeout`] middleware which apply a timeout to requests.
 ///
@@ -85,11 +101,27 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        // Capture method + uri before moving the request into the inner
+        // service so we can attach them to the timeout log if it fires.
+        let method = req.method().clone();
+        let uri = req.uri().clone();
         tokio::select! {
             res = self.inner.serve(req) => Ok(res?.map(OptionalBody::some)),
             _ = tokio::time::sleep(self.timeout) => {
+                let elapsed_ms = u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX);
+                tracing::warn!(
+                    target: "rama_http::timeout",
+                    elapsed_ms,
+                    status_code = self.status_code.as_u16(),
+                    http.method = %method,
+                    url.path = uri.path(),
+                    "request did not complete within configured timeout; synthesising response",
+                );
                 let mut res = Response::new(OptionalBody::none());
                 *res.status_mut() = self.status_code;
+                res.extensions().insert(TimeoutCause {
+                    elapsed: self.timeout,
+                });
                 Ok(res)
             }
         }
@@ -273,7 +305,6 @@ mod tests {
 
     #[tokio::test]
     async fn deprecated_new_method_compatibility() {
-        #[allow(deprecated)]
         let layer = TimeoutLayer::new(Duration::from_millis(10));
         let service = layer.into_layer(service_fn(slow_handler));
 
@@ -282,6 +313,31 @@ mod tests {
 
         // Should use default 408 status code
         assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn timeout_response_carries_timeout_cause_extension() {
+        let timeout = Duration::from_millis(10);
+        let service = Timeout::new(service_fn(slow_handler), timeout);
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+        let cause = res
+            .extensions()
+            .get_ref::<TimeoutCause>()
+            .expect("TimeoutCause extension");
+        assert_eq!(cause.elapsed, timeout);
+    }
+
+    #[tokio::test]
+    async fn fast_response_has_no_timeout_cause_extension() {
+        let service = Timeout::new(service_fn(fast_handler), Duration::from_secs(1));
+        let request = Request::get("/").body(Body::empty()).unwrap();
+        let res = service.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.extensions().get_ref::<TimeoutCause>().is_none());
     }
 
     async fn slow_handler(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
