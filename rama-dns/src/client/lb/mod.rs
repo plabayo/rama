@@ -462,4 +462,74 @@ mod tests {
         assert_eq!(captured.len(), 1);
         assert!(captured[0].is_none(), "no ConnectorTarget should be set");
     }
+
+    #[tokio::test]
+    async fn proxy_address_request_is_skipped() {
+        // Resolver panics if called: proves the LB short-circuits.
+        #[derive(Clone)]
+        struct PanickingResolver;
+        impl DnsAddressResolver for PanickingResolver {
+            type Error = Infallible;
+            fn lookup_ipv4(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+                panic!("resolver should not be called when ProxyAddress is set");
+                #[expect(unreachable_code, reason = "panic before stream construction")]
+                stream::empty()
+            }
+            fn lookup_ipv6(
+                &self,
+                _: Domain,
+            ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+                panic!("resolver should not be called when ProxyAddress is set");
+                #[expect(unreachable_code, reason = "panic before stream construction")]
+                stream::empty()
+            }
+        }
+
+        let inner = CapturingInner::default();
+        let config = DnsLoadBalancerConfig {
+            mode: DnsResolveIpMode::SingleIpV4,
+            ..DnsLoadBalancerConfig::from_parts(PanickingResolver, RoundRobinPicker::new())
+        };
+        let svc = DnsLoadBalancer::new(inner.clone(), config);
+
+        let request = req("example.com", 443);
+        request
+            .extensions
+            .insert(ProxyAddress::try_from("http://proxy.example.com:8080").unwrap());
+        svc.serve(request).await.unwrap();
+
+        let captured = inner.captured.lock();
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].is_none(), "no ConnectorTarget should be set");
+    }
+
+    #[tokio::test]
+    async fn picker_returning_none_does_not_set_target() {
+        #[derive(Clone, Copy)]
+        struct NonePicker;
+        impl DnsIpPicker for NonePicker {
+            fn pick(&self, _: &Domain, _: &HostResolution) -> Result<Option<IpAddr>, BoxError> {
+                Ok(None)
+            }
+        }
+
+        let resolver = StaticResolver {
+            ips: vec![Ipv4Addr::new(10, 0, 0, 1)],
+        };
+        let inner = CapturingInner::default();
+        let config = DnsLoadBalancerConfig {
+            mode: DnsResolveIpMode::SingleIpV4,
+            ..DnsLoadBalancerConfig::from_parts(resolver, NonePicker)
+        };
+        let svc = DnsLoadBalancer::new(inner.clone(), config);
+
+        svc.serve(req("example.com", 443)).await.unwrap();
+
+        let captured = inner.captured.lock();
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].is_none(), "no ConnectorTarget should be set");
+    }
 }

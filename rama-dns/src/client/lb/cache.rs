@@ -249,6 +249,7 @@ mod tests {
     struct FixedV4Resolver {
         ips: Vec<Ipv4Addr>,
         calls: Arc<AtomicUsize>,
+        return_empty: Arc<AtomicBool>,
     }
 
     impl FixedV4Resolver {
@@ -256,11 +257,18 @@ mod tests {
             Self {
                 ips,
                 calls: Arc::new(AtomicUsize::new(0)),
+                return_empty: Arc::new(AtomicBool::new(false)),
             }
         }
 
         fn call_count(&self) -> usize {
             self.calls.load(Ordering::SeqCst)
+        }
+
+        /// Subsequent lookups return an empty stream, which makes `resolve`
+        /// fail with "no addresses".
+        fn start_failing(&self) {
+            self.return_empty.store(true, Ordering::SeqCst);
         }
     }
 
@@ -272,7 +280,12 @@ mod tests {
             _: Domain,
         ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            stream::iter(self.ips.clone().into_iter().map(Ok))
+            let ips = if self.return_empty.load(Ordering::SeqCst) {
+                Vec::new()
+            } else {
+                self.ips.clone()
+            };
+            stream::iter(ips.into_iter().map(Ok))
         }
 
         fn lookup_ipv6(
@@ -280,6 +293,30 @@ mod tests {
             _: Domain,
         ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
             stream::empty()
+        }
+    }
+
+    #[derive(Clone)]
+    struct DualResolver {
+        v4: Vec<Ipv4Addr>,
+        v6: Vec<Ipv6Addr>,
+    }
+
+    impl DnsAddressResolver for DualResolver {
+        type Error = Infallible;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::iter(self.v4.clone().into_iter().map(Ok))
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::iter(self.v6.clone().into_iter().map(Ok))
         }
     }
 
@@ -444,5 +481,107 @@ mod tests {
         cache.lookup(&host).await.unwrap();
         // No need to drain_spawned here since this happened in a blocking way
         assert_eq!(resolver.call_count(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_refresh_keeps_stale_entry() {
+        let ip = Ipv4Addr::new(10, 0, 0, 1);
+        let resolver = FixedV4Resolver::new(vec![ip]);
+        let cache = Arc::new(DnsLbCache::new(
+            resolver.clone(),
+            Duration::from_secs(30),
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            DnsResolveIpMode::SingleIpV4,
+            1024,
+        ));
+        let host = Domain::from_static("example.com");
+
+        cache.lookup(&host).await.unwrap();
+        resolver.start_failing();
+
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let stale = cache.lookup(&host).await.unwrap();
+        assert_eq!(stale.ips[0], IpAddr::V4(ip));
+        drain_spawned().await;
+
+        // Refresh failed; the cached snapshot is unchanged.
+        assert_eq!(resolver.call_count(), 2);
+        let after = cache.lookup(&host).await.unwrap();
+        assert_eq!(after.ips[0], IpAddr::V4(ip));
+    }
+
+    #[tokio::test]
+    async fn evict_after_idle_drops_unused_entry() {
+        // Uses real time: moka's time_to_idle runs off its own clock so
+        // `tokio::time::pause` doesn't affect it.
+        let resolver = FixedV4Resolver::new(vec![Ipv4Addr::new(10, 0, 0, 1)]);
+        let cache = Arc::new(DnsLbCache::new(
+            resolver.clone(),
+            Duration::from_secs(60),
+            Duration::from_millis(50),
+            Duration::from_secs(600),
+            DnsResolveIpMode::SingleIpV4,
+            1024,
+        ));
+        let host = Domain::from_static("example.com");
+
+        cache.lookup(&host).await.unwrap();
+        assert_eq!(resolver.call_count(), 1);
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cache.entries.run_pending_tasks().await;
+
+        // Entry should be evicted; next lookup re-resolves.
+        cache.lookup(&host).await.unwrap();
+        assert_eq!(resolver.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn dual_mode_collects_both_families() {
+        let resolver = DualResolver {
+            v4: vec![Ipv4Addr::new(10, 0, 0, 1)],
+            v6: vec![Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)],
+        };
+
+        // dual prefers ipv6
+        let cache = Arc::new(DnsLbCache::new(
+            resolver.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            DnsResolveIpMode::Dual,
+            1024,
+        ));
+        let host = Domain::from_static("example.com");
+
+        let entry = cache.lookup(&host).await.unwrap();
+        assert_eq!(
+            entry.ips.iter().collect::<Vec<_>>(),
+            vec![
+                &IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+                &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            ]
+        );
+
+        // prefers ipv4
+        let cache = Arc::new(DnsLbCache::new(
+            resolver.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(600),
+            Duration::from_secs(600),
+            DnsResolveIpMode::DualPreferIpV4,
+            1024,
+        ));
+        let host = Domain::from_static("example.com");
+
+        let entry = cache.lookup(&host).await.unwrap();
+        assert_eq!(
+            entry.ips.iter().collect::<Vec<_>>(),
+            vec![
+                &IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                &IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
+            ]
+        );
     }
 }
