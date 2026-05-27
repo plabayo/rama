@@ -176,11 +176,11 @@ to surface.
 
 > **Note on parsing scope.** The parser is intentionally lenient: unknown
 > elements are skipped and lenient mode never errors (a non-feed document
-> yields an empty feed). Core RSS 2.0 / Atom fields plus the `itunes:` and
-> `content:encoded` extensions are parsed; the Podcasting 2.0, Media RSS, and
-> Dublin Core extensions are currently **serialize-only** and are not read back
-> when parsing. Round-tripping a feed through parse → serialize therefore drops
-> those extension fields.
+> yields an empty feed). For **RSS 2.0**, all supported extensions — iTunes,
+> Podcasting 2.0, Media RSS, Dublin Core, and `content:encoded` — round-trip
+> losslessly through parse → serialize. The **Atom** parser reads the core
+> feed/entry fields (including entry categories and typed text constructs);
+> extension namespaces are serialized for Atom but not yet parsed back.
 
 ## Examples
 
