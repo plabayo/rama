@@ -4,12 +4,7 @@
 //! produce `Bytes` chunks that form a complete, well-formed XML document.
 //! They implement `Stream<Item = Result<Bytes, BoxError>>` and integrate
 //! directly with [`Body::from_stream`].
-//!
-//! Zero-copy read sides: [`Rss2ItemRef`] and [`AtomEntryRef`] hold
-//! `Cow<'_, str>` fields so parsers can borrow from source buffers without
-//! allocating when escape processing is not needed.
 
-use std::borrow::Cow;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -26,48 +21,6 @@ use rama_core::futures::Stream;
 use super::atom::{AtomEntry, write_atom_entry};
 use super::rss2::{Rss2Item, write_rss2_item};
 use super::ser::XmlWriteError;
-
-// ---------------------------------------------------------------------------
-// Zero-copy item references
-// ---------------------------------------------------------------------------
-
-/// A borrowed view of an RSS 2.0 item, usable during streaming parse passes
-/// without allocating for every field.
-#[derive(Debug, Clone, Default)]
-pub struct Rss2ItemRef<'a> {
-    pub title: Option<Cow<'a, str>>,
-    pub link: Option<Cow<'a, str>>,
-    pub description: Option<Cow<'a, str>>,
-    pub author: Option<Cow<'a, str>>,
-    pub guid: Option<Cow<'a, str>>,
-    pub pub_date: Option<Cow<'a, str>>,
-}
-
-impl<'a> Rss2ItemRef<'a> {
-    /// Allocate a fully-owned [`Rss2Item`] from this reference.
-    #[must_use]
-    pub fn to_owned_item(&self) -> Rss2Item {
-        Rss2Item {
-            title: self.title.as_deref().map(str::to_owned),
-            link: self.link.as_deref().map(str::to_owned),
-            description: self.description.as_deref().map(str::to_owned),
-            author: self.author.as_deref().map(str::to_owned),
-            ..Default::default()
-        }
-    }
-}
-
-/// A borrowed view of an Atom entry.
-#[derive(Debug, Clone)]
-pub struct AtomEntryRef<'a> {
-    pub id: Cow<'a, str>,
-    pub title: Cow<'a, str>,
-    pub updated: Cow<'a, str>,
-    pub author_name: Option<Cow<'a, str>>,
-    pub summary: Option<Cow<'a, str>>,
-    pub content: Option<Cow<'a, str>>,
-    pub link_href: Option<Cow<'a, str>>,
-}
 
 // ---------------------------------------------------------------------------
 // RSS 2.0 stream writer

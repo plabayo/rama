@@ -76,9 +76,7 @@ pub use atom::{
 
 pub use feed::Feed;
 pub use parse::FeedParseError;
-pub use stream::{
-    AtomEntryRef, AtomFeedMeta, AtomStreamWriter, Rss2FeedMeta, Rss2ItemRef, Rss2StreamWriter,
-};
+pub use stream::{AtomFeedMeta, AtomStreamWriter, Rss2FeedMeta, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------
 // Re-exports: Extensions

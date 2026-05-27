@@ -37,6 +37,10 @@ impl Feed {
     }
 
     /// Parse a feed from a [`Body`], consuming it entirely.
+    ///
+    /// The whole body is buffered into memory. When parsing feeds from an
+    /// untrusted source (e.g. a MITM proxy), apply a `BodyLimit` layer upstream
+    /// to cap the size and avoid unbounded allocation.
     pub async fn from_body(body: Body) -> Result<Self, FeedParseError> {
         use crate::BodyExtractExt as _;
         let text = body.try_into_string().await.map_err(|e| FeedParseError {

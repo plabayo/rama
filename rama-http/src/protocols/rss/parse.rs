@@ -885,6 +885,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
     let mut feed_id = String::new();
     let mut feed_title = AtomText::text("");
     let mut feed_updated = Timestamp::UNIX_EPOCH;
+    let mut feed_updated_set = false;
     let mut feed_authors: Vec<AtomPerson> = Vec::new();
     let mut feed_links: Vec<AtomLink> = Vec::new();
     let mut feed_categories: Vec<AtomCategory> = Vec::new();
@@ -1125,6 +1126,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
                         "updated" => {
                             feed_updated =
                                 parse_rfc3339_lax(&text).unwrap_or(Timestamp::UNIX_EPOCH);
+                            feed_updated_set = true;
                         }
                         "subtitle" => feed_subtitle = Some(AtomText::text(text)),
                         "rights" => feed_rights = Some(AtomText::text(text)),
@@ -1145,8 +1147,16 @@ fn parse_atom(input: &str, strict: bool) -> Result<AtomFeed, FeedParseError> {
         }
     }
 
-    if strict && feed_id.is_empty() {
-        return Err(FeedParseError::new("Atom feed missing required <id>"));
+    if strict {
+        if feed_id.is_empty() {
+            return Err(FeedParseError::new("Atom feed missing required <id>"));
+        }
+        if feed_title.value().is_empty() {
+            return Err(FeedParseError::new("Atom feed missing required <title>"));
+        }
+        if !feed_updated_set {
+            return Err(FeedParseError::new("Atom feed missing required <updated>"));
+        }
     }
 
     Ok(AtomFeed {
@@ -1410,6 +1420,28 @@ mod tests {
         assert_eq!(img.width, Some(88));
         // the image's inner <title>/<link> must not clobber the channel's
         assert_eq!(rss.title, "T");
+    }
+
+    #[test]
+    fn atom_strict_requires_id_title_updated() {
+        // missing <updated>
+        parse_feed(
+            r#"<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:f</id><title>T</title></feed>"#,
+            true,
+        )
+        .unwrap_err();
+        // missing <title>
+        parse_feed(
+            r#"<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:f</id><updated>2024-01-01T00:00:00Z</updated></feed>"#,
+            true,
+        )
+        .unwrap_err();
+        // all present -> ok
+        parse_feed(
+            r#"<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:f</id><title>T</title><updated>2024-01-01T00:00:00Z</updated></feed>"#,
+            true,
+        )
+        .unwrap();
     }
 
     #[test]
