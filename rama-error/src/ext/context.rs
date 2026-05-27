@@ -94,7 +94,7 @@ pub(super) struct HexContextValue<T: fmt::Debug + Send + Sync + 'static>(pub(sup
 impl<T: fmt::Debug + Send + Sync + 'static> fmt::Debug for HexContextValue<T> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:x?}", &self.0)
+        write!(f, "{:x?}", self.0)
     }
 }
 
