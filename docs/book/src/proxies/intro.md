@@ -7,7 +7,7 @@
          for the purpose of making requests on behalf of other clients.
          Requests are serviced internally or by passing them on, with
          possible translation, to other servers.
-        <p>— <a href="https://www.rfc-editor.org/rfc/pdfrfc/rfc3507.txt.pdf">RFC 3507 (ICAP)</a></p>
+        <p>— <a href="https://www.rfc-editor.org/rfc/rfc3507">RFC 3507 (ICAP)</a></p>
     </div>
 </div>
 

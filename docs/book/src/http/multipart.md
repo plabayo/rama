@@ -77,7 +77,7 @@ layer you stack on top.
   for any HTTP client
 
 The full API lives under
-[`rama::http::service::web::extract::multipart`](https://ramaproxy.org/docs/rama/http/service/web/extract/multipart/index.html)
+[`rama::http::service::web::extract::Multipart`](https://ramaproxy.org/docs/rama/http/service/web/extract/struct.Multipart.html)
 on the server side and
 [`rama::http::service::client::multipart`](https://ramaproxy.org/docs/rama/http/service/client/multipart/index.html)
 on the client side.
