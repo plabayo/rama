@@ -46,3 +46,23 @@ struct RamaTproxyRootCaReply: Decodable {
     let error: String?
     let cert_der_b64: String?
 }
+
+enum RamaTproxySetTlsKeylog: RamaXpcRoute {
+    static let selector = "setTlsKeylog:withReply:"
+
+    struct Request: Encodable {
+        let enabled: Bool
+    }
+
+    typealias Reply = RamaTproxyTlsKeylogReply
+}
+
+enum RamaTproxyGetTlsKeylog: RamaXpcRoute {
+    static let selector = "getTlsKeylog:withReply:"
+    typealias Reply = RamaTproxyTlsKeylogReply
+}
+
+/// State observed *after* the call; the GUI mirrors this into the menu.
+struct RamaTproxyTlsKeylogReply: Decodable {
+    let enabled: Bool
+}

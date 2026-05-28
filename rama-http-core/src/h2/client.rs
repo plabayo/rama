@@ -155,6 +155,7 @@ use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, Strea
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use rama_http_types::{request, uri};
+use rama_net::extensions::StreamTransformed;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -1445,6 +1446,9 @@ where
         builder: Builder,
     ) -> Result<(SendRequest<B>, Self), crate::h2::Error> {
         bind_connection(&mut io).await?;
+        io.extensions().insert(StreamTransformed {
+            by: "rama-http-core::h2::client",
+        });
 
         // Create the codec
         let mut codec = Codec::new(io);

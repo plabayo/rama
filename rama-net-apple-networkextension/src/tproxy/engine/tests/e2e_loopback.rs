@@ -160,6 +160,8 @@ fn run_one(behavior: PeerBehavior) {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 

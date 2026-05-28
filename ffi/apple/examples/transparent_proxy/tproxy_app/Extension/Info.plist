@@ -25,8 +25,17 @@
       <key>com.apple.networkextension.app-proxy</key>
       <string>RamaAppleNetworkExtension.RamaTransparentProxyProvider</string>
     </dict>
+    <!-- Version suffix works around Apple FB21271237: when a sysext is
+         replaced by a new build, launchd's `MachServices` table is not
+         refreshed until the next reboot, so the container's
+         `xpc_connection_create_mach_service(NEMachServiceName)` lookup
+         fails (`xpc_error=[3: No such process]`) until reboot.
+         Embedding `$(CURRENT_PROJECT_VERSION)` makes every build use a
+         unique mach name so each new install gets a fresh launchd
+         registration. The container reads the same composed name from
+         its own Info.plist — they must stay in sync. -->
     <key>NEMachServiceName</key>
-    <string>$(APP_GROUP_ID).provider</string>
+    <string>$(APP_GROUP_ID).provider.$(CURRENT_PROJECT_VERSION)</string>
   </dict>
 </dict>
 </plist>

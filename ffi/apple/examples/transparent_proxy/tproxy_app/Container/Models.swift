@@ -9,6 +9,13 @@ struct DemoProxySettings: Equatable {
         "connectivitycheck.gstatic.com",
         "captive.apple.com",
     ]
+    /// UI-display cache for the sysext's runtime TLS keylog toggle.
+    /// The authoritative state lives in the sysext's
+    /// `ToggleableKeyLogSink` (an `AtomicBool`); the GUI flips it
+    /// via `setTlsKeylog:withReply:` and mirrors the reply here.
+    /// Not persisted — re-synced from the sysext via
+    /// `getTlsKeylog:withReply:` after the proxy connects.
+    var tlsKeylogEnabled: Bool = false
 
     var isDefault: Bool {
         self == Self()

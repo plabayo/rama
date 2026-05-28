@@ -11,6 +11,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response};
+use rama_net::extensions::StreamTransformed;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch::{self, TrySendError};
@@ -524,6 +525,10 @@ impl Builder {
 
         async move {
             trace!("client handshake HTTP/1");
+
+            io.extensions().insert(StreamTransformed {
+                by: "rama-http-core::h1::client",
+            });
 
             let (tx, rx) = dispatch::channel();
             let mut conn = proto::Conn::new(io);

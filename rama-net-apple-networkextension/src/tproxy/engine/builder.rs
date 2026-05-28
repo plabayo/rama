@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    graceful::Shutdown,
     rt::Executor,
 };
 
@@ -21,6 +20,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
     app_message_deadline: Option<Duration>,
@@ -44,6 +44,7 @@ where
             tcp_idle_timeout: Some(super::DEFAULT_TCP_IDLE_TIMEOUT),
             tcp_paused_drain_max_wait: Some(super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT),
             udp_max_flow_lifetime: Some(super::DEFAULT_UDP_MAX_FLOW_LIFETIME),
+            udp_idle_timeout: Some(super::DEFAULT_UDP_IDLE_TIMEOUT),
             decision_deadline: None,
             decision_deadline_action: None,
             app_message_deadline: None,
@@ -64,6 +65,7 @@ where
             tcp_idle_timeout: self.tcp_idle_timeout,
             tcp_paused_drain_max_wait: self.tcp_paused_drain_max_wait,
             udp_max_flow_lifetime: self.udp_max_flow_lifetime,
+            udp_idle_timeout: self.udp_idle_timeout,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
             app_message_deadline: self.app_message_deadline,
@@ -157,6 +159,31 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Per-UDP-flow idle timeout — close the flow when no
+        /// datagrams have flowed in EITHER direction for this long.
+        /// Resets on every observed ingress datagram (`on_client_datagram`)
+        /// or service-emitted egress datagram (the `on_server_datagram`
+        /// sink). Defaults to [`DEFAULT_UDP_IDLE_TIMEOUT`] (60 s);
+        /// opt out with `without_udp_idle_timeout`.
+        ///
+        /// Distinct from [`Self::udp_max_flow_lifetime`]: that is a
+        /// hard wall-clock cap from flow start (whether active or
+        /// idle), this is reset-on-activity. Without it, a typical
+        /// burst-then-quiet flow (a satisfied DNS query, a NAT
+        /// binding probe, an mDNS announcement, …) lives until the
+        /// max-lifetime cap fires — long enough to accumulate
+        /// thousands of leaked sessions under sustained device
+        /// traffic.
+        ///
+        /// [`DEFAULT_UDP_IDLE_TIMEOUT`]: super::DEFAULT_UDP_IDLE_TIMEOUT
+        pub fn udp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
+        {
+            self.udp_idle_timeout = timeout;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Max time a flow handler may take to return an Intercept /
         /// Passthrough / Blocked decision before the configured
         /// [`DecisionDeadlineAction`] kicks in. Defaults to
@@ -225,6 +252,7 @@ where
             tcp_idle_timeout,
             tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
+            udp_idle_timeout,
             decision_deadline,
             decision_deadline_action,
             app_message_deadline,
@@ -258,14 +286,8 @@ where
             .create_async_runtime(opaque_config.as_deref())
             .context("TransparentProxyEngineBuilder: create async runtime")?;
 
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = {
-            let _enter = rt.enter();
-            Shutdown::new(async move {
-                _ = stop_rx.await;
-            })
-        };
-        let guard = shutdown.guard();
+        let pair = super::build_shutdown_pair(&rt);
+        let guard = pair.shutdown.guard();
         let ctx = TransparentProxyServiceContext {
             executor: Executor::graceful(guard),
             opaque_config,
@@ -293,6 +315,7 @@ where
             tcp_idle_timeout,
             tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
+            udp_idle_timeout,
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),
@@ -301,8 +324,7 @@ where
             // in here so future `set_decision_deadline`-style
             // mutators (none today) would naturally reflect.
             app_message_deadline,
-            shutdown: Some(shutdown),
-            stop_trigger: Some(stop_tx),
+            shutdown: parking_lot::Mutex::new(Some(pair)),
         })
     }
 }
@@ -325,6 +347,11 @@ impl<F, R> TransparentProxyEngineBuilder<F, R> {
     #[cfg(test)]
     pub(super) fn current_udp_max_flow_lifetime(&self) -> Option<Duration> {
         self.udp_max_flow_lifetime
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_udp_idle_timeout(&self) -> Option<Duration> {
+        self.udp_idle_timeout
     }
 
     #[cfg(test)]

@@ -221,6 +221,108 @@ pub(crate) async fn websocket_echo(
     _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
 }
 
+/// Like [`websocket_echo`] but offers `permessage-deflate`, exactly as the
+/// `rama` CLI WS client does (`.with_per_message_deflate_overwrite_extensions()`).
+/// This is what `rama -k wss://echo.ramaproxy.org` negotiates in the wild, and
+/// the plain [`websocket_echo`] path does NOT cover it — so a relay that can't
+/// transcode compressed frames would slip through every other WS test.
+pub(crate) async fn websocket_echo_deflate(
+    client: &ClientService,
+    url: String,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+) {
+    let extensions = rama::extensions::Extensions::new();
+    if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
+        extensions.insert(proxy_address);
+    }
+
+    tracing::info!(?version, ?proxy_kind, %proxy_addr, "start deflate ws handshake");
+
+    let mut ws = match version {
+        Version::HTTP_2 => client.websocket_h2(url),
+        _ => client.websocket(url),
+    }
+    .with_per_message_deflate_overwrite_extensions()
+    .handshake(extensions)
+    .await
+    .expect("deflate websocket handshake");
+
+    tracing::info!(?version, ?proxy_kind, "deflate ws handshake complete");
+
+    // A payload long + repetitive enough that deflate actually compresses it,
+    // so a broken inflate path on either relay leg corrupts the round-trip.
+    let payload = "hello ffi ".repeat(64);
+    ws.send_message(Message::text(payload.clone()))
+        .await
+        .expect("send deflate websocket message");
+    let echoed = ws
+        .recv_message()
+        .await
+        .expect("recv deflate websocket message")
+        .into_text()
+        .expect("deflate websocket text response");
+    assert_eq!(echoed.as_str(), payload.as_str());
+
+    _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
+}
+
+/// Like [`websocket_echo`] but keeps the tunnel open for several
+/// round-trips with a sleep between each, so the test fails if the
+/// upgraded tunnel is torn down after the initial 101 instead of
+/// living for the duration of the conversation.
+pub(crate) async fn websocket_echo_sustained(
+    client: &ClientService,
+    url: String,
+    version: Version,
+    proxy_kind: ProxyKind,
+    proxy_addr: std::net::SocketAddr,
+    rounds: usize,
+    gap: Duration,
+) {
+    let extensions = rama::extensions::Extensions::new();
+    if let Some(proxy_address) = proxy_address(proxy_kind, proxy_addr) {
+        extensions.insert(proxy_address);
+    }
+
+    tracing::info!(?version, ?proxy_kind, %proxy_addr, rounds, ?gap, "start sustained ws handshake");
+
+    let mut ws = match version {
+        Version::HTTP_2 => client.websocket_h2(url),
+        _ => client.websocket(url),
+    }
+    .handshake(extensions)
+    .await
+    .expect("websocket handshake");
+
+    tracing::info!(?version, ?proxy_kind, "sustained ws handshake complete");
+
+    for round in 0..rounds {
+        if round > 0 {
+            tokio::time::sleep(gap).await;
+        }
+        let payload = format!("hello ffi #{round}");
+        ws.send_message(Message::text(payload.clone()))
+            .await
+            .unwrap_or_else(|err| panic!("send ws message (round {round}): {err}"));
+        let echoed = ws
+            .recv_message()
+            .await
+            .unwrap_or_else(|err| panic!("recv ws message (round {round}): {err}"))
+            .into_text()
+            .unwrap_or_else(|err| panic!("ws text response (round {round}): {err}"));
+        assert_eq!(
+            echoed.as_str(),
+            payload.as_str(),
+            "echo mismatch on round {round}"
+        );
+        tracing::info!(?version, ?proxy_kind, round, "sustained ws round ok");
+    }
+
+    _ = tokio::time::timeout(Duration::from_millis(250), ws.close(None)).await;
+}
+
 pub(crate) async fn roundtrip_custom_protocol(
     mode: TcpMode,
     proxy_kind: ProxyKind,

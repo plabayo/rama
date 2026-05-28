@@ -131,6 +131,19 @@ impl HttpMitmRelay {
     pub fn new(exec: Executor) -> Self {
         let mut http_server = HttpServer::auto(exec.clone());
         http_server.h2_mut().set_enable_connect_protocol();
+        // h2 SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 8441) is
+        // intentionally advertised here. This may cause issues as enabling
+        // it unconditionally is incorrect for an invisible proxy:
+        // we'd tell every client we accept h2 Extended CONNECT
+        // even when the upstream doesn't, and the client
+        // (browser) would then attempt h2 WebSocket against an
+        // upstream that 400s it. The principled fix is to mirror
+        // the upstream's SETTINGS — tracked in
+        // https://github.com/plabayo/rama/issues/932. Until that
+        // lands, clients fall back to their h1 WebSocket path,
+        // which is universally supported.
+        //
+        // Until than you might see 400s... this comment tells you why.
         Self {
             http_server,
             middleware: (
@@ -354,6 +367,10 @@ where
             })
         }
         RelayMode::Http2 => {
+            // Acquire-release: only briefly grab the state lock to
+            // ensure the egress h2 client is connected, then drop
+            // it. The actual upstream serve must NOT hold the lock
+            // (see `serve_relay_request` rationale).
             let client_and_req = {
                 let mut state = relay_state.lock().await;
                 relay_connect_http2_if_needed(&mut *state, req, guard, close_ingress.clone()).await
@@ -361,7 +378,6 @@ where
 
             match client_and_req {
                 Ok((client, req)) => {
-                    let mut state = relay_state.lock().await;
                     let resp = serve_relay_request(
                         &client,
                         req,
@@ -369,7 +385,7 @@ where
                         &uri,
                         version,
                         close_ingress.clone(),
-                        &mut *state,
+                        relay_state,
                     )
                     .await;
                     if let Ok(ref resp) = resp {
@@ -618,13 +634,19 @@ async fn serve_relay_request<Egress, Middleware, Client>(
     uri: &Uri,
     version: Version,
     close_ingress: CancellationToken,
-    state: &mut RelayState<Egress, Middleware>,
+    relay_state: &Arc<Mutex<RelayState<Egress, Middleware>>>,
 ) -> Result<Response, BoxError>
 where
     Egress: Io + Unpin + ExtensionsRef,
     Middleware: Layer<HttpClientService<Body>>,
     Client: Service<Request, Output = Response, Error: Into<BoxError>>,
 {
+    // Do NOT hold `relay_state.lock()` across the upstream serve.
+    // For h2, multiple streams share one `RelayState`; locking across
+    // `client.serve(req).await` serialises every stream on the
+    // mutex and kills multiplexing.
+    //
+    // The lock is only needed to mark state Closed on error.
     match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
@@ -635,9 +657,36 @@ where
                 ?version,
                 "upstream MITM relay request failed: {err}"
             );
-            *state = RelayState::Closed;
+            // A peer `RST_STREAM` is scoped to this one h2 stream; the
+            // shared egress connection and its sibling streams are
+            // unaffected. Fail only this stream so we don't escalate to
+            // tearing down the whole ingress connection (GOAWAY for all
+            // siblings) — which would happen via the `Closed` + cancel
+            // below. `GOAWAY` / transport errors are connection-scoped
+            // and still take that path.
+            if egress_error_is_stream_scoped(&err) {
+                return Ok(DefaultErrorResponse::response_for_version(version));
+            }
+            *relay_state.lock().await = RelayState::Closed;
             close_ingress.cancel();
             Err(err)
         }
     }
+}
+
+/// Whether an egress request error is scoped to a single h2 stream (a
+/// `RST_STREAM`) rather than the whole connection. Walks the cause
+/// chain because the reset may be wrapped in a `rama_http_core::Error`.
+fn egress_error_is_stream_scoped(err: &BoxError) -> bool {
+    if let Some(h2) = err.downcast_ref::<rama_http_core::h2::Error>() {
+        return h2.is_reset();
+    }
+    let mut current = err.source();
+    while let Some(cause) = current {
+        if let Some(h2) = cause.downcast_ref::<rama_http_core::h2::Error>() {
+            return h2.is_reset();
+        }
+        current = cause.source();
+    }
+    false
 }

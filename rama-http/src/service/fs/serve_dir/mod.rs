@@ -7,7 +7,6 @@ use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::error::extra::OpaqueError;
-use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
@@ -284,7 +283,12 @@ impl<F> ServeDir<F> {
             *fallback_req.method_mut() = req.method().clone();
             *fallback_req.uri_mut() = req.uri().clone();
             *fallback_req.headers_mut() = req.headers().clone();
-            fallback_req.extensions().extend(&extensions);
+            // Carry the ORIGINAL request's full extensions (including any
+            // parent chain) onto the fallback request. `extend` would copy
+            // only the top-level store and silently drop a parent chain.
+            let (mut fallback_parts, fallback_body) = fallback_req.into_parts();
+            fallback_parts.extensions = extensions;
+            let fallback_req = Request::from_parts(fallback_parts, fallback_body);
 
             (fallback, fallback_req)
         });

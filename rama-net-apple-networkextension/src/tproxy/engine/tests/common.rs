@@ -33,6 +33,13 @@ pub(super) struct TestHandler {
                 + Sync,
         >,
     >,
+    /// Optional hook observed by `on_system_sleep`. Tests use it
+    /// to pin that the engine's `notify_system_sleep` actually
+    /// reaches the handler. Default `None` keeps every existing
+    /// test site compiling.
+    pub(super) on_sleep: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Symmetric for `on_system_wake`.
+    pub(super) on_wake: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl TestHandler {
@@ -42,6 +49,8 @@ impl TestHandler {
             tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
             udp_matcher: Arc::new(|_| FlowAction::Passthrough),
             tcp_egress_options: None,
+            on_sleep: None,
+            on_wake: None,
         }
     }
 
@@ -53,6 +62,16 @@ impl TestHandler {
         + 'static,
     ) -> Self {
         self.tcp_egress_options = Some(Arc::new(f));
+        self
+    }
+
+    pub(super) fn with_on_sleep(mut self, f: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_sleep = Some(Arc::new(f));
+        self
+    }
+
+    pub(super) fn with_on_wake(mut self, f: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_wake = Some(Arc::new(f));
         self
     }
 }
@@ -104,6 +123,20 @@ impl TransparentProxyHandler for TestHandler {
         meta: &TransparentProxyFlowMeta,
     ) -> Option<crate::tproxy::NwTcpConnectOptions> {
         self.tcp_egress_options.as_ref().and_then(|f| f(meta))
+    }
+
+    fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+        if let Some(cb) = self.on_sleep.as_ref() {
+            cb();
+        }
+        std::future::ready(())
+    }
+
+    fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+        if let Some(cb) = self.on_wake.as_ref() {
+            cb();
+        }
+        std::future::ready(())
     }
 }
 

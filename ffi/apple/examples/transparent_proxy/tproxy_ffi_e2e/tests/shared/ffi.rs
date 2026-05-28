@@ -79,7 +79,6 @@ pub(crate) fn initialize_ffi(storage_dir: &Path) {
     assert!(ok, "ffi initialize should succeed");
 }
 
-
 pub(crate) struct EngineHandle {
     pub(crate) raw: *mut bindings::RamaTransparentProxyEngine,
 }

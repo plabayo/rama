@@ -13,6 +13,7 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::io::upgrade::Upgraded;
 use rama_http::{Body, Request, Response};
+use rama_net::extensions::StreamTransformed;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -422,6 +423,9 @@ impl Builder {
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
+        io.extensions().insert(StreamTransformed {
+            by: "rama-http-core::h1::server",
+        });
         let mut conn = proto::Conn::new(io);
         conn.set_h1_parser_config(self.h1_parser_config.clone());
         if !self.h1_keep_alive {

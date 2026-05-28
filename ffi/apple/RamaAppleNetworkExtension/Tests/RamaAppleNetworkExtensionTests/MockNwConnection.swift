@@ -31,7 +31,7 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _state: NWConnection.State = .preparing
-    private var _stateUpdateHandler: ((NWConnection.State) -> Void)?
+    private var _stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)?
     private var _sentChunks: [SentChunk] = []
     private var _pendingSendCompletions: [SendCompletion] = []
     private var _pendingReceiveCompletions: [ReceiveCompletion] = []
@@ -46,7 +46,7 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         return _state
     }
 
-    var stateUpdateHandler: ((NWConnection.State) -> Void)? {
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
         get {
             lock.lock()
             defer { lock.unlock() }

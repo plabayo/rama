@@ -53,6 +53,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::io::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
+use rama_net::extensions::StreamTransformed;
 use rama_utils::macros::generate_set_and_with;
 
 /// An upgraded HTTP connection.
@@ -168,8 +169,12 @@ impl Upgraded {
     where
         T: Io + Unpin + ExtensionsRef,
     {
+        let extensions = io.extensions().clone();
+        extensions.insert(StreamTransformed {
+            by: "rama-http::Upgraded",
+        });
         Self {
-            extensions: io.extensions().clone(),
+            extensions,
             io: Rewind::new_buffered(Box::new(io), read_buf),
         }
     }
@@ -355,5 +360,16 @@ mod tests {
         let upgraded = Upgraded::new(io, Bytes::new());
         let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
         upgraded.downcast::<ServiceInput<Mock>>().unwrap();
+    }
+
+    #[test]
+    fn upgraded_carries_stream_transformed_marker() {
+        let io = ServiceInput::new(Builder::default().build());
+        let upgraded = Upgraded::new(io, Bytes::new());
+        let marker = upgraded
+            .extensions()
+            .get_ref::<StreamTransformed>()
+            .expect("Upgraded::new must insert the StreamTransformed marker");
+        assert_eq!(marker.by, "rama-http::Upgraded");
     }
 }

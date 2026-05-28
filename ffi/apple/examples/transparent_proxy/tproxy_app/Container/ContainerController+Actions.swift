@@ -80,6 +80,56 @@ extension ContainerController {
         applyDemoSettings()
     }
 
+    /// Flip the TLS keylog toggle via XPC. Runtime-only: the sysext
+    /// holds a `ToggleableKeyLogSink`'s `AtomicBool` and flips it in
+    /// place, so no proxy restart is required. State is never
+    /// persisted — a sysext restart resets it to OFF.
+    ///
+    /// Sysext writes rotated session-key files (hourly buckets, 8 h
+    /// retention) to `~root/Library/Application Support/rama/tproxy/keylog/`.
+    @objc func toggleTlsKeylogAction(_: Any?) {
+        guard isProviderActive() else {
+            showProviderInactiveAlert(action: "Toggle TLS Keylog")
+            return
+        }
+        guard !xpcServiceName.isEmpty else {
+            logErrorText(
+                "toggleTlsKeylog: xpcServiceName is empty — check ProviderMachServiceName in Info.plist"
+            )
+            showCommandErrorAlert(
+                title: "TLS Keylog Toggle Failed",
+                message: "XPC service name is empty. Reinstall the container app."
+            )
+            return
+        }
+
+        let requested = !demoSettings.tlsKeylogEnabled
+        let client = ramaXpcClient
+        log("toggleTlsKeylog: requesting enabled=\(requested) via XPC")
+        Task { [weak self] in
+            do {
+                let reply = try await client.call(
+                    RamaTproxySetTlsKeylog.self,
+                    RamaTproxySetTlsKeylog.Request(enabled: requested)
+                )
+                await MainActor.run {
+                    guard let self else { return }
+                    self.demoSettings.tlsKeylogEnabled = reply.enabled
+                    self.updateDemoSettingsMenu()
+                    self.log("toggleTlsKeylog: sysext now enabled=\(reply.enabled)")
+                }
+            } catch {
+                await MainActor.run {
+                    self?.logError("toggleTlsKeylog: XPC failed", error)
+                    self?.showCommandErrorAlert(
+                        title: "TLS Keylog Toggle Failed",
+                        message: error.localizedDescription
+                    )
+                }
+            }
+        }
+    }
+
     @objc func refreshAction(_: Any?) {
         refreshManagerAndStatus()
     }

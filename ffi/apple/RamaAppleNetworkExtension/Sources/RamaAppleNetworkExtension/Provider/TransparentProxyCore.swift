@@ -52,10 +52,20 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private(set) var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
-    private var tcpSessions: [ObjectIdentifier: RamaTcpSessionHandle] = [:]
+    /// Per-TCP-flow context registry. The session handle reaches
+    /// into the context via `ctx.session` so there is no separate
+    /// session map — one entry per active flow, removed exactly
+    /// when teardown calls `removeTcpFlow`.
     private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    private var udpSessions: [ObjectIdentifier: RamaUdpSessionHandle] = [:]
-    private var udpContexts: [ObjectIdentifier: UdpFlowContext] = [:]
+    /// Per-UDP-flow session registry. Unlike the TCP side, this
+    /// holds the per-flow `UdpFlowSession` (type-erased via
+    /// `UdpFlowSessionAnchor`) rather than the bare context. The
+    /// session owns the context as a `let` member, so registering
+    /// the session keeps the whole graph (`ctx`, writer, closures,
+    /// `RamaUdpSessionHandle`) alive while the flow is open and
+    /// drops it deterministically when `removeUdpFlow` runs — no
+    /// context→session back-reference, no retain cycle.
+    private var udpSessions: [ObjectIdentifier: UdpFlowSessionAnchor] = [:]
 
     /// Factory used to construct egress `NWConnection`s for intercepted
     /// flows. Production leaves this at the default (a real
@@ -98,38 +108,192 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Idempotent — safe to call twice.
     func detachEngine(reason: Int32) {
         stopFlowCountReporting()
+        // Tear down live flows BEFORE stopping the engine and clearing
+        // the registry. A live TcpFlowSession is lifetime-anchored by
+        // its NWConnection.stateUpdateHandler, and once the engine is
+        // stopped the Rust→Swift close callbacks are suppressed — so
+        // just dropping the maps would leak each egress NWConnection
+        // (and its kernel NECP entry) until process exit. Each teardown
+        // cancels its connection + session and removes itself from the
+        // registry; the removeAll below is then a no-op safety net.
+        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applyEngineDetached() } }
+        let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
+        for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
         self.engine = nil
         stateQueue.sync {
-            self.tcpSessions.removeAll(keepingCapacity: false)
             self.tcpContexts.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
-            self.udpContexts.removeAll(keepingCapacity: false)
         }
     }
 
-    // MARK: - Periodic flow-count telemetry
+    /// Run a teardown for a registered flow on its own `flowQueue`
+    /// when it has one — production contexts always do (set by
+    /// `TcpFlowSession.init`), and routing there keeps the teardown
+    /// single-threaded with that flow's kernel / NWConnection
+    /// callbacks (the `done` flag + slots are flow-queue-confined).
+    /// A context with no queue (engine-less unit-test contexts, or
+    /// any that never got one) runs inline: better to tear it down
+    /// than to silently skip it.
+    private func runFlowTeardown(_ ctx: TcpFlowContext, _ body: @escaping () -> Void) {
+        if let queue = ctx.flowQueue {
+            queue.async(execute: body)
+        } else {
+            body()
+        }
+    }
 
-    /// Interval between live-flow-count reports. 60s is short enough
-    /// to surface accumulation regressions within minutes of onset
-    /// and long enough that the resulting log volume is negligible.
-    private static let flowCountReportingInterval: DispatchTimeInterval = .seconds(60)
+    // MARK: - System sleep / wake
+
+    /// Budget the engine drain blocks the sleep handler for.
+    ///
+    /// Apple's documented contract for
+    /// `sleepWithCompletionHandler:` is "call the completion when
+    /// you're done"; the framework does not publish a specific
+    /// grace window. **Treat 5s as an empirical, observable
+    /// ceiling, not a documented guarantee.** Empirically Apple
+    /// gives at least several seconds before forcing suspension,
+    /// and we want enough budget for the engine drain's
+    /// cancellation propagation + any `on_system_sleep` handler
+    /// hook to complete. If a future host hook needs longer (e.g.
+    /// flushing a large metrics batch on sleep), bump this — but
+    /// ideally bump cautiously and pair with telemetry that flags
+    /// when the actual drain duration approaches the budget.
+    static let systemSleepEngineDrainBudgetMs: UInt32 = 5_000
+
+    /// Drop every active flow on sleep, then block until the Rust
+    /// engine confirms its spawned tasks have actually exited
+    /// cooperatively (or until [`systemSleepEngineDrainBudgetMs`]
+    /// elapses, whichever first).
+    ///
+    /// Each Swift-side TCP teardown is dispatched onto its own flow
+    /// queue first (`runFlowTeardown`) so it runs single-threaded
+    /// with that flow's kernel / NWConnection callbacks — the
+    /// teardown's `done` flag and slot mutations are
+    /// flow-queue-confined, so this avoids racing them. Then we drive
+    /// `engine.drainForSleep`, which fires the engine-wide shutdown
+    /// trigger; per-flow `Shutdown`s observe `parent_guard.cancelled()`
+    /// on the engine guard chain and the cascade unwinds every
+    /// in-Rust service / bridge / handler task. The drain blocks
+    /// until either all tasks exit or the budget elapses.
+    ///
+    /// Apple may suspend the process the moment we call `completion`.
+    /// Blocking on the drain BEFORE `completion` ensures the runtime
+    /// is genuinely quiet at the suspension point: no half-cancelled
+    /// service tasks, no hundreds of pending timer expirations to
+    /// catch up on after wake.
+    func handleSystemSleep(completion: @escaping () -> Void) {
+        stopFlowCountReporting()
+        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applySystemSleep() } }
+        let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
+        for session in udp { session.ctx.terminate?(systemSleepError()) }
+        // Notify the handler's on_system_sleep hook FIRST so it has
+        // a chance to start running before the drain's cancellation
+        // cascades. The hook task is spawned through the engine's
+        // graceful executor, so the drain still bounds it.
+        engine?.notifySystemSleep()
+
+        // Engine-side recoverable drain. Fires the engine-wide
+        // shutdown trigger and blocks until all guards drop or the
+        // budget expires. On wake a fresh shutdown is in place so
+        // new flows are unaffected.
+        let outcome = engine?.drainForSleep(maxWaitMs: Self.systemSleepEngineDrainBudgetMs)
+            ?? .alreadyStopped
+        logLifecycle(
+            "system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows; engine=\(outcome)"
+        )
+        completion()
+    }
+
+    /// On wake, restart telemetry and reconcile any TCP flow whose
+    /// egress never reached `.ready` — a still-connecting flow won't
+    /// recover (its NECP path is gone) and would otherwise burn its
+    /// connect timer. Established flows are left to the post-ready path
+    /// so we don't kill ones the OS kept across a no-op sleep.
+    func handleSystemWake() {
+        engine?.notifySystemWake()
+        // Reconcile on each flow's own queue: both the `egressReady`
+        // read and the teardown run there, so they stay single-threaded
+        // with that flow's kernel / NWConnection callbacks instead of
+        // racing them (and reading `egressReady`, written on the flow
+        // queue, off-queue). A still-connecting flow won't recover (its
+        // NECP path is gone); established flows are left to the
+        // post-ready path so we don't kill ones the OS kept across a
+        // no-op sleep.
+        let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        for ctx in all {
+            runFlowTeardown(ctx) {
+                guard !ctx.egressReady else { return }
+                ctx.teardown?.applySystemWake()
+            }
+        }
+        logLifecycle("system wake")
+        if self.engine != nil {
+            startFlowCountReporting()
+        }
+    }
+
+    private func systemSleepError() -> NSError {
+        NSError(
+            domain: "rama.tproxy.system-sleep", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "system entered sleep; flow dropped"])
+    }
+
+    private func engineDetachedError() -> NSError {
+        NSError(
+            domain: "rama.tproxy.engine-detached", code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
+    }
+
+    // MARK: - Periodic maintenance (flow-count telemetry + stale-flow watchdog)
+
+    /// Interval between maintenance ticks. 60s is short enough to surface
+    /// accumulation regressions and to bound how long a wedged flow can
+    /// sit in the registry, while long enough that the resulting log
+    /// volume is negligible.
+    private static let periodicMaintenanceInterval: DispatchTimeInterval = .seconds(60)
+
+    /// TCP flow IDs observed pre-`egressReady` on the previous
+    /// maintenance tick. On the NEXT tick, any flow still in this set
+    /// AND still pre-`egressReady` has been stuck for at least one
+    /// tick interval (≥ 60s) and is force-torn-down — the per-flow
+    /// connect-timeout timer fires on the flow's own dispatch queue,
+    /// so when that queue is starved (the post-wake / tokio-backlog
+    /// failure mode this watchdog exists for) the per-flow timer is
+    /// also queued behind backlog. The watchdog runs on `stateQueue`
+    /// which has its own thread, so it makes progress even when every
+    /// per-flow queue is in catch-up.
+    ///
+    /// Only mutated from `stateQueue` (the maintenance timer fires
+    /// there); no lock needed.
+    private var stuckPreReadyFlowIds: Set<ObjectIdentifier> = []
 
     private func startFlowCountReporting() {
         stopFlowCountReporting()
         let timer = DispatchSource.makeTimerSource(queue: stateQueue)
         timer.schedule(
-            deadline: .now() + Self.flowCountReportingInterval,
-            repeating: Self.flowCountReportingInterval
+            deadline: .now() + Self.periodicMaintenanceInterval,
+            repeating: Self.periodicMaintenanceInterval
         )
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            // `stateQueue.sync` not needed — the timer fires ON
-            // `stateQueue`, so direct access to the maps is already
-            // serialised correctly.
-            let tcp = self.tcpContexts.count
-            let udp = self.udpContexts.count
-            self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
+            let toKick = self.collectMaintenanceKicksLocked()
+            guard !toKick.isEmpty else { return }
+            // Hop off `stateQueue` before firing teardowns. Today
+            // every production ctx has its own `flowQueue` so the
+            // teardown body runs there (no recursive sync). But if a
+            // future code path ever inserts a ctx without one,
+            // `runFlowTeardown` runs the body inline → the body's
+            // `core?.removeTcpFlow(flowId)` `stateQueue.sync`s back
+            // → deadlock. Hopping off here costs one async per tick
+            // (per-flow watchdog) and makes the production path
+            // robust to that regression. The test hook does the
+            // same; this brings prod into line.
+            DispatchQueue.global(qos: .utility).async {
+                self.fireWatchdogKicks(toKick)
+            }
         }
         timer.resume()
         flowCountReportingTimer = timer
@@ -138,7 +302,94 @@ final class TransparentProxyCore: @unchecked Sendable {
     private func stopFlowCountReporting() {
         flowCountReportingTimer?.cancel()
         flowCountReportingTimer = nil
+        // Clear watchdog state so a future `attachEngine` doesn't
+        // inherit stale "stuck" IDs from the previous lifecycle.
+        stateQueue.sync { self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false) }
     }
+
+    /// One maintenance tick, on-`stateQueue` half: emit flow-count
+    /// telemetry, run the stale-pre-ready bookkeeping, and return the
+    /// list of contexts that crossed the "stuck for ≥ one tick"
+    /// threshold so the off-queue half can drive their teardowns.
+    ///
+    /// MUST be called on `stateQueue` — both the timer handler and
+    /// the test hook satisfy that.
+    private func collectMaintenanceKicksLocked() -> [TcpFlowContext] {
+        // `stateQueue.sync` is unnecessary inside — the timer fires ON
+        // `stateQueue`, so direct access to the maps is already
+        // serialised correctly.
+        let tcp = self.tcpContexts.count
+        let udp = self.udpSessions.count
+        self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
+
+        // Track the set of pre-`egressReady` IDs across ticks. An ID
+        // present in both the previous AND the current set has been
+        // stuck for ≥ one tick interval and gets force-torn-down via
+        // `applyConnectTimeout` — the same teardown the per-flow
+        // connect timer would fire, just driven from here so it
+        // survives the per-flow queue being starved.
+        var nowStuck: Set<ObjectIdentifier> = []
+        var toKick: [TcpFlowContext] = []
+        for (id, ctx) in tcpContexts where !ctx.egressReady {
+            nowStuck.insert(id)
+            if stuckPreReadyFlowIds.contains(id) {
+                toKick.append(ctx)
+            }
+        }
+        stuckPreReadyFlowIds = nowStuck
+        return toKick
+    }
+
+    /// One maintenance tick, off-`stateQueue` half: actually fire the
+    /// teardowns identified by [`collectMaintenanceKicksLocked`].
+    ///
+    /// Hopped off `stateQueue` deliberately. In production every ctx
+    /// has its own `flowQueue` so `runFlowTeardown` dispatches there
+    /// — but engine-less / test ctxs without a `flowQueue` run the
+    /// teardown body inline, and that body calls
+    /// `core?.removeTcpFlow(flowId)` which `stateQueue.sync`s back.
+    /// Holding `stateQueue` across the body would deadlock there. The
+    /// hop costs nothing in production and makes the watchdog robust
+    /// to engine-less call paths.
+    private func fireWatchdogKicks(_ toKick: [TcpFlowContext]) {
+        guard !toKick.isEmpty else { return }
+        logLifecycle(
+            "watchdog: force-tearing down \(toKick.count) stale pre-ready flow(s)"
+        )
+        for ctx in toKick {
+            // Re-check `egressReady` ON `flowQueue`. The decision to
+            // kick was made on `stateQueue` from a `nonisolated`
+            // read of `ctx.egressReady`; between that and us getting
+            // here the flow may have raced into `.ready` (the
+            // legitimate happy path catching up just in time). The
+            // teardown's `applyConnectTimeout` has no internal
+            // ready-check — it'd cancel a healthy NWConnection and
+            // pop the registry. Mirror what `handleSystemWake`
+            // already does for the same race.
+            runFlowTeardown(ctx) {
+                guard !ctx.egressReady else { return }
+                ctx.teardown?.applyConnectTimeout()
+            }
+        }
+    }
+
+    #if DEBUG
+        /// Test hook: run one maintenance tick synchronously. Lets
+        /// unit tests exercise the watchdog without waiting 60s for
+        /// the production timer. Same `#if DEBUG` gating as the other
+        /// `test*` surfaces above.
+        func testRunPeriodicMaintenance() {
+            let toKick = stateQueue.sync { self.collectMaintenanceKicksLocked() }
+            // Outside `stateQueue.sync` on purpose — see
+            // [`fireWatchdogKicks`] for the deadlock rationale.
+            fireWatchdogKicks(toKick)
+        }
+
+        /// Test hook: inspect the watchdog's "stuck since last tick" set.
+        var testStuckPreReadyFlowIds: Set<ObjectIdentifier> {
+            stateQueue.sync { self.stuckPreReadyFlowIds }
+        }
+    #endif
 
     // MARK: - App-message routing
 
@@ -158,35 +409,33 @@ final class TransparentProxyCore: @unchecked Sendable {
         session: RamaTcpSessionHandle,
         context: TcpFlowContext
     ) {
-        stateQueue.sync {
-            self.tcpSessions[flowId] = session
-            self.tcpContexts[flowId] = context
-        }
+        stateQueue.sync { self.tcpContexts[flowId] = context }
     }
 
-    func registerUdpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaUdpSessionHandle,
-        context: UdpFlowContext
-    ) {
-        stateQueue.sync {
-            self.udpSessions[flowId] = session
-            self.udpContexts[flowId] = context
-        }
+    /// Register the per-flow session as the owner-of-record for an
+    /// intercepted UDP flow. The anchor is the only strong reference
+    /// keeping the session alive while the flow is open; dropping
+    /// it via `removeUdpFlow` deallocates the session and the
+    /// `ctx`/writer/closure graph it owns.
+    func registerUdpFlow(_ flowId: ObjectIdentifier, anchor: UdpFlowSessionAnchor) {
+        stateQueue.sync { self.udpSessions[flowId] = anchor }
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
         stateQueue.sync {
-            self.tcpSessions.removeValue(forKey: flowId)
             self.tcpContexts.removeValue(forKey: flowId)
+            // Belt-and-suspenders against `ObjectIdentifier` reuse:
+            // if a torn-down flow's pointer is recycled for a new ctx
+            // within one maintenance tick, the new ctx would inherit
+            // the old's "stuck" status and be kicked on its very
+            // first observation. Removing here keeps the watchdog's
+            // tracking set in lockstep with the registry.
+            self.stuckPreReadyFlowIds.remove(flowId)
         }
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
-            self.udpSessions.removeValue(forKey: flowId)
-            self.udpContexts.removeValue(forKey: flowId)
-        }
+        stateQueue.sync { self.udpSessions.removeValue(forKey: flowId) }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
@@ -197,7 +446,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     /// Count of currently-registered UDP flows. Test-only signal.
     var udpFlowCount: Int {
-        stateQueue.sync { self.udpContexts.count }
+        stateQueue.sync { self.udpSessions.count }
     }
 
     #if DEBUG
@@ -208,7 +457,36 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// loop. Gated on `#if DEBUG` so production builds carry
         /// no test-only surface on `TransparentProxyCore`.
         func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
-            stateQueue.sync { self.udpContexts[ObjectIdentifier(flow)]?.writer }
+            stateQueue.sync { self.udpSessions[ObjectIdentifier(flow)]?.ctx.writer }
+        }
+
+        /// Test-only accessor for the per-flow TCP context. Used by
+        /// the promote-cutover integration tests to drive
+        /// `beginPromoteCutover` directly + inspect the resulting
+        /// state (mode transition, forwarder presence). Same
+        /// gating rationale as the UDP accessor above.
+        func testInspectTcpContext(for flow: AnyObject) -> TcpFlowContext? {
+            stateQueue.sync { self.tcpContexts[ObjectIdentifier(flow)] }
+        }
+
+        /// Insert a TCP context into the registry directly, without
+        /// going through `registerTcpFlow` (which requires a real
+        /// `RamaTcpSessionHandle`). Lets tests drive engine-less
+        /// scenarios like `handleSystemSleep` walks.
+        func testInsertTcpContext(_ flowId: ObjectIdentifier, _ ctx: TcpFlowContext) {
+            stateQueue.sync { self.tcpContexts[flowId] = ctx }
+        }
+
+        /// Symmetric for UDP. Wraps the bare ctx in a stub
+        /// `UdpFlowSessionAnchor` so the production map's
+        /// invariant (one anchor per registered flow) holds. The
+        /// stub captures the ctx as the live session would, so
+        /// `handleSystemSleep` reaches the same `ctx.terminate`
+        /// path.
+        func testInsertUdpContext(_ flowId: ObjectIdentifier, _ ctx: UdpFlowContext) {
+            stateQueue.sync {
+                self.udpSessions[flowId] = _TestUdpFlowSessionAnchor(ctx: ctx)
+            }
         }
     #endif
 
@@ -246,6 +524,25 @@ final class TransparentProxyCore: @unchecked Sendable {
         )
     }
 
+    /// Emit a lifecycle / critical event.
+    ///
+    /// Routed through `LifecycleLog` (Apple `os.Logger`, direct) AND
+    /// through the Rust tracing path. The direct route guarantees the
+    /// message is in `log show` regardless of the Rust subscriber's
+    /// current INFO-level mapping; the Rust route keeps the message in
+    /// the unified stderr / dial9 trace for the demo binary. See
+    /// `LifecycleLog` for the gap that motivates the dual path.
+    func logLifecycle(_ message: String) {
+        LifecycleLog.notice(message)
+        logInfo(message)
+    }
+
+    /// Lifecycle-error counterpart of [`logLifecycle`].
+    func logLifecycleError(_ message: String) {
+        LifecycleLog.error(message)
+        logError(message)
+    }
+
     func logFlowMessage(_ message: FlowLogMessage) {
         switch message.level {
         case .trace: logTrace(message.text)
@@ -271,405 +568,127 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleTcpFlow<F: TcpFlowLike>(
         _ flow: F, meta: RamaTransparentProxyFlowMetaBridge
     ) -> Bool {
-        let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(
-            label: "rama.tproxy.tcp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
-            qos: .utility)
-        let ctx = TcpFlowContext()
+        TcpFlowSession(core: self, flow: flow, meta: meta).start()
+    }
 
-        let writer = TcpClientWritePump(
-            flow: flow,
-            queue: flowQueue,
-            logger: { [weak self] message in
-                self?.logFlowMessage(message)
-            },
-            onTerminalError: { [weak self, weak ctx] error in
-                // [weak ctx] keeps the writer's onTerminalError closure
-                // from pinning the per-flow context graph alive after
-                // the session is removed.
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                ctx?.connection?.cancel()
-                ctx?.session?.cancel()
-                self?.removeTcpFlow(flowId)
-            },
-            onDrained: { [weak ctx] in
-                ctx?.session?.signalServerDrain()
-            }
-        )
-        ctx.clientWritePump = writer
 
-        let decision =
-            engine?.newTcpSession(
-                meta: meta,
-                onServerBytes: { [weak ctx] data in
-                    // Reach the writer through ctx so the Rust callback
-                    // box can't keep the writer alive past dispatcher
-                    // teardown. `.closed` tells the Rust bridge to stop
-                    // producing.
-                    ctx?.clientWritePump?.enqueue(data) ?? .closed
-                },
-                onClientReadDemand: { [weak ctx] in
-                    // Rust → Swift: the per-flow ingress channel has space
-                    // again, so we may resume `flow.readData`. Hop onto the
-                    // flow's queue before touching `ctx`, since this fires
-                    // from a Rust worker thread.
-                    flowQueue.async { [weak ctx] in
-                        ctx?.clientReadPump?.resume()
-                    }
-                },
-                onServerClosed: { [weak self, weak ctx] in
-                    ctx?.clientWritePump?.closeWhenDrained { wasOpened in
-                        if wasOpened {
-                            flow.closeReadWithError(nil)
-                            flow.closeWriteWithError(nil)
-                        } else {
-                            let error = tcpUpstreamUnavailableError()
-                            flow.closeReadWithError(error)
-                            flow.closeWriteWithError(error)
-                        }
-                        ctx?.connection?.cancel()
-                        self?.removeTcpFlow(flowId)
-                    }
-                }
-            ) ?? .passthrough
+    // MARK: - Promote cutover orchestration
 
-        let session: RamaTcpSessionHandle
-        switch decision {
-        case .intercept(let createdSession):
-            session = createdSession
-        case .passthrough:
-            logDebug("handleNewFlow tcp bypassed by rust flow policy")
-            return false
-        case .blocked:
-            logInfo("handleNewFlow tcp blocked by rust flow policy")
-            let error = blockedFlowError()
-            flow.closeReadWithError(error)
-            flow.closeWriteWithError(error)
-            return true
+    /// Coordinate a service-initiated promote: cancel the
+    /// Rust-bound read pumps with carryover routed into a fresh
+    /// `TcpDirectForwarder`, then ACK Rust so its in-flight
+    /// service drains and exits.
+    ///
+    /// Runs on the per-flow `flowQueue`. Assumes all four pumps,
+    /// the kernel flow, and the egress `NWConnection` are live
+    /// (the promote callback is registered only after that
+    /// point in `handleTcpFlow`).
+    ///
+    /// Failure modes that ACK `.failed` instead of `.ok`:
+    ///   * Mode already advanced past `.viaRust` (e.g. double-
+    ///     fire). Idempotent: subsequent calls are no-ops.
+    ///   * Connection or pumps already torn down (a fast hard-
+    ///     error path raced ahead). Confirm with a diagnostic
+    ///     reason so the service falls through to the in-Rust
+    ///     data path.
+    ///
+    /// `internal` (not `private`) so the integration tests in
+    /// `PromoteCutoverIntegrationTests` can call this directly
+    /// with mock flows / connections — exercising the full
+    /// cutover sequence without needing a real Rust service to
+    /// invoke `into_passthrough` from the engine side.
+    func beginPromoteCutover<F: TcpFlowLike>(
+        ctx: TcpFlowContext?,
+        flow: F,
+        flowQueue: DispatchQueue,
+        flowId: ObjectIdentifier
+    ) {
+        guard let ctx else { return }
+        guard ctx.mode == .viaRust else {
+            // Idempotent: a later promote-callback invocation
+            // (e.g. test-only manual fire) lands here. No-op.
+            return
         }
-
-        ctx.session = session
-        // Publish the flow state before any callback that may observe it can fire.
-        registerTcpFlow(flowId, session: session, context: ctx)
-
-        // ── Phase 2: pre-connect egress NWConnection before opening the flow ──
-        guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
-            logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
-            session.cancel()
-            removeTcpFlow(flowId)
-            return true
-        }
-
-        let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs =
-            egressOpts.flatMap { $0.has_connect_timeout_ms ? $0.connect_timeout_ms : nil } ?? 30_000
-        let lingerCloseMs =
-            egressOpts.flatMap { $0.has_linger_close_ms ? $0.linger_close_ms : nil }
-            ?? defaultLingerCloseMs
-        let egressEofGraceMs =
-            egressOpts.flatMap {
-                $0.has_egress_eof_grace_ms ? $0.egress_eof_grace_ms : nil
-            } ?? defaultEgressEofGraceMs
-        let nwParams = makeTcpNwParameters(egressOpts)
-
-        // Stamp the intercepted flow's NEFlowMetaData (source app identifier,
-        // audit token, …) onto the egress NWParameters when the handler asks
-        // for it (default true). Downstream NEAppProxyProviders that
-        // intercept our egress see the original app rather than this
-        // extension. Must run before the NWConnection is constructed from
-        // these params.
-        //
-        // The core delegates to the protocol's `applyMetadata(to:)` so
-        // it never has to know what `NEFlowMetaData` is — Apple-framework
-        // surface stays on the adapter side via the conformance.
-        if egressOpts?.parameters.preserve_original_meta_data ?? true {
-            flow.applyMetadata(to: nwParams)
-        }
-
-        guard let connection = nwConnectionFactory(remoteHost, meta.remotePort, nwParams)
+        // Note `clientReadPump`: installed by `armReadTerminal`, which
+        // runs inside the `flow.open` completion callback. Its
+        // presence is the canonical "kernel flow is open" signal —
+        // the forwarder we build below issues `flow.readData` and
+        // expects the kernel side to honor it. Promoting before
+        // flow.open completes (only possible since we moved
+        // `armPromoteCallback` ahead of `session.activate` to fix
+        // the registration race) would start the forwarder on an
+        // unopened flow; refuse cleanly and let the service fall
+        // back to the in-Rust path.
+        guard let session = ctx.session,
+              let connection = ctx.connection,
+              let clientWritePump = ctx.clientWritePump,
+              let egressWritePump = ctx.egressWritePump,
+              ctx.clientReadPump != nil
         else {
             logDebug(
-                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session"
+                "promote: flow not in a promotable state (missing session/connection/pumps or flow.open not yet complete); confirming failed"
             )
-            session.cancel()
-            removeTcpFlow(flowId)
-            return true
-        }
-        ctx.connection = connection
-
-        // Track whether the egress connection succeeded before flow.open was called.
-        var egressReady = false
-
-        // Timeout: cancel if NWConnection doesn't reach .ready in time.
-        let timeoutMs = Int(connectTimeoutMs)
-        let timeoutWork = DispatchWorkItem { [weak self, weak ctx] in
-            guard !egressReady else { return }
-            self?.logDebug(
-                "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(meta.remotePort)"
-            )
-            ctx?.connection?.cancel()
-            ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
-        }
-        flowQueue.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeoutWork)
-
-        // Post-ready `.waiting(_)` tolerance — a Wi-Fi roam or other
-        // transient path change can take the connection briefly back
-        // into `.waiting` after it reached `.ready`. We allow a short
-        // window for the path to recover; staying in `.waiting` past
-        // the window means the path is gone and the flow must be torn
-        // down so the macOS NWConnection registration is released.
-        let egressWaitingToleranceMs = defaultEgressWaitingToleranceMs
-        var waitingWork: DispatchWorkItem?
-
-        // Post-ready teardown shared between the `.failed` arm and the
-        // `.waiting` tolerance timer. Idempotent — every step is safe
-        // to invoke twice, so a concurrent teardown path (the egress
-        // read pump's EOF backstop, the flow's hard-error terminal,
-        // an external `engine.stop`) that races with this closure
-        // does not corrupt state.
-        // Not `@Sendable` because it mutates `waitingWork`; all
-        // invocation sites run on `flowQueue` so single-threaded
-        // mutation is safe.
-        let tearDownPostReady: (Error?) -> Void = { [weak self, weak ctx] err in
-            waitingWork?.cancel()
-            waitingWork = nil
-            let nsErr =
-                err
-                ?? NSError(
-                    domain: "rama.tproxy.tcp",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "egress NWConnection terminated post-ready"
-                    ]
-                )
-            flow.closeReadWithError(nsErr)
-            flow.closeWriteWithError(nsErr)
-            ctx?.connection?.cancel()
-            ctx?.connection = nil
-            ctx?.egressReadPump?.cancel()
-            ctx?.egressReadPump = nil
-            ctx?.egressWritePump?.cancel()
-            ctx?.egressWritePump = nil
-            ctx?.clientReadPump = nil
-            ctx?.clientWritePump?.cancel()
-            ctx?.clientWritePump = nil
-            ctx?.session?.cancel()
-            self?.removeTcpFlow(flowId)
+            ctx.session?.confirmPromoted(
+                .failed, reason: "egress not ready")
+            return
         }
 
-        connection.stateUpdateHandler = { [weak self, weak ctx] (state: NWConnection.State) in
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, let connection = ctx.connection else { return }
-                switch state {
-                case .ready:
-                    if egressReady {
-                        // A duplicate `.ready` after a recovered
-                        // `.waiting` — cancel any pending tolerance
-                        // timer so it does not fire on the now-healthy
-                        // connection.
-                        waitingWork?.cancel()
-                        waitingWork = nil
-                        return
-                    }
-                    egressReady = true
-                    timeoutWork.cancel()
+        ctx.mode = .promoted
+        logTrace("promote: cutover begin")
 
-                    let writePump = NwTcpConnectionWritePump(
-                        connection: connection,
-                        queue: flowQueue,
-                        lingerCloseDeadline: .milliseconds(Int(lingerCloseMs)),
-                        onDrained: { [weak ctx] in
-                            ctx?.session?.signalEgressDrain()
-                        }
-                    )
-                    ctx.egressWritePump = writePump
-                    let readPump = NwTcpConnectionReadPump(
-                        connection: connection,
-                        session: session,
-                        queue: flowQueue,
-                        eofGraceDeadline: .milliseconds(Int(egressEofGraceMs))
-                    )
-                    ctx.egressReadPump = readPump
-
-                    session.activate(
-                        onWriteToEgress: { [weak ctx] data in
-                            ctx?.egressWritePump?.enqueue(data) ?? .closed
-                        },
-                        onEgressReadDemand: { [weak ctx] in
-                            flowQueue.async { [weak ctx] in
-                                ctx?.egressReadPump?.resume()
-                            }
-                        },
-                        onCloseEgress: { [weak ctx] in
-                            ctx?.egressWritePump?.closeWhenDrained()
-                        }
-                    )
-
-                    flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
-                        flowQueue.async {
-                            if let error {
-                                self?.logDebug("flow.open error after egress ready: \(error)")
-                                connection.cancel()
-                                ctx?.connection = nil
-                                readPump.cancel()
-                                ctx?.egressReadPump = nil
-                                ctx?.egressWritePump?.cancel()
-                                ctx?.egressWritePump = nil
-                                ctx?.clientWritePump?.cancel()
-                                ctx?.clientWritePump = nil
-                                session.cancel()
-                                self?.removeTcpFlow(flowId)
-                                return
-                            }
-                            // The egress NWConnection or session may
-                            // have been torn down between this
-                            // flow.open call and its completion (a
-                            // post-ready `.failed` / `.waiting` →
-                            // `tearDownPostReady`, or an external
-                            // engine stop). Each individual cleanup
-                            // step in those paths is async, so by the
-                            // time we observe `ctx.connection == nil`
-                            // it's the canonical signal that the
-                            // flow's state machine has moved on and
-                            // this success branch is stale. Walking
-                            // it would arm fresh pumps and reads
-                            // against torn-down state.
-                            guard let ctx, ctx.connection != nil else {
-                                self?.logTrace(
-                                    "flow.open completion observed teardown; dropping"
-                                )
-                                return
-                            }
-                            self?.logTrace("flow.open ok (tcp, egress pre-connected)")
-                            writer.markOpened()
-                            readPump.start()
-
-                            // Natural-EOF and hard-error paths
-                            // intentionally diverge — see
-                            // `TcpReadTerminal`. The natural-EOF
-                            // path defers write-side teardown to
-                            // the writer pump's drain so queued
-                            // response bytes reach the originating
-                            // app; closing the write side or
-                            // calling `session.cancel()` here
-                            // would truncate them. Weak captures
-                            // keep this closure graph from pinning
-                            // the per-flow context alive.
-                            let terminal = TcpReadTerminal(
-                                onNaturalEof: {
-                                    [weak self, weak readPump, weak session] in
-                                    self?.logTrace(
-                                        "tcp natural EOF: deferring teardown to closeWhenDrained"
-                                    )
-                                    flow.closeReadWithError(nil)
-                                    readPump?.cancel()
-                                    session?.onClientEof()
-                                },
-                                onHardError: {
-                                    [weak self, weak ctx, weak readPump, weak session] err in
-                                    flow.closeReadWithError(err)
-                                    flow.closeWriteWithError(err)
-                                    ctx?.connection?.cancel()
-                                    ctx?.connection = nil
-                                    readPump?.cancel()
-                                    ctx?.clientWritePump?.cancel()
-                                    ctx?.egressWritePump?.cancel()
-                                    session?.cancel()
-                                    ctx?.clientReadPump = nil
-                                    ctx?.egressReadPump = nil
-                                    ctx?.clientWritePump = nil
-                                    ctx?.egressWritePump = nil
-                                    self?.removeTcpFlow(flowId)
-                                }
-                            )
-                            let flowReadPump = TcpClientReadPump(
-                                flow: flow,
-                                session: session,
-                                queue: flowQueue,
-                                logger: { [weak self] message in self?.logFlowMessage(message) },
-                                onTerminal: terminal.dispatch
-                            )
-                            ctx.clientReadPump = flowReadPump
-                            flowReadPump.requestRead()
-                        }
-                    }
-
-                case .failed(let error):
-                    if !egressReady {
-                        // Pre-ready failure — flow was never opened,
-                        // pumps were never wired, session has no
-                        // bridges to drain. The minimal cleanup is
-                        // enough.
-                        timeoutWork.cancel()
-                        self?.logDebug(
-                            "egress NWConnection failed before flow opened: \(String(describing: error))"
-                        )
-                        // Explicit cancel() releases the kernel NECP flow slot.
-                        connection.cancel()
-                        session.cancel()
-                        self?.removeTcpFlow(flowId)
-                    } else {
-                        // Post-ready failure — peer RST, TLS abort,
-                        // NECP path drop, or anything else that takes
-                        // an established `NWConnection` to `.failed`.
-                        // Without this branch the connection sits
-                        // registered until some other path (read pump
-                        // error, idle timeout, max-flow lifetime)
-                        // eventually catches it, which is exactly the
-                        // accumulation that turns into the
-                        // path-evaluator slowdown.
-                        self?.logDebug(
-                            "egress NWConnection failed after flow opened: \(String(describing: error))"
-                        )
-                        tearDownPostReady(error)
-                    }
-
-                case .waiting(let error):
-                    if !egressReady {
-                        // Pre-ready waiting is handled by
-                        // `connect_timeout` already; we leave it
-                        // alone here so two timers cannot race.
-                        break
-                    }
-                    // Post-ready waiting — start the tolerance timer
-                    // if one is not already pending. Returning to
-                    // `.ready` cancels it; staying in `.waiting` past
-                    // the tolerance triggers teardown via the same
-                    // path as `.failed`.
-                    if waitingWork != nil { break }
-                    self?.logDebug(
-                        "egress NWConnection waiting after flow opened: \(String(describing: error))"
-                    )
-                    let work = DispatchWorkItem {
-                        tearDownPostReady(error)
-                    }
-                    waitingWork = work
-                    flowQueue.asyncAfter(
-                        deadline: .now() + .milliseconds(Int(egressWaitingToleranceMs)),
-                        execute: work
-                    )
-
-                case .cancelled:
-                    // We initiated this cancel via one of the
-                    // teardown paths above (or the linger / EOF
-                    // backstops in the pumps). Nothing to do here
-                    // beyond making sure any pending `.waiting`
-                    // tolerance timer is invalidated.
-                    waitingWork?.cancel()
-                    waitingWork = nil
-
-                default:
-                    // `.preparing`, `.setup`, and future cases —
-                    // nothing actionable at the core level.
-                    break
-                }
+        let forwarder = TcpDirectForwarder(
+            flow: flow,
+            connection: connection,
+            clientWritePump: clientWritePump,
+            egressWritePump: egressWritePump,
+            queue: flowQueue,
+            logger: { [weak self] message in self?.logFlowMessage(message) },
+            onTerminal: { [weak self, weak flow] in
+                // Both direct directions done. Close the
+                // kernel flow read+write sides + drop the
+                // per-flow registry entry. The egress
+                // NWConnection's lifecycle is owned by
+                // egressWritePump (drain → FIN → linger).
+                flow?.closeReadWithError(nil)
+                flow?.closeWriteWithError(nil)
+                self?.removeTcpFlow(flowId)
             }
-        }
+        )
+        ctx.directForwarder = forwarder
 
-        connection.start(queue: flowQueue)
-        return true
+        // Cancel the Rust-bound read pumps. Their in-flight
+        // bytes (the `.paused` replay buffer plus any
+        // outstanding `readData` / `receive` result) are
+        // routed into the forwarder's per-direction
+        // buffers, to be flushed FIFO after Rust's tail
+        // when the corresponding Rust-done signal arrives.
+        //
+        // `onComplete` fires the read-drain barrier: only
+        // then can the forwarder issue its own
+        // `flow.readData` / `connection.receive` without
+        // racing the in-flight kernel-side request.
+        ctx.clientReadPump?.cancelForPromote(
+            onCarryover: { [weak forwarder] data in
+                forwarder?.acceptClientCarryover(data)
+            },
+            onComplete: { [weak forwarder] in
+                forwarder?.markClientReadDrained()
+            })
+        ctx.egressReadPump?.cancelForPromote(
+            onCarryover: { [weak forwarder] data in
+                forwarder?.acceptEgressCarryover(data)
+            },
+            onComplete: { [weak forwarder] in
+                forwarder?.markEgressReadDrained()
+            })
+
+        // ACK the cutover. Rust drops its ingress + egress
+        // senders; the service drains its read loops + writes
+        // its responses to the existing write pumps. Once
+        // Rust signals `onServerClosed` / `onCloseEgress`,
+        // the mode-aware handlers transition the forwarder's
+        // per-direction state to `.active`.
+        session.confirmPromoted(.ok)
     }
 
     // MARK: - Per-flow handling (UDP)
@@ -682,229 +701,19 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleUdpFlow<F: UdpFlowLike>(
         _ flow: F, meta bootMeta: RamaTransparentProxyFlowMetaBridge
     ) -> Bool {
-        let flowId = ObjectIdentifier(flow)
-        let flowQueue = DispatchQueue(
-            label: "rama.tproxy.udp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
-            qos: .utility)
-        let ctx = UdpFlowContext()
-
-        ctx.terminate = { [weak self, weak ctx] error in
-            // Re-`[weak ctx]` at the nested closure boundary; see
-            // `requestRead` for why.
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx, ctx.readState != .closed else { return }
-                ctx.readState = .closed
-                ctx.writer?.close()
-                flow.closeReadWithError(error)
-                flow.closeWriteWithError(error)
-                ctx.session?.onClientClose()
-                self?.removeUdpFlow(flowId)
-            }
-        }
-
-        ctx.writer = UdpClientWritePump(
-            flow: flow,
-            queue: flowQueue,
-            logger: { [weak self] message in
-                self?.logFlowMessage(message)
-            },
-            onTerminalError: { [weak ctx] error in
-                // Route through `[weak ctx]` so this closure (held
-                // by the writer) does not strong-capture `terminate`
-                // — terminate transitively reaches the writer via
-                // `ctx.writer`, so a strong link in either direction
-                // would close a writer ↔ terminate cycle.
-                ctx?.terminate?(error)
-            }
-        )
-
-        ctx.requestRead = { [weak self, weak ctx] in
-            // Re-`[weak ctx]` at every nested-closure boundary.
-            // A `guard let ctx` here would make `ctx` strong for
-            // every closure further down, re-introducing a strong
-            // capture path back through this chain.
-            flowQueue.async { [weak ctx] in
-                guard let ctx, ctx.readState != .closed else { return }
-                // If a read is already in flight (or demand is already
-                // queued), record / keep the demand flag and return —
-                // the completion handler will re-trigger.  The check
-                // covers both .reading and .readingWithDemand so that
-                // a third rapid demand does not issue a concurrent
-                // second readDatagrams call while the first is still
-                // in flight.
-                if ctx.readState == .reading || ctx.readState == .readingWithDemand {
-                    ctx.readState = .readingWithDemand
-                    return
-                }
-                ctx.readState = .reading
-                flow.readDatagrams { [weak self, weak ctx] datagrams, endpoints, error in
-                    flowQueue.async { [weak ctx] in
-                        guard let ctx, ctx.readState != .closed else { return }
-                        let hadPendingDemand = ctx.readState == .readingWithDemand
-                        ctx.readState = .idle
-                        if let error {
-                            let msg = classifyFlowCallbackError(
-                                error,
-                                operation: "udp flow.read"
-                            )
-                            self?.logFlowMessage(msg)
-                            ctx.terminate?(error)
-                            return
-                        }
-
-                        guard let datagrams, !datagrams.isEmpty else {
-                            self?.logTrace("flow.readDatagrams eof")
-                            ctx.terminate?(nil)
-                            return
-                        }
-
-                        guard let session = ctx.session else {
-                            self?.logDebug(
-                                "udp flow read received but session no longer active; closing flow"
-                            )
-                            ctx.terminate?(nil)
-                            return
-                        }
-
-                        // Forward each datagram tagged with its
-                        // per-datagram peer. `flow.readDatagrams`
-                        // returns parallel arrays (`datagrams[i]`
-                        // paired with `endpoints[i]`); we honour
-                        // that pairing so a multi-peer flow (DNS
-                        // stub resolver, NTP, gaming) faithfully
-                        // proxies each datagram to its intended
-                        // peer instead of collapsing to a single
-                        // bootstrap endpoint. RFC 768: zero-length
-                        // datagrams are valid; forward unchanged.
-                        let endpointMismatch =
-                            endpoints != nil
-                            && (endpoints?.count ?? 0) != datagrams.count
-                        if endpointMismatch && !ctx.endpointMismatchLogged {
-                            ctx.endpointMismatchLogged = true
-                            self?.logDebug(
-                                "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(datagrams.count), endpoints=\(endpoints?.count ?? 0)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
-                            )
-                        }
-                        for (index, datagram) in datagrams.enumerated() {
-                            // Strict parallel-array semantics: Apple
-                            // documents `readDatagrams` as returning
-                            // `[Data]` paired with `[NWEndpoint]`
-                            // element-for-element. If the endpoint
-                            // array is missing or shorter than the
-                            // datagrams array, the surplus entries
-                            // get `nil` peer — we do NOT fabricate
-                            // attribution from `eps.first`, which on
-                            // a multi-peer flow would actively
-                            // misroute every reply past the first
-                            // index back to the first observed peer.
-                            // `ramaUdpPeer(from:)` does the
-                            // NWHostEndpoint fast path + macOS-15
-                            // NWConcreteHostEndpoint KVC fallback.
-                            //
-                            // Element type inferred from
-                            // `endpoints: [NWEndpoint]?` (NetworkExtension's
-                            // legacy class); writing it explicitly conflicts
-                            // with the modern `Network.NWEndpoint` enum
-                            // imported elsewhere in this file.
-                            let endpoint = endpoints.flatMap { eps in
-                                index < eps.count ? eps[index] : nil
-                            }
-                            let peer = endpoint.flatMap(ramaUdpPeer(from:))
-                            // Update the writer pump's cached
-                            // "latest peer" — the fallback for
-                            // outbound datagrams that arrive
-                            // without explicit `sentBy`. Rebuild
-                            // from the parsed `RamaUdpPeer` so the
-                            // cache is always a kernel-acceptable
-                            // `NWHostEndpoint`, regardless of which
-                            // concrete `NWEndpoint` subclass the
-                            // kernel surfaced.
-                            if let peer {
-                                ctx.writer?.setSentByEndpoint(
-                                    peer.toNetworkExtensionEndpoint()
-                                )
-                            }
-                            session.onClientDatagram(datagram, peer: peer)
-                        }
-
-                        if hadPendingDemand {
-                            ctx.requestRead?()
-                        }
-                    }
-                }
-            }
-        }
-
-        let decision =
-            engine?.newUdpSession(
-                meta: bootMeta,
-                // Rust-held closures route through `[weak ctx]` so the
-                // callback box (Rust) does not strong-pin the per-flow
-                // pumps. The box is dropped on `_session_free`, so once
-                // `removeUdpFlow` releases the session-handle these
-                // closures stop firing — no late-arrival hazard.
-                onServerDatagram: { [weak ctx] data, peer in
-                    // `peer` is the source the reply came from; thread it
-                    // into the writer pump as the `sentBy` endpoint so
-                    // `flow.writeDatagrams` tags the kernel-bound write
-                    // correctly per datagram, even when the flow has been
-                    // talking to multiple peers.
-                    ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
-                },
-                onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
-                onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
-            ) ?? .passthrough
-
-        let session: RamaUdpSessionHandle
-        switch decision {
-        case .intercept(let createdSession):
-            session = createdSession
-        case .passthrough:
-            logDebug("handleNewFlow udp bypassed by rust flow policy")
-            return false
-        case .blocked:
-            logInfo("handleNewFlow udp blocked by rust flow policy")
-            let error = blockedFlowError()
-            flow.closeReadWithError(error)
-            flow.closeWriteWithError(error)
-            return true
-        }
-
-        ctx.session = session
-        // Publish the flow state before any callback that may observe it can fire.
-        registerUdpFlow(flowId, session: session, context: ctx)
-
-        // ── Phase 2: open the flow and hand control to Rust ──
-        //
-        // Egress lives on the Rust side, owned by the handler's
-        // service: the service opens its own socket(s),
-        // routes by per-datagram peer, and writes replies back via
-        // `flow.send`. The pre-ready NWConnection state machine that
-        // once gated `flow.open` is gone — as soon as Rust says
-        // "intercept" we open the flow and arm the session.
-        //
-        // Trade-off: a downstream `NEAppProxyProvider` no longer sees
-        // the egress flow as an `NEAppProxyFlow` carrying the original
-        // `NEFlowMetaData` (BSD socket sits below NE attribution). This
-        // matches stacked-provider behavior under any direct-socket
-        // egress; downstream `NEFilterPacketProvider` policies already
-        // saw the extension PID. Audit-token attribution to the
-        // ORIGINATING app is preserved end-to-end via Rust's
-        // `TransparentProxyFlowMeta`.
-        flow.open(withLocalEndpoint: nil) { [weak self, weak ctx] error in
-            flowQueue.async { [weak self, weak ctx] in
-                guard let ctx else { return }
-                if let error {
-                    self?.logDebug("udp flow.open error: \(error)")
-                    ctx.terminate?(error)
-                    return
-                }
-                self?.logTrace("flow.open ok (udp; egress on Rust-owned BSD socket)")
-                ctx.writer?.markOpened()
-                ctx.session?.activate()
-                ctx.requestRead?()
-            }
-        }
-        return true
+        UdpFlowSession(core: self, flow: flow, meta: bootMeta).start()
     }
+
 }
+
+#if DEBUG
+    /// Stub anchor used by `testInsertUdpContext` — wraps a bare
+    /// `UdpFlowContext` so the production registry's
+    /// `UdpFlowSessionAnchor` invariant holds in tests that drive
+    /// registry-walk code paths (`handleSystemSleep`,
+    /// `detachEngine`) without spinning up a full session.
+    final class _TestUdpFlowSessionAnchor: UdpFlowSessionAnchor {
+        let ctx: UdpFlowContext
+        init(ctx: UdpFlowContext) { self.ctx = ctx }
+    }
+#endif

@@ -413,7 +413,7 @@ extension ContainerController {
             xpcServiceName: xpcServiceName,
             // Forward our bundle ID so the sysext can lock the XPC listener to
             // this container only (same Apple Developer team + this identifier).
-            containerSigningIdentifier: Bundle.main.bundleIdentifier ?? "",
+            containerSigningIdentifier: Bundle.main.bundleIdentifier ?? ""
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -466,6 +466,10 @@ extension ContainerController {
                 settings.excludeDomains = domains
             }
         }
+        // `tlsKeylogEnabled` is never persisted: it's a runtime-only
+        // sysext toggle. Settings loaded from NE preferences always
+        // leave it at the default (off); the GUI re-syncs the menu
+        // from the sysext via getTlsKeylog after the proxy is up.
         return settings
     }
 

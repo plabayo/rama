@@ -40,10 +40,23 @@ impl Default for DemoProxyConfig {
             html_badge_enabled: true,
             html_badge_label: "proxied by rama".to_owned(),
             peek_duration_s: 8.,
+            // Keep in sync with `policy::DomainExclusionList::default()`
+            // — that's the engine-internal fallback; this is the
+            // user-visible default that ships in the opaque config.
             exclude_domains: vec![
+                // Captive-portal probes.
                 "detectportal.firefox.com".to_owned(),
                 "connectivitycheck.gstatic.com".to_owned(),
                 "captive.apple.com".to_owned(),
+                // High-traffic dev/CDN endpoints — see policy.rs
+                // for the rationale. Wildcards opt into subtree
+                // matching (handled by `DomainTrie::is_match`).
+                "*.github.com".to_owned(),
+                "*.githubusercontent.com".to_owned(),
+                "*.googleapis.com".to_owned(),
+                "*.gstatic.com".to_owned(),
+                "*.cloudflare.com".to_owned(),
+                "*.jsdelivr.net".to_owned(),
             ],
             ca_cert_pem: None,
             ca_key_pem: None,
