@@ -459,6 +459,38 @@ fn drain_for_sleep_awaits_handler_on_sleep_hook() {
     engine.stop(0);
 }
 
+/// `drain_for_sleep` MUST NOT revive a terminally-stopped engine.
+/// After `engine.stop(...)` the inner shutdown slot is `None`; a
+/// subsequent drain must return `AlreadyStopped` and NOT install a
+/// fresh pair. Otherwise the engine would appear alive again, and
+/// `shutdown_guard()` would hand out guards from a pair nobody
+/// awaits — a real-world hazard if XPC ever races stop+sleep.
+#[test]
+fn drain_for_sleep_after_stop_returns_already_stopped_and_does_not_revive() {
+    let mut engine = build_engine(TestHandler::passthrough());
+    // Terminally stop via the same path Drop uses, but keep the
+    // engine value around so we can call drain on it. `stop` is
+    // `&mut self`; after this the internal slot is `None`.
+    engine.shutdown_blocking(0);
+
+    // Drain MUST report AlreadyStopped.
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::AlreadyStopped
+    );
+
+    // And a SECOND drain MUST also report AlreadyStopped — i.e. the
+    // first drain did not install a fresh pair as a side-effect.
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::AlreadyStopped
+    );
+
+    // `shutdown_guard()` returns `None` — engine is dead. (No way
+    // to spawn new sessions / handler hooks against it.)
+    assert!(engine.shutdown_guard().is_none());
+}
+
 /// Drain installs a FRESH `ShutdownPair` on every call, so calling
 /// `drain_for_sleep` repeatedly is safe — the second call drains
 /// the fresh pair (empty) and returns `Drained` quickly. Pins the

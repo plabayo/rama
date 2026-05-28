@@ -1751,17 +1751,30 @@ where
         // hold contended state across an unbounded operation.
         let fresh = build_shutdown_pair(&self.rt);
 
-        // Atomic swap. A racing `shutdown_guard()` sees either the
-        // OLD or the NEW pair — either is valid:
-        //   • OLD: returns a guard from the about-to-be-signalled
-        //     Shutdown. The new flow observes cancellation on its
-        //     first poll and bails harmlessly.
-        //   • NEW: returns a guard from the fresh Shutdown. Normal
-        //     post-drain flow.
-        let old = (*self.shutdown.lock()).replace(fresh);
-
-        let Some(old_pair) = old else {
-            return DrainOutcome::AlreadyStopped;
+        // Atomic swap, GUARDED against terminal-stop. If the slot
+        // is `None` the engine is permanently stopped (Drop or a
+        // racing `shutdown_blocking()` already took the pair) — we
+        // MUST NOT install `fresh`, otherwise subsequent
+        // `shutdown_guard()` calls would return guards from a fresh
+        // pair and the engine would appear alive again post-stop.
+        // Bail BEFORE the replace; `fresh` then drops here and its
+        // spawned signal-future task is GC'd cooperatively (it sees
+        // its `oneshot::Receiver`'s `Sender` half drop, exits).
+        //
+        // A racing `shutdown_guard()` reaching the lock between
+        // here and the trigger fire sees either OLD or NEW — both
+        // are valid (OLD: about-to-cancel, harmless; NEW: clean
+        // post-drain registration).
+        let old_pair = {
+            let mut slot = self.shutdown.lock();
+            if slot.is_none() {
+                return DrainOutcome::AlreadyStopped;
+            }
+            #[expect(
+                clippy::expect_used,
+                reason = "the is_none guard above proves slot is Some"
+            )]
+            slot.replace(fresh).expect("slot was Some by the guard above")
         };
 
         // Fire the OLD trigger so the OLD Shutdown's inner future

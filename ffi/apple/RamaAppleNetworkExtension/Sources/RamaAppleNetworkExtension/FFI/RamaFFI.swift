@@ -585,7 +585,22 @@ final class RamaTransparentProxyEngineHandle {
         defer { lock.unlock() }
         guard let p = enginePtr else { return .alreadyStopped }
         let raw = rama_transparent_proxy_engine_drain_for_sleep(p, maxWaitMs)
-        return RamaDrainOutcome(rawValue: raw) ?? .alreadyStopped
+        if let outcome = RamaDrainOutcome(rawValue: raw) {
+            return outcome
+        }
+        // Unknown discriminant — ABI skew between the Swift wrapper
+        // and the Rust FFI surface. Log loudly so the mismatch
+        // surfaces, then fall back to `.alreadyStopped` (the most
+        // conservative arm: caller treats us as no-op, doesn't keep
+        // waiting). The alternative silent fallback would hide a
+        // protocol bug as a quiet "is this thing even drained?"
+        // mystery.
+        Self.log(
+            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
+            message:
+                "drainForSleep: unknown RamaDrainOutcome discriminant \(raw); ABI skew between FFI shim and Swift wrapper — coercing to .alreadyStopped"
+        )
+        return .alreadyStopped
     }
 
     /// Forward a provider message into Rust and return the reply (or `nil` for
