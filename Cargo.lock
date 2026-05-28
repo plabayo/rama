@@ -4056,6 +4056,7 @@ name = "rama-ws"
 version = "0.3.0-rc1"
 dependencies = [
  "flate2",
+ "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-http",

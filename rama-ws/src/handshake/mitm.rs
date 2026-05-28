@@ -309,7 +309,8 @@ mod tests {
     //!   * shared `clone()` of one side  → cross-direction probe assertion
     //!   * per-direction `clone()`       → live-socket containment assertion
 
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     use rama_core::{
         Service,
@@ -376,7 +377,7 @@ mod tests {
                 saw_leak_ingress: extensions.get_ref::<LeakProbeIngress>().is_some(),
                 saw_leak_egress: extensions.get_ref::<LeakProbeEgress>().is_some(),
             };
-            self.log.lock().unwrap().push(obs);
+            self.log.lock().push(obs);
             match direction {
                 WebSocketRelayDirection::Ingress => {
                     extensions.insert(LeakProbeIngress);
@@ -464,7 +465,7 @@ mod tests {
         drop(peer_egress_ws);
         let _ = relay.await.expect("relay task join");
 
-        let log = log.lock().unwrap();
+        let log = log.lock();
         assert_eq!(log.len(), 2, "exactly one middleware call per direction");
 
         let ingress = log
