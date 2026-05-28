@@ -175,10 +175,14 @@ parses leniently.  Use `Feed::from_body_strict` if you need structural errors
 to surface.
 
 > **Note on parsing scope.** The parser is intentionally lenient: unknown
-> elements are skipped and lenient mode never errors (a non-feed document
-> yields an empty feed). All supported extensions — iTunes, Podcasting 2.0,
-> Media RSS, Dublin Core, and `content:encoded` — round-trip losslessly through
-> parse → serialize, for both RSS 2.0 and Atom.
+> elements are skipped, while non-feed documents are rejected (no
+> `<rss>`/`<channel>`/`<feed>` root). All supported extensions — iTunes,
+> Podcasting 2.0, Media RSS, Dublin Core, and `content:encoded` — round-trip
+> losslessly through parse → serialize, for both RSS 2.0 and Atom. Element
+> matching is by resolved namespace URI rather than literal prefix, so any
+> prefix the feed binds to a recognised namespace works (e.g. a feed declaring
+> `xmlns:pod="https://podcastindex.org/namespace/1.0"` and emitting
+> `<pod:person>` is parsed identically to `<podcast:person>`).
 
 ## Examples
 

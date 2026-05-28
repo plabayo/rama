@@ -5,14 +5,14 @@
 //! strict parsing returns an error for any structural violation.
 
 use jiff::Timestamp;
-use quick_xml::{Reader, events::Event};
+use quick_xml::{NsReader, events::Event};
 use rama_core::telemetry::tracing;
 
 use super::atom::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson,
     AtomSource, AtomText,
 };
-use super::ext_parse::{FeedExtAcc, ItemExtAcc};
+use super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::feed::Feed;
 use super::rss2::{
     Rss2Category, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source,
@@ -86,9 +86,11 @@ pub(super) fn parse_feed(input: &str, strict: bool) -> Result<Feed, FeedParseErr
 }
 
 fn detect_atom(s: &str) -> bool {
-    // Look for `<feed` with the Atom namespace within the first few KB.
+    // Either the Atom namespace URI is declared (any prefix), or a bare
+    // `<feed>` element is present. Looking for the URI alone catches prefixed
+    // roots like `<a:feed xmlns:a="http://www.w3.org/2005/Atom">`.
     let probe = probe_prefix(s, 2048);
-    probe.contains("<feed") && (probe.contains("w3.org/2005/Atom") || probe.contains("<feed>"))
+    probe.contains("w3.org/2005/Atom") || probe.contains("<feed>") || probe.contains("<feed ")
 }
 
 fn detect_rss(s: &str) -> bool {
@@ -114,7 +116,7 @@ fn probe_prefix(s: &str, max: usize) -> &str {
 // ---------------------------------------------------------------------------
 
 fn parse_rss2(input: &str, strict: bool) -> Result<(Rss2Feed, bool), FeedParseError> {
-    let mut reader = Reader::from_str(input);
+    let mut reader = NsReader::from_str(input);
     reader.config_mut().trim_text(true);
 
     let mut saw_root = false;
@@ -157,17 +159,19 @@ fn parse_rss2(input: &str, strict: bool) -> Result<(Rss2Feed, bool), FeedParseEr
     let mut text_buf = String::new();
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+        match reader.read_resolved_event() {
+            Ok((rr, Event::Start(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 text_buf.clear();
                 let consumed = if in_item {
-                    item_acc.on_start(&full_tag, &e)
+                    item_acc.on_start(ns, local, &e)
                 } else {
-                    feed_acc.on_start(&full_tag, &e)
+                    feed_acc.on_start(ns, local, &e)
                 };
-                if !consumed {
-                    match full_tag.as_str() {
+                if !consumed && ns == Ns::None {
+                    match local {
                         "rss" | "channel" => saw_root = true,
                         "item" => {
                             in_item = true;
@@ -194,119 +198,129 @@ fn parse_rss2(input: &str, strict: bool) -> Result<(Rss2Feed, bool), FeedParseEr
                     }
                 }
             }
-            Ok(Event::Empty(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+            Ok((rr, Event::Empty(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 let consumed = if in_item {
-                    item_acc.on_empty(&full_tag, &e)
+                    item_acc.on_empty(ns, local, &e)
                 } else {
-                    feed_acc.on_empty(&full_tag, &e)
+                    feed_acc.on_empty(ns, local, &e)
                 };
-                if !consumed && in_item && full_tag == "enclosure" {
+                if !consumed && ns == Ns::None && in_item && local == "enclosure" {
                     current_item.enclosure = Some(enclosure_from_attrs(&e));
                 }
             }
-            Ok(Event::Text(e)) => match e.unescape() {
+            Ok((_, Event::Text(e))) => match e.unescape() {
                 Ok(t) => text_buf.push_str(&t),
                 Err(err) => {
                     if strict {
                         return Err(FeedParseError::new(format!("invalid text content: {err}")));
                     }
-                    tracing::debug!("feed unescape error (lenient): {err}");
+                    tracing::debug!("rss2 unescape error (lenient): {err}");
                 }
             },
-            Ok(Event::CData(e)) => match std::str::from_utf8(e.as_ref()) {
+            Ok((_, Event::CData(e))) => match std::str::from_utf8(e.as_ref()) {
                 Ok(t) => text_buf.push_str(t),
                 Err(err) => {
                     if strict {
-                        return Err(FeedParseError::new(format!("invalid CDATA content: {err}")));
+                        return Err(FeedParseError::new(format!("invalid CDATA: {err}")));
                     }
-                    tracing::debug!("feed cdata utf8 error (lenient): {err}");
+                    tracing::debug!("rss2 CDATA utf8 error (lenient): {err}");
                 }
             },
-            Ok(Event::End(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+            Ok((rr, Event::End(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 let text = std::mem::take(&mut text_buf);
 
                 if in_item {
-                    let Some(text) = item_acc.on_end(&full_tag, text) else {
+                    let Some(text) = item_acc.on_end(ns, local, text) else {
                         continue;
                     };
-                    match full_tag.as_str() {
-                        "title" => current_item.title = Some(text),
-                        "link" => current_item.link = Some(text),
-                        "description" => current_item.description = Some(text),
-                        "author" => current_item.author = Some(text),
-                        "comments" => current_item.comments = Some(text),
-                        "pubDate" => current_item.pub_date = parse_rss2_date(&text),
-                        "guid" => {
-                            if let Some(guid) = &mut current_item.guid {
-                                guid.value = text;
+                    if ns == Ns::None {
+                        match local {
+                            "title" => current_item.title = Some(text),
+                            "link" => current_item.link = Some(text),
+                            "description" => current_item.description = Some(text),
+                            "author" => current_item.author = Some(text),
+                            "comments" => current_item.comments = Some(text),
+                            "pubDate" => current_item.pub_date = parse_rss2_date(&text),
+                            "guid" => {
+                                if let Some(guid) = &mut current_item.guid {
+                                    guid.value = text;
+                                }
                             }
+                            "category" => current_item.categories.push(Rss2Category {
+                                name: text,
+                                domain: pending_category_domain.take(),
+                            }),
+                            "source" => {
+                                current_item.source = Some(Rss2Source {
+                                    title: text,
+                                    url: pending_source_url.take().unwrap_or_default(),
+                                });
+                            }
+                            "item" => {
+                                current_item.extensions = std::mem::take(&mut item_acc).finish();
+                                items.push(std::mem::take(&mut current_item));
+                                in_item = false;
+                            }
+                            _ => {}
                         }
-                        "category" => current_item.categories.push(Rss2Category {
-                            name: text,
-                            domain: pending_category_domain.take(),
-                        }),
-                        "source" => {
-                            current_item.source = Some(Rss2Source {
-                                title: text,
-                                url: pending_source_url.take().unwrap_or_default(),
-                            });
-                        }
-                        "item" => {
-                            current_item.extensions = std::mem::take(&mut item_acc).finish();
-                            items.push(std::mem::take(&mut current_item));
-                            in_item = false;
-                        }
-                        _ => {}
                     }
                 } else if in_image_block {
-                    match full_tag.as_str() {
-                        "url" => image_url = text,
-                        "title" => image_title = text,
-                        "link" => image_link = text,
-                        "width" => image_width = text.parse().ok(),
-                        "height" => image_height = text.parse().ok(),
-                        "description" => image_description = Some(text),
-                        "image" => {
-                            in_image_block = false;
-                            image = Some(Rss2Image {
-                                url: std::mem::take(&mut image_url),
-                                title: std::mem::take(&mut image_title),
-                                link: std::mem::take(&mut image_link),
-                                width: image_width.take(),
-                                height: image_height.take(),
-                                description: image_description.take(),
-                            });
+                    if ns == Ns::None {
+                        match local {
+                            "url" => image_url = text,
+                            "title" => image_title = text,
+                            "link" => image_link = text,
+                            "width" => image_width = text.parse().ok(),
+                            "height" => image_height = text.parse().ok(),
+                            "description" => image_description = Some(text),
+                            "image" => {
+                                in_image_block = false;
+                                image = Some(Rss2Image {
+                                    url: std::mem::take(&mut image_url),
+                                    title: std::mem::take(&mut image_title),
+                                    link: std::mem::take(&mut image_link),
+                                    width: image_width.take(),
+                                    height: image_height.take(),
+                                    description: image_description.take(),
+                                });
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 } else {
-                    let Some(text) = feed_acc.on_end(&full_tag, text) else {
+                    let Some(text) = feed_acc.on_end(ns, local, text) else {
                         continue;
                     };
-                    match full_tag.as_str() {
-                        "title" => title = text,
-                        "link" => link = text,
-                        "description" => description = text,
-                        "language" => language = Some(text),
-                        "copyright" => copyright = Some(text),
-                        "managingEditor" => managing_editor = Some(text),
-                        "webMaster" => web_master = Some(text),
-                        "pubDate" => pub_date = parse_rss2_date(&text),
-                        "lastBuildDate" => last_build_date = parse_rss2_date(&text),
-                        "generator" => generator = Some(text),
-                        "ttl" => ttl = text.parse().ok(),
-                        "docs" => docs = Some(text),
-                        "category" => categories.push(Rss2Category {
-                            name: text,
-                            domain: pending_category_domain.take(),
-                        }),
-                        _ => {}
+                    if ns == Ns::None {
+                        match local {
+                            "title" => title = text,
+                            "link" => link = text,
+                            "description" => description = text,
+                            "language" => language = Some(text),
+                            "copyright" => copyright = Some(text),
+                            "managingEditor" => managing_editor = Some(text),
+                            "webMaster" => web_master = Some(text),
+                            "pubDate" => pub_date = parse_rss2_date(&text),
+                            "lastBuildDate" => last_build_date = parse_rss2_date(&text),
+                            "generator" => generator = Some(text),
+                            "ttl" => ttl = text.parse().ok(),
+                            "docs" => docs = Some(text),
+                            "category" => categories.push(Rss2Category {
+                                name: text,
+                                domain: pending_category_domain.take(),
+                            }),
+                            _ => {}
+                        }
                     }
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok((_, Event::Eof)) => break,
             Err(e) => {
                 if strict {
                     return Err(FeedParseError::new(format!("xml error: {e}")));
@@ -357,7 +371,7 @@ fn parse_rss2(input: &str, strict: bool) -> Result<(Rss2Feed, bool), FeedParseEr
 // ---------------------------------------------------------------------------
 
 fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseError> {
-    let mut reader = Reader::from_str(input);
+    let mut reader = NsReader::from_str(input);
     reader.config_mut().trim_text(true);
 
     let mut saw_root = false;
@@ -412,26 +426,32 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
     let mut current_content_type = String::from("text");
     let mut current_title_type = String::from("text");
     let mut current_summary_type = String::from("text");
+    let mut current_subtitle_type = String::from("text");
     let mut current_rights_type = String::from("text");
 
     let mut text_buf = String::new();
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+        match reader.read_resolved_event() {
+            Ok((rr, Event::Start(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 text_buf.clear();
 
                 let consumed = if in_entry {
-                    entry_acc.on_start(&full_tag, &e)
+                    entry_acc.on_start(ns, local, &e)
                 } else {
-                    feed_acc.on_start(&full_tag, &e)
+                    feed_acc.on_start(ns, local, &e)
                 };
                 if consumed {
                     continue;
                 }
 
-                match full_tag.as_str() {
+                if ns != Ns::Atom {
+                    continue;
+                }
+                match local {
                     "feed" => saw_root = true,
                     "entry" => {
                         in_entry = true;
@@ -473,13 +493,6 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                             updated: None,
                         };
                     }
-                    "generator" => {
-                        pending_generator = Some(AtomGenerator {
-                            value: String::new(),
-                            uri: attr_value(&e, b"uri"),
-                            version: attr_value(&e, b"version"),
-                        });
-                    }
                     "link" => {
                         let link = atom_link_from_attrs(&e);
                         if in_entry {
@@ -508,26 +521,42 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         current_content_type =
                             attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                     }
+                    "subtitle" => {
+                        current_subtitle_type =
+                            attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                    }
                     "rights" => {
                         current_rights_type =
                             attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                     }
+                    "generator" => {
+                        pending_generator = Some(AtomGenerator {
+                            value: String::new(),
+                            uri: attr_value(&e, b"uri"),
+                            version: attr_value(&e, b"version"),
+                        });
+                    }
                     _ => {}
                 }
             }
-            Ok(Event::Empty(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+            Ok((rr, Event::Empty(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
 
                 let consumed = if in_entry {
-                    entry_acc.on_empty(&full_tag, &e)
+                    entry_acc.on_empty(ns, local, &e)
                 } else {
-                    feed_acc.on_empty(&full_tag, &e)
+                    feed_acc.on_empty(ns, local, &e)
                 };
                 if consumed {
                     continue;
                 }
 
-                match full_tag.as_str() {
+                if ns != Ns::Atom {
+                    continue;
+                }
+                match local {
                     "link" => {
                         let link = atom_link_from_attrs(&e);
                         if in_entry {
@@ -557,30 +586,32 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                     _ => {}
                 }
             }
-            Ok(Event::Text(e)) => match e.unescape() {
+            Ok((_, Event::Text(e))) => match e.unescape() {
                 Ok(t) => text_buf.push_str(&t),
                 Err(err) => {
                     if strict {
                         return Err(FeedParseError::new(format!("invalid text content: {err}")));
                     }
-                    tracing::debug!("feed unescape error (lenient): {err}");
+                    tracing::debug!("atom unescape error (lenient): {err}");
                 }
             },
-            Ok(Event::CData(e)) => match std::str::from_utf8(e.as_ref()) {
+            Ok((_, Event::CData(e))) => match std::str::from_utf8(e.as_ref()) {
                 Ok(t) => text_buf.push_str(t),
                 Err(err) => {
                     if strict {
-                        return Err(FeedParseError::new(format!("invalid CDATA content: {err}")));
+                        return Err(FeedParseError::new(format!("invalid CDATA: {err}")));
                     }
-                    tracing::debug!("feed cdata utf8 error (lenient): {err}");
+                    tracing::debug!("atom CDATA utf8 error (lenient): {err}");
                 }
             },
-            Ok(Event::End(e)) => {
-                let full_tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+            Ok((rr, Event::End(e))) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 let text = std::mem::take(&mut text_buf);
 
-                if in_author {
-                    match full_tag.as_str() {
+                if in_author && ns == Ns::Atom {
+                    match local {
                         "name" => current_author.name = text,
                         "email" => current_author.email = Some(text),
                         "uri" => current_author.uri = Some(text),
@@ -591,8 +622,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         }
                         _ => {}
                     }
-                } else if in_feed_author {
-                    match full_tag.as_str() {
+                } else if in_feed_author && ns == Ns::Atom {
+                    match local {
                         "name" => current_author.name = text,
                         "email" => current_author.email = Some(text),
                         "uri" => current_author.uri = Some(text),
@@ -603,8 +634,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         }
                         _ => {}
                     }
-                } else if in_contributor {
-                    match full_tag.as_str() {
+                } else if in_contributor && ns == Ns::Atom {
+                    match local {
                         "name" => current_contributor.name = text,
                         "email" => current_contributor.email = Some(text),
                         "uri" => current_contributor.uri = Some(text),
@@ -617,8 +648,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         }
                         _ => {}
                     }
-                } else if in_feed_contributor {
-                    match full_tag.as_str() {
+                } else if in_feed_contributor && ns == Ns::Atom {
+                    match local {
                         "name" => current_contributor.name = text,
                         "email" => current_contributor.email = Some(text),
                         "uri" => current_contributor.uri = Some(text),
@@ -631,8 +662,8 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         }
                         _ => {}
                     }
-                } else if in_source {
-                    match full_tag.as_str() {
+                } else if in_source && ns == Ns::Atom {
+                    match local {
                         "id" => current_source.id = Some(text),
                         "title" => {
                             current_source.title = Some(make_atom_text(&current_title_type, text));
@@ -652,10 +683,13 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         _ => {}
                     }
                 } else if in_entry {
-                    let Some(text) = entry_acc.on_end(&full_tag, text) else {
+                    let Some(text) = entry_acc.on_end(ns, local, text) else {
                         continue;
                     };
-                    match full_tag.as_str() {
+                    if ns != Ns::Atom {
+                        continue;
+                    }
+                    match local {
                         "id" => current_entry_id = text,
                         "title" => {
                             current_entry_title = make_atom_text(&current_title_type, text);
@@ -664,16 +698,15 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                             current_entry_updated =
                                 parse_rfc3339_lax(&text).unwrap_or(Timestamp::UNIX_EPOCH);
                         }
-                        "published" => {
-                            current_entry_published = parse_rfc3339_lax(&text);
-                        }
+                        "published" => current_entry_published = parse_rfc3339_lax(&text),
                         "summary" => {
                             current_entry_summary =
                                 Some(make_atom_text(&current_summary_type, text));
                         }
                         "content" => {
+                            let at = make_atom_text(&current_content_type, text);
                             current_entry_content = Some(AtomContent {
-                                value: make_atom_text(&current_content_type, text),
+                                value: at,
                                 src: None,
                             });
                         }
@@ -694,7 +727,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                                 summary: current_entry_summary.take(),
                                 categories: std::mem::take(&mut current_entry_categories),
                                 contributors: std::mem::take(&mut current_entry_contributors),
-                                published: current_entry_published,
+                                published: current_entry_published.take(),
                                 rights: current_entry_rights.take(),
                                 source: current_entry_source.take(),
                                 extensions: std::mem::take(&mut entry_acc).finish(),
@@ -705,10 +738,13 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                         _ => {}
                     }
                 } else {
-                    let Some(text) = feed_acc.on_end(&full_tag, text) else {
+                    let Some(text) = feed_acc.on_end(ns, local, text) else {
                         continue;
                     };
-                    match full_tag.as_str() {
+                    if ns != Ns::Atom {
+                        continue;
+                    }
+                    match local {
                         "id" => feed_id = text,
                         "title" => {
                             feed_title = make_atom_text(&current_title_type, text);
@@ -718,8 +754,12 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                                 parse_rfc3339_lax(&text).unwrap_or(Timestamp::UNIX_EPOCH);
                             feed_updated_set = true;
                         }
-                        "subtitle" => feed_subtitle = Some(AtomText::text(text)),
-                        "rights" => feed_rights = Some(make_atom_text(&current_rights_type, text)),
+                        "subtitle" => {
+                            feed_subtitle = Some(make_atom_text(&current_subtitle_type, text));
+                        }
+                        "rights" => {
+                            feed_rights = Some(make_atom_text(&current_rights_type, text));
+                        }
                         "logo" => feed_logo = Some(text),
                         "icon" => feed_icon = Some(text),
                         "generator" => {
@@ -732,7 +772,7 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
                     }
                 }
             }
-            Ok(Event::Eof) => break,
+            Ok((_, Event::Eof)) => break,
             Err(e) => {
                 if strict {
                     return Err(FeedParseError::new(format!("xml error: {e}")));
@@ -777,25 +817,6 @@ fn parse_atom(input: &str, strict: bool) -> Result<(AtomFeed, bool), FeedParseEr
     ))
 }
 
-fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
-    AtomLink {
-        href: attr_value(e, b"href").unwrap_or_default(),
-        rel: attr_value(e, b"rel"),
-        type_: attr_value(e, b"type"),
-        hreflang: attr_value(e, b"hreflang"),
-        title: attr_value(e, b"title"),
-        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
-    }
-}
-
-fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
-    AtomCategory {
-        term: attr_value(e, b"term").unwrap_or_default(),
-        scheme: attr_value(e, b"scheme"),
-        label: attr_value(e, b"label"),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -829,6 +850,25 @@ fn enclosure_from_attrs(e: &Attrs<'_>) -> Rss2Enclosure {
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default(),
         type_: attr_value(e, b"type").unwrap_or_default(),
+    }
+}
+
+fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
+    AtomLink {
+        href: attr_value(e, b"href").unwrap_or_default(),
+        rel: attr_value(e, b"rel"),
+        type_: attr_value(e, b"type"),
+        hreflang: attr_value(e, b"hreflang"),
+        title: attr_value(e, b"title"),
+        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
+    }
+}
+
+fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
+    AtomCategory {
+        term: attr_value(e, b"term").unwrap_or_default(),
+        scheme: attr_value(e, b"scheme"),
+        label: attr_value(e, b"label"),
     }
 }
 
@@ -1410,5 +1450,57 @@ mod tests {
             false,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rss2_recognises_arbitrary_extension_prefix() {
+        // Bind the Podcasting 2.0 namespace to a non-standard prefix and verify
+        // the parser resolves by namespace URI rather than literal prefix.
+        let xml = r#"<?xml version="1.0"?>
+<rss version="2.0" xmlns:pod="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>T</title><link>https://e.com</link><description>D</description>
+    <item>
+      <title>E</title>
+      <pod:person role="host">Jane</pod:person>
+    </item>
+  </channel>
+</rss>"#;
+        let Feed::Rss2(feed) = parse_feed(xml, false).unwrap() else {
+            panic!("expected RSS 2.0")
+        };
+        let podcast = feed.items[0]
+            .podcast()
+            .expect("podcast extension parsed via non-standard prefix");
+        assert_eq!(podcast.persons.len(), 1);
+        assert_eq!(podcast.persons[0].name, "Jane");
+        assert_eq!(podcast.persons[0].role.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn atom_parses_with_prefixed_root() {
+        // Atom feed with a non-default prefix for the Atom namespace itself.
+        let xml = r#"<?xml version="1.0"?>
+<a:feed xmlns:a="http://www.w3.org/2005/Atom">
+  <a:id>urn:f</a:id>
+  <a:title>T</a:title>
+  <a:updated>2024-01-01T00:00:00Z</a:updated>
+  <a:entry>
+    <a:id>urn:1</a:id>
+    <a:title>E</a:title>
+    <a:updated>2024-01-01T00:00:00Z</a:updated>
+    <a:summary>hi</a:summary>
+  </a:entry>
+</a:feed>"#;
+        let Feed::Atom(feed) = parse_feed(xml, false).unwrap() else {
+            panic!("expected Atom")
+        };
+        assert_eq!(feed.id, "urn:f");
+        assert_eq!(feed.entries.len(), 1);
+        assert_eq!(feed.entries[0].id, "urn:1");
+        match &feed.entries[0].summary {
+            Some(AtomText::Text(s)) => assert_eq!(s, "hi"),
+            other => panic!("unexpected summary: {other:?}"),
+        }
     }
 }
