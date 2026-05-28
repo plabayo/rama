@@ -427,9 +427,9 @@ dependencies = [
 
 [[package]]
 name = "brotli"
-version = "8.0.2"
+version = "8.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bd8b9603c7aa97359dbd97ecf258968c95f3adddd6db2f7e7a5bef101c84560"
+checksum = "8119e4516436f5708bbc474a9d395bf12f1b5395e93a92a56e647ac3388c8610"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -438,9 +438,9 @@ dependencies = [
 
 [[package]]
 name = "brotli-decompressor"
-version = "5.0.0"
+version = "5.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "874bb8112abecc98cbd6d81ea4fa7e94fb9449648c93cc89aa40c81c24d7de03"
+checksum = "5962523e1b92ce1b5e793d9169b9943eece10d39f62550bc04bb605d75b94924"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -3243,9 +3243,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "psl"
-version = "2.1.210"
+version = "2.1.211"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27fbd4d9b2eb0b6e0cbd654bce70243f460cbc8dc92df6747e3fb911ce1cd4a8"
+checksum = "fa14bac28d3b158b9651f643b2c6ad02da1624df7f06f0380d6f22358a4979c0"
 dependencies = [
  "psl-types",
 ]
@@ -3557,7 +3557,6 @@ dependencies = [
  "arc-swap",
  "base64",
  "flate2",
- "parking_lot",
  "pin-project-lite",
  "prost",
  "prost-types",
@@ -3934,12 +3933,10 @@ dependencies = [
 name = "rama-tls-boring"
 version = "0.3.0-rc1"
 dependencies = [
- "ahash",
  "brotli",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
  "flate2",
- "flume",
  "itertools 0.14.0",
  "moka",
  "parking_lot",
