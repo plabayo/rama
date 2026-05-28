@@ -1703,6 +1703,7 @@ impl<H> Drop for TransparentProxyEngine<H> {
 }
 
 impl<H> TransparentProxyEngine<H> {
+    #[expect(clippy::needless_pass_by_ref_mut, reason = "contract")]
     fn shutdown_blocking(&mut self, reason: i32) {
         let Some(pair) = self.shutdown.lock().take() else {
             return;
@@ -1722,7 +1723,7 @@ where
 {
     /// Recoverable drain for system sleep.
     ///
-    /// Swap the engine-wide [`ShutdownPair`] for a fresh one, fire
+    /// Swap the engine-wide life cycle (shutdown) state, fire
     /// the old one's trigger, and block on the old [`Shutdown`]'s
     /// drain with a deadline. Returns:
     /// - [`DrainOutcome::Drained`] — every pre-drain [`ShutdownGuard`]
@@ -1757,7 +1758,7 @@ where
         //     first poll and bails harmlessly.
         //   • NEW: returns a guard from the fresh Shutdown. Normal
         //     post-drain flow.
-        let old = std::mem::replace(&mut *self.shutdown.lock(), Some(fresh));
+        let old = (*self.shutdown.lock()).replace(fresh);
 
         let Some(old_pair) = old else {
             return DrainOutcome::AlreadyStopped;
