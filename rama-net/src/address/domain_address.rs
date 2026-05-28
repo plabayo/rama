@@ -161,8 +161,7 @@ impl serde::Serialize for DomainAddress {
     where
         S: serde::Serializer,
     {
-        let address = self.to_string();
-        address.serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 
