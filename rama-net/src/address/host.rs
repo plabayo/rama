@@ -872,8 +872,7 @@ impl serde::Serialize for Host {
     where
         S: serde::Serializer,
     {
-        let host = self.to_string();
-        host.serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 

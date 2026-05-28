@@ -609,8 +609,7 @@ impl serde::Serialize for HostWithOptPort {
     where
         S: serde::Serializer,
     {
-        let address = self.to_string();
-        address.serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 
