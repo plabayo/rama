@@ -274,7 +274,20 @@ final class TransparentProxyCore: @unchecked Sendable {
         timer.setEventHandler { [weak self] in
             guard let self else { return }
             let toKick = self.collectMaintenanceKicksLocked()
-            self.fireWatchdogKicks(toKick)
+            guard !toKick.isEmpty else { return }
+            // Hop off `stateQueue` before firing teardowns. Today
+            // every production ctx has its own `flowQueue` so the
+            // teardown body runs there (no recursive sync). But if a
+            // future code path ever inserts a ctx without one,
+            // `runFlowTeardown` runs the body inline → the body's
+            // `core?.removeTcpFlow(flowId)` `stateQueue.sync`s back
+            // → deadlock. Hopping off here costs one async per tick
+            // (per-flow watchdog) and makes the production path
+            // robust to that regression. The test hook does the
+            // same; this brings prod into line.
+            DispatchQueue.global(qos: .utility).async {
+                self.fireWatchdogKicks(toKick)
+            }
         }
         timer.resume()
         flowCountReportingTimer = timer
@@ -338,7 +351,19 @@ final class TransparentProxyCore: @unchecked Sendable {
             "watchdog: force-tearing down \(toKick.count) stale pre-ready flow(s)"
         )
         for ctx in toKick {
-            runFlowTeardown(ctx) { ctx.teardown?.applyConnectTimeout() }
+            // Re-check `egressReady` ON `flowQueue`. The decision to
+            // kick was made on `stateQueue` from a `nonisolated`
+            // read of `ctx.egressReady`; between that and us getting
+            // here the flow may have raced into `.ready` (the
+            // legitimate happy path catching up just in time). The
+            // teardown's `applyConnectTimeout` has no internal
+            // ready-check — it'd cancel a healthy NWConnection and
+            // pop the registry. Mirror what `handleSystemWake`
+            // already does for the same race.
+            runFlowTeardown(ctx) {
+                guard !ctx.egressReady else { return }
+                ctx.teardown?.applyConnectTimeout()
+            }
         }
     }
 
@@ -391,7 +416,16 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync { self.tcpContexts.removeValue(forKey: flowId) }
+        stateQueue.sync {
+            self.tcpContexts.removeValue(forKey: flowId)
+            // Belt-and-suspenders against `ObjectIdentifier` reuse:
+            // if a torn-down flow's pointer is recycled for a new ctx
+            // within one maintenance tick, the new ctx would inherit
+            // the old's "stuck" status and be kicked on its very
+            // first observation. Removing here keeps the watchdog's
+            // tracking set in lockstep with the registry.
+            self.stuckPreReadyFlowIds.remove(flowId)
+        }
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {

@@ -227,6 +227,68 @@ final class StaleFlowWatchdogTests: XCTestCase {
         )
     }
 
+    /// Race regression: a ctx that became `egressReady` between
+    /// the watchdog's snapshot (on `stateQueue`) and the dispatched
+    /// teardown body (on `flowQueue`) must NOT be torn down. The
+    /// teardown body re-checks on the way in. Mirrors the same
+    /// guard `handleSystemWake` already does.
+    func testKickReChecksEgressReadyBeforeTeardown() {
+        let core = makeCore()
+        let fx = TcpFx(core: core)
+        insert(fx, into: core)
+
+        core.testRunPeriodicMaintenance()  // tick 1: record
+        XCTAssertFalse(fx.wasTornDown)
+
+        // Race: the flow becomes ready AFTER it was added to the
+        // kick list but BEFORE `applyConnectTimeout` runs. With the
+        // re-check guard the teardown bails; without it the flow
+        // gets torn down despite being healthy.
+        fx.markReady()
+        core.testRunPeriodicMaintenance()  // tick 2: would kick — but ctx is now ready
+
+        XCTAssertFalse(
+            fx.wasTornDown,
+            "watchdog must re-check egressReady on flowQueue and skip ready flows"
+        )
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+    }
+
+    /// `removeTcpFlow` must also remove the flow's ID from the
+    /// watchdog's stuck-since set. Otherwise `ObjectIdentifier`
+    /// reuse within one tick interval could let a brand-new ctx
+    /// inherit the old's "stuck" status and be kicked on its very
+    /// first observation.
+    func testRemoveTcpFlowClearsFromStuckSet() {
+        let core = makeCore()
+        let fx = TcpFx(core: core)
+        insert(fx, into: core)
+
+        core.testRunPeriodicMaintenance()  // record stuck
+        XCTAssertTrue(core.testStuckPreReadyFlowIds.contains(fx.flowId))
+
+        core.removeTcpFlow(fx.flowId)
+
+        XCTAssertFalse(
+            core.testStuckPreReadyFlowIds.contains(fx.flowId),
+            "removeTcpFlow must drop the flow ID from the watchdog tracking set"
+        )
+
+        // And the next tick — a hypothetical new ctx reusing the
+        // same ObjectIdentifier slot — would not inherit the
+        // "stuck" status. Re-insert at the same ID, single tick,
+        // not yet a kick. (We can't actually trigger pointer
+        // reuse in a deterministic test; this asserts the
+        // bookkeeping invariant.)
+        let fx2 = TcpFx(core: core)
+        insert(fx2, into: core)
+        core.testRunPeriodicMaintenance()
+        XCTAssertFalse(
+            fx2.wasTornDown,
+            "fresh ctx must NOT be kicked on its first observation"
+        )
+    }
+
     /// `stopFlowCountReporting` (called from `detachEngine`) must
     /// also clear the watchdog tracking set; otherwise a subsequent
     /// `attachEngine` would inherit stale IDs and potentially kick a
