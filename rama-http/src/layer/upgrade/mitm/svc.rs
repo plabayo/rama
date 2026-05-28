@@ -121,14 +121,40 @@ where
                 // identically; without it an h1 WS relay builds its sockets
                 // WITHOUT deflate and resets the first compressed frame.
                 //
-                // NOTE: this is grafted per call site rather than inside
-                // `handle_upgrade` ON PURPOSE — `res.extensions()` carries the
-                // connection's own `Egress`/`Ingress(self.io.extensions())`
-                // self-wrapper, so extending it onto the upgraded io (which IS
-                // that connection's io) would create a self-referential
-                // `Extensions` cycle → stack overflow on traversal. Here we
-                // graft only what the relay needs, onto a distinct upgraded
-                // stream, which is safe.
+                // On h2 this graft is technically redundant — the upgraded
+                // io's extension store and `res.extensions()` share the same
+                // top-level `Arc`, so `extend` duplicates the top-level
+                // entries into the same `AppendOnlyVec`. `get_ref` walks
+                // newest-first and returns the (identical) duplicate, so it's
+                // correctness-neutral; the cost is one extra entry per
+                // top-level item per WS upgrade. Filtering to the specific
+                // entries the relay reads would couple this layer to
+                // rama-ws-side types (e.g. `RelayWebSocketConfig`), which
+                // we'd rather not — the over-graft is bounded and benign.
+                //
+                // NOTE: grafted per call site rather than inside
+                // `handle_upgrade` ON PURPOSE, and it grafts the ENTIRE
+                // top-level of `res.extensions()` (not a curated subset).
+                // This is safe because `extend` copies only the TOP-LEVEL
+                // entries of the source (it does NOT walk the parent chain),
+                // and a client-received response's top level is a `fork()` of
+                // the request (h1: `conn.rs` client branch; h2: the stream
+                // equivalent) — so it does NOT carry the connection's own
+                // `Ingress`/`Egress(self.io.extensions())` self-wrapper. That
+                // wrapper, when present, lives in the parent chain, which
+                // `extend` skips. So grafting the response top level onto the
+                // egress upgraded stream cannot introduce a back-pointer to
+                // that stream's own store.
+                //
+                // Centralizing this inside `handle_upgrade` is NOT safe: it
+                // would also run on the server-acceptor path, where the
+                // request's TOP level *does* carry
+                // `Ingress(self.io.extensions())` (`conn.rs:221`) and
+                // `Upgraded::new` shares that same io extension `Arc`. The
+                // graft would then make the io's store contain a wrapper
+                // pointing back at itself — a self-referential `Extensions`
+                // cycle → stack overflow on `get_ref` traversal (confirmed
+                // empirically: centralizing SIGABRTs the WS suite).
                 let egress_msg_ext = res.extensions().clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 

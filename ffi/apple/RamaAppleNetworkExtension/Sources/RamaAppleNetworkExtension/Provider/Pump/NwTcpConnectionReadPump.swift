@@ -100,6 +100,7 @@ final class NwTcpConnectionReadPump {
             guard let session = self.session else {
                 self.pendingData = nil
                 self.phase = .closed
+                self.scheduleEgressReleaseLocked()
                 return
             }
             switch session.onEgressBytes(pending) {
@@ -110,8 +111,12 @@ final class NwTcpConnectionReadPump {
                 self.phase = .paused
                 return
             case .closed:
+                // Rust dropped the egress consumer; no demand will follow.
+                // Stop reading AND arm the bounded release so the
+                // NWConnection can't linger if the clean path never cancels.
                 self.pendingData = nil
                 self.phase = .closed
+                self.scheduleEgressReleaseLocked()
                 return
             }
         }
@@ -155,8 +160,10 @@ final class NwTcpConnectionReadPump {
                         // flight — drop the bytes and stop. Re-issuing
                         // another `connection.receive` here would keep the
                         // NWConnection's read side draining bytes that have
-                        // nowhere to go.
+                        // nowhere to go. Arm the bounded release so the
+                        // connection can't linger.
                         self.phase = .closed
+                        self.scheduleEgressReleaseLocked()
                         return
                     }
                     switch session.onEgressBytes(data) {
@@ -176,48 +183,54 @@ final class NwTcpConnectionReadPump {
                         self.phase = .paused
                         return
                     case .closed:
-                        // No demand will follow; tear the pump down now.
+                        // Rust dropped the egress consumer; no demand will
+                        // follow. Stop reading AND arm the bounded release so
+                        // the NWConnection can't linger if the clean teardown
+                        // path never reaches the cancel. Symmetric with the
+                        // EOF/error path and with `TcpClientReadPump`'s
+                        // `.closed` → `terminate(...)`.
                         self.phase = .closed
+                        self.scheduleEgressReleaseLocked()
                         return
                     }
                 }
                 if isComplete || error != nil {
                     self.phase = .closed
                     self.session?.onEgressEof()
-                    // The clean teardown path runs `on_egress_eof` →
-                    // bridge exits → `on_server_closed` → Swift
-                    // cancels the connection. That path depends on
-                    // the originating app's write pump being able to
-                    // drain its queued response bytes. If the app
-                    // stopped reading (process exit, browser tab
-                    // closed) the drain never completes and the
-                    // clean path stalls. Schedule a fallback cancel
-                    // so the NWConnection registration is released
-                    // within a bounded window regardless of app
-                    // behavior. `cancel()` is idempotent — if the
-                    // clean path reaches it first, the work item is
-                    // invalidated by `cancel()` below or the call
-                    // becomes a no-op.
-                    //
-                    // Capture `connection` strongly: a promote teardown
-                    // (or any outer drop) can release the pump between
-                    // EOF observation and the grace deadline. With
-                    // `[weak self]` only, `self.connection.cancel()`
-                    // never fires and the NWConnection registration
-                    // leaks until the OS reaps it. Mirrors the write
-                    // pump's linger watchdog.
-                    let conn = self.connection
-                    let work = DispatchWorkItem { [weak self] in
-                        conn.cancelAndDetach()
-                        self?.eofWork = nil
-                    }
-                    self.eofWork = work
-                    self.queue.asyncAfter(deadline: .now() + self.eofGraceDeadline, execute: work)
+                    self.scheduleEgressReleaseLocked()
                     return
                 }
                 self.scheduleReadLocked()
             }
         }
+    }
+
+    /// Bounded fallback that force-cancels the egress NWConnection if the
+    /// clean teardown path (`on_egress_eof`/`on_server_closed` → Swift cancel)
+    /// doesn't reach it first.
+    ///
+    /// Armed whenever this pump stops reading for a terminal reason — peer
+    /// EOF/error, Rust returning `.closed` (the bridge dropped the egress
+    /// consumer), or the session vanishing mid-flight. Without it, a
+    /// `.closed`/session-gone path would silently stop reading while the
+    /// NWConnection (and its NECP registration) stays live until the OS reaps
+    /// it — the sibling asymmetry with `TcpClientReadPump`, which routes its
+    /// `.closed` through `terminate(...)`.
+    ///
+    /// The clean path is given `eofGraceDeadline` to win first; `cancel()` is
+    /// idempotent so a late watchdog is a no-op. `connection` is captured
+    /// strongly (not via `[weak self]`) so a promote teardown / outer drop
+    /// between arming and the deadline still releases the registration —
+    /// mirrors the write pump's linger watchdog.
+    private func scheduleEgressReleaseLocked() {
+        guard eofWork == nil else { return }
+        let conn = self.connection
+        let work = DispatchWorkItem { [weak self] in
+            conn.cancelAndDetach()
+            self?.eofWork = nil
+        }
+        eofWork = work
+        queue.asyncAfter(deadline: .now() + eofGraceDeadline, execute: work)
     }
 
     func cancel() {
