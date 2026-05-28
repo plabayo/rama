@@ -7,7 +7,7 @@ Fetch
 
 Living Standard — Last Updated 8 May 2026
 
-Participate: [GitHub whatwg/fetch](https://github.com/whatwg/fetch) ([new issue](https://github.com/whatwg/fetch/issues/new/choose), [open issues](https://github.com/whatwg/fetch/issues)): [Chat on Matrix](https://whatwg.org/chat) Commits: [GitHub whatwg/fetch/commits](https://github.com/whatwg/fetch/commits): [Snapshot as of this commit](/commit-snapshots/301650c6d9ee932f126d6598262966242eb3d838/): [@fetchstandard](https://twitter.com/fetchstandard) Tests: [web-platform-tests fetch/](https://github.com/web-platform-tests/wpt/tree/master/fetch) ([ongoing work](https://github.com/web-platform-tests/wpt/labels/fetch)) Translations (non-normative): [日本語](https://triple-underscore.github.io/Fetch-ja.html): [简体中文](https://htmlspecs.com/fetch/): [한국어](https://ko.htmlspecs.com/fetch/)
+Participate: [GitHub whatwg/fetch](https://github.com/whatwg/fetch) ([new issue](https://github.com/whatwg/fetch/issues/new/choose), [open issues](https://github.com/whatwg/fetch/issues)): [Chat on Matrix](https://whatwg.org/chat) Commits: [GitHub whatwg/fetch/commits](https://github.com/whatwg/fetch/commits): [Snapshot as of this commit](https://fetch.spec.whatwg.org/commit-snapshots/301650c6d9ee932f126d6598262966242eb3d838/): [@fetchstandard](https://twitter.com/fetchstandard) Tests: [web-platform-tests fetch/](https://github.com/web-platform-tests/wpt/tree/master/fetch) ([ongoing work](https://github.com/web-platform-tests/wpt/labels/fetch)) Translations (non-normative): [日本語](https://triple-underscore.github.io/Fetch-ja.html): [简体中文](https://htmlspecs.com/fetch/): [한국어](https://ko.htmlspecs.com/fetch/)
 
 Abstract
 --------
@@ -7202,7 +7202,7 @@ portions in the source code are licensed under the [BSD 3-Clause License](https:
 
 This is the Living Standard. Those
 interested in the patent-review version should view the
-[Living Standard Review Draft](/review-drafts/2025-12/).
+[Living Standard Review Draft](https://fetch.spec.whatwg.org/review-drafts/2025-12/).
 
 Index
 -----

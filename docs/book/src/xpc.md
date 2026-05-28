@@ -196,7 +196,7 @@ Network Extension style control-plane flows.
 
 Feature flag: `net-apple-xpc`. Only compiled on `target_vendor = "apple"`.
 
-Crate docs: <https://ramaproxy.org/docs/rama_net_apple_xpc/index.html>
+Crate docs: <https://docs.rs/rama-net-apple-xpc/latest/rama_net_apple_xpc/index.html>
 
 Apple XPC reference: <https://developer.apple.com/documentation/xpc>
 
