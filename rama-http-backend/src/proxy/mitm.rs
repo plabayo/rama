@@ -129,10 +129,11 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
-        let http_server = HttpServer::auto(exec.clone());
+        let mut http_server = HttpServer::auto(exec.clone());
+        http_server.h2_mut().set_enable_connect_protocol();
         // h2 SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 8441) is
-        // intentionally NOT advertised here. Enabling it
-        // unconditionally is incorrect for an invisible proxy:
+        // intentionally advertised here. This may cause issues as enabling
+        // it unconditionally is incorrect for an invisible proxy:
         // we'd tell every client we accept h2 Extended CONNECT
         // even when the upstream doesn't, and the client
         // (browser) would then attempt h2 WebSocket against an
@@ -141,6 +142,8 @@ impl HttpMitmRelay {
         // https://github.com/plabayo/rama/issues/932. Until that
         // lands, clients fall back to their h1 WebSocket path,
         // which is universally supported.
+        //
+        // Until than you might see 400s... this comment tells you why.
         Self {
             http_server,
             middleware: (
