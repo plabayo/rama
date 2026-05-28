@@ -204,28 +204,40 @@ final class TransparentProxyCore: @unchecked Sendable {
             userInfo: [NSLocalizedDescriptionKey: "engine detached; flow dropped"])
     }
 
-    // MARK: - Periodic flow-count telemetry
+    // MARK: - Periodic maintenance (flow-count telemetry + stale-flow watchdog)
 
-    /// Interval between live-flow-count reports. 60s is short enough
-    /// to surface accumulation regressions within minutes of onset
-    /// and long enough that the resulting log volume is negligible.
-    private static let flowCountReportingInterval: DispatchTimeInterval = .seconds(60)
+    /// Interval between maintenance ticks. 60s is short enough to surface
+    /// accumulation regressions and to bound how long a wedged flow can
+    /// sit in the registry, while long enough that the resulting log
+    /// volume is negligible.
+    private static let periodicMaintenanceInterval: DispatchTimeInterval = .seconds(60)
+
+    /// TCP flow IDs observed pre-`egressReady` on the previous
+    /// maintenance tick. On the NEXT tick, any flow still in this set
+    /// AND still pre-`egressReady` has been stuck for at least one
+    /// tick interval (≥ 60s) and is force-torn-down — the per-flow
+    /// connect-timeout timer fires on the flow's own dispatch queue,
+    /// so when that queue is starved (the post-wake / tokio-backlog
+    /// failure mode this watchdog exists for) the per-flow timer is
+    /// also queued behind backlog. The watchdog runs on `stateQueue`
+    /// which has its own thread, so it makes progress even when every
+    /// per-flow queue is in catch-up.
+    ///
+    /// Only mutated from `stateQueue` (the maintenance timer fires
+    /// there); no lock needed.
+    private var stuckPreReadyFlowIds: Set<ObjectIdentifier> = []
 
     private func startFlowCountReporting() {
         stopFlowCountReporting()
         let timer = DispatchSource.makeTimerSource(queue: stateQueue)
         timer.schedule(
-            deadline: .now() + Self.flowCountReportingInterval,
-            repeating: Self.flowCountReportingInterval
+            deadline: .now() + Self.periodicMaintenanceInterval,
+            repeating: Self.periodicMaintenanceInterval
         )
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            // `stateQueue.sync` not needed — the timer fires ON
-            // `stateQueue`, so direct access to the maps is already
-            // serialised correctly.
-            let tcp = self.tcpContexts.count
-            let udp = self.udpSessions.count
-            self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
+            let toKick = self.collectMaintenanceKicksLocked()
+            self.fireWatchdogKicks(toKick)
         }
         timer.resume()
         flowCountReportingTimer = timer
@@ -234,7 +246,82 @@ final class TransparentProxyCore: @unchecked Sendable {
     private func stopFlowCountReporting() {
         flowCountReportingTimer?.cancel()
         flowCountReportingTimer = nil
+        // Clear watchdog state so a future `attachEngine` doesn't
+        // inherit stale "stuck" IDs from the previous lifecycle.
+        stateQueue.sync { self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false) }
     }
+
+    /// One maintenance tick, on-`stateQueue` half: emit flow-count
+    /// telemetry, run the stale-pre-ready bookkeeping, and return the
+    /// list of contexts that crossed the "stuck for ≥ one tick"
+    /// threshold so the off-queue half can drive their teardowns.
+    ///
+    /// MUST be called on `stateQueue` — both the timer handler and
+    /// the test hook satisfy that.
+    private func collectMaintenanceKicksLocked() -> [TcpFlowContext] {
+        // `stateQueue.sync` is unnecessary inside — the timer fires ON
+        // `stateQueue`, so direct access to the maps is already
+        // serialised correctly.
+        let tcp = self.tcpContexts.count
+        let udp = self.udpSessions.count
+        self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
+
+        // Track the set of pre-`egressReady` IDs across ticks. An ID
+        // present in both the previous AND the current set has been
+        // stuck for ≥ one tick interval and gets force-torn-down via
+        // `applyConnectTimeout` — the same teardown the per-flow
+        // connect timer would fire, just driven from here so it
+        // survives the per-flow queue being starved.
+        var nowStuck: Set<ObjectIdentifier> = []
+        var toKick: [TcpFlowContext] = []
+        for (id, ctx) in tcpContexts where !ctx.egressReady {
+            nowStuck.insert(id)
+            if stuckPreReadyFlowIds.contains(id) {
+                toKick.append(ctx)
+            }
+        }
+        stuckPreReadyFlowIds = nowStuck
+        return toKick
+    }
+
+    /// One maintenance tick, off-`stateQueue` half: actually fire the
+    /// teardowns identified by [`collectMaintenanceKicksLocked`].
+    ///
+    /// Hopped off `stateQueue` deliberately. In production every ctx
+    /// has its own `flowQueue` so `runFlowTeardown` dispatches there
+    /// — but engine-less / test ctxs without a `flowQueue` run the
+    /// teardown body inline, and that body calls
+    /// `core?.removeTcpFlow(flowId)` which `stateQueue.sync`s back.
+    /// Holding `stateQueue` across the body would deadlock there. The
+    /// hop costs nothing in production and makes the watchdog robust
+    /// to engine-less call paths.
+    private func fireWatchdogKicks(_ toKick: [TcpFlowContext]) {
+        guard !toKick.isEmpty else { return }
+        logLifecycle(
+            "watchdog: force-tearing down \(toKick.count) stale pre-ready flow(s)"
+        )
+        for ctx in toKick {
+            runFlowTeardown(ctx) { ctx.teardown?.applyConnectTimeout() }
+        }
+    }
+
+    #if DEBUG
+        /// Test hook: run one maintenance tick synchronously. Lets
+        /// unit tests exercise the watchdog without waiting 60s for
+        /// the production timer. Same `#if DEBUG` gating as the other
+        /// `test*` surfaces above.
+        func testRunPeriodicMaintenance() {
+            let toKick = stateQueue.sync { self.collectMaintenanceKicksLocked() }
+            // Outside `stateQueue.sync` on purpose — see
+            // [`fireWatchdogKicks`] for the deadlock rationale.
+            fireWatchdogKicks(toKick)
+        }
+
+        /// Test hook: inspect the watchdog's "stuck since last tick" set.
+        var testStuckPreReadyFlowIds: Set<ObjectIdentifier> {
+            stateQueue.sync { self.stuckPreReadyFlowIds }
+        }
+    #endif
 
     // MARK: - App-message routing
 

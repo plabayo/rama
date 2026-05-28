@@ -56,24 +56,21 @@ final class LifecycleLogTests: XCTestCase {
     /// The error override is independent of the notice override —
     /// installing one does not redirect the other.
     func testErrorOverrideIsIndependentOfNoticeOverride() {
-        let lock = NSLock()
-        var notices: [String] = []
-        var errors: [String] = []
-        LifecycleLog.noticeOverride = { msg in
-            lock.lock(); notices.append(msg); lock.unlock()
-        }
-        LifecycleLog.errorOverride = { msg in
-            lock.lock(); errors.append(msg); lock.unlock()
-        }
+        // Use `CapturedMessages` (already thread-safe via its
+        // internal lock) so the `@Sendable` override closure isn't
+        // capturing a `var` from outer scope — that's an error
+        // under Swift-6 strict concurrency.
+        let notices = CapturedMessages()
+        let errors = CapturedMessages()
+        LifecycleLog.noticeOverride = { notices.append($0) }
+        LifecycleLog.errorOverride = { errors.append($0) }
 
         LifecycleLog.notice("a")
         LifecycleLog.error("b")
         LifecycleLog.notice("c")
 
-        lock.lock()
-        defer { lock.unlock() }
-        XCTAssertEqual(notices, ["a", "c"])
-        XCTAssertEqual(errors, ["b"])
+        XCTAssertEqual(notices.values, ["a", "c"])
+        XCTAssertEqual(errors.values, ["b"])
     }
 
     /// Without an override, the `os.Logger` path is used. The test
