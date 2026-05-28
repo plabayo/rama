@@ -146,14 +146,20 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     // MARK: - System sleep / wake
 
-    /// Budget the engine drain blocks the sleep handler for. Apple's
-    /// `sleepWithCompletionHandler:` grace is "seconds" — 5s is well
-    /// within that and gives the Rust runtime enough time to unwind a
-    /// stress-magnitude (~hundreds-of-flows) backlog cooperatively.
-    /// Tasks that don't yield by then are signalled and will bail on
-    /// next yield post-wake; they no longer block new-flow processing
-    /// because new flows register against the fresh shutdown the
-    /// drain installed.
+    /// Budget the engine drain blocks the sleep handler for.
+    ///
+    /// Apple's documented contract for
+    /// `sleepWithCompletionHandler:` is "call the completion when
+    /// you're done"; the framework does not publish a specific
+    /// grace window. **Treat 5s as an empirical, observable
+    /// ceiling, not a documented guarantee.** Empirically Apple
+    /// gives at least several seconds before forcing suspension,
+    /// and we want enough budget for the engine drain's
+    /// cancellation propagation + any `on_system_sleep` handler
+    /// hook to complete. If a future host hook needs longer (e.g.
+    /// flushing a large metrics batch on sleep), bump this — but
+    /// ideally bump cautiously and pair with telemetry that flags
+    /// when the actual drain duration approaches the budget.
     static let systemSleepEngineDrainBudgetMs: UInt32 = 5_000
 
     /// Drop every active flow on sleep, then block until the Rust

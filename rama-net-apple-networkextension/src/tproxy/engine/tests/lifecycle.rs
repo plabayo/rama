@@ -336,8 +336,20 @@ fn drain_for_sleep_with_no_sessions_returns_drained_quickly() {
     engine.stop(0);
 }
 
+/// With N live sessions, `drain_for_sleep` returns `Drained`
+/// quickly — but the load-bearing reason is the structural one
+/// noted on [`TransparentProxyEngine::drain_for_sleep`]: the only
+/// engine-level guards are the per-flow `parent_guard`s held by
+/// each per-flow Shutdown's signal-future, and those drop the
+/// instant the trigger fires. **This test asserts that the drain
+/// propagates the cancellation signal cleanly, NOT that every
+/// service / bridge task has finished its cleanup work.** Those
+/// run on per-flow `flow_guard`s the drain doesn't account for;
+/// they bail at their next yield via the per-flow Shutdown
+/// cascade. The fresh-pair swap is what ensures new post-drain
+/// flows don't compete with them.
 #[test]
-fn drain_for_sleep_with_live_sessions_drains_within_budget() {
+fn drain_for_sleep_with_live_sessions_propagates_cancellation_within_budget() {
     use rama_core::io::BridgeIo;
     use rama_core::service::service_fn;
     use rama_net::address::HostWithPort;

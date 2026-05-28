@@ -1723,28 +1723,58 @@ where
 {
     /// Recoverable drain for system sleep.
     ///
-    /// Swap the engine-wide life cycle (shutdown) state, fire
+    /// Swap the engine-wide [`ShutdownPair`] for a fresh one, fire
     /// the old one's trigger, and block on the old [`Shutdown`]'s
-    /// drain with a deadline. Returns:
-    /// - [`DrainOutcome::Drained`] — every pre-drain [`ShutdownGuard`]
-    ///   dropped before `max_wait`; runtime is quiet.
-    /// - [`DrainOutcome::Timeout`] — `max_wait` elapsed first; the
-    ///   OLD shutdown has been signalled, so the still-running tasks
-    ///   bail at their next yield. The engine continues to accept
-    ///   new flows on the FRESH pair installed at swap time.
+    /// drain with a deadline.
+    ///
+    /// ## What this drain DOES and DOES NOT wait for
+    ///
+    /// The drain awaits every [`ShutdownGuard`] of the OLD
+    /// [`Shutdown`] to drop. The only engine-level guards held
+    /// past the swap are the `parent_guard`s captured by each
+    /// per-flow `Shutdown::new` signal-future (`select! { _ =
+    /// parent_guard.cancelled() => …}`). The moment the trigger
+    /// fires those select arms resolve, the closures end, the
+    /// `parent_guard`s drop — within milliseconds.
+    ///
+    /// Per-flow service / bridge tasks hold *per-flow*
+    /// `flow_guard`s (of the per-flow [`Shutdown`]), NOT engine
+    /// guards. They are NOT on the drain's accounting. They DO
+    /// observe `flow_guard.cancelled()` via the per-flow [`Shutdown`]
+    /// cascade and exit cooperatively at their next yield — but
+    /// this is asynchronous to the drain's return.
+    ///
+    /// So `Drained` means "the cancellation signal has been
+    /// fully propagated through the engine guard tree and any
+    /// engine-spawned handler hooks (e.g. `on_system_sleep`) have
+    /// completed", NOT "every spawned task has finished cleaning
+    /// up". The load-bearing fix the drain provides for the
+    /// post-wake stall is the FRESH-pair swap: new flows arriving
+    /// after wake register against a clean tree, so they don't
+    /// queue behind any straggler tasks left over from before
+    /// sleep. Those stragglers unwind on their own time across
+    /// the suspension boundary.
+    ///
+    /// ## Outcomes
+    /// - [`DrainOutcome::Drained`] — every pre-drain engine-level
+    ///   [`ShutdownGuard`] dropped before `max_wait`. The handler
+    ///   hook (if any) completed.
+    /// - [`DrainOutcome::Timeout`] — `max_wait` elapsed first.
+    ///   The OLD shutdown has been signalled; still-running tasks
+    ///   observe cancellation at their next yield. The engine
+    ///   continues to accept new flows on the FRESH pair installed
+    ///   at swap time.
     /// - [`DrainOutcome::AlreadyStopped`] — engine was terminally
     ///   stopped via `shutdown_blocking` (e.g. extension stop fired
-    ///   in parallel); this is a no-op.
+    ///   in parallel); no fresh pair is installed; no-op.
+    ///
+    /// ## Use
     ///
     /// Designed to be invoked from Apple's
     /// `NEProvider.sleepWithCompletionHandler:` override. The Swift
     /// side drives every Swift-side per-flow teardown first; this
-    /// engine drain then waits for the in-Rust service / bridge
-    /// tasks (and the engine-wide handler-hook spawns) to exit
-    /// cooperatively via the [`Shutdown`] cascade — every per-flow
-    /// [`Shutdown`] observes `parent_guard.cancelled()` on the
-    /// engine guard chain, so a single trigger fire drains every
-    /// outstanding spawned task.
+    /// engine drain then propagates the cancellation through the
+    /// in-Rust tree before completion is signalled to Apple.
     pub fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
         // Build the FRESH pair OUTSIDE the lock — `Shutdown::new`
         // spawns onto the runtime; doing it under the mutex would
