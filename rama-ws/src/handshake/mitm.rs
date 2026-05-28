@@ -359,10 +359,7 @@ mod tests {
         type Output = WebSocketRelayOutput;
         type Error = BoxError;
 
-        async fn serve(
-            &self,
-            input: WebSocketRelayInput,
-        ) -> Result<Self::Output, Self::Error> {
+        async fn serve(&self, input: WebSocketRelayInput) -> Result<Self::Output, Self::Error> {
             let WebSocketRelayInput {
                 direction,
                 message,
@@ -421,9 +418,8 @@ mod tests {
         let middleware = RecordingMiddleware { log: log.clone() };
         let svc = WebSocketRelayService::new(middleware);
 
-        let relay = tokio::spawn(async move {
-            svc.serve(BridgeIo(relay_ingress, relay_egress)).await
-        });
+        let relay =
+            tokio::spawn(async move { svc.serve(BridgeIo(relay_ingress, relay_egress)).await });
 
         // Relay's ingress is `Role::Server`, so the peer plays `Role::Client`
         // (masked frames). Egress is the mirror.
@@ -481,7 +477,10 @@ mod tests {
             .expect("egress observation");
 
         // Per-direction parent visibility: fork() preserves walk-into-parent.
-        assert!(ingress.saw_ingress_marker, "ingress fork sees IngressMarker");
+        assert!(
+            ingress.saw_ingress_marker,
+            "ingress fork sees IngressMarker"
+        );
         assert!(egress.saw_egress_marker, "egress fork sees EgressMarker");
         assert!(
             !ingress.saw_egress_marker,
