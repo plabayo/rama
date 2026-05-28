@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
-    graceful::Shutdown,
     rt::Executor,
 };
 
@@ -287,14 +286,8 @@ where
             .create_async_runtime(opaque_config.as_deref())
             .context("TransparentProxyEngineBuilder: create async runtime")?;
 
-        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = {
-            let _enter = rt.enter();
-            Shutdown::new(async move {
-                _ = stop_rx.await;
-            })
-        };
-        let guard = shutdown.guard();
+        let pair = super::build_shutdown_pair(&rt);
+        let guard = pair.shutdown.guard();
         let ctx = TransparentProxyServiceContext {
             executor: Executor::graceful(guard),
             opaque_config,
@@ -331,8 +324,7 @@ where
             // in here so future `set_decision_deadline`-style
             // mutators (none today) would naturally reflect.
             app_message_deadline,
-            shutdown: Some(shutdown),
-            stop_trigger: Some(stop_tx),
+            shutdown: parking_lot::Mutex::new(Some(pair)),
         })
     }
 }

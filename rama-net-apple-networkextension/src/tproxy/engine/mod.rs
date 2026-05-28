@@ -243,8 +243,66 @@ pub struct TransparentProxyEngine<H> {
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
-    shutdown: Option<Shutdown>,
-    stop_trigger: Option<oneshot::Sender<()>>,
+    /// Engine-wide [`Shutdown`] + its `oneshot` trigger, held together
+    /// because [`drain_for_sleep`] needs to swap them as a unit (fire
+    /// the OLD pair, install a FRESH one so post-drain flows have a
+    /// clean graceful tree). `None` after `shutdown_blocking` has
+    /// taken them — the engine is terminally stopped.
+    ///
+    /// [`drain_for_sleep`]: TransparentProxyEngine::drain_for_sleep
+    shutdown: parking_lot::Mutex<Option<ShutdownPair>>,
+}
+
+/// Pair of an engine-wide [`Shutdown`] and the [`oneshot::Sender`]
+/// that fires its inner future.
+///
+/// Kept together because they must move atomically across the
+/// recoverable-drain path: firing the trigger resolves the inner
+/// future, which lets the [`Shutdown`] propagate cancellation to all
+/// outstanding [`ShutdownGuard`]s; once the trigger is `send()`-ed it
+/// is consumed, and a future caller would need a fresh `Shutdown` to
+/// fire again.
+struct ShutdownPair {
+    shutdown: Shutdown,
+    trigger: oneshot::Sender<()>,
+}
+
+/// Outcome of [`TransparentProxyEngine::drain_for_sleep`].
+///
+/// `#[repr(u32)]` so the value is stable for the FFI shim — Swift
+/// gates `handleSystemSleep`'s completion behaviour on which arm
+/// fired.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DrainOutcome {
+    /// All outstanding [`ShutdownGuard`]s observed cancellation and
+    /// dropped before the deadline. Engine is quiet.
+    Drained = 0,
+    /// Deadline elapsed before all guards dropped. The engine is
+    /// still functional — new flows post-drain register against a
+    /// fresh [`Shutdown`] — but some pre-drain tasks may still be
+    /// running. Apple sleeps the process anyway; on wake they
+    /// resume but with the OLD cancellation already signalled,
+    /// they'll bail at their next yield point.
+    Timeout = 1,
+    /// Engine was already terminally stopped (`shutdown_blocking`
+    /// had taken the pair). No-op.
+    AlreadyStopped = 2,
+}
+
+/// Build a fresh [`ShutdownPair`] bound to the engine's runtime.
+///
+/// Kept private to this module — every construction site needs the
+/// same `rt.enter()` ceremony so the [`Shutdown`]'s inner future is
+/// spawned on the engine's runtime, not whatever runtime the caller
+/// happens to be on.
+fn build_shutdown_pair(rt: &TransparentProxyAsyncRuntime) -> ShutdownPair {
+    let (trigger, rx) = oneshot::channel::<()>();
+    let _enter = rt.enter();
+    let shutdown = Shutdown::new(async move {
+        _ = rx.await;
+    });
+    ShutdownPair { shutdown, trigger }
 }
 
 impl<H> TransparentProxyEngine<H>
@@ -421,7 +479,10 @@ where
     }
 
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
-        self.shutdown.as_ref().map(Shutdown::guard)
+        self.shutdown
+            .lock()
+            .as_ref()
+            .map(|pair| pair.shutdown.guard())
     }
 }
 
@@ -1643,17 +1704,91 @@ impl<H> Drop for TransparentProxyEngine<H> {
 
 impl<H> TransparentProxyEngine<H> {
     fn shutdown_blocking(&mut self, reason: i32) {
-        let Some(shutdown) = self.shutdown.take() else {
+        let Some(pair) = self.shutdown.lock().take() else {
             return;
         };
 
         tracing::info!(reason, "transparent proxy engine stopping");
-        if let Some(stop_trigger) = self.stop_trigger.take() {
-            _ = stop_trigger.send(());
-        }
+        _ = pair.trigger.send(());
 
-        let time = block_on_async_task(&self.rt, shutdown.shutdown());
+        let time = block_on_async_task(&self.rt, pair.shutdown.shutdown());
         tracing::info!(?time, reason, "transparent proxy engine stopped");
+    }
+}
+
+impl<H> TransparentProxyEngine<H>
+where
+    H: TransparentProxyHandler,
+{
+    /// Recoverable drain for system sleep.
+    ///
+    /// Swap the engine-wide [`ShutdownPair`] for a fresh one, fire
+    /// the old one's trigger, and block on the old [`Shutdown`]'s
+    /// drain with a deadline. Returns:
+    /// - [`DrainOutcome::Drained`] — every pre-drain [`ShutdownGuard`]
+    ///   dropped before `max_wait`; runtime is quiet.
+    /// - [`DrainOutcome::Timeout`] — `max_wait` elapsed first; the
+    ///   OLD shutdown has been signalled, so the still-running tasks
+    ///   bail at their next yield. The engine continues to accept
+    ///   new flows on the FRESH pair installed at swap time.
+    /// - [`DrainOutcome::AlreadyStopped`] — engine was terminally
+    ///   stopped via `shutdown_blocking` (e.g. extension stop fired
+    ///   in parallel); this is a no-op.
+    ///
+    /// Designed to be invoked from Apple's
+    /// `NEProvider.sleepWithCompletionHandler:` override. The Swift
+    /// side drives every Swift-side per-flow teardown first; this
+    /// engine drain then waits for the in-Rust service / bridge
+    /// tasks (and the engine-wide handler-hook spawns) to exit
+    /// cooperatively via the [`Shutdown`] cascade — every per-flow
+    /// [`Shutdown`] observes `parent_guard.cancelled()` on the
+    /// engine guard chain, so a single trigger fire drains every
+    /// outstanding spawned task.
+    pub fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
+        // Build the FRESH pair OUTSIDE the lock — `Shutdown::new`
+        // spawns onto the runtime; doing it under the mutex would
+        // hold contended state across an unbounded operation.
+        let fresh = build_shutdown_pair(&self.rt);
+
+        // Atomic swap. A racing `shutdown_guard()` sees either the
+        // OLD or the NEW pair — either is valid:
+        //   • OLD: returns a guard from the about-to-be-signalled
+        //     Shutdown. The new flow observes cancellation on its
+        //     first poll and bails harmlessly.
+        //   • NEW: returns a guard from the fresh Shutdown. Normal
+        //     post-drain flow.
+        let old = std::mem::replace(&mut *self.shutdown.lock(), Some(fresh));
+
+        let Some(old_pair) = old else {
+            return DrainOutcome::AlreadyStopped;
+        };
+
+        // Fire the OLD trigger so the OLD Shutdown's inner future
+        // resolves and guards observe cancellation. Send() returns
+        // `Err` only if the rx half is gone (i.e. the Shutdown's
+        // inner future already completed somehow); harmless either
+        // way.
+        _ = old_pair.trigger.send(());
+
+        let started = std::time::Instant::now();
+        let timed_out = block_on_async_task(&self.rt, async move {
+            tokio::time::timeout(max_wait, old_pair.shutdown.shutdown())
+                .await
+                .is_err()
+        });
+        let elapsed = started.elapsed();
+
+        if timed_out {
+            tracing::warn!(
+                ?elapsed,
+                ?max_wait,
+                "drain_for_sleep timeout: some pre-drain tasks did not yield in time"
+            );
+            DrainOutcome::Timeout
+        } else {
+            tracing::info!(?elapsed, "drain_for_sleep complete");
+            DrainOutcome::Drained
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::tproxy::{
     SessionFlowAction, TcpDeliverStatus, TransparentProxyConfig, TransparentProxyFlowMeta,
@@ -7,7 +8,7 @@ use crate::tproxy::{
 use rama_core::bytes::Bytes;
 
 use super::{
-    TransparentProxyEngine, TransparentProxyHandler, TransparentProxyTcpSession,
+    DrainOutcome, TransparentProxyEngine, TransparentProxyHandler, TransparentProxyTcpSession,
     TransparentProxyUdpSession,
 };
 
@@ -31,6 +32,7 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn notify_system_sleep(&self);
     fn notify_system_wake(&self);
+    fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome;
     fn stop_box(self: Box<Self>, reason: i32);
     fn new_tcp_session(
         &self,
@@ -66,6 +68,10 @@ where
 
     fn notify_system_wake(&self) {
         self.notify_system_wake();
+    }
+
+    fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
+        self.drain_for_sleep(max_wait)
     }
 
     fn stop_box(self: Box<Self>, reason: i32) {
@@ -122,6 +128,16 @@ impl BoxedTransparentProxyEngine {
 
     pub fn notify_system_wake(&self) {
         self.0.notify_system_wake();
+    }
+
+    /// Recoverable system-sleep drain. Forwards to
+    /// [`TransparentProxyEngine::drain_for_sleep`]; see that doc for
+    /// semantics.
+    ///
+    /// [`TransparentProxyEngine::drain_for_sleep`]:
+    ///     super::TransparentProxyEngine::drain_for_sleep
+    pub fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
+        self.0.drain_for_sleep(max_wait)
     }
 
     pub fn stop(self, reason: i32) {

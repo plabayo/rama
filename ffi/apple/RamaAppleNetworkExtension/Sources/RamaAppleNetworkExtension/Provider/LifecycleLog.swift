@@ -5,13 +5,7 @@ import os.log
 ///
 /// Lifecycle events (`extension startProxy`, `engine created`,
 /// `system sleep:`, `system wake`, `extension stopProxy`, …) MUST be
-/// visible in `log show` for post-incident debugging. Today the
-/// Rust-side `tracing::info!` path is swallowed for our subsystem
-/// (`tracing-oslog` maps `INFO → OS_LOG_TYPE_DEFAULT` but the events
-/// don't surface in `log show`; reason still under investigation),
-/// while `tracing::debug!` routes through fine. Until the Rust path is
-/// fixed we emit lifecycle events directly through Apple's
-/// `os.Logger`, which has no such gap.
+/// visible in `log show` for post-incident debugging.
 ///
 /// `Logger.notice(_:)` maps to `OS_LOG_TYPE_DEFAULT`, which is always
 /// persistent and always returned by `log show` without flags. That's
@@ -24,11 +18,8 @@ import os.log
 /// so unit tests don't have to read back from `OSLogStore` (which
 /// would require elevated entitlements in the test harness).
 public enum LifecycleLog {
-    /// Subsystem the lifecycle logger writes to. Kept in sync with the
-    /// `tracing-oslog` subscriber initialised by `tproxy_rs` so a
-    /// single `log show --predicate 'subsystem == "..."'` covers both
-    /// paths.
-    public static let subsystem = "org.ramaproxy.example.tproxy"
+    /// Subsystem the lifecycle logger writes to.
+    public static let subsystem = "org.ramaproxy.ne.provider"
 
     /// Dedicated category so a focused query
     /// (`category == "lifecycle"`) surfaces exactly these events
