@@ -18,28 +18,58 @@ import os.log
 /// so unit tests don't have to read back from `OSLogStore` (which
 /// would require elevated entitlements in the test harness).
 public enum LifecycleLog {
-    /// Subsystem the lifecycle logger writes to. **Mutable** — host
-    /// extensions can override before any emission to route lifecycle
-    /// events into their own namespace.
-    ///
-    /// Default: `Bundle.main.bundleIdentifier`. Inside a system
-    /// extension `Bundle.main` is the extension's own bundle.
-    ///
-    /// `nonisolated(unsafe)` is fine: production reads at startup
-    /// (single-threaded), mutates at most once.
-    nonisolated(unsafe) public static var subsystem: String =
-        Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
-
     /// Dedicated category so a focused query
     /// (`category == "lifecycle"`) surfaces exactly these events
     /// without the noise of the rest of the subsystem.
     public static let category = "lifecycle"
 
+    /// Read / write the subsystem the lifecycle logger emits to.
+    /// Host extensions configure it before any emission to route
+    /// events into their own namespace; default is
+    /// `Bundle.main.bundleIdentifier` (the host's bundle id —
+    /// inside a system extension `Bundle.main` is the extension's
+    /// own bundle).
+    ///
+    /// Both the get and set go through a serial lock — there's no
+    /// process-wide guarantee that hosts mutate only at startup,
+    /// and concurrent unsynchronised `String` mutation is a data
+    /// race (Swift `String` has COW shared-Arc internals). The
+    /// lock is uncontended in practice (one read per emission,
+    /// vanishingly rare writes), so the cost is negligible vs the
+    /// formal correctness it buys. Apple's `os.Logger` internally
+    /// caches `os_log_t` on the `(subsystem, category)` tuple, so
+    /// `Logger(subsystem:category:)` per emit is essentially free
+    /// after the first call.
+    public static var subsystem: String {
+        get {
+            subsystemLock.lock()
+            defer { subsystemLock.unlock() }
+            return _subsystem
+        }
+        set {
+            subsystemLock.lock()
+            defer { subsystemLock.unlock() }
+            _subsystem = newValue
+        }
+    }
+
+    /// Backing storage for [`subsystem`]. Only touched through the
+    /// lock above; `nonisolated(unsafe)` is OK by construction.
+    nonisolated(unsafe) private static var _subsystem: String =
+        Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
+
+    /// Serializes reads and writes of [`subsystem`]. `os_unfair_lock`
+    /// would be lower-overhead but `NSLock` is enough here — the
+    /// critical section is "read a `String` value" / "store a
+    /// `String` value".
+    private static let subsystemLock = NSLock()
+
     /// Build a `Logger` for the current subsystem + category.
     ///
-    /// Apple's runtime caches the underlying `os_log_t` on the
-    /// `(subsystem, category)` tuple, so re-constructing the Logger
-    /// each call is essentially free after the first emission. This
+    /// Reads `subsystem` under the lock once, then constructs the
+    /// `Logger`. Apple's runtime caches the underlying `os_log_t`
+    /// on the `(subsystem, category)` tuple, so re-constructing
+    /// the Logger each call is cheap after the first emission. This
     /// lets a mid-run `subsystem =` reassignment take effect on the
     /// next emission without our maintaining a cache + invalidate.
     private static func logger() -> Logger {

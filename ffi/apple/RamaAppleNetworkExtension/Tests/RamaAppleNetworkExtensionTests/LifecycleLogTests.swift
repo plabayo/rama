@@ -60,6 +60,51 @@ final class LifecycleLogTests: XCTestCase {
         LifecycleLog.notice("hello-from-custom-subsystem")
     }
 
+    /// Concurrent reads and writes of `subsystem` must not race or
+    /// crash. The implementation gates both behind an `NSLock`;
+    /// this test hammers the read/write surface from many threads
+    /// at once. With the lock the test passes deterministically;
+    /// without it (an unsynchronized `nonisolated(unsafe) var`)
+    /// `String` COW mutation under contention would corrupt or
+    /// trip TSan.
+    func testSubsystemReadWriteIsRaceFree() {
+        let original = LifecycleLog.subsystem
+
+        let writeCount = 200
+        let readCount = 500
+        let exp = expectation(description: "concurrent access done")
+        exp.expectedFulfillmentCount = writeCount + readCount
+
+        let writeQueue = DispatchQueue(
+            label: "rama.test.subsystem.writes", attributes: .concurrent)
+        let readQueue = DispatchQueue(
+            label: "rama.test.subsystem.reads", attributes: .concurrent)
+
+        for i in 0..<writeCount {
+            writeQueue.async {
+                LifecycleLog.subsystem = "com.example.race.\(i)"
+                exp.fulfill()
+            }
+        }
+        for _ in 0..<readCount {
+            readQueue.async {
+                // Read AND emit (which itself reads the subsystem).
+                _ = LifecycleLog.subsystem
+                LifecycleLog.notice("concurrent-emit")
+                exp.fulfill()
+            }
+        }
+        wait(for: [exp], timeout: 5.0)
+
+        // After the dust settles, subsystem is some valid string —
+        // the test isn't about which value wins, only that no
+        // crash / data race occurred.
+        XCTAssertFalse(LifecycleLog.subsystem.isEmpty)
+
+        // Restore deterministically.
+        LifecycleLog.subsystem = original
+    }
+
     // MARK: - Direct `LifecycleLog` surface
 
     /// The override hook fires when set, and the `os.Logger` sink is
