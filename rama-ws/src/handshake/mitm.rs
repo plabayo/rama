@@ -463,7 +463,7 @@ mod tests {
         // error and returns.
         drop(peer_ingress_ws);
         drop(peer_egress_ws);
-        let _ = relay.await.expect("relay task join");
+        _ = relay.await.expect("relay task join");
 
         let log = log.lock();
         assert_eq!(log.len(), 2, "exactly one middleware call per direction");
