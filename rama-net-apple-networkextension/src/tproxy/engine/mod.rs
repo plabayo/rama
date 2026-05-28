@@ -1723,7 +1723,7 @@ where
 {
     /// Recoverable drain for system sleep.
     ///
-    /// Swap the engine-wide [`ShutdownPair`] for a fresh one, fire
+    /// Swap the engine-wide [`Shutdown`] state for a fresh one, fire
     /// the old one's trigger, and block on the old [`Shutdown`]'s
     /// drain with a deadline.
     ///
@@ -1804,7 +1804,8 @@ where
                 clippy::expect_used,
                 reason = "the is_none guard above proves slot is Some"
             )]
-            slot.replace(fresh).expect("slot was Some by the guard above")
+            slot.replace(fresh)
+                .expect("slot was Some by the guard above")
         };
 
         // Fire the OLD trigger so the OLD Shutdown's inner future
