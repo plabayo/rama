@@ -160,7 +160,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(systemSleepError()) }
         engine?.notifySystemSleep()
-        logInfo("system sleep: draining tcp=\(tcp.count) udp=\(udp.count) flows")
+        logLifecycle("system sleep: draining tcp=\(tcp.count) udp=\(udp.count) flows")
         completion()
     }
 
@@ -186,7 +186,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 ctx.teardown?.applySystemWake()
             }
         }
-        logInfo("system wake")
+        logLifecycle("system wake")
         if self.engine != nil {
             startFlowCountReporting()
         }
@@ -358,6 +358,25 @@ final class TransparentProxyCore: @unchecked Sendable {
             level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
             message: message
         )
+    }
+
+    /// Emit a lifecycle / critical event.
+    ///
+    /// Routed through `LifecycleLog` (Apple `os.Logger`, direct) AND
+    /// through the Rust tracing path. The direct route guarantees the
+    /// message is in `log show` regardless of the Rust subscriber's
+    /// current INFO-level mapping; the Rust route keeps the message in
+    /// the unified stderr / dial9 trace for the demo binary. See
+    /// `LifecycleLog` for the gap that motivates the dual path.
+    func logLifecycle(_ message: String) {
+        LifecycleLog.notice(message)
+        logInfo(message)
+    }
+
+    /// Lifecycle-error counterpart of [`logLifecycle`].
+    func logLifecycleError(_ message: String) {
+        LifecycleLog.error(message)
+        logError(message)
     }
 
     func logFlowMessage(_ message: FlowLogMessage) {

@@ -92,7 +92,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             core?.logDebug("handleNewFlow udp bypassed by rust flow policy")
             return false
         case .blocked:
-            core?.logInfo("handleNewFlow udp blocked by rust flow policy")
+            core?.logLifecycle("handleNewFlow udp blocked by rust flow policy")
             let error = blockedFlowError()
             flow.closeReadWithError(error)
             flow.closeWriteWithError(error)

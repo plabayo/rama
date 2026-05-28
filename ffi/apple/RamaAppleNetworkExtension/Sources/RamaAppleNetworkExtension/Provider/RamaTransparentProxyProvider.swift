@@ -658,18 +658,18 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             completionHandler(error)
             return
         }
-        core.logInfo("extension startProxy")
+        core.logLifecycle("extension startProxy")
 
         let engineConfigJson = Self.engineConfigJson(
             protocolConfiguration: self.protocolConfiguration as? NETunnelProviderProtocol,
             startOptions: options
         )
         if let engineConfigJson {
-            core.logInfo("engine config json bytes=\(engineConfigJson.count)")
+            core.logLifecycle("engine config json bytes=\(engineConfigJson.count)")
         }
         guard let engine = RamaTransparentProxyEngineHandle(engineConfigJson: engineConfigJson)
         else {
-            core.logError("engine creation error")
+            core.logLifecycleError("engine creation error")
             completionHandler(
                 NSError(
                     domain: "org.ramaproxy.example.tproxy.engine",
@@ -682,10 +682,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return
         }
         core.attachEngine(engine)
-        core.logInfo("engine created")
+        core.logLifecycle("engine created")
 
         guard let startup = engine.config() else {
-            core.logError("failed to get transparent proxy config from rust")
+            core.logLifecycleError("failed to get transparent proxy config from rust")
             // Apple does NOT call `stopProxy` to clean up after a failed
             // `startProxy`, so any state we attached above must be torn
             // down locally before we surface the error — otherwise the
@@ -717,7 +717,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         // drifted from what the comments described.
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        core.logInfo("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        core.logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
         let settings = Self.buildNetworkSettings(
             from: startup,
@@ -727,7 +727,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         setTunnelNetworkSettings(settings) { [core] error in
             if let error {
-                core.logError("setTunnelNetworkSettings error: \(error)")
+                core.logLifecycleError("setTunnelNetworkSettings error: \(error)")
                 // Same reason as the `engine.config()` failure path:
                 // Apple won't compensate via `stopProxy`, so we must
                 // tear down the engine + telemetry timer locally.
@@ -735,7 +735,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 completionHandler(error)
                 return
             }
-            core.logInfo("setTunnelNetworkSettings ok")
+            core.logLifecycle("setTunnelNetworkSettings ok")
             completionHandler(nil)
         }
     }
@@ -743,7 +743,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     public override func stopProxy(
         with reason: NEProviderStopReason, completionHandler: @escaping () -> Void
     ) {
-        core.logInfo("extension stopProxy reason=\(reason.rawValue)")
+        core.logLifecycle("extension stopProxy reason=\(reason.rawValue)")
         core.detachEngine(reason: Int32(reason.rawValue))
         completionHandler()
     }

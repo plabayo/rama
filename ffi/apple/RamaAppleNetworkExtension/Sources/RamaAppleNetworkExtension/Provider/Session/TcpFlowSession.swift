@@ -64,7 +64,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
         case .blocked:
-            core?.logInfo("handleNewFlow tcp blocked by rust flow policy")
+            core?.logLifecycle("handleNewFlow tcp blocked by rust flow policy")
             let error = blockedFlowError()
             flow.closeReadWithError(error)
             flow.closeWriteWithError(error)
