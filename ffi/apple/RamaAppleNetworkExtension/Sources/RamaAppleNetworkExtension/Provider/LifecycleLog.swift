@@ -18,17 +18,33 @@ import os.log
 /// so unit tests don't have to read back from `OSLogStore` (which
 /// would require elevated entitlements in the test harness).
 public enum LifecycleLog {
-    /// Subsystem the lifecycle logger writes to.
-    public static let subsystem = "org.ramaproxy.ne.provider"
+    /// Subsystem the lifecycle logger writes to. **Mutable** — host
+    /// extensions can override before any emission to route lifecycle
+    /// events into their own namespace.
+    ///
+    /// Default: `Bundle.main.bundleIdentifier`. Inside a system
+    /// extension `Bundle.main` is the extension's own bundle.
+    ///
+    /// `nonisolated(unsafe)` is fine: production reads at startup
+    /// (single-threaded), mutates at most once.
+    nonisolated(unsafe) public static var subsystem: String =
+        Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
 
     /// Dedicated category so a focused query
     /// (`category == "lifecycle"`) surfaces exactly these events
     /// without the noise of the rest of the subsystem.
     public static let category = "lifecycle"
 
-    /// Lazily-built `Logger`. `Logger` is a value type wrapping an
-    /// `os_log_t`; one instance per process is fine.
-    private static let logger = Logger(subsystem: subsystem, category: category)
+    /// Build a `Logger` for the current subsystem + category.
+    ///
+    /// Apple's runtime caches the underlying `os_log_t` on the
+    /// `(subsystem, category)` tuple, so re-constructing the Logger
+    /// each call is essentially free after the first emission. This
+    /// lets a mid-run `subsystem =` reassignment take effect on the
+    /// next emission without our maintaining a cache + invalidate.
+    private static func logger() -> Logger {
+        Logger(subsystem: subsystem, category: category)
+    }
 
     /// Test-only override for `notice`. When non-nil, called instead
     /// of the `os.Logger` sink. Marked `nonisolated(unsafe)` because
@@ -53,7 +69,7 @@ public enum LifecycleLog {
         // strings — they don't carry user data; suppressing them
         // turns post-incident `log show` output into `<private>`
         // placeholders, which defeats the purpose.
-        logger.notice("\(message, privacy: .public)")
+        logger().notice("\(message, privacy: .public)")
     }
 
     /// Emit a lifecycle event at `OS_LOG_TYPE_ERROR` for failures that
@@ -64,6 +80,6 @@ public enum LifecycleLog {
             override(message)
             return
         }
-        logger.error("\(message, privacy: .public)")
+        logger().error("\(message, privacy: .public)")
     }
 }

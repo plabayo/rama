@@ -24,12 +24,40 @@ final class LifecycleLogTests: XCTestCase {
     }
 
     override func tearDown() {
-        // Always clear the test overrides; otherwise a failed assertion
-        // mid-test would leak state into the next case in the run order
-        // and produce confusing cascading failures.
+        // Always clear the test overrides + restore the default
+        // subsystem; otherwise a failed assertion mid-test would
+        // leak state into the next case in the run order and
+        // produce confusing cascading failures.
         LifecycleLog.noticeOverride = nil
         LifecycleLog.errorOverride = nil
+        LifecycleLog.subsystem = Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
         super.tearDown()
+    }
+
+    // MARK: - Configurable subsystem
+
+    /// Default subsystem must be the host's bundle ID — the rama
+    /// library is a shell, the host (Aikido, our example, …) owns
+    /// the namespace.
+    func testDefaultSubsystemIsHostBundleId() {
+        // In the test binary, Bundle.main is the XCTest harness or
+        // the package's `xctest`. Either way it has a bundle ID
+        // distinct from the placeholder.
+        let expected = Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
+        XCTAssertEqual(LifecycleLog.subsystem, expected)
+    }
+
+    /// Host extensions can override the subsystem at startup. The
+    /// next emission uses the new value. We can't observe the
+    /// subsystem at the os_log layer without `OSLogStore`
+    /// entitlements, but we CAN pin that the property assignment
+    /// sticks — and the per-emit `Logger(subsystem:category:)`
+    /// path documented in `LifecycleLog` then carries it through.
+    func testSubsystemIsConfigurable() {
+        LifecycleLog.subsystem = "com.example.host.custom"
+        XCTAssertEqual(LifecycleLog.subsystem, "com.example.host.custom")
+        // Sanity: emitting with the custom subsystem doesn't crash.
+        LifecycleLog.notice("hello-from-custom-subsystem")
     }
 
     // MARK: - Direct `LifecycleLog` surface
