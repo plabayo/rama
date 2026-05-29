@@ -203,7 +203,7 @@ fn input() -> Input {
 }
 
 fn meta<T>(r: &Response<T>) -> String {
-    format!("{:?}", r.metadata())
+    stable_metadata(r.metadata())
 }
 
 fn data<T>(r: &Response<T>) -> &T {
@@ -215,5 +215,14 @@ async fn stream<T>(r: Response<Streaming<T>>) -> Vec<T> {
 }
 
 fn status(s: &Status) -> (String, Code) {
-    (format!("{:?}", s.metadata()), s.code())
+    (stable_metadata(s.metadata()), s.code())
+}
+
+// Format metadata without headers that vary per response (e.g. the
+// server-emitted `date` header has 1s resolution, so parallel responses
+// straddling a second boundary would otherwise compare unequal).
+fn stable_metadata(metadata: &rama::http::grpc::metadata::MetadataMap) -> String {
+    let mut metadata = metadata.clone();
+    metadata.remove("date");
+    format!("{metadata:?}")
 }
