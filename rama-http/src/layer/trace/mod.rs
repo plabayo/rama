@@ -384,49 +384,86 @@ pub type HttpMakeClassifier = SharedClassifier<ServerErrorsAsFailures>;
 pub type GrpcMakeClassifier = SharedClassifier<GrpcErrorsAsFailures>;
 
 macro_rules! event_dynamic_lvl {
-    ( $(target: $target:expr,)? $(parent: $parent:expr,)? $lvl:expr, $($tt:tt)* ) => {
+    ( target: $target:expr, parent: $parent:expr, $lvl:expr, $($tt:tt)* ) => {
         {
             use ::rama_core::telemetry::tracing;
             match $lvl {
                 tracing::Level::ERROR => {
-                    tracing::event!(
-                        $(target: $target,)?
-                        $(parent: $parent,)?
-                        tracing::Level::ERROR,
-                        $($tt)*
-                    );
+                    tracing::event!(target: $target, parent: $parent, tracing::Level::ERROR, $($tt)*);
                 }
                 tracing::Level::WARN => {
-                    tracing::event!(
-                        $(target: $target,)?
-                        $(parent: $parent,)?
-                        tracing::Level::WARN,
-                        $($tt)*
-                    );
+                    tracing::event!(target: $target, parent: $parent, tracing::Level::WARN, $($tt)*);
                 }
                 tracing::Level::INFO => {
-                    tracing::event!(
-                        $(target: $target,)?
-                        $(parent: $parent,)?
-                        tracing::Level::INFO,
-                        $($tt)*
-                    );
+                    tracing::event!(target: $target, parent: $parent, tracing::Level::INFO, $($tt)*);
                 }
                 tracing::Level::DEBUG => {
-                    tracing::event!(
-                        $(target: $target,)?
-                        $(parent: $parent,)?
-                        tracing::Level::DEBUG,
-                        $($tt)*
-                    );
+                    tracing::event!(target: $target, parent: $parent, tracing::Level::INFO, $($tt)*);
                 }
                 tracing::Level::TRACE => {
-                    tracing::event!(
-                        $(target: $target,)?
-                        $(parent: $parent,)?
-                        tracing::Level::TRACE,
-                        $($tt)*
-                    );
+                    tracing::event!(target: $target, parent: $parent, tracing::Level::TRACE, $($tt)*);
+                }
+            }
+        }
+    };
+    ( target: $target:expr, $lvl:expr, $($tt:tt)* ) => {
+        use ::rama_core::telemetry::tracing;
+        match $lvl {
+            tracing::Level::ERROR => {
+                tracing::event!(target: $target, tracing::Level::ERROR, $($tt)*);
+            }
+            tracing::Level::WARN => {
+                tracing::event!(target: $target, tracing::Level::WARN, $($tt)*);
+            }
+            tracing::Level::INFO => {
+                tracing::event!(target: $target, tracing::Level::INFO, $($tt)*);
+            }
+            tracing::Level::DEBUG => {
+                tracing::event!(target: $target, tracing::Level::DEBUG, $($tt)*);
+            }
+            tracing::Level::TRACE => {
+                tracing::event!(target: $target, tracing::Level::TRACE, $($tt)*);
+            }
+        }
+    };
+    ( parent: $parent:expr, $lvl:expr, $($tt:tt)* ) => {
+        use ::rama_core::telemetry::tracing;
+        match $lvl {
+            tracing::Level::ERROR => {
+                tracing::event!(parent: $parent, tracing::Level::ERROR, $($tt)*);
+            }
+            tracing::Level::WARN => {
+                tracing::event!(parent: $parent, tracing::Level::WARN, $($tt)*);
+            }
+            tracing::Level::INFO => {
+                tracing::event!(parent: $parent, tracing::Level::INFO, $($tt)*);
+            }
+            tracing::Level::DEBUG => {
+                tracing::event!(parent: $parent, tracing::Level::DEBUG, $($tt)*);
+            }
+            tracing::Level::TRACE => {
+                tracing::event!(parent: $parent, tracing::Level::TRACE, $($tt)*);
+            }
+        }
+    };
+    ( $lvl:expr, $($tt:tt)* ) => {
+        {
+            use ::rama_core::telemetry::tracing;
+            match $lvl {
+                tracing::Level::ERROR => {
+                    tracing::event!(tracing::Level::ERROR, $($tt)*);
+                }
+                tracing::Level::WARN => {
+                    tracing::event!(tracing::Level::WARN, $($tt)*);
+                }
+                tracing::Level::INFO => {
+                    tracing::event!(tracing::Level::INFO, $($tt)*);
+                }
+                tracing::Level::DEBUG => {
+                    tracing::event!(tracing::Level::DEBUG, $($tt)*);
+                }
+                tracing::Level::TRACE => {
+                    tracing::event!(tracing::Level::TRACE, $($tt)*);
                 }
             }
         }
@@ -677,6 +714,87 @@ mod tests {
         assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
     }
 
+    #[tokio::test]
+    async fn on_eos_fires_for_content_length_body() {
+        // Simulates the scenario where a consumer stops polling after receiving
+        // all bytes (as hyper does when Content-Length is exact). We poll only
+        // the data frame and never poll to None.
+
+        lazy_atomic_u32!(ON_BODY_CHUNK_COUNT, ON_EOS);
+
+        let trace_layer = TraceLayer::new_for_http()
+            .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
+                ON_BODY_CHUNK_COUNT().fetch_add(1, Ordering::SeqCst);
+            })
+            .on_eos(
+                |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                },
+            );
+
+        let svc = trace_layer.into_layer(service_fn(echo));
+
+        let res = svc.serve(Request::new(Body::from("hello"))).await.unwrap();
+
+        let mut body = res.into_body();
+
+        // Poll only the data frame (simulating a content-length aware consumer)
+        let frame = body.frame().await.unwrap().unwrap();
+        assert!(frame.data_ref().is_some());
+
+        // on_eos should have fired immediately after the data frame since
+        // is_end_stream() is true for Full bodies after yielding their data.
+        assert_eq!(
+            1,
+            ON_BODY_CHUNK_COUNT().load(Ordering::SeqCst),
+            "body chunk"
+        );
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+    }
+
+    #[tokio::test]
+    async fn on_eos_fires_for_streaming_body_on_none() {
+        // Streaming bodies (no content-length) don't report is_end_stream()
+        // until polled to None. Verify on_eos still fires via the None path.
+        lazy_atomic_u32!(ON_EOS);
+
+        let trace_layer = TraceLayer::new_for_http().on_eos(
+            |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                ON_EOS().fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let svc = trace_layer.into_layer(service_fn(streaming_body));
+
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        res.into_body().collect().await.unwrap();
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+    }
+
+    #[tokio::test]
+    async fn on_eos_not_called_twice() {
+        // When is_end_stream() fires on_eos after a data frame, a subsequent
+        // poll returning None must not fire on_eos again.
+        lazy_atomic_u32!(ON_EOS);
+
+        let trace_layer = TraceLayer::new_for_http().on_eos(
+            |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
+                ON_EOS().fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        let svc = trace_layer.into_layer(service_fn(echo));
+
+        let res = svc.serve(Request::new(Body::from("hello"))).await.unwrap();
+
+        // Consume the body fully (polls data frame then None)
+        res.into_body().collect().await.unwrap();
+
+        // on_eos should fire exactly once, not twice
+        assert_eq!(1, ON_EOS().load(Ordering::SeqCst), "eos");
+    }
+
     async fn echo(req: Request) -> Result<Response, BoxError> {
         Ok(Response::new(req.into_body()))
     }
@@ -772,6 +890,123 @@ mod tests {
             E: std::fmt::Display,
         {
             "error"
+        }
+    }
+
+    /// Regression test for https://github.com/tower-rs/tower-http/issues/655
+    ///
+    /// Reproduces the reported bug: when a subscriber's filter disables the
+    /// request span but still enables events, the events appear without any
+    /// span context. This happens because `Span::enter()` on a disabled span
+    /// is a no-op, so events relying on ambient context have no parent.
+    ///
+    /// The fix (using explicit `parent: span`) ensures events always reference
+    /// the request span, even when it's disabled. A subscriber that records
+    /// disabled spans will still see the correct parent relationship.
+    #[test]
+    fn events_have_span_context_when_span_is_disabled() {
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::{Layer as _, layer::SubscriberExt, registry::LookupSpan};
+
+        /// A filter that disables spans (by rejecting at the span level)
+        /// but allows all events through. This simulates the scenario where
+        /// a per-layer EnvFilter disables the request span's callsite.
+        struct DisableSpansFilter;
+
+        impl<S: tracing::Subscriber> tracing_subscriber::layer::Filter<S> for DisableSpansFilter {
+            fn enabled(
+                &self,
+                meta: &tracing::Metadata<'_>,
+                _cx: &tracing_subscriber::layer::Context<'_, S>,
+            ) -> bool {
+                // Disable spans, keep events
+                !meta.is_span()
+            }
+        }
+
+        /// Records (event_message, has_any_parent) pairs.
+        #[derive(Clone)]
+        struct RecordingLayer {
+            events: Arc<Mutex<Vec<(String, bool)>>>,
+        }
+
+        impl<S> tracing_subscriber::Layer<S> for RecordingLayer
+        where
+            S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+        {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut msg = String::new();
+                event.record(&mut MessageVisitor(&mut msg));
+
+                // Check if the event has ANY parent: explicit or contextual
+                let has_parent = event.parent().is_some() || ctx.event_span(event).is_some();
+
+                self.events.lock().push((msg, has_parent));
+            }
+        }
+
+        struct MessageVisitor<'a>(&'a mut String);
+        impl tracing::field::Visit for MessageVisitor<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    *self.0 = format!("{value:?}");
+                }
+            }
+        }
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let layer = RecordingLayer {
+            events: events.clone(),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer.with_filter(DisableSpansFilter));
+
+        // Use with_default to guarantee cleanup even on panic, avoiding
+        // cross-test subscriber pollution.
+        with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            rt.block_on(async {
+                let svc = TraceLayer::new_for_http().into_layer(service_fn(echo));
+
+                let res = svc.serve(Request::new(Body::from("test"))).await.unwrap();
+
+                res.into_body().collect().await.unwrap();
+            });
+        });
+
+        let events = events.lock();
+        let request_events: Vec<_> = events
+            .iter()
+            .filter(|(msg, _)| {
+                msg.contains("started processing request")
+                    || msg.contains("finished processing request")
+            })
+            .collect();
+
+        assert!(
+            request_events.len() >= 2,
+            "expected on_request and on_response events to fire"
+        );
+
+        // The bug: without explicit parent, these events have no span context
+        // at all when the request span is disabled. With the fix, they still
+        // reference the span (even though it's disabled).
+        for (msg, has_parent) in &request_events {
+            assert!(
+                *has_parent,
+                "event {msg:?} has no span context. When the request span is \
+                     disabled by a filter, events must still reference it via \
+                     explicit parent so subscribers can associate them correctly."
+            );
         }
     }
 }

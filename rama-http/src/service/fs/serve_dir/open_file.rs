@@ -44,6 +44,7 @@ impl OpenFileOutput {
         maybe_encoding: Option<Encoding>,
         maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
         last_modified: Option<LastModified>,
+        precompression_configured: bool,
     ) -> Self {
         Self::FileOpened(Box::new(FileOpened {
             extent,
@@ -52,6 +53,7 @@ impl OpenFileOutput {
             maybe_encoding,
             maybe_range,
             last_modified,
+            precompression_configured,
         }))
     }
 }
@@ -64,6 +66,11 @@ pub(super) struct FileOpened {
     pub(super) maybe_encoding: Option<Encoding>,
     pub(super) maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
     pub(super) last_modified: Option<LastModified>,
+    /// Whether `ServeDir` was configured with any precompressed variants.
+    /// When true, the response advertises `Vary: Accept-Encoding` even if
+    /// this particular response was served uncompressed, per RFC 9110
+    /// §12.5.3 — a different request could yield a different encoding.
+    pub(super) precompression_configured: bool,
 }
 
 /// Represents different ways a file can be accessed for serving.
@@ -95,6 +102,10 @@ impl FileRequestExtent {
 
 /// Open a file for serving, handling both filesystem and embedded sources.
 /// Supports precompressed variants, range requests, and conditional headers.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper; each arg has a distinct role and grouping them into a struct adds more noise than it removes"
+)]
 pub(super) async fn open_file(
     variant: ServeVariant,
     mut path_to_file: PathBuf,
@@ -103,14 +114,24 @@ pub(super) async fn open_file(
     range_header: Option<&str>,
     buf_chunk_size: usize,
     source: &DirSource,
+    precompression_configured: bool,
 ) -> io::Result<OpenFileOutput> {
     let mime = match variant {
-        ServeVariant::Directory { serve_mode } => {
+        ServeVariant::Directory {
+            serve_mode,
+            html_as_default_extension,
+        } => {
             // Might already at this point know a redirect or not found result should be
             // returned which corresponds to a Some(output). Otherwise the path might be
             // modified and proceed to the open file/metadata future.
-            if let Some(output) =
-                maybe_serve_directory(&mut path_to_file, req.uri(), serve_mode, source).await?
+            if let Some(output) = maybe_serve_directory(
+                &mut path_to_file,
+                req.uri(),
+                serve_mode,
+                html_as_default_extension,
+                source,
+            )
+            .await?
             {
                 return Ok(output);
             }
@@ -141,6 +162,7 @@ pub(super) async fn open_file(
                     maybe_encoding,
                     maybe_range,
                     last_modified,
+                    precompression_configured,
                 ))
             }
             DirSource::Embedded(base) => {
@@ -170,6 +192,7 @@ pub(super) async fn open_file(
                     maybe_encoding,
                     maybe_range,
                     last_modified,
+                    precompression_configured,
                 ))
             }
         }
@@ -204,6 +227,7 @@ pub(super) async fn open_file(
                     maybe_encoding,
                     maybe_range,
                     last_modified,
+                    precompression_configured,
                 ))
             }
             DirSource::Embedded(base) => {
@@ -242,6 +266,7 @@ pub(super) async fn open_file(
                     maybe_encoding,
                     maybe_range,
                     last_modified,
+                    precompression_configured,
                 ))
             }
         }
@@ -361,7 +386,14 @@ async fn open_file_with_fallback(
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
         match (File::open(&path).await, encoding) {
             (Ok(file), maybe_encoding) => break (file, maybe_encoding),
-            (Err(err), Some(encoding)) if err.kind() == io::ErrorKind::NotFound => {
+            // Identity has no file extension to strip, so falling through to
+            // the strip-and-retry path would clobber the originally requested
+            // extension (e.g. `/foo.foobar` would become `/foo`). Only strip
+            // when the preferred encoding actually appended an extension.
+            // Regression test: see `identity_encoding_does_not_strip_extension`.
+            (Err(err), Some(encoding))
+                if err.kind() == io::ErrorKind::NotFound && encoding != Encoding::Identity =>
+            {
                 // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
                 // to reset the path before the next iteration.
                 path.set_extension(OsStr::new(""));
@@ -418,7 +450,10 @@ async fn file_metadata_with_fallback(
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
         match (tokio::fs::metadata(&path).await, encoding) {
             (Ok(file), maybe_encoding) => break (file, maybe_encoding),
-            (Err(err), Some(encoding)) if err.kind() == io::ErrorKind::NotFound => {
+            // See `open_file_with_fallback` for why Identity is skipped here.
+            (Err(err), Some(encoding))
+                if err.kind() == io::ErrorKind::NotFound && encoding != Encoding::Identity =>
+            {
                 // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
                 // to reset the path before the next iteration.
                 path.set_extension(OsStr::new(""));
@@ -437,15 +472,33 @@ async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
     mode: DirectoryServeMode,
+    html_as_default_extension: bool,
     source: &DirSource,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
-    // Check if it's a directory based on the source type
-    let is_directory = match source {
+    let uri_path = uri.path();
+
+    // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
+    let is_directory: Option<bool> = match source {
         DirSource::Filesystem(_) => is_dir(path_to_file).await,
         DirSource::Embedded(base) => is_dir_embedded(path_to_file, base).await,
     };
 
-    if !is_directory {
+    // A trailing slash means the client is referring to a directory.
+    // If the path resolves to something other than an existing directory
+    // (a file, or nothing at all), we must NOT silently strip the slash
+    // and serve a file. Root `/` is exempted: it always means "this dir".
+    if uri_path.ends_with('/') && uri_path != "/" && is_directory != Some(true) {
+        return Ok(Some(OpenFileOutput::FileNotFound));
+    }
+
+    // Bare-name requests (`/about`) — if nothing exists at that path AND
+    // the path has no extension yet, try appending `.html`.
+    if html_as_default_extension && is_directory.is_none() && path_to_file.extension().is_none() {
+        path_to_file.set_extension("html");
+        return Ok(None);
+    }
+
+    if is_directory != Some(true) {
         return Ok(None);
     }
 
@@ -603,18 +656,29 @@ fn try_parse_range(
     })
 }
 
-async fn is_dir(path_to_file: &Path) -> bool {
+/// `Some(true)` => exists and is a directory. `Some(false)` => exists and is
+/// not a directory (i.e. file). `None` => does not exist. Distinguishing
+/// "missing" from "is a file" is what lets us decide whether to apply
+/// `html_as_default_extension` or reject a trailing slash as a 404.
+async fn is_dir(path_to_file: &Path) -> Option<bool> {
     tokio::fs::metadata(path_to_file)
         .await
-        .is_ok_and(|meta_data| meta_data.is_dir())
+        .ok()
+        .map(|meta_data| meta_data.is_dir())
 }
 
-async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> bool {
+async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> Option<bool> {
     // Empty path corresponds to the root directory, which is always a directory
     if path_to_file.as_os_str().is_empty() {
-        return true;
+        return Some(true);
     }
-    base.get_dir(path_to_file).is_some()
+    if base.get_dir(path_to_file).is_some() {
+        Some(true)
+    } else if base.get_file(path_to_file).is_some() {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Append a trailing slash to a URI path for directory redirection.

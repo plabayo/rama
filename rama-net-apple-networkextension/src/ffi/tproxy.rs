@@ -152,11 +152,15 @@ pub struct TransparentProxyNetworkRule {
     pub remote_network_utf8_len: usize,
     pub remote_prefix: u8,
     pub remote_prefix_is_set: bool,
+    pub remote_port: u16,
+    pub remote_port_is_set: bool,
     pub local_network_utf8: *const c_char,
     pub local_network_utf8_len: usize,
     pub local_prefix: u8,
     pub local_prefix_is_set: bool,
     pub protocol: u32,
+    /// See [`tproxy::TransparentProxyNetworkRule::exclude`].
+    pub exclude: bool,
 }
 
 #[repr(C)]
@@ -217,11 +221,14 @@ impl TransparentProxyConfig {
                 remote_network_utf8_len,
                 remote_prefix: rule.remote_prefix().unwrap_or(0),
                 remote_prefix_is_set: rule.remote_prefix().is_some(),
+                remote_port: rule.remote_port().unwrap_or(0),
+                remote_port_is_set: rule.remote_port().is_some(),
                 local_network_utf8,
                 local_network_utf8_len,
                 local_prefix: rule.local_prefix().unwrap_or(0),
                 local_prefix_is_set: rule.local_prefix().is_some(),
                 protocol: rule.protocol().as_u32(),
+                exclude: rule.exclude(),
             });
         }
 
@@ -298,11 +305,12 @@ impl TransparentProxyConfig {
 pub struct TransparentProxyTcpSessionCallbacks {
     pub context: *mut c_void,
     /// Rust → Swift: deliver response bytes to the intercepted client flow.
-    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
-    /// pause when Swift's writer pump (`TcpClientWritePump`) is full and
-    /// resume only after the matching `signal_server_drain` call from Swift.
-    pub on_server_bytes:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
+    /// Returns the raw `u8` of a [`crate::tproxy::TcpDeliverStatus`]
+    /// (0=Accepted, 1=Paused, 2=Closed) — Rust decodes it via
+    /// `TcpDeliverStatus::from_ffi_u8`, so an out-of-range byte can't
+    /// materialize an invalid enum discriminant (UB). The C header /
+    /// Swift side use the typed `uint8_t`-backed enum.
+    pub on_server_bytes: Option<unsafe extern "C" fn(*mut c_void, BytesView) -> u8>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow ingress channel has space again
     /// after [`crate::tproxy::TransparentProxyTcpSession::on_client_bytes`] returned `Paused`.
@@ -459,6 +467,61 @@ pub struct TcpEgressConnectOptions {
     pub egress_eof_grace_ms: u32,
 }
 
+/// Callbacks passed to
+/// `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
+///
+/// This is a Rust→Swift channel: Rust calls `on_promote_request`
+/// when the in-Rust service invokes [`crate::tproxy::PromoteHandle::into_passthrough`].
+/// Swift completes the cutover then ACKs by calling
+/// `rama_transparent_proxy_tcp_session_confirm_promoted`.
+///
+/// `context` lifetime / threading contract: see
+/// [`TransparentProxyTcpSessionCallbacks`] above. The pointee must
+/// outlive the `_session_free` call, callbacks may run on any
+/// Tokio worker thread (the Swift side is responsible for any
+/// synchronization the pointee needs — e.g. hopping to its
+/// flow-private dispatch queue).
+#[repr(C)]
+pub struct TransparentProxyTcpPromoteCallbacks {
+    pub context: *mut c_void,
+    /// Rust → Swift: a service called `into_passthrough` on the
+    /// per-flow `PromoteHandle`. Swift drains its outgoing writer
+    /// pump, atomically rewires the data path to bypass Rust, and
+    /// then calls `rama_transparent_proxy_tcp_session_confirm_promoted`.
+    pub on_promote_request: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// Status code passed to
+/// `rama_transparent_proxy_tcp_session_confirm_promoted`.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PromoteConfirmStatus {
+    /// Swift completed the cutover. Rust drops its ingress sender so
+    /// the service sees EOF after in-flight bytes drain, then
+    /// `into_passthrough` resolves with `Ok(())`.
+    Ok = 0,
+    /// Swift could not complete the cutover. The accompanying reason
+    /// string (if any) is surfaced via
+    /// [`crate::tproxy::PromoteError::SwiftCutoverFailed`]; the
+    /// in-Rust data path keeps running unchanged.
+    Failed = 1,
+}
+
+impl PromoteConfirmStatus {
+    /// Decode a raw byte received across the FFI boundary. The exported
+    /// confirm fn takes `u8` (not this enum) so an out-of-range value
+    /// can never materialize an invalid discriminant (UB). Unknown
+    /// values fail safe to `Failed` — never claim a cutover succeeded
+    /// on a corrupt status.
+    #[must_use]
+    pub fn from_ffi_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Ok,
+            _ => Self::Failed,
+        }
+    }
+}
+
 /// Callbacks passed to `rama_transparent_proxy_tcp_session_activate`.
 ///
 /// These are Rust→Swift channels: Rust calls these when it has data for the
@@ -472,11 +535,11 @@ pub struct TcpEgressConnectOptions {
 pub struct TransparentProxyTcpEgressCallbacks {
     pub context: *mut c_void,
     /// Rust calls this to send bytes from the service to the egress NWConnection.
-    /// Returns a [`crate::tproxy::TcpDeliverStatus`] so the Rust bridge can
-    /// pause when Swift's `NwTcpConnectionWritePump` is full and resume only
-    /// after the matching `signal_egress_drain` call from Swift.
-    pub on_write_to_egress:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView) -> crate::tproxy::TcpDeliverStatus>,
+    /// Returns the raw `u8` of a [`crate::tproxy::TcpDeliverStatus`]
+    /// (0=Accepted, 1=Paused, 2=Closed) — Rust decodes it via
+    /// `TcpDeliverStatus::from_ffi_u8` to avoid UB on an out-of-range
+    /// discriminant. The C header / Swift side use the typed enum.
+    pub on_write_to_egress: Option<unsafe extern "C" fn(*mut c_void, BytesView) -> u8>,
     /// Rust calls this when the service is done writing to the egress NWConnection.
     pub on_close_egress: Option<unsafe extern "C" fn(*mut c_void)>,
     /// Rust → Swift: signal that the per-flow egress channel has space again
@@ -575,15 +638,47 @@ mod tests {
     };
 
     use super::{
-        NwEgressParameters, TransparentFlowEndpoint, TransparentProxyConfig,
+        NwEgressParameters, PromoteConfirmStatus, TransparentFlowEndpoint, TransparentProxyConfig,
         TransparentProxyFlowMeta,
     };
+
+    #[test]
+    fn ffi_enum_decoders_fail_safe_on_bad_byte() {
+        use crate::tproxy::TcpDeliverStatus;
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(0), TcpDeliverStatus::Accepted);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(1), TcpDeliverStatus::Paused);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(2), TcpDeliverStatus::Closed);
+        // Out-of-range bytes must not be UB — they fail safe to Closed.
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(3), TcpDeliverStatus::Closed);
+        assert_eq!(TcpDeliverStatus::from_ffi_u8(255), TcpDeliverStatus::Closed);
+
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(0),
+            PromoteConfirmStatus::Ok
+        );
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(1),
+            PromoteConfirmStatus::Failed
+        );
+        // Out-of-range bytes fail safe to Failed (never claim success).
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(2),
+            PromoteConfirmStatus::Failed
+        );
+        assert_eq!(
+            PromoteConfirmStatus::from_ffi_u8(255),
+            PromoteConfirmStatus::Failed
+        );
+    }
 
     /// Alloc → free round-trip for the FFI config struct. Designed so
     /// that under LeakSanitizer (`just test-e2e-asan`) any heap field
     /// added to `TransparentProxyNetworkRule` that `free` doesn't
     /// release surfaces as a leak. Plain `cargo test` only verifies
     /// that the round-trip doesn't double-free or panic.
+    ///
+    /// Includes a mix of included AND excluded rules to exercise
+    /// both branches of the `exclude` field's round-trip.
     #[test]
     fn ffi_config_round_trip_freed_under_lsan() {
         let config = tproxy::TransparentProxyConfig::default()
@@ -604,11 +699,76 @@ mod tests {
                     .with_local_network_prefix(8)
                     .with_protocol(TransparentProxyRuleProtocol::Tcp),
                 TransparentProxyNetworkRule::any(),
+                // Excluded carve-out with a port — exercises
+                // both `exclude = true` AND `remote_port_is_set`
+                // branches of the round-trip.
+                TransparentProxyNetworkRule::any()
+                    .with_remote_network(
+                        "169.254.169.254"
+                            .parse::<rama_net::address::Host>()
+                            .expect("valid host"),
+                    )
+                    .with_remote_network_prefix(32)
+                    .with_remote_port(80)
+                    .with_protocol(TransparentProxyRuleProtocol::Any)
+                    .excluded(),
             ]);
 
         let ffi = TransparentProxyConfig::from_rust_type(&config);
         // SAFETY: `ffi` was just created by `from_rust_type` and not
         // freed yet.
+        unsafe { ffi.free() };
+    }
+
+    /// Verify the `exclude` field round-trips through the FFI
+    /// alloc → slice-read shape. Includes a mix to ensure the
+    /// per-rule field is preserved at the correct index.
+    #[test]
+    fn ffi_rule_exclude_field_round_trips_through_ffi() {
+        let config = tproxy::TransparentProxyConfig::default().with_rules(vec![
+            TransparentProxyNetworkRule::any(),
+            TransparentProxyNetworkRule::any()
+                .with_protocol(TransparentProxyRuleProtocol::Tcp)
+                .excluded(),
+            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
+            TransparentProxyNetworkRule::any().with_exclude(true),
+        ]);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        assert_eq!(ffi.rules_len, 4);
+        // SAFETY: alloc came from `from_rust_type` and lives
+        // until our `free` call at the end.
+        let slice = unsafe { std::slice::from_raw_parts(ffi.rules, ffi.rules_len) };
+        assert!(!slice[0].exclude, "rule 0: default = included");
+        assert!(slice[1].exclude, "rule 1: `.excluded()` → excluded");
+        assert!(!slice[2].exclude, "rule 2: default = included");
+        assert!(slice[3].exclude, "rule 3: `.with_exclude(true)` → excluded");
+        // SAFETY: same alloc as above.
+        unsafe { ffi.free() };
+    }
+
+    #[test]
+    fn ffi_rule_remote_port_field_round_trips_through_ffi() {
+        let config = tproxy::TransparentProxyConfig::default().with_rules(vec![
+            TransparentProxyNetworkRule::any(),
+            TransparentProxyNetworkRule::any().with_remote_port(443),
+            TransparentProxyNetworkRule::any().with_remote_port(0),
+            TransparentProxyNetworkRule::any().with_remote_port(65535),
+        ]);
+
+        let ffi = TransparentProxyConfig::from_rust_type(&config);
+        assert_eq!(ffi.rules_len, 4);
+        // SAFETY: alloc came from `from_rust_type`; freed below.
+        let slice = unsafe { std::slice::from_raw_parts(ffi.rules, ffi.rules_len) };
+        assert!(!slice[0].remote_port_is_set);
+        assert_eq!(slice[0].remote_port, 0, "unset → zeroed");
+        assert!(slice[1].remote_port_is_set);
+        assert_eq!(slice[1].remote_port, 443);
+        assert!(slice[2].remote_port_is_set);
+        assert_eq!(slice[2].remote_port, 0, "explicit 0 survives");
+        assert!(slice[3].remote_port_is_set);
+        assert_eq!(slice[3].remote_port, 65535, "u16 max survives");
+        // SAFETY: same alloc as above.
         unsafe { ffi.free() };
     }
 

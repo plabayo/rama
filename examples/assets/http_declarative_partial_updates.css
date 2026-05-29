@@ -48,6 +48,10 @@ body {
 .metric { font-family: monospace; font-weight: bold; }
 .ok { color: #096; }
 
-/* the inline polyfill sets these attributes as fragments swap in. */
-.panel[data-dpu-loaded] .spinner { display: none; }
-body[data-dpu-done] .banner { opacity: 0; pointer-events: none; }
+/* The spinner sits between `<?start>` and `<?end>`, so the range swap
+   removes it when the fragment arrives — no CSS needed to hide it. The
+   banner clears once no spinner remains. */
+body:not(:has(.spinner)) .banner {
+  opacity: 0;
+  pointer-events: none;
+}

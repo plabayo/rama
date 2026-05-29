@@ -71,11 +71,11 @@ impl<S> AllowStd<S> {
     // Set the read or write waker for our proxies.
     //
     // Read: this is only supposed to be called by read (or handshake) operations, i.e. the Stream
-    // impl on the WebSocketStream.
+    // impl on the AsyncWebSocket.
     // Reading can also cause writes to happen, e.g. in case of Message::Ping handling.
     //
     // Write: this is only supposde to be called by write operations, i.e. the Sink impl on the
-    // WebSocketStream.
+    // AsyncWebSocket.
     pub(crate) fn set_waker(&self, kind: ContextWaker, waker: &task::Waker) {
         match kind {
             ContextWaker::Read => {

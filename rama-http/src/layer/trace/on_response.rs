@@ -1,6 +1,6 @@
 use super::{DEFAULT_MESSAGE_LEVEL, Latency};
 use crate::Response;
-use rama_core::telemetry::tracing::{self, Level, Span};
+use rama_core::telemetry::tracing::{Level, Span, field};
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
 
@@ -115,17 +115,16 @@ impl<B> OnResponse<B> for DefaultOnResponse {
         };
         let response_headers = self
             .include_headers
-            .then(|| tracing::field::debug(response.headers()));
+            .then(|| field::debug(response.headers()));
 
-        span.in_scope(|| {
-            event_dynamic_lvl!(
-                self.level,
-                %latency,
-                status = status(response),
-                response_headers,
-                "finished processing request"
-            );
-        })
+        event_dynamic_lvl!(
+            parent: span,
+            self.level,
+            %latency,
+            status = status(response),
+            response_headers,
+            "finished processing request"
+        );
     }
 }
 
@@ -153,10 +152,8 @@ fn status<B>(res: &Response<B>) -> Option<i32> {
             res.headers(),
             crate::layer::classify::GrpcCode::Ok.into_bitmask(),
         ) {
-            ParsedGrpcStatus::Success
-            | ParsedGrpcStatus::HeaderNotString
-            | ParsedGrpcStatus::HeaderNotInt => Some(0),
-            ParsedGrpcStatus::NonSuccess(status) => Some(status.get()),
+            ParsedGrpcStatus::Success | ParsedGrpcStatus::HeaderNotGrpcCode => Some(0),
+            ParsedGrpcStatus::NonSuccess(status) => Some(status.code_raw()),
             // if `grpc-status` is missing then its a streaming response and there is no status
             // _yet_, so its neither success nor error
             ParsedGrpcStatus::GrpcStatusHeaderMissing => None,

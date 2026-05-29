@@ -64,3 +64,5 @@ pub use global::{GlobalDnsResolver, init_global_dns_resolver, try_init_global_dn
 mod chain;
 mod tuple;
 mod variant;
+
+pub mod lb;

@@ -178,6 +178,10 @@ typedef struct {
     uint8_t remote_prefix;
     /// Whether `remote_prefix` is explicitly set.
     bool remote_prefix_is_set;
+    /// Remote port to match. Only valid when `remote_port_is_set` is true.
+    uint16_t remote_port;
+    /// Whether `remote_port` is explicitly set.
+    bool remote_port_is_set;
     /// Optional local network address UTF-8 bytes (not NUL-terminated). May be NULL.
     const char* local_network_utf8;
     /// Length of `local_network_utf8`.
@@ -189,6 +193,8 @@ typedef struct {
     bool local_prefix_is_set;
     /// One of `RamaTransparentProxyRuleProtocol`.
     uint32_t protocol;
+    /// `true` ⇒ excludedNetworkRules; `false` ⇒ includedNetworkRules.
+    bool exclude;
 } RamaTransparentProxyNetworkRule;
 
 /// Transparent proxy configuration returned by Rust to Swift.
@@ -444,6 +450,43 @@ typedef struct {
     RamaTcpEgressReadDemandFn on_egress_read_demand;
 } RamaTransparentProxyTcpEgressCallbacks;
 
+/// Status code passed to
+/// `rama_transparent_proxy_tcp_session_confirm_promoted`.
+typedef uint8_t RamaPromoteConfirmStatus;
+/// Swift completed the cutover. Rust drops its ingress sender so the
+/// service sees EOF after in-flight bytes drain, then the
+/// service-bound `PromoteHandle::into_passthrough` future resolves
+/// with `Ok(())`.
+#define RAMA_PROMOTE_CONFIRM_OK ((RamaPromoteConfirmStatus)0)
+/// Swift could not complete the cutover. The optional UTF-8 reason
+/// is surfaced via `PromoteError::SwiftCutoverFailed { reason }`;
+/// the in-Rust data path keeps running unchanged.
+#define RAMA_PROMOTE_CONFIRM_FAILED ((RamaPromoteConfirmStatus)1)
+
+/// `on_promote_request` fires when the in-Rust per-flow service
+/// calls `PromoteHandle::into_passthrough`. Swift drains its
+/// pending writers, atomically rewires the data path to bypass
+/// Rust, then ACKs by calling
+/// `rama_transparent_proxy_tcp_session_confirm_promoted`.
+typedef void (*RamaTcpPromoteRequestFn)(void* context);
+
+/// Callbacks passed to
+/// `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
+///
+/// `context` lifetime / threading contract: see the matching
+/// contract on `RamaTransparentProxyTcpSessionCallbacks` above.
+/// The pointee must outlive the corresponding `_session_free`
+/// call; callbacks may run on any Tokio worker thread (the
+/// Swift side is responsible for any synchronization the
+/// pointee requires — e.g. hopping to a per-flow dispatch queue).
+typedef struct {
+    /// Opaque user context passed back to the callback. See
+    /// lifetime contract above. Do NOT use for sensitive
+    /// information / secrets.
+    void* context;
+    RamaTcpPromoteRequestFn on_promote_request;
+} RamaTransparentProxyTcpPromoteCallbacks;
+
 // Logging
 
 /// Forward a log message to Rust tracing.
@@ -512,6 +555,55 @@ void rama_transparent_proxy_engine_stop(RamaTransparentProxyEngine* engine, int3
 RamaBytesOwned rama_transparent_proxy_engine_handle_app_message(
     RamaTransparentProxyEngine* engine,
     RamaBytesView message
+);
+
+/// Notify the Rust handler that the system is going to sleep.
+/// Fire-and-forget; the handler's `on_system_sleep` runs detached
+/// on the engine runtime.  NULL engine is allowed and ignored.
+void rama_transparent_proxy_engine_notify_system_sleep(
+    RamaTransparentProxyEngine* engine
+);
+
+/// Symmetric counterpart of
+/// `rama_transparent_proxy_engine_notify_system_sleep`.
+void rama_transparent_proxy_engine_notify_system_wake(
+    RamaTransparentProxyEngine* engine
+);
+
+/// Outcome discriminant for `rama_transparent_proxy_engine_drain_for_sleep`.
+///
+/// Stable across releases — Swift gates `sleepWithCompletionHandler:`
+/// behaviour on the discriminant. Mirrors `tproxy::DrainOutcome`.
+typedef enum RamaDrainOutcome {
+    /// Every pre-drain spawned task exited cooperatively before the
+    /// deadline; the engine runtime is quiet.
+    RAMA_DRAIN_OUTCOME_DRAINED = 0,
+    /// `max_wait_ms` elapsed before all guards dropped. The engine
+    /// continues to accept new flows on a fresh shutdown installed at
+    /// drain time; in-flight pre-drain tasks bail at their next yield.
+    RAMA_DRAIN_OUTCOME_TIMEOUT = 1,
+    /// Engine was already terminally stopped (NULL pointer, or
+    /// `_engine_stop` ran in parallel). No-op.
+    RAMA_DRAIN_OUTCOME_ALREADY_STOPPED = 2,
+} RamaDrainOutcome;
+
+/// Synchronous recoverable drain for system sleep. Block the calling
+/// thread (Apple's `sleepWithCompletionHandler:`) until either every
+/// pre-drain spawned task exits, or `max_wait_ms` elapses, or the
+/// engine is already terminally stopped. Returns the outcome
+/// discriminant as `uint32_t`; cast to `RamaDrainOutcome`.
+///
+/// Unlike `_engine_stop`, this is RECOVERABLE — a fresh internal
+/// shutdown is installed before the old one fires, so new flows
+/// arriving during / after the drain register against an alive
+/// graceful tree. Designed to be called from
+/// `NEProvider.sleep(completionHandler:)`; the Swift wrapper drives
+/// every Swift-side per-flow teardown first, then calls this to
+/// drain the in-Rust spawned tasks (service / bridge / handler hook)
+/// before completing the Apple sleep handler.
+uint32_t rama_transparent_proxy_engine_drain_for_sleep(
+    RamaTransparentProxyEngine* engine,
+    uint32_t max_wait_ms
 );
 
 // TCP flow lifecycle
@@ -605,6 +697,51 @@ void rama_transparent_proxy_tcp_session_signal_server_drain(
 /// `on_write_to_egress` returned `RAMA_TCP_DELIVER_PAUSED`.
 void rama_transparent_proxy_tcp_session_signal_egress_drain(
     RamaTransparentProxyTcpSession* session
+);
+
+/// Register a Swift callback fired when the in-Rust per-flow
+/// service calls `PromoteHandle::into_passthrough` on this
+/// session.
+///
+/// Idempotent: a later call replaces any prior registration.
+/// If `callbacks.on_promote_request` is NULL the call is a
+/// no-op. If no callback is ever registered, services that
+/// invoke `into_passthrough` see `PromoteError::EgressUnavailable`
+/// and `PromoteLayer` falls through to the in-Rust data path.
+///
+/// After Swift completes the cutover it MUST call
+/// `rama_transparent_proxy_tcp_session_confirm_promoted` to
+/// resolve the pending future.
+///
+/// NULL `session` is allowed and ignored.
+void rama_transparent_proxy_tcp_session_register_promote_callbacks(
+    RamaTransparentProxyTcpSession* session,
+    RamaTransparentProxyTcpPromoteCallbacks callbacks
+);
+
+/// Swift → Rust ACK for an in-flight
+/// `PromoteHandle::into_passthrough` cutover.
+///
+/// `status` is one of:
+///   * `RAMA_PROMOTE_CONFIRM_OK` — Rust drops its ingress
+///     sender so the service sees EOF after draining in-flight
+///     bytes, then `into_passthrough` resolves with `Ok(())`.
+///   * `RAMA_PROMOTE_CONFIRM_FAILED` — surfaces as
+///     `PromoteError::SwiftCutoverFailed { reason }`. The in-Rust
+///     data path keeps running unchanged.
+///
+/// `reason_ptr` / `reason_len` carry an optional UTF-8 reason
+/// for the `FAILED` case. Pass `(NULL, 0)` for none.
+/// `reason_*` is borrowed for the call's duration.
+///
+/// Calling without a pending promote (e.g. before any service
+/// ran `into_passthrough`, or after a previous confirm) is a
+/// no-op. NULL `session` is allowed and ignored.
+void rama_transparent_proxy_tcp_session_confirm_promoted(
+    RamaTransparentProxyTcpSession* session,
+    RamaPromoteConfirmStatus status,
+    const char* reason_ptr,
+    size_t reason_len
 );
 
 // UDP flow lifecycle

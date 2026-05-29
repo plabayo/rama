@@ -140,10 +140,11 @@ function connectWebSocket() {
     };
 
     socket.onclose = function (event) {
+      // The server closes /api/ws right after a greeting; through a
+      // proxy/MITM that can surface as non-clean. We already connected,
+      // so don't treat the close itself as a failure.
       if (!event.wasClean) {
-        console.warn("WebSocket closed unexpectedly:", event);
-        reject(new Error("WebSocket closed unexpectedly"));
-        return;
+        console.warn("WebSocket closed without a clean handshake:", event);
       }
       completed();
     };
@@ -176,8 +177,14 @@ async function main() {
     console.log("XMLHttpRequest POST request response:", response4);
     const result2 = JSON.parse(response4);
 
-    // WS connection
-    await connectWebSocket();
+    // WS connection — best-effort probe. The fingerprint is captured
+    // on connect, so a WS hiccup must not fail the whole report (and
+    // trigger the redirect below).
+    try {
+      await connectWebSocket();
+    } catch (wsError) {
+      console.warn("WebSocket probe failed:", wsError);
+    }
 
     console.log("Requests completed successfully");
     console.log("Result:", result);

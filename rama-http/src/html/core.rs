@@ -162,6 +162,62 @@ impl<S: AsRef<str>> IntoHtml for Marker<S> {
     }
 }
 
+/// Emit a `<?start name="…">` processing instruction — the opening of the
+/// *range* form of declarative partial updates. Whatever HTML sits between
+/// `<?start name="x">` and the matching [`end`] (often a skeleton or
+/// spinner) is replaced wholesale when the `<template for="x">` arrives, so
+/// the placeholder content goes away on swap without any CSS bookkeeping.
+/// The name is HTML-escaped via [`escape_into`] on render.
+#[inline]
+pub fn start<S: AsRef<str>>(name: S) -> Start<S> {
+    Start(name)
+}
+
+/// Renderer for [`start`].
+#[derive(Debug, Clone, Copy)]
+pub struct Start<S>(pub S);
+
+impl<S: AsRef<str>> IntoHtml for Start<S> {
+    #[inline]
+    fn into_html(self) -> impl IntoHtml {
+        self
+    }
+    fn escape_and_write(self, buf: &mut String) {
+        buf.push_str(r#"<?start name=""#);
+        escape_into(buf, self.0.as_ref());
+        buf.push_str(r#"">"#);
+    }
+    fn size_hint(&self) -> usize {
+        // length of `<?start name="">` + name; escape may grow it a bit.
+        16 + self.0.as_ref().len()
+    }
+}
+
+/// Emit a `<?end>` processing instruction — the closing of a range opened
+/// by [`start`]. Takes no name: `<?end>` always closes the most recent
+/// unclosed `<?start>` at the same nesting level.
+#[inline]
+pub fn end() -> End {
+    End
+}
+
+/// Renderer for [`end`].
+#[derive(Debug, Clone, Copy)]
+pub struct End;
+
+impl IntoHtml for End {
+    #[inline]
+    fn into_html(self) -> impl IntoHtml {
+        self
+    }
+    fn escape_and_write(self, buf: &mut String) {
+        buf.push_str(r#"<?end>"#);
+    }
+    fn size_hint(&self) -> usize {
+        6 // length of `<?end>`
+    }
+}
+
 /// Wrapper that marks its inner value as already-escaped HTML — i.e. it
 /// will be written verbatim instead of going through [`escape_into`].
 ///

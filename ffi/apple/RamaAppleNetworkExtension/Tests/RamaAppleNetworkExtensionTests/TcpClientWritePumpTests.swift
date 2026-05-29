@@ -43,19 +43,63 @@ final class MockTcpFlow: TcpFlowLike {
         return _writeCount
     }
 
+    /// If true, `write` captures the completion handler into
+    /// `_pendingWriteCompletions` instead of firing it on a global
+    /// queue. Tests can later drive completions synchronously via
+    /// `completeNextWrite()` — necessary when ordering a write
+    /// completion against other queue work (e.g. verifying cancel
+    /// cleanup ran first) must be deterministic.
+    var captureWriteCompletions: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _captureWriteCompletions }
+        set { lock.lock(); defer { lock.unlock() }; _captureWriteCompletions = newValue }
+    }
+    private var _captureWriteCompletions: Bool = false
+    private var _pendingWriteCompletions: [(@Sendable (Error?) -> Void, Error?)] = []
+
+    var pendingWriteCompletionCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _pendingWriteCompletions.count
+    }
+
+    /// Fires the oldest captured write completion synchronously on
+    /// the calling thread. Because the completion's `self.queue.async`
+    /// is enqueued synchronously from here, any subsequent
+    /// `queue.async` issued by the same caller (e.g. an invariant
+    /// snapshot) is FIFO-ordered after the completion's block —
+    /// removing the global-queue race.
+    @discardableResult
+    func completeNextWrite() -> Bool {
+        lock.lock()
+        guard !_pendingWriteCompletions.isEmpty else {
+            lock.unlock()
+            return false
+        }
+        let (cb, err) = _pendingWriteCompletions.removeFirst()
+        lock.unlock()
+        cb(err)
+        return true
+    }
+
     func write(_ data: Data, withCompletionHandler: @escaping @Sendable (Error?) -> Void) {
         lock.lock()
         let idx = _writeCount
         _writes.append(data)
         _writeCount += 1
+        let capture = _captureWriteCompletions
         lock.unlock()
         let error = handler(idx, data)
-        // Apple's NEAppProxyTCPFlow calls the completion handler off
-        // the calling thread. Mirror that so the writer pump's
-        // re-entry into `queue.async` is exercised the same way it is
-        // in production.
-        DispatchQueue.global().async {
-            withCompletionHandler(error)
+        if capture {
+            lock.lock()
+            _pendingWriteCompletions.append((withCompletionHandler, error))
+            lock.unlock()
+        } else {
+            // Apple's NEAppProxyTCPFlow calls the completion handler off
+            // the calling thread. Mirror that so the writer pump's
+            // re-entry into `queue.async` is exercised the same way it is
+            // in production.
+            DispatchQueue.global().async {
+                withCompletionHandler(error)
+            }
         }
     }
 
@@ -192,7 +236,15 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// failure mode that wedged the runtime: each retry strongly
     /// captured `self` via `asyncAfter`, so without a wall-clock
     /// deadline the writer had no terminating condition.
+    ///
+    /// Clamp the hard deadline so the test completes deterministically
+    /// in well under a second; the production default (5s) was the
+    /// source of CI-killing flakes on loaded test runners.
     func testTransientRetryLoopHonoursDeadline() {
+        let savedDeadline = writeRetryHardDeadlineMs
+        writeRetryHardDeadlineMs = 200
+        defer { writeRetryHardDeadlineMs = savedDeadline }
+
         let flow = MockTcpFlow()
         flow.handler = { _, _ in transientENOBUFS() }
 
@@ -211,8 +263,8 @@ final class TcpClientWritePumpTests: XCTestCase {
         pump.markOpened()
         XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)
 
-        // Deadline is 5s + per-attempt delays. Pad generously.
-        wait(for: [terminalError], timeout: 10.0)
+        // 200ms deadline + per-attempt delays + slack.
+        wait(for: [terminalError], timeout: 2.0)
         XCTAssertNotNil(observedError)
         XCTAssertGreaterThan(flow.writeCount, 1, "should have retried at least once before giving up")
     }
@@ -225,7 +277,23 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// already knows the flow is dead.
     func testCancelStopsRetryImmediately() {
         let flow = MockTcpFlow()
-        flow.handler = { _, _ in transientENOBUFS() }
+
+        // Use an expectation to wait deterministically for at least
+        // one write to fire before we issue cancel(). The previous
+        // `Thread.sleep(0.05)` raced a starved dispatch queue on
+        // loaded CI runners — wake-up could land before any write
+        // had executed, leaving `beforeCancel = 0` and the cancel-
+        // vs-retry contract effectively unverifiable (the post-cancel
+        // bound `beforeCancel + 1 = 1` then trips on whatever the
+        // queue eventually drains).
+        let firstWriteFired = expectation(description: "first write fires")
+        // The retry loop fires many writes; we only need to observe
+        // the first one to know the pump is "mid-loop".
+        firstWriteFired.assertForOverFulfill = false
+        flow.handler = { _, _ in
+            firstWriteFired.fulfill()
+            return transientENOBUFS()
+        }
 
         let pump = TcpClientWritePump(
             flow: flow,
@@ -239,8 +307,10 @@ final class TcpClientWritePumpTests: XCTestCase {
         pump.markOpened()
         XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)
 
-        // Let one or two retries fire so the pump is mid-loop.
-        Thread.sleep(forTimeInterval: 0.05)
+        // Block until the pump is actually mid-loop. Generous timeout
+        // tolerates worst-case dispatch latency on loaded CI without
+        // crossing into "test is silently broken" territory.
+        wait(for: [firstWriteFired], timeout: 2.0)
         let beforeCancel = flow.writeCount
         XCTAssertGreaterThan(beforeCancel, 0)
 
@@ -258,6 +328,95 @@ final class TcpClientWritePumpTests: XCTestCase {
             flow.writeCount, beforeCancel + 1,
             "cancel must short-circuit the retry loop; saw \(flow.writeCount) writes vs \(beforeCancel) before cancel"
         )
+    }
+
+    /// Pin the post-cancel state-hygiene invariant:
+    ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`
+    /// must hold even when a write completion lands AFTER cancel's
+    /// cleanup block ran.
+    ///
+    /// The race: `flush()` issued `doWrite(chunk, completion)` while
+    /// open; before the completion fires, `cancel()` sets `closed=true`
+    /// (synchronous) and enqueues cleanup (`pending.removeAll`,
+    /// `retrying=nil`). The cleanup runs first because it was queued
+    /// before the completion's `self.queue.async`. Then the completion
+    /// fires. Without an `isClosed()` guard at the top of the
+    /// completion's queue block, the transient-error branch silently
+    /// revives `pending`, `pendingBytes`, and `retrying` — no extra
+    /// write fires (the next flush bails on `isClosed`), but the
+    /// invariant is quietly violated.
+    ///
+    /// Drives the completion synchronously from the test thread via
+    /// `MockTcpFlow.completeNextWrite()` so the completion's queue
+    /// block is FIFO-ordered before the snapshot block; this removes
+    /// the global-queue race that would otherwise make the test
+    /// flaky in either direction.
+    func testCancelPreservesInvariantsAfterInFlightCompletion() {
+        let flow = MockTcpFlow()
+        flow.captureWriteCompletions = true
+        let firstWriteFired = expectation(description: "first write fires")
+        flow.handler = { _, _ in
+            firstWriteFired.fulfill()
+            return transientENOBUFS()
+        }
+
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: makeQueue(),
+            logger: { _ in },
+            onTerminalError: { _ in
+                XCTFail("onTerminalError must not fire after explicit cancel")
+            },
+            onDrained: {}
+        )
+        pump.markOpened()
+        XCTAssertEqual(pump.enqueue(Data(repeating: 0xAB, count: 64)), .accepted)
+
+        // The handler fulfills the expectation INSIDE `flow.write`,
+        // just before `MockTcpFlow` captures the completion under
+        // its lock. Spin briefly for the capture to land — bounded
+        // and short; in practice the gap is microseconds.
+        wait(for: [firstWriteFired], timeout: 2.0)
+        let captureDeadline = Date().addingTimeInterval(1.0)
+        while flow.pendingWriteCompletionCount == 0 {
+            if Date() > captureDeadline {
+                XCTFail("captured write did not land within 1s")
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        XCTAssertEqual(flow.pendingWriteCompletionCount, 1)
+
+        // Cancel BEFORE the completion is released — this is the race
+        // window. `closed=true` is published synchronously here;
+        // cleanup is queued on the core queue.
+        pump.cancel()
+        XCTAssertEqual(pump.enqueue(Data([0x01])), .closed)
+
+        // Release the captured completion synchronously on the test
+        // thread. The pump's `[weak self] error in self.queue.async {…}`
+        // closure runs inline, enqueuing the completion's block onto
+        // the core queue immediately after the cancel cleanup block.
+        XCTAssertTrue(flow.completeNextWrite())
+
+        // Snapshot the invariant. The block runs on the core queue,
+        // FIFO-ordered strictly after the cleanup and the completion
+        // blocks — so it observes the post-completion steady state.
+        let snapshotFired = expectation(description: "invariant snapshot")
+        var observedPendingEmpty = false
+        var observedRetryingNil = false
+        var observedPendingBytes = -1
+        pump.testCoreInvariantSnapshot { pendingEmpty, retryingNil, pendingBytes in
+            observedPendingEmpty = pendingEmpty
+            observedRetryingNil = retryingNil
+            observedPendingBytes = pendingBytes
+            snapshotFired.fulfill()
+        }
+        wait(for: [snapshotFired], timeout: 2.0)
+
+        XCTAssertTrue(observedPendingEmpty, "pending must be empty after cancel + completion")
+        XCTAssertTrue(observedRetryingNil, "retrying must be nil after cancel + completion")
+        XCTAssertEqual(observedPendingBytes, 0, "pendingBytes must be 0 after cancel + completion")
     }
 
     /// `enqueue()` is called from the Rust side on a Tokio worker

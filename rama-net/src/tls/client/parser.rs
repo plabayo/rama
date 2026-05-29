@@ -12,7 +12,7 @@ use crate::tls::{
 use nom::{
     IResult, Parser,
     bytes::streaming::take,
-    combinator::{complete, cond, map, map_opt, map_parser, opt, verify},
+    combinator::{complete, cond, map, map_opt, map_parser, verify},
     error::{ErrorKind, make_error},
     multi::{length_data, many0},
     number::streaming::{be_u8, be_u16},
@@ -147,16 +147,23 @@ fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain
     let (i, comp_len) = be_u8(i)?;
     let (i, _) = take(comp_len)(i)?;
 
-    // start the actual search for the SNI... the one to rule them all
-    let (_, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
-    if let Some(mut i) = opt_ext {
-        while !i.is_empty() {
-            let (new_i, domain) = parse_tls_client_hello_extension_sni_host_or_skip(i)?;
-            if let Some(domain) = domain {
-                return Ok((new_i, Some(domain)));
-            }
-            i = new_i;
+    // Search for the SNI extension. Same incompleteness contract as
+    // `parse_client_hello_inner`: an empty tail means "no extensions
+    // block" (no SNI), but a *declared-yet-truncated* extensions
+    // section must surface as `Incomplete` (via streaming `be_u16` /
+    // `take`) so an incremental peeker keeps reading instead of
+    // silently concluding "no SNI" from a half-buffered hello.
+    if i.is_empty() {
+        return Ok((&[], None));
+    }
+    let (after_len, ext_len) = be_u16(i)?;
+    let (_, mut ext_payload) = take(ext_len as usize).parse(after_len)?;
+    while !ext_payload.is_empty() {
+        let (next, domain) = parse_tls_client_hello_extension_sni_host_or_skip(ext_payload)?;
+        if let Some(domain) = domain {
+            return Ok((next, Some(domain)));
         }
+        ext_payload = next;
     }
 
     // no SNI found...
@@ -172,16 +179,33 @@ fn parse_client_hello_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
     let (i, cipher_suites) = parse_cipher_suites(i, ciphers_len as usize)?;
     let (i, comp_len) = be_u8(i)?;
     let (i, compression_algorithms) = parse_compressions_algs(i, comp_len as usize)?;
-    let (i, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
 
-    let mut extensions = vec![];
-    if let Some(mut i) = opt_ext {
-        while !i.is_empty() {
-            let (new_i, ch_ext) = parse_tls_client_hello_extension(i)?;
+    // Extensions section.
+    //
+    // If `i` is empty here, the ClientHello legitimately carries no
+    // extensions block (a TLS 1.0/1.1-era hello) — return an empty
+    // list. Otherwise the 2-byte length AND the full declared payload
+    // MUST be present; we parse them with the *streaming* `be_u16` /
+    // `take` so a short buffer surfaces as `Incomplete` and propagates
+    // via `?`. The previous `opt(complete(length_data(...)))` masked
+    // BOTH "no section" and "section declared but truncated" as
+    // `None`, which silently dropped SNI / ALPN / supported_versions
+    // from a half-buffered hello and made the MITM mirror a bare
+    // default ClientHello that upstreams reject. An incremental peeker
+    // must keep reading on truncation, not accept a stripped hello.
+    let (i, extensions) = if i.is_empty() {
+        (i, Vec::new())
+    } else {
+        let (after_len, ext_len) = be_u16(i)?;
+        let (after_ext, mut ext_payload) = take(ext_len as usize).parse(after_len)?;
+        let mut extensions = vec![];
+        while !ext_payload.is_empty() {
+            let (next, ch_ext) = parse_tls_client_hello_extension(ext_payload)?;
             extensions.push(ch_ext);
-            i = new_i;
+            ext_payload = next;
         }
-    }
+        (after_ext, extensions)
+    };
 
     Ok((
         i,
@@ -561,6 +585,100 @@ mod tests {
     #[test]
     fn test_parse_client_hello_zero_bytes_failure() {
         parse_client_hello(&[]).unwrap_err();
+    }
+
+    /// ClientHello record body (no TLS record / handshake header) up to
+    /// and including the compression-methods field, with one TLS 1.3
+    /// cipher and the null compression method. Callers append whatever
+    /// extensions-section bytes they want to exercise.
+    fn ch_record_body_prefix() -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&[0x03, 0x03]); // legacy_version = TLS 1.2
+        v.extend_from_slice(&[0u8; 32]); // random
+        v.push(0x00); // session_id length = 0
+        v.extend_from_slice(&[0x00, 0x02]); // cipher_suites length = 2
+        v.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+        v.extend_from_slice(&[0x01, 0x00]); // compression: len 1, method null
+        v
+    }
+
+    /// A hello with no extensions section at all (legacy TLS 1.0/1.1
+    /// shape) must still parse — with an empty extensions list.
+    #[test]
+    fn parse_client_hello_without_extensions_section() {
+        let body = ch_record_body_prefix();
+        let ch = parse_client_hello(&body).expect("legacy extensionless CH must parse");
+        assert!(ch.extensions().is_empty());
+        assert_eq!(ch.cipher_suites(), &[CipherSuite::TLS13_AES_128_GCM_SHA256]);
+    }
+
+    /// A hello whose extensions section is fully present parses with the
+    /// extensions populated.
+    #[test]
+    fn parse_client_hello_with_complete_extensions() {
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&[0x00, 0x04]); // extensions total length = 4
+        body.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]); // extended_master_secret, empty
+        let ch = parse_client_hello(&body).expect("complete CH must parse");
+        assert_eq!(ch.extensions().len(), 1);
+    }
+
+    /// Regression: a hello whose extensions section is *declared* but
+    /// *truncated* in the buffer must NOT parse as an extension-less
+    /// hello. Before the fix `opt(complete(length_data(...)))` swallowed
+    /// the incompleteness and returned a CH with zero extensions —
+    /// which made the MITM mirror a bare default ClientHello (no SNI /
+    /// ALPN / supported_versions) that SNI-routed upstreams reject. The
+    /// parse must instead fail so an incremental peeker keeps reading.
+    #[test]
+    fn parse_client_hello_truncated_extensions_section_is_error() {
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&[0x00, 0x0a]); // declares 10 extension bytes
+        body.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]); // but only 4 present
+        parse_client_hello(&body)
+            .expect_err("truncated extensions must not parse as extension-less");
+    }
+
+    /// Same truncation contract through the full handshake-level parser
+    /// (the path `PeekTlsClientHelloService` / the MITM actually use):
+    /// a complete record parses with extensions; a truncated one errors.
+    #[test]
+    fn parse_client_hello_handshake_truncated_extensions_is_error() {
+        // Build the CH body with a complete 1-extension section.
+        let mut body = ch_record_body_prefix();
+        body.extend_from_slice(&[0x00, 0x04]);
+        body.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]);
+
+        let wrap_handshake = |body: &[u8]| -> Vec<u8> {
+            let mut hs = Vec::new();
+            // Handshake header: ClientHello (0x01) + 3-byte length.
+            hs.push(0x01);
+            let blen = body.len();
+            hs.extend_from_slice(&[
+                ((blen >> 16) & 0xff) as u8,
+                ((blen >> 8) & 0xff) as u8,
+                (blen & 0xff) as u8,
+            ]);
+            hs.extend_from_slice(body);
+            // TLS record header: handshake (0x16) + version + 2-byte length.
+            let mut rec = Vec::new();
+            rec.extend_from_slice(&[0x16, 0x03, 0x01]);
+            let hlen = hs.len();
+            rec.extend_from_slice(&[((hlen >> 8) & 0xff) as u8, (hlen & 0xff) as u8]);
+            rec.extend_from_slice(&hs);
+            rec
+        };
+
+        let complete_record = wrap_handshake(&body);
+        let ch =
+            parse_client_hello_handshake(&complete_record).expect("complete record must parse");
+        assert_eq!(ch.extensions().len(), 1);
+
+        // Now lop off the last 2 bytes of the *body's* extension payload
+        // so the declared extensions length outruns the buffer.
+        let truncated_record = &complete_record[..complete_record.len() - 2];
+        parse_client_hello_handshake(truncated_record)
+            .expect_err("truncated handshake-level CH must not parse as extension-less");
     }
 
     #[test]

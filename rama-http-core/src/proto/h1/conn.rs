@@ -911,17 +911,17 @@ struct State {
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
-    /// State of allowed reads
+    /// State of allowed reads.
     reading: Reading,
-    /// State of allowed writes
+    /// State of allowed writes.
     writing: Writing,
     /// Last known request extensions encoded
     encoded_request_extensions: Option<rama_core::extensions::Extensions>,
     /// An expected pending HTTP upgrade.
     upgrade: Option<upgrade::Pending>,
-    /// Either HTTP/1.0 or 1.1 connection
+    /// Either HTTP/1.0 or 1.1 connection.
     version: Version,
-    /// Flag to track if trailer fields are allowed to be sent
+    /// Flag to track if trailer fields are allowed to be sent.
     allow_trailer_fields: bool,
 }
 

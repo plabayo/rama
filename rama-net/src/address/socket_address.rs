@@ -394,8 +394,7 @@ impl serde::Serialize for SocketAddress {
     where
         S: serde::Serializer,
     {
-        let address = self.to_string();
-        address.serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 

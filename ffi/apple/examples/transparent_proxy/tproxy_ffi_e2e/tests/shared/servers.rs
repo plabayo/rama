@@ -215,7 +215,7 @@ fn http_app(
             UpgradeLayer::new(
                 Executor::default(),
                 HttpMatcher::path("/ws").and_custom(WebSocketMatcher::new()),
-                WebSocketAcceptor::new(),
+                WebSocketAcceptor::new().with_per_message_deflate(),
                 ConsumeErrLayer::trace_as_debug().into_layer(WebSocketEchoService::new()),
             ),
             MapResponseBodyLayer::new_boxed_streaming_body(),
@@ -235,7 +235,9 @@ pub(crate) async fn spawn_http_server(
         .expect("bind plain http server");
     let port = listener.local_addr().expect("plain http local addr").port();
     let handle = tokio::spawn(async move {
-        let _ = listener.serve(server.service(http_app(&observations))).await;
+        let _ = listener
+            .serve(server.service(http_app(&observations)))
+            .await;
     });
     (port, handle)
 }
@@ -260,7 +262,9 @@ pub(crate) async fn spawn_https_server(
     let port = listener.local_addr().expect("https local addr").port();
     let handle = tokio::spawn(async move {
         let _ = listener
-            .serve(TlsAcceptorLayer::new(tls_data).into_layer(server.service(http_app(&observations))))
+            .serve(
+                TlsAcceptorLayer::new(tls_data).into_layer(server.service(http_app(&observations))),
+            )
             .await;
     });
     (port, handle)
@@ -316,11 +320,12 @@ pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
         .expect("bind raw tls echo");
     let port = listener.local_addr().expect("raw tls local addr").port();
     let handle = tokio::spawn(async move {
-        let _ = listener
-            .serve(TlsAcceptorLayer::new(tls_data).into_layer(service_fn(
-                |stream| async move { tls_echo_service(stream).await },
-            )))
-            .await;
+        let _ =
+            listener
+                .serve(TlsAcceptorLayer::new(tls_data).into_layer(service_fn(
+                    |stream| async move { tls_echo_service(stream).await },
+                )))
+                .await;
     });
     (port, handle)
 }

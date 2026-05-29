@@ -7,7 +7,6 @@ use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::error::extra::OpaqueError;
-use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_net::uri::util::percent_encoding::percent_decode;
 use rama_utils::include_dir::Dir;
@@ -85,6 +84,7 @@ impl ServeDir<DefaultServeDirFallback> {
             precompressed_variants: None,
             variant: ServeVariant::Directory {
                 serve_mode: Default::default(),
+                html_as_default_extension: false,
             },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
@@ -112,8 +112,27 @@ impl<F> ServeDir<F> {
         /// Set the [`DirectoryServeMode`].
         pub fn directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
             match &mut self.variant {
-                ServeVariant::Directory { serve_mode } => {
+                ServeVariant::Directory { serve_mode, .. } => {
                     *serve_mode = mode;
+                    self
+                }
+                ServeVariant::SingleFile { mime: _ } => self,
+            }
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// If the requested path doesn't specify a file extension, append `.html`
+        /// to it before trying to open it. Useful for serving static sites that
+        /// link to bare filenames (e.g. `/about` → `/about.html`).
+        ///
+        /// Has no effect for [`ServeFile`](super::ServeFile) (single-file mode).
+        ///
+        /// Defaults to `false`.
+        pub fn html_as_default_extension(mut self, html_as_default_extension: bool) -> Self {
+            match &mut self.variant {
+                ServeVariant::Directory { html_as_default_extension: dst, .. } => {
+                    *dst = html_as_default_extension;
                     self
                 }
                 ServeVariant::SingleFile { mime: _ } => self,
@@ -284,7 +303,12 @@ impl<F> ServeDir<F> {
             *fallback_req.method_mut() = req.method().clone();
             *fallback_req.uri_mut() = req.uri().clone();
             *fallback_req.headers_mut() = req.headers().clone();
-            fallback_req.extensions().extend(&extensions);
+            // Carry the ORIGINAL request's full extensions (including any
+            // parent chain) onto the fallback request. `extend` would copy
+            // only the top-level store and silently drop a parent chain.
+            let (mut fallback_parts, fallback_body) = fallback_req.into_parts();
+            fallback_parts.extensions = extensions;
+            let fallback_req = Request::from_parts(fallback_parts, fallback_body);
 
             (fallback, fallback_req)
         });
@@ -307,6 +331,7 @@ impl<F> ServeDir<F> {
             .and_then(|value| value.to_str().ok())
             .map(|s| s.to_owned());
 
+        let precompression_configured = self.precompressed_variants.is_some();
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
@@ -322,6 +347,7 @@ impl<F> ServeDir<F> {
             range_header.as_deref(),
             buf_chunk_size,
             &self.base,
+            precompression_configured,
         )
         .await;
 
@@ -404,8 +430,15 @@ impl TryFrom<&str> for DirectoryServeMode {
 // with almost no overhead
 #[derive(Clone, Debug)]
 enum ServeVariant {
-    Directory { serve_mode: DirectoryServeMode },
-    SingleFile { mime: Mime },
+    Directory {
+        serve_mode: DirectoryServeMode,
+        /// If true, requests for a path without a file extension that doesn't
+        /// resolve to anything will be retried with `.html` appended.
+        html_as_default_extension: bool,
+    },
+    SingleFile {
+        mime: Mime,
+    },
 }
 
 impl ServeVariant {
@@ -413,7 +446,7 @@ impl ServeVariant {
     /// Returns None if the path is invalid or unsafe.
     fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
-            Self::Directory { serve_mode: _ } => {
+            Self::Directory { .. } => {
                 let path = requested_path.trim_start_matches('/');
 
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;

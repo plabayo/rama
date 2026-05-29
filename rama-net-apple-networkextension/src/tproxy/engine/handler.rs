@@ -154,6 +154,30 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     + '_ {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }
+
+    /// Notification that the system is about to sleep. The engine
+    /// has already drained every in-flight flow on the Swift side
+    /// before this fires — opportunity to flush metrics, snapshot
+    /// pending work, etc. Default: trace log.
+    fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+        tracing::debug!(
+            target: "rama_apple_ne::tproxy::lifecycle",
+            "system sleep (default handler)"
+        );
+        std::future::ready(())
+    }
+
+    /// Notification that the system has just resumed from sleep.
+    /// No flows are carried across; new flows arrive via
+    /// `match_tcp_flow` / `match_udp_flow` as normal. Default:
+    /// trace log.
+    fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
+        tracing::debug!(
+            target: "rama_apple_ne::tproxy::lifecycle",
+            "system wake (default handler)"
+        );
+        std::future::ready(())
+    }
 }
 
 #[derive(Debug, Clone)]

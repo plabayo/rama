@@ -1,0 +1,211 @@
+name: CI (unstable toolchains)
+
+# Beta and nightly toolchain jobs live here, on a daily schedule, so that
+# new lints / compiler changes get caught without ever blocking main or PRs.
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN_NIGHTLY: nightly
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check-rust:
+    strategy:
+      matrix:
+        toolchain:
+          - beta
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ilammy/setup-nasm@v1
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy, rustfmt
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
+          key: ${{ matrix.os }}-${{ matrix.toolchain }}
+      - name: clippy
+        run: |
+          cargo clippy --workspace --all-targets --all-features
+      - name: rustfmt
+        run: |
+          cargo fmt --all --check
+
+  clippy-autofix:
+    # If check-rust fails (typically because clippy fires new lints on
+    # the beta toolchain), try `cargo clippy --fix` on ubuntu-latest +
+    # beta and open a PR with whatever auto-fixes get applied. Many
+    # beta lint regressions are auto-fixable, so this should resolve
+    # most failures of the scheduled run without manual intervention.
+    needs: check-rust
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      # No `-D warnings` here: we want clippy to apply as many
+      # auto-fixes as it can, even if some lints remain unfixable.
+      RUSTFLAGS: --cfg tokio_unstable
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: beta
+          components: clippy
+      - uses: ./.github/actions/rust-cache
+        with:
+          env-vars: "RUST_TOOLCHAIN=beta"
+          key: ubuntu-latest-beta
+      - name: cargo clippy --fix
+        # Don't fail the job on remaining (unfixable) lints — we still
+        # want to open a PR with whatever got auto-fixed.
+        continue-on-error: true
+        run: |
+          cargo clippy --workspace --all-targets --all-features \
+            --fix --allow-dirty --allow-staged
+      - name: Check for changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open PR with clippy --fix changes
+        if: steps.diff.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rustc_version=$(rustc --version)
+          today=$(date -u +%Y-%m-%d)
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          branch="ci/clippy-autofix-${stamp}"
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${branch}"
+          git add -A
+
+          commit_msg=$(cat <<EOF
+          ci(autofix): apply cargo clippy --fix (beta)
+
+          rustc:    ${rustc_version}
+          date:     ${today}
+          workflow: ${run_url}
+          EOF
+          )
+          git commit -m "${commit_msg}"
+          git push origin "${branch}"
+
+          pr_body=$(cat <<EOF
+          Automated fixes from \`cargo clippy --fix\` on the beta toolchain.
+
+          - **rustc:** \`${rustc_version}\`
+          - **date:** ${today}
+          - **workflow run:** ${run_url}
+
+          Triggered because the scheduled \`check-rust\` job in \`CI-unstable.yml\` failed. Review carefully — auto-fixes are usually safe but not always semantics-preserving.
+          EOF
+          )
+          gh pr create \
+            --base main \
+            --head "${branch}" \
+            --title "ci: clippy --fix auto-fixes (${today})" \
+            --body "${pr_body}"
+
+  test-ffi-apple-example-transparent-proxy-e2e-asan:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      # ASan needs nightly for `-Z sanitizer=address` and a matching
+      # `rust-src` so the sanitizer-built std actually compiles.
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
+          components: rust-src
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
+      - name: Install just
+        run: brew install just
+      - name: Run transparent proxy FFI stress tests under AddressSanitizer
+        working-directory: ./ffi/apple/examples/transparent_proxy
+        run: just test-e2e-asan
+
+  fuzz-rust:
+    runs-on: ubuntu-latest
+    env:
+      # cargo-fuzz builds with `-Zsanitizer=address`, which is
+      # incompatible with statically linked libc. The host's
+      # toolchain can pick up `+crt-static` from a recent image
+      # default, so disable it explicitly here. rustc emits exactly
+      # this fix in the error message when the combination fires.
+      # Also keep `--cfg tokio_unstable` here because setting
+      # RUSTFLAGS via env overrides the workspace's
+      # `.cargo/config.toml` rustflags entirely (rather than
+      # appending).
+      RUSTFLAGS: "--cfg tokio_unstable -C target-feature=-crt-static"
+      # `cargo-fuzz` uses the host triple by default. A recent
+      # ubuntu-latest image flipped that to
+      # `x86_64-unknown-linux-musl`, which isn't installed by
+      # `dtolnay/rust-toolchain` and fails the build with
+      # "can't find crate for std" / "the
+      # x86_64-unknown-linux-musl target may not be installed".
+      # Pin to gnu explicitly so the job doesn't depend on
+      # whatever the runner's default is on any given day.
+      RAMA_FUZZ_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+          targets: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: ubuntu-latest-nightly-fuzz
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_NIGHTLY}}"
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
+        with:
+          tool: cargo-fuzz
+      - name: fuzz — ua_parse
+        run: |
+          cargo +nightly fuzz run ua_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
+      - name: fuzz — http_header_x_robots_tag
+        run: |
+          cargo +nightly fuzz run http_header_x_robots_tag --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=131072 -max_total_time=30
+      - name: fuzz — uri_parse
+        run: |
+          cargo +nightly fuzz run uri_parse --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
+      - name: fuzz — uri_resolve
+        run: |
+          cargo +nightly fuzz run uri_resolve --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_len=65534 -max_total_time=30
+      - name: fuzz — h2
+        run: |
+          cargo +nightly fuzz run h2_client --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+          cargo +nightly fuzz run h2_e2e --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30
+          cargo +nightly fuzz run h2_hpack --target ${{ env.RAMA_FUZZ_TARGET }} -- -max_total_time=30

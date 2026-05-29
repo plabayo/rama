@@ -51,6 +51,11 @@ final class ContainerController: NSObject, NSApplicationDelegate {
     var installCAMenuItem: NSMenuItem?
     var clearCAMenuItem: NSMenuItem?
     var pingProviderMenuItem: NSMenuItem?
+    /// Toggle for the SSLKEYLOG sink baked into the MITM relay
+    /// at engine-construction time. Flipping it while the proxy
+    /// is connected restarts the provider (the action confirms
+    /// first).
+    var tlsKeylogMenuItem: NSMenuItem?
     var resetMenuItem: NSMenuItem?
 
     var activeManager: NETransparentProxyManager?
