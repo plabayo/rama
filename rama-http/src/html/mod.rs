@@ -71,7 +71,9 @@ mod rama_impls;
 mod response;
 
 #[doc(inline)]
-pub use self::core::{IntoHtml, Marker, PreEscaped, escape, escape_into, marker};
+pub use self::core::{
+    End, IntoHtml, Marker, PreEscaped, Start, end, escape, escape_into, marker, start,
+};
 #[doc(inline)]
 pub use self::response::HtmlBuf;
 

@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use crate::html::{IntoHtml, escape, escape_into, marker};
+use crate::html::{IntoHtml, end, escape, escape_into, marker, start};
 
 #[test]
 fn escape_returns_owned_when_needed() {
@@ -64,5 +64,19 @@ fn marker_escapes_unsafe_chars() {
     assert_eq!(
         marker(String::from(" with space ")).into_string(),
         r#"<?marker name=" with space ">"#
+    );
+}
+
+#[test]
+fn start_end_emit_processing_instructions() {
+    assert_eq!(start("cart").into_string(), r#"<?start name="cart">"#);
+    assert_eq!(end().into_string(), r#"<?end>"#);
+}
+
+#[test]
+fn start_escapes_unsafe_chars() {
+    assert_eq!(
+        start(r#"a"<&>b"#).into_string(),
+        r#"<?start name="a&quot;&lt;&amp;&gt;b">"#
     );
 }
