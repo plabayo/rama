@@ -9,9 +9,9 @@ use rama::{
 };
 use std::time::{Duration, Instant};
 
-/// String that only ever appears inside the inline polyfill `<script>`,
-/// so its presence is an exact signal for `?polyfill=…` gating.
-const POLYFILL_NEEDLE: &str = "findMarker";
+/// String that only ever appears in the polyfill `<script src>` tag, so
+/// its presence is an exact signal for `?polyfill=…` gating.
+const POLYFILL_NEEDLE: &str = "template-for-polyfill";
 
 #[tokio::test]
 #[ignore]
@@ -75,8 +75,8 @@ async fn test_http_declarative_partial_updates() {
     let first_str = std::str::from_utf8(&first).unwrap();
     for m in ["recs", "herd", "ping"] {
         assert!(
-            first_str.contains(&format!(r#"<?marker name="{m}">"#)),
-            "shell missing marker {m}"
+            first_str.contains(&format!(r#"<?start name="{m}">"#)),
+            "shell missing start marker {m}"
         );
     }
     for m in ["recs", "herd", "ping"] {
