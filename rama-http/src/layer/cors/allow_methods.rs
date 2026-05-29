@@ -15,6 +15,14 @@ impl AllowMethods {
         }
     }
 
+    /// Whether the emitted `Access-Control-Allow-Methods` depends on
+    /// `Access-Control-Request-Method`. When true, the derived `Vary`
+    /// must advertise it so caches don't serve one preflight's allowance
+    /// to a different method.
+    pub(super) fn varies_with_request_method(&self) -> bool {
+        matches!(self, Self::MirrorRequest)
+    }
+
     pub(super) fn extend_headers(&self, headers: &mut HeaderMap, parts: &RequestParts) {
         match self {
             Self::Const(header) => headers.typed_insert(header),

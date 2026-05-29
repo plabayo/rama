@@ -136,6 +136,16 @@ fn build_response(output: FileOpened) -> Response {
         builder = builder.header(header::CONTENT_ENCODING, HeaderValue::from(encoding));
     }
 
+    // Per RFC 9110 §12.5.3: when the response *could have* been selected by
+    // `Accept-Encoding` — i.e. ServeDir was configured with precompressed
+    // variants — caches need `Vary: Accept-Encoding` to avoid serving a
+    // compressed response to a client that only asked for identity (or
+    // vice-versa). This must be emitted even for uncompressed responses,
+    // because the negotiation outcome is still request-dependent.
+    if output.precompression_configured {
+        builder = builder.header(header::VARY, HeaderValue::from_static("accept-encoding"));
+    }
+
     if let Some(last_modified) = output.last_modified {
         builder = builder.header(header::LAST_MODIFIED, last_modified.0.to_string());
     }

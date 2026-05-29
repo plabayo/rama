@@ -43,9 +43,9 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.project();
+        let mut this = self.project();
         let _guard = this.span.enter();
-        let result = ready!(this.inner.poll_frame(cx));
+        let result = ready!(this.inner.as_mut().poll_frame(cx));
 
         let latency = this.start.elapsed();
         *this.start = Instant::now();
@@ -75,6 +75,21 @@ where
                     }
                     Err(frame) => frame,
                 };
+
+                // If the inner body signals end-of-stream after this frame,
+                // fire on_eos now since the consumer may not poll again (e.g.
+                // when Content-Length is exact).
+                if this.inner.is_end_stream() {
+                    if let Some((classify_eos, on_failure)) =
+                        this.classify_eos.take().zip(this.on_failure.take())
+                        && let Err(failure_class) = classify_eos.classify_eos(None)
+                    {
+                        on_failure.on_failure(failure_class, latency, this.span);
+                    }
+                    if let Some((on_eos, stream_start)) = this.on_eos.take() {
+                        on_eos.on_eos(None, stream_start.elapsed(), this.span);
+                    }
+                }
 
                 Poll::Ready(Some(Ok(frame)))
             }

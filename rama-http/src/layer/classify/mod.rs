@@ -14,7 +14,7 @@ mod status_in_range_is_error;
 
 pub use self::{
     grpc_errors_as_failures::{
-        GrpcCode, GrpcEosErrorsAsFailures, GrpcErrorsAsFailures, GrpcFailureClass,
+        GrpcCode, GrpcEosErrorsAsFailures, GrpcErrorsAsFailures, GrpcFailureClass, GrpcStatus,
     },
     map_failure_class::MapFailureClass,
     status_in_range_is_error::{StatusInRangeAsFailures, StatusInRangeFailureClass},

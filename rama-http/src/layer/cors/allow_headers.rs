@@ -15,6 +15,14 @@ impl AllowHeaders {
         }
     }
 
+    /// Whether the emitted `Access-Control-Allow-Headers` depends on
+    /// `Access-Control-Request-Headers`. When true, the derived `Vary`
+    /// must advertise it so caches don't serve one preflight's allowance
+    /// to a different request-header set.
+    pub(super) fn varies_with_request_headers(&self) -> bool {
+        matches!(self, Self::MirrorRequest)
+    }
+
     pub(super) fn extend_headers(&self, headers: &mut HeaderMap, parts: &RequestParts) {
         match self {
             Self::Const(header) => headers.typed_insert(header),
