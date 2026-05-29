@@ -179,15 +179,16 @@ impl FrameCodec {
                 bytes::Buf::advance(&mut self.in_buffer, advanced as _);
 
                 if let Some((_, len)) = &self.header {
-                    let len = *len as usize;
-
-                    // Enforce frame size limit early
-                    if len > max_size {
+                    // Enforce frame size limit early. Compare in u64 before
+                    // narrowing so a length above usize::MAX can't wrap on
+                    // 32-bit/wasm32 targets and slip past the check.
+                    if *len > max_size as u64 {
                         return Err(ProtocolError::MessageTooLong {
-                            size: len,
+                            size: *len as usize,
                             max_size,
                         });
                     }
+                    let len = *len as usize;
 
                     // Reserve full message length only once, even for multiple
                     // loops or if WouldBlock errors cause multiple fn calls.
@@ -390,6 +391,24 @@ mod tests {
             Err(ProtocolError::MessageTooLong {
                 size: 7,
                 max_size: 5
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn length_above_usize_max_rejected() {
+        // 64-bit payload length 0x1_0000_0005 does not fit a 32-bit usize; it
+        // must be rejected rather than wrapping to 5 when narrowed.
+        let raw = Cursor::new(vec![
+            0x82, 0x7f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05,
+        ]);
+        let mut sock = FrameSocket::new(raw);
+        assert!(matches!(
+            sock.read(None),
+            Err(ProtocolError::MessageTooLong {
+                size: 5,
+                max_size: usize::MAX
             })
         ));
     }

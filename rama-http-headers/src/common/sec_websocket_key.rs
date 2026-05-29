@@ -58,10 +58,36 @@ impl From<[u8; 16]> for SecWebSocketKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::test_decode;
 
     #[test]
     fn from_bytes() {
         let bytes: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
         _ = SecWebSocketKey::from(bytes);
+    }
+
+    #[test]
+    fn test_invalid_websocket_key_empty() {
+        assert!(test_decode::<SecWebSocketKey>(&[""]).is_none());
+    }
+
+    #[test]
+    fn test_invalid_websocket_key_too_long() {
+        assert!(test_decode::<SecWebSocketKey>(&["dGhlIHNhbXBsZSBub25jZQ==AAAAAAAAAA"]).is_none());
+    }
+
+    #[test]
+    fn test_invalid_websocket_key_base64_symbol() {
+        assert!(test_decode::<SecWebSocketKey>(&["dGhlIHNhbXBsZSBub25jZQ!!"]).is_none());
+    }
+
+    #[test]
+    fn test_invalid_websocket_key_decoded_length() {
+        assert!(test_decode::<SecWebSocketKey>(&["AAAAAAAAAAAAAAAAAAAAAAAA"]).is_none());
+    }
+
+    #[test]
+    fn test_valid_websocket_key() {
+        _ = test_decode::<SecWebSocketKey>(&["dGhlIHNhbXBsZSBub25jZQ=="]).unwrap();
     }
 }

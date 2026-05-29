@@ -92,7 +92,7 @@ impl<S> AsyncWebSocket<S> {
         f(&mut self.inner)
     }
 
-    /// Consumes the `WebSocketStream` and returns the underlying stream.
+    /// Consumes the `AsyncWebSocket` and returns the underlying stream.
     pub fn into_inner(self) -> S {
         self.inner.into_inner().into_inner()
     }
