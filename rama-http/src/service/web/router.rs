@@ -738,9 +738,8 @@ impl IntoResponse for RouterError {
 }
 
 impl From<Infallible> for RouterError {
-    fn from(_: Infallible) -> Self {
-        // unreachable
-        Self::Internal
+    fn from(infallible: Infallible) -> Self {
+        match infallible {}
     }
 }
 
