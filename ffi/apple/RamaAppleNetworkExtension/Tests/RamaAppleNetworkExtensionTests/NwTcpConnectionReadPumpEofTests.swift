@@ -177,6 +177,149 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         )
     }
 
+    /// Regression: the EOF backstop must fire even after the pump
+    /// itself is deallocated. A promote teardown drops the per-flow
+    /// ctx — and the read pump along with it — once the cutover
+    /// completes; without a strong capture of the connection, the
+    /// backstop's `[weak self]` no-ops and the NWConnection
+    /// registration leaks until the OS reaps it.
+    ///
+    /// Mirrors `testLingerCancelsConnectionEvenAfterPumpDeallocated`
+    /// in the writer-pump linger suite.
+    func testCancelStillFiresAfterPumpDeallocated() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        let session = makeInterceptedSession(engine)
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+
+        do {
+            let pump = NwTcpConnectionReadPump(
+                connection: mock,
+                session: session,
+                queue: queue,
+                eofGraceDeadline: .milliseconds(150)
+            )
+            pump.start()
+            waitForQueueDrain(queue)
+            XCTAssertEqual(mock.pendingReceiveCount, 1)
+
+            mock.completePendingReceive(isComplete: true)
+            waitForQueueDrain(queue)
+            XCTAssertEqual(mock.cancelCount, 0, "backstop not yet fired")
+            // `pump` goes out of scope → deallocated.
+        }
+
+        // Past the grace deadline + slack.
+        Thread.sleep(forTimeInterval: 0.30)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "EOF backstop must cancel the connection even after the pump is deallocated"
+        )
+    }
+
+    /// Regression (audit "Medium": egress `.closed` asymmetry). When the
+    /// Rust egress consumer is dropped, `session.onEgressBytes(_:)` returns
+    /// `.closed`. The pump must treat this as a terminal reason and arm the
+    /// same bounded-release backstop as EOF/error — otherwise the pump
+    /// silently stops reading while the NWConnection (and its NECP
+    /// registration) lingers until the OS reaps it. The sibling
+    /// `TcpClientReadPump` already routes `.closed` through `terminate(...)`;
+    /// this test pins the symmetric behaviour here.
+    ///
+    /// `session.cancel()` flips the handle's `cancelled` flag, after which
+    /// `onEgressBytes(_:)` returns `.closed` deterministically without
+    /// depending on Rust bridge state.
+    func testEgressClosedSchedulesCancelWithinGrace() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        let session = makeInterceptedSession(engine)
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: session,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(300)
+        )
+
+        pump.start()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.pendingReceiveCount, 1)
+
+        // Rust dropped the egress consumer: subsequent `onEgressBytes`
+        // returns `.closed`.
+        session.cancel()
+
+        // A receive carrying bytes now routes through the data branch,
+        // where `onEgressBytes` returns `.closed`.
+        mock.completePendingReceive(data: Data([0x1, 0x2, 0x3]), isComplete: false)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "bounded release must not fire before its deadline"
+        )
+        XCTAssertEqual(
+            mock.pendingReceiveCount, 0,
+            "pump must stop reading once the egress consumer is closed"
+        )
+
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "egress `.closed` must arm the same bounded release as EOF/error"
+        )
+    }
+
+    /// Regression (same audit finding, session-gone branch). If the per-flow
+    /// session is torn down while a receive is in flight, the pump's `weak`
+    /// session reference nils out. The data branch's `guard let session`
+    /// bail must also drive the bounded release — re-issuing a receive would
+    /// keep draining bytes that have nowhere to go, and doing nothing would
+    /// leak the NWConnection.
+    func testSessionGoneMidReceiveSchedulesCancelWithinGrace() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+        var session: RamaTcpSessionHandle? = makeInterceptedSession(engine)
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: session!,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(300)
+        )
+
+        pump.start()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.pendingReceiveCount, 1)
+
+        // Drop the only strong reference: the pump holds the session
+        // `weak`, so it nils out here.
+        session = nil
+
+        // A receive carrying bytes now hits the `guard let session` bail.
+        mock.completePendingReceive(data: Data([0x1, 0x2, 0x3]), isComplete: false)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 0, "bounded release must not fire before its deadline")
+        XCTAssertEqual(
+            mock.pendingReceiveCount, 0,
+            "pump must stop reading once the session is gone"
+        )
+
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "a session that vanishes mid-receive must arm the bounded release"
+        )
+    }
+
     func testNonTerminalReceiveDoesNotScheduleBackstop() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }

@@ -44,6 +44,20 @@ struct UpdateSettingsReply {
 #[derive(Debug, Default, Deserialize)]
 struct EmptyRequest {}
 
+/// Payload for the `setTlsKeylog:withReply:` selector.
+#[derive(Debug, Deserialize)]
+struct SetTlsKeylogRequest {
+    enabled: bool,
+}
+
+/// Reply shape for both `setTlsKeylog:withReply:` and
+/// `getTlsKeylog:withReply:` — `enabled` is the state observed
+/// *after* the call.
+#[derive(Debug, Serialize)]
+struct TlsKeylogReply {
+    enabled: bool,
+}
+
 /// Shared reply shape for `installRootCA:withReply:` and
 /// `uninstallRootCA:withReply:`.
 ///
@@ -224,7 +238,7 @@ pub(crate) fn spawn_xpc_server(
         .with_typed_route::<EmptyRequest, RotateRootCaReply, _>(
             "rotateRootCA:withReply:",
             service_fn({
-                let state = state;
+                let state = state.clone();
                 move |_req: EmptyRequest| {
                     let state = state.clone();
                     async move {
@@ -244,6 +258,39 @@ pub(crate) fn spawn_xpc_server(
                             }
                         };
                         Ok::<_, BoxError>(reply)
+                    }
+                }
+            }),
+        )
+        .with_typed_route::<SetTlsKeylogRequest, TlsKeylogReply, _>(
+            "setTlsKeylog:withReply:",
+            service_fn({
+                let state = state.clone();
+                move |req: SetTlsKeylogRequest| {
+                    let state = state.clone();
+                    async move {
+                        let toggle = state.load().tls_keylog_toggle.clone();
+                        toggle.set(req.enabled);
+                        let now = toggle.is_enabled();
+                        tracing::info!(
+                            requested = req.enabled,
+                            now,
+                            "xpc demo server: setTlsKeylog applied",
+                        );
+                        Ok::<_, BoxError>(TlsKeylogReply { enabled: now })
+                    }
+                }
+            }),
+        )
+        .with_typed_route::<EmptyRequest, TlsKeylogReply, _>(
+            "getTlsKeylog:withReply:",
+            service_fn({
+                let state = state;
+                move |_req: EmptyRequest| {
+                    let state = state.clone();
+                    async move {
+                        let enabled = state.load().tls_keylog_toggle.is_enabled();
+                        Ok::<_, BoxError>(TlsKeylogReply { enabled })
                     }
                 }
             }),
@@ -292,6 +339,7 @@ fn apply_settings(state: &SharedState, req: UpdateSettingsRequest) -> UpdateSett
         exclude_domains,
         ca_crt_pem: current.ca_crt_pem.clone(),
         tls_mitm_relay: current.tls_mitm_relay.clone(),
+        tls_keylog_toggle: current.tls_keylog_toggle.clone(),
     };
 
     tracing::debug!(
@@ -316,12 +364,18 @@ fn rotate_and_swap(state: &SharedState) -> Result<(Option<Vec<u8>>, Vec<u8>), Bo
         .context("encode rotated MITM CA cert to PEM")?;
 
     let current = state.load_full();
+    let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(rotated.cert, rotated.key);
+    // Preserve the same keylog intent — sink + toggle stay shared
+    // across CA rotations so an existing "on" toggle keeps writing
+    // through the new relay.
+    tls_mitm_relay.set_keylog_intent(current.tls_mitm_relay.keylog_intent_ref().clone());
     let new_settings = LiveSettings {
         html_badge_enabled: current.html_badge_enabled,
         html_badge_label: current.html_badge_label.clone(),
         exclude_domains: current.exclude_domains.clone(),
         ca_crt_pem: Bytes::from(cert_pem),
-        tls_mitm_relay: TlsMitmRelay::new_cached_in_memory(rotated.cert, rotated.key),
+        tls_mitm_relay,
+        tls_keylog_toggle: current.tls_keylog_toggle.clone(),
     };
     state.store(Arc::new(new_settings));
 

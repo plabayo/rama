@@ -63,6 +63,29 @@ fn builder_without_udp_max_flow_lifetime_sets_none() {
 }
 
 #[test]
+fn default_udp_idle_timeout_constant_is_sixty_seconds() {
+    assert_eq!(DEFAULT_UDP_IDLE_TIMEOUT, Duration::from_secs(60));
+}
+
+#[test]
+fn builder_default_udp_idle_timeout_is_the_constant() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()));
+    assert_eq!(
+        builder.current_udp_idle_timeout(),
+        Some(DEFAULT_UDP_IDLE_TIMEOUT)
+    );
+}
+
+#[test]
+fn builder_without_udp_idle_timeout_sets_none() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .without_udp_idle_timeout();
+    assert_eq!(builder.current_udp_idle_timeout(), None);
+}
+
+#[test]
 fn default_tcp_paused_drain_max_wait_constant_is_one_minute() {
     assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(1));
 }
@@ -166,6 +189,8 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     }
     .with_tcp_egress_options(move |_meta| Some(custom.clone()));
     let engine = build_engine(handler);
@@ -219,8 +244,293 @@ fn app_message_can_return_reply() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     });
 
     let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
     assert_eq!(reply.as_deref(), Some(&b"pong"[..]));
+}
+
+// ── on_system_sleep / on_system_wake plumbing ────────────────────────────────
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// `notify_system_sleep` drives `TransparentProxyHandler::on_system_sleep`
+/// through the engine's runtime.
+#[test]
+fn notify_system_sleep_invokes_handler_hook() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_in = counter.clone();
+    let engine = build_engine(TestHandler::passthrough().with_on_sleep(move || {
+        counter_in.fetch_add(1, Ordering::SeqCst);
+    }));
+    engine.notify_system_sleep();
+    // Detached: spin briefly until the handler observes the call.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while counter.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    engine.stop(0);
+}
+
+/// `notify_system_wake` drives `TransparentProxyHandler::on_system_wake`.
+#[test]
+fn notify_system_wake_invokes_handler_hook() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_in = counter.clone();
+    let engine = build_engine(TestHandler::passthrough().with_on_wake(move || {
+        counter_in.fetch_add(1, Ordering::SeqCst);
+    }));
+    engine.notify_system_wake();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while counter.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    engine.stop(0);
+}
+
+/// The default handler impl is a noop (just a trace log). Calling
+/// `notify_system_sleep` on a passthrough handler must not panic or
+/// affect engine state — the handler simply observes nothing.
+#[test]
+fn notify_system_sleep_with_default_handler_is_safe() {
+    let engine = build_engine(TestHandler::passthrough());
+    engine.notify_system_sleep();
+    engine.notify_system_wake();
+    engine.stop(0);
+}
+
+// ── drain_for_sleep ─────────────────────────────────────────────────────────
+//
+// The Swift `NEProvider.sleep(completionHandler:)` override drives
+// `engine.drain_for_sleep` before invoking the Apple completion
+// handler. The contract these tests pin:
+//   1. A fresh engine with no spawned tasks drains instantly.
+//   2. A live engine drains all engine-wide guards within budget by
+//      firing the engine shutdown trigger; per-flow `parent_guard`s
+//      drop via the `Shutdown` cascade.
+//   3. After drain, the engine is STILL USABLE: a fresh `Shutdown`
+//      pair was installed at swap time, so new sessions get healthy
+//      guards. This is what distinguishes drain from `stop`.
+//   4. A handler with an `on_system_sleep` hook gets its hook task
+//      spawned *and* awaited by the drain (the hook spawn registers
+//      against the engine's shutdown via `Executor::graceful`).
+//   5. A spawned task that holds an engine guard past the budget
+//      causes `Timeout`; the engine is still usable afterwards
+//      because the fresh pair is independent.
+
+#[test]
+fn drain_for_sleep_with_no_sessions_returns_drained_quickly() {
+    let engine = build_engine(TestHandler::passthrough());
+    let started = std::time::Instant::now();
+    let outcome = engine.drain_for_sleep(Duration::from_secs(5));
+    let elapsed = started.elapsed();
+    assert_eq!(outcome, DrainOutcome::Drained);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "drain on a quiet engine should resolve quickly; took {elapsed:?}"
+    );
+    engine.stop(0);
+}
+
+/// With N live sessions, `drain_for_sleep` returns `Drained`
+/// quickly — but the load-bearing reason is the structural one
+/// noted on [`TransparentProxyEngine::drain_for_sleep`]: the only
+/// engine-level guards are the per-flow `parent_guard`s held by
+/// each per-flow Shutdown's signal-future, and those drop the
+/// instant the trigger fires. **This test asserts that the drain
+/// propagates the cancellation signal cleanly, NOT that every
+/// service / bridge task has finished its cleanup work.** Those
+/// run on per-flow `flow_guard`s the drain doesn't account for;
+/// they bail at their next yield via the per-flow Shutdown
+/// cascade. The fresh-pair swap is what ensures new post-drain
+/// flows don't compete with them.
+#[test]
+fn drain_for_sleep_with_live_sessions_propagates_cancellation_within_budget() {
+    use rama_core::io::BridgeIo;
+    use rama_core::service::service_fn;
+    use rama_net::address::HostWithPort;
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            // Service stays alive (future::pending) — drain must
+            // unwind the engine via the `Shutdown` cascade
+            // (`parent_guard.cancelled()` → per-flow `Shutdown`
+            // signal-future exit → `parent_guard` drops). The
+            // service task itself holds a flow-level guard, NOT an
+            // engine guard, so it doesn't block the engine drain.
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+
+    let mut keep_alive = Vec::new();
+    for _ in 0..32 {
+        let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+                .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+            |_| TcpDeliverStatus::Accepted,
+            || {},
+            || {},
+        ) else {
+            panic!("expected intercept session");
+        };
+        session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+        keep_alive.push(session);
+    }
+
+    let started = std::time::Instant::now();
+    let outcome = engine.drain_for_sleep(Duration::from_secs(3));
+    let elapsed = started.elapsed();
+    assert_eq!(outcome, DrainOutcome::Drained);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "drain with 32 live sessions took {elapsed:?} (>2s) — possible bridge wedge"
+    );
+
+    drop(keep_alive);
+    engine.stop(0);
+}
+
+#[test]
+fn drain_for_sleep_engine_remains_usable_for_new_sessions_post_drain() {
+    use rama_core::bytes::Bytes;
+
+    let engine = build_engine(TestHandler::passthrough());
+    // First drain (no live sessions).
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::Drained
+    );
+
+    // Post-drain: the engine still serves app messages and TCP
+    // session creation. This is the load-bearing distinction from
+    // `stop` — drain is recoverable.
+    let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
+    assert_eq!(reply, None, "passthrough handler returns None");
+
+    let action = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(
+        matches!(action, SessionFlowAction::Passthrough),
+        "passthrough handler returns Passthrough decision"
+    );
+
+    // A SECOND drain on the fresh pair must also work cleanly —
+    // verifies that the swap on the first drain installed a
+    // healthy successor, not a one-shot.
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::Drained
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn drain_for_sleep_awaits_handler_on_sleep_hook() {
+    // The handler's `on_system_sleep` hook task is spawned through
+    // `Executor::graceful(engine_guard)` (see
+    // `TransparentProxyEngine::notify_system_sleep`), so it holds
+    // an engine guard. A drain must wait for the hook to complete
+    // before returning `Drained` — pin this by having the hook
+    // observe a flag, then notify_system_sleep + drain.
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_in = counter.clone();
+    let engine = build_engine(TestHandler::passthrough().with_on_sleep(move || {
+        counter_in.fetch_add(1, Ordering::SeqCst);
+    }));
+
+    engine.notify_system_sleep();
+    let outcome = engine.drain_for_sleep(Duration::from_secs(2));
+    assert_eq!(outcome, DrainOutcome::Drained);
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "on_system_sleep hook must have run before drain returned"
+    );
+    engine.stop(0);
+}
+
+/// `drain_for_sleep` MUST NOT revive a terminally-stopped engine.
+/// After `engine.stop(...)` the inner shutdown slot is `None`; a
+/// subsequent drain must return `AlreadyStopped` and NOT install a
+/// fresh pair. Otherwise the engine would appear alive again, and
+/// `shutdown_guard()` would hand out guards from a pair nobody
+/// awaits — a real-world hazard if XPC ever races stop+sleep.
+#[test]
+fn drain_for_sleep_after_stop_returns_already_stopped_and_does_not_revive() {
+    let mut engine = build_engine(TestHandler::passthrough());
+    // Terminally stop via the same path Drop uses, but keep the
+    // engine value around so we can call drain on it. `stop` is
+    // `&mut self`; after this the internal slot is `None`.
+    engine.shutdown_blocking(0);
+
+    // Drain MUST report AlreadyStopped.
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::AlreadyStopped
+    );
+
+    // And a SECOND drain MUST also report AlreadyStopped — i.e. the
+    // first drain did not install a fresh pair as a side-effect.
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_secs(2)),
+        DrainOutcome::AlreadyStopped
+    );
+
+    // `shutdown_guard()` returns `None` — engine is dead. (No way
+    // to spawn new sessions / handler hooks against it.)
+    assert!(engine.shutdown_guard().is_none());
+}
+
+/// Drain installs a FRESH `ShutdownPair` on every call, so calling
+/// `drain_for_sleep` repeatedly is safe — the second call drains
+/// the fresh pair (empty) and returns `Drained` quickly. Pins the
+/// "swap in a successor, not consume one-shot" property of the
+/// drain implementation.
+///
+/// (The genuine `Timeout` arm — drain returning `Timeout` because a
+/// task held an engine guard past the budget without yielding — is
+/// exercised in production paths and on real overloaded engines.
+/// Reproducing it from a unit test requires an `Executor`-injecting
+/// async hook on `TestHandler` that's not worth the surface change
+/// here; tracked as a follow-up if a stress run ever surfaces a
+/// genuine timeout that needs regression coverage.)
+#[test]
+fn drain_for_sleep_can_be_called_repeatedly() {
+    let engine = build_engine(TestHandler::passthrough());
+
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_millis(500)),
+        DrainOutcome::Drained
+    );
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_millis(500)),
+        DrainOutcome::Drained
+    );
+    assert_eq!(
+        engine.drain_for_sleep(Duration::from_millis(500)),
+        DrainOutcome::Drained
+    );
+    engine.stop(0);
 }

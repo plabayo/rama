@@ -95,13 +95,12 @@ where
             unit: self.latency_unit,
             duration: latency,
         };
-        span.in_scope(|| {
-            event_dynamic_lvl!(
-                self.level,
-                classification = %failure_classification,
-                %latency,
-                "response failed"
-            )
-        });
+        event_dynamic_lvl!(
+            parent: span,
+            self.level,
+            classification = %failure_classification,
+            %latency,
+            "response failed"
+        );
     }
 }

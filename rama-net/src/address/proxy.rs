@@ -111,8 +111,7 @@ impl serde::Serialize for ProxyAddress {
     where
         S: serde::Serializer,
     {
-        let addr = self.to_string();
-        addr.serialize(serializer)
+        serializer.collect_str(self)
     }
 }
 

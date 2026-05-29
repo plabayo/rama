@@ -35,12 +35,10 @@ ua = ["dep:rama-ua"]
 dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
 
 [dependencies]
-ahash = { workspace = true }
 brotli = { workspace = true, optional = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
-flume = { workspace = true, features = ["async"] }
 itertools = { workspace = true }
 moka = { workspace = true, features = ["sync"] }
 parking_lot = { workspace = true }

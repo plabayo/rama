@@ -99,6 +99,10 @@ macro_rules! __transparent_proxy_ffi_emit {
         pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
         pub type RamaTransparentProxyTcpEgressCallbacks =
             $crate::ffi::tproxy::TransparentProxyTcpEgressCallbacks;
+        pub type RamaTransparentProxyTcpPromoteCallbacks =
+            $crate::ffi::tproxy::TransparentProxyTcpPromoteCallbacks;
+        pub type RamaPromoteConfirmStatus =
+            $crate::ffi::tproxy::PromoteConfirmStatus;
 
         #[repr(C)]
         pub struct RamaTransparentProxyTcpSessionResult {
@@ -225,6 +229,59 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_notify_system_sleep(
+            engine: *mut RamaTransparentProxyEngine,
+        ) {
+            if engine.is_null() {
+                return;
+            }
+            let engine = unsafe { &*engine };
+            engine.notify_system_sleep();
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_notify_system_wake(
+            engine: *mut RamaTransparentProxyEngine,
+        ) {
+            if engine.is_null() {
+                return;
+            }
+            let engine = unsafe { &*engine };
+            engine.notify_system_wake();
+        }
+
+        /// Synchronous recoverable drain for system sleep.
+        ///
+        /// Forwards to
+        /// [`TransparentProxyEngine::drain_for_sleep`]. Blocks the
+        /// calling thread (Apple's `sleepWithCompletionHandler:`)
+        /// until either every pre-drain spawned task exits
+        /// cooperatively, or `max_wait_ms` elapses, or the engine is
+        /// already terminally stopped.
+        ///
+        /// Returns the [`DrainOutcome`] discriminant as `u32`. A
+        /// `NULL` engine pointer returns the `AlreadyStopped` arm
+        /// so the caller can safely treat "no engine" identically
+        /// to "engine torn down mid-call". Out-of-bound values are
+        /// impossible — every variant is exhaustively mapped.
+        ///
+        /// [`TransparentProxyEngine::drain_for_sleep`]:
+        ///     crate::tproxy::engine::TransparentProxyEngine::drain_for_sleep
+        /// [`DrainOutcome`]: crate::tproxy::DrainOutcome
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_drain_for_sleep(
+            engine: *mut RamaTransparentProxyEngine,
+            max_wait_ms: u32,
+        ) -> u32 {
+            if engine.is_null() {
+                return $crate::tproxy::DrainOutcome::AlreadyStopped as u32;
+            }
+            let engine = unsafe { &*engine };
+            let max_wait = ::std::time::Duration::from_millis(u64::from(max_wait_ms));
+            engine.drain_for_sleep(max_wait) as u32
+        }
+
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_engine_handle_app_message(
             engine: *mut RamaTransparentProxyEngine,
             message: $crate::ffi::BytesView,
@@ -314,7 +371,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                     if bytes.is_empty() {
                         return RamaTcpDeliverStatus::Accepted;
                     }
-                    unsafe {
+                    let raw: u8 = unsafe {
                         callback(
                             context as *mut ::std::ffi::c_void,
                             $crate::ffi::BytesView {
@@ -322,7 +379,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                                 len: bytes.len(),
                             },
                         )
-                    }
+                    };
+                    RamaTcpDeliverStatus::from_ffi_u8(raw)
                 }),
                 ::std::sync::Arc::new(move || {
                     if let Some(callback) = on_client_read_demand {
@@ -413,6 +471,84 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
 
             unsafe { (*session).cancel() };
+        }
+
+        /// Register a Swift callback fired when the in-Rust service
+        /// calls `PromoteHandle::into_passthrough` on this session.
+        ///
+        /// Idempotent: a later call replaces any prior registration.
+        /// Calling on a null session is a no-op.
+        ///
+        /// See [`RamaTransparentProxyTcpPromoteCallbacks`] for the
+        /// `context` lifetime / threading contract.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_register_promote_callbacks(
+            session: *mut RamaTransparentProxyTcpSession,
+            callbacks: RamaTransparentProxyTcpPromoteCallbacks,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            let Some(on_promote_request) = callbacks.on_promote_request else {
+                return;
+            };
+            unsafe {
+                (*session).register_promote_request_callback_raw(
+                    callbacks.context,
+                    on_promote_request,
+                )
+            };
+        }
+
+        /// Swift → Rust ACK for a pending promote cutover.
+        ///
+        /// On `Ok` the engine drops its ingress sender so the
+        /// service sees EOF after draining in-flight bytes, then
+        /// `into_passthrough` resolves with `Ok(())`.
+        ///
+        /// On `Failed`, `reason_ptr`/`reason_len` (optional UTF-8;
+        /// pass `(null, 0)` for none) is surfaced via
+        /// `PromoteError::SwiftCutoverFailed`; the in-Rust data
+        /// path keeps running unchanged.
+        ///
+        /// Calling without a pending promote (e.g. before any
+        /// service ran `into_passthrough`, or after a previous
+        /// confirm) is a no-op.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_confirm_promoted(
+            session: *mut RamaTransparentProxyTcpSession,
+            status: u8,
+            reason_ptr: *const ::std::ffi::c_char,
+            reason_len: usize,
+        ) {
+            if session.is_null() {
+                return;
+            }
+            // Decode the raw byte defensively: taking `u8` (not the enum)
+            // at the boundary avoids UB if a caller passes an
+            // out-of-range discriminant.
+            let result = match RamaPromoteConfirmStatus::from_ffi_u8(status) {
+                RamaPromoteConfirmStatus::Ok => Ok(()),
+                RamaPromoteConfirmStatus::Failed => {
+                    let reason = if reason_ptr.is_null() || reason_len == 0 {
+                        String::new()
+                    } else {
+                        // SAFETY: caller contract — pointer is valid
+                        // for `reason_len` bytes and contains UTF-8.
+                        unsafe {
+                            let slice = ::std::slice::from_raw_parts(
+                                reason_ptr as *const u8,
+                                reason_len,
+                            );
+                            ::std::str::from_utf8(slice)
+                                .unwrap_or("<non-utf8 reason>")
+                                .to_owned()
+                        }
+                    };
+                    Err($crate::tproxy::PromoteError::SwiftCutoverFailed { reason })
+                }
+            };
+            unsafe { (*session).confirm_promoted(result) };
         }
 
         #[unsafe(no_mangle)]
@@ -633,7 +769,7 @@ macro_rules! __transparent_proxy_ffi_emit {
                         if bytes.is_empty() {
                             return RamaTcpDeliverStatus::Accepted;
                         }
-                        unsafe {
+                        let raw: u8 = unsafe {
                             callback(
                                 context as *mut ::std::ffi::c_void,
                                 $crate::ffi::BytesView {
@@ -641,7 +777,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                                     len: bytes.len(),
                                 },
                             )
-                        }
+                        };
+                        RamaTcpDeliverStatus::from_ffi_u8(raw)
                     },
                     move || {
                         if let Some(callback) = on_egress_read_demand {

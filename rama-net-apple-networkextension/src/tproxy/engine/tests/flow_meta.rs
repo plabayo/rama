@@ -43,6 +43,8 @@ fn tcp_flow_exposes_meta_extension() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -92,6 +94,8 @@ fn udp_flow_exposes_meta_extension() {
             }
         }),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 
@@ -157,6 +161,8 @@ fn flow_meta_records_intercept_decision_after_handler() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine(handler);
 

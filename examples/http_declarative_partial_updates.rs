@@ -23,25 +23,17 @@
 //! `recs` (~4s) — each skeleton swaps out as its content lands; the banner
 //! disappears once all three have arrived.
 //!
-//! The shell carries a small inline polyfill (`<script>` in `<head>`,
-//! synchronous) that wires up the `<?marker …>` ↔ `<template for=…>` swap
-//! via `MutationObserver`. We can't reuse GoogleChromeLabs'
-//! `template-for-polyfill` for this — it explicitly batches body-level
-//! template swaps until `DOMContentLoaded` fires, which only happens after
-//! the streaming response closes, so every fragment would appear at once
-//! at the end. Chrome 148+ ships native support behind
-//! `chrome://flags/#enable-experimental-web-platform-features`; the inline
-//! polyfill is harmless when native already swapped. Pass `?polyfill=false`
-//! on the request URL to skip the polyfill entirely (e.g. to test against
-//! native support, or measure the baseline shell). The loading chrome
-//! (skeleton spinners + banner) is cleared by CSS `:has()` off the swapped
-//! fragments — no JS bookkeeping — so it disappears with zero JS on a
-//! browser with native support, and works under the polyfill too.
+//! By default we also include GoogleChromeLabs'
+//! [`template-for-polyfill`] script from unpkg (latest). Pass `?polyfill=false`
+//! to skip it. This polyfill is useful for any browser that does not
+//! (yet) support this feature.
+//!
+//! [`template-for-polyfill`]: https://github.com/GoogleChromeLabs/template-for-polyfill
 //!
 //! The pipeline also layers in [`StreamCompressionLayer`] (so each
 //! fragment chunk is compressed and flushed on its own, not held back
 //! until the body ends) and [`AddRequiredResponseHeadersLayer`] (so the
-//! response carries the usual server/date/request-id headers).
+//! response carries the usual server/date headers).
 //!
 //! [`StreamCompressionLayer`]: rama::http::layer::compression::stream::StreamCompressionLayer
 //! [`AddRequiredResponseHeadersLayer`]: rama::http::layer::required_header::AddRequiredResponseHeadersLayer
@@ -56,8 +48,8 @@ use rama::{
     http::{
         Response,
         html::{
-            IntoHtml, PreEscaped, body, div, h1, h2, head, html, li, marker, meta, p, script,
-            section, span, style, title, ul,
+            IntoHtml, PreEscaped, body, div, end, h1, h2, head, html, li, meta, p, script, section,
+            span, start, style, title, ul, wbr,
         },
         layer::{
             compression::stream::StreamCompressionLayer,
@@ -84,13 +76,16 @@ use rama_http::layer::error_handling::ErrorHandlerLayer;
 use serde::Deserialize;
 use std::time::Duration;
 
-const POLYFILL: &str = include_str!("assets/http_declarative_partial_updates.js");
 const STYLE: &str = include_str!("assets/http_declarative_partial_updates.css");
+
+/// Bare unpkg URL with no version suffix — always serves the latest
+/// published release of the polyfill, per its README.
+const POLYFILL_URL: &str = "https://unpkg.com/template-for-polyfill";
 
 #[derive(Debug, Deserialize)]
 struct DashboardQuery {
-    /// `?polyfill=false` opts out of the inline polyfill — useful for
-    /// Chrome 148+ with the experimental flag, or for measuring the
+    /// `?polyfill=false` opts out of the polyfill — useful for Chrome
+    /// 148+ with the experimental flag, or for measuring the
     /// non-polyfilled baseline. Anything else (including no query) keeps
     /// the polyfill on.
     polyfill: Option<bool>,
@@ -98,9 +93,9 @@ struct DashboardQuery {
 
 async fn dashboard(Query(q): Query<DashboardQuery>) -> Response {
     let polyfill = q.polyfill.unwrap_or(true).then(|| {
-        // Synchronous so the MutationObserver is armed before any body
-        // content (and any `<template for=…>`) streams in.
-        script!(PreEscaped(POLYFILL))
+        // Parser-blocking (no async/defer) so it loads and arms its
+        // MutationObserver before any body content streams in.
+        script!(src = POLYFILL_URL)
     });
 
     let shell = html!(
@@ -146,8 +141,15 @@ fn panel(heading: &'static str, name: &'static str) -> impl IntoHtml {
     section!(
         class = "panel",
         h2!(heading),
+        // Range form: anything between `<?start>` and `<?end>` is replaced
+        // when the fragment lands, so the spinner is removed by the swap
+        // itself — no CSS bookkeeping needed for loading chrome.
+        start(name),
         div!(class = "spinner", span!(class = "llama", "🦙"), " loading…",),
-        marker(name),
+        end(),
+        // The polyfill defers swaps while `<?end>` has no `nextElementSibling`,
+        // so we add a zero-impact `<wbr>` after it — see book chapter.
+        wbr!(),
     )
 }
 
@@ -186,7 +188,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(64805), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(64805), exec.clone())
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");

@@ -49,7 +49,7 @@ For HTML responses, Rama ships a small templating library exposed under
 behind the `html` feature (included in `http-full`). It is a permanent
 fork of [`vy`](https://github.com/JonahLund/vy), reshaped to integrate
 with the rest of the rama ecosystem (using
-[`rama_core::combinators::Either`](https://ramaproxy.org/docs/rama_core/combinators/enum.Either.html)
+[`rama::combinators::Either`](https://ramaproxy.org/docs/rama/combinators/enum.Either.html)
 for branching, and producing a value that already implements
 [`IntoResponse`](https://ramaproxy.org/docs/rama/http/service/web/response/trait.IntoResponse.html)).
 

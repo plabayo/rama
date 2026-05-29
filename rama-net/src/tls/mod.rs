@@ -61,42 +61,43 @@ impl SecureTransport {
 #[derive(Debug, Clone, Default)]
 /// Intent for a (tls) keylogger to be used.
 ///
-/// Applicable to both a client- and server- config.
+/// Applicable to both a client- and server- config. Consumers (the
+/// boring / rustls integrations) resolve this into a concrete sink
+/// via [`keylog::open_intent_sink`].
 pub enum KeyLogIntent {
     #[default]
-    /// By default `SSLKEYLOGFILE` env variable is respected
-    /// as the path to key log to, if defined
+    /// `SSLKEYLOGFILE` env var: if set, log to that file.
     Environment,
-    /// You can choose to disable the key logging explicitly
+    /// Keylog explicitly disabled.
     Disabled,
-    /// Request a keys to be logged to the given file path.
+    /// Log to the given file path (append).
     File(String),
+    /// Use the supplied sink as-is. Lets callers plug in a rotating
+    /// sink, a toggle wrapper, an in-memory capture, etc., without
+    /// the consumer needing to know which.
+    Custom(std::sync::Arc<dyn keylog::KeyLogSink>),
 }
 
 impl KeyLogIntent {
-    /// Return the [`Default`] "SSLKEYLOGFILE" env-based file path as a [`String`].
+    /// `SSLKEYLOGFILE` env value, if set.
     #[must_use]
     pub fn env_file_path() -> Option<String> {
         std::env::var("SSLKEYLOGFILE").ok()
     }
 
-    /// get the file path if intended
+    /// File path for the [`File`] and [`Environment`] variants;
+    /// `None` for [`Disabled`] and [`Custom`] (no path to surface).
+    ///
+    /// [`File`]: Self::File
+    /// [`Environment`]: Self::Environment
+    /// [`Disabled`]: Self::Disabled
+    /// [`Custom`]: Self::Custom
     #[must_use]
     pub fn file_path(&self) -> Option<Cow<'_, str>> {
         match self {
-            Self::Disabled => None,
+            Self::Disabled | Self::Custom(_) => None,
             Self::Environment => Self::env_file_path().map(Into::into),
             Self::File(keylog_filename) => Some(keylog_filename.into()),
-        }
-    }
-
-    /// consume itself into the file path if intended
-    #[must_use]
-    pub fn into_file_path(self) -> Option<String> {
-        match self {
-            Self::Disabled => None,
-            Self::Environment => std::env::var("SSLKEYLOGFILE").ok(),
-            Self::File(keylog_filename) => Some(keylog_filename),
         }
     }
 }

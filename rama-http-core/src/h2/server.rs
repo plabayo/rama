@@ -137,6 +137,7 @@ use rama_http_types::proto::h2::frame::{
 };
 use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version, uri};
+use rama_net::extensions::StreamTransformed;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -395,6 +396,10 @@ where
     fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
         let span = tracing::trace_span!("server_handshake");
         let entered = span.enter();
+
+        io.extensions().insert(StreamTransformed {
+            by: "rama-http-core::h2::server",
+        });
 
         // Create the codec.
         let mut codec = Codec::new(io);

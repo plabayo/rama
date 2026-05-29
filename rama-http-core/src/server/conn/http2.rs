@@ -1,4 +1,4 @@
-//! HTTP/2 Server Connections
+//! HTTP/2 Server Connections.
 
 use std::convert::Infallible;
 use std::fmt;
@@ -252,6 +252,20 @@ impl Builder {
         /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
         pub fn enable_connect_protocol(mut self) -> Self {
             self.h2_builder.enable_connect_protocol = true;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the header table size.
+        ///
+        /// This setting informs the peer of the maximum size of the header compression
+        /// table used to encode header blocks, in octets. The encoder may select any value
+        /// equal to or less than the header table size specified by the sender.
+        ///
+        /// The default value of crate `h2` is 4,096.
+        pub fn header_table_size(mut self, size: Option<u32>) -> Self {
+            self.h2_builder.header_table_size = size;
             self
         }
     }

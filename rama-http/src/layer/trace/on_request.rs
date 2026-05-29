@@ -79,6 +79,10 @@ impl DefaultOnRequest {
 
 impl<B> OnRequest<B> for DefaultOnRequest {
     fn on_request(&self, _: &Request<B>, span: &Span) {
-        span.in_scope(|| event_dynamic_lvl!(self.level, "started processing request"));
+        event_dynamic_lvl!(
+            parent: span,
+            self.level,
+            "started processing request",
+        );
     }
 }

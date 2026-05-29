@@ -68,6 +68,14 @@ pub struct CliCommandFs {
     ///
     /// 'html-file-list': render directory file structure as a html page (default)
     dir_serve: DirectoryServeMode,
+
+    #[arg(long)]
+    /// when set, requests for a path without a file extension that
+    /// doesn't resolve to anything will be retried with `.html` appended
+    /// (e.g. `/about` will serve `/about.html`)
+    ///
+    /// only applies when serving a directory
+    html_as_default_extension: bool,
 }
 
 /// run the rama serve service
@@ -93,6 +101,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .maybe_with_tls_server_config(maybe_tls_server_config)
         .maybe_with_content_path(cfg.path)
         .with_directory_serve_mode(cfg.dir_serve)
+        .with_html_as_default_extension(cfg.html_as_default_extension)
         .build(exec.clone())
         .context("build serve service")?;
 

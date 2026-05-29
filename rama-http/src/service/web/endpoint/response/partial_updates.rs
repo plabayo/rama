@@ -3,9 +3,16 @@
 //! Flushes a shell (with `<?marker name="…">` placeholders) immediately,
 //! then emits one `<template for="name">…</template>` body chunk per
 //! fragment as each fragment future resolves — in completion order, not
-//! declaration order.
+//! declaration order. Each chunk is followed by `\n<wbr>` so the [official
+//! polyfill] can swap every fragment at its own arrival rather than one
+//! step behind: it defers a swap while the template has no
+//! `nextElementSibling`, and `<wbr>` (an invisible HTMLElement) is the
+//! smallest thing that satisfies that check. Mirrors the spirit of
+//! [Google's photo-album demo].
 //!
 //! [Chrome declarative partial updates]: https://developer.chrome.com/blog/declarative-partial-updates
+//! [official polyfill]: https://github.com/GoogleChromeLabs/template-for-polyfill
+//! [Google's photo-album demo]: https://github.com/GoogleChromeLabs/web-perf-demos/blob/main/patching-demos/server.js
 
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
@@ -110,7 +117,9 @@ where
         let fragment_chunks = stream::iter(self.fragments)
             .map(|Fragment { name, future }| async move {
                 let render = future.await?;
-                Ok::<_, BoxError>(Bytes::from(template!(r#for = name, render).into_string()))
+                let mut s = template!(r#for = name, render).into_string();
+                s.push_str("\n<wbr>");
+                Ok::<_, BoxError>(Bytes::from(s))
             })
             .buffer_unordered(frag_count);
 
@@ -160,7 +169,7 @@ mod tests {
         );
         assert_eq!(
             std::str::from_utf8(&second).unwrap(),
-            r#"<template for="slow">ok</template>"#
+            "<template for=\"slow\">ok</template>\n<wbr>"
         );
 
         assert!(body.chunk().await.unwrap().is_none());
@@ -179,7 +188,7 @@ mod tests {
         let tpl = body.chunk().await.unwrap().unwrap();
         assert_eq!(
             std::str::from_utf8(&tpl).unwrap(),
-            r#"<template for="x"><p>&lt;not-a-tag&gt;</p></template>"#
+            "<template for=\"x\"><p>&lt;not-a-tag&gt;</p></template>\n<wbr>"
         );
     }
 
@@ -194,7 +203,7 @@ mod tests {
         let tpl = body.chunk().await.unwrap().unwrap();
         assert_eq!(
             std::str::from_utf8(&tpl).unwrap(),
-            r#"<template for="a&lt;b">ok</template>"#
+            "<template for=\"a&lt;b\">ok</template>\n<wbr>"
         );
     }
 
@@ -229,9 +238,9 @@ mod tests {
 
         assert_eq!(chunks.len(), 4, "shell + 3 fragments");
         assert!(chunks[0].1.contains(r#"<?marker name="a">"#));
-        assert_eq!(chunks[1].1, r#"<template for="b">B</template>"#);
-        assert_eq!(chunks[2].1, r#"<template for="c">C</template>"#);
-        assert_eq!(chunks[3].1, r#"<template for="a">A</template>"#);
+        assert_eq!(chunks[1].1, "<template for=\"b\">B</template>\n<wbr>");
+        assert_eq!(chunks[2].1, "<template for=\"c\">C</template>\n<wbr>");
+        assert_eq!(chunks[3].1, "<template for=\"a\">A</template>\n<wbr>");
 
         let spread = chunks[3].0.checked_sub(chunks[1].0).unwrap();
         assert!(

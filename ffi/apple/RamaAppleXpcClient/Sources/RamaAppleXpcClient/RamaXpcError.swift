@@ -1,7 +1,13 @@
 import Foundation
 
 /// Errors thrown by ``RamaXpcClient`` and related APIs.
-public enum RamaXpcError: Error, CustomStringConvertible {
+///
+/// Conforms to `LocalizedError` so `error.localizedDescription` —
+/// which AppKit alert handlers reach for — surfaces the same text
+/// as `description`. Without that conformance the Swift-→-NSError
+/// bridge collapses every case to a useless
+/// `"DomainName error <case-index>"` string.
+public enum RamaXpcError: Error, CustomStringConvertible, LocalizedError {
     /// `serviceName` was empty.
     case emptyServiceName
     /// The XPC connection delivered an error event before or instead of a reply.
@@ -34,4 +40,6 @@ public enum RamaXpcError: Error, CustomStringConvertible {
             return "RamaXpcError: decoding failed: \(error)"
         }
     }
+
+    public var errorDescription: String? { description }
 }

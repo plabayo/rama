@@ -36,9 +36,9 @@ pub(crate) type ResponseHead = MessageHead<StatusCode>;
 
 #[derive(Debug)]
 pub(crate) enum BodyLength {
-    /// Content-Length
+    /// `Content-Length`.
     Known(u64),
-    /// Transfer-Encoding: chunked (if h1)
+    /// `Transfer-Encoding: chunked` (if h1).
     Unknown,
 }
 

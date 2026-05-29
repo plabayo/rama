@@ -1,24 +1,25 @@
+//! HTTP2 Ping usage.
+//!
+//! These HTTP2 pings are for two purposes:
+//!
+//! 1. Adaptive flow control using BDP
+//! 2. Connection keep-alive
+//!
+//! Both cases are optional.
+//!
+//! # BDP Algorithm
+//!
+//! 1. When receiving a DATA frame, if a BDP ping isn't outstanding:
+//!    1a. Record current time.
+//!    1b. Send a BDP ping.
+//! 2. Increment the number of received bytes.
+//! 3. When the BDP ping ack is received:
+//!    3a. Record duration from sent time.
+//!    3b. Merge RTT with a running average.
+//!    3c. Calculate bdp as bytes/rtt.
+//!    3d. If bdp is over 2/3 max, set new max to bdp and update windows.
+
 use parking_lot::Mutex;
-/// HTTP2 Ping usage
-///
-/// These HTTP2 pings are for two purposes:
-///
-/// 1. Adaptive flow control using BDP
-/// 2. Connection keep-alive
-///
-/// Both cases are optional.
-///
-/// # BDP Algorithm
-///
-/// 1. When receiving a DATA frame, if a BDP ping isn't outstanding:
-///    1a. Record current time.
-///    1b. Send a BDP ping.
-/// 2. Increment the number of received bytes.
-/// 3. When the BDP ping ack is received:
-///    3a. Record duration from sent time.
-///    3b. Merge RTT with a running average.
-///    3c. Calculate bdp as bytes/rtt.
-///    3d. If bdp is over 2/3 max, set new max to bdp and update windows.
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -131,11 +132,11 @@ struct Shared {
 }
 
 struct Bdp {
-    /// Current BDP in bytes
+    /// Current BDP in bytes.
     bdp: u32,
     /// Largest bandwidth we've seen so far.
     max_bandwidth: f64,
-    /// Round trip time in seconds
+    /// Round trip time in seconds.
     rtt: f64,
     /// Delay the next ping by this amount.
     ///

@@ -100,14 +100,12 @@ impl OnEos for DefaultOnEos {
                 trailers,
                 crate::layer::classify::GrpcCode::Ok.into_bitmask(),
             ) {
-                ParsedGrpcStatus::Success
-                | ParsedGrpcStatus::HeaderNotString
-                | ParsedGrpcStatus::HeaderNotInt => Some(0),
-                ParsedGrpcStatus::NonSuccess(status) => Some(status.get()),
+                ParsedGrpcStatus::Success | ParsedGrpcStatus::HeaderNotGrpcCode => Some(0),
+                ParsedGrpcStatus::NonSuccess(status) => Some(status.code_raw()),
                 ParsedGrpcStatus::GrpcStatusHeaderMissing => None,
             }
         });
 
-        span.in_scope(|| event_dynamic_lvl!(self.level, %stream_duration, status, "end of stream"));
+        event_dynamic_lvl!(parent: span, self.level, %stream_duration, status, "end of stream");
     }
 }

@@ -1100,9 +1100,9 @@ impl Http1Transaction for Client {
 }
 
 impl Client {
-    /// Returns Some(length, wants_upgrade) if successful.
+    /// Returns `Some(length, wants_upgrade)` if successful.
     ///
-    /// Returns None if this message head should be skipped (like a 100 status).
+    /// Returns `None` if this message head should be skipped (like a 100 status).
     #[expect(clippy::needless_pass_by_ref_mut)]
     fn decoder(
         inc: &MessageHead<StatusCode>,

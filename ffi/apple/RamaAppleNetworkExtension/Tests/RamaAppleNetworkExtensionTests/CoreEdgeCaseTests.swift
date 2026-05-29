@@ -55,6 +55,39 @@ final class CoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
     }
 
+    /// Promote-aware clean teardown — mirrors
+    /// `CoreTcpLifecycleTests.drainAndAwaitRemoval`. See that
+    /// docstring for the rationale (cutover wait + both EOFs +
+    /// send-completer for the FIN drain).
+    private func drainAndAwaitRemoval(
+        _ core: TransparentProxyCore,
+        flow: MockTcpFlow,
+        conn: MockNwConnection,
+        description: String = "flow removed",
+        timeout: TimeInterval = 5.0
+    ) {
+        guard let ctx = core.testInspectTcpContext(for: flow) else {
+            XCTFail("no ctx for flow — cutover wait impossible"); return
+        }
+        waitFor("cutover flips ctx.mode away from .viaRust", timeout: 3.0) {
+            ctx.mode != .viaRust
+        }
+
+        let completer = AtomicFlag()
+        DispatchQueue.global().async {
+            while !completer.load() {
+                _ = conn.completePendingSend(error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+
+        flow.completeRead(data: nil, error: nil)
+        _ = conn.completePendingReceive(isComplete: true)
+
+        waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
+    }
+
     // MARK: - handleAppMessage in various engine states
 
     func testHandleAppMessageBeforeEngineAttached() {
@@ -275,8 +308,7 @@ final class CoreEdgeCaseTests: XCTestCase {
         )
 
         // Clean shutdown so the deferred detachEngine doesn't leak.
-        conn.completePendingReceive(isComplete: true)
-        waitFor("flow removed") { core.tcpFlowCount == 0 }
+        drainAndAwaitRemoval(core, flow: flow, conn: conn)
         conn.simulateCancelled()
         capture.releaseAll()
     }

@@ -1,4 +1,4 @@
-//! HTTP/1 Server Connections
+//! HTTP/1 Server Connections.
 
 use std::convert::Infallible;
 use std::fmt;
@@ -13,6 +13,7 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::io::upgrade::Upgraded;
 use rama_http::{Body, Request, Response};
+use rama_net::extensions::StreamTransformed;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -356,11 +357,11 @@ impl Builder {
         /// but may also improve performance when an IO transport doesn't
         /// support vectored writes well, such as most TLS implementations.
         ///
-        /// Setting this to true will force rama_http_core to use queued strategy
-        /// which may eliminate unnecessary cloning on some TLS backends
+        /// Setting this to true will force rama_http_core to use queued strategy,
+        /// which may eliminate unnecessary cloning on some TLS backends.
         ///
         /// Default is `auto`. In this mode rama_http_core will try to guess which
-        /// mode to use
+        /// mode to use.
         pub fn writev(mut self, val: Option<bool>) -> Self {
             self.h1_writev = val;
             self
@@ -422,6 +423,9 @@ impl Builder {
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible> + Clone,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
+        io.extensions().insert(StreamTransformed {
+            by: "rama-http-core::h1::server",
+        });
         let mut conn = proto::Conn::new(io);
         conn.set_h1_parser_config(self.h1_parser_config.clone());
         if !self.h1_keep_alive {

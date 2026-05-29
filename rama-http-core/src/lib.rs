@@ -1,5 +1,13 @@
 //! Rama http protocol implementation and low level utilities.
 //!
+//! # Cancel safety
+//!
+//! Futures returned by this crate senders are cancel safe: dropping a future before it
+//! completes is the supported way to cancel the operation. See the
+//! documentation on individual futures — for example `SendRequest::send_request`
+//! in `client::conn::http1` and `client::conn::http2` — for the protocol-
+//! specific behavior on cancellation.
+//!
 //! # Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.

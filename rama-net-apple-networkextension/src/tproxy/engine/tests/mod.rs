@@ -7,6 +7,7 @@ mod e2e_loopback;
 mod flow_meta;
 mod leak;
 mod lifecycle;
+mod promote;
 mod safety;
 mod tcp;
 mod udp;

@@ -94,9 +94,9 @@ async fn test_head_request(svc: ServeDir) {
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     #[cfg(target_os = "windows")]
-    assert_eq!(res.headers()["content-length"], "24");
+    assert_eq!(res.headers()["content-length"], "11");
     #[cfg(not(target_os = "windows"))]
-    assert_eq!(res.headers()["content-length"], "23");
+    assert_eq!(res.headers()["content-length"], "10");
 
     assert!(res.into_body().frame().await.is_none());
 }
@@ -125,7 +125,7 @@ async fn test_precompresed_head_request(svc: ServeDir) {
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "gzip");
-    assert_eq!(res.headers()["content-length"], "59");
+    assert_eq!(res.headers()["content-length"], "30");
 
     assert!(res.into_body().frame().await.is_none());
 }
@@ -187,7 +187,7 @@ async fn test_precompressed_gzip(svc: ServeDir) {
     let mut decoder = GzDecoder::new(&body[..]);
     let mut decompressed = String::new();
     decoder.read_to_string(&mut decompressed).unwrap();
-    assert!(decompressed.starts_with("\"This is a test file!\""));
+    assert!(decompressed.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -218,7 +218,7 @@ async fn test_precompressed_br(svc: ServeDir) {
     let mut decompressed = Vec::new();
     BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
     let decompressed = String::from_utf8(decompressed.clone()).unwrap();
-    assert!(decompressed.starts_with("\"This is a test file!\""));
+    assert!(decompressed.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -249,7 +249,7 @@ async fn test_precompressed_deflate(svc: ServeDir) {
     let mut decoder = DeflateDecoder::new(&body[..]);
     let mut decompressed = String::new();
     decoder.read_to_string(&mut decompressed).unwrap();
-    assert!(decompressed.starts_with("\"This is a test file!\""));
+    assert!(decompressed.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -278,7 +278,7 @@ async fn test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc
 
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.starts_with("\"This is a test file!\""));
+    assert!(body.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -318,7 +318,7 @@ async fn test_only_precompressed_variant_existing(svc: ServeDir) {
     let mut decoder = GzDecoder::new(&body[..]);
     let mut decompressed = String::new();
     decoder.read_to_string(&mut decompressed).unwrap();
-    assert!(decompressed.starts_with("\"This is a test file\""));
+    assert!(decompressed.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -348,7 +348,7 @@ async fn test_missing_precompressed_variant_fallbacks_to_uncompressed(svc: Serve
 
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body.starts_with("Test file!"));
+    assert!(body.starts_with("Test file"));
 }
 
 #[tokio::test]
@@ -377,9 +377,9 @@ async fn test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_r
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     #[cfg(target_os = "windows")]
-    assert_eq!(res.headers()["content-length"], "12");
-    #[cfg(not(target_os = "windows"))]
     assert_eq!(res.headers()["content-length"], "11");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(res.headers()["content-length"], "10");
     // Uncompressed file is served because compressed version is missing
     assert!(res.headers().get("content-encoding").is_none());
 
@@ -1167,6 +1167,248 @@ async fn calls_fallback_on_null() {
     assert_eq!(res.headers()["from-fallback"], "1");
 }
 
+// --- Regression test for tower-rs/tower-http#664 ----------------------------
+//
+// `Accept-Encoding: identity` must NOT trigger the precompressed fallback
+// path that strips the file's existing extension. Without this guard a
+// request for `/foo.foobar` would silently turn into a request for `/foo`,
+// which is plainly wrong: the client asked for a specific file.
+
+#[tokio::test]
+async fn identity_encoding_does_not_strip_extension() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/missing.foobar")
+        .header("Accept-Encoding", "identity")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn identity_encoding_does_not_strip_extension_head_request() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/missing.foobar")
+        .method(Method::HEAD)
+        .header("Accept-Encoding", "identity")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+// --- Vary: Accept-Encoding when precompressed variants are configured ------
+//
+// Per RFC 9110 §12.5.3, a response that *could have* varied with
+// `Accept-Encoding` must advertise `Vary: Accept-Encoding`, even if this
+// particular response happened to be uncompressed.
+
+#[tokio::test]
+async fn precompressed_response_includes_vary_header() {
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .header("Accept-Encoding", "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.headers()["content-encoding"], "gzip");
+    assert_eq!(res.headers()["vary"], "accept-encoding");
+}
+
+#[tokio::test]
+async fn no_vary_header_without_precompressed_serving() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .header("Accept-Encoding", "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get("vary").is_none());
+}
+
+#[tokio::test]
+async fn vary_header_present_when_precompressed_configured_but_fallback_to_uncompressed() {
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .header("Accept-Encoding", "br")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert!(res.headers().get("content-encoding").is_none());
+    assert_eq!(res.headers()["vary"], "accept-encoding");
+}
+
+#[tokio::test]
+async fn vary_header_present_when_precompressed_configured_but_no_accept_encoding() {
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert!(res.headers().get("content-encoding").is_none());
+    assert_eq!(res.headers()["vary"], "accept-encoding");
+}
+
+#[tokio::test]
+async fn precompressed_head_request_includes_vary_header() {
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .method(Method::HEAD)
+        .header("Accept-Encoding", "gzip")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.headers()["content-encoding"], "gzip");
+    assert_eq!(res.headers()["vary"], "accept-encoding");
+}
+
+// --- Trailing slash on file paths (tower-rs/tower-http#678) ----------------
+//
+// A trailing slash means "directory" — when the underlying path is a file
+// (or does not exist) the request must 404, not silently serve the file.
+
+#[tokio::test]
+async fn not_found_when_file_requested_with_trailing_slash() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/index.html/")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(res.headers().get(header::CONTENT_TYPE).is_none());
+
+    let body = body_into_text(res.into_body()).await;
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn file_requested_with_trailing_slash_with_fallback() {
+    async fn fallback(req: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(Body::from(format!(
+            "from fallback {}",
+            req.uri().path()
+        ))))
+    }
+
+    let svc = ServeDir::new("../test-files").fallback(service_fn(fallback));
+
+    let req = Request::builder()
+        .uri("/index.html/")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_into_text(res.into_body()).await;
+    assert_eq!(body, "from fallback /index.html/");
+}
+
+#[tokio::test]
+async fn directory_with_trailing_slash_appends_index_html() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder().uri("/foo/").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html");
+    let body = body_into_text(res.into_body()).await;
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(body, "<b>HTML!</b>\n");
+}
+
+#[tokio::test]
+async fn root_with_trailing_slash_serves_index_html() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html");
+    let body = body_into_text(res.into_body()).await;
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(body, "<b>HTML!</b>\n");
+}
+
+// --- html_as_default_extension (tower-rs/tower-http#519) -------------------
+//
+// When enabled, a bare-name request (no extension) that doesn't resolve to
+// an existing file gets `.html` appended before opening.
+
+#[tokio::test]
+async fn html_as_default_extension_serves_html_file() {
+    let svc = ServeDir::new("../test-files").with_html_as_default_extension(true);
+
+    let req = Request::builder().uri("/page").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html");
+
+    let body = body_into_text(res.into_body()).await;
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>page</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(body, "<b>page</b>\n");
+}
+
+#[tokio::test]
+async fn html_as_default_extension_not_found_when_html_missing() {
+    let svc = ServeDir::new("../test-files").with_html_as_default_extension(true);
+
+    let req = Request::builder()
+        .uri("/nonexistent")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn html_as_default_extension_does_not_apply_when_extension_present() {
+    let svc = ServeDir::new("../test-files").with_html_as_default_extension(true);
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/plain");
+}
+
 #[cfg(windows)]
 fn verify_windows_device(name: &str, is_positive: bool) {
     use std::fs::OpenOptions;
@@ -1290,6 +1532,7 @@ fn test_build_and_validate_path_reserved_dos_names() {
 
     let variant = ServeVariant::Directory {
         serve_mode: DirectoryServeMode::AppendIndexHtml,
+        html_as_default_extension: false,
     };
     let base = Path::new("/base");
 

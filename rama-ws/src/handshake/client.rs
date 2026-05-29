@@ -24,6 +24,7 @@ use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 use rama_http::{request, response};
+use rama_net::extensions::StreamTransformed;
 use rama_utils::str::NonEmptyStr;
 
 use crate::protocol::{Role, WebSocketConfig};
@@ -763,6 +764,10 @@ where
         self,
         extensions: Extensions,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
+        extensions.insert(StreamTransformed {
+            by: "rama-ws::WebSocketClient",
+        });
+
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
             None => self.inner.builder,

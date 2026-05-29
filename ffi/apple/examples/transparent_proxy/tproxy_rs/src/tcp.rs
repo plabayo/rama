@@ -1,5 +1,10 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+use rama::net::tls::KeyLogIntent;
+use rama::net::tls::keylog::{
+    KeyLogSink, NoopKeyLogSink, RotatingFileKeyLogSink, RotationPeriod, ToggleableKeyLogSink,
+};
+use rama::telemetry::tracing;
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -28,7 +33,10 @@ use rama::{
     layer::{ArcLayer, ConsumeErrLayer, HijackLayer},
     net::{
         address::Domain,
-        apple::networkextension::{NwTcpStream, TcpFlow, tproxy::TransparentProxyServiceContext},
+        apple::networkextension::{
+            NwTcpStream, TcpFlow,
+            tproxy::{PromoteLayer, TransparentProxyServiceContext},
+        },
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         tls::server::PeekTlsClientHelloService,
@@ -65,12 +73,56 @@ impl DemoTcpMitmService {
         )?;
         let ca_crt_pem: Bytes = Bytes::from(ca_crt.to_pem().context("encode root ca cert to pem")?);
 
+        // Build the keylog pipeline unconditionally and bake it into
+        // the relay as `KeyLogIntent::Custom`. Runtime on/off is a
+        // single AtomicBool flip via XPC — see
+        // `LiveSettings::tls_keylog_toggle`. Default is OFF; nothing
+        // is persisted across sysext restarts. Rotated files (hourly,
+        // 8 h retention) land in `<storage_dir>/keylog/` (Wireshark:
+        // Preferences → Protocols → TLS → (Pre)-Master-Secret log
+        // filename → pick the most recent file).
+        let (tls_keylog_intent, tls_keylog_toggle) = if let Some(dir) = crate::utils::storage_dir()
+        {
+            let keylog_dir = dir.join("keylog");
+            let rotating = RotatingFileKeyLogSink::try_open_with(
+                &keylog_dir,
+                "sslkeylog",
+                RotationPeriod::HOURLY,
+                Some(Duration::from_hours(8)),
+            )
+            .context("open rotating tls keylog sink")?;
+            let toggleable = Arc::new(ToggleableKeyLogSink::new(rotating));
+            let toggle = toggleable.toggle();
+            tracing::info!(
+                dir = %keylog_dir.display(),
+                "TLS keylog pipeline ready (OFF by default; toggle via XPC)",
+            );
+            (
+                KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                toggle,
+            )
+        } else {
+            tracing::warn!(
+                "TLS keylog: no storage_dir → Noop sink; toggle XPC route exists but writes \
+                    go nowhere",
+            );
+            let toggleable = Arc::new(ToggleableKeyLogSink::new(NoopKeyLogSink));
+            let toggle = toggleable.toggle();
+            (
+                KeyLogIntent::Custom(toggleable as Arc<dyn KeyLogSink>),
+                toggle,
+            )
+        };
+        let mut tls_mitm_relay = TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key);
+        tls_mitm_relay.set_keylog_intent(tls_keylog_intent);
+
         let initial_settings = LiveSettings {
             html_badge_enabled: demo_config.html_badge_enabled,
             html_badge_label: demo_config.html_badge_label.clone(),
             exclude_domains: demo_config.exclude_domains.clone(),
             ca_crt_pem,
-            tls_mitm_relay: TlsMitmRelay::new_cached_in_memory(ca_crt, ca_key),
+            tls_mitm_relay,
+            tls_keylog_toggle,
         };
         let state: SharedState = Arc::new(arc_swap::ArcSwap::from_pointee(initial_settings));
 
@@ -108,21 +160,36 @@ impl DemoTcpMitmService {
             self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
 
-        let maybe_http_mitm_svc = HttpPeekRouter::new(http_mitm_svc)
+        // `promote_passthrough` is ONLY safe on a raw kernel-flow ↔
+        // NWConnection bridge — see `PromoteHandle`'s safety contract.
+        // Inside TLS / HTTP MITM the bridge carries post-decryption
+        // cleartext, but the underlying kernel flow + NWConnection
+        // still carry mutually-undecryptable TLS bytes, so a cutover
+        // there would forward garbage. Wrap the outer fallbacks
+        // (non-TLS plain traffic, SNI-excluded TLS passthrough);
+        // leave the inner fallback (post-TLS-MITM cleartext) as plain
+        // `IoForwardService`.
+        let plain_passthrough = IoForwardService::new(exec.clone());
+        let promote_passthrough = PromoteLayer::new().into_layer(plain_passthrough.clone());
+
+        let inner_http_router = HttpPeekRouter::new(http_mitm_svc.clone())
             .with_peek_timeout(peek_duration)
-            .with_fallback(IoForwardService::new(exec.clone()));
+            .with_fallback(plain_passthrough);
+        let outer_http_router = HttpPeekRouter::new(http_mitm_svc)
+            .with_peek_timeout(peek_duration)
+            .with_fallback(promote_passthrough.clone());
 
         let excluded_domains =
             crate::policy::DomainExclusionList::new(settings.exclude_domains.iter());
-        let tls_mitm_relay_policy =
-            TlsMitmRelayPolicyLayer::new(exec.clone()).with_excluded_domains(excluded_domains);
+        let tls_mitm_relay_policy = TlsMitmRelayPolicyLayer::new(exec.clone())
+            .with_excluded_domains(excluded_domains)
+            .with_fallback(promote_passthrough);
 
         let app_mitm_layer = PeekTlsClientHelloService::new(
-            (tls_mitm_relay_policy, settings.tls_mitm_relay.clone())
-                .into_layer(maybe_http_mitm_svc.clone()),
+            (tls_mitm_relay_policy, settings.tls_mitm_relay.clone()).into_layer(inner_http_router),
         )
         .with_peek_timeout(peek_duration)
-        .with_fallback(maybe_http_mitm_svc);
+        .with_fallback(outer_http_router);
 
         if within_connect_tunnel {
             return Either::A(ConsumeErrLayer::trace_as_debug().into_layer(app_mitm_layer));
@@ -182,6 +249,9 @@ impl DemoTcpMitmService {
                         DemoTraceTrafficLayer.into_layer(MirrorService::new()),
                     )),
                     HttpProxyConnectRelayServiceRequestMatcher::new(if within_connect_tunnel {
+                        // CONNECT tunnel inner stream — post-HTTP-decoding,
+                        // NOT a raw kernel-flow bridge. Do not promote here;
+                        // see `PromoteHandle`'s safety contract.
                         ConsumeErrLayer::trace_as_debug()
                             .into_layer(IoForwardService::new(exec))
                             .boxed()

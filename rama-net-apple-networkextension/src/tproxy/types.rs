@@ -336,25 +336,33 @@ impl From<bool> for TransparentProxyFlowAction {
 }
 
 /// One network interception rule for transparent proxy settings.
+///
+/// `exclude = true` rules map to Apple's `excludedNetworkRules`
+/// (bypassed by the kernel, never reach the provider). They take
+/// precedence over included rules at the framework level.
 #[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {
     remote_network: Option<Host>,
     remote_prefix: Option<u8>,
+    remote_port: Option<u16>,
     local_network: Option<Host>,
     local_prefix: Option<u8>,
     protocol: TransparentProxyRuleProtocol,
+    exclude: bool,
 }
 
 impl TransparentProxyNetworkRule {
-    /// Create an "all traffic" rule.
+    /// Create an "all traffic" rule (included by default).
     #[must_use]
     pub fn any() -> Self {
         Self {
             remote_network: None,
             remote_prefix: None,
+            remote_port: None,
             local_network: None,
             local_prefix: None,
             protocol: TransparentProxyRuleProtocol::Any,
+            exclude: false,
         }
     }
 
@@ -368,6 +376,12 @@ impl TransparentProxyNetworkRule {
     #[must_use]
     pub const fn remote_prefix(&self) -> Option<u8> {
         self.remote_prefix
+    }
+
+    /// Remote port to match, if set.
+    #[must_use]
+    pub const fn remote_port(&self) -> Option<u16> {
+        self.remote_port
     }
 
     /// Optional local network as domain or IP address.
@@ -386,6 +400,12 @@ impl TransparentProxyNetworkRule {
     #[must_use]
     pub const fn protocol(&self) -> TransparentProxyRuleProtocol {
         self.protocol
+    }
+
+    /// `true` if matching flows are bypassed by the kernel.
+    #[must_use]
+    pub const fn exclude(&self) -> bool {
+        self.exclude
     }
 
     generate_set_and_with! {
@@ -413,6 +433,14 @@ impl TransparentProxyNetworkRule {
     }
 
     generate_set_and_with! {
+        /// Set remote port.
+        pub fn remote_port(mut self, port: u16) -> Self {
+            self.remote_port = Some(port);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set local network prefix.
         pub fn local_network_prefix(mut self, prefix: u8) -> Self {
             self.local_prefix = Some(prefix);
@@ -426,6 +454,21 @@ impl TransparentProxyNetworkRule {
             self.protocol = protocol;
             self
         }
+    }
+
+    generate_set_and_with! {
+        /// Set the exclusion flag.
+        pub fn exclude(mut self, exclude: bool) -> Self {
+            self.exclude = exclude;
+            self
+        }
+    }
+
+    /// Shorthand for `.with_exclude(true)`.
+    #[must_use]
+    pub fn excluded(mut self) -> Self {
+        self.exclude = true;
+        self
     }
 }
 
@@ -554,6 +597,48 @@ mod transparent_proxy_config_tests {
     fn tcp_write_pump_max_pending_bytes_round_trips() {
         let cfg = TransparentProxyConfig::new().with_tcp_write_pump_max_pending_bytes(17);
         assert_eq!(cfg.tcp_write_pump_max_pending_bytes(), 17);
+    }
+
+    /// Pin the default for the `exclude` flag — flipping the
+    /// default would silently turn every existing user's rules
+    /// into exclusions, bypassing the proxy entirely.
+    #[test]
+    fn network_rule_default_is_included() {
+        let r = TransparentProxyNetworkRule::any();
+        assert!(
+            !r.exclude(),
+            "TransparentProxyNetworkRule::any() must default to INCLUDED \
+             (exclude=false). Flipping this default is a breaking change \
+             that silently routes 0% of traffic through the proxy.",
+        );
+    }
+
+    /// Builder coverage for `with_exclude` + `excluded`.
+    #[test]
+    fn network_rule_exclude_builders_round_trip() {
+        let with = TransparentProxyNetworkRule::any().with_exclude(true);
+        assert!(with.exclude());
+        let explicit = TransparentProxyNetworkRule::any().excluded();
+        assert!(explicit.exclude());
+        let toggled = TransparentProxyNetworkRule::any()
+            .with_exclude(true)
+            .with_exclude(false);
+        assert!(!toggled.exclude(), "later setter wins");
+    }
+
+    #[test]
+    fn network_rule_default_remote_port_is_none() {
+        assert_eq!(TransparentProxyNetworkRule::any().remote_port(), None);
+    }
+
+    #[test]
+    fn network_rule_with_remote_port_round_trips() {
+        let r = TransparentProxyNetworkRule::any().with_remote_port(443);
+        assert_eq!(r.remote_port(), Some(443));
+        let r2 = TransparentProxyNetworkRule::any()
+            .with_remote_port(80)
+            .with_remote_port(8080);
+        assert_eq!(r2.remote_port(), Some(8080), "later setter wins");
     }
 }
 

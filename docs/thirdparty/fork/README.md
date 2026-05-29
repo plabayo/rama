@@ -9,14 +9,14 @@ as a distant relative.
 
 ### hyperium
 
-- h2: <https://github.com/hyperium/h2/tree/e2826c54601a2afd5083e496a6e021408cc2a11f>
+- h2: <https://github.com/hyperium/h2/tree/d361b75762868f51fb85e39e0a6c3c79958b42ea>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/e2826c54601a2afd5083e496a6e021408cc2a11f/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/d361b75762868f51fb85e39e0a6c3c79958b42ea/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- hyper: <https://github.com/hyperium/hyper/tree/e9be344f16c8a996ccf3a9f69a66408437885f31>
+- hyper: <https://github.com/hyperium/hyper/tree/54e8511d5fb25e7db3fd766a403826d4946af5b6>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/e9be344f16c8a996ccf3a9f69a66408437885f31/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/54e8511d5fb25e7db3fd766a403826d4946af5b6/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
 - hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
@@ -44,13 +44,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/251296dc54a044383dffd16d2179b443e2615672/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/7551a9b8b9706ca1e11c035659b243f688b136bd>
+- <https://github.com/tower-rs/tower-http/tree/b5366318c0661693e15de6d75e15a2f7924b5036>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/7551a9b8b9706ca1e11c035659b243f688b136bd/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/b5366318c0661693e15de6d75e15a2f7924b5036/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
@@ -129,16 +129,16 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/59bee6404f3c126af71e33b3cf02627df0cae50a>
+- <https://github.com/snapview/tungstenite-rs/tree/16ca0fc87e0a39f66548e24a08ab0961e592324f>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/59bee6404f3c126af71e33b3cf02627df0cae50a/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/16ca0fc87e0a39f66548e24a08ab0961e592324f/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/38d04656fe28be0000920201d6a49bf5ec3d537b>
+- <https://github.com/snapview/tokio-tungstenite/tree/753ca72690919485a1aa1f0f69a336b1152fb0ae>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/38d04656fe28be0000920201d6a49bf5ec3d537b/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/753ca72690919485a1aa1f0f69a336b1152fb0ae/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>

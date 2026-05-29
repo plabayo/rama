@@ -45,6 +45,8 @@ fn tcp_session_can_be_blocked() {
         tcp_matcher: Arc::new(|_| FlowAction::Blocked),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     });
     let decision = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
@@ -62,6 +64,8 @@ fn udp_session_can_be_blocked() {
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|_| FlowAction::Blocked),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     });
     let decision = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
@@ -219,6 +223,8 @@ fn decision_deadline_does_not_fire_for_fast_handlers() {
         }),
         udp_matcher: Arc::new(|_| FlowAction::Passthrough),
         tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
     };
     let engine = build_engine_with_decision_deadline(
         handler,

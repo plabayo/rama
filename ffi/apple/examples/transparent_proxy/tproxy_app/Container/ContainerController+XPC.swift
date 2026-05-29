@@ -22,6 +22,29 @@ extension ContainerController {
         }
     }
 
+    /// Refresh the menu's TLS-keylog checkmark from the sysext's
+    /// authoritative state. Called after the provider transitions to
+    /// `.connected` — the sysext's toggle is never persisted, so the
+    /// state on fresh launches is always `false`, but pulling it
+    /// keeps things truthful if the sysext was already running.
+    func syncTlsKeylogStateFromSysext() {
+        guard !xpcServiceName.isEmpty, isProviderActive() else { return }
+        let client = ramaXpcClient
+        Task { [weak self] in
+            do {
+                let reply = try await client.call(RamaTproxyGetTlsKeylog.self)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.demoSettings.tlsKeylogEnabled = reply.enabled
+                    self.updateDemoSettingsMenu()
+                    self.log("syncTlsKeylogStateFromSysext: enabled=\(reply.enabled)")
+                }
+            } catch {
+                self?.logError("syncTlsKeylogStateFromSysext: XPC failed", error)
+            }
+        }
+    }
+
     /// Push the current demo settings to the running sysext.
     /// Fire-and-forget; only runs while the proxy is active.
     func sendXpcUpdateSettings() {

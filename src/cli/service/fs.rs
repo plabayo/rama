@@ -69,6 +69,7 @@ pub struct FsServiceBuilder<H> {
 
     content_path: Option<PathBuf>,
     dir_serve_mode: DirectoryServeMode,
+    html_as_default_extension: bool,
 }
 
 impl Default for FsServiceBuilder<()> {
@@ -88,6 +89,7 @@ impl Default for FsServiceBuilder<()> {
 
             content_path: None,
             dir_serve_mode: DirectoryServeMode::HtmlFileList,
+            html_as_default_extension: false,
         }
     }
 }
@@ -183,6 +185,7 @@ impl<H> FsServiceBuilder<H> {
 
             content_path: self.content_path,
             dir_serve_mode: self.dir_serve_mode,
+            html_as_default_extension: self.html_as_default_extension,
         }
     }
 
@@ -217,6 +220,20 @@ impl<H> FsServiceBuilder<H> {
         /// and that path points to a valid directory.
         pub fn directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
             self.dir_serve_mode = mode;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// If true, requests for a path without a file extension that
+        /// doesn't resolve to anything will be retried with `.html` appended
+        /// (e.g. `/about` will serve `/about.html`).
+        ///
+        /// Only takes effect when the content path points to a directory.
+        ///
+        /// Defaults to `false`.
+        pub fn html_as_default_extension(mut self, html_as_default_extension: bool) -> Self {
+            self.html_as_default_extension = html_as_default_extension;
             self
         }
     }
@@ -318,9 +335,11 @@ where
                 include_str!("../../../docs/index.html"),
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
-            Some(path) if path.is_dir() => {
-                Either3::C(ServeDir::new(path).with_directory_serve_mode(self.dir_serve_mode))
-            }
+            Some(path) if path.is_dir() => Either3::C(
+                ServeDir::new(path)
+                    .with_directory_serve_mode(self.dir_serve_mode)
+                    .with_html_as_default_extension(self.html_as_default_extension),
+            ),
             Some(path) => {
                 return Err(OpaqueError::from_static_str(
                     "invalid path: no such file or directory",

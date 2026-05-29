@@ -1,4 +1,4 @@
-//! HTTP Client
+//! HTTP Client.
 //!
 //! rama_http_core provides HTTP over a single connection. See the [`conn`] module.
 

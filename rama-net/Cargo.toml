@@ -31,7 +31,7 @@ http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
 #
 # Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.
 idna = ["dep:idna"]
-tls = ["dep:hex", "dep:md5", "dep:sha2"]
+tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:jiff"]
 opentelemetry = ["rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
 #
@@ -51,6 +51,7 @@ idna = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true }
 itoa = { workspace = true }
+jiff = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
 memchr = { workspace = true }
 nom = { workspace = true }
@@ -81,6 +82,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 itertools = { workspace = true }
 nom = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 

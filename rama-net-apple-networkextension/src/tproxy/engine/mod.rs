@@ -56,6 +56,9 @@ pub use self::runtime::{
     TransparentProxyAsyncRuntimeFactory,
 };
 
+mod promote;
+pub use self::promote::{Promote, PromoteError, PromoteHandle, PromoteLayer};
+
 /// Default deadline for flow-handler decisions. Tuned via
 /// [`TransparentProxyEngineBuilder::with_decision_deadline`].
 pub const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(3);
@@ -71,6 +74,20 @@ pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_mins(15);
 /// [`DEFAULT_TCP_IDLE_TIMEOUT`] for UDP; opt out via
 /// [`TransparentProxyEngineBuilder::without_udp_max_flow_lifetime`].
 pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
+
+/// Default per-UDP-flow idle timeout — close the flow when no
+/// datagrams have been observed in either direction for this long.
+/// Distinct from [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: that is a hard
+/// wall-clock cap from flow start (whether active or idle); this
+/// resets on each datagram. Opt out via
+/// [`TransparentProxyEngineBuilder::without_udp_idle_timeout`].
+///
+/// 60 s is the smallest window that comfortably exceeds typical
+/// real-world UDP-flow idle gaps (DNS retry cadence, NAT-keepalive
+/// intervals, mDNS jitter). Active flows — QUIC long-poll, WebRTC
+/// media — push the deadline forward on every datagram so they're
+/// unaffected.
+pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Action taken when a flow handler exceeds the configured decision deadline.
 ///
@@ -99,36 +116,31 @@ impl std::fmt::Display for DecisionDeadlineAction {
     }
 }
 
-const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 64 * 1024; // 64 KiB
-/// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress) will
-/// buffer before we tell Swift to stop reading from the kernel and wait for a
-/// demand callback to resume. Each chunk is whatever Swift hands us in one
-/// `flow.readData` / `connection.receive` callback (typically 4–64 KiB).
+/// Default duplex buffer size between the per-flow bridge and the service.
+/// Two duplexes per TCP flow (ingress + egress) at this size each, fixed
+/// at flow creation, so this is a per-flow memory floor of `2× this`.
 ///
-/// We bound this to keep per-flow worst-case memory in check: the prior
-/// unbounded design let one slow flow buffer arbitrary pending bytes, which
-/// under sustained traffic exhausted Apple's per-flow NE kernel buffer and
-/// aborted the shared NEAppProxyProvider director, killing every flow on the
-/// extension.
+/// 16 KiB matches the bridge's own read buffer ([`run_tcp_bridge`]). For
+/// L4 transparent forwarding this is plenty of burst absorption — the
+/// bridge always copies out before the next read. Handlers that terminate
+/// HTTP/2 (or other heavy fan-in protocols) should raise this via
+/// [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`].
+const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
+/// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
+/// will buffer before backpressuring Swift. Each chunk is whatever Swift
+/// hands us in one `flow.readData` / `connection.receive` callback
+/// (typically 4–64 KiB).
 ///
-/// 128 chunks is sized for L4 transparent forwarding (the design centre of
-/// this engine): one or two in-flight `flow.readData` results plus brief
-/// downstream backpressure absorb cleanly. At ~64 KiB per chunk that gives
-/// ~8 MiB of worst-case headroom per direction, ~16 MiB per flow — modest
-/// enough that a few hundred concurrent flows do not push the SE process
-/// past a sensible RSS, but generous enough that legitimate single-flow
-/// throughput does not see a pause every few packets. Handlers that
-/// terminate HTTP/2 (or other heavy fan-in protocols) should raise this
-/// via `TransparentProxyEngineBuilder::tcp_channel_capacity` for those
-/// flows specifically — the high default that used to live here was sized
-/// for that case but applied to every flow, which is the wrong tradeoff
-/// for an L4 transparent proxy.
-const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 128;
+/// 32 chunks is sized for L4 transparent forwarding (the design centre of
+/// this engine). At ~16 KiB per chunk that gives ~512 KiB of worst-case
+/// headroom per direction, ~1 MiB per flow under saturation. Handlers
+/// that terminate HTTP/2 (or other heavy fan-in protocols) should raise
+/// this via [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 32;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
 /// lossy, so on a full channel we drop the datagram rather than block; the
-/// bound is just a memory cap. Same sizing tradeoff as the TCP channel —
-/// 128 datagrams of headroom is plenty for any normal application.
-const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 128;
+/// bound is just a memory cap.
+const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 32;
 
 /// Default for [`TransparentProxyEngineBuilder::with_tcp_paused_drain_max_wait`].
 /// Backstops a stuck downstream writer (a Swift `flow.write`
@@ -192,6 +204,30 @@ pub enum TcpDeliverStatus {
 // compile time instead of corrupting return values at runtime.
 const _: () = assert!(std::mem::size_of::<TcpDeliverStatus>() == 1);
 
+impl TcpDeliverStatus {
+    /// Decode a raw byte received across the FFI boundary. The FFI
+    /// callbacks are declared to return `u8` (not this enum) so an
+    /// out-of-range value from a foreign caller can never materialize
+    /// an invalid discriminant (which would be UB). Unknown values
+    /// fail safe to `Closed` — stop the pump rather than act on a
+    /// corrupt status.
+    #[must_use]
+    pub fn from_ffi_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Accepted,
+            1 => Self::Paused,
+            2 => Self::Closed,
+            other => {
+                tracing::error!(
+                    raw = other,
+                    "TcpDeliverStatus: invalid FFI value; treating as Closed"
+                );
+                Self::Closed
+            }
+        }
+    }
+}
+
 pub struct TransparentProxyEngine<H> {
     rt: TransparentProxyAsyncRuntime,
     handler: H,
@@ -201,13 +237,72 @@ pub struct TransparentProxyEngine<H> {
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
-    shutdown: Option<Shutdown>,
-    stop_trigger: Option<oneshot::Sender<()>>,
+    /// Engine-wide [`Shutdown`] + its `oneshot` trigger, held together
+    /// because [`drain_for_sleep`] needs to swap them as a unit (fire
+    /// the OLD pair, install a FRESH one so post-drain flows have a
+    /// clean graceful tree). `None` after `shutdown_blocking` has
+    /// taken them — the engine is terminally stopped.
+    ///
+    /// [`drain_for_sleep`]: TransparentProxyEngine::drain_for_sleep
+    shutdown: parking_lot::Mutex<Option<ShutdownPair>>,
+}
+
+/// Pair of an engine-wide [`Shutdown`] and the [`oneshot::Sender`]
+/// that fires its inner future.
+///
+/// Kept together because they must move atomically across the
+/// recoverable-drain path: firing the trigger resolves the inner
+/// future, which lets the [`Shutdown`] propagate cancellation to all
+/// outstanding [`ShutdownGuard`]s; once the trigger is `send()`-ed it
+/// is consumed, and a future caller would need a fresh `Shutdown` to
+/// fire again.
+struct ShutdownPair {
+    shutdown: Shutdown,
+    trigger: oneshot::Sender<()>,
+}
+
+/// Outcome of [`TransparentProxyEngine::drain_for_sleep`].
+///
+/// `#[repr(u32)]` so the value is stable for the FFI shim — Swift
+/// gates `handleSystemSleep`'s completion behaviour on which arm
+/// fired.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum DrainOutcome {
+    /// All outstanding [`ShutdownGuard`]s observed cancellation and
+    /// dropped before the deadline. Engine is quiet.
+    Drained = 0,
+    /// Deadline elapsed before all guards dropped. The engine is
+    /// still functional — new flows post-drain register against a
+    /// fresh [`Shutdown`] — but some pre-drain tasks may still be
+    /// running. Apple sleeps the process anyway; on wake they
+    /// resume but with the OLD cancellation already signalled,
+    /// they'll bail at their next yield point.
+    Timeout = 1,
+    /// Engine was already terminally stopped (`shutdown_blocking`
+    /// had taken the pair). No-op.
+    AlreadyStopped = 2,
+}
+
+/// Build a fresh [`ShutdownPair`] bound to the engine's runtime.
+///
+/// Kept private to this module — every construction site needs the
+/// same `rt.enter()` ceremony so the [`Shutdown`]'s inner future is
+/// spawned on the engine's runtime, not whatever runtime the caller
+/// happens to be on.
+fn build_shutdown_pair(rt: &TransparentProxyAsyncRuntime) -> ShutdownPair {
+    let (trigger, rx) = oneshot::channel::<()>();
+    let _enter = rt.enter();
+    let shutdown = Shutdown::new(async move {
+        _ = rx.await;
+    });
+    ShutdownPair { shutdown, trigger }
 }
 
 impl<H> TransparentProxyEngine<H>
@@ -216,6 +311,34 @@ where
 {
     pub fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
         self.handler.transparent_proxy_config()
+    }
+
+    /// Fire-and-forget notification that the system is going to
+    /// sleep. Drives `TransparentProxyHandler::on_system_sleep` on
+    /// the engine's runtime. Returns once the dispatch is queued
+    /// — the handler's future runs detached so the Swift sleep
+    /// completion isn't gated on it.
+    pub fn notify_system_sleep(&self) {
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::trace!("notify_system_sleep ignored: engine already stopped");
+            return;
+        };
+        let exec = Executor::graceful(guard);
+        let handler = self.handler.clone();
+        self.rt
+            .spawn(async move { handler.on_system_sleep(exec).await });
+    }
+
+    /// Symmetric counterpart of [`Self::notify_system_sleep`].
+    pub fn notify_system_wake(&self) {
+        let Some(guard) = self.shutdown_guard() else {
+            tracing::trace!("notify_system_wake ignored: engine already stopped");
+            return;
+        };
+        let exec = Executor::graceful(guard);
+        let handler = self.handler.clone();
+        self.rt
+            .spawn(async move { handler.on_system_wake(exec).await });
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -326,6 +449,7 @@ where
 
         let udp_channel_capacity = self.udp_channel_capacity;
         let udp_max_flow_lifetime = self.udp_max_flow_lifetime;
+        let udp_idle_timeout = self.udp_idle_timeout;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
         let exec = Executor::graceful(guard.clone());
@@ -339,6 +463,7 @@ where
                 meta,
                 udp_channel_capacity,
                 udp_max_flow_lifetime,
+                udp_idle_timeout,
                 decision_deadline,
                 decision_deadline_action,
                 on_server_datagram,
@@ -354,7 +479,10 @@ where
     }
 
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
-        self.shutdown.as_ref().map(Shutdown::guard)
+        self.shutdown
+            .lock()
+            .as_ref()
+            .map(|pair| pair.shutdown.guard())
     }
 }
 
@@ -366,22 +494,16 @@ struct TcpSessionPendingData {
     bridge_tx: oneshot::Sender<BridgeIo<TcpFlow, NwTcpStream>>,
     /// Ingress (client→Rust) bytes; handed to the ingress bridge at activate.
     client_rx: mpsc::Receiver<Bytes>,
-    /// Ingress paused flag, shared with `on_client_bytes` and the bridge.
-    /// See [`TransparentProxyTcpSession::client_paused`].
-    client_paused: Arc<AtomicBool>,
+    /// Shared per-flow paused flags + drain notifications.
+    signals: Arc<TcpPerFlowSignals>,
     /// Rust→Swift: signal Swift it can resume reading from the intercepted flow.
     /// Fired by the ingress bridge after it drained a chunk while
-    /// `client_paused` was set.
+    /// `signals.ingress_paused` was set.
     on_client_read_demand: DemandSink,
     /// Rust→Swift: response bytes back to the intercepted client flow.
     /// Returns a [`TcpDeliverStatus`] so the bridge can pause when Swift's
     /// writer pump is full and wait for the matching `signal_server_drain`.
     on_server_bytes: BytesStatusSink,
-    /// Notified by `TransparentProxyTcpSession::signal_server_drain` when the
-    /// Swift writer pump for the intercepted flow has drained capacity.
-    /// The ingress bridge awaits on it after `on_server_bytes` returns
-    /// `Paused`.
-    server_write_notify: Arc<Notify>,
     /// Rust→Swift: ingress response stream done.
     on_server_closed: ClosedSink,
     /// Both ingress and egress duplex buffer size.
@@ -410,28 +532,32 @@ struct TcpSessionPendingData {
 
 pub struct TransparentProxyTcpSession {
     // ingress data path
-    client_tx: Option<mpsc::Sender<Bytes>>,
-    /// `true` while Swift has been told to stop calling `on_client_bytes`
-    /// (because the ingress channel was full). Cleared by the ingress bridge
-    /// after it drains a chunk; the bridge then fires
-    /// `on_client_read_demand` to wake Swift.
-    client_paused: Arc<AtomicBool>,
+    //
+    // Shared with `promote::PromoteRegistry` so the promote fire
+    // closure can drop the sender on a successful Swift cutover —
+    // see `PromoteRegistry::fire`. The lock is uncontended on the
+    // hot path (`on_client_bytes`) — only the promote path ever
+    // contends with `on_client_bytes`, and only at cutover time.
+    client_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
     saw_client_bytes: bool,
-    /// Symmetric counterpart of `client_paused` for the response direction
-    /// (Rust → Swift writer pump). Notified by Swift via
-    /// [`Self::signal_server_drain`] when its writer drains capacity, awaited
-    /// by the ingress bridge after `on_server_bytes` returns `Paused`.
-    server_write_notify: Arc<Notify>,
 
-    // egress data path (populated by activate)
-    egress_tx: Option<mpsc::Sender<Bytes>>,
-    /// Same role as `client_paused` but for the egress (NWConnection→Rust)
-    /// channel; populated at `activate`.
-    egress_paused: Option<Arc<AtomicBool>>,
-    /// Symmetric counterpart for the egress request direction (Rust →
-    /// Swift NWConnection writer pump); populated at `activate`. Notified by
-    /// Swift via [`Self::signal_egress_drain`].
-    egress_write_notify: Option<Arc<Notify>>,
+    // egress data path (populated by activate).
+    //
+    // Same `Arc<Mutex<Option<...>>>` shape as `client_tx` — and
+    // for the same reason: the promote fire closure also drops
+    // this sender on Ok ACK so a service using bidirectional
+    // copy gets EOF on its `egress.read()` too. Without this
+    // mirror, only `ingress.read()` would EOF and
+    // `copy_bidirectional` (or any "both halves" reader) would
+    // wedge forever after cutover.
+    egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
+
+    /// Shared paused flags + drain notifications for both directions.
+    /// One allocation, used by `on_*_bytes`, the bridges, and `signal_*_drain`.
+    signals: Arc<TcpPerFlowSignals>,
+
+    // promote
+    promote_registry: Arc<promote::PromoteRegistry>,
 
     // lifecycle
     callback_active: Arc<parking_lot::Mutex<bool>>,
@@ -465,7 +591,11 @@ impl TransparentProxyTcpSession {
             return TcpDeliverStatus::Accepted;
         }
         self.saw_client_bytes = true;
-        let Some(tx) = self.client_tx.as_mut() else {
+        // Lock window is bounded: `try_reserve` + `permit.send` are
+        // both non-blocking. The lock is only contended with the
+        // promote path at cutover time.
+        let guard = self.client_tx.lock();
+        let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
@@ -474,7 +604,7 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                self.client_paused.store(true, Ordering::Release);
+                self.signals.ingress_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
@@ -489,12 +619,18 @@ impl TransparentProxyTcpSession {
     /// would create a select-fairness race against `read_half.read()`
     /// that can either drop the last chunk (too-eager EOF) or starve the
     /// response direction (over-prioritised EOF).
+    ///
+    /// If the client EOFs without ever sending a byte (`!saw_client_bytes`),
+    /// route through `cancel()`: there's nothing for the service to do, and
+    /// dragging the bridges through a normal half-close just adds latency
+    /// before teardown. Note this is asymmetric with [`Self::on_egress_eof`]
+    /// — see that method.
     pub fn on_client_eof(&mut self) {
         if !self.saw_client_bytes {
             self.cancel();
             return;
         }
-        self.client_tx = None;
+        *self.client_tx.lock() = None;
     }
 
     /// Called by Swift when bytes arrive from the egress `NWConnection`.
@@ -507,7 +643,11 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return TcpDeliverStatus::Accepted;
         }
-        let Some(tx) = self.egress_tx.as_mut() else {
+        // Same lock-discipline rationale as `on_client_bytes` —
+        // the only writer that contends is the promote fire
+        // closure dropping the sender on Ok ACK.
+        let guard = self.egress_tx.lock();
+        let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
@@ -516,9 +656,7 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                if let Some(paused) = self.egress_paused.as_ref() {
-                    paused.store(true, Ordering::Release);
-                }
+                self.signals.egress_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
@@ -532,23 +670,27 @@ impl TransparentProxyTcpSession {
     /// Idempotent — the underlying `Notify` collapses redundant signals into
     /// a single permit.
     pub fn signal_server_drain(&self) {
-        self.server_write_notify.notify_one();
+        self.signals.ingress_drain.notify_one();
     }
 
     /// Symmetric counterpart of [`Self::signal_server_drain`] for the egress
     /// request direction. Called by Swift when its `NwTcpConnectionWritePump`
     /// has drained capacity after `on_write_to_egress` returned `Paused`.
     pub fn signal_egress_drain(&self) {
-        if let Some(notify) = &self.egress_write_notify {
-            notify.notify_one();
-        }
+        self.signals.egress_drain.notify_one();
     }
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
     ///
-    /// Same channel-close pattern as [`Self::on_client_eof`].
+    /// Same channel-close pattern as [`Self::on_client_eof`], but no
+    /// "no-traffic → cancel" fast path: a server closing before sending
+    /// any response bytes is a normal protocol outcome (HTTP CONNECT
+    /// tunnel close, idle disconnect, request-only verbs), and the
+    /// service may still want to flush request bytes or run epilogue
+    /// logic. Dropping `egress_tx` lets the service's `egress.read()`
+    /// EOF naturally; the service decides what to do from there.
     pub fn on_egress_eof(&mut self) {
-        self.egress_tx = None;
+        *self.egress_tx.lock() = None;
     }
 
     /// Return the handler-supplied egress connect options, if any.
@@ -587,10 +729,9 @@ impl TransparentProxyTcpSession {
         let TcpSessionPendingData {
             bridge_tx,
             client_rx,
-            client_paused,
+            signals,
             on_client_read_demand,
             on_server_bytes,
-            server_write_notify,
             on_server_closed,
             tcp_flow_buffer_size,
             tcp_channel_capacity,
@@ -612,17 +753,22 @@ impl TransparentProxyTcpSession {
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ProxyTarget(remote));
         }
+        // Service-initiated hand-off back to Swift; see [`PromoteHandle`].
+        // The handle is backed by the session's `PromoteRegistry` so
+        // `into_passthrough` fires the FFI-registered Swift callback,
+        // awaits Swift's `confirm_promoted` ACK, and on success drops
+        // both ingress + egress senders so the bridges EOF the
+        // service after draining in-flight bytes.
+        ingress_stream
+            .extensions()
+            .insert(self.promote_registry.clone().into_handle(rt_handle.clone()));
 
         // egress stream (service ↔ NWConnection)
         let (egress_user, egress_internal) = tokio::io::duplex(tcp_flow_buffer_size);
         let egress_stream = NwTcpStream::new(egress_user);
 
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-        let egress_paused = Arc::new(AtomicBool::new(false));
-        let egress_write_notify = Arc::new(Notify::new());
-        self.egress_tx = Some(egress_client_tx);
-        self.egress_paused = Some(egress_paused.clone());
-        self.egress_write_notify = Some(egress_write_notify.clone());
+        *self.egress_tx.lock() = Some(egress_client_tx);
 
         // guard egress callbacks
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
@@ -656,14 +802,14 @@ impl TransparentProxyTcpSession {
         self.ingress_bridge_task = Some({
             let guard = flow_guard.clone();
             let meta = meta_arc.clone();
+            let signals = signals.clone();
             rt_handle.spawn(async move {
                 run_tcp_bridge(
                     ingress_internal,
                     client_rx,
-                    client_paused,
+                    signals,
                     on_client_read_demand,
                     on_server_bytes,
-                    server_write_notify,
                     on_server_closed,
                     guard,
                     meta,
@@ -683,10 +829,9 @@ impl TransparentProxyTcpSession {
                 run_tcp_bridge(
                     egress_internal,
                     egress_client_rx,
-                    egress_paused,
+                    signals,
                     guarded_egress_demand,
                     guarded_egress_bytes,
-                    egress_write_notify,
                     guarded_egress_closed,
                     guard,
                     meta,
@@ -714,6 +859,61 @@ impl TransparentProxyTcpSession {
                 "tcp activate: bridge_tx.send dropped — service task ended before activate",
             );
         }
+    }
+
+    /// Register the Swift callback fired when the per-flow service
+    /// calls [`PromoteHandle::into_passthrough`].
+    ///
+    /// Idempotent: a later call replaces the previous registration.
+    /// If no callback is registered when `into_passthrough` fires,
+    /// the future resolves with [`PromoteError::EgressUnavailable`]
+    /// and `PromoteLayer` falls through to the in-Rust data path.
+    ///
+    /// After Swift completes the cutover it MUST call
+    /// [`Self::confirm_promoted`] on this session to resolve the
+    /// pending future.
+    pub fn register_promote_request_callback<F>(&self, on_request: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        // Rust-typed registration: the registry stores the
+        // closure as `Arc<dyn Fn>`, so re-registration drops
+        // the previous closure (and any sentinel it captured)
+        // promptly — no leak. Mutually exclusive with the
+        // FFI-shape slot; registering one clears the other.
+        self.promote_registry.register_rust(on_request);
+    }
+
+    /// Engine-internal: register a raw FFI-shape promote callback.
+    /// Used by `rama_transparent_proxy_tcp_session_register_promote_callbacks`.
+    #[doc(hidden)]
+    pub fn register_promote_request_callback_raw(
+        &self,
+        context: *mut std::ffi::c_void,
+        on_promote_request: unsafe extern "C" fn(*mut std::ffi::c_void),
+    ) {
+        self.promote_registry
+            .register_raw(promote::PromoteRequestCallback {
+                context: context as usize,
+                on_promote_request,
+            });
+    }
+
+    /// Swift→Rust ACK for a pending `PromoteHandle::into_passthrough`.
+    ///
+    /// Resolves the future on the awaiting service task:
+    /// - `Ok(())` → the in-Rust ingress sender is dropped so the
+    ///   service sees EOF after draining in-flight bytes, then
+    ///   `into_passthrough` returns `Ok(())`.
+    /// - `Err(PromoteError::SwiftCutoverFailed { reason })` → the
+    ///   layer logs the failure and the in-Rust data path keeps
+    ///   running unchanged.
+    ///
+    /// Calling without a pending promote (e.g. duplicate confirm,
+    /// or confirm before any service called `into_passthrough`) is
+    /// a no-op.
+    pub fn confirm_promoted(&self, result: Result<(), PromoteError>) {
+        self.promote_registry.confirm(result);
     }
 
     pub fn cancel(&mut self) {
@@ -746,15 +946,16 @@ impl TransparentProxyTcpSession {
                 "tcp cancel: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
             );
         }
-        self.server_write_notify.notify_one();
-        if let Some(notify) = &self.egress_write_notify {
-            notify.notify_one();
-        }
-        self.egress_write_notify = None;
-        self.client_tx = None;
-        self.egress_tx = None;
-        self.egress_paused = None;
+        self.signals.ingress_drain.notify_one();
+        self.signals.egress_drain.notify_one();
+        *self.client_tx.lock() = None;
+        *self.egress_tx.lock() = None;
         self.pending = None;
+        // Abort any in-flight promote so callers of
+        // `PromoteHandle::into_passthrough` resolve with
+        // `EngineShuttingDown` instead of hanging on the ACK
+        // forever.
+        self.promote_registry.abort_pending();
         _ = self.ingress_bridge_task.take();
         _ = self.egress_bridge_task.take();
         if let Some(task) = self.service_task.take() {
@@ -839,9 +1040,8 @@ where
     let flow_guard = flow_shutdown.guard();
 
     let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
-    let client_paused = Arc::new(AtomicBool::new(false));
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
-    let server_write_notify = Arc::new(Notify::new());
+    let signals = Arc::new(TcpPerFlowSignals::new());
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
@@ -908,10 +1108,9 @@ where
     let pending = TcpSessionPendingData {
         bridge_tx,
         client_rx,
-        client_paused: client_paused.clone(),
+        signals: signals.clone(),
         on_client_read_demand: on_client_read_demand_guarded,
         on_server_bytes: on_server_bytes_guarded,
-        server_write_notify: server_write_notify.clone(),
         on_server_closed: on_server_closed_guarded,
         tcp_flow_buffer_size,
         tcp_channel_capacity,
@@ -923,14 +1122,21 @@ where
         egress_connect_options,
     };
 
+    let client_tx_shared = Arc::new(parking_lot::Mutex::new(Some(client_tx)));
+    let egress_tx_shared: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let promote_registry = promote::PromoteRegistry::new(
+        client_tx_shared.clone(),
+        egress_tx_shared.clone(),
+        callback_active.clone(),
+    );
+
     SessionFlowAction::Intercept(TransparentProxyTcpSession {
-        client_tx: Some(client_tx),
-        client_paused,
+        client_tx: client_tx_shared,
         saw_client_bytes: false,
-        server_write_notify,
-        egress_tx: None,
-        egress_paused: None,
-        egress_write_notify: None,
+        egress_tx: egress_tx_shared,
+        signals,
+        promote_registry,
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
@@ -981,6 +1187,12 @@ pub struct TransparentProxyUdpSession {
     /// in-flight Rust task. See the `guarded_*_sink` helpers for the
     /// load-bearing pattern.
     callback_active: Arc<parking_lot::Mutex<bool>>,
+
+    /// Optional liveness signal for the engine-side UDP idle watcher.
+    /// Fired on every observed ingress (`on_client_datagram`) and
+    /// egress (the service's `Datagram` sink) datagram. `None` when
+    /// the builder opted out via `without_udp_idle_timeout`.
+    idle_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl TransparentProxyUdpSession {
@@ -990,6 +1202,15 @@ impl TransparentProxyUdpSession {
     /// faithfully proxied. `None` is the safety-valve for paths that
     /// lack endpoint attribution.
     pub fn on_client_datagram(&mut self, bytes: &[u8], peer: Option<SocketAddr>) {
+        // Fire BEFORE the channel send: even if the channel is closed
+        // (session torn down) the activity itself happened, and the
+        // service task's idle watcher gets one consistent signal. The
+        // watcher's `notified()` resolves at most once per
+        // notify-then-notified pair, so back-to-back datagrams between
+        // iterations coalesce into a single wake — no thundering herd.
+        if let Some(notify) = self.idle_notify.as_ref() {
+            notify.notify_one();
+        }
         // Zero-length datagrams are valid per RFC 768; some protocols
         // (DTLS heartbeats, NAT-binding probes, keep-alives) rely on
         // them. Forward them through the bridge unchanged — the
@@ -1160,6 +1381,7 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     meta: TransparentProxyFlowMeta,
     udp_channel_capacity: usize,
     udp_max_flow_lifetime: Option<Duration>,
+    udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
     on_server_datagram: OnDatagram,
@@ -1225,8 +1447,27 @@ where
     // the FFI box releases that happen right after `_session_free`
     // are race-free.
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
+
+    // Liveness signal for the engine-side idle watcher. Allocated
+    // only when an idle timeout is configured; the wrapped sink
+    // notifies on every service-emitted egress datagram, and
+    // `on_client_datagram` mirrors the wake for the ingress
+    // direction. The watcher races `serve_fut` in the service
+    // task — see the `IdleTimeout` arm below.
+    let idle_notify: Option<Arc<tokio::sync::Notify>> =
+        udp_idle_timeout.map(|_| Arc::new(tokio::sync::Notify::new()));
+
+    let on_server_datagram_with_idle: DatagramSink = if let Some(notify) = idle_notify.clone() {
+        let inner: DatagramSink = Arc::new(on_server_datagram);
+        Arc::new(move |d| {
+            notify.notify_one();
+            inner(d);
+        })
+    } else {
+        Arc::new(on_server_datagram)
+    };
     let datagram_sink: DatagramSink =
-        guarded_datagram_sink(callback_active.clone(), Arc::new(on_server_datagram));
+        guarded_datagram_sink(callback_active.clone(), on_server_datagram_with_idle);
     let closed_sink: ClosedSink =
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
     let user_demand_sink: DemandSink = Arc::new(on_client_read_demand);
@@ -1247,6 +1488,7 @@ where
     // is applied when the feature is on (see TCP path for context).
     let meta_for_close = meta_arc.clone();
     let flow_guard_for_task = flow_guard.clone();
+    let idle_notify_for_task = idle_notify.clone();
     let service_task = Executor::graceful(flow_guard).spawn_task(async move {
         let Ok(flow) = flow_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
@@ -1259,8 +1501,8 @@ where
             }
             return;
         };
-        // Drive `service.serve(flow)` to completion, but observe two
-        // additional terminators:
+        // Drive `service.serve(flow)` to completion, but observe up to
+        // three additional terminators:
         //
         //   * `flow_guard.cancelled()` — fires when Swift calls
         //     `on_client_close` (which sends through `flow_stop_tx`) or
@@ -1270,35 +1512,66 @@ where
         //     `closed_sink` / dial9 / structured-tracing close
         //     epilogue below — every clean Swift teardown would
         //     silently drop the close record.
-        //   * `udp_max_flow_lifetime` — when configured, a hard cap so
-        //     flows that never see an explicit close (Swift bug, app
-        //     death, kernel slot leaked, etc.) eventually free their
-        //     per-flow state. See builder doc for semantics.
+        //   * `udp_idle_timeout` — when configured, the per-flow idle
+        //     reaper. Resets on every datagram (ingress or egress);
+        //     trips when both sides have gone quiet. This is the
+        //     fast-feedback path for short-lived bursty flows
+        //     (DNS, mDNS, NAT-keepalive probes) that would otherwise
+        //     live until `udp_max_flow_lifetime`.
+        //   * `udp_max_flow_lifetime` — when configured, a hard cap
+        //     from flow start. Survives traffic; backstops a
+        //     misbehaving idle reaper or a service-side wedge that
+        //     keeps the idle signal alive without making real progress.
+        //     See builder doc for semantics.
         let mut serve_fut = std::pin::pin!(service.serve(flow));
-        let close_reason = if let Some(lifetime) = udp_max_flow_lifetime {
-            tokio::select! {
-                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
-                res = tokio::time::timeout(lifetime, &mut serve_fut) => {
-                    if res.is_ok() {
-                        BridgeCloseReason::PeerEofLeft
-                    } else {
-                        tracing::warn!(
-                            target: "rama_apple_ne::tproxy",
-                            flow_id = meta_for_close.flow_id,
-                            lifetime_ms = u64::try_from(lifetime.as_millis()).unwrap_or(u64::MAX),
-                            "transparent proxy udp flow exceeded max lifetime; closing",
-                        );
-                        BridgeCloseReason::IdleTimeout
-                    }
+        let lifetime_fut = async {
+            if let Some(lifetime) = udp_max_flow_lifetime {
+                tokio::time::sleep(lifetime).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
+        let idle_fut = async {
+            let (Some(timeout), Some(notify)) = (udp_idle_timeout, idle_notify_for_task.as_ref())
+            else {
+                std::future::pending::<()>().await;
+                return;
+            };
+            loop {
+                let notified = notify.notified();
+                if let Err(err) = tokio::time::timeout(timeout, notified).await {
+                    tracing::debug!("UDP idle notifier timed out after {err:?}");
+                    return;
                 }
             }
-        } else {
-            tokio::select! {
-                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
-                res = &mut serve_fut => {
-                    _ = res;
-                    BridgeCloseReason::PeerEofLeft
-                }
+        };
+        let close_reason = tokio::select! {
+            () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+            res = &mut serve_fut => {
+                _ = res;
+                BridgeCloseReason::PeerEofLeft
+            }
+            () = idle_fut => {
+                tracing::debug!(
+                    target: "rama_apple_ne::tproxy",
+                    flow_id = meta_for_close.flow_id,
+                    idle_ms = udp_idle_timeout
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                    "transparent proxy udp flow idle; closing",
+                );
+                BridgeCloseReason::IdleTimeout
+            }
+            () = lifetime_fut => {
+                tracing::warn!(
+                    target: "rama_apple_ne::tproxy",
+                    flow_id = meta_for_close.flow_id,
+                    lifetime_ms = udp_max_flow_lifetime
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                    "transparent proxy udp flow exceeded max lifetime; closing",
+                );
+                BridgeCloseReason::IdleTimeout
             }
         };
         emit_udp_session_close_event(close_reason, &meta_for_close);
@@ -1325,6 +1598,7 @@ where
         pending: Some(pending),
         service_task: Some(service_task),
         callback_active,
+        idle_notify,
     })
 }
 
@@ -1367,6 +1641,13 @@ where
     //
     // catch_unwind logs handler-future panics before the extern "C"
     // boundary forces abort.
+    //
+    // NOTE (fail-fast vs isolate): we deliberately resume_unwind →
+    // abort the whole sysext rather than swallow the panic and return
+    // a fail-safe decision (`Block`). Loud + no poisoned-state class,
+    // but blast radius = every flow. If a single panicking flow taking
+    // the tunnel down ever proves worse than the recovery risk,
+    // reconsider isolating just the decision path here.
     let inner = rt.tokio_runtime();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
@@ -1422,18 +1703,137 @@ impl<H> Drop for TransparentProxyEngine<H> {
 }
 
 impl<H> TransparentProxyEngine<H> {
+    #[expect(clippy::needless_pass_by_ref_mut, reason = "contract")]
     fn shutdown_blocking(&mut self, reason: i32) {
-        let Some(shutdown) = self.shutdown.take() else {
+        let Some(pair) = self.shutdown.lock().take() else {
             return;
         };
 
         tracing::info!(reason, "transparent proxy engine stopping");
-        if let Some(stop_trigger) = self.stop_trigger.take() {
-            _ = stop_trigger.send(());
-        }
+        _ = pair.trigger.send(());
 
-        let time = block_on_async_task(&self.rt, shutdown.shutdown());
+        let time = block_on_async_task(&self.rt, pair.shutdown.shutdown());
         tracing::info!(?time, reason, "transparent proxy engine stopped");
+    }
+}
+
+impl<H> TransparentProxyEngine<H>
+where
+    H: TransparentProxyHandler,
+{
+    /// Recoverable drain for system sleep.
+    ///
+    /// Swap the engine-wide [`Shutdown`] state for a fresh one, fire
+    /// the old one's trigger, and block on the old [`Shutdown`]'s
+    /// drain with a deadline.
+    ///
+    /// ## What this drain DOES and DOES NOT wait for
+    ///
+    /// The drain awaits every [`ShutdownGuard`] of the OLD
+    /// [`Shutdown`] to drop. The only engine-level guards held
+    /// past the swap are the `parent_guard`s captured by each
+    /// per-flow `Shutdown::new` signal-future (`select! { _ =
+    /// parent_guard.cancelled() => …}`). The moment the trigger
+    /// fires those select arms resolve, the closures end, the
+    /// `parent_guard`s drop — within milliseconds.
+    ///
+    /// Per-flow service / bridge tasks hold *per-flow*
+    /// `flow_guard`s (of the per-flow [`Shutdown`]), NOT engine
+    /// guards. They are NOT on the drain's accounting. They DO
+    /// observe `flow_guard.cancelled()` via the per-flow [`Shutdown`]
+    /// cascade and exit cooperatively at their next yield — but
+    /// this is asynchronous to the drain's return.
+    ///
+    /// So `Drained` means "the cancellation signal has been
+    /// fully propagated through the engine guard tree and any
+    /// engine-spawned handler hooks (e.g. `on_system_sleep`) have
+    /// completed", NOT "every spawned task has finished cleaning
+    /// up". The load-bearing fix the drain provides for the
+    /// post-wake stall is the FRESH-pair swap: new flows arriving
+    /// after wake register against a clean tree, so they don't
+    /// queue behind any straggler tasks left over from before
+    /// sleep. Those stragglers unwind on their own time across
+    /// the suspension boundary.
+    ///
+    /// ## Outcomes
+    /// - [`DrainOutcome::Drained`] — every pre-drain engine-level
+    ///   [`ShutdownGuard`] dropped before `max_wait`. The handler
+    ///   hook (if any) completed.
+    /// - [`DrainOutcome::Timeout`] — `max_wait` elapsed first.
+    ///   The OLD shutdown has been signalled; still-running tasks
+    ///   observe cancellation at their next yield. The engine
+    ///   continues to accept new flows on the FRESH pair installed
+    ///   at swap time.
+    /// - [`DrainOutcome::AlreadyStopped`] — engine was terminally
+    ///   stopped via `shutdown_blocking` (e.g. extension stop fired
+    ///   in parallel); no fresh pair is installed; no-op.
+    ///
+    /// ## Use
+    ///
+    /// Designed to be invoked from Apple's
+    /// `NEProvider.sleepWithCompletionHandler:` override. The Swift
+    /// side drives every Swift-side per-flow teardown first; this
+    /// engine drain then propagates the cancellation through the
+    /// in-Rust tree before completion is signalled to Apple.
+    pub fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
+        // Build the FRESH pair OUTSIDE the lock — `Shutdown::new`
+        // spawns onto the runtime; doing it under the mutex would
+        // hold contended state across an unbounded operation.
+        let fresh = build_shutdown_pair(&self.rt);
+
+        // Atomic swap, GUARDED against terminal-stop. If the slot
+        // is `None` the engine is permanently stopped (Drop or a
+        // racing `shutdown_blocking()` already took the pair) — we
+        // MUST NOT install `fresh`, otherwise subsequent
+        // `shutdown_guard()` calls would return guards from a fresh
+        // pair and the engine would appear alive again post-stop.
+        // Bail BEFORE the replace; `fresh` then drops here and its
+        // spawned signal-future task is GC'd cooperatively (it sees
+        // its `oneshot::Receiver`'s `Sender` half drop, exits).
+        //
+        // A racing `shutdown_guard()` reaching the lock between
+        // here and the trigger fire sees either OLD or NEW — both
+        // are valid (OLD: about-to-cancel, harmless; NEW: clean
+        // post-drain registration).
+        let old_pair = {
+            let mut slot = self.shutdown.lock();
+            if slot.is_none() {
+                return DrainOutcome::AlreadyStopped;
+            }
+            #[expect(
+                clippy::expect_used,
+                reason = "the is_none guard above proves slot is Some"
+            )]
+            slot.replace(fresh)
+                .expect("slot was Some by the guard above")
+        };
+
+        // Fire the OLD trigger so the OLD Shutdown's inner future
+        // resolves and guards observe cancellation. Send() returns
+        // `Err` only if the rx half is gone (i.e. the Shutdown's
+        // inner future already completed somehow); harmless either
+        // way.
+        _ = old_pair.trigger.send(());
+
+        let started = std::time::Instant::now();
+        let timed_out = block_on_async_task(&self.rt, async move {
+            tokio::time::timeout(max_wait, old_pair.shutdown.shutdown())
+                .await
+                .is_err()
+        });
+        let elapsed = started.elapsed();
+
+        if timed_out {
+            tracing::warn!(
+                ?elapsed,
+                ?max_wait,
+                "drain_for_sleep timeout: some pre-drain tasks did not yield in time"
+            );
+            DrainOutcome::Timeout
+        } else {
+            tracing::info!(?elapsed, "drain_for_sleep complete");
+            DrainOutcome::Drained
+        }
     }
 }
 
@@ -1556,14 +1956,48 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
+/// Per-flow backpressure flags and drain notifications, shared between the
+/// session's FFI surface and its two bridge tasks via a single `Arc`. One
+/// allocation instead of four (two `AtomicBool` + two `Notify`).
+struct TcpPerFlowSignals {
+    ingress_paused: AtomicBool,
+    ingress_drain: Notify,
+    egress_paused: AtomicBool,
+    egress_drain: Notify,
+}
+
+impl TcpPerFlowSignals {
+    fn new() -> Self {
+        Self {
+            ingress_paused: AtomicBool::new(false),
+            ingress_drain: Notify::new(),
+            egress_paused: AtomicBool::new(false),
+            egress_drain: Notify::new(),
+        }
+    }
+
+    fn paused(&self, dir: BridgeDirection) -> &AtomicBool {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_paused,
+            BridgeDirection::Egress => &self.egress_paused,
+        }
+    }
+
+    fn drain(&self, dir: BridgeDirection) -> &Notify {
+        match dir {
+            BridgeDirection::Ingress => &self.ingress_drain,
+            BridgeDirection::Egress => &self.egress_drain,
+        }
+    }
+}
+
 #[expect(clippy::too_many_arguments)]
 async fn run_tcp_bridge(
     internal: tokio::io::DuplexStream,
     mut client_rx: mpsc::Receiver<Bytes>,
-    paused: Arc<AtomicBool>,
+    signals: Arc<TcpPerFlowSignals>,
     on_read_demand: DemandSink,
     on_server_bytes: BytesStatusSink,
-    server_write_notify: Arc<Notify>,
     on_server_closed: ClosedSink,
     flow_guard: ShutdownGuard,
     meta: Arc<TransparentProxyFlowMeta>,
@@ -1571,6 +2005,8 @@ async fn run_tcp_bridge(
     paused_drain_max_wait: Duration,
     direction: BridgeDirection,
 ) {
+    let paused = signals.paused(direction);
+    let server_write_notify = signals.drain(direction);
     let (mut read_half, mut write_half) = tokio::io::split(internal);
     let mut buf = vec![0u8; 16 * 1024];
     // Set to true once the write side is finished so we keep draining read_half even

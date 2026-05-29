@@ -54,13 +54,13 @@ pub(super) enum Kind {
     ChannelClosed,
     /// An `io::Error` that occurred while trying to read or write to a network stream.
     Io,
-    /// User took too long to send headers
+    /// User took too long to send headers.
     HeaderTimeout,
     /// Error while reading a body from connection.
     Body,
     /// Error while writing a body to connection.
     BodyWrite,
-    /// Error calling AsyncWrite::shutdown()
+    /// Error calling `AsyncWrite::shutdown()`.
     Shutdown,
 
     /// A general error from h2.
@@ -90,7 +90,7 @@ pub(super) enum Header {
 
 #[derive(Debug)]
 pub(super) enum User {
-    /// Error calling user's Body::poll_data().
+    /// Error calling the user's `Body::poll_data()`.
     Body,
     /// The user aborted writing of the outgoing body.
     BodyWriteAborted,
@@ -113,6 +113,11 @@ pub(super) struct TimedOut;
 
 impl Error {
     /// Returns true if this was an HTTP parse error.
+    ///
+    /// This can be caused by a malformed HTTP message, an invalid header,
+    /// an invalid URI, an invalid HTTP version, or a message head that is
+    /// too large. Use the more specific `is_parse_*` methods to determine
+    /// the exact cause.
     #[must_use]
     #[inline(always)]
     pub fn is_parse(&self) -> bool {
@@ -120,6 +125,11 @@ impl Error {
     }
 
     /// Returns true if this was an HTTP parse error caused by a message that was too large.
+    ///
+    /// This is triggered when the message head (request line plus headers for
+    /// HTTP/1, or header frame for HTTP/2) exceeds the configured
+    /// `max_buf_size`. It also covers the case where the URI alone exceeds the internal
+    /// maximum URI length.
     #[must_use]
     #[inline(always)]
     pub fn is_parse_too_large(&self) -> bool {
@@ -138,6 +148,11 @@ impl Error {
     }
 
     /// Returns true if this error was caused by user code.
+    ///
+    /// For example, this can be returned when the user's `Service` returns
+    /// an error, the user's `Body` stream yields an error, or the user
+    /// sends an unexpected header combination (such as both
+    /// `content-length` and `transfer-encoding`).
     #[must_use]
     #[inline(always)]
     pub fn is_user(&self) -> bool {
@@ -146,11 +161,18 @@ impl Error {
 
     /// Returns true if this was an HTTP parse error caused by HTTP2 preface sent over an HTTP1
     /// connection.
+    ///
+    /// This can happen when a client sends an HTTP/2 connection preface to a
+    /// server that is only expecting HTTP/1.x requests.
     pub fn is_parse_version_h2(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(Parse::VersionH2))
     }
 
     /// Returns true if this was about a `Request` that was canceled.
+    ///
+    /// This typically happens when a pending request is dropped before
+    /// it can be dispatched to the connection, for example because the
+    /// connection was not ready.
     #[must_use]
     #[inline(always)]
     pub fn is_canceled(&self) -> bool {
@@ -158,6 +180,10 @@ impl Error {
     }
 
     /// Returns true if a sender's channel is closed.
+    ///
+    /// This can occur when the other side of a client or body channel
+    /// has been dropped, indicating that the receiver is no longer
+    /// interested in the data.
     #[must_use]
     #[inline(always)]
     pub fn is_closed(&self) -> bool {
@@ -188,6 +214,10 @@ impl Error {
     }
 
     /// Returns true if the body write was aborted.
+    ///
+    /// This occurs when the user's code explicitly aborts writing of the
+    /// outgoing body before it completes, for example by dropping the
+    /// body sender.
     #[inline(always)]
     #[must_use]
     pub fn is_body_write_aborted(&self) -> bool {
@@ -195,6 +225,9 @@ impl Error {
     }
 
     /// Returns true if the error was caused while calling `AsyncWrite::shutdown()`.
+    ///
+    /// This can happen when the connection is being gracefully shut down
+    /// and the underlying IO reports an error during the shutdown sequence.
     #[inline(always)]
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
@@ -205,6 +238,10 @@ impl Error {
     }
 
     /// Returns true if the error was caused by a timeout.
+    ///
+    /// For HTTP/1 servers, this includes the header read timeout (see
+    /// [`header_read_timeout`](crate::server::conn::http1::Builder::set_header_read_timeout)).
+    /// It also covers any timeout set via a user-provided timer
     #[inline(always)]
     #[must_use]
     pub fn is_timeout(&self) -> bool {

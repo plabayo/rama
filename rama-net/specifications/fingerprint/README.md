@@ -50,7 +50,8 @@ spec is always one click from the code that materialises it.
 ## Akamai HTTP/2 fingerprint
 
 * Upstream whitepaper: *Passive Fingerprinting of HTTP/2 Clients*
-  (<https://www.akamai.com/site/en/documents/research-paper/passive-fingerprinting-of-http2-clients-white-paper.pdf>),
+  (<https://blackhat.com/docs/eu-17/materials/eu-17-Shuster-Passive-Fingerprinting-Of-HTTP2-Clients-wp.pdf>,
+  presented at Black Hat Europe 2017),
   copyright Akamai Technologies. Not freely redistributable, so not
   vendored here.
 * Format (re-implemented from the whitepaper): four pipe-separated

@@ -30,7 +30,7 @@ impl DecodedLength {
     /// Takes the length as a content-length without other checks.
     ///
     /// Should only be called if previously confirmed this isn't
-    /// CLOSE_DELIMITED or CHUNKED.
+    /// `CLOSE_DELIMITED` or `CHUNKED`.
     #[inline]
     pub(crate) fn danger_len(self) -> u64 {
         debug_assert!(self.0 < Self::CHUNKED.0);

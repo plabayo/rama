@@ -2,7 +2,6 @@ use super::TlsAcceptorData;
 use crate::{
     TlsStream,
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-    keylog::try_new_key_log_file_handle,
     types::SecureTransport,
 };
 use parking_lot::Mutex;
@@ -14,7 +13,11 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
-use rama_net::tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters};
+use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
+use rama_net::{
+    extensions::StreamTransformed,
+    tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
 
@@ -155,11 +158,12 @@ where
             );
         }
 
-        if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
-            let handle = try_new_key_log_file_handle(keylog_filename)?;
+        if let Some(sink) = open_intent_sink(&tls_config.keylog_intent)? {
             acceptor_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{line}\n");
-                handle.write_log_line(line);
+                let mut buf = String::with_capacity(line.len() + 1);
+                buf.push_str(line);
+                buf.push('\n');
+                sink.write_line(&buf);
             });
         }
 
@@ -251,6 +255,9 @@ where
         let stream = TlsStream::new(stream);
         stream.extensions().insert(secure_transport);
         stream.extensions().insert(negotiated_tls_params);
+        stream.extensions().insert(StreamTransformed {
+            by: "rama-tls-boring::TlsAcceptor",
+        });
 
         self.inner
             .serve(stream)

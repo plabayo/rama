@@ -1,11 +1,12 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
-use crate::key_log::KeyLogFile;
+use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::Extension;
 use rama_net::address::Host;
+use rama_net::tls::keylog::open_intent_sink;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
@@ -178,9 +179,8 @@ impl TlsConnectorDataBuilder {
         /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
         /// and set it in the current config
         pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
-            if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
-                let key_logger = Arc::new(KeyLogFile::try_new(path)?);
-                self.client_config.key_log = key_logger;
+            if let Some(sink) = open_intent_sink(&KeyLogIntent::Environment)? {
+                self.client_config.key_log = Arc::new(RamaKeyLog::new(sink));
             };
             Ok(self)
         }
