@@ -36,63 +36,43 @@ Transfer-Encoding: chunked
 ```
 
 Native support shipped in Chrome 148+ behind
-`chrome://flags/#enable-experimental-web-platform-features`. Since that
-flag is rarely on, the example ships a tiny inline polyfill in the shell
-(synchronous, in `<head>`) that scans for `<?marker …>` comment nodes and
-applies `<template for=…>` blocks via `MutationObserver` as they stream
-in. (The GoogleChromeLabs `template-for-polyfill` exists, but it batches
-body-level swaps until `DOMContentLoaded`, which only fires after the
-streaming body completes — fragments would all appear at once at the end.)
+`chrome://flags/#enable-experimental-web-platform-features`. Other browsers
+need the [`template-for-polyfill`][polyfill] (the example loads the latest
+from `unpkg.com/template-for-polyfill`).
+
+> **Polyfill caveats** (native Chrome 148+ has none). The polyfill defers a
+> swap while either the `<template>`, its `<?start>`, or its `<?end>` has no
+> `nextElementSibling`, so `PartialUpdates` appends `\n<wbr>` after each
+> fragment chunk — the trailing `<wbr>` gives every template an element
+> sibling at its own arrival, mirroring the spirit of Google's
+> [photo-album demo][demo]. Markers also support the **range form**
+> `<?start name="x">…<?end>` ([`start`] / [`end`]): the skeleton between
+> is replaced wholesale on swap, so no CSS gymnastics to hide loading
+> chrome — drop a `<wbr>` (or any element) right after `<?end>` though, so
+> it isn't last-sibling either. See Google's [explainer][exp] for the spec.
+
+[polyfill]: https://github.com/GoogleChromeLabs/template-for-polyfill
+[demo]: https://github.com/GoogleChromeLabs/web-perf-demos/blob/main/patching-demos/server.js
+[`start`]: https://ramaproxy.org/docs/rama/http/html/fn.start.html
+[`end`]: https://ramaproxy.org/docs/rama/http/html/fn.end.html
+[exp]: https://github.com/WICG/declarative-partial-updates
 
 ## Rama Support
 
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.PartialUpdates.html>
 
 Enable the `http` feature and the `html` feature (or even better `http-full` to cover it all),
-then use `PartialUpdates` together with the `marker()` helper from `rama::http::html`:
-
-```rust,ignore
-use rama::http::html::*;
-use rama::http::service::web::response::PartialUpdates;
-use rama::http::Response;
-use std::time::Duration;
-
-async fn dashboard() -> Response {
-    let shell = html!(
-        head!(title!("dashboard")),
-        body!(
-            section!(marker("ping")),
-            section!(marker("herd")),
-            section!(marker("recs")),
-        ),
-    );
-
-    PartialUpdates::new(shell)
-        .fragment("recs", async {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
-            ul!(li!("rec 1"), li!("rec 2"))
-        })
-        .fragment("herd", async {
-            tokio::time::sleep(Duration::from_millis(900)).await;
-            p!("42 alive")
-        })
-        .fragment("ping", async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            p!("ok")
-        })
-        .into_response()
-}
-```
-
-Fragments are raced via `FuturesUnordered` and each completion flushes its
-own `<template for=…>` body chunk — so the browser sees fragments arrive in
-*completion order*, not declaration order.
+then use `PartialUpdates` together with the `marker()` helper from `rama::http::html`.
 
 ### Example
 
 [`http_declarative_partial_updates.rs`](https://github.com/plabayo/rama/blob/main/examples/http_declarative_partial_updates.rs)
-serves a llama-themed dashboard with three slow panels and demonstrates
-the UA-driven CDN polyfill injection for non-Chrome-148 browsers.
+serves a llama-themed dashboard with three slow panels, fragments
+streaming in completion order, and the unpkg-hosted polyfill in the
+shell `<head>` so the swap works on browsers without native support.
+Pass `?polyfill=false` to skip the polyfill (useful for testing native
+Chrome 148+ behind the experimental flag, or measuring the baseline
+shell).
 
 ## Relation to SSE
 
