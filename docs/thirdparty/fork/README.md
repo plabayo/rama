@@ -129,16 +129,16 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
-- <https://github.com/snapview/tungstenite-rs/tree/59bee6404f3c126af71e33b3cf02627df0cae50a>
+- <https://github.com/snapview/tungstenite-rs/tree/16ca0fc87e0a39f66548e24a08ab0961e592324f>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tungstenite-rs/blob/59bee6404f3c126af71e33b3cf02627df0cae50a/LICENSE-MIT>
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/16ca0fc87e0a39f66548e24a08ab0961e592324f/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
-- <https://github.com/snapview/tokio-tungstenite/tree/38d04656fe28be0000920201d6a49bf5ec3d537b>
+- <https://github.com/snapview/tokio-tungstenite/tree/753ca72690919485a1aa1f0f69a336b1152fb0ae>
   - minor improvements, and adapted+scoped for rama use
   - License:
-    - Original: <https://github.com/snapview/tokio-tungstenite/blob/38d04656fe28be0000920201d6a49bf5ec3d537b/LICENSE>
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/753ca72690919485a1aa1f0f69a336b1152fb0ae/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
 - <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>

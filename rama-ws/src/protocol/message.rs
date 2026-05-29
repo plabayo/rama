@@ -252,7 +252,7 @@ impl Message {
         self.len() == 0
     }
 
-    /// Consume the WebSocket and return it as binary data.
+    /// Consume the WebSocket message and return it as binary data.
     pub fn into_data(self) -> Bytes {
         match self {
             Self::Text(utf8) => utf8.into(),
