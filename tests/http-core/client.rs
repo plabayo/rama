@@ -352,7 +352,7 @@ macro_rules! test {
 
             let mut builder = Uri::builder();
             if req.method() == Method::CONNECT {
-                builder = builder.path_and_query(format!("{}:{}", req.uri().host().unwrap(), req.uri().port_u16().unwrap()));
+                builder = builder.authority(format!("{}:{}", req.uri().host().unwrap(), req.uri().port_u16().unwrap()));
             } else {
                 builder = builder.path_and_query(req.uri().path_and_query().cloned().unwrap_or(PathAndQuery::from_static("/")));
             }
@@ -1764,6 +1764,63 @@ mod conn {
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
         let chunk = rt.block_on(future::join(res, rx).map(|r| r.0)).unwrap();
         assert_eq!(chunk.data_ref().unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn dropped_conn_sends_incomplete_body_error() {
+        let (listener, addr) = setup_tk_test_server().await;
+        let (release_tx, release_rx) = oneshot::channel();
+
+        let server = async move {
+            let mut sock = listener.accept().await.unwrap().0;
+            let mut buf = [0; 4096];
+            let n = sock.read(&mut buf).await.expect("read 1");
+
+            let expected = "GET / HTTP/1.1\r\n\r\n";
+            assert_eq!(s(&buf[..n]), expected);
+
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n")
+                .await
+                .unwrap();
+
+            release_rx.await.expect("release server");
+        };
+
+        let client = async move {
+            let tcp = tcp_connect(&addr).await.expect("connect");
+            let tcp = ServiceInput::new(tcp);
+
+            let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
+
+            let conn = tokio::task::spawn(async move {
+                conn.await.expect("http conn");
+            });
+
+            let req = Request::builder()
+                .uri("/")
+                .body(Empty::<Bytes>::new())
+                .unwrap();
+            let mut res = client.send_request(req).await.expect("send_request");
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(res.body().size_hint().exact(), Some(5));
+            assert!(!res.body().is_end_stream());
+
+            conn.abort();
+            let err = conn.await.expect_err("conn task should be aborted");
+            assert!(err.is_cancelled(), "{err:?}");
+
+            let err = res
+                .body_mut()
+                .frame()
+                .await
+                .expect("body frame")
+                .unwrap_err();
+            assert!(err.is_incomplete_message(), "{err:?}");
+
+            release_tx.send(()).expect("release server");
+        };
+
+        future::join(server, client).await;
     }
 
     #[test]

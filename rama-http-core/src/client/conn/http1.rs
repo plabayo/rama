@@ -1,4 +1,4 @@
-//! HTTP/1 client connections
+//! HTTP/1 client connections.
 
 use std::fmt;
 use std::pin::Pin;
@@ -51,7 +51,7 @@ pub struct Parts<T> {
 /// In most cases, this should just be spawned into an executor, so that it
 /// can process incoming and outgoing messages, notice hangups, and the like.
 ///
-/// Instances of this type are typically created via the [`handshake`] function///
+/// Instances of this type are typically created via the [`handshake`] function.
 ///
 /// # Drop behavior
 ///
@@ -157,7 +157,7 @@ impl<B> SendRequest<B> {
         self.dispatch.poll_ready(cx)
     }
 
-    /// Waits until the dispatcher is ready
+    /// Waits until the dispatcher is ready.
     ///
     /// If the associated connection is closed, this returns an Error.
     pub async fn ready(&mut self) -> crate::Result<()> {
@@ -200,6 +200,15 @@ where
     ///
     /// This is however not enforced or validated and it is up to the user
     /// of this method to ensure the `Uri` is correct for their intended purpose.
+    ///
+    /// # Cancel safety
+    ///
+    /// Dropping the returned future is the supported way to cancel an
+    /// in-flight HTTP/1 request. Because HTTP/1 has no in-protocol way to
+    /// abort a single request without affecting the shared connection,
+    /// hyper closes the underlying connection when a request future is
+    /// dropped before completion. Any subsequent calls on the same
+    /// [`SendRequest`] will return a `canceled` error.
     pub fn send_request(
         &mut self,
         req: Request<B>,
