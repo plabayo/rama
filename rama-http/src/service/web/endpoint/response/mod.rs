@@ -58,7 +58,6 @@ pub mod redirect;
 pub use redirect::Redirect;
 
 pub mod sse;
-
 pub use sse::Sse;
 
 #[cfg(feature = "html")]
