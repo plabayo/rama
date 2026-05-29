@@ -104,10 +104,12 @@ mod tests {
     use crate::header::{
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
     };
-    use crate::{HeaderValue, Request, Response, StreamingBody, body::util::BodyExt};
+    use crate::{HeaderMap, HeaderValue, Request, Response, StreamingBody, body::util::BodyExt};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::Service;
+    use rama_core::bytes::Bytes;
+    use rama_core::error::BoxError;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
@@ -598,6 +600,88 @@ mod tests {
         assert!(!headers.contains_key(ACCEPT_RANGES));
         assert_eq!(headers[CONTENT_ENCODING], "gzip");
         assert_eq!(decompressed, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn trailers_with_empty_body() {
+        let svc = service_fn(|_req: Request<Body>| async {
+            let mut trailers = HeaderMap::new();
+            trailers.insert("grpc-status", "0".parse().unwrap());
+            trailers.insert("grpc-message", "OK".parse().unwrap());
+            let body = Body::empty().with_trailer_headers(trailers);
+            Ok::<_, Infallible>(Response::builder().body(body).unwrap())
+        });
+        let svc = Compression::new(svc).with_compress_predicate(Always);
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        let collected = res.into_body().collect().await.unwrap();
+        let trailers = collected.trailers().cloned().unwrap();
+        assert_eq!(trailers["grpc-status"], "0");
+        assert_eq!(trailers["grpc-message"], "OK");
+    }
+
+    #[tokio::test]
+    async fn trailers_with_streamed_body() {
+        // Simulate a gRPC-like streamed response: multiple data frames followed by trailers
+        let svc = service_fn(|_req: Request<Body>| async {
+            let stream = rama_core::stream::iter(vec![
+                Ok::<_, BoxError>(Bytes::from("chunk1")),
+                Ok(Bytes::from("chunk2")),
+                Ok(Bytes::from("chunk3")),
+            ]);
+            let mut trailers = HeaderMap::new();
+            trailers.insert("grpc-status", "0".parse().unwrap());
+            let body = Body::from_stream(stream).with_trailer_headers(trailers);
+            Ok::<_, Infallible>(Response::builder().body(body).unwrap())
+        });
+        let svc = Compression::new(svc).with_compress_predicate(Always);
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        let collected = res.into_body().collect().await.unwrap();
+        let trailers = collected.trailers().cloned().unwrap();
+        let compressed_data = collected.to_bytes();
+
+        let mut decoder = GzDecoder::new(&compressed_data[..]);
+        let mut decompressed = String::new();
+        decoder.read_to_string(&mut decompressed).unwrap();
+
+        assert_eq!(decompressed, "chunk1chunk2chunk3");
+        assert_eq!(trailers["grpc-status"], "0");
+    }
+
+    #[tokio::test]
+    async fn trailers_with_grpc_web_content_type() {
+        let svc = service_fn(|_req: Request<Body>| async {
+            let mut trailers = HeaderMap::new();
+            trailers.insert("grpc-status", "0".parse().unwrap());
+            let body = Body::from("a".repeat((SizeAbove::DEFAULT_MIN_SIZE * 2) as usize))
+                .with_trailer_headers(trailers);
+            let mut res = Response::new(body);
+            res.headers_mut()
+                .insert(CONTENT_TYPE, "application/grpc-web+proto".parse().unwrap());
+            Ok::<_, Infallible>(res)
+        });
+        let svc = Compression::new(svc).with_compress_predicate(Always);
+
+        let req = Request::builder()
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        let collected = res.into_body().collect().await.unwrap();
+        let trailers = collected.trailers().cloned().unwrap();
+        assert_eq!(trailers["grpc-status"], "0");
     }
 
     #[tokio::test]

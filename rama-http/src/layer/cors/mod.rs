@@ -13,6 +13,7 @@ use rama_http_headers::{
     AccessControlMaxAge, HeaderMapExt, Vary, util::Seconds,
 };
 use rama_http_types::{body::OptionalBody, request::Parts as RequestParts};
+use rama_utils::collections::NonEmptyVec;
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::{mem, sync::Arc};
 
@@ -46,7 +47,7 @@ pub struct CorsLayer {
     allow_private_network: Option<AllowPrivateNetwork>,
     expose_headers: Option<AccessControlExposeHeaders>,
     max_age: Option<MaxAge>,
-    vary: Vary,
+    vary: Option<Vary>,
     handle_options_request: bool,
 }
 
@@ -67,7 +68,7 @@ impl CorsLayer {
             allow_private_network: None,
             expose_headers: None,
             max_age: None,
-            vary: Vary::preflight_request_headers(),
+            vary: None,
             handle_options_request: false,
         }
     }
@@ -164,6 +165,21 @@ impl CorsLayer {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Access-Control-Request-Headers`][mdn] header
+        /// back as the value of [`Access-Control-Allow-Headers`][mdn-allow].
+        ///
+        /// Causes the derived `Vary` to advertise
+        /// `Access-Control-Request-Headers`.
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Request-Headers
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
+        pub fn allow_headers_mirror_request(mut self) -> Self {
+            self.allow_headers = Some(AllowHeaders::MirrorRequest);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the value of the [`Access-Control-Max-Age`][mdn] header.
         ///
         /// By default the header will not be set which disables caching and will
@@ -218,6 +234,21 @@ impl CorsLayer {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Access-Control-Request-Method`][mdn] header
+        /// back as the value of [`Access-Control-Allow-Methods`][mdn-allow].
+        ///
+        /// Causes the derived `Vary` to advertise
+        /// `Access-Control-Request-Method`.
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Request-Method
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
+        pub fn allow_methods_mirror_request(mut self) -> Self {
+            self.allow_methods = Some(AllowMethods::MirrorRequest);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Only set the [`Access-Control-Allow-Origin`][mdn] header with the wildcard value (`*`).
         ///
         /// # Errors
@@ -267,6 +298,20 @@ impl CorsLayer {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Origin`][mdn] header back as the value of
+        /// [`Access-Control-Allow-Origin`][mdn-allow].
+        ///
+        /// Causes the derived `Vary` to advertise `Origin`.
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Origin
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
+        pub fn allow_origin_mirror_request(mut self) -> Self {
+            self.allow_origin = Some(AllowOrigin::MirrorRequest);
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the value of the [`Access-Control-Expose-Headers`][mdn] header.
         ///
         /// # Errors
@@ -310,16 +355,58 @@ impl CorsLayer {
     generate_set_and_with! {
         /// Set the value(s) of the [`Vary`][mdn] header.
         ///
-        /// You only need to set this if you want to remove some of these defaults,
-        /// or if you use a closure for one of the other headers and want to add a
-        /// vary header accordingly.
+        /// By default no `Vary` value is configured explicitly. The `Vary`
+        /// header is then derived from whether the other CORS settings are
+        /// request-dependent:
+        ///
+        /// - `Origin` is advertised when `Access-Control-Allow-Origin` depends
+        ///   on the request's `Origin` header (e.g. `MirrorRequest`,
+        ///   predicate).
+        /// - `Access-Control-Request-Method` is advertised when
+        ///   `Access-Control-Allow-Methods` mirrors the request method.
+        /// - `Access-Control-Request-Headers` is advertised when
+        ///   `Access-Control-Allow-Headers` mirrors the request headers.
+        /// - If none of those are request-dependent, no `Vary` header is
+        ///   emitted by the layer.
+        ///
+        /// Setting `Vary` explicitly pins the value, but the layer still
+        /// appends `Vary: origin` as a safety net when `Access-Control-Allow-Origin`
+        /// is request-dependent and the supplied `Vary` omits it.
         ///
         /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary
-        pub fn vary(mut self, header: Vary) -> Self
+        pub fn vary(mut self, vary: Option<Vary>) -> Self
         {
-            self.vary = header;
+            self.vary = vary;
             self
         }
+    }
+
+    /// Derive a `Vary` header from the currently-configured allow-* settings,
+    /// or `None` if none of them depend on a request header.
+    fn derived_vary(&self) -> Option<Vary> {
+        let mut names = Vec::with_capacity(3);
+        if self
+            .allow_origin
+            .as_ref()
+            .is_some_and(AllowOrigin::varies_with_origin)
+        {
+            names.push(header::ORIGIN);
+        }
+        if self
+            .allow_methods
+            .as_ref()
+            .is_some_and(AllowMethods::varies_with_request_method)
+        {
+            names.push(header::ACCESS_CONTROL_REQUEST_METHOD);
+        }
+        if self
+            .allow_headers
+            .as_ref()
+            .is_some_and(AllowHeaders::varies_with_request_headers)
+        {
+            names.push(header::ACCESS_CONTROL_REQUEST_HEADERS);
+        }
+        NonEmptyVec::from_vec(names).map(Vary::headers)
     }
 
     /// Handle OPTIONS request with the inner service.
@@ -444,6 +531,18 @@ impl<S> Cors<S> {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Access-Control-Request-Headers`][mdn] header
+        /// back as the value of [`Access-Control-Allow-Headers`][mdn-allow].
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Request-Headers
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
+        pub fn allow_headers_mirror_request(mut self) -> Self {
+            self.layer.set_allow_headers_mirror_request();
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the value of the [`Access-Control-Max-Age`][mdn] header.
         ///
         /// By default the header will not be set which disables caching and will
@@ -495,6 +594,18 @@ impl<S> Cors<S> {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Access-Control-Request-Method`][mdn] header
+        /// back as the value of [`Access-Control-Allow-Methods`][mdn-allow].
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Request-Method
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
+        pub fn allow_methods_mirror_request(mut self) -> Self {
+            self.layer.set_allow_methods_mirror_request();
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Only set the [`Access-Control-Allow-Origin`][mdn] header with the wildcard value (`*`).
         ///
         /// # Errors
@@ -541,6 +652,18 @@ impl<S> Cors<S> {
     }
 
     generate_set_and_with! {
+        /// Mirror the request's [`Origin`][mdn] header back as the value of
+        /// [`Access-Control-Allow-Origin`][mdn-allow].
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Origin
+        /// [mdn-allow]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
+        pub fn allow_origin_mirror_request(mut self) -> Self {
+            self.layer.set_allow_origin_mirror_request();
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the value of the [`Access-Control-Expose-Headers`][mdn] header.
         ///
         /// # Errors
@@ -577,6 +700,17 @@ impl<S> Cors<S> {
             self
         }
     }
+
+    generate_set_and_with! {
+        /// Set the value(s) of the [`Vary`][mdn] header. See [`CorsLayer::with_vary`]
+        /// for the derivation rules used when no value is set.
+        ///
+        /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Vary
+        pub fn vary(mut self, vary: Option<Vary>) -> Self {
+            self.layer.maybe_set_vary(vary);
+            self
+        }
+    }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Cors<S>
@@ -603,16 +737,30 @@ where
             allow_private_network.extend_headers(&mut headers, origin, &parts);
         }
 
-        headers.typed_insert(&self.layer.vary);
+        // Resolve the effective `Vary`. If the user pinned one explicitly we
+        // use it as-is; otherwise we derive it from whether the configured
+        // CORS allow-* settings are request-dependent. If nothing varies, no
+        // `Vary` header is added at all.
+        let effective_vary = self
+            .layer
+            .vary
+            .clone()
+            .or_else(|| self.layer.derived_vary());
+        if let Some(ref vary) = effective_vary {
+            headers.typed_insert(vary);
+        }
         // When `Access-Control-Allow-Origin` is computed from the request's
         // `Origin`, the response MUST advertise `Vary: Origin` so shared
-        // caches don't serve one client's CORS allowance to another. The
+        // caches don't serve one client's CORS allowance to another. A
         // user-supplied `Vary` may not contain `Origin`; in that case
         // append an additional `Vary: origin` directive — multiple
         // `Vary` field-values are merged per RFC 9110 §5.3.5.
         if let Some(allow_origin) = self.layer.allow_origin.as_ref()
             && allow_origin.is_request_dependent()
-            && !vary_contains_origin(&self.layer.vary)
+            && !effective_vary
+                .as_ref()
+                .map(vary_contains_origin)
+                .unwrap_or(false)
         {
             headers.append(header::VARY, HeaderValue::from_static("origin"));
         }

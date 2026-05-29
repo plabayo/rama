@@ -30,6 +30,14 @@ impl AllowOrigin {
         matches!(self, Self::MirrorRequest | Self::Predicate(_))
     }
 
+    /// Whether the derived `Vary` header should advertise a dependency on
+    /// the request's `Origin`. Equivalent to [`Self::is_request_dependent`]
+    /// today, kept as a separate predicate so it can be tightened
+    /// independently in the future.
+    pub(super) fn varies_with_origin(&self) -> bool {
+        self.is_request_dependent()
+    }
+
     pub(super) fn extend_headers(
         &self,
         headers: &mut HeaderMap,
