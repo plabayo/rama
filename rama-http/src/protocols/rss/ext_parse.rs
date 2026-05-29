@@ -126,14 +126,19 @@ fn podcast_trailer_from_attrs(e: &Attrs<'_>) -> PodcastTrailer {
     }
 }
 
+/// Parse an `f64` attribute, rejecting non-finite values (NaN/+Inf/-Inf).
+/// Most podcast clients refuse such timestamps and some crash on them.
+fn finite_f64(e: &Attrs<'_>, name: &[u8]) -> f64 {
+    attr_value(e, name)
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or_default()
+}
+
 fn podcast_soundbite_from_attrs(e: &Attrs<'_>) -> PodcastSoundbite {
     PodcastSoundbite {
-        start_time: attr_value(e, b"startTime")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default(),
-        duration: attr_value(e, b"duration")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_default(),
+        start_time: finite_f64(e, b"startTime"),
+        duration: finite_f64(e, b"duration"),
         title: None,
     }
 }
@@ -200,8 +205,12 @@ pub(super) struct ItemExtAcc {
     podcast: Podcast,
     has_podcast: bool,
     content: Option<Content>,
-    in_media_content: bool,
-    pending_media: Option<MediaContent>,
+    /// Stack of `<media:content>` elements currently open. The topmost entry
+    /// receives nested `<media:title>`/`<media:description>` children; on its
+    /// End event it is popped into `media.contents`. A stack (rather than a
+    /// single slot) is required so a nested `<media:content>` doesn't silently
+    /// overwrite its parent.
+    pending_media: Vec<MediaContent>,
     pending_person: Option<PodcastPerson>,
     pending_location: Option<PodcastLocation>,
     pending_soundbite: Option<PodcastSoundbite>,
@@ -220,8 +229,7 @@ impl ItemExtAcc {
                 }
             }
             (Ns::Media, "content") => {
-                self.pending_media = Some(media_content_from_attrs(e));
-                self.in_media_content = true;
+                self.pending_media.push(media_content_from_attrs(e));
             }
             (Ns::Podcast, "person") => self.pending_person = Some(podcast_person_from_attrs(e)),
             (Ns::Podcast, "location") => {
@@ -336,18 +344,15 @@ impl ItemExtAcc {
             }
             // Media RSS
             (Ns::Media, "content") => {
-                if let Some(m) = self.pending_media.take() {
+                if let Some(m) = self.pending_media.pop() {
                     self.media.contents.push(m);
                     self.has_media = true;
                 }
-                self.in_media_content = false;
                 return None;
             }
             (Ns::Media, "title") => {
-                if self.in_media_content {
-                    if let Some(m) = &mut self.pending_media {
-                        m.title = Some(text);
-                    }
+                if let Some(m) = self.pending_media.last_mut() {
+                    m.title = Some(text);
                 } else {
                     self.media.title = Some(text);
                     self.has_media = true;
@@ -355,10 +360,8 @@ impl ItemExtAcc {
                 return None;
             }
             (Ns::Media, "description") => {
-                if self.in_media_content {
-                    if let Some(m) = &mut self.pending_media {
-                        m.description = Some(text);
-                    }
+                if let Some(m) = self.pending_media.last_mut() {
+                    m.description = Some(text);
                 } else {
                     self.media.description = Some(text);
                     self.has_media = true;
@@ -412,7 +415,12 @@ impl ItemExtAcc {
             }
             (Ns::Podcast, "episode") => {
                 if let Some(mut ep) = self.pending_episode.take() {
-                    ep.number = text.trim().parse().unwrap_or(0.0);
+                    ep.number = text
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .unwrap_or(0.0);
                     self.podcast.episode = Some(ep);
                     self.has_podcast = true;
                 }

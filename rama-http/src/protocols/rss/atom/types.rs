@@ -266,9 +266,18 @@ impl AtomFeed {
 }
 
 impl std::fmt::Display for AtomFeed {
+    /// Best-effort XML serialization. Returning `Err` from `Display::fmt` makes
+    /// `to_string()` / `format!()` panic per the `Display` contract, so on a
+    /// serialization failure this emits an XML comment instead. Use
+    /// [`AtomFeed::to_xml`] when the underlying error needs to be surfaced.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let xml = self.to_xml().map_err(|_err| std::fmt::Error)?;
-        f.write_str(std::str::from_utf8(&xml).map_err(|_err| std::fmt::Error)?)
+        match self.to_xml() {
+            Ok(xml) => match std::str::from_utf8(&xml) {
+                Ok(s) => f.write_str(s),
+                Err(_) => f.write_str("<!-- atom serialization produced non-utf8 -->"),
+            },
+            Err(_) => f.write_str("<!-- atom serialization error -->"),
+        }
     }
 }
 

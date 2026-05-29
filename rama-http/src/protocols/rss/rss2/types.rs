@@ -1,5 +1,6 @@
 use jiff::Timestamp;
 
+use super::super::atom::AtomLink;
 use super::super::feed_ext::{
     Content, DublinCore, FeedExtension, ITunes, ItemExtensionGet, ItemExtensions, MediaRss, Podcast,
 };
@@ -27,6 +28,10 @@ pub struct Rss2Feed {
     pub docs: Option<String>,
     pub ttl: Option<u32>,
     pub image: Option<Rss2Image>,
+    /// Channel-level `<atom:link>` elements (most commonly the
+    /// `rel="self"` link required by podcast directories, but any are kept).
+    /// Serialized with `xmlns:atom` declared on `<rss>` when non-empty.
+    pub atom_links: Vec<AtomLink>,
     pub items: Vec<Rss2Item>,
     pub extensions: super::super::feed_ext::FeedExtensions,
 }
@@ -51,9 +56,18 @@ impl Rss2Feed {
 }
 
 impl std::fmt::Display for Rss2Feed {
+    /// Best-effort XML serialization. Returning `Err` from `Display::fmt` makes
+    /// `to_string()` / `format!()` panic per the `Display` contract, so on a
+    /// serialization failure this emits an XML comment instead. Use
+    /// [`Rss2Feed::to_xml`] when the underlying error needs to be surfaced.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let xml = self.to_xml().map_err(|_err| std::fmt::Error)?;
-        f.write_str(std::str::from_utf8(&xml).map_err(|_err| std::fmt::Error)?)
+        match self.to_xml() {
+            Ok(xml) => match std::str::from_utf8(&xml) {
+                Ok(s) => f.write_str(s),
+                Err(_) => f.write_str("<!-- rss serialization produced non-utf8 -->"),
+            },
+            Err(_) => f.write_str("<!-- rss serialization error -->"),
+        }
     }
 }
 
@@ -66,7 +80,10 @@ pub struct Rss2Item {
     pub author: Option<String>,
     pub categories: Vec<Rss2Category>,
     pub comments: Option<String>,
-    pub enclosure: Option<Rss2Enclosure>,
+    /// All `<enclosure>` elements on this item. Most real-world feeds carry
+    /// exactly one, but some (multi-format podcasts, Spotify-exclusive
+    /// previews) emit several — we keep them all to round-trip.
+    pub enclosures: Vec<Rss2Enclosure>,
     pub guid: Option<Rss2Guid>,
     pub pub_date: Option<Timestamp>,
     pub source: Option<Rss2Source>,
@@ -121,9 +138,10 @@ impl Rss2Item {
         self
     }
 
+    /// Append an `<enclosure>`. Call multiple times to attach more than one.
     #[must_use]
     pub fn with_enclosure(mut self, enc: Rss2Enclosure) -> Self {
-        self.enclosure = Some(enc);
+        self.enclosures.push(enc);
         self
     }
 

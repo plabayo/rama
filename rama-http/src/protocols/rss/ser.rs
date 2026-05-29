@@ -2,7 +2,7 @@
 
 use quick_xml::{
     Writer,
-    events::{BytesEnd, BytesStart, BytesText, Event},
+    events::{BytesCData, BytesEnd, BytesStart, BytesText, Event},
 };
 
 /// Error type for XML write operations.
@@ -52,5 +52,27 @@ pub(super) fn write_opt_text_elem<W: std::io::Write>(
     if let Some(v) = value {
         write_text_elem(w, name, v)?;
     }
+    Ok(())
+}
+
+/// Write `content` as one or more CDATA sections, splitting at every `]]>`
+/// occurrence so the resulting XML is well-formed for any input.
+///
+/// XML forbids the literal `]]>` token inside a `<![CDATA[ … ]]>` section
+/// (it would close the section early). The standard workaround is to break the
+/// CDATA at each occurrence: emit `<![CDATA[…]]]]><![CDATA[>…]]>` so the
+/// `]]` lands at the end of one section and the `>` at the start of the next.
+/// Concatenating the text content of both sections yields the original string.
+pub(super) fn write_cdata_escaped<W: std::io::Write>(
+    w: &mut Writer<W>,
+    content: &str,
+) -> Result<(), XmlWriteError> {
+    let mut start = 0usize;
+    while let Some(rel) = content[start..].find("]]>") {
+        let split = start + rel + 2; // include "]]" in the head; ">" starts the next CDATA
+        w.write_event(Event::CData(BytesCData::new(&content[start..split])))?;
+        start = split;
+    }
+    w.write_event(Event::CData(BytesCData::new(&content[start..])))?;
     Ok(())
 }

@@ -41,20 +41,20 @@ impl Feed {
     /// The whole body is buffered into memory. When parsing feeds from an
     /// untrusted source (e.g. a MITM proxy), apply a `BodyLimit` layer upstream
     /// to cap the size and avoid unbounded allocation.
+    ///
+    /// XML 1.0 requires that processors support UTF-8 and UTF-16; this method
+    /// honours a UTF-8 / UTF-16 LE / UTF-16 BE byte-order mark before parsing
+    /// so podcast feeds emitted by vendor tooling in UTF-16 are accepted.
     pub async fn from_body(body: Body) -> Result<Self, FeedParseError> {
-        use crate::BodyExtractExt as _;
-        let text = body.try_into_string().await.map_err(|e| FeedParseError {
-            message: e.to_string(),
-        })?;
+        let bytes = collect_body(body).await?;
+        let text = decode_xml_body(&bytes)?;
         Self::parse(&text)
     }
 
-    /// Parse a feed from a [`Body`] in strict mode.
+    /// Parse a feed from a [`Body`] in strict mode. See [`Self::from_body`].
     pub async fn from_body_strict(body: Body) -> Result<Self, FeedParseError> {
-        use crate::BodyExtractExt as _;
-        let text = body.try_into_string().await.map_err(|e| FeedParseError {
-            message: e.to_string(),
-        })?;
+        let bytes = collect_body(body).await?;
+        let text = decode_xml_body(&bytes)?;
         Self::parse_strict(&text)
     }
 
@@ -119,6 +119,64 @@ impl From<AtomFeed> for Feed {
 }
 
 // ---------------------------------------------------------------------------
+// Body helpers
+// ---------------------------------------------------------------------------
+
+async fn collect_body(body: Body) -> Result<rama_core::bytes::Bytes, FeedParseError> {
+    use crate::body::util::BodyExt as _;
+    body.collect()
+        .await
+        .map(|c| c.to_bytes())
+        .map_err(|e| FeedParseError {
+            message: format!("read feed body: {e}"),
+        })
+}
+
+/// Decode a feed body to a UTF-8 `String`, honouring a UTF-8/UTF-16 BOM.
+/// XML 1.0 mandates UTF-8 *and* UTF-16 support, so a vendor-emitted UTF-16
+/// podcast feed is accepted in addition to the common UTF-8 case.
+fn decode_xml_body(bytes: &[u8]) -> Result<String, FeedParseError> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return std::str::from_utf8(rest)
+            .map(str::to_owned)
+            .map_err(|e| FeedParseError {
+                message: format!("feed body is not valid utf-8: {e}"),
+            });
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_utf16(rest, false);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_utf16(rest, true);
+    }
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|e| FeedParseError {
+            message: format!("feed body is not valid utf-8: {e}"),
+        })
+}
+
+fn decode_utf16(bytes: &[u8], big_endian: bool) -> Result<String, FeedParseError> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err(FeedParseError {
+            message: "feed body has truncated utf-16 input (odd byte count)".to_owned(),
+        });
+    }
+    let units = bytes.chunks_exact(2).map(|c| {
+        if big_endian {
+            u16::from_be_bytes([c[0], c[1]])
+        } else {
+            u16::from_le_bytes([c[0], c[1]])
+        }
+    });
+    std::char::decode_utf16(units)
+        .collect::<Result<String, _>>()
+        .map_err(|e| FeedParseError {
+            message: format!("feed body is not valid utf-16: {e}"),
+        })
+}
+
+// ---------------------------------------------------------------------------
 // IntoResponse
 // ---------------------------------------------------------------------------
 
@@ -126,7 +184,13 @@ impl IntoResponse for Rss2Feed {
     fn into_response(self) -> Response {
         match self.to_xml() {
             Ok(xml) => (Headers::single(ContentType::rss()), Body::from(xml)).into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(err) => {
+                rama_core::telemetry::tracing::error!(
+                    error = %err,
+                    "rss feed serialization failed; returning 500",
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     }
 }
@@ -135,7 +199,13 @@ impl IntoResponse for AtomFeed {
     fn into_response(self) -> Response {
         match self.to_xml() {
             Ok(xml) => (Headers::single(ContentType::atom()), Body::from(xml)).into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            Err(err) => {
+                rama_core::telemetry::tracing::error!(
+                    error = %err,
+                    "atom feed serialization failed; returning 500",
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     }
 }

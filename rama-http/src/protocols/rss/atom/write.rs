@@ -1,10 +1,10 @@
 use quick_xml::{
     Writer,
-    events::{BytesCData, BytesEnd, BytesStart, BytesText, Event},
+    events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
 use super::super::ext_write;
-use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
+use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
 };
@@ -200,7 +200,7 @@ fn write_atom_text_body<W: std::io::Write>(
             w.write_event(Event::Text(BytesText::new(s)))?;
         }
         AtomText::Html(s) => {
-            w.write_event(Event::CData(BytesCData::new(s)))?;
+            write_cdata_escaped(w, s)?;
         }
         AtomText::Xhtml(s) => {
             // RFC 4287 §3.1.1.3: xhtml content is a single XHTML-namespaced
@@ -222,15 +222,20 @@ fn write_atom_text_body<W: std::io::Write>(
     Ok(())
 }
 
-/// Returns `true` if `fragment` is balanced, well-formed XML, so it is safe to
-/// embed verbatim inside an Atom `type="xhtml"` `<div>`.
+/// Returns `true` if `fragment` is balanced, well-formed XML *and* contains
+/// only the event kinds permitted inside an Atom `type="xhtml"` `<div>`
+/// (per RFC 4287 §3.1.1.3): elements, text, CDATA, and comments. Document-
+/// level constructs — XML declaration, DOCTYPE, and processing instructions —
+/// are not legal inside a content element and would produce invalid XML if
+/// emitted verbatim, so they are rejected here even though `quick-xml`'s
+/// tokenizer accepts them.
 fn xhtml_well_formed(fragment: &str) -> bool {
     let wrapped = format!("<x>{fragment}</x>");
     let mut reader = quick_xml::Reader::from_str(&wrapped);
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => return true,
-            Err(_) => return false,
+            Ok(Event::Decl(_) | Event::DocType(_) | Event::PI(_)) | Err(_) => return false,
             Ok(_) => {}
         }
     }

@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 
 use jiff::Timestamp;
 
+use super::super::atom::AtomLink;
 use super::super::feed_ext::FeedExtensions;
 use super::types::{Missing, Present, Rss2Category, Rss2Feed, Rss2Image, Rss2Item};
 
@@ -25,6 +26,7 @@ pub struct Rss2FeedBuilder<T, L, D> {
     pub(super) docs: Option<String>,
     pub(super) ttl: Option<u32>,
     pub(super) image: Option<Rss2Image>,
+    pub(super) atom_links: Vec<AtomLink>,
     pub(super) items: Vec<Rss2Item>,
     pub(super) extensions: FeedExtensions,
     pub(super) _pd: PhantomData<(T, L, D)>,
@@ -47,6 +49,7 @@ impl Rss2FeedBuilder<Missing, Missing, Missing> {
             docs: None,
             ttl: None,
             image: None,
+            atom_links: Vec::new(),
             items: Vec::new(),
             extensions: FeedExtensions::default(),
             _pd: PhantomData,
@@ -72,6 +75,7 @@ impl<L, D> Rss2FeedBuilder<Missing, L, D> {
             docs: self.docs,
             ttl: self.ttl,
             image: self.image,
+            atom_links: self.atom_links,
             items: self.items,
             extensions: self.extensions,
             _pd: PhantomData,
@@ -97,6 +101,7 @@ impl<T, D> Rss2FeedBuilder<T, Missing, D> {
             docs: self.docs,
             ttl: self.ttl,
             image: self.image,
+            atom_links: self.atom_links,
             items: self.items,
             extensions: self.extensions,
             _pd: PhantomData,
@@ -122,6 +127,7 @@ impl<T, L> Rss2FeedBuilder<T, L, Missing> {
             docs: self.docs,
             ttl: self.ttl,
             image: self.image,
+            atom_links: self.atom_links,
             items: self.items,
             extensions: self.extensions,
             _pd: PhantomData,
@@ -190,6 +196,15 @@ impl<T, L, D> Rss2FeedBuilder<T, L, D> {
         self
     }
 
+    /// Append a channel-level `<atom:link>`. The conventional `rel="self"`
+    /// element required by podcast directories is built via
+    /// [`AtomLink::self_link`].
+    #[must_use]
+    pub fn atom_link(mut self, link: AtomLink) -> Self {
+        self.atom_links.push(link);
+        self
+    }
+
     #[must_use]
     pub fn item(mut self, item: Rss2Item) -> Self {
         self.items.push(item);
@@ -227,6 +242,7 @@ impl Rss2FeedBuilder<Present, Present, Present> {
             docs: self.docs,
             ttl: self.ttl,
             image: self.image,
+            atom_links: self.atom_links,
             items: self.items,
             extensions: self.extensions,
         }

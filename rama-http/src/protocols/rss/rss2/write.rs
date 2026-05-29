@@ -1,11 +1,11 @@
 use jiff::Timestamp;
 use quick_xml::{
     Writer,
-    events::{BytesCData, BytesEnd, BytesStart, BytesText, Event},
+    events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
 use super::super::ext_write;
-use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
+use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::types::{Rss2Feed, Rss2Item};
 
 pub(super) fn write_rss2_feed<W: std::io::Write>(
@@ -26,6 +26,7 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
             .any(|i| i.extensions.dublin_core.is_some());
     let needs_content = feed.items.iter().any(|i| i.extensions.content.is_some());
     let needs_media = feed.items.iter().any(|i| i.extensions.media.is_some());
+    let needs_atom = !feed.atom_links.is_empty();
 
     if needs_itunes {
         rss_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
@@ -41,6 +42,9 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
     }
     if needs_media {
         rss_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
+    }
+    if needs_atom {
+        rss_tag.push_attribute(("xmlns:atom", "http://www.w3.org/2005/Atom"));
     }
 
     w.write_event(Event::Start(rss_tag))?;
@@ -93,6 +97,27 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
         w.write_event(Event::End(BytesEnd::new("image")))?;
     }
 
+    for atom_link in &feed.atom_links {
+        let mut tag = BytesStart::new("atom:link");
+        tag.push_attribute(("href", atom_link.href.as_str()));
+        if let Some(rel) = &atom_link.rel {
+            tag.push_attribute(("rel", rel.as_str()));
+        }
+        if let Some(type_) = &atom_link.type_ {
+            tag.push_attribute(("type", type_.as_str()));
+        }
+        if let Some(hreflang) = &atom_link.hreflang {
+            tag.push_attribute(("hreflang", hreflang.as_str()));
+        }
+        if let Some(title) = &atom_link.title {
+            tag.push_attribute(("title", title.as_str()));
+        }
+        if let Some(len) = atom_link.length {
+            tag.push_attribute(("length", len.to_string().as_str()));
+        }
+        w.write_event(Event::Empty(tag))?;
+    }
+
     if let Some(itunes) = &feed.extensions.itunes {
         ext_write::write_itunes_feed(w, itunes)?;
     }
@@ -135,7 +160,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
 
     write_opt_text_elem(w, "comments", item.comments.as_deref())?;
 
-    if let Some(enc) = &item.enclosure {
+    for enc in &item.enclosures {
         let mut tag = BytesStart::new("enclosure");
         tag.push_attribute(("url", enc.url.as_str()));
         tag.push_attribute(("length", enc.length.to_string().as_str()));
@@ -167,7 +192,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
         && let Some(encoded) = &content.encoded
     {
         w.write_event(Event::Start(BytesStart::new("content:encoded")))?;
-        w.write_event(Event::CData(BytesCData::new(encoded)))?;
+        write_cdata_escaped(w, encoded)?;
         w.write_event(Event::End(BytesEnd::new("content:encoded")))?;
     }
 
