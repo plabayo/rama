@@ -2125,3 +2125,81 @@ impl MockH2 for mock_io::Builder {
             .read(SETTINGS_ACK)
     }
 }
+
+/// RFC 9113 S5.1: "Receiving any frame other than HEADERS or PRIORITY on a
+/// stream in [idle] state MUST be treated as a connection error of type
+/// PROTOCOL_ERROR."
+#[tokio::test]
+async fn frame_on_pending_open_stream_is_conn_error() {
+    h2_support::trace_init!();
+
+    let illegal: [SendFrame; 4] = [
+        frames::reset(3).reason(h2::Reason::NO_ERROR).into(),
+        frames::reset(3).reason(h2::Reason::CANCEL).into(),
+        frames::window_update(3, 1024).into(),
+        frames::data(3, &b"hello"[..]).into(),
+    ];
+
+    for frame in illegal {
+        let (io, mut srv) = mock::new();
+
+        let srv = async move {
+            let settings = srv
+                .assert_client_handshake_with_settings(
+                    frames::settings().with_max_concurrent_streams(1),
+                )
+                .await;
+            assert_default_settings!(settings);
+
+            // 3. Receive stream 1 HEADERS.
+            srv.recv_frame(
+                frames::headers(1)
+                    .request("POST", "https://example.com/")
+                    .eos(),
+            )
+            .await;
+
+            idle_ms(50).await;
+
+            // 4. Send a frame targeting stream 3, whose HEADERS haven't
+            //    been transmitted since it's pending (blocked by
+            //    max_concurrent_streams=1). Illegal per §5.1.
+            srv.send_frame(frame).await;
+
+            // 5. Client responds with GOAWAY(PROTOCOL_ERROR).
+            srv.recv_frame(frames::go_away(0).protocol_error()).await;
+        };
+
+        let client = async move {
+            let (mut client, mut conn) = client::Builder::new()
+                .with_initial_max_send_streams(1)
+                .handshake::<_, Bytes>(io)
+                .await
+                .unwrap();
+
+            // 1. Stream 1 fills the concurrent slot
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            let (_resp1, _) = client.send_request(request, true).unwrap();
+            client = conn.drive(client.ready()).await.unwrap();
+
+            // 2. Stream 3 is queued
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://example.com/")
+                .body(())
+                .unwrap();
+            let (_resp3, _) = client.send_request(request, true).unwrap();
+
+            // 6. Connection error propagates to poll_ready.
+            conn.drive(client.ready())
+                .await
+                .expect_err("connection error");
+        };
+
+        join(srv, client).await;
+    }
+}
