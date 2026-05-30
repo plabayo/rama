@@ -1,19 +1,19 @@
-//! [`Feed`] umbrella type, [`IntoResponse`] impls, and client-side parse entry
-//! points (`Feed::from_body`, `Feed::from_str`).
-
-use std::str::FromStr;
+//! [`Feed`] umbrella type, [`IntoResponse`] impls, and the `from_body`
+//! convenience that drains [`FeedStream`] into an in-memory feed.
+//!
+//! There is **no synchronous high-level parser** — everything goes through
+//! the async streaming reader. Callers who need item-by-item processing use
+//! [`super::FeedStream`] directly; callers who just want the whole document
+//! call [`Feed::from_body`] (which is the "collect" adapter on top).
 
 use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
 use crate::{Body, Response, StatusCode};
 
 use super::atom::AtomFeed;
-use super::parse::{FeedParseError, parse_feed};
+use super::error::FeedParseError;
+use super::read::FeedStream;
 use super::rss2::Rss2Feed;
-
-// ---------------------------------------------------------------------------
-// Feed umbrella
-// ---------------------------------------------------------------------------
 
 /// A feed in either RSS 2.0 or Atom 1.0 format.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,41 +23,34 @@ pub enum Feed {
 }
 
 impl Feed {
-    /// Parse a feed document, detecting the format automatically.
+    /// Parse a feed from a [`Body`] by draining a [`FeedStream`]. This is the
+    /// convenience "collect" adapter — fine for the typical "give me the
+    /// whole document" client / proxy case, but it does buffer every item /
+    /// entry into memory.
     ///
-    /// Unrecognized elements are silently ignored.
-    pub fn parse(input: &str) -> Result<Self, FeedParseError> {
-        parse_feed(input, false)
-    }
-
-    /// Parse a feed document strictly; any structural violation returns an
-    /// error.
-    pub fn parse_strict(input: &str) -> Result<Self, FeedParseError> {
-        parse_feed(input, true)
-    }
-
-    /// Parse a feed from a [`Body`] using the async streaming reader, so the
-    /// body is consumed chunk-by-chunk and never fully buffered into memory
-    /// for the common UTF-8 case. UTF-16 (LE/BE) byte-order marks are also
-    /// accepted; UTF-16 inputs fall back to the buffered path since the
-    /// streaming parser only consumes UTF-8 bytes.
+    /// Use [`FeedStream::from_body`] directly if you want to process items
+    /// incrementally (e.g. filter podcast episodes as they stream in, or stop
+    /// after the first N items).
     ///
-    /// For defence-in-depth on untrusted feeds (MITM proxy / aggregator),
-    /// apply a `BodyLimit` layer upstream — the streaming parser is
-    /// bounded-memory per item but won't cap total document size on its own.
+    /// For defence-in-depth on untrusted feeds, apply a `BodyLimit` layer
+    /// upstream — the streaming reader is bounded-memory per item but does
+    /// not cap the total document size on its own.
     pub async fn from_body(body: Body) -> Result<Self, FeedParseError> {
-        super::read::FeedStream::from_body(body)
-            .await?
-            .collect()
-            .await
+        match FeedStream::from_body(body).await?.collect().await {
+            Ok(feed) => Ok(feed),
+            Err(err) => Err(err.error),
+        }
     }
 
-    /// Strict variant of [`Self::from_body`].
+    /// Strict variant of [`Self::from_body`]. Collapses the
+    /// [`super::FeedCollectError`] from the underlying [`FeedStream::collect`]
+    /// into just its [`FeedParseError`]; if you need the partial feed on a
+    /// mid-stream error, drain a [`FeedStream`] yourself.
     pub async fn from_body_strict(body: Body) -> Result<Self, FeedParseError> {
-        super::read::FeedStream::from_body_strict(body)
-            .await?
-            .collect()
-            .await
+        match FeedStream::from_body_strict(body).await?.collect().await {
+            Ok(feed) => Ok(feed),
+            Err(err) => Err(err.error),
+        }
     }
 
     /// Returns `true` if this is an RSS 2.0 feed.
@@ -100,14 +93,6 @@ impl Feed {
     }
 }
 
-impl FromStr for Feed {
-    type Err = FeedParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s)
-    }
-}
-
 impl From<Rss2Feed> for Feed {
     fn from(f: Rss2Feed) -> Self {
         Self::Rss2(f)
@@ -118,55 +103,6 @@ impl From<AtomFeed> for Feed {
     fn from(f: AtomFeed) -> Self {
         Self::Atom(f)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Body helpers
-// ---------------------------------------------------------------------------
-
-/// Decode a feed body to a UTF-8 `String`, honouring a UTF-8/UTF-16 BOM. XML
-/// 1.0 mandates UTF-8 *and* UTF-16 support, so a vendor-emitted UTF-16 podcast
-/// feed is accepted in addition to the common UTF-8 case. Used by
-/// [`super::read::FeedStream`]'s UTF-16 fallback and the lenient fallback.
-pub(super) fn decode_xml_body(bytes: &[u8]) -> Result<String, FeedParseError> {
-    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return std::str::from_utf8(rest)
-            .map(str::to_owned)
-            .map_err(|e| FeedParseError {
-                message: format!("feed body is not valid utf-8: {e}"),
-            });
-    }
-    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
-        return decode_utf16(rest, false);
-    }
-    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
-        return decode_utf16(rest, true);
-    }
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|e| FeedParseError {
-            message: format!("feed body is not valid utf-8: {e}"),
-        })
-}
-
-fn decode_utf16(bytes: &[u8], big_endian: bool) -> Result<String, FeedParseError> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err(FeedParseError {
-            message: "feed body has truncated utf-16 input (odd byte count)".to_owned(),
-        });
-    }
-    let units = bytes.chunks_exact(2).map(|c| {
-        if big_endian {
-            u16::from_be_bytes([c[0], c[1]])
-        } else {
-            u16::from_le_bytes([c[0], c[1]])
-        }
-    });
-    std::char::decode_utf16(units)
-        .collect::<Result<String, _>>()
-        .map_err(|e| FeedParseError {
-            message: format!("feed body is not valid utf-16: {e}"),
-        })
 }
 
 // ---------------------------------------------------------------------------

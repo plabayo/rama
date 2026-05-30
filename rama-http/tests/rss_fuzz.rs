@@ -1,48 +1,33 @@
-//! Property-based fuzzing for the RSS / Atom parser surface.
+//! Property-based fuzzing for the async streaming RSS / Atom reader.
 //!
-//! The parser is fed arbitrary attacker-controlled input in the proxy and
-//! client use cases. The properties exercised here are:
+//! The reader is fed attacker-controlled bytes in the proxy and client cases,
+//! so the property is: `FeedStream::new` (lenient) and `FeedStream::new_strict`
+//! must never panic on any utf-8 input.
 //!
-//! * `Feed::parse` (lenient) **must never panic** on any byte string.
-//! * `Feed::parse_strict` must never panic either — it may return `Err`, but
-//!   must not unwind through arbitrary input.
-//! * The same input fed through both modes must agree on the obvious fact that
-//!   anything strict accepts, lenient must also accept.
-//!
-//! `quickcheck` generates strings biased toward `ASCII` plus some specific
-//! shapes (XML-ish, with stray tags and entities) so the test runs fast yet
-//! still exercises the interesting edges.
+//! `quickcheck` generates byte strings biased toward XML-ish shapes so the
+//! parser is exercised on interesting inputs more often than purely random
+//! `String::arbitrary` would.
 
 #![cfg(feature = "rss")]
 #![expect(
-    clippy::needless_pass_by_value,
-    reason = "quickcheck requires by-value Arbitrary arguments for shrinking"
+    clippy::expect_used,
+    reason = "fuzz test: panicking on runtime build failure is the assertion"
 )]
-#![expect(
-    clippy::let_underscore_must_use,
-    reason = "the property under test is that parse does not panic; the value itself doesn't matter"
-)]
+
+use std::sync::OnceLock;
 
 use quickcheck::{Arbitrary, Gen, TestResult};
 use quickcheck_macros::quickcheck;
 
-use rama_http::protocols::rss::Feed;
+use rama_http::protocols::rss::FeedStream;
 
-/// Bytes biased toward XML-ish shapes so the parser is exercised on interesting
-/// inputs more often than purely random `String::arbitrary` would.
+/// Bytes biased toward XML-ish shapes so the parser is exercised on
+/// interesting inputs more often than purely random `String::arbitrary`.
 #[derive(Debug, Clone)]
 struct FeedLikeBytes(Vec<u8>);
 
 impl Arbitrary for FeedLikeBytes {
     fn arbitrary(g: &mut Gen) -> Self {
-        // Tokens worth interleaving:
-        //   `<rss>` / `<channel>` / `<feed>` to trip detection,
-        //   `<item>` / `<entry>` to enter element states,
-        //   `<![CDATA[` / `]]>` for the CDATA path,
-        //   `&amp;` / `&` / `&bogus;` for the entity path,
-        //   `<` / `>` for tokenizer edges,
-        //   plus a few real attribute names and multi-byte chars to keep the
-        //   utf-8 boundary code honest.
         let chunks: &[&[u8]] = &[
             b"<rss version=\"2.0\">",
             b"<channel>",
@@ -76,7 +61,6 @@ impl Arbitrary for FeedLikeBytes {
             b"-->",
             b"<?xml version=\"1.0\"?>",
             b"<!DOCTYPE x>",
-            b"\xff\xfe", // would-be UTF-16 BOM
             "🎙".as_bytes(),
             "€".as_bytes(),
             b"a",
@@ -94,28 +78,57 @@ impl Arbitrary for FeedLikeBytes {
     }
 }
 
+fn rt() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime")
+    })
+}
+
+async fn drive(bytes: Vec<u8>, strict: bool) {
+    let cursor = std::io::Cursor::new(bytes);
+    let reader = tokio::io::BufReader::new(cursor);
+    let result = if strict {
+        FeedStream::new_strict(reader).await
+    } else {
+        FeedStream::new(reader).await
+    };
+    if let Ok(stream) = result {
+        // Drain to completion to exercise the items path too.
+        let _ = stream.collect_lossy().await;
+    }
+}
+
 #[quickcheck]
 fn parse_never_panics(input: FeedLikeBytes) -> TestResult {
-    let Ok(s) = std::str::from_utf8(&input.0) else {
-        // Public `Feed::parse` takes `&str`; non-utf8 isn't its concern.
-        return TestResult::discard();
-    };
-    let _ = Feed::parse(s);
-    let _ = Feed::parse_strict(s);
+    // Public surface takes bytes via AsyncBufRead, so non-utf8 is fine — but
+    // the parser may reject it. The property is: no panic, regardless.
+    rt().block_on(drive(input.0.clone(), false));
+    rt().block_on(drive(input.0, true));
     TestResult::passed()
 }
 
 #[quickcheck]
 fn strict_acceptance_implies_lenient_acceptance(input: FeedLikeBytes) -> TestResult {
-    let Ok(s) = std::str::from_utf8(&input.0) else {
-        return TestResult::discard();
-    };
-    if Feed::parse_strict(s).is_ok() {
-        // If strict accepts it, lenient must too — there is no input that
-        // strict accepts but lenient rejects.
+    let bytes = input.0;
+    let strict_ok = rt().block_on(async {
+        let cursor = std::io::Cursor::new(bytes.clone());
+        let reader = tokio::io::BufReader::new(cursor);
+        FeedStream::new_strict(reader).await.is_ok()
+    });
+    if strict_ok {
+        let lenient_ok = rt().block_on(async {
+            let cursor = std::io::Cursor::new(bytes.clone());
+            let reader = tokio::io::BufReader::new(cursor);
+            FeedStream::new(reader).await.is_ok()
+        });
         assert!(
-            Feed::parse(s).is_ok(),
-            "strict accepted but lenient rejected: {s:?}"
+            lenient_ok,
+            "strict accepted but lenient rejected: {:?}",
+            String::from_utf8_lossy(&bytes)
         );
     }
     TestResult::passed()

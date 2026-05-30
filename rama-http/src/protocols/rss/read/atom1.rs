@@ -1,16 +1,18 @@
 //! Async streaming Atom 1.0 reader.
 //!
-//! Symmetric to [`super::rss2`]: yields an [`AtomReadEvent::Feed`] event with
-//! feed-level metadata up to (and excluding) the first `<entry>`, then one
-//! [`AtomReadEvent::Entry`] per entry, then [`AtomReadEvent::Eof`].
-//!
-//! [`collect_atom`] is the in-memory adapter.
+//! Same shape as the RSS 2.0 reader: header is read at construction time,
+//! [`AtomEntry`]s stream after.
+
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use jiff::Timestamp;
 use quick_xml::NsReader;
 use quick_xml::events::Event;
 use rama_core::futures::Stream;
+use rama_core::futures::StreamExt as _;
 use rama_core::futures::async_stream::stream_fn;
+use rama_core::futures::stream::BoxStream;
 use rama_core::telemetry::tracing;
 use tokio::io::AsyncBufRead;
 
@@ -18,11 +20,15 @@ use super::super::atom::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson,
     AtomSource, AtomText,
 };
+use super::super::error::{AtomCollectError, CollectError, FeedParseError};
 use super::super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::feed_ext::FeedExtensions;
-use super::super::parse::{Attrs, FeedParseError, attr_value};
+use super::super::parse_util::{
+    atom_category_from_attrs, atom_link_from_attrs, attr_value, make_atom_text, parse_rfc3339_lax,
+};
 
-/// Feed-level metadata of an Atom 1.0 feed — [`AtomFeed`] without `entries`.
+/// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
+/// carries except its `entries`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomHeader {
     pub id: String,
@@ -61,7 +67,8 @@ impl Default for AtomHeader {
 }
 
 impl AtomHeader {
-    /// Combine this header with an iterator of entries into a full feed.
+    /// Combine this feed header with an iterator of entries into a full
+    /// [`AtomFeed`].
     #[must_use]
     pub fn into_feed_with_entries<I>(self, entries: I) -> AtomFeed
     where
@@ -86,620 +93,744 @@ impl AtomHeader {
     }
 }
 
-/// One step of an Atom 1.0 streaming parse.
-#[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "internal event type: the size disparity (Feed header vs. boxed Entry) \
-              only lives across one yield boundary inside the stream, not in user-visible APIs"
-)]
-pub(super) enum AtomReadEvent {
-    /// Feed-level metadata, emitted once before any [`Entry`](Self::Entry).
-    Feed(AtomHeader),
-    /// One fully-parsed `<entry>`.
-    Entry(Box<AtomEntry>),
-    /// End of feed (the matching `</feed>` end or EOF in lenient mode).
+/// Async streaming reader for an Atom 1.0 feed.
+pub struct AtomFeedStream {
+    header: AtomHeader,
+    entries: BoxStream<'static, Result<AtomEntry, FeedParseError>>,
+}
+
+impl AtomFeedStream {
+    pub async fn new<R>(reader: R) -> Result<Self, FeedParseError>
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        Self::new_with_mode(reader, false).await
+    }
+
+    pub async fn new_strict<R>(reader: R) -> Result<Self, FeedParseError>
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        Self::new_with_mode(reader, true).await
+    }
+
+    pub(super) async fn new_with_mode<R>(reader: R, strict: bool) -> Result<Self, FeedParseError>
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        let mut state = AtomReader::new(reader, strict);
+        let header = state.read_header().await?;
+        let entries: BoxStream<'static, Result<AtomEntry, FeedParseError>> =
+            Box::pin(stream_fn(move |mut yielder| async move {
+                let mut state = state;
+                loop {
+                    match state.read_next_entry().await {
+                        Ok(Some(entry)) => yielder.yield_item(Ok(entry)).await,
+                        Ok(None) => return,
+                        Err(e) => {
+                            yielder.yield_item(Err(e)).await;
+                            return;
+                        }
+                    }
+                }
+            }));
+        Ok(Self { header, entries })
+    }
+
+    /// Borrow the feed-level metadata parsed at construction time.
+    #[must_use]
+    pub fn header(&self) -> &AtomHeader {
+        &self.header
+    }
+
+    /// Split into `(header, entries)`.
+    #[must_use]
+    pub fn drain(
+        self,
+    ) -> (
+        AtomHeader,
+        BoxStream<'static, Result<AtomEntry, FeedParseError>>,
+    ) {
+        (self.header, self.entries)
+    }
+
+    /// Drain into a full [`AtomFeed`]; on per-entry error returns a partial
+    /// feed with everything parsed so far.
+    pub async fn collect(mut self) -> Result<AtomFeed, AtomCollectError> {
+        let mut entries = Vec::new();
+        while let Some(entry) = self.entries.next().await {
+            match entry {
+                Ok(e) => entries.push(e),
+                Err(error) => {
+                    return Err(CollectError {
+                        error,
+                        partial: self.header.into_feed_with_entries(entries),
+                    });
+                }
+            }
+        }
+        Ok(self.header.into_feed_with_entries(entries))
+    }
+
+    /// Drain, silently dropping (and `tracing::debug!`-logging) entries that
+    /// fail to parse.
+    pub async fn collect_lossy(mut self) -> AtomFeed {
+        let mut entries = Vec::new();
+        while let Some(entry) = self.entries.next().await {
+            match entry {
+                Ok(e) => entries.push(e),
+                Err(err) => tracing::debug!(error = %err, "atom entry dropped by collect_lossy"),
+            }
+        }
+        self.header.into_feed_with_entries(entries)
+    }
+
+    /// Drain into a feed retaining only entries the predicate accepts.
+    pub async fn collect_filtered<F>(
+        mut self,
+        mut predicate: F,
+    ) -> Result<AtomFeed, AtomCollectError>
+    where
+        F: FnMut(&AtomEntry) -> bool + Send,
+    {
+        let mut entries = Vec::new();
+        while let Some(entry) = self.entries.next().await {
+            match entry {
+                Ok(e) => {
+                    if predicate(&e) {
+                        entries.push(e);
+                    }
+                }
+                Err(error) => {
+                    return Err(CollectError {
+                        error,
+                        partial: self.header.into_feed_with_entries(entries),
+                    });
+                }
+            }
+        }
+        Ok(self.header.into_feed_with_entries(entries))
+    }
+}
+
+impl Stream for AtomFeedStream {
+    type Item = Result<AtomEntry, FeedParseError>;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = Pin::into_inner(self);
+        this.entries.poll_next_unpin(cx)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AtomReader: state machine. Private.
+// ---------------------------------------------------------------------------
+
+enum Action {
+    Continue,
+    FirstEntryStarted,
+    /// Boxed so the enum stays small (a finished `AtomEntry` is ~1.3 KB).
+    EntryFinished(Box<AtomEntry>),
     Eof,
 }
 
-/// Construct an async stream yielding Atom 1.0 events from `reader`.
-///
-/// `strict = true` requires `<id>`, `<title>` and a parseable `<updated>` both
-/// at feed and entry level. Lenient mode tolerates missing/unparseable values.
-#[expect(
-    clippy::too_many_lines,
-    reason = "single-state-machine streaming parser; splitting hurts readability"
-)]
-pub(super) fn atom_event_stream<R>(
-    reader: R,
+struct AtomReader<R: AsyncBufRead + Unpin + Send> {
+    nsr: NsReader<R>,
+    buf: Vec<u8>,
     strict: bool,
-) -> impl Stream<Item = Result<AtomReadEvent, FeedParseError>> + Send
-where
-    R: AsyncBufRead + Unpin + Send + 'static,
-{
-    stream_fn(move |mut yielder| async move {
+
+    text_buf: String,
+    depth: i32,
+    saw_root: bool,
+    feed_updated_parsed: bool,
+
+    // Feed-level header accumulator.
+    header: AtomHeader,
+    feed_acc: FeedExtAcc,
+    pending_generator: Option<AtomGenerator>,
+
+    // Entry / sub-element state.
+    in_entry: bool,
+    current_entry: AtomEntry,
+    current_entry_id_set: bool,
+    current_entry_title_set: bool,
+    current_entry_updated_parsed: bool,
+    entry_acc: ItemExtAcc,
+    in_author: bool,
+    in_feed_author: bool,
+    in_contributor: bool,
+    in_feed_contributor: bool,
+    current_author: AtomPerson,
+    current_contributor: AtomPerson,
+    in_source: bool,
+    current_source: AtomSource,
+
+    current_title_type: String,
+    current_summary_type: String,
+    current_content_type: String,
+    current_rights_type: String,
+    current_subtitle_type: String,
+}
+
+impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
+    fn new(reader: R, strict: bool) -> Self {
         let mut nsr = NsReader::from_reader(reader);
         nsr.config_mut().trim_text(true);
-        let mut buf: Vec<u8> = Vec::with_capacity(4096);
-
-        // Feed-level state, yielded as `AtomReadEvent::Feed` on first <entry>
-        // (or at EOF for entry-less feeds).
-        let mut header = AtomHeader::default();
-        let mut feed_acc = FeedExtAcc::default();
-        let mut feed_updated_parsed = false;
-        let mut header_yielded = false;
-        let mut saw_root = false;
-        let mut pending_generator: Option<AtomGenerator> = None;
-
-        // Entry / sub-element state — same shape as the sync parser.
-        let mut in_entry = false;
-        let mut in_author = false;
-        let mut in_feed_author = false;
-        let mut in_contributor = false;
-        let mut in_feed_contributor = false;
-        let mut in_source = false;
-        let mut current_entry = AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH);
-        let mut current_entry_id_set = false;
-        let mut current_entry_title_set = false;
-        let mut current_entry_updated_parsed = false;
-        let mut entry_acc = ItemExtAcc::default();
-        let mut current_author = AtomPerson::new("");
-        let mut current_contributor = AtomPerson::new("");
-        let mut current_source = AtomSource {
-            id: None,
-            title: None,
-            updated: None,
-        };
-
-        let mut current_title_type = String::from("text");
-        let mut current_summary_type = String::from("text");
-        let mut current_content_type = String::from("text");
-        let mut current_rights_type = String::from("text");
-        let mut current_subtitle_type = String::from("text");
-
-        let mut text_buf = String::new();
-        let mut depth: i32 = 0;
-
-        macro_rules! yield_err {
-            ($expr:expr) => {{
-                yielder.yield_item(Err($expr)).await;
-                return;
-            }};
+        Self {
+            nsr,
+            buf: Vec::with_capacity(4096),
+            strict,
+            text_buf: String::new(),
+            depth: 0,
+            saw_root: false,
+            feed_updated_parsed: false,
+            header: AtomHeader::default(),
+            feed_acc: FeedExtAcc::default(),
+            pending_generator: None,
+            in_entry: false,
+            current_entry: AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH),
+            current_entry_id_set: false,
+            current_entry_title_set: false,
+            current_entry_updated_parsed: false,
+            entry_acc: ItemExtAcc::default(),
+            in_author: false,
+            in_feed_author: false,
+            in_contributor: false,
+            in_feed_contributor: false,
+            current_author: AtomPerson::new(""),
+            current_contributor: AtomPerson::new(""),
+            in_source: false,
+            current_source: AtomSource {
+                id: None,
+                title: None,
+                updated: None,
+            },
+            current_title_type: String::from("text"),
+            current_summary_type: String::from("text"),
+            current_content_type: String::from("text"),
+            current_rights_type: String::from("text"),
+            current_subtitle_type: String::from("text"),
         }
-        macro_rules! flush_header {
-            () => {{
-                if !header_yielded {
-                    let mut h = std::mem::take(&mut header);
-                    h.extensions = std::mem::take(&mut feed_acc).finish();
-                    header_yielded = true;
-                    yielder.yield_item(Ok(AtomReadEvent::Feed(h))).await;
-                }
-            }};
-        }
+    }
 
+    async fn read_header(&mut self) -> Result<AtomHeader, FeedParseError> {
         loop {
-            buf.clear();
-            let (rr, ev) = match nsr.read_resolved_event_into_async(&mut buf).await {
-                Ok(p) => p,
-                Err(e) => {
-                    if strict {
-                        yield_err!(FeedParseError {
-                            message: format!("xml error: {e}"),
-                        });
-                    }
-                    tracing::debug!("atom stream xml error (lenient): {e}");
-                    break;
+            match self.step().await? {
+                Action::Continue => {}
+                Action::FirstEntryStarted | Action::Eof => return self.take_header(),
+                Action::EntryFinished(_) => {
+                    return Err(FeedParseError::new(
+                        "internal: entry finished during header phase",
+                    ));
                 }
-            };
-
-            match ev {
-                Event::Start(e) => {
-                    depth += 1;
-                    let ns = classify_ns(&rr);
-                    let local_name = e.local_name();
-                    let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
-                    text_buf.clear();
-
-                    let consumed = if in_entry {
-                        entry_acc.on_start(ns, local, &e)
-                    } else {
-                        feed_acc.on_start(ns, local, &e)
-                    };
-                    if consumed {
-                        continue;
-                    }
-                    if ns != Ns::Atom {
-                        continue;
-                    }
-
-                    match local {
-                        "feed" => saw_root = true,
-                        "entry" => {
-                            flush_header!();
-                            in_entry = true;
-                            current_entry =
-                                AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH);
-                            current_entry_id_set = false;
-                            current_entry_title_set = false;
-                            current_entry_updated_parsed = false;
-                            entry_acc = ItemExtAcc::default();
-                        }
-                        "author" if !in_source => {
-                            current_author = AtomPerson::new("");
-                            if in_entry {
-                                in_author = true;
-                            } else {
-                                in_feed_author = true;
-                            }
-                        }
-                        "contributor" if !in_source => {
-                            current_contributor = AtomPerson::new("");
-                            if in_entry {
-                                in_contributor = true;
-                            } else {
-                                in_feed_contributor = true;
-                            }
-                        }
-                        "source" if in_entry && !in_source => {
-                            in_source = true;
-                            current_source = AtomSource {
-                                id: None,
-                                title: None,
-                                updated: None,
-                            };
-                        }
-                        "link" if !in_source => {
-                            let link = atom_link_from_attrs(&e);
-                            if in_entry {
-                                current_entry.links.push(link);
-                            } else {
-                                header.links.push(link);
-                            }
-                        }
-                        "category" if !in_source => {
-                            let cat = atom_category_from_attrs(&e);
-                            if in_entry {
-                                current_entry.categories.push(cat);
-                            } else {
-                                header.categories.push(cat);
-                            }
-                        }
-                        "title" => {
-                            let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                            if t == "xhtml" {
-                                let xml =
-                                    match capture_xhtml_subtree_async(&mut nsr, &mut buf).await {
-                                        Ok(s) => s,
-                                        Err(err) => yield_err!(err),
-                                    };
-                                if in_entry {
-                                    current_entry.title = AtomText::Xhtml(xml);
-                                    current_entry_title_set = true;
-                                } else {
-                                    header.title = AtomText::Xhtml(xml);
-                                }
-                                depth -= 1;
-                                continue;
-                            }
-                            current_title_type = t;
-                        }
-                        "summary" if in_entry => {
-                            let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                            if t == "xhtml" {
-                                let xml =
-                                    match capture_xhtml_subtree_async(&mut nsr, &mut buf).await {
-                                        Ok(s) => s,
-                                        Err(err) => yield_err!(err),
-                                    };
-                                current_entry.summary = Some(AtomText::Xhtml(xml));
-                                depth -= 1;
-                                continue;
-                            }
-                            current_summary_type = t;
-                        }
-                        "content" if in_entry && !in_source => {
-                            let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                            if t == "xhtml" {
-                                let xml =
-                                    match capture_xhtml_subtree_async(&mut nsr, &mut buf).await {
-                                        Ok(s) => s,
-                                        Err(err) => yield_err!(err),
-                                    };
-                                current_entry.content = Some(AtomContent {
-                                    value: AtomText::Xhtml(xml),
-                                    src: None,
-                                });
-                                depth -= 1;
-                                continue;
-                            }
-                            current_content_type = t;
-                        }
-                        "rights" => {
-                            let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                            if t == "xhtml" {
-                                let xml =
-                                    match capture_xhtml_subtree_async(&mut nsr, &mut buf).await {
-                                        Ok(s) => s,
-                                        Err(err) => yield_err!(err),
-                                    };
-                                if in_entry {
-                                    current_entry.rights = Some(AtomText::Xhtml(xml));
-                                } else {
-                                    header.rights = Some(AtomText::Xhtml(xml));
-                                }
-                                depth -= 1;
-                                continue;
-                            }
-                            current_rights_type = t;
-                        }
-                        "subtitle" if !in_entry => {
-                            let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                            if t == "xhtml" {
-                                let xml =
-                                    match capture_xhtml_subtree_async(&mut nsr, &mut buf).await {
-                                        Ok(s) => s,
-                                        Err(err) => yield_err!(err),
-                                    };
-                                header.subtitle = Some(AtomText::Xhtml(xml));
-                                depth -= 1;
-                                continue;
-                            }
-                            current_subtitle_type = t;
-                        }
-                        "generator" if !in_source => {
-                            pending_generator = Some(AtomGenerator {
-                                value: String::new(),
-                                uri: attr_value(&e, b"uri"),
-                                version: attr_value(&e, b"version"),
-                            });
-                        }
-                        _ => {}
-                    }
-                }
-                Event::Empty(e) => {
-                    let ns = classify_ns(&rr);
-                    let local_name = e.local_name();
-                    let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
-
-                    let consumed = if in_entry {
-                        entry_acc.on_empty(ns, local, &e)
-                    } else {
-                        feed_acc.on_empty(ns, local, &e)
-                    };
-                    if consumed || ns != Ns::Atom {
-                        continue;
-                    }
-                    match local {
-                        "link" if !in_source => {
-                            let link = atom_link_from_attrs(&e);
-                            if in_entry {
-                                current_entry.links.push(link);
-                            } else {
-                                header.links.push(link);
-                            }
-                        }
-                        "category" if !in_source => {
-                            let cat = atom_category_from_attrs(&e);
-                            if in_entry {
-                                current_entry.categories.push(cat);
-                            } else {
-                                header.categories.push(cat);
-                            }
-                        }
-                        "content" if in_entry && !in_source => {
-                            // Out-of-line <content src=".." type=".."/>.
-                            if let Some(src) = attr_value(&e, b"src") {
-                                let type_ =
-                                    attr_value(&e, b"type").unwrap_or_else(|| "text".into());
-                                current_entry.content = Some(AtomContent {
-                                    value: AtomText::Text(type_),
-                                    src: Some(src),
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Event::Text(e) => match e.unescape() {
-                    Ok(t) => text_buf.push_str(&t),
-                    Err(err) => {
-                        if strict {
-                            yield_err!(FeedParseError {
-                                message: format!("invalid text content: {err}"),
-                            });
-                        }
-                        tracing::debug!("atom stream unescape error (lenient): {err}");
-                        text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                },
-                Event::CData(e) => match std::str::from_utf8(e.as_ref()) {
-                    Ok(t) => text_buf.push_str(t),
-                    Err(err) => {
-                        if strict {
-                            yield_err!(FeedParseError {
-                                message: format!("invalid CDATA: {err}"),
-                            });
-                        }
-                        tracing::debug!("atom stream CDATA utf8 error (lenient): {err}");
-                        text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                },
-                Event::End(e) => {
-                    depth -= 1;
-                    let ns = classify_ns(&rr);
-                    let local_name = e.local_name();
-                    let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
-                    let text = std::mem::take(&mut text_buf);
-
-                    if in_author {
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "name" => current_author.name = text,
-                            "email" => current_author.email = Some(text),
-                            "uri" => current_author.uri = Some(text),
-                            "author" => {
-                                current_entry.authors.push(std::mem::replace(
-                                    &mut current_author,
-                                    AtomPerson::new(""),
-                                ));
-                                in_author = false;
-                            }
-                            _ => {}
-                        }
-                    } else if in_feed_author {
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "name" => current_author.name = text,
-                            "email" => current_author.email = Some(text),
-                            "uri" => current_author.uri = Some(text),
-                            "author" => {
-                                header.authors.push(std::mem::replace(
-                                    &mut current_author,
-                                    AtomPerson::new(""),
-                                ));
-                                in_feed_author = false;
-                            }
-                            _ => {}
-                        }
-                    } else if in_contributor {
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "name" => current_contributor.name = text,
-                            "email" => current_contributor.email = Some(text),
-                            "uri" => current_contributor.uri = Some(text),
-                            "contributor" => {
-                                current_entry.contributors.push(std::mem::replace(
-                                    &mut current_contributor,
-                                    AtomPerson::new(""),
-                                ));
-                                in_contributor = false;
-                            }
-                            _ => {}
-                        }
-                    } else if in_feed_contributor {
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "name" => current_contributor.name = text,
-                            "email" => current_contributor.email = Some(text),
-                            "uri" => current_contributor.uri = Some(text),
-                            "contributor" => {
-                                header.contributors.push(std::mem::replace(
-                                    &mut current_contributor,
-                                    AtomPerson::new(""),
-                                ));
-                                in_feed_contributor = false;
-                            }
-                            _ => {}
-                        }
-                    } else if in_source {
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "id" => current_source.id = Some(text),
-                            "title" => {
-                                current_source.title =
-                                    Some(make_atom_text(&current_title_type, text));
-                            }
-                            "updated" => current_source.updated = parse_rfc3339_lax(&text),
-                            "source" => {
-                                current_entry.source = Some(std::mem::replace(
-                                    &mut current_source,
-                                    AtomSource {
-                                        id: None,
-                                        title: None,
-                                        updated: None,
-                                    },
-                                ));
-                                in_source = false;
-                            }
-                            _ => {}
-                        }
-                    } else if in_entry {
-                        let Some(text) = entry_acc.on_end(ns, local, text) else {
-                            continue;
-                        };
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "id" => {
-                                current_entry.id = text;
-                                current_entry_id_set = true;
-                            }
-                            "title" => {
-                                current_entry.title = make_atom_text(&current_title_type, text);
-                                current_entry_title_set = true;
-                            }
-                            "updated" => {
-                                if let Some(ts) = parse_rfc3339_lax(&text) {
-                                    current_entry.updated = ts;
-                                    current_entry_updated_parsed = true;
-                                }
-                            }
-                            "published" => current_entry.published = parse_rfc3339_lax(&text),
-                            "summary" => {
-                                current_entry.summary =
-                                    Some(make_atom_text(&current_summary_type, text));
-                            }
-                            "content" => {
-                                let v = make_atom_text(&current_content_type, text);
-                                current_entry.content = Some(AtomContent {
-                                    value: v,
-                                    src: None,
-                                });
-                            }
-                            "rights" => {
-                                current_entry.rights =
-                                    Some(make_atom_text(&current_rights_type, text));
-                            }
-                            "entry" => {
-                                if strict
-                                    && (!current_entry_id_set
-                                        || !current_entry_title_set
-                                        || !current_entry_updated_parsed)
-                                {
-                                    yield_err!(FeedParseError {
-                                        message:
-                                            "Atom entry missing required <id>/<title>/<updated>"
-                                                .to_owned(),
-                                    });
-                                }
-                                current_entry.extensions = std::mem::take(&mut entry_acc).finish();
-                                let entry = std::mem::replace(
-                                    &mut current_entry,
-                                    AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH),
-                                );
-                                in_entry = false;
-                                yielder
-                                    .yield_item(Ok(AtomReadEvent::Entry(Box::new(entry))))
-                                    .await;
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        let Some(text) = feed_acc.on_end(ns, local, text) else {
-                            continue;
-                        };
-                        if ns != Ns::Atom {
-                            continue;
-                        }
-                        match local {
-                            "id" => header.id = text,
-                            "title" => {
-                                header.title = make_atom_text(&current_title_type, text);
-                            }
-                            "updated" => {
-                                if let Some(ts) = parse_rfc3339_lax(&text) {
-                                    header.updated = ts;
-                                    feed_updated_parsed = true;
-                                }
-                            }
-                            "subtitle" => {
-                                header.subtitle =
-                                    Some(make_atom_text(&current_subtitle_type, text));
-                            }
-                            "rights" => {
-                                header.rights = Some(make_atom_text(&current_rights_type, text));
-                            }
-                            "logo" => header.logo = Some(text),
-                            "icon" => header.icon = Some(text),
-                            "generator" => {
-                                if let Some(mut g) = pending_generator.take() {
-                                    g.value = text;
-                                    header.generator = Some(g);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Event::Eof => break,
-                _ => {}
             }
         }
+    }
 
-        if strict && depth > 0 {
-            yield_err!(FeedParseError {
-                message: format!("truncated Atom document ({depth} unclosed elements at EOF)"),
-            });
+    async fn read_next_entry(&mut self) -> Result<Option<AtomEntry>, FeedParseError> {
+        loop {
+            match self.step().await? {
+                Action::Continue | Action::FirstEntryStarted => {}
+                Action::EntryFinished(entry) => return Ok(Some(*entry)),
+                Action::Eof => return Ok(None),
+            }
         }
-        if strict {
+    }
+
+    fn take_header(&mut self) -> Result<AtomHeader, FeedParseError> {
+        if !self.saw_root {
+            return Err(FeedParseError::new("no <feed> root encountered"));
+        }
+        let mut header = std::mem::take(&mut self.header);
+        header.extensions = std::mem::take(&mut self.feed_acc).finish();
+        if self.strict {
             if header.id.is_empty() {
-                yield_err!(FeedParseError {
-                    message: "Atom feed missing required <id>".to_owned(),
-                });
+                return Err(FeedParseError::new("Atom feed missing required <id>"));
             }
             if header.title.value().is_empty() {
-                yield_err!(FeedParseError {
-                    message: "Atom feed missing required <title>".to_owned(),
-                });
+                return Err(FeedParseError::new("Atom feed missing required <title>"));
             }
-            if !feed_updated_parsed {
-                yield_err!(FeedParseError {
-                    message: "Atom feed missing required <updated>".to_owned(),
-                });
+            if !self.feed_updated_parsed {
+                return Err(FeedParseError::new("Atom feed missing required <updated>"));
             }
         }
-        if !saw_root {
-            return;
+        Ok(header)
+    }
+
+    async fn step(&mut self) -> Result<Action, FeedParseError> {
+        self.buf.clear();
+        let (rr, ev) = match self.nsr.read_resolved_event_into_async(&mut self.buf).await {
+            Ok(p) => p,
+            Err(e) => {
+                if self.strict {
+                    return Err(FeedParseError::new(format!("xml error: {e}")));
+                }
+                tracing::debug!("atom stream xml error (lenient): {e}");
+                return Ok(Action::Eof);
+            }
+        };
+
+        match ev {
+            Event::Start(e) => {
+                self.depth += 1;
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                self.text_buf.clear();
+
+                let consumed = if self.in_entry {
+                    self.entry_acc.on_start(ns, local, &e)
+                } else {
+                    self.feed_acc.on_start(ns, local, &e)
+                };
+                if consumed {
+                    return Ok(Action::Continue);
+                }
+                if ns != Ns::Atom {
+                    return Ok(Action::Continue);
+                }
+
+                match local {
+                    "feed" => {
+                        self.saw_root = true;
+                        Ok(Action::Continue)
+                    }
+                    "entry" => {
+                        let first_entry = !self.in_entry;
+                        self.in_entry = true;
+                        self.current_entry =
+                            AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH);
+                        self.current_entry_id_set = false;
+                        self.current_entry_title_set = false;
+                        self.current_entry_updated_parsed = false;
+                        self.entry_acc = ItemExtAcc::default();
+                        if first_entry {
+                            Ok(Action::FirstEntryStarted)
+                        } else {
+                            Ok(Action::Continue)
+                        }
+                    }
+                    "author" if !self.in_source => {
+                        self.current_author = AtomPerson::new("");
+                        if self.in_entry {
+                            self.in_author = true;
+                        } else {
+                            self.in_feed_author = true;
+                        }
+                        Ok(Action::Continue)
+                    }
+                    "contributor" if !self.in_source => {
+                        self.current_contributor = AtomPerson::new("");
+                        if self.in_entry {
+                            self.in_contributor = true;
+                        } else {
+                            self.in_feed_contributor = true;
+                        }
+                        Ok(Action::Continue)
+                    }
+                    "source" if self.in_entry && !self.in_source => {
+                        self.in_source = true;
+                        self.current_source = AtomSource {
+                            id: None,
+                            title: None,
+                            updated: None,
+                        };
+                        Ok(Action::Continue)
+                    }
+                    "link" if !self.in_source => {
+                        let link = atom_link_from_attrs(&e);
+                        if self.in_entry {
+                            self.current_entry.links.push(link);
+                        } else {
+                            self.header.links.push(link);
+                        }
+                        Ok(Action::Continue)
+                    }
+                    "category" if !self.in_source => {
+                        let cat = atom_category_from_attrs(&e);
+                        if self.in_entry {
+                            self.current_entry.categories.push(cat);
+                        } else {
+                            self.header.categories.push(cat);
+                        }
+                        Ok(Action::Continue)
+                    }
+                    "title" => {
+                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        drop(e);
+                        self.start_typed_text("title", t).await
+                    }
+                    "summary" if self.in_entry => {
+                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        drop(e);
+                        self.start_typed_text("summary", t).await
+                    }
+                    "content" if self.in_entry && !self.in_source => {
+                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        drop(e);
+                        self.start_typed_text("content", t).await
+                    }
+                    "rights" => {
+                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        drop(e);
+                        self.start_typed_text("rights", t).await
+                    }
+                    "subtitle" if !self.in_entry => {
+                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        drop(e);
+                        self.start_typed_text("subtitle", t).await
+                    }
+                    "generator" if !self.in_source => {
+                        self.pending_generator = Some(AtomGenerator {
+                            value: String::new(),
+                            uri: attr_value(&e, b"uri"),
+                            version: attr_value(&e, b"version"),
+                        });
+                        Ok(Action::Continue)
+                    }
+                    _ => Ok(Action::Continue),
+                }
+            }
+            Event::Empty(e) => {
+                let ns = classify_ns(&rr);
+                let local_name = e.local_name();
+                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+
+                let consumed = if self.in_entry {
+                    self.entry_acc.on_empty(ns, local, &e)
+                } else {
+                    self.feed_acc.on_empty(ns, local, &e)
+                };
+                if consumed || ns != Ns::Atom {
+                    return Ok(Action::Continue);
+                }
+                match local {
+                    "link" if !self.in_source => {
+                        let link = atom_link_from_attrs(&e);
+                        if self.in_entry {
+                            self.current_entry.links.push(link);
+                        } else {
+                            self.header.links.push(link);
+                        }
+                    }
+                    "category" if !self.in_source => {
+                        let cat = atom_category_from_attrs(&e);
+                        if self.in_entry {
+                            self.current_entry.categories.push(cat);
+                        } else {
+                            self.header.categories.push(cat);
+                        }
+                    }
+                    "content" if self.in_entry && !self.in_source => {
+                        // Out-of-line <content src=".." type=".."/>
+                        if let Some(src) = attr_value(&e, b"src") {
+                            let type_ = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                            self.current_entry.content = Some(AtomContent {
+                                value: AtomText::Text(type_),
+                                src: Some(src),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(Action::Continue)
+            }
+            Event::Text(e) => {
+                match e.unescape() {
+                    Ok(t) => self.text_buf.push_str(&t),
+                    Err(err) => {
+                        if self.strict {
+                            return Err(FeedParseError::new(format!(
+                                "invalid text content: {err}"
+                            )));
+                        }
+                        tracing::debug!("atom stream unescape error (lenient): {err}");
+                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    }
+                }
+                Ok(Action::Continue)
+            }
+            Event::CData(e) => {
+                match std::str::from_utf8(e.as_ref()) {
+                    Ok(t) => self.text_buf.push_str(t),
+                    Err(err) => {
+                        if self.strict {
+                            return Err(FeedParseError::new(format!("invalid CDATA: {err}")));
+                        }
+                        tracing::debug!("atom stream CDATA utf8 error (lenient): {err}");
+                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    }
+                }
+                Ok(Action::Continue)
+            }
+            Event::End(e) => {
+                self.depth -= 1;
+                let local = std::str::from_utf8(e.local_name().as_ref())
+                    .map(str::to_owned)
+                    .unwrap_or_default();
+                let ns = classify_ns(&rr);
+                let text = std::mem::take(&mut self.text_buf);
+                drop(e);
+                self.handle_end(ns, &local, text)
+            }
+            Event::Eof => {
+                if self.strict && self.depth > 0 {
+                    return Err(FeedParseError::new(format!(
+                        "truncated Atom document ({} unclosed elements at EOF)",
+                        self.depth
+                    )));
+                }
+                Ok(Action::Eof)
+            }
+            _ => Ok(Action::Continue),
         }
+    }
 
-        if !header_yielded {
-            let mut h = std::mem::take(&mut header);
-            h.extensions = std::mem::take(&mut feed_acc).finish();
-            yielder.yield_item(Ok(AtomReadEvent::Feed(h))).await;
+    /// Common entry point for the typed text constructs (title/summary/
+    /// content/rights/subtitle). If type is `xhtml`, captures the inner
+    /// subtree directly; otherwise records the type and lets the End handler
+    /// finalise it from `text_buf`.
+    async fn start_typed_text(
+        &mut self,
+        which: &'static str,
+        t: String,
+    ) -> Result<Action, FeedParseError> {
+        if t == "xhtml" {
+            let xml = capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf).await?;
+            self.depth -= 1;
+            match which {
+                "title" => {
+                    if self.in_entry {
+                        self.current_entry.title = AtomText::Xhtml(xml);
+                        self.current_entry_title_set = true;
+                    } else {
+                        self.header.title = AtomText::Xhtml(xml);
+                    }
+                }
+                "summary" => {
+                    self.current_entry.summary = Some(AtomText::Xhtml(xml));
+                }
+                "content" => {
+                    self.current_entry.content = Some(AtomContent {
+                        value: AtomText::Xhtml(xml),
+                        src: None,
+                    });
+                }
+                "rights" => {
+                    if self.in_entry {
+                        self.current_entry.rights = Some(AtomText::Xhtml(xml));
+                    } else {
+                        self.header.rights = Some(AtomText::Xhtml(xml));
+                    }
+                }
+                "subtitle" => {
+                    self.header.subtitle = Some(AtomText::Xhtml(xml));
+                }
+                _ => {}
+            }
+            return Ok(Action::Continue);
         }
-        yielder.yield_item(Ok(AtomReadEvent::Eof)).await;
-    })
-}
+        match which {
+            "title" => self.current_title_type = t,
+            "summary" => self.current_summary_type = t,
+            "content" => self.current_content_type = t,
+            "rights" => self.current_rights_type = t,
+            "subtitle" => self.current_subtitle_type = t,
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
 
-fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
-    AtomLink {
-        href: attr_value(e, b"href").unwrap_or_default(),
-        rel: attr_value(e, b"rel"),
-        type_: attr_value(e, b"type"),
-        hreflang: attr_value(e, b"hreflang"),
-        title: attr_value(e, b"title"),
-        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
+    fn handle_end(&mut self, ns: Ns, local: &str, text: String) -> Result<Action, FeedParseError> {
+        // Author / contributor sub-elements: shallow finalisation.
+        if self.in_author && ns == Ns::Atom {
+            return Ok(self.handle_person_end(local, text, &PersonKind::EntryAuthor));
+        }
+        if self.in_feed_author && ns == Ns::Atom {
+            return Ok(self.handle_person_end(local, text, &PersonKind::FeedAuthor));
+        }
+        if self.in_contributor && ns == Ns::Atom {
+            return Ok(self.handle_person_end(local, text, &PersonKind::EntryContributor));
+        }
+        if self.in_feed_contributor && ns == Ns::Atom {
+            return Ok(self.handle_person_end(local, text, &PersonKind::FeedContributor));
+        }
+        // Source sub-elements: route into current_source, then close on </source>.
+        if self.in_source && ns == Ns::Atom {
+            match local {
+                "id" => self.current_source.id = Some(text),
+                "title" => {
+                    self.current_source.title =
+                        Some(make_atom_text(&self.current_title_type, text));
+                }
+                "updated" => self.current_source.updated = parse_rfc3339_lax(&text),
+                "source" => {
+                    self.in_source = false;
+                    let source = std::mem::replace(
+                        &mut self.current_source,
+                        AtomSource {
+                            id: None,
+                            title: None,
+                            updated: None,
+                        },
+                    );
+                    self.current_entry.source = Some(source);
+                }
+                _ => {}
+            }
+            return Ok(Action::Continue);
+        }
+        // Entry-level core elements.
+        if self.in_entry {
+            let Some(text) = self.entry_acc.on_end(ns, local, text) else {
+                return Ok(Action::Continue);
+            };
+            if ns != Ns::Atom {
+                return Ok(Action::Continue);
+            }
+            match local {
+                "id" => {
+                    self.current_entry.id = text;
+                    self.current_entry_id_set = true;
+                }
+                "title" => {
+                    self.current_entry.title = make_atom_text(&self.current_title_type, text);
+                    self.current_entry_title_set = true;
+                }
+                "updated" => {
+                    if let Some(ts) = parse_rfc3339_lax(&text) {
+                        self.current_entry.updated = ts;
+                        self.current_entry_updated_parsed = true;
+                    }
+                }
+                "published" => self.current_entry.published = parse_rfc3339_lax(&text),
+                "summary" => {
+                    self.current_entry.summary =
+                        Some(make_atom_text(&self.current_summary_type, text));
+                }
+                "content" => {
+                    self.current_entry.content = Some(AtomContent {
+                        value: make_atom_text(&self.current_content_type, text),
+                        src: None,
+                    });
+                }
+                "rights" => {
+                    self.current_entry.rights =
+                        Some(make_atom_text(&self.current_rights_type, text));
+                }
+                "entry" => {
+                    if self.strict {
+                        if !self.current_entry_id_set {
+                            return Err(FeedParseError::new("Atom entry missing required <id>"));
+                        }
+                        if !self.current_entry_title_set {
+                            return Err(FeedParseError::new("Atom entry missing required <title>"));
+                        }
+                        if !self.current_entry_updated_parsed {
+                            return Err(FeedParseError::new(
+                                "Atom entry missing required <updated>",
+                            ));
+                        }
+                    }
+                    self.current_entry.extensions = std::mem::take(&mut self.entry_acc).finish();
+                    let entry = std::mem::replace(
+                        &mut self.current_entry,
+                        AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH),
+                    );
+                    self.in_entry = false;
+                    return Ok(Action::EntryFinished(Box::new(entry)));
+                }
+                _ => {}
+            }
+            return Ok(Action::Continue);
+        }
+        // Feed-level core elements.
+        let Some(text) = self.feed_acc.on_end(ns, local, text) else {
+            return Ok(Action::Continue);
+        };
+        if ns != Ns::Atom {
+            return Ok(Action::Continue);
+        }
+        match local {
+            "id" => self.header.id = text,
+            "title" => self.header.title = make_atom_text(&self.current_title_type, text),
+            "updated" => {
+                if let Some(ts) = parse_rfc3339_lax(&text) {
+                    self.header.updated = ts;
+                    self.feed_updated_parsed = true;
+                }
+            }
+            "subtitle" => {
+                self.header.subtitle = Some(make_atom_text(&self.current_subtitle_type, text));
+            }
+            "rights" => {
+                self.header.rights = Some(make_atom_text(&self.current_rights_type, text));
+            }
+            "logo" => self.header.logo = Some(text),
+            "icon" => self.header.icon = Some(text),
+            "generator" => {
+                if let Some(mut g) = self.pending_generator.take() {
+                    g.value = text;
+                    self.header.generator = Some(g);
+                }
+            }
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
+
+    fn handle_person_end(&mut self, local: &str, text: String, kind: &PersonKind) -> Action {
+        let person = match kind {
+            PersonKind::EntryAuthor | PersonKind::FeedAuthor => &mut self.current_author,
+            PersonKind::EntryContributor | PersonKind::FeedContributor => {
+                &mut self.current_contributor
+            }
+        };
+        match local {
+            "name" => person.name = text,
+            "email" => person.email = Some(text),
+            "uri" => person.uri = Some(text),
+            "author" | "contributor" => {
+                let finalised = std::mem::replace(person, AtomPerson::new(""));
+                match kind {
+                    PersonKind::EntryAuthor => {
+                        self.current_entry.authors.push(finalised);
+                        self.in_author = false;
+                    }
+                    PersonKind::FeedAuthor => {
+                        self.header.authors.push(finalised);
+                        self.in_feed_author = false;
+                    }
+                    PersonKind::EntryContributor => {
+                        self.current_entry.contributors.push(finalised);
+                        self.in_contributor = false;
+                    }
+                    PersonKind::FeedContributor => {
+                        self.header.contributors.push(finalised);
+                        self.in_feed_contributor = false;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Action::Continue
     }
 }
 
-fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
-    AtomCategory {
-        term: attr_value(e, b"term").unwrap_or_default(),
-        scheme: attr_value(e, b"scheme"),
-        label: attr_value(e, b"label"),
-    }
+enum PersonKind {
+    EntryAuthor,
+    FeedAuthor,
+    EntryContributor,
+    FeedContributor,
 }
 
-fn make_atom_text(type_attr: &str, value: String) -> AtomText {
-    match type_attr {
-        "html" | "text/html" => AtomText::Html(value),
-        "xhtml" => AtomText::Xhtml(value),
-        _ => AtomText::Text(value),
-    }
-}
+// ---------------------------------------------------------------------------
+// XHTML subtree capture (preserved from the previous implementation).
+// ---------------------------------------------------------------------------
 
-fn parse_rfc3339_lax(s: &str) -> Option<Timestamp> {
-    s.trim().parse::<Timestamp>().ok()
-}
-
-/// Async sibling of `parse::atom1::capture_xhtml_subtree`. Reads events from
-/// `nsr` and re-emits Start/End/Empty/Text/CData/Comment into an internal
-/// buffer until the matching End of the caller's currently-open element. The
-/// first child Start (the wrapping XHTML `<div>` per RFC 4287 §3.1.1.3) and
-/// its closing End are dropped so the captured string matches what
-/// [`super::super::atom::AtomText::Xhtml`] expects (raw inner markup, which
-/// the writer re-wraps in `<div xmlns="…xhtml">`).
+/// Consume events from `nsr` until the matching End closes the enclosing
+/// `type="xhtml"` element, re-emitting child events into a string buffer.
+/// The single wrapping `<div xmlns="...xhtml">` and its closing End are
+/// stripped so the captured string is the raw inner markup the writer expects.
 async fn capture_xhtml_subtree_async<R>(
     nsr: &mut NsReader<R>,
     buf: &mut Vec<u8>,
@@ -714,12 +845,10 @@ where
     let mut writer = Writer::new(&mut captured);
     loop {
         buf.clear();
-        let (_, ev) =
-            nsr.read_resolved_event_into_async(buf)
-                .await
-                .map_err(|e| FeedParseError {
-                    message: format!("xhtml capture: {e}"),
-                })?;
+        let (_, ev) = nsr
+            .read_resolved_event_into_async(buf)
+            .await
+            .map_err(|e| FeedParseError::new(format!("xhtml capture: {e}")))?;
         match ev {
             Event::Start(e) => {
                 if depth == 0 && !saw_wrapper && e.local_name().as_ref() == b"div" {
@@ -729,16 +858,14 @@ where
                     depth += 1;
                     writer
                         .write_event(Event::Start(e))
-                        .map_err(|err| FeedParseError {
-                            message: format!("xhtml write: {err}"),
-                        })?;
+                        .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
                 }
             }
             Event::End(e) => {
                 if depth == 0 {
                     drop(writer);
-                    return String::from_utf8(captured).map_err(|err| FeedParseError {
-                        message: format!("xhtml inner is not utf-8: {err}"),
+                    return String::from_utf8(captured).map_err(|err| {
+                        FeedParseError::new(format!("xhtml inner is not utf-8: {err}"))
                     });
                 }
                 depth -= 1;
@@ -747,41 +874,23 @@ where
                 } else {
                     writer
                         .write_event(Event::End(e))
-                        .map_err(|err| FeedParseError {
-                            message: format!("xhtml write: {err}"),
-                        })?;
+                        .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
                 }
             }
-            Event::Empty(e) => {
-                writer
-                    .write_event(Event::Empty(e))
-                    .map_err(|err| FeedParseError {
-                        message: format!("xhtml write: {err}"),
-                    })?
-            }
+            Event::Empty(e) => writer
+                .write_event(Event::Empty(e))
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Text(e) => writer
                 .write_event(Event::Text(e))
-                .map_err(|err| FeedParseError {
-                    message: format!("xhtml write: {err}"),
-                })?,
-            Event::CData(e) => {
-                writer
-                    .write_event(Event::CData(e))
-                    .map_err(|err| FeedParseError {
-                        message: format!("xhtml write: {err}"),
-                    })?
-            }
-            Event::Comment(e) => {
-                writer
-                    .write_event(Event::Comment(e))
-                    .map_err(|err| FeedParseError {
-                        message: format!("xhtml write: {err}"),
-                    })?
-            }
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
+            Event::CData(e) => writer
+                .write_event(Event::CData(e))
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
+            Event::Comment(e) => writer
+                .write_event(Event::Comment(e))
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Eof => {
-                return Err(FeedParseError {
-                    message: "unexpected EOF in xhtml content".to_owned(),
-                });
+                return Err(FeedParseError::new("unexpected EOF in xhtml content"));
             }
             // DocType / PI / Decl are not legal inside Atom xhtml content; drop.
             _ => {}

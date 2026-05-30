@@ -28,8 +28,10 @@
 //!
 //! ## Parsing feeds
 //!
-//! Use [`Feed::from_body`] on the client side or [`Feed::parse`] /
-//! [`Feed::parse_strict`] for in-process parsing.
+//! Use [`Feed::from_body`] (or [`FeedStream::from_body`] for true streaming
+//! item-by-item processing) to parse a feed from an HTTP response. There is
+//! no sync top-level parser — everything goes through the async streaming
+//! reader.
 //!
 //! ## Streaming
 //!
@@ -45,16 +47,20 @@
 pub mod feed_ext;
 
 mod atom;
+mod error;
 mod ext_parse;
 mod ext_write;
 mod feed;
 mod ns;
-mod parse;
+mod parse_util;
 mod read;
 mod rss2;
 mod ser;
 mod stream;
 
+pub use error::{
+    AtomCollectError, CollectError, FeedCollectError, FeedParseError, Rss2CollectError,
+};
 pub use read::{AtomFeedStream, AtomHeader, FeedStream, Rss2Channel, Rss2FeedStream};
 
 // ---------------------------------------------------------------------------
@@ -80,7 +86,6 @@ pub use atom::{
 // ---------------------------------------------------------------------------
 
 pub use feed::Feed;
-pub use parse::FeedParseError;
 pub use stream::{AtomFeedMeta, AtomStreamWriter, Rss2FeedMeta, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------

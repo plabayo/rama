@@ -52,9 +52,9 @@ Rama gives you:
   needed and CDATA properly escaped (including the `]]>` case that breaks naive
   emitters).
 - **Lenient parsing by default, strict opt-in.** Unknown elements are skipped;
-  malformed entities and missing required fields are tolerated. Switch to
-  `Feed::parse_strict` / `Feed::from_body_strict` to surface the underlying
-  structural violation instead.
+  malformed entities and missing required fields are tolerated. A strict mode
+  is available on every reader entry point for the cases where you'd rather
+  see the structural violation than silently absorb it.
 - **Lossless round-trip** for both formats across all supported extensions.
   Parse → mutate → re-serialize is the proxy/aggregator case and is a first-class
   goal: every field the writer emits, the parser reads back.
@@ -62,11 +62,18 @@ Rama gives you:
   namespace URI rather than by literal prefix, so a feed declaring
   `xmlns:pod="https://podcastindex.org/namespace/1.0"` is parsed identically
   to one using the conventional `xmlns:podcast`.
-- **Streaming-first writers.** `Rss2StreamWriter` / `AtomStreamWriter` take a
-  `Stream` of items and emit XML incrementally so a server can produce a feed
-  of arbitrary size with bounded memory. The in-memory `Rss2Feed::to_xml` /
-  `AtomFeed::to_xml` paths are convenience adapters that collect the same
-  stream.
+- **Streaming-first, both directions.** Reading and writing both treat the
+  feed as a header followed by an async stream of items. On the read side the
+  channel/feed header is parsed up front and inspectable before any item is
+  pulled, so a consumer can decide whether to keep going (or to apply a filter)
+  without first buffering the whole document. On the write side a `Stream` of
+  items is serialized incrementally, so a server can emit a feed of arbitrary
+  size with bounded memory. The in-memory whole-feed adapters are thin
+  conveniences on top of the same streams.
+- **Partial results on failure.** If an item partway through a feed fails to
+  parse, the error carries the header and every item that succeeded before it,
+  so a client doesn't lose the rest of a long feed to one bad entry. A lossy
+  drain variant is also provided for the common "skip and keep going" case.
 - **A format-agnostic `Feed` umbrella** for callers that want to consume a feed
   without caring whether the upstream chose RSS or Atom.
 - **`IntoResponse` impls** so a handler can return a built feed directly and
@@ -97,7 +104,10 @@ The same API serves three distinct callers:
   a feed from the wire and parse it. Default leniency is what you want here —
   third-party feeds in the wild are routinely a little off-spec and the right
   behaviour is to skip what you don't understand, not to reject the whole
-  document.
+  document. The streaming reader lets you inspect the channel header before
+  committing to the rest of the feed and lets you discard items as they're
+  produced, which keeps memory bounded for very large podcast or aggregator
+  feeds.
 - **Proxies** (MITM tooling, transformation gateways, ad-injection pipelines)
   parse a feed, mutate it, and re-serialize. Lossless round-trip is the
   property that makes this safe — anything the proxy doesn't touch must come

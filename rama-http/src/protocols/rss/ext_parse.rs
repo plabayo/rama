@@ -20,7 +20,7 @@ use super::feed_ext::{
     PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
     PodcastSoundbite, PodcastTrailer, PodcastTranscript,
 };
-use super::parse::{Attrs, attr_value, parse_rss2_date};
+use super::parse_util::{Attrs, attr_value, parse_rss2_date};
 
 /// Recognised XML namespaces. Anything outside this set is treated as unknown
 /// and ignored by the accumulators.
