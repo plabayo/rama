@@ -337,22 +337,54 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(h.terminalCount, 1)
     }
 
-    /// `acceptClientCarryover` AFTER the direction has already
-    /// transitioned to `.active` is a no-op — the read loop is
-    /// already pulling from the kernel, and routing additional
-    /// carryover would put bytes out of order. Defensive guard.
-    func testAcceptCarryoverAfterActiveIsIgnored() {
-        let h = Harness("late.carryover")
-        h.forwarder.markRustC2SDone()
-        h.drain()
+    /// `acceptClientCarryover` may fire AFTER the direction has
+    /// transitioned to `.active` — the old read pump's
+    /// `cancelForPromote` and the engine's `markRustC2SDone` race,
+    /// and `markClientReadDrained` (the barrier that flips
+    /// `c2sReadDrained = true`) only fires once the pump's
+    /// onComplete reports it idle, which happens AFTER any
+    /// final carryover payloads. The forwarder must enqueue the
+    /// late chunk through the same path as the buffered ones so
+    /// FIFO order is preserved relative to anything already
+    /// flushed to the egress pump.
+    ///
+    /// `preDrained: false` mirrors that production order: the
+    /// read-drained barrier has NOT yet fired when the late
+    /// carryover lands.
+    func testAcceptCarryoverAfterActiveIsEnqueuedInOrder() {
+        let h = Harness("late.carryover", preDrained: false)
+        let earlyChunk = Data([0x11, 0x22])
+        let lateChunk = Data([0xFF, 0xFE])
 
-        // Try to inject after .active. Should be ignored — no
-        // extra send to the connection should happen.
-        let initialSends = h.conn.sentChunks.count
-        h.forwarder.acceptClientCarryover(Data([0xFF, 0xFE]))
+        // Pre-active chunk: parked in `c2sBuffer` until transition.
+        h.forwarder.acceptClientCarryover(earlyChunk)
         h.drain()
-        XCTAssertEqual(h.conn.sentChunks.count, initialSends,
-            "late carryover must not be enqueued")
+        XCTAssertEqual(h.conn.sentChunks.count, 0,
+            "buffered carryover must not flush before `.active`")
+
+        // Transition to `.active`: flushes `c2sBuffer` to the
+        // egress pump.
+        h.forwarder.markRustC2SDone()
+        waitFor("early chunk dispatched", timeout: 2.0) {
+            h.conn.sentChunks.contains { $0.content == earlyChunk }
+        }
+
+        // Late carryover (sink fires after `.active`): goes via
+        // `writeC2SLocked` and must arrive at the connection
+        // strictly after the early chunk.
+        h.forwarder.acceptClientCarryover(lateChunk)
+        waitFor("late chunk dispatched", timeout: 2.0) {
+            h.conn.sentChunks.contains { $0.content == lateChunk }
+        }
+
+        let earlyIdx = h.conn.sentChunks.firstIndex { $0.content == earlyChunk }
+        let lateIdx = h.conn.sentChunks.firstIndex { $0.content == lateChunk }
+        XCTAssertNotNil(earlyIdx)
+        XCTAssertNotNil(lateIdx)
+        if let e = earlyIdx, let l = lateIdx {
+            XCTAssertLessThan(e, l,
+                "late carryover must land after the buffered carryover")
+        }
     }
 
     // MARK: - Multi-chunk FIFO flush ordering
