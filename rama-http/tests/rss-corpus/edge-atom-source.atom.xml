@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: Atom entry with an embedded <source> element. RFC 4287 §4.2.11:
+     `<source>` carries the *origin* feed's metadata when an entry was taken
+     from elsewhere (aggregator/re-publish). Its child <id>/<title>/<updated>/
+     <author>/<link>/<category> describe the SOURCE, not the entry — they must
+     not leak into the enclosing entry's id/title/updated/authors/links/etc. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>https://aggregator.example.com/feed</id>
+  <title>Aggregator</title>
+  <updated>2025-05-12T09:00:00Z</updated>
+  <entry>
+    <id>https://aggregator.example.com/republished/1</id>
+    <title>Republished Post</title>
+    <updated>2025-05-12T09:00:00Z</updated>
+    <author><name>EntryAuthor</name></author>
+    <link rel="alternate" href="https://aggregator.example.com/republished/1"/>
+    <summary>An entry quoted from another feed.</summary>
+    <source>
+      <id>https://origin.example.com/feed</id>
+      <title>Origin Blog</title>
+      <updated>2025-05-11T08:00:00Z</updated>
+      <author><name>SourceAuthor</name></author>
+      <link rel="alternate" href="https://origin.example.com/"/>
+      <category term="origin-cat"/>
+    </source>
+  </entry>
+</feed>

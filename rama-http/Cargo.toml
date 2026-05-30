@@ -84,6 +84,8 @@ brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
+quickcheck = { workspace = true }
+quickcheck_macros = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

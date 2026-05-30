@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Example Pod</title>
+    <link>https://example.com/podcast</link>
+    <description>A weekly show.</description>
+    <language>en</language>
+    <generator>rama / example</generator>
+    <atom:link rel="self" href="https://example.com/podcast/feed.rss" type="application/rss+xml"/>
+    <itunes:author>Alice &amp; Bob</itunes:author>
+    <itunes:summary>Episodes about systems engineering.</itunes:summary>
+    <itunes:type>episodic</itunes:type>
+    <itunes:explicit>false</itunes:explicit>
+    <itunes:image href="https://example.com/podcast/cover.jpg"/>
+    <itunes:category text="Technology"/>
+    <itunes:category text="Software How-To"/>
+    <itunes:owner>
+      <itunes:name>Alice</itunes:name>
+      <itunes:email>alice@example.com</itunes:email>
+    </itunes:owner>
+    <itunes:new-feed-url>https://example.com/podcast/v2/feed.rss</itunes:new-feed-url>
+    <itunes:block>No</itunes:block>
+    <itunes:complete>No</itunes:complete>
+    <item>
+      <title>Episode 1 — Hello</title>
+      <link>https://example.com/podcast/1</link>
+      <description>Pilot episode.</description>
+      <guid isPermaLink="true">https://example.com/podcast/1</guid>
+      <pubDate>Mon, 12 May 2025 09:00:00 GMT</pubDate>
+      <enclosure url="https://cdn.example.com/ep1.mp3?token=a&amp;b=2" length="48000000" type="audio/mpeg"/>
+      <itunes:title>Hello</itunes:title>
+      <itunes:duration>30:14</itunes:duration>
+      <itunes:episode>1</itunes:episode>
+      <itunes:season>1</itunes:season>
+      <itunes:episodeType>full</itunes:episodeType>
+      <itunes:explicit>false</itunes:explicit>
+      <itunes:keywords>intro,welcome</itunes:keywords>
+      <content:encoded><![CDATA[<p>Show notes for <b>episode 1</b>.</p>]]></content:encoded>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: Atom entry whose <content>/<summary>/<rights> are
+     `type="xhtml"` — i.e. their inner content is a real XHTML subtree wrapped
+     in a single `<div xmlns="http://www.w3.org/1999/xhtml">` (RFC 4287
+     §3.1.1.3), not flat text. Parser must capture the subtree, not just the
+     concatenated #PCDATA. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:xhtml-feed</id>
+  <title>XHTML Test</title>
+  <updated>2025-05-12T09:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:xhtml-entry-1</id>
+    <title type="text">XHTML content example</title>
+    <updated>2025-05-12T09:00:00Z</updated>
+    <summary type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>This is <em>real</em> markup, not escaped text.</p>
+      </div>
+    </summary>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>Inside the content, <strong>also</strong> real markup.</p>
+        <ul>
+          <li>One</li>
+          <li>Two</li>
+        </ul>
+      </div>
+    </content>
+    <rights type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>© <a href="https://example.com/">Example</a> 2025</p>
+      </div>
+    </rights>
+  </entry>
+</feed>

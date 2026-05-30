@@ -29,7 +29,9 @@ impl AtomText {
         Self::Xhtml(s.into())
     }
 
-    pub(crate) fn type_attr(&self) -> &'static str {
+    /// The Atom `type=` attribute value (`text`/`html`/`xhtml`) for this construct.
+    #[must_use]
+    pub fn type_attr(&self) -> &'static str {
         match self {
             Self::Text(_) => "text",
             Self::Html(_) => "html",
@@ -37,7 +39,10 @@ impl AtomText {
         }
     }
 
-    pub(crate) fn value(&self) -> &str {
+    /// The inner string regardless of variant. For `Xhtml` this is the raw
+    /// inner XML (with the wrapping `<div>` stripped).
+    #[must_use]
+    pub fn value(&self) -> &str {
         match self {
             Self::Text(s) | Self::Html(s) | Self::Xhtml(s) => s,
         }

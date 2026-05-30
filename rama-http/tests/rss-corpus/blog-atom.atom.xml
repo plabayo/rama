@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:6e95a2c8-9d5e-4f9f-9b6f-21f7d5b1f9aa</id>
+  <title type="text">Example Blog</title>
+  <updated>2025-05-12T09:00:00Z</updated>
+  <author>
+    <name>Alice</name>
+    <email>alice@example.com</email>
+  </author>
+  <link rel="self" href="https://example.com/feed.atom" type="application/atom+xml"/>
+  <link rel="alternate" href="https://example.com/" type="text/html"/>
+  <subtitle type="text">Posts about distributed systems and Rust.</subtitle>
+  <generator uri="https://example.com/" version="1.0">ExamplePub</generator>
+  <icon>https://example.com/icon.png</icon>
+  <logo>https://example.com/logo.png</logo>
+  <rights type="text">CC BY 4.0</rights>
+  <entry>
+    <id>urn:uuid:9c5e1ed5-7d4c-4d8b-9d5f-1d0e44ce9b88</id>
+    <title type="text">Hello, world</title>
+    <updated>2025-05-12T09:00:00Z</updated>
+    <published>2025-05-10T08:30:00Z</published>
+    <author><name>Alice</name></author>
+    <link rel="alternate" href="https://example.com/posts/hello" type="text/html" hreflang="en" title="Hello, world"/>
+    <category term="meta" scheme="https://example.com/tags" label="Meta"/>
+    <summary type="text">A first post.</summary>
+    <content type="html">&lt;p&gt;Hello &lt;strong&gt;world&lt;/strong&gt;.&lt;/p&gt;</content>
+  </entry>
+</feed>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Example Blog</title>
+    <link>https://example.com/</link>
+    <description>The shortest legal RSS 2.0 channel — title/link/description plus one item.</description>
+    <language>en-us</language>
+    <pubDate>Mon, 12 May 2025 09:00:00 GMT</pubDate>
+    <item>
+      <title>Hello, world</title>
+      <link>https://example.com/posts/hello</link>
+      <description>A first post.</description>
+      <guid isPermaLink="true">https://example.com/posts/hello</guid>
+      <pubDate>Mon, 12 May 2025 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
