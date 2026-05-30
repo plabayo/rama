@@ -63,7 +63,7 @@ multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-quick-xml = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true, features = ["async-tokio"] }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }

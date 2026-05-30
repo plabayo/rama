@@ -204,6 +204,139 @@ fn nonstandard_podcast_prefix_routes_by_uri() {
     assert_eq!(p.persons[0].name, "Alice");
 }
 
+/// Drive every fixture through the **async streaming reader** + `collect_*`
+/// adapter and assert it produces the same model as the sync `Feed::parse`.
+/// This is the property a `Feed::from_body` caller (and `Rss2Feed::to_byte_stream`
+/// round-trip) depend on.
+#[tokio::test]
+async fn corpus_streaming_reader_matches_sync_parser() {
+    use rama_http::protocols::rss::{AtomFeedStream, Rss2FeedStream};
+
+    for path in corpus_files() {
+        let xml = load(&path);
+        let sync = Feed::parse(&xml).unwrap();
+        let cursor = std::io::Cursor::new(xml.into_bytes());
+        let buf = tokio::io::BufReader::new(cursor);
+        let streamed = match &sync {
+            Feed::Rss2(_) => Feed::Rss2(
+                Rss2FeedStream::new(buf)
+                    .await
+                    .unwrap_or_else(|err| panic!("{}: streaming RSS new: {err}", name(&path)))
+                    .collect()
+                    .await
+                    .unwrap_or_else(|err| panic!("{}: streaming RSS collect: {err}", name(&path))),
+            ),
+            Feed::Atom(_) => Feed::Atom(
+                AtomFeedStream::new(buf)
+                    .await
+                    .unwrap_or_else(|err| panic!("{}: streaming Atom new: {err}", name(&path)))
+                    .collect()
+                    .await
+                    .unwrap_or_else(|err| panic!("{}: streaming Atom collect: {err}", name(&path))),
+            ),
+        };
+        assert_eq!(
+            sync,
+            streamed,
+            "{}: streaming reader and sync parser produced different models",
+            name(&path)
+        );
+    }
+}
+
+/// `Rss2FeedStream::channel` / `AtomFeedStream::header` must expose the parsed
+/// header *before* any item is read, and `drain` must split into
+/// `(header, items)` exactly the way the docs promise.
+#[tokio::test]
+async fn typed_stream_header_visible_before_items_and_drain_works() {
+    use rama_core::futures::StreamExt as _;
+    use rama_http::protocols::rss::{AtomFeedStream, FeedStream, Rss2FeedStream};
+
+    // RSS path: prove `.channel()` returns the title before any item is read.
+    let xml = load(&corpus_dir().join("podcast-itunes.rss.xml"));
+    let buf = tokio::io::BufReader::new(std::io::Cursor::new(xml.into_bytes()));
+    let s = Rss2FeedStream::new(buf).await.unwrap();
+    assert_eq!(s.channel().title, "Example Pod");
+    let (channel, mut items) = s.drain();
+    assert_eq!(channel.title, "Example Pod");
+    let first = items.next().await.unwrap().unwrap();
+    assert_eq!(first.title.as_deref(), Some("Episode 1 \u{2014} Hello"));
+    // Atom path.
+    let xml = load(&corpus_dir().join("blog-atom.atom.xml"));
+    let buf = tokio::io::BufReader::new(std::io::Cursor::new(xml.into_bytes()));
+    let s = AtomFeedStream::new(buf).await.unwrap();
+    assert_eq!(s.header().title.value(), "Example Blog");
+    let (header, mut entries) = s.drain();
+    assert_eq!(header.id, "urn:uuid:6e95a2c8-9d5e-4f9f-9b6f-21f7d5b1f9aa");
+    let first = entries.next().await.unwrap().unwrap();
+    assert_eq!(first.title.value(), "Hello, world");
+    // Umbrella FeedStream over an arbitrary corpus file.
+    let xml = load(&corpus_dir().join("podcast-v2.rss.xml"));
+    let body = rama_http::Body::from(xml.into_bytes());
+    let umbrella = FeedStream::from_body(body).await.unwrap();
+    let feed = umbrella.collect().await.unwrap();
+    assert!(matches!(feed, Feed::Rss2(_)));
+}
+
+/// `Feed::from_body` must produce the same model as `Feed::parse(&str)` for
+/// every fixture. Exercises the new stream-first body parser end-to-end.
+#[tokio::test]
+async fn from_body_matches_sync_parse_on_corpus() {
+    use rama_http::Body;
+
+    for path in corpus_files() {
+        let xml = load(&path);
+        let sync = Feed::parse(&xml).unwrap();
+        let body = Body::from(xml.into_bytes());
+        let via_body = Feed::from_body(body)
+            .await
+            .unwrap_or_else(|err| panic!("{}: from_body: {err}", name(&path)));
+        assert_eq!(
+            sync,
+            via_body,
+            "{}: from_body produced a different model than sync parse",
+            name(&path)
+        );
+    }
+}
+
+/// `Rss2Feed::to_byte_stream` / `AtomFeed::to_byte_stream` must produce the
+/// same byte sequence (modulo chunk boundaries) as `to_xml()`.
+#[tokio::test]
+async fn to_byte_stream_matches_to_xml() {
+    use rama_core::futures::StreamExt as _;
+
+    for path in corpus_files() {
+        let xml = load(&path);
+        let feed = Feed::parse(&xml).unwrap();
+        let blob = match &feed {
+            Feed::Rss2(f) => f.to_xml().unwrap(),
+            Feed::Atom(f) => f.to_xml().unwrap(),
+        };
+        let mut streamed = Vec::new();
+        let stream: std::pin::Pin<
+            Box<
+                dyn rama_core::futures::Stream<
+                        Item = Result<rama_core::bytes::Bytes, rama_core::error::BoxError>,
+                    > + Send,
+            >,
+        > = match feed {
+            Feed::Rss2(f) => Box::pin(f.to_byte_stream()),
+            Feed::Atom(f) => Box::pin(f.to_byte_stream()),
+        };
+        let mut s = stream;
+        while let Some(chunk) = s.next().await {
+            streamed.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(
+            blob,
+            streamed,
+            "{}: to_byte_stream bytes != to_xml bytes",
+            name(&path),
+        );
+    }
+}
+
 /// Multiple `<enclosure>` elements on one item must all survive the round-trip.
 #[test]
 fn multiple_enclosures_preserved() {

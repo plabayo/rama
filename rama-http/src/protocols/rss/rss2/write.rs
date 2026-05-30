@@ -13,6 +13,19 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
     w: &mut Writer<W>,
     feed: &Rss2Feed,
 ) -> Result<(), XmlWriteError> {
+    write_rss2_feed_header(w, feed)?;
+    for item in &feed.items {
+        write_rss2_item(w, item)?;
+    }
+    write_rss2_feed_footer(w)
+}
+
+/// Open `<rss>` + `<channel>` and emit all channel-level metadata + feed-level
+/// extension blocks. Stops just before items so the caller can stream them in.
+pub(in super::super) fn write_rss2_feed_header<W: std::io::Write>(
+    w: &mut Writer<W>,
+    feed: &Rss2Feed,
+) -> Result<(), XmlWriteError> {
     let mut rss_tag = BytesStart::new("rss");
     rss_tag.push_attribute(("version", "2.0"));
 
@@ -129,10 +142,14 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
         ext_write::write_dc_feed_fields(w, dc)?;
     }
 
-    for item in &feed.items {
-        write_rss2_item(w, item)?;
-    }
+    Ok(())
+}
 
+/// Close `</channel></rss>`. Pairs with [`write_rss2_feed_header`] so callers
+/// can interleave items from an external source between the two.
+pub(in super::super) fn write_rss2_feed_footer<W: std::io::Write>(
+    w: &mut Writer<W>,
+) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new("channel")))?;
     w.write_event(Event::End(BytesEnd::new("rss")))?;
     Ok(())

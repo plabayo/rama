@@ -36,26 +36,28 @@ impl Feed {
         parse_feed(input, true)
     }
 
-    /// Parse a feed from a [`Body`], consuming it entirely.
+    /// Parse a feed from a [`Body`] using the async streaming reader, so the
+    /// body is consumed chunk-by-chunk and never fully buffered into memory
+    /// for the common UTF-8 case. UTF-16 (LE/BE) byte-order marks are also
+    /// accepted; UTF-16 inputs fall back to the buffered path since the
+    /// streaming parser only consumes UTF-8 bytes.
     ///
-    /// The whole body is buffered into memory. When parsing feeds from an
-    /// untrusted source (e.g. a MITM proxy), apply a `BodyLimit` layer upstream
-    /// to cap the size and avoid unbounded allocation.
-    ///
-    /// XML 1.0 requires that processors support UTF-8 and UTF-16; this method
-    /// honours a UTF-8 / UTF-16 LE / UTF-16 BE byte-order mark before parsing
-    /// so podcast feeds emitted by vendor tooling in UTF-16 are accepted.
+    /// For defence-in-depth on untrusted feeds (MITM proxy / aggregator),
+    /// apply a `BodyLimit` layer upstream — the streaming parser is
+    /// bounded-memory per item but won't cap total document size on its own.
     pub async fn from_body(body: Body) -> Result<Self, FeedParseError> {
-        let bytes = collect_body(body).await?;
-        let text = decode_xml_body(&bytes)?;
-        Self::parse(&text)
+        super::read::FeedStream::from_body(body)
+            .await?
+            .collect()
+            .await
     }
 
-    /// Parse a feed from a [`Body`] in strict mode. See [`Self::from_body`].
+    /// Strict variant of [`Self::from_body`].
     pub async fn from_body_strict(body: Body) -> Result<Self, FeedParseError> {
-        let bytes = collect_body(body).await?;
-        let text = decode_xml_body(&bytes)?;
-        Self::parse_strict(&text)
+        super::read::FeedStream::from_body_strict(body)
+            .await?
+            .collect()
+            .await
     }
 
     /// Returns `true` if this is an RSS 2.0 feed.
@@ -122,20 +124,11 @@ impl From<AtomFeed> for Feed {
 // Body helpers
 // ---------------------------------------------------------------------------
 
-async fn collect_body(body: Body) -> Result<rama_core::bytes::Bytes, FeedParseError> {
-    use crate::body::util::BodyExt as _;
-    body.collect()
-        .await
-        .map(|c| c.to_bytes())
-        .map_err(|e| FeedParseError {
-            message: format!("read feed body: {e}"),
-        })
-}
-
-/// Decode a feed body to a UTF-8 `String`, honouring a UTF-8/UTF-16 BOM.
-/// XML 1.0 mandates UTF-8 *and* UTF-16 support, so a vendor-emitted UTF-16
-/// podcast feed is accepted in addition to the common UTF-8 case.
-fn decode_xml_body(bytes: &[u8]) -> Result<String, FeedParseError> {
+/// Decode a feed body to a UTF-8 `String`, honouring a UTF-8/UTF-16 BOM. XML
+/// 1.0 mandates UTF-8 *and* UTF-16 support, so a vendor-emitted UTF-16 podcast
+/// feed is accepted in addition to the common UTF-8 case. Used by
+/// [`super::read::FeedStream`]'s UTF-16 fallback and the lenient fallback.
+pub(super) fn decode_xml_body(bytes: &[u8]) -> Result<String, FeedParseError> {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return std::str::from_utf8(rest)
             .map(str::to_owned)

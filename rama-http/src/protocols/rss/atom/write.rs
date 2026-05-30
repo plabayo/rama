@@ -14,6 +14,19 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     w: &mut Writer<W>,
     feed: &AtomFeed,
 ) -> Result<(), XmlWriteError> {
+    write_atom_feed_header(w, feed)?;
+    for entry in &feed.entries {
+        write_atom_entry(w, entry)?;
+    }
+    write_atom_feed_footer(w)
+}
+
+/// Open `<feed>` and emit all feed-level metadata + extension blocks. Stops
+/// just before entries so the caller can stream them in.
+pub(in super::super) fn write_atom_feed_header<W: std::io::Write>(
+    w: &mut Writer<W>,
+    feed: &AtomFeed,
+) -> Result<(), XmlWriteError> {
     let mut feed_tag = BytesStart::new("feed");
     ns::push_xmlns_atom_default(&mut feed_tag);
 
@@ -90,10 +103,13 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
         ext_write::write_dc_feed_fields(w, dc)?;
     }
 
-    for entry in &feed.entries {
-        write_atom_entry(w, entry)?;
-    }
+    Ok(())
+}
 
+/// Close `</feed>`. Pairs with [`write_atom_feed_header`].
+pub(in super::super) fn write_atom_feed_footer<W: std::io::Write>(
+    w: &mut Writer<W>,
+) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new("feed")))?;
     Ok(())
 }

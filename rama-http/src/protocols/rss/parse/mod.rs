@@ -27,23 +27,25 @@ pub use error::FeedParseError;
 pub(super) use helpers::{Attrs, attr_value, parse_rss2_date};
 
 pub(super) fn parse_feed(input: &str, strict: bool) -> Result<Feed, FeedParseError> {
-    // Quick sniff for format detection before full parse.
+    // Quick sniff for format detection before full parse. RSS is checked
+    // first: RSS feeds routinely declare `xmlns:atom="…"` for `<atom:link>`,
+    // which would false-positive an Atom-first probe.
     let trimmed = input.trim_start();
-    let is_atom = detect_atom(trimmed);
-    let is_rss = !is_atom && detect_rss(trimmed);
+    let is_rss = detect_rss(trimmed);
+    let is_atom = !is_rss && detect_atom(trimmed);
 
     // Each parser reports whether it actually saw a recognized root element
     // (`<rss>`/`<channel>` or `<feed>`); without one the input is not a feed,
     // so even lenient parsing returns an error rather than an empty feed.
-    if is_atom {
-        let (feed, saw_root) = atom1::parse_atom(input, strict)?;
-        if saw_root {
-            return Ok(Feed::Atom(feed));
-        }
-    } else if is_rss {
+    if is_rss {
         let (feed, saw_root) = rss2::parse_rss2(input, strict)?;
         if saw_root {
             return Ok(Feed::Rss2(feed));
+        }
+    } else if is_atom {
+        let (feed, saw_root) = atom1::parse_atom(input, strict)?;
+        if saw_root {
+            return Ok(Feed::Atom(feed));
         }
     }
 
@@ -63,17 +65,67 @@ pub(super) fn parse_feed(input: &str, strict: bool) -> Result<Feed, FeedParseErr
     Err(FeedParseError::new("unrecognized feed format"))
 }
 
-fn detect_atom(s: &str) -> bool {
-    // Either the Atom namespace URI is declared (any prefix), or a bare
-    // `<feed>` element is present. Looking for the URI alone catches prefixed
-    // roots like `<a:feed xmlns:a="http://www.w3.org/2005/Atom">`.
-    let probe = probe_prefix(s, 2048);
-    probe.contains("w3.org/2005/Atom") || probe.contains("<feed>") || probe.contains("<feed ")
+/// Sniff whether `s` looks like an Atom 1.0 document. We look at the *first
+/// real element* (skipping `<?xml…?>`, comments and DOCTYPE) and check that
+/// its local name is `feed`. This catches both plain `<feed xmlns=…>` and a
+/// prefix-bound root like `<a:feed xmlns:a="http://www.w3.org/2005/Atom">`
+/// without false-positiving on an RSS feed that merely *declares* the Atom
+/// namespace prefix (e.g. for `<atom:link rel="self"/>`).
+pub(super) fn detect_atom(s: &str) -> bool {
+    first_element_local_name(probe_prefix(s, 2048)) == Some("feed")
 }
 
-fn detect_rss(s: &str) -> bool {
-    let probe = probe_prefix(s, 1024);
-    probe.contains("<rss") || probe.contains("<channel")
+/// Sniff whether `s` looks like an RSS 2.0 document — first element is `rss`
+/// (or `channel`, if some upstream stripped the wrapping `<rss>` shell).
+pub(super) fn detect_rss(s: &str) -> bool {
+    matches!(
+        first_element_local_name(probe_prefix(s, 1024)),
+        Some("rss" | "channel")
+    )
+}
+
+/// Find the local name of the first real element in `s`, skipping the XML
+/// declaration, comments and DOCTYPE. Returns `None` if no element is found
+/// inside the probed window.
+fn first_element_local_name(s: &str) -> Option<&str> {
+    let mut rest = s;
+    loop {
+        // Find the next `<`.
+        let lt = rest.find('<')?;
+        rest = &rest[lt + 1..];
+        if let Some(after) = rest.strip_prefix("?xml") {
+            // XML declaration: skip to `?>`.
+            let end = after.find("?>")?;
+            rest = &after[end + 2..];
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("!--") {
+            // Comment: skip to `-->`.
+            let end = after.find("-->")?;
+            rest = &after[end + 3..];
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("!DOCTYPE") {
+            // DOCTYPE: skip to the matching `>` at depth 0 (no internal subset
+            // support — good enough for sniffing).
+            let end = after.find('>')?;
+            rest = &after[end + 1..];
+            continue;
+        }
+        if rest.starts_with('!') || rest.starts_with('?') {
+            // Some other declaration/PI we don't care about; skip to `>`.
+            let end = rest.find('>')?;
+            rest = &rest[end + 1..];
+            continue;
+        }
+        // Real element name; ends at whitespace, `/`, or `>`.
+        let qname_end = rest
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(rest.len());
+        let qname = &rest[..qname_end];
+        // Strip any namespace prefix (`a:feed` -> `feed`).
+        return Some(qname.rsplit(':').next().unwrap_or(qname));
+    }
 }
 
 /// Largest prefix of `s` no longer than `max` bytes, never splitting a

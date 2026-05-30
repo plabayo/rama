@@ -50,9 +50,12 @@ mod ext_write;
 mod feed;
 mod ns;
 mod parse;
+mod read;
 mod rss2;
 mod ser;
 mod stream;
+
+pub use read::{AtomFeedStream, AtomHeader, FeedStream, Rss2Channel, Rss2FeedStream};
 
 // ---------------------------------------------------------------------------
 // Re-exports: RSS 2.0

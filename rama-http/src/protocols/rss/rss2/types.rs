@@ -42,6 +42,9 @@ impl Rss2Feed {
         super::builder::Rss2FeedBuilder::new()
     }
 
+    /// Render the feed to a single in-memory XML document. The convenience
+    /// "collect" side of stream-first: it just drains [`Self::to_byte_stream`]
+    /// into a `Vec`.
     pub fn to_xml(&self) -> Result<Vec<u8>, super::super::ser::XmlWriteError> {
         use quick_xml::{
             Writer,
@@ -52,6 +55,73 @@ impl Rss2Feed {
         w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
         super::write::write_rss2_feed(&mut w, self)?;
         Ok(buf)
+    }
+
+    /// Consume the feed and produce a byte stream that emits the XML document
+    /// incrementally — one chunk for the channel header, one per `<item>`, and
+    /// one for the footer. Plugs directly into [`crate::Body::from_stream`]
+    /// so a handler can return an in-memory feed without holding the rendered
+    /// XML in memory.
+    pub fn to_byte_stream(
+        self,
+    ) -> impl rama_core::futures::Stream<
+        Item = Result<rama_core::bytes::Bytes, rama_core::error::BoxError>,
+    > + Send {
+        use quick_xml::{
+            Writer,
+            events::{BytesDecl, Event},
+        };
+        use rama_core::bytes::{BufMut as _, BytesMut};
+        use rama_core::futures::async_stream::stream_fn;
+
+        stream_fn(move |mut yielder| async move {
+            let mut scratch = BytesMut::with_capacity(4096);
+
+            // Header
+            {
+                let mut w = Writer::new((&mut scratch).writer());
+                if let Err(e) =
+                    w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
+                {
+                    yielder
+                        .yield_item(Err(Box::new(super::super::ser::XmlWriteError::from(e))
+                            as rama_core::error::BoxError))
+                        .await;
+                    return;
+                }
+                if let Err(e) = super::write::write_rss2_feed_header(&mut w, &self) {
+                    yielder
+                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
+                        .await;
+                    return;
+                }
+            }
+            yielder.yield_item(Ok(scratch.split().freeze())).await;
+
+            // One item per chunk.
+            for item in &self.items {
+                let mut w = Writer::new((&mut scratch).writer());
+                if let Err(e) = super::write::write_rss2_item(&mut w, item) {
+                    yielder
+                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
+                        .await;
+                    return;
+                }
+                yielder.yield_item(Ok(scratch.split().freeze())).await;
+            }
+
+            // Footer
+            {
+                let mut w = Writer::new((&mut scratch).writer());
+                if let Err(e) = super::write::write_rss2_feed_footer(&mut w) {
+                    yielder
+                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
+                        .await;
+                    return;
+                }
+            }
+            yielder.yield_item(Ok(scratch.split().freeze())).await;
+        })
     }
 }
 
