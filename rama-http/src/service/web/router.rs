@@ -45,9 +45,9 @@ use crate::{
 /// to fit default Router.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-pub struct DefaultLayer;
+pub struct DefaultEndpointLayer;
 
-impl<S> Layer<S> for DefaultLayer
+impl<S> Layer<S> for DefaultEndpointLayer
 where
     S: Service<Request, Output: IntoResponse, Error: Into<ErrorResponse>>,
 {
@@ -67,7 +67,7 @@ where
 /// to predefined routes. Each route is associated with an `HttpMatcher`
 /// and a corresponding service handler.
 #[allow(unused)]
-pub struct Router<State = (), Layer = DefaultLayer, O = Response, E = RouterError> {
+pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
     routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>>,
     sub_services: Option<Trie<String, SubService<O, E>>>,
     not_found: Option<BoxService<Request, O, E>>,
@@ -81,7 +81,7 @@ impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
     }
 }
 
-impl<O, E> Router<(), DefaultLayer, O, E> {
+impl<O, E> Router<(), DefaultEndpointLayer, O, E> {
     /// create a new router.
     #[must_use]
     pub fn new() -> Self {
@@ -89,7 +89,7 @@ impl<O, E> Router<(), DefaultLayer, O, E> {
     }
 }
 
-impl<State, O, E> Router<State, DefaultLayer, O, E>
+impl<State, O, E> Router<State, DefaultEndpointLayer, O, E>
 where
     State: Send + Sync + Clone + 'static,
 {
@@ -117,6 +117,7 @@ where
     }
 
     /// Apply `layer` to every endpoint registered after this call.
+    ///
     /// Routes registered before this call keep whatever layer was in effect at the time of registration.
     pub fn with_endpoint_layer<N>(self, layer: N) -> Router<State, N, O, E> {
         Router {
@@ -124,6 +125,19 @@ where
             sub_services: self.sub_services,
             not_found: self.not_found,
             layer,
+            state: self.state,
+        }
+    }
+
+    /// Apply [`DefaultLayer`] to every endpoint registered after this call.
+    ///
+    /// Routes registered before this call keep whatever layer was in effect at the time of registration.
+    pub fn with_default_endpoint_layer(self) -> Router<State, DefaultEndpointLayer, O, E> {
+        Router {
+            routes: self.routes,
+            sub_services: self.sub_services,
+            not_found: self.not_found,
+            layer: DefaultEndpointLayer,
             state: self.state,
         }
     }
@@ -584,6 +598,8 @@ where
     E: IntoResponse + From<Infallible> + Send + 'static,
 {
     /// serve the given file under the given path.
+    ///
+    /// `endpoint_layers` are not applied to this
     #[must_use]
     #[inline]
     pub fn with_file(mut self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
@@ -592,6 +608,8 @@ where
     }
 
     /// serve the given file under the given prefix (path).
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     pub fn set_file(
         &mut self,
@@ -604,6 +622,8 @@ where
     }
 
     /// serve the given directory under the given prefix (path).
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     #[must_use]
     pub fn with_dir(self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> Self {
@@ -611,6 +631,8 @@ where
     }
 
     /// serve the given directory under the given prefix (path).
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     pub fn set_dir(&mut self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> &mut Self {
         self.set_dir_with_serve_mode(prefix, dir, Default::default())
@@ -618,6 +640,8 @@ where
 
     /// serve the given directory under the given prefix (path),
     /// with a custom serve move.
+    ///
+    /// `endpoint_layers` are not applied to this
     #[must_use]
     #[inline]
     pub fn with_dir_and_serve_mode(
@@ -632,6 +656,8 @@ where
 
     /// serve the given directory under the given prefix (path),
     /// with a custom serve move.
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     pub fn set_dir_with_serve_mode(
         &mut self,
@@ -644,6 +670,8 @@ where
     }
 
     /// serve the given embedded directory under the given prefix (path).
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     #[must_use]
     pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self {
@@ -651,6 +679,8 @@ where
     }
 
     /// serve the given embedded directory under the given prefix (path).
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     pub fn set_dir_embed(
         &mut self,
@@ -662,6 +692,8 @@ where
 
     /// serve the given embedded directory under the given prefix (path)
     /// with a custom serve move.
+    ///
+    /// `endpoint_layers` are not applied to this
     #[must_use]
     #[inline]
     pub fn with_dir_embed_and_serve_mode(
@@ -676,6 +708,8 @@ where
 
     /// serve the given embedded directory under the given prefix (path)
     /// with a custom serve move.
+    ///
+    /// `endpoint_layers` are not applied to this
     #[inline]
     pub fn set_dir_embed_with_serve_mode(
         &mut self,
@@ -710,6 +744,7 @@ impl Default for Router {
 
 #[derive(Debug, Clone)]
 pub enum RouterError {
+    /// This one should never fire, if it does something is wrong in uri prefix stripped
     Internal,
     MethodNotAllowed(Box<NonEmptySmallVec<7, Method>>),
     NotFound,

@@ -1,7 +1,7 @@
 //! Extract utilities to develop endpoint services efortless.
 
 use super::IntoResponse;
-use crate::{HeaderMap, header, mime, request::Parts, service::web::response::ErrorResponse};
+use crate::{HeaderMap, header, mime, request::Parts};
 
 pub mod host;
 #[doc(inline)]
@@ -85,7 +85,7 @@ pub trait FromPartsStateRefPair<State>: Sized + Send + Sync + 'static {
 pub trait FromRequest: Sized + Send + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
-    type Rejection: Into<ErrorResponse>;
+    type Rejection;
 
     /// Perform the extraction.
     fn from_request(

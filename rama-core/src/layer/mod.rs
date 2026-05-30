@@ -910,6 +910,10 @@ mod hijack;
 #[doc(inline)]
 pub use hijack::{HijackLayer, HijackService};
 
+mod into_err;
+#[doc(inline)]
+pub use into_err::{IntoErr, IntoErrLayer};
+
 mod layer_fn;
 #[doc(inline)]
 pub use layer_fn::{LayerFn, layer_fn};
@@ -924,7 +928,7 @@ pub use map_output::{MapOutput, MapOutputLayer};
 
 mod map_err;
 #[doc(inline)]
-pub use map_err::{IntoErr, IntoErrLayer, MapErr, MapErrLayer};
+pub use map_err::{MapErr, MapErrLayer};
 
 pub mod consume_err;
 #[doc(inline)]

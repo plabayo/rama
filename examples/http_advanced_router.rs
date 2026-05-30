@@ -72,7 +72,10 @@ use rama::{
     rt::Executor,
     telemetry::tracing::{self, error, trace},
 };
-use rama_http::{layer::error_handling::ErrorHandlerLayer, service::web::router::RouterError};
+use rama_http::{
+    layer::error_handling::ErrorHandlerLayer,
+    service::web::router::{DefaultEndpointLayer, RouterError},
+};
 use serde::{Deserialize, Serialize};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -147,14 +150,14 @@ async fn main() -> Result<(), BoxError> {
 /// applied to these endpoints
 fn api_v2<L>(
     router: Router<Arc<AppState>, L, Response, CustomRouterError>,
-) -> Router<Arc<AppState>, (), Response, CustomRouterError> {
+) -> Router<Arc<AppState>, DefaultEndpointLayer, Response, CustomRouterError> {
     let state = router.state().clone();
 
     router
         .with_endpoint_layer(ApiEndpointLayer::new(state))
         .with_get("/info", api_info)
         .with_get("/greet", greet_v2)
-        .with_endpoint_layer(())
+        .with_default_endpoint_layer()
 }
 
 async fn api_info() -> Result<ApiInfo, Infallible> {
