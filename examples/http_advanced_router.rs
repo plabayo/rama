@@ -146,8 +146,8 @@ async fn main() -> Result<(), BoxError> {
 /// Endpoints registered here emit a `Serialize` output and a `CustomRouterError`
 /// error. [`ApiEndpointLayer`] wraps each endpoint so successful outputs become
 /// a signed JSON envelope and errors are converted into [`CustomRouterError`]. The
-/// trailing `with_endpoint_layer(())` resets the layer so these layers are only
-/// applied to these endpoints
+/// trailing `with_default_endpoint_layer()` resets the endpoint_layer, so these layers
+/// are only applied to these endpoints
 fn api_v2<L>(
     router: Router<Arc<AppState>, L, Response, CustomRouterError>,
 ) -> Router<Arc<AppState>, DefaultEndpointLayer, Response, CustomRouterError> {

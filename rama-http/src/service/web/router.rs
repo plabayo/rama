@@ -3,7 +3,7 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{convert::Infallible, error::Error, fmt, path::Path, sync::Arc};
+use std::{convert::Infallible, error::Error, fmt, sync::Arc};
 
 use http::Method;
 use matchit::Router as MatchitRouter;
@@ -11,31 +11,26 @@ use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
     Layer,
     extensions::{Extensions, ExtensionsRef},
-    layer::{IntoErrLayer, MapResult},
+    layer::MapResult,
     matcher::Matcher,
     service::{BoxService, Service},
     telemetry::tracing,
 };
 use rama_http_types::{
-    Body, OriginalRouterUri, StatusCode, mime::Mime, uri::try_to_strip_path_prefix_from_uri,
+    Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };
 use rama_utils::{
     collections::NonEmptySmallVec,
-    include_dir,
     str::smol_str::{StrExt as _, format_smolstr},
 };
 
 use crate::{
     Request, Response,
     headers::Allow,
-    layer::error_handling::ErrorHandlerLayer,
     matcher::{HttpMatcher, MethodMatcher, PathMatcher, UriParams},
-    service::{
-        fs::{DirectoryServeMode, ServeDir},
-        web::{
-            IntoEndpointService, IntoEndpointServiceWithState,
-            response::{ErrorResponse, Headers, IntoResponse},
-        },
+    service::web::{
+        IntoEndpointService, IntoEndpointServiceWithState,
+        response::{ErrorResponse, Headers, IntoResponse},
     },
 };
 
@@ -43,6 +38,8 @@ use crate::{
 /// It converts Output and Error types of endpoints using [`IntoResponse`] trait,
 /// same as [`ErrorHandlerLayer`], except it returns [`RouterError`] instead of [`Infallible`]
 /// to fit default Router.
+///
+/// [`ErrorHandlerLayer`]: crate::layer::error_handling::ErrorHandlerLayer
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct DefaultEndpointLayer;
@@ -129,7 +126,7 @@ where
         }
     }
 
-    /// Apply [`DefaultLayer`] to every endpoint registered after this call.
+    /// Apply [`DefaultEndpointLayer`] to every endpoint registered after this call.
     ///
     /// Routes registered before this call keep whatever layer was in effect at the time of registration.
     pub fn with_default_endpoint_layer(self) -> Router<State, DefaultEndpointLayer, O, E> {
@@ -592,150 +589,6 @@ where
     }
 }
 
-impl<State, Layer, E> Router<State, Layer, Response, E>
-where
-    State: Send + Sync + Clone + 'static,
-    E: IntoResponse + From<Infallible> + Send + 'static,
-{
-    /// serve the given file under the given path.
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[must_use]
-    #[inline]
-    pub fn with_file(mut self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
-        self.set_file(path, file, mime);
-        self
-    }
-
-    /// serve the given file under the given prefix (path).
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    pub fn set_file(
-        &mut self,
-        prefix: impl AsRef<str>,
-        file: impl AsRef<Path>,
-        mime: Mime,
-    ) -> &mut Self {
-        let service = ServeDir::new_single_file(file, mime);
-        self.set_serve_dir_service(prefix, service)
-    }
-
-    /// serve the given directory under the given prefix (path).
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    #[must_use]
-    pub fn with_dir(self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> Self {
-        self.with_dir_and_serve_mode(prefix, dir, Default::default())
-    }
-
-    /// serve the given directory under the given prefix (path).
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    pub fn set_dir(&mut self, prefix: impl AsRef<str>, dir: impl AsRef<Path>) -> &mut Self {
-        self.set_dir_with_serve_mode(prefix, dir, Default::default())
-    }
-
-    /// serve the given directory under the given prefix (path),
-    /// with a custom serve move.
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[must_use]
-    #[inline]
-    pub fn with_dir_and_serve_mode(
-        mut self,
-        prefix: impl AsRef<str>,
-        dir: impl AsRef<Path>,
-        mode: DirectoryServeMode,
-    ) -> Self {
-        self.set_dir_with_serve_mode(prefix, dir, mode);
-        self
-    }
-
-    /// serve the given directory under the given prefix (path),
-    /// with a custom serve move.
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    pub fn set_dir_with_serve_mode(
-        &mut self,
-        prefix: impl AsRef<str>,
-        dir: impl AsRef<Path>,
-        mode: DirectoryServeMode,
-    ) -> &mut Self {
-        let service = ServeDir::new(dir).with_directory_serve_mode(mode);
-        self.set_serve_dir_service(prefix, service)
-    }
-
-    /// serve the given embedded directory under the given prefix (path).
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    #[must_use]
-    pub fn with_dir_embed(self, prefix: impl AsRef<str>, dir: include_dir::Dir<'static>) -> Self {
-        self.with_dir_embed_and_serve_mode(prefix, dir, Default::default())
-    }
-
-    /// serve the given embedded directory under the given prefix (path).
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    pub fn set_dir_embed(
-        &mut self,
-        prefix: impl AsRef<str>,
-        dir: include_dir::Dir<'static>,
-    ) -> &mut Self {
-        self.set_dir_embed_with_serve_mode(prefix, dir, Default::default())
-    }
-
-    /// serve the given embedded directory under the given prefix (path)
-    /// with a custom serve move.
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[must_use]
-    #[inline]
-    pub fn with_dir_embed_and_serve_mode(
-        mut self,
-        prefix: impl AsRef<str>,
-        dir: include_dir::Dir<'static>,
-        mode: DirectoryServeMode,
-    ) -> Self {
-        self.set_dir_embed_with_serve_mode(prefix, dir, mode);
-        self
-    }
-
-    /// serve the given embedded directory under the given prefix (path)
-    /// with a custom serve move.
-    ///
-    /// `endpoint_layers` are not applied to this
-    #[inline]
-    pub fn set_dir_embed_with_serve_mode(
-        &mut self,
-        prefix: impl AsRef<str>,
-        dir: include_dir::Dir<'static>,
-        mode: DirectoryServeMode,
-    ) -> &mut Self {
-        let service = ServeDir::new_embedded(dir).with_directory_serve_mode(mode);
-        self.set_serve_dir_service(prefix, service)
-    }
-
-    fn set_serve_dir_service(&mut self, prefix: impl AsRef<str>, service: ServeDir) -> &mut Self {
-        match self.not_found.clone() {
-            Some(not_found) => self.set_sub_service_inner(
-                prefix,
-                IntoErrLayer::<E>::new()
-                    .layer(service.fallback(ErrorHandlerLayer::new().layer(not_found)))
-                    .boxed(),
-            ),
-            None => {
-                self.set_sub_service_inner(prefix, IntoErrLayer::<E>::new().layer(service).boxed())
-            }
-        }
-    }
-}
-
 impl Default for Router {
     fn default() -> Self {
         Self::new()
@@ -945,7 +798,9 @@ mod tests {
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt, header};
 
     use super::*;
-    use crate::{matcher::UriParams, service::web::extract::State};
+    use crate::{
+        layer::error_handling::ErrorHandlerLayer, matcher::UriParams, service::web::extract::State,
+    };
 
     fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
         service_fn(|_req| async {
