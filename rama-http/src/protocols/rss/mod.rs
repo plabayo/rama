@@ -48,6 +48,7 @@ mod atom;
 mod ext_parse;
 mod ext_write;
 mod feed;
+mod ns;
 mod parse;
 mod rss2;
 mod ser;

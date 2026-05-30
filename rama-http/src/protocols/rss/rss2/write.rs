@@ -5,6 +5,7 @@ use quick_xml::{
 };
 
 use super::super::ext_write;
+use super::super::ns;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::types::{Rss2Feed, Rss2Item};
 
@@ -29,22 +30,22 @@ pub(super) fn write_rss2_feed<W: std::io::Write>(
     let needs_atom = !feed.atom_links.is_empty();
 
     if needs_itunes {
-        rss_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
+        ns::push_xmlns_itunes(&mut rss_tag);
     }
     if needs_podcast {
-        rss_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
+        ns::push_xmlns_podcast(&mut rss_tag);
     }
     if needs_dc {
-        rss_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
+        ns::push_xmlns_dc(&mut rss_tag);
     }
     if needs_content {
-        rss_tag.push_attribute(("xmlns:content", "http://purl.org/rss/1.0/modules/content/"));
+        ns::push_xmlns_content(&mut rss_tag);
     }
     if needs_media {
-        rss_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
+        ns::push_xmlns_media(&mut rss_tag);
     }
     if needs_atom {
-        rss_tag.push_attribute(("xmlns:atom", "http://www.w3.org/2005/Atom"));
+        ns::push_xmlns_atom(&mut rss_tag);
     }
 
     w.write_event(Event::Start(rss_tag))?;

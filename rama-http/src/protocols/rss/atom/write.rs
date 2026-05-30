@@ -4,6 +4,7 @@ use quick_xml::{
 };
 
 use super::super::ext_write;
+use super::super::ns;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
@@ -14,7 +15,7 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     feed: &AtomFeed,
 ) -> Result<(), XmlWriteError> {
     let mut feed_tag = BytesStart::new("feed");
-    feed_tag.push_attribute(("xmlns", "http://www.w3.org/2005/Atom"));
+    ns::push_xmlns_atom_default(&mut feed_tag);
 
     let needs_itunes = feed.extensions.itunes.is_some()
         || feed.entries.iter().any(|e| e.extensions.itunes.is_some());
@@ -28,16 +29,16 @@ pub(super) fn write_atom_feed<W: std::io::Write>(
     let needs_media = feed.entries.iter().any(|e| e.extensions.media.is_some());
 
     if needs_itunes {
-        feed_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
+        ns::push_xmlns_itunes(&mut feed_tag);
     }
     if needs_podcast {
-        feed_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
+        ns::push_xmlns_podcast(&mut feed_tag);
     }
     if needs_dc {
-        feed_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
+        ns::push_xmlns_dc(&mut feed_tag);
     }
     if needs_media {
-        feed_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
+        ns::push_xmlns_media(&mut feed_tag);
     }
 
     w.write_event(Event::Start(feed_tag))?;
@@ -213,7 +214,7 @@ fn write_atom_text_body<W: std::io::Write>(
                 )));
             }
             let mut div = BytesStart::new("div");
-            div.push_attribute(("xmlns", "http://www.w3.org/1999/xhtml"));
+            div.push_attribute(("xmlns", ns::XHTML_NS));
             w.write_event(Event::Start(div))?;
             w.write_event(Event::Text(BytesText::from_escaped(s.as_str())))?;
             w.write_event(Event::End(BytesEnd::new("div")))?;

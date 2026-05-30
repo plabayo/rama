@@ -19,6 +19,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 
 use super::atom::{AtomEntry, write_atom_entry};
+use super::ns;
 use super::rss2::{Rss2Item, write_rss2_item};
 use super::ser::XmlWriteError;
 
@@ -141,11 +142,11 @@ fn write_rss2_header(buf: &mut BytesMut, meta: &Rss2FeedMeta) -> Result<(), XmlW
     // A streaming header is written before any item is seen, so it cannot know
     // which extension prefixes the items will use. Declare the supported ones
     // up front to keep the document namespace-well-formed regardless.
-    rss_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
-    rss_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
-    rss_tag.push_attribute(("xmlns:content", "http://purl.org/rss/1.0/modules/content/"));
-    rss_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
-    rss_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
+    ns::push_xmlns_itunes(&mut rss_tag);
+    ns::push_xmlns_podcast(&mut rss_tag);
+    ns::push_xmlns_content(&mut rss_tag);
+    ns::push_xmlns_dc(&mut rss_tag);
+    ns::push_xmlns_media(&mut rss_tag);
     w.write_event(Event::Start(rss_tag))?;
     w.write_event(Event::Start(BytesStart::new("channel")))?;
     write_text_elem_to(&mut w, "title", &meta.title)?;
@@ -274,13 +275,13 @@ fn write_atom_header(buf: &mut BytesMut, meta: &AtomFeedMeta) -> Result<(), XmlW
     let mut w = Writer::new(buf.writer());
     w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
     let mut feed_tag = BytesStart::new("feed");
-    feed_tag.push_attribute(("xmlns", "http://www.w3.org/2005/Atom"));
+    ns::push_xmlns_atom_default(&mut feed_tag);
     // Declared up front because entries are streamed after this header and may
     // carry extension-namespaced elements (see Rss2StreamWriter header).
-    feed_tag.push_attribute(("xmlns:itunes", "http://www.itunes.com/dtds/podcast-1.0.dtd"));
-    feed_tag.push_attribute(("xmlns:podcast", "https://podcastindex.org/namespace/1.0"));
-    feed_tag.push_attribute(("xmlns:dc", "http://purl.org/dc/elements/1.1/"));
-    feed_tag.push_attribute(("xmlns:media", "http://search.yahoo.com/mrss/"));
+    ns::push_xmlns_itunes(&mut feed_tag);
+    ns::push_xmlns_podcast(&mut feed_tag);
+    ns::push_xmlns_dc(&mut feed_tag);
+    ns::push_xmlns_media(&mut feed_tag);
     w.write_event(Event::Start(feed_tag))?;
     write_text_elem_to(&mut w, "id", &meta.id)?;
     {

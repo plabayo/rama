@@ -2,189 +2,111 @@
 
 <div class="book-article-intro">
     <div>
-        Rama has built-in support for <strong>RSS 2.0</strong> and <strong>Atom 1.0</strong>
-        feeds — both for serving them from a web handler and for consuming them on the client
-        side.  Extensions (iTunes, Podcasting 2.0, Dublin Core, Media RSS,
-        <code>content:encoded</code>) are supported out of the box.
+        <strong>RSS 2.0</strong> and <strong>Atom 1.0</strong> are the two ubiquitous
+        XML formats for publishing a feed of regularly-updated items — blog posts,
+        news articles, and especially podcast episodes. A feed reader, podcast app,
+        or aggregator polls the feed and renders the new items.
+        <p>— <a href="https://www.rssboard.org/rss-specification">RSS Advisory Board</a> /
+        <a href="https://www.rfc-editor.org/rfc/rfc4287">RFC 4287 — The Atom Syndication Format</a></p>
     </div>
 </div>
 
-## Overview
+## Description
 
-| Goal | API |
-|------|-----|
-| Serve an RSS 2.0 feed | Return `Rss2Feed` from a handler (implements `IntoResponse`) |
-| Serve an Atom feed | Return `AtomFeed` from a handler (implements `IntoResponse`) |
-| Stream a feed without buffering | Wrap an item stream in `Rss2StreamWriter` / `AtomStreamWriter` |
-| Parse any feed on the client side | `Feed::from_body(response.into_body()).await` |
-| Format-agnostic code | Use the `Feed` umbrella enum |
+A feed is a small XML document that describes a channel (or "feed", in Atom
+terminology) and an ordered list of items (or "entries"). Subscribers fetch the
+URL on a schedule and present any new items to the user. The two formats are
+contemporaries that solve the same problem with slightly different vocabularies;
+in practice most podcasts use RSS 2.0 and most modern blog platforms emit Atom,
+but the choice is opaque to most subscribers.
 
-All types live under `rama_http::protocols::rss` (or `rama::http::protocols::rss` via the top-level crate).
+The wire format is rarely interesting on its own — most of the operational
+detail lives in *extension namespaces* that the core specs were intentionally
+left open for. The ones that matter in the wild:
 
-## Serving feeds
+| Namespace | Used for |
+|---|---|
+| `itunes:` | Apple Podcasts metadata (artwork, explicit flag, episode/season numbers) |
+| `podcast:` | [Podcasting 2.0](https://podcastindex.org/namespace/1.0) — chapters, transcripts, persons, locations, funding |
+| `media:` | [Media RSS](https://www.rssboard.org/media-rss) — alternate media renditions, thumbnails |
+| `dc:` | [Dublin Core](https://www.dublincore.org/specifications/dublin-core/dces/) — generic bibliographic metadata |
+| `content:encoded` | Full HTML body of an item (RSS 1.0 content module) |
 
-### RSS 2.0
+The authoritative specs (RSS 2.0, RFC 4287, the iTunes podcast tag spec, the
+Podcasting 2.0 namespace, Media RSS, Dublin Core) are listed in
+[`rama-http/specifications/README.md`](https://github.com/plabayo/rama/blob/main/rama-http/specifications/README.md).
 
-`Rss2Feed` uses a type-state builder that enforces the three required fields
-(`title`, `link`, `description`) at compile time — the compiler prevents
-calling `.build()` until all three are present:
+## Rama Support
 
-```rust,ignore
-use rama::http::protocols::rss::{Rss2Feed, Rss2Item, Rss2Guid};
+> 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/protocols/rss/index.html>
 
-async fn feed_handler() -> impl IntoResponse {
-    Rss2Feed::builder()
-        .title("My Blog")
-        .link("https://example.com")
-        .description("Latest articles")
-        .item(
-            Rss2Item::new()
-                .with_title("Hello World")
-                .with_guid(Rss2Guid::permalink("https://example.com/hello"))
-                .with_description("My first post"),
-        )
-        .build()
-}
-```
+Enable the `rss` feature on the mono `rama` crate (or `http-full`, which pulls
+it in). Everything lives under `rama::http::protocols::rss`.
 
-The response will have `Content-Type: application/rss+xml`.
+Rama gives you:
 
-### Atom 1.0
+- **Type-state builders** that make `RSS 2.0` (`title` + `link` + `description`)
+  and `Atom 1.0` (`id` + `title` + `updated`) required fields a compile-time
+  obligation — you cannot call `.build()` until the required fields are set.
+- **Spec-compliant serialization** with namespace prefixes declared only when
+  needed and CDATA properly escaped (including the `]]>` case that breaks naive
+  emitters).
+- **Lenient parsing by default, strict opt-in.** Unknown elements are skipped;
+  malformed entities and missing required fields are tolerated. Switch to
+  `Feed::parse_strict` / `Feed::from_body_strict` to surface the underlying
+  structural violation instead.
+- **Lossless round-trip** for both formats across all supported extensions.
+  Parse → mutate → re-serialize is the proxy/aggregator case and is a first-class
+  goal: every field the writer emits, the parser reads back.
+- **Resolved-namespace routing** — extension elements are matched by their
+  namespace URI rather than by literal prefix, so a feed declaring
+  `xmlns:pod="https://podcastindex.org/namespace/1.0"` is parsed identically
+  to one using the conventional `xmlns:podcast`.
+- **Streaming-first writers.** `Rss2StreamWriter` / `AtomStreamWriter` take a
+  `Stream` of items and emit XML incrementally so a server can produce a feed
+  of arbitrary size with bounded memory. The in-memory `Rss2Feed::to_xml` /
+  `AtomFeed::to_xml` paths are convenience adapters that collect the same
+  stream.
+- **A format-agnostic `Feed` umbrella** for callers that want to consume a feed
+  without caring whether the upstream chose RSS or Atom.
+- **`IntoResponse` impls** so a handler can return a built feed directly and
+  the correct `application/rss+xml` or `application/atom+xml` `Content-Type`
+  is set for you.
 
-`AtomFeed` follows the same type-state pattern (required: `id`, `title`,
-`updated`):
+### Examples
 
-```rust,ignore
-use rama::http::protocols::rss::{AtomFeed, AtomEntry, AtomText, AtomLink, AtomPerson};
-use jiff::Timestamp;
+The ready-to-run examples cover the common shapes:
 
-async fn atom_handler() -> impl IntoResponse {
-    let now = Timestamp::now();
-    AtomFeed::builder()
-        .id("https://example.com/feed.atom")
-        .title("My Blog")
-        .updated(now)
-        .author(AtomPerson::new("Alice"))
-        .link(AtomLink::alternate("https://example.com"))
-        .entry(
-            AtomEntry::new("https://example.com/hello", "Hello World", now)
-                .with_summary(AtomText::text("My first post")),
-        )
-        .build()
-}
-```
+- [`http_rss_blog.rs`](https://github.com/plabayo/rama/blob/main/examples/http_rss_blog.rs)
+  — serve an RSS 2.0 feed and an Atom 1.0 feed from the same router.
+- [`http_rss_podcast.rs`](https://github.com/plabayo/rama/blob/main/examples/http_rss_podcast.rs)
+  — serve a podcast feed with iTunes + Podcasting 2.0 extensions, both as a
+  one-shot response and as a streamed response.
 
-## Streaming feeds
+These are the canonical "how do I…" references; they're tested in CI so they
+won't drift away from the API.
 
-For feeds with many items — or items produced by an async data source — use the
-streaming writers to avoid buffering the entire document:
+## Use cases
 
-```rust,ignore
-use std::convert::Infallible;
-use rama::{
-    futures::async_stream::stream_fn,
-    http::{Body, headers::ContentType, protocols::rss::{Rss2FeedMeta, Rss2Item, Rss2StreamWriter},
-           service::web::response::{Headers, IntoResponse}},
-};
+The same API serves three distinct callers:
 
-async fn streamed_feed() -> impl IntoResponse {
-    let meta = Rss2FeedMeta {
-        title: "My Blog".into(),
-        link: "https://example.com".into(),
-        description: "Latest articles".into(),
-        language: None,
-        generator: None,
-    };
-    let items = stream_fn(|mut y| async move {
-        for i in 0..100u64 {
-            let item = Rss2Item::new()
-                .with_title(format!("Post {i}"))
-                .with_link(format!("https://example.com/{i}"));
-            y.yield_item(Ok::<_, Infallible>(item)).await;
-        }
-    });
-    (
-        Headers::single(ContentType::rss()),
-        Body::from_stream(Rss2StreamWriter::new(meta, items)),
-    )
-}
-```
+- **Authors** (blog or podcast publisher) build a feed in code with the
+  type-state builder, optionally driving items from a database via a `Stream`
+  when the feed is large or the items are paginated.
+- **Aggregators / clients** (podcast apps, feed readers, search indexers) fetch
+  a feed from the wire and parse it. Default leniency is what you want here —
+  third-party feeds in the wild are routinely a little off-spec and the right
+  behaviour is to skip what you don't understand, not to reject the whole
+  document.
+- **Proxies** (MITM tooling, transformation gateways, ad-injection pipelines)
+  parse a feed, mutate it, and re-serialize. Lossless round-trip is the
+  property that makes this safe — anything the proxy doesn't touch must come
+  out of the other side byte-for-byte equivalent at the model level. Apply a
+  `BodyLimit` layer upstream of any untrusted parse to cap the memory cost.
 
-## Podcast feeds with extensions
+## See also
 
-Use the `feed_ext` sub-module for iTunes, Podcasting 2.0, and other extension
-fields.  Items expose both inherent shortcuts (`.itunes()`, `.podcast()`, …)
-and a generic `.extension::<T>()` method:
-
-```rust,ignore
-use rama::http::protocols::rss::feed_ext::{
-    FeedExtensions, ITunes, ITunesFeed, ItemExtensions, Podcast, PodcastEpisode,
-};
-
-let feed = Rss2Feed::builder()
-    .title("My Podcast")
-    .link("https://example.com/podcast")
-    .description("A weekly show")
-    .feed_extensions(FeedExtensions {
-        itunes: Some(ITunesFeed {
-            author: Some("Alice".into()),
-            explicit: Some(false),
-            type_: Some("episodic".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })
-    .item(
-        Rss2Item::new()
-            .with_title("Episode 1")
-            .with_extensions(ItemExtensions {
-                itunes: Some(ITunes {
-                    episode: Some(1),
-                    season: Some(1),
-                    duration: Some("45:00".into()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-    )
-    .build();
-
-// Access extension data on the parsed item:
-let item = &feed.items[0];
-assert!(item.itunes().is_some());
-assert_eq!(item.itunes().unwrap().episode, Some(1));
-```
-
-## Client-side parsing
-
-```rust,ignore
-use rama::http::{client::EasyHttpWebClient, protocols::rss::Feed,
-                  service::client::HttpClientExt};
-
-let client = EasyHttpWebClient::default();
-let response = client
-    .get("https://example.com/feed.rss")
-    .send()
-    .await?;
-let feed = Feed::from_body(response.into_body()).await?;
-println!("Feed title: {}", feed.title());
-```
-
-`Feed::from_body` detects the format automatically (RSS 2.0 vs Atom) and
-parses leniently.  Use `Feed::from_body_strict` if you need structural errors
-to surface.
-
-> **Note on parsing scope.** The parser is intentionally lenient: unknown
-> elements are skipped, while non-feed documents are rejected (no
-> `<rss>`/`<channel>`/`<feed>` root). All supported extensions — iTunes,
-> Podcasting 2.0, Media RSS, Dublin Core, and `content:encoded` — round-trip
-> losslessly through parse → serialize, for both RSS 2.0 and Atom. Element
-> matching is by resolved namespace URI rather than literal prefix, so any
-> prefix the feed binds to a recognised namespace works (e.g. a feed declaring
-> `xmlns:pod="https://podcastindex.org/namespace/1.0"` and emitting
-> `<pod:person>` is parsed identically to `<podcast:person>`).
-
-## Examples
-
-- [`http_rss_blog`](https://github.com/plabayo/rama/blob/main/examples/http_rss_blog.rs) — RSS 2.0 and Atom blog feed server
-- [`http_rss_podcast`](https://github.com/plabayo/rama/blob/main/examples/http_rss_podcast.rs) — podcast feed with iTunes + Podcasting 2.0 extensions, one-shot and streaming
+- [Server-Sent Events](./sse.md) — for *pushing* updates as they happen rather
+  than the *polling* model RSS/Atom assume.
+- [Binary Bodies and Multipart Uploads](./multipart.md) — for `<enclosure>`
+  binaries (podcast audio) the feed points at.

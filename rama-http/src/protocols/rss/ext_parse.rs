@@ -46,17 +46,26 @@ pub(super) enum Ns {
 
 /// Resolve a [`ResolveResult`] from `NsReader` into one of the namespaces we
 /// recognise. Comparison is on the namespace URI bytes, so the actual prefix
-/// the document uses is irrelevant.
+/// the document uses is irrelevant. URIs come from [`super::ns`] so the writer
+/// and parser never disagree on a single byte.
 pub(super) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
+    use super::ns;
+    const ATOM: &[u8] = ns::ATOM_NS.as_bytes();
+    const ITUNES: &[u8] = ns::ITUNES_NS.as_bytes();
+    const PODCAST: &[u8] = ns::PODCAST_NS.as_bytes();
+    const DC: &[u8] = ns::DC_NS.as_bytes();
+    const MEDIA: &[u8] = ns::MEDIA_NS.as_bytes();
+    const CONTENT: &[u8] = ns::CONTENT_NS.as_bytes();
+
     match rr {
         ResolveResult::Unbound => Ns::None,
-        ResolveResult::Bound(ns) => match ns.0 {
-            b"http://www.w3.org/2005/Atom" => Ns::Atom,
-            b"http://www.itunes.com/dtds/podcast-1.0.dtd" => Ns::ITunes,
-            b"https://podcastindex.org/namespace/1.0" => Ns::Podcast,
-            b"http://purl.org/dc/elements/1.1/" => Ns::Dc,
-            b"http://search.yahoo.com/mrss/" => Ns::Media,
-            b"http://purl.org/rss/1.0/modules/content/" => Ns::Content,
+        ResolveResult::Bound(n) => match n.0 {
+            ATOM => Ns::Atom,
+            ITUNES => Ns::ITunes,
+            PODCAST => Ns::Podcast,
+            DC => Ns::Dc,
+            MEDIA => Ns::Media,
+            CONTENT => Ns::Content,
             _ => Ns::Other,
         },
         ResolveResult::Unknown(_) => Ns::Other,
