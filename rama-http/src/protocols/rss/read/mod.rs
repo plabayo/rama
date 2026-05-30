@@ -8,10 +8,10 @@
 //! stream let the caller borrow the header, `drain` into `(header, items)`,
 //! or `collect` the lot into an in-memory feed — pick what fits the caller.
 
-mod atom1;
+mod atom;
 mod feed_stream;
 mod rss2;
 
-pub use atom1::{AtomFeedStream, AtomHeader};
+pub use atom::{AtomFeedStream, AtomHeader};
 pub use feed_stream::FeedStream;
 pub use rss2::{Rss2Channel, Rss2FeedStream};
