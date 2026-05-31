@@ -8,6 +8,7 @@
 use jiff::Timestamp;
 
 use super::atom::{AtomCategory, AtomLink, AtomText};
+use super::ext_names::attr;
 use super::rss2::Rss2Enclosure;
 
 /// Short alias kept so attribute-extraction helper signatures fit on a line.
@@ -16,10 +17,11 @@ pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
 /// Read an attribute by qualified name and XML-unescape its value. Returns
 /// `None` if absent, malformed, or carrying an unresolvable entity — the
 /// caller treats that the same as "missing".
-pub(super) fn attr_value(e: &Attrs<'_>, name: &[u8]) -> Option<String> {
+pub(super) fn attr_value(e: &Attrs<'_>, name: &str) -> Option<String> {
+    let needle = name.as_bytes();
     e.attributes()
         .filter_map(|a| a.ok())
-        .find(|a| a.key.as_ref() == name)
+        .find(|a| a.key.as_ref() == needle)
         .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
 }
 
@@ -50,30 +52,30 @@ pub(super) fn make_atom_text(type_attr: &str, value: String) -> AtomText {
 
 pub(super) fn enclosure_from_attrs(e: &Attrs<'_>) -> Rss2Enclosure {
     Rss2Enclosure {
-        url: attr_value(e, b"url").unwrap_or_default(),
-        length: attr_value(e, b"length")
+        url: attr_value(e, attr::URL).unwrap_or_default(),
+        length: attr_value(e, attr::LENGTH)
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default(),
-        type_: attr_value(e, b"type").unwrap_or_default(),
+        type_: attr_value(e, attr::TYPE).unwrap_or_default(),
     }
 }
 
 pub(super) fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
     AtomLink {
-        href: attr_value(e, b"href").unwrap_or_default(),
-        rel: attr_value(e, b"rel"),
-        type_: attr_value(e, b"type"),
-        hreflang: attr_value(e, b"hreflang"),
-        title: attr_value(e, b"title"),
-        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
+        href: attr_value(e, attr::HREF).unwrap_or_default(),
+        rel: attr_value(e, attr::REL),
+        type_: attr_value(e, attr::TYPE),
+        hreflang: attr_value(e, attr::HREFLANG),
+        title: attr_value(e, attr::TITLE),
+        length: attr_value(e, attr::LENGTH).and_then(|v| v.parse().ok()),
     }
 }
 
 pub(super) fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
     AtomCategory {
-        term: attr_value(e, b"term").unwrap_or_default(),
-        scheme: attr_value(e, b"scheme"),
-        label: attr_value(e, b"label"),
+        term: attr_value(e, attr::TERM).unwrap_or_default(),
+        scheme: attr_value(e, attr::SCHEME),
+        label: attr_value(e, attr::LABEL),
     }
 }
 

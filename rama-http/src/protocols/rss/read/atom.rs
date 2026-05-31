@@ -21,6 +21,7 @@ use super::super::atom::{
     AtomSource, AtomText,
 };
 use super::super::error::{AtomCollectError, CollectError, FeedParseError};
+use super::super::ext_names::attr;
 use super::super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::feed_ext::FeedExtensions;
 use super::super::parse_util::{
@@ -455,35 +456,35 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         Ok(Action::Continue)
                     }
                     "title" => {
-                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("title", t).await
                     }
                     "summary" if self.in_entry => {
-                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("summary", t).await
                     }
                     "content" if self.in_entry && !self.in_source => {
-                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("content", t).await
                     }
                     "rights" => {
-                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("rights", t).await
                     }
                     "subtitle" if !self.in_entry => {
-                        let t = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("subtitle", t).await
                     }
                     "generator" if !self.in_source => {
                         self.pending_generator = Some(AtomGenerator {
                             value: String::new(),
-                            uri: attr_value(&e, b"uri"),
-                            version: attr_value(&e, b"version"),
+                            uri: attr_value(&e, attr::URI),
+                            version: attr_value(&e, attr::VERSION),
                         });
                         Ok(Action::Continue)
                     }
@@ -522,8 +523,8 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     }
                     "content" if self.in_entry && !self.in_source => {
                         // Out-of-line <content src=".." type=".."/>
-                        if let Some(src) = attr_value(&e, b"src") {
-                            let type_ = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
+                        if let Some(src) = attr_value(&e, attr::SRC) {
+                            let type_ = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                             self.current_entry.content = Some(AtomContent {
                                 value: AtomText::text(type_),
                                 src: Some(src),

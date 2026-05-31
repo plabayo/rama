@@ -1,14 +1,16 @@
-//! Element names used by the extension parsers and writers.
+//! Element and attribute names used by the RSS / Atom parsers and writers.
 //!
-//! The parser ([`super::ext_parse`]) sees *local* names (the prefix is
-//! stripped after namespace resolution); the writer ([`super::ext_write`])
-//! emits the prefix-qualified form. Both forms are driven from one
-//! [`decl_ext!`] invocation per namespace so a typo can't silently desync
-//! the two sides.
+//! Two flavours of constants live here:
 //!
-//! For each declared element `Foo` the macro emits two `&str` constants:
-//! `Foo` (the local name, used in parser `match` arms) and `Foo_TAG` (the
-//! prefixed name, used in writer `BytesStart::new` / `write_*_text_elem`).
+//! * **Per-namespace element names** (in [`itunes`] / [`podcast`] / [`media`]
+//!   / [`dc`] / [`content`]). Parser sees *local* names (the prefix is
+//!   stripped after namespace resolution); writer emits the prefix-qualified
+//!   form. The [`decl_ext!`] macro drives both from one source per element,
+//!   producing `FOO` (local) + `FOO_TAG` (prefixed).
+//! * **Attribute names** (in [`attr`]). XML attributes aren't
+//!   namespace-qualified in the feeds we handle, so one bare `&str` per name
+//!   serves both parser ([`super::parse_util::attr_value`] takes `&str` now)
+//!   and writer (quick-xml `push_attribute` takes `&str` for the key).
 //!
 //! See [`super::ns`] for the namespace URIs themselves.
 
@@ -113,5 +115,60 @@ pub(super) mod dc {
 pub(super) mod content {
     decl_ext! { "content",
         ENCODED => "encoded",
+    }
+}
+
+/// XML attribute names used across the RSS / Atom parsers + writers. None of
+/// these are namespace-qualified in real-world feeds (the host element's
+/// namespace governs), so one bare `&str` constant per name serves both
+/// sides.
+pub(super) mod attr {
+    macro_rules! decl_attr {
+        ($($name:ident => $lit:literal),+ $(,)?) => {
+            $(
+                pub(in super::super::super) const $name: &str = $lit;
+            )+
+        };
+    }
+    decl_attr! {
+        // Core RSS / Atom attributes
+        URL          => "url",
+        HREF         => "href",
+        TYPE         => "type",
+        REL          => "rel",
+        HREFLANG     => "hreflang",
+        TITLE        => "title",
+        LENGTH       => "length",
+        URI          => "uri",
+        VERSION      => "version",
+        SRC          => "src",
+        DOMAIN       => "domain",
+        IS_PERMALINK => "isPermaLink",
+        TERM         => "term",
+        SCHEME       => "scheme",
+        LABEL        => "label",
+        LANGUAGE     => "language",
+        PUB_DATE     => "pubDate",
+        NAME         => "name",
+
+        // Extension attributes
+        MEDIUM       => "medium",
+        DURATION     => "duration",
+        WIDTH        => "width",
+        HEIGHT       => "height",
+        FILE_SIZE    => "fileSize",
+        BITRATE      => "bitrate",
+        ROLE         => "role",
+        GROUP        => "group",
+        IMG          => "img",
+        GEO          => "geo",
+        OSM          => "osm",
+        SEASON       => "season",
+        DISPLAY      => "display",
+        START_TIME   => "startTime",
+        TEXT         => "text",
+        FEED_GUID    => "feedGuid",
+        ITEM_GUID    => "itemGuid",
+        FEED_URL     => "feedUrl",
     }
 }

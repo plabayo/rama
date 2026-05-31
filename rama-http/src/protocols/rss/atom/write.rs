@@ -3,6 +3,7 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
+use super::super::ext_names::attr;
 use super::super::ext_write;
 use super::super::ns;
 use super::super::read::AtomHeader;
@@ -49,10 +50,10 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
     if let Some(generator) = &header.generator {
         let mut tag = BytesStart::new("generator");
         if let Some(uri) = &generator.uri {
-            tag.push_attribute(("uri", uri.as_str()));
+            tag.push_attribute((attr::URI, uri.as_str()));
         }
         if let Some(ver) = &generator.version {
-            tag.push_attribute(("version", ver.as_str()));
+            tag.push_attribute((attr::VERSION, ver.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&generator.value)))?;
@@ -159,11 +160,11 @@ fn write_atom_content<W: std::io::Write>(
     if let Some(src) = &content.src {
         // Out-of-line content: AtomContent::out_of_line stuffs the MIME type
         // into the AtomText body so we can serialise it back out here.
-        tag.push_attribute(("src", src.as_str()));
-        tag.push_attribute(("type", content.value.value.as_str()));
+        tag.push_attribute((attr::SRC, src.as_str()));
+        tag.push_attribute((attr::TYPE, content.value.value.as_str()));
         w.write_event(Event::Empty(tag))?;
     } else {
-        tag.push_attribute(("type", content.value.kind.type_attr()));
+        tag.push_attribute((attr::TYPE, content.value.kind.type_attr()));
         w.write_event(Event::Start(tag))?;
         write_atom_text_body(w, &content.value)?;
         w.write_event(Event::End(BytesEnd::new("content")))?;
@@ -177,7 +178,7 @@ fn write_atom_text<W: std::io::Write>(
     text: &AtomText,
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new(name);
-    tag.push_attribute(("type", text.kind.type_attr()));
+    tag.push_attribute((attr::TYPE, text.kind.type_attr()));
     w.write_event(Event::Start(tag))?;
     write_atom_text_body(w, text)?;
     w.write_event(Event::End(BytesEnd::new(name)))?;
@@ -253,21 +254,21 @@ fn write_atom_link<W: std::io::Write>(
     link: &AtomLink,
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new("link");
-    tag.push_attribute(("href", link.href.as_str()));
+    tag.push_attribute((attr::HREF, link.href.as_str()));
     if let Some(rel) = &link.rel {
-        tag.push_attribute(("rel", rel.as_str()));
+        tag.push_attribute((attr::REL, rel.as_str()));
     }
     if let Some(type_) = &link.type_ {
-        tag.push_attribute(("type", type_.as_str()));
+        tag.push_attribute((attr::TYPE, type_.as_str()));
     }
     if let Some(lang) = &link.hreflang {
-        tag.push_attribute(("hreflang", lang.as_str()));
+        tag.push_attribute((attr::HREFLANG, lang.as_str()));
     }
     if let Some(title) = &link.title {
-        tag.push_attribute(("title", title.as_str()));
+        tag.push_attribute((attr::TITLE, title.as_str()));
     }
     if let Some(len) = link.length {
-        tag.push_attribute(("length", len.to_string().as_str()));
+        tag.push_attribute((attr::LENGTH, len.to_string().as_str()));
     }
     w.write_event(Event::Empty(tag))?;
     Ok(())
@@ -278,12 +279,12 @@ fn write_atom_category<W: std::io::Write>(
     cat: &AtomCategory,
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new("category");
-    tag.push_attribute(("term", cat.term.as_str()));
+    tag.push_attribute((attr::TERM, cat.term.as_str()));
     if let Some(scheme) = &cat.scheme {
-        tag.push_attribute(("scheme", scheme.as_str()));
+        tag.push_attribute((attr::SCHEME, scheme.as_str()));
     }
     if let Some(label) = &cat.label {
-        tag.push_attribute(("label", label.as_str()));
+        tag.push_attribute((attr::LABEL, label.as_str()));
     }
     w.write_event(Event::Empty(tag))?;
     Ok(())

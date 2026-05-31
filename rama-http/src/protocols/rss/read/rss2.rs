@@ -19,6 +19,7 @@ use tokio::io::AsyncBufRead;
 
 use super::super::atom::AtomLink;
 use super::super::error::{CollectError, FeedParseError, Rss2CollectError};
+use super::super::ext_names::attr;
 use super::super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::feed_ext::FeedExtensions;
 use super::super::parse_util::{attr_value, enclosure_from_attrs, parse_rss2_date};
@@ -427,7 +428,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         Ok(Action::Continue)
                     }
                     "guid" if self.in_item => {
-                        let permalink = attr_value(&e, b"isPermaLink")
+                        let permalink = attr_value(&e, attr::IS_PERMALINK)
                             .map(|v| v != "false")
                             .unwrap_or(true);
                         self.current_item.guid = Some(Rss2Guid {
@@ -437,11 +438,11 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         Ok(Action::Continue)
                     }
                     "source" if self.in_item => {
-                        self.pending_source_url = attr_value(&e, b"url");
+                        self.pending_source_url = attr_value(&e, attr::URL);
                         Ok(Action::Continue)
                     }
                     "category" => {
-                        self.pending_category_domain = attr_value(&e, b"domain");
+                        self.pending_category_domain = attr_value(&e, attr::DOMAIN);
                         Ok(Action::Continue)
                     }
                     _ => Ok(Action::Continue),

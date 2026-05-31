@@ -4,7 +4,7 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::ext_names::content;
+use super::super::ext_names::{attr, content};
 use super::super::ext_write;
 use super::super::ns;
 use super::super::read::Rss2Channel;
@@ -24,7 +24,7 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
     channel: &Rss2Channel,
 ) -> Result<(), XmlWriteError> {
     let mut rss_tag = BytesStart::new("rss");
-    rss_tag.push_attribute(("version", "2.0"));
+    rss_tag.push_attribute((attr::VERSION, "2.0"));
 
     ns::push_xmlns_itunes(&mut rss_tag);
     ns::push_xmlns_podcast(&mut rss_tag);
@@ -56,7 +56,7 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
     for cat in &channel.categories {
         let mut tag = BytesStart::new("category");
         if let Some(domain) = &cat.domain {
-            tag.push_attribute(("domain", domain.as_str()));
+            tag.push_attribute((attr::DOMAIN, domain.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&cat.name)))?;
@@ -87,21 +87,21 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
 
     for atom_link in &channel.atom_links {
         let mut tag = BytesStart::new("atom:link");
-        tag.push_attribute(("href", atom_link.href.as_str()));
+        tag.push_attribute((attr::HREF, atom_link.href.as_str()));
         if let Some(rel) = &atom_link.rel {
-            tag.push_attribute(("rel", rel.as_str()));
+            tag.push_attribute((attr::REL, rel.as_str()));
         }
         if let Some(type_) = &atom_link.type_ {
-            tag.push_attribute(("type", type_.as_str()));
+            tag.push_attribute((attr::TYPE, type_.as_str()));
         }
         if let Some(hreflang) = &atom_link.hreflang {
-            tag.push_attribute(("hreflang", hreflang.as_str()));
+            tag.push_attribute((attr::HREFLANG, hreflang.as_str()));
         }
         if let Some(title) = &atom_link.title {
-            tag.push_attribute(("title", title.as_str()));
+            tag.push_attribute((attr::TITLE, title.as_str()));
         }
         if let Some(len) = atom_link.length {
-            tag.push_attribute(("length", len.to_string().as_str()));
+            tag.push_attribute((attr::LENGTH, len.to_string().as_str()));
         }
         w.write_event(Event::Empty(tag))?;
     }
@@ -143,7 +143,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
     for cat in &item.categories {
         let mut tag = BytesStart::new("category");
         if let Some(domain) = &cat.domain {
-            tag.push_attribute(("domain", domain.as_str()));
+            tag.push_attribute((attr::DOMAIN, domain.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&cat.name)))?;
@@ -154,15 +154,18 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
 
     for enc in &item.enclosures {
         let mut tag = BytesStart::new("enclosure");
-        tag.push_attribute(("url", enc.url.as_str()));
-        tag.push_attribute(("length", enc.length.to_string().as_str()));
-        tag.push_attribute(("type", enc.type_.as_str()));
+        tag.push_attribute((attr::URL, enc.url.as_str()));
+        tag.push_attribute((attr::LENGTH, enc.length.to_string().as_str()));
+        tag.push_attribute((attr::TYPE, enc.type_.as_str()));
         w.write_event(Event::Empty(tag))?;
     }
 
     if let Some(guid) = &item.guid {
         let mut tag = BytesStart::new("guid");
-        tag.push_attribute(("isPermaLink", if guid.permalink { "true" } else { "false" }));
+        tag.push_attribute((
+            attr::IS_PERMALINK,
+            if guid.permalink { "true" } else { "false" },
+        ));
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&guid.value)))?;
         w.write_event(Event::End(BytesEnd::new("guid")))?;
@@ -174,7 +177,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
 
     if let Some(src) = &item.source {
         let mut tag = BytesStart::new("source");
-        tag.push_attribute(("url", src.url.as_str()));
+        tag.push_attribute((attr::URL, src.url.as_str()));
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&src.title)))?;
         w.write_event(Event::End(BytesEnd::new("source")))?;

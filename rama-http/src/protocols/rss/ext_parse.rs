@@ -14,7 +14,7 @@
 
 use quick_xml::name::ResolveResult;
 
-use super::ext_names::{content, dc, itunes, media, podcast};
+use super::ext_names::{attr, content, dc, itunes, media, podcast};
 use super::feed_ext::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
     MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
@@ -79,14 +79,14 @@ fn is_truthy(text: &str) -> bool {
 
 fn media_content_from_attrs(e: &Attrs<'_>) -> MediaContent {
     MediaContent {
-        url: attr_value(e, b"url"),
-        type_: attr_value(e, b"type"),
-        medium: attr_value(e, b"medium"),
-        duration: attr_value(e, b"duration").and_then(|v| v.parse().ok()),
-        width: attr_value(e, b"width").and_then(|v| v.parse().ok()),
-        height: attr_value(e, b"height").and_then(|v| v.parse().ok()),
-        file_size: attr_value(e, b"fileSize").and_then(|v| v.parse().ok()),
-        bitrate: attr_value(e, b"bitrate").and_then(|v| v.parse().ok()),
+        url: attr_value(e, attr::URL),
+        type_: attr_value(e, attr::TYPE),
+        medium: attr_value(e, attr::MEDIUM),
+        duration: attr_value(e, attr::DURATION).and_then(|v| v.parse().ok()),
+        width: attr_value(e, attr::WIDTH).and_then(|v| v.parse().ok()),
+        height: attr_value(e, attr::HEIGHT).and_then(|v| v.parse().ok()),
+        file_size: attr_value(e, attr::FILE_SIZE).and_then(|v| v.parse().ok()),
+        bitrate: attr_value(e, attr::BITRATE).and_then(|v| v.parse().ok()),
         title: None,
         description: None,
     }
@@ -94,33 +94,33 @@ fn media_content_from_attrs(e: &Attrs<'_>) -> MediaContent {
 
 fn media_thumbnail_from_attrs(e: &Attrs<'_>) -> MediaThumbnail {
     MediaThumbnail {
-        url: attr_value(e, b"url").unwrap_or_default(),
-        width: attr_value(e, b"width").and_then(|v| v.parse().ok()),
-        height: attr_value(e, b"height").and_then(|v| v.parse().ok()),
+        url: attr_value(e, attr::URL).unwrap_or_default(),
+        width: attr_value(e, attr::WIDTH).and_then(|v| v.parse().ok()),
+        height: attr_value(e, attr::HEIGHT).and_then(|v| v.parse().ok()),
     }
 }
 
 fn podcast_person_from_attrs(e: &Attrs<'_>) -> PodcastPerson {
     PodcastPerson {
         name: String::new(),
-        role: attr_value(e, b"role"),
-        group: attr_value(e, b"group"),
-        img: attr_value(e, b"img"),
-        href: attr_value(e, b"href"),
+        role: attr_value(e, attr::ROLE),
+        group: attr_value(e, attr::GROUP),
+        img: attr_value(e, attr::IMG),
+        href: attr_value(e, attr::HREF),
     }
 }
 
 fn podcast_location_from_attrs(e: &Attrs<'_>) -> PodcastLocation {
     PodcastLocation {
         name: String::new(),
-        geo: attr_value(e, b"geo"),
-        osm: attr_value(e, b"osm"),
+        geo: attr_value(e, attr::GEO),
+        osm: attr_value(e, attr::OSM),
     }
 }
 
 fn podcast_funding_from_attrs(e: &Attrs<'_>) -> PodcastFunding {
     PodcastFunding {
-        url: attr_value(e, b"url").unwrap_or_default(),
+        url: attr_value(e, attr::URL).unwrap_or_default(),
         title: None,
     }
 }
@@ -128,17 +128,17 @@ fn podcast_funding_from_attrs(e: &Attrs<'_>) -> PodcastFunding {
 fn podcast_trailer_from_attrs(e: &Attrs<'_>) -> PodcastTrailer {
     PodcastTrailer {
         title: String::new(),
-        url: attr_value(e, b"url").unwrap_or_default(),
-        pub_date: attr_value(e, b"pubDate").and_then(|v| parse_rss2_date(&v)),
-        length: attr_value(e, b"length").and_then(|v| v.parse().ok()),
-        type_: attr_value(e, b"type"),
-        season: attr_value(e, b"season").and_then(|v| v.parse().ok()),
+        url: attr_value(e, attr::URL).unwrap_or_default(),
+        pub_date: attr_value(e, attr::PUB_DATE).and_then(|v| parse_rss2_date(&v)),
+        length: attr_value(e, attr::LENGTH).and_then(|v| v.parse().ok()),
+        type_: attr_value(e, attr::TYPE),
+        season: attr_value(e, attr::SEASON).and_then(|v| v.parse().ok()),
     }
 }
 
 /// Parse an `f64` attribute, rejecting non-finite values (NaN/+Inf/-Inf).
 /// Most podcast clients refuse such timestamps and some crash on them.
-fn finite_f64(e: &Attrs<'_>, name: &[u8]) -> f64 {
+fn finite_f64(e: &Attrs<'_>, name: &str) -> f64 {
     attr_value(e, name)
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|v| v.is_finite())
@@ -147,28 +147,28 @@ fn finite_f64(e: &Attrs<'_>, name: &[u8]) -> f64 {
 
 fn podcast_soundbite_from_attrs(e: &Attrs<'_>) -> PodcastSoundbite {
     PodcastSoundbite {
-        start_time: finite_f64(e, b"startTime"),
-        duration: finite_f64(e, b"duration"),
+        start_time: finite_f64(e, attr::START_TIME),
+        duration: finite_f64(e, attr::DURATION),
         title: None,
     }
 }
 
 fn podcast_transcript_from_attrs(e: &Attrs<'_>) -> PodcastTranscript {
     PodcastTranscript {
-        url: attr_value(e, b"url").unwrap_or_default(),
-        type_: attr_value(e, b"type").unwrap_or_default(),
-        language: attr_value(e, b"language"),
-        rel: attr_value(e, b"rel"),
+        url: attr_value(e, attr::URL).unwrap_or_default(),
+        type_: attr_value(e, attr::TYPE).unwrap_or_default(),
+        language: attr_value(e, attr::LANGUAGE),
+        rel: attr_value(e, attr::REL),
     }
 }
 
 fn podcast_remote_item_from_attrs(e: &Attrs<'_>) -> PodcastRemoteItem {
     PodcastRemoteItem {
-        feed_guid: attr_value(e, b"feedGuid").unwrap_or_default(),
-        item_guid: attr_value(e, b"itemGuid"),
-        feed_url: attr_value(e, b"feedUrl"),
-        title: attr_value(e, b"title"),
-        medium: attr_value(e, b"medium"),
+        feed_guid: attr_value(e, attr::FEED_GUID).unwrap_or_default(),
+        item_guid: attr_value(e, attr::ITEM_GUID),
+        feed_url: attr_value(e, attr::FEED_URL),
+        title: attr_value(e, attr::TITLE),
+        medium: attr_value(e, attr::MEDIUM),
     }
 }
 
@@ -233,7 +233,7 @@ impl ItemExtAcc {
     pub(super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, b"href") {
+                if let Some(href) = attr_value(e, attr::HREF) {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
@@ -253,13 +253,13 @@ impl ItemExtAcc {
             (Ns::Podcast, podcast::SEASON) => {
                 self.pending_season = Some(PodcastSeason {
                     number: 0,
-                    name: attr_value(e, b"name"),
+                    name: attr_value(e, attr::NAME),
                 });
             }
             (Ns::Podcast, podcast::EPISODE) => {
                 self.pending_episode = Some(PodcastEpisode {
                     number: 0.0,
-                    display: attr_value(e, b"display"),
+                    display: attr_value(e, attr::DISPLAY),
                 });
             }
             _ => return false,
@@ -271,7 +271,7 @@ impl ItemExtAcc {
     pub(super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, b"href") {
+                if let Some(href) = attr_value(e, attr::HREF) {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
@@ -292,8 +292,8 @@ impl ItemExtAcc {
             }
             (Ns::Podcast, podcast::CHAPTERS) => {
                 self.podcast.chapters = Some(PodcastChapters {
-                    url: attr_value(e, b"url").unwrap_or_default(),
-                    type_: attr_value(e, b"type").unwrap_or_default(),
+                    url: attr_value(e, attr::URL).unwrap_or_default(),
+                    type_: attr_value(e, attr::TYPE).unwrap_or_default(),
                 });
                 self.has_podcast = true;
             }
@@ -314,14 +314,14 @@ impl ItemExtAcc {
             (Ns::Podcast, podcast::SEASON) => {
                 self.podcast.season = Some(PodcastSeason {
                     number: 0,
-                    name: attr_value(e, b"name"),
+                    name: attr_value(e, attr::NAME),
                 });
                 self.has_podcast = true;
             }
             (Ns::Podcast, podcast::EPISODE) => {
                 self.podcast.episode = Some(PodcastEpisode {
                     number: 0.0,
-                    display: attr_value(e, b"display"),
+                    display: attr_value(e, attr::DISPLAY),
                 });
                 self.has_podcast = true;
             }
@@ -481,7 +481,7 @@ impl FeedExtAcc {
     pub(super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, b"href") {
+                if let Some(href) = attr_value(e, attr::HREF) {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
@@ -510,13 +510,13 @@ impl FeedExtAcc {
     pub(super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, b"href") {
+                if let Some(href) = attr_value(e, attr::HREF) {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
             }
             (Ns::ITunes, itunes::CATEGORY) => {
-                if let Some(v) = attr_value(e, b"text") {
+                if let Some(v) = attr_value(e, attr::TEXT) {
                     self.itunes.categories.push(v);
                     self.has_itunes = true;
                 }
