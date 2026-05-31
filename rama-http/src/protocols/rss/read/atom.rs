@@ -346,7 +346,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             if header.id.is_empty() {
                 return Err(FeedParseError::new("Atom feed missing required <id>"));
             }
-            if header.title.value().is_empty() {
+            if header.title.value.is_empty() {
                 return Err(FeedParseError::new("Atom feed missing required <title>"));
             }
             if !self.feed_updated_parsed {
@@ -525,7 +525,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         if let Some(src) = attr_value(&e, b"src") {
                             let type_ = attr_value(&e, b"type").unwrap_or_else(|| "text".into());
                             self.current_entry.content = Some(AtomContent {
-                                value: AtomText::Text(type_),
+                                value: AtomText::text(type_),
                                 src: Some(src),
                             });
                         }
@@ -600,30 +600,30 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             match which {
                 "title" => {
                     if self.in_entry {
-                        self.current_entry.title = AtomText::Xhtml(xml);
+                        self.current_entry.title = AtomText::xhtml(xml);
                         self.current_entry_title_set = true;
                     } else {
-                        self.header.title = AtomText::Xhtml(xml);
+                        self.header.title = AtomText::xhtml(xml);
                     }
                 }
                 "summary" => {
-                    self.current_entry.summary = Some(AtomText::Xhtml(xml));
+                    self.current_entry.summary = Some(AtomText::xhtml(xml));
                 }
                 "content" => {
                     self.current_entry.content = Some(AtomContent {
-                        value: AtomText::Xhtml(xml),
+                        value: AtomText::xhtml(xml),
                         src: None,
                     });
                 }
                 "rights" => {
                     if self.in_entry {
-                        self.current_entry.rights = Some(AtomText::Xhtml(xml));
+                        self.current_entry.rights = Some(AtomText::xhtml(xml));
                     } else {
-                        self.header.rights = Some(AtomText::Xhtml(xml));
+                        self.header.rights = Some(AtomText::xhtml(xml));
                     }
                 }
                 "subtitle" => {
-                    self.header.subtitle = Some(AtomText::Xhtml(xml));
+                    self.header.subtitle = Some(AtomText::xhtml(xml));
                 }
                 _ => {}
             }

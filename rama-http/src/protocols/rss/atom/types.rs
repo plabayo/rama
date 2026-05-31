@@ -5,59 +5,74 @@ use super::super::feed_ext::{
 };
 use super::super::rss2::Missing;
 
-/// Atom text construct — `text`, `html`, or `xhtml`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AtomText {
-    Text(String),
-    Html(String),
-    Xhtml(String),
+/// Atom text construct: a string body plus a [`AtomTextKind`] that says how
+/// to interpret/serialize it. Equivalent of the spec's "Text Construct"
+/// (RFC 4287 §3.1).
+///
+/// For `Xhtml`, `value` is the raw inner XML *with the wrapping `<div>`
+/// stripped* — the serializer puts the `<div xmlns="…/xhtml">` back on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomText {
+    pub value: String,
+    pub kind: AtomTextKind,
+}
+
+/// Which Atom `type=` attribute applies to an [`AtomText`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtomTextKind {
+    Text,
+    Html,
+    Xhtml,
+}
+
+impl AtomTextKind {
+    /// The lowercased `type=` attribute value Atom uses on the wire
+    /// (`"text"`, `"html"`, `"xhtml"`).
+    #[must_use]
+    pub fn type_attr(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Html => "html",
+            Self::Xhtml => "xhtml",
+        }
+    }
 }
 
 impl AtomText {
     #[must_use]
     pub fn text(s: impl Into<String>) -> Self {
-        Self::Text(s.into())
+        Self {
+            value: s.into(),
+            kind: AtomTextKind::Text,
+        }
     }
 
     #[must_use]
     pub fn html(s: impl Into<String>) -> Self {
-        Self::Html(s.into())
+        Self {
+            value: s.into(),
+            kind: AtomTextKind::Html,
+        }
     }
 
     #[must_use]
     pub fn xhtml(s: impl Into<String>) -> Self {
-        Self::Xhtml(s.into())
-    }
-
-    /// The Atom `type=` attribute value (`text`/`html`/`xhtml`) for this construct.
-    #[must_use]
-    pub fn type_attr(&self) -> &'static str {
-        match self {
-            Self::Text(_) => "text",
-            Self::Html(_) => "html",
-            Self::Xhtml(_) => "xhtml",
-        }
-    }
-
-    /// The inner string regardless of variant. For `Xhtml` this is the raw
-    /// inner XML (with the wrapping `<div>` stripped).
-    #[must_use]
-    pub fn value(&self) -> &str {
-        match self {
-            Self::Text(s) | Self::Html(s) | Self::Xhtml(s) => s,
+        Self {
+            value: s.into(),
+            kind: AtomTextKind::Xhtml,
         }
     }
 }
 
 impl From<&str> for AtomText {
     fn from(s: &str) -> Self {
-        Self::Text(s.to_owned())
+        Self::text(s)
     }
 }
 
 impl From<String> for AtomText {
     fn from(s: String) -> Self {
-        Self::Text(s)
+        Self::text(s)
     }
 }
 
@@ -218,7 +233,7 @@ impl AtomContent {
     #[must_use]
     pub fn out_of_line(src: impl Into<String>, type_: impl Into<String>) -> Self {
         Self {
-            value: AtomText::Text(type_.into()),
+            value: AtomText::text(type_),
             src: Some(src.into()),
         }
     }

@@ -18,7 +18,6 @@ use rama_core::futures::Stream;
 use rama_core::futures::stream::BoxStream;
 use tokio::io::AsyncBufRead;
 
-use super::super::atom::AtomText;
 use super::super::error::{CollectError, FeedCollectError, FeedParseError};
 use super::super::feed::{Feed, FeedItem, pick_alternate, pick_rel};
 use super::super::parse_util::{detect_atom, detect_rss};
@@ -170,7 +169,7 @@ impl FeedStream {
     pub fn title(&self) -> &str {
         match self {
             Self::Rss2(s) => &s.channel().title,
-            Self::Atom(s) => s.header().title.value(),
+            Self::Atom(s) => s.header().title.value.as_str(),
         }
     }
 
@@ -179,7 +178,7 @@ impl FeedStream {
     pub fn description(&self) -> Option<&str> {
         match self {
             Self::Rss2(s) => Some(&s.channel().description),
-            Self::Atom(s) => s.header().subtitle.as_ref().map(AtomText::value),
+            Self::Atom(s) => s.header().subtitle.as_ref().map(|t| t.value.as_str()),
         }
     }
 
@@ -224,7 +223,7 @@ impl FeedStream {
     pub fn copyright(&self) -> Option<&str> {
         match self {
             Self::Rss2(s) => s.channel().copyright.as_deref(),
-            Self::Atom(s) => s.header().rights.as_ref().map(AtomText::value),
+            Self::Atom(s) => s.header().rights.as_ref().map(|t| t.value.as_str()),
         }
     }
 

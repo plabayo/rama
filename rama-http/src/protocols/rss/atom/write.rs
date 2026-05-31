@@ -7,7 +7,9 @@ use super::super::ext_write;
 use super::super::ns;
 use super::super::read::AtomHeader;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
-use super::types::{AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText};
+use super::types::{
+    AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText, AtomTextKind,
+};
 
 /// Open `<feed>` and emit all feed-level metadata + extension blocks. Stops
 /// just before entries so the caller can stream them in.
@@ -155,11 +157,13 @@ fn write_atom_content<W: std::io::Write>(
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new("content");
     if let Some(src) = &content.src {
+        // Out-of-line content: AtomContent::out_of_line stuffs the MIME type
+        // into the AtomText body so we can serialise it back out here.
         tag.push_attribute(("src", src.as_str()));
-        tag.push_attribute(("type", content.value.value()));
+        tag.push_attribute(("type", content.value.value.as_str()));
         w.write_event(Event::Empty(tag))?;
     } else {
-        tag.push_attribute(("type", content.value.type_attr()));
+        tag.push_attribute(("type", content.value.kind.type_attr()));
         w.write_event(Event::Start(tag))?;
         write_atom_text_body(w, &content.value)?;
         w.write_event(Event::End(BytesEnd::new("content")))?;
@@ -173,7 +177,7 @@ fn write_atom_text<W: std::io::Write>(
     text: &AtomText,
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new(name);
-    tag.push_attribute(("type", text.type_attr()));
+    tag.push_attribute(("type", text.kind.type_attr()));
     w.write_event(Event::Start(tag))?;
     write_atom_text_body(w, text)?;
     w.write_event(Event::End(BytesEnd::new(name)))?;
@@ -184,14 +188,15 @@ fn write_atom_text_body<W: std::io::Write>(
     w: &mut Writer<W>,
     text: &AtomText,
 ) -> Result<(), XmlWriteError> {
-    match text {
-        AtomText::Text(s) => {
+    let s = text.value.as_str();
+    match text.kind {
+        AtomTextKind::Text => {
             w.write_event(Event::Text(BytesText::new(s)))?;
         }
-        AtomText::Html(s) => {
+        AtomTextKind::Html => {
             write_cdata_escaped(w, s)?;
         }
-        AtomText::Xhtml(s) => {
+        AtomTextKind::Xhtml => {
             // RFC 4287 §3.1.1.3: xhtml content is a single XHTML-namespaced
             // <div> whose children are real markup, emitted verbatim. Guard
             // against malformed input so we never emit a broken document.
@@ -204,7 +209,7 @@ fn write_atom_text_body<W: std::io::Write>(
             let mut div = BytesStart::new("div");
             div.push_attribute(("xmlns", ns::XHTML_NS));
             w.write_event(Event::Start(div))?;
-            w.write_event(Event::Text(BytesText::from_escaped(s.as_str())))?;
+            w.write_event(Event::Text(BytesText::from_escaped(s)))?;
             w.write_event(Event::End(BytesEnd::new("div")))?;
         }
     }
@@ -299,7 +304,7 @@ mod tests {
             .title("Test Feed")
             .build();
         assert_eq!(feed.id, "urn:uuid:test");
-        assert_eq!(feed.title, AtomText::Text("Test Feed".into()));
+        assert_eq!(feed.title, AtomText::text("Test Feed"));
         assert_eq!(feed.updated, ts);
     }
 
@@ -331,8 +336,8 @@ mod tests {
     #[test]
     fn atom_text_preserves_type() {
         let text = AtomText::html("<b>bold</b>");
-        assert_eq!(text.type_attr(), "html");
-        assert_eq!(text.value(), "<b>bold</b>");
+        assert_eq!(text.kind.type_attr(), "html");
+        assert_eq!(text.value, "<b>bold</b>");
     }
 
     #[tokio::test]

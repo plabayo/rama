@@ -20,7 +20,7 @@ use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
 use crate::{Body, Response};
 
-use super::atom::{AtomEntry, AtomFeed, AtomLink, AtomText};
+use super::atom::{AtomEntry, AtomFeed, AtomLink};
 use super::error::FeedParseError;
 use super::read::FeedStream;
 use super::rss2::{Rss2Enclosure, Rss2Feed, Rss2Item};
@@ -63,7 +63,7 @@ impl FeedItem {
     pub fn title(&self) -> Option<&str> {
         match self {
             Self::Rss2(i) => i.title.as_deref(),
-            Self::Atom(e) => Some(e.title.value()),
+            Self::Atom(e) => Some(e.title.value.as_str()),
         }
     }
 
@@ -91,7 +91,7 @@ impl FeedItem {
     pub fn summary(&self) -> Option<&str> {
         match self {
             Self::Rss2(i) => i.description.as_deref(),
-            Self::Atom(e) => e.summary.as_ref().map(AtomText::value),
+            Self::Atom(e) => e.summary.as_ref().map(|t| t.value.as_str()),
         }
     }
 
@@ -109,7 +109,7 @@ impl FeedItem {
                 .as_ref()
                 .and_then(|c| c.encoded.as_deref())
                 .or(i.description.as_deref()),
-            Self::Atom(e) => e.content.as_ref().map(|c| c.value.value()),
+            Self::Atom(e) => e.content.as_ref().map(|c| c.value.value.as_str()),
         }
     }
 
@@ -314,7 +314,7 @@ impl Feed {
     pub fn title(&self) -> &str {
         match self {
             Self::Rss2(f) => &f.title,
-            Self::Atom(f) => f.title.value(),
+            Self::Atom(f) => f.title.value.as_str(),
         }
     }
 
@@ -323,7 +323,7 @@ impl Feed {
     pub fn description(&self) -> Option<&str> {
         match self {
             Self::Rss2(f) => Some(&f.description),
-            Self::Atom(f) => f.subtitle.as_ref().map(AtomText::value),
+            Self::Atom(f) => f.subtitle.as_ref().map(|t| t.value.as_str()),
         }
     }
 
@@ -372,7 +372,7 @@ impl Feed {
     pub fn copyright(&self) -> Option<&str> {
         match self {
             Self::Rss2(f) => f.copyright.as_deref(),
-            Self::Atom(f) => f.rights.as_ref().map(AtomText::value),
+            Self::Atom(f) => f.rights.as_ref().map(|t| t.value.as_str()),
         }
     }
 

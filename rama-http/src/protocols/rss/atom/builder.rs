@@ -35,7 +35,7 @@ impl AtomFeedBuilder<Missing, Missing, Missing> {
     pub(super) fn new() -> Self {
         Self {
             id: String::new(),
-            title: AtomText::Text(String::new()),
+            title: AtomText::text(""),
             updated: None,
             authors: Vec::new(),
             links: Vec::new(),

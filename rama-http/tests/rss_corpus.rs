@@ -126,7 +126,7 @@ async fn atom_source_does_not_leak_into_entry() {
     let entry = &feed.entries[0];
 
     assert_eq!(entry.id, "https://aggregator.example.com/republished/1");
-    assert_eq!(entry.title.value(), "Republished Post");
+    assert_eq!(entry.title.value, "Republished Post");
     assert_eq!(entry.authors.len(), 1);
     assert_eq!(entry.authors[0].name, "EntryAuthor");
     // The single <link> on the entry is the entry's own, NOT the source's.
@@ -197,7 +197,7 @@ async fn prefixed_atom_root_parses() {
     };
     assert_eq!(feed.entries.len(), 1);
     assert_eq!(
-        feed.entries[0].title.value(),
+        feed.entries[0].title.value,
         "An entry under a non-default Atom prefix"
     );
 }
@@ -252,11 +252,11 @@ async fn typed_stream_header_visible_before_items_and_drain_works() {
     let cursor = std::io::Cursor::new(bytes);
     let reader = tokio::io::BufReader::new(cursor);
     let s = AtomFeedStream::new(reader).await.unwrap();
-    assert_eq!(s.header().title.value(), "Example Blog");
+    assert_eq!(s.header().title.value, "Example Blog");
     let (header, mut entries) = s.drain();
     assert_eq!(header.id, "urn:uuid:6e95a2c8-9d5e-4f9f-9b6f-21f7d5b1f9aa");
     let first = entries.next().await.unwrap().unwrap();
-    assert_eq!(first.title.value(), "Hello, world");
+    assert_eq!(first.title.value, "Hello, world");
 }
 
 /// `collect_filtered` must keep only items the predicate accepts, drop the

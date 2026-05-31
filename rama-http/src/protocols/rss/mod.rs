@@ -78,7 +78,7 @@ pub use rss2::{
 
 pub use atom::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomFeedBuilder, AtomGenerator, AtomLink,
-    AtomPerson, AtomSource, AtomText,
+    AtomPerson, AtomSource, AtomText, AtomTextKind,
 };
 
 // ---------------------------------------------------------------------------

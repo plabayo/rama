@@ -42,9 +42,9 @@ pub(super) fn parse_rfc3339_lax(s: &str) -> Option<Timestamp> {
 /// [`AtomText`] variant.
 pub(super) fn make_atom_text(type_attr: &str, value: String) -> AtomText {
     match type_attr {
-        "html" | "text/html" => AtomText::Html(value),
-        "xhtml" => AtomText::Xhtml(value),
-        _ => AtomText::Text(value),
+        "html" | "text/html" => AtomText::html(value),
+        "xhtml" => AtomText::xhtml(value),
+        _ => AtomText::text(value),
     }
 }
 
