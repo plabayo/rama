@@ -5,74 +5,46 @@ use quick_xml::{
 
 use super::super::ext_write;
 use super::super::ns;
+use super::super::read::AtomHeader;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
-use super::types::{
-    AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
-};
-
-pub(super) fn write_atom_feed<W: std::io::Write>(
-    w: &mut Writer<W>,
-    feed: &AtomFeed,
-) -> Result<(), XmlWriteError> {
-    write_atom_feed_header(w, feed)?;
-    for entry in &feed.entries {
-        write_atom_entry(w, entry)?;
-    }
-    write_atom_feed_footer(w)
-}
+use super::types::{AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText};
 
 /// Open `<feed>` and emit all feed-level metadata + extension blocks. Stops
 /// just before entries so the caller can stream them in.
-pub(in super::super) fn write_atom_feed_header<W: std::io::Write>(
+///
+/// Always declares the well-known extension namespaces (`itunes`, `podcast`,
+/// `dc`, `media`); see the comment in [`super::super::rss2::write_rss2_channel_open`]
+/// for why.
+pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
     w: &mut Writer<W>,
-    feed: &AtomFeed,
+    header: &AtomHeader,
 ) -> Result<(), XmlWriteError> {
     let mut feed_tag = BytesStart::new("feed");
     ns::push_xmlns_atom_default(&mut feed_tag);
-
-    let needs_itunes = feed.extensions.itunes.is_some()
-        || feed.entries.iter().any(|e| e.extensions.itunes.is_some());
-    let needs_podcast = feed.extensions.podcast.is_some()
-        || feed.entries.iter().any(|e| e.extensions.podcast.is_some());
-    let needs_dc = feed.extensions.dublin_core.is_some()
-        || feed
-            .entries
-            .iter()
-            .any(|e| e.extensions.dublin_core.is_some());
-    let needs_media = feed.entries.iter().any(|e| e.extensions.media.is_some());
-
-    if needs_itunes {
-        ns::push_xmlns_itunes(&mut feed_tag);
-    }
-    if needs_podcast {
-        ns::push_xmlns_podcast(&mut feed_tag);
-    }
-    if needs_dc {
-        ns::push_xmlns_dc(&mut feed_tag);
-    }
-    if needs_media {
-        ns::push_xmlns_media(&mut feed_tag);
-    }
+    ns::push_xmlns_itunes(&mut feed_tag);
+    ns::push_xmlns_podcast(&mut feed_tag);
+    ns::push_xmlns_dc(&mut feed_tag);
+    ns::push_xmlns_media(&mut feed_tag);
 
     w.write_event(Event::Start(feed_tag))?;
 
-    write_text_elem(w, "id", &feed.id)?;
-    write_atom_text(w, "title", &feed.title)?;
-    write_text_elem(w, "updated", &feed.updated.to_string())?;
+    write_text_elem(w, "id", &header.id)?;
+    write_atom_text(w, "title", &header.title)?;
+    write_text_elem(w, "updated", &header.updated.to_string())?;
 
-    for author in &feed.authors {
+    for author in &header.authors {
         write_atom_person(w, "author", author)?;
     }
-    for link in &feed.links {
+    for link in &header.links {
         write_atom_link(w, link)?;
     }
-    for cat in &feed.categories {
+    for cat in &header.categories {
         write_atom_category(w, cat)?;
     }
-    for contrib in &feed.contributors {
+    for contrib in &header.contributors {
         write_atom_person(w, "contributor", contrib)?;
     }
-    if let Some(generator) = &feed.generator {
+    if let Some(generator) = &header.generator {
         let mut tag = BytesStart::new("generator");
         if let Some(uri) = &generator.uri {
             tag.push_attribute(("uri", uri.as_str()));
@@ -84,30 +56,30 @@ pub(in super::super) fn write_atom_feed_header<W: std::io::Write>(
         w.write_event(Event::Text(BytesText::new(&generator.value)))?;
         w.write_event(Event::End(BytesEnd::new("generator")))?;
     }
-    write_opt_text_elem(w, "icon", feed.icon.as_deref())?;
-    write_opt_text_elem(w, "logo", feed.logo.as_deref())?;
-    if let Some(rights) = &feed.rights {
+    write_opt_text_elem(w, "icon", header.icon.as_deref())?;
+    write_opt_text_elem(w, "logo", header.logo.as_deref())?;
+    if let Some(rights) = &header.rights {
         write_atom_text(w, "rights", rights)?;
     }
-    if let Some(subtitle) = &feed.subtitle {
+    if let Some(subtitle) = &header.subtitle {
         write_atom_text(w, "subtitle", subtitle)?;
     }
 
-    if let Some(itunes) = &feed.extensions.itunes {
+    if let Some(itunes) = &header.extensions.itunes {
         ext_write::write_itunes_feed(w, itunes)?;
     }
-    if let Some(podcast) = &feed.extensions.podcast {
+    if let Some(podcast) = &header.extensions.podcast {
         ext_write::write_podcast_feed(w, podcast)?;
     }
-    if let Some(dc) = &feed.extensions.dublin_core {
+    if let Some(dc) = &header.extensions.dublin_core {
         ext_write::write_dc_feed_fields(w, dc)?;
     }
 
     Ok(())
 }
 
-/// Close `</feed>`. Pairs with [`write_atom_feed_header`].
-pub(in super::super) fn write_atom_feed_footer<W: std::io::Write>(
+/// Close `</feed>`. Pairs with [`write_atom_feed_open`].
+pub(in super::super) fn write_atom_feed_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new("feed")))?;
@@ -331,8 +303,8 @@ mod tests {
         assert_eq!(feed.updated, ts);
     }
 
-    #[test]
-    fn feed_serializes_to_valid_xml() {
+    #[tokio::test]
+    async fn feed_serializes_to_valid_xml() {
         let ts = Timestamp::now();
         let feed = AtomFeed::builder()
             .id("https://example.com/feed")
@@ -346,7 +318,8 @@ mod tests {
             )
             .build();
 
-        let xml = feed.to_string();
+        let xml_bytes = feed.to_xml().await.expect("serialize");
+        let xml = String::from_utf8(xml_bytes).expect("utf-8");
         assert!(xml.contains("<?xml"));
         assert!(xml.contains(r#"xmlns="http://www.w3.org/2005/Atom""#));
         assert!(xml.contains("<id>https://example.com/feed</id>"));
@@ -362,8 +335,8 @@ mod tests {
         assert_eq!(text.value(), "<b>bold</b>");
     }
 
-    #[test]
-    fn xhtml_malformed_content_errors() {
+    #[tokio::test]
+    async fn xhtml_malformed_content_errors() {
         let ts = Timestamp::UNIX_EPOCH;
         let bad = AtomFeed::builder()
             .id("urn:f")
@@ -375,6 +348,7 @@ mod tests {
             }))
             .build();
         bad.to_xml()
+            .await
             .expect_err("malformed xhtml should fail to serialize");
 
         let ok = AtomFeed::builder()
@@ -386,11 +360,11 @@ mod tests {
                 src: None,
             }))
             .build();
-        ok.to_xml().expect("valid xhtml should serialize");
+        ok.to_xml().await.expect("valid xhtml should serialize");
     }
 
-    #[test]
-    fn xhtml_content_wrapped_in_namespaced_div() {
+    #[tokio::test]
+    async fn xhtml_content_wrapped_in_namespaced_div() {
         let ts = Timestamp::UNIX_EPOCH;
         let feed = AtomFeed::builder()
             .id("urn:f")
@@ -401,7 +375,8 @@ mod tests {
                 src: None,
             }))
             .build();
-        let xml = feed.to_string();
+        let xml_bytes = feed.to_xml().await.expect("serialize");
+        let xml = String::from_utf8(xml_bytes).expect("utf-8");
         assert!(
             xml.contains(
                 r#"<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>hi</p></div></content>"#

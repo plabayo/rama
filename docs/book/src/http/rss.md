@@ -62,14 +62,18 @@ Rama gives you:
   namespace URI rather than by literal prefix, so a feed declaring
   `xmlns:pod="https://podcastindex.org/namespace/1.0"` is parsed identically
   to one using the conventional `xmlns:podcast`.
-- **Streaming-first, both directions.** Reading and writing both treat the
-  feed as a header followed by an async stream of items. On the read side the
-  channel/feed header is parsed up front and inspectable before any item is
-  pulled, so a consumer can decide whether to keep going (or to apply a filter)
-  without first buffering the whole document. On the write side a `Stream` of
-  items is serialized incrementally, so a server can emit a feed of arbitrary
-  size with bounded memory. The in-memory whole-feed adapters are thin
-  conveniences on top of the same streams.
+- **Streaming-first, both directions, symmetric model.** Reading and writing
+  both treat the feed as a header followed by an async stream of items, and
+  both use the *same* header and item types — what the reader drains is what
+  the writer expects to be given. On the read side the channel/feed header is
+  parsed up front and inspectable before any item is pulled, so a consumer can
+  decide whether to keep going (or apply a filter) without buffering the whole
+  document. On the write side the symmetric path lets a server build the
+  header first and pipe items in from any async source (database pagination,
+  upstream proxy, scheduled job) so the response starts flowing before every
+  item is materialised. Everything async; there's no sync serialization path.
+  The in-memory whole-feed adapters are thin conveniences on top of the same
+  streams.
 - **Partial results on failure.** If an item partway through a feed fails to
   parse, the error carries the header and every item that succeeded before it,
   so a client doesn't lose the rest of a long feed to one bad entry. A lossy

@@ -1,8 +1,14 @@
 //! RSS 2.0 podcast feed example with iTunes and Podcasting 2.0 extensions.
 //!
-//! Demonstrates serving a podcast RSS feed with episode enclosures, iTunes
-//! metadata, and Podcasting 2.0 extension fields.  Also shows how a streaming
-//! writer can produce the feed without buffering all items in memory.
+//! Two routes:
+//!
+//! * `/podcast.rss` — one-shot: build a whole [`Rss2Feed`] in-memory and let
+//!   `IntoResponse` stream it out. Fine when the catalogue fits in memory.
+//! * `/podcast-stream.rss` — streamed: build a [`Rss2Channel`] header up front,
+//!   then pipe episodes from a faux paginated store through
+//!   [`Rss2StreamWriter`] so the response starts flowing before every item is
+//!   materialised. Mirrors the shape of "fetch a page of episodes from the
+//!   database at a time, no buffering" that a real podcast backend needs.
 //!
 //! # Run the example
 //!
@@ -35,7 +41,7 @@ use rama::{
         headers::ContentType,
         layer::trace::TraceLayer,
         protocols::rss::{
-            Rss2Enclosure, Rss2Feed, Rss2FeedMeta, Rss2Guid, Rss2Item, Rss2StreamWriter,
+            Rss2Channel, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Item, Rss2StreamWriter,
             feed_ext::{
                 FeedExtensions, ITunes, ITunesFeed, ItemExtensions, Podcast, PodcastEpisode,
                 PodcastFeed, PodcastSeason,
@@ -91,25 +97,64 @@ async fn podcast_feed() -> impl IntoResponse {
 }
 
 async fn podcast_stream() -> impl IntoResponse {
-    let meta = Rss2FeedMeta {
+    // The channel header is the same type the reader produces — same shape
+    // both ways, so the construct ↔ drain path round-trips through one model.
+    let channel = Rss2Channel {
         title: "Netstack.FM (streaming)".into(),
         link: "https://netstack.fm".into(),
         description: "Streamed podcast feed.".into(),
         language: Some("en".into()),
         generator: Some("rama Rss2StreamWriter".into()),
+        ..Default::default()
     };
 
+    // Simulate paginated fetches from a backing store (e.g. a database that
+    // returns 2 episodes at a time). Items are yielded as each page arrives;
+    // the writer never sees the whole catalogue at once.
     let item_stream = stream_fn(move |mut yielder| async move {
-        for ep in EPISODES {
-            let item = make_episode_item(ep);
-            yielder.yield_item(Ok::<_, Infallible>(item)).await;
+        let store = EpisodeStore::new(EPISODES, 2);
+        let mut offset = 0;
+        while let Some(page) = store.page(offset).await {
+            offset += page.len();
+            for ep in page {
+                yielder
+                    .yield_item(Ok::<_, Infallible>(make_episode_item(ep)))
+                    .await;
+            }
         }
     });
 
     (
         Headers::single(ContentType::rss()),
-        Body::from_stream(Rss2StreamWriter::new(meta, item_stream)),
+        Body::from_stream(Rss2StreamWriter::new(channel, item_stream)),
     )
+}
+
+/// Faux paginated catalogue store. Stands in for a database or external
+/// service the streaming endpoint reads from one page at a time.
+struct EpisodeStore<'a> {
+    episodes: &'a [Episode],
+    page_size: usize,
+}
+
+impl<'a> EpisodeStore<'a> {
+    fn new(episodes: &'a [Episode], page_size: usize) -> Self {
+        Self {
+            episodes,
+            page_size,
+        }
+    }
+
+    /// Fetch the next page starting at `offset`. Returns `None` once the end
+    /// of the catalogue has been reached. The `await` is symbolic — a real
+    /// implementation would await an actual I/O round-trip here.
+    async fn page(&self, offset: usize) -> Option<&'a [Episode]> {
+        if offset >= self.episodes.len() {
+            return None;
+        }
+        let end = (offset + self.page_size).min(self.episodes.len());
+        Some(&self.episodes[offset..end])
+    }
 }
 
 fn make_episode_item(ep: &Episode) -> Rss2Item {

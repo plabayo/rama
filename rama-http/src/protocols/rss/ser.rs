@@ -7,7 +7,7 @@ use quick_xml::{
 
 /// Error type for XML write operations.
 #[derive(Debug)]
-pub struct XmlWriteError(quick_xml::Error);
+pub(super) struct XmlWriteError(quick_xml::Error);
 
 impl std::fmt::Display for XmlWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

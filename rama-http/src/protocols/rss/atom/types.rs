@@ -257,99 +257,32 @@ impl AtomFeed {
         super::builder::AtomFeedBuilder::new()
     }
 
-    /// Render the feed to a single in-memory XML document. Convenience
-    /// "collect" side of [`Self::to_byte_stream`].
-    pub fn to_xml(&self) -> Result<Vec<u8>, super::super::ser::XmlWriteError> {
-        use quick_xml::{
-            Writer,
-            events::{BytesDecl, Event},
-        };
-        let mut buf = Vec::with_capacity(4096);
-        let mut w = Writer::new(&mut buf);
-        w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
-        super::write::write_atom_feed(&mut w, self)?;
-        Ok(buf)
-    }
-
-    /// Consume the feed and produce a byte stream that emits the XML document
-    /// incrementally — one chunk for the feed header, one per `<entry>`, and
-    /// one for the footer. Plugs directly into [`crate::Body::from_stream`].
-    pub fn to_byte_stream(
+    /// Stream the feed as XML bytes. Equivalent to
+    /// [`super::super::AtomStreamWriter::from_feed`]; provided as a method for
+    /// discoverability when starting from a whole in-memory feed.
+    ///
+    /// Plugs directly into [`crate::Body::from_stream`].
+    #[must_use]
+    pub fn into_stream_writer(
         self,
-    ) -> impl rama_core::futures::Stream<
-        Item = Result<rama_core::bytes::Bytes, rama_core::error::BoxError>,
-    > + Send {
-        use quick_xml::{
-            Writer,
-            events::{BytesDecl, Event},
-        };
-        use rama_core::bytes::{BufMut as _, BytesMut};
-        use rama_core::futures::async_stream::stream_fn;
-
-        stream_fn(move |mut yielder| async move {
-            let mut scratch = BytesMut::with_capacity(4096);
-
-            // Header
-            {
-                let mut w = Writer::new((&mut scratch).writer());
-                if let Err(e) =
-                    w.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
-                {
-                    yielder
-                        .yield_item(Err(Box::new(super::super::ser::XmlWriteError::from(e))
-                            as rama_core::error::BoxError))
-                        .await;
-                    return;
-                }
-                if let Err(e) = super::write::write_atom_feed_header(&mut w, &self) {
-                    yielder
-                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
-                        .await;
-                    return;
-                }
-            }
-            yielder.yield_item(Ok(scratch.split().freeze())).await;
-
-            // One entry per chunk.
-            for entry in &self.entries {
-                let mut w = Writer::new((&mut scratch).writer());
-                if let Err(e) = super::write::write_atom_entry(&mut w, entry) {
-                    yielder
-                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
-                        .await;
-                    return;
-                }
-                yielder.yield_item(Ok(scratch.split().freeze())).await;
-            }
-
-            // Footer
-            {
-                let mut w = Writer::new((&mut scratch).writer());
-                if let Err(e) = super::write::write_atom_feed_footer(&mut w) {
-                    yielder
-                        .yield_item(Err(Box::new(e) as rama_core::error::BoxError))
-                        .await;
-                    return;
-                }
-            }
-            yielder.yield_item(Ok(scratch.split().freeze())).await;
-        })
+    ) -> super::super::AtomStreamWriter<
+        rama_core::futures::stream::BoxStream<
+            'static,
+            Result<AtomEntry, rama_core::error::BoxError>,
+        >,
+    > {
+        super::super::AtomStreamWriter::from_feed(self)
     }
-}
 
-impl std::fmt::Display for AtomFeed {
-    /// Best-effort XML serialization. Returning `Err` from `Display::fmt` makes
-    /// `to_string()` / `format!()` panic per the `Display` contract, so on a
-    /// serialization failure this emits an XML comment instead. Use
-    /// [`AtomFeed::to_xml`] when the underlying error needs to be surfaced.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.to_xml() {
-            Ok(xml) => match std::str::from_utf8(&xml) {
-                Ok(s) => f.write_str(s),
-                Err(_) => f.write_str("<!-- atom serialization produced non-utf8 -->"),
-            },
-            Err(_) => f.write_str("<!-- atom serialization error -->"),
+    /// Drain [`Self::into_stream_writer`] into an in-memory `Vec<u8>`.
+    pub async fn to_xml(self) -> Result<Vec<u8>, rama_core::error::BoxError> {
+        use rama_core::futures::StreamExt as _;
+        let mut stream = self.into_stream_writer();
+        let mut buf = Vec::with_capacity(4096);
+        while let Some(chunk) = stream.next().await {
+            buf.extend_from_slice(&chunk?);
         }
+        Ok(buf)
     }
 }
 

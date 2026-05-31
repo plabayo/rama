@@ -86,7 +86,7 @@ pub use atom::{
 // ---------------------------------------------------------------------------
 
 pub use feed::Feed;
-pub use stream::{AtomFeedMeta, AtomStreamWriter, Rss2FeedMeta, Rss2StreamWriter};
+pub use stream::{AtomStreamWriter, FeedStreamWriter, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------
 // Re-exports: Extensions

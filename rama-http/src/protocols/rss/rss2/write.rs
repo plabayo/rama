@@ -6,80 +6,53 @@ use quick_xml::{
 
 use super::super::ext_write;
 use super::super::ns;
+use super::super::read::Rss2Channel;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
-use super::types::{Rss2Feed, Rss2Item};
-
-pub(super) fn write_rss2_feed<W: std::io::Write>(
-    w: &mut Writer<W>,
-    feed: &Rss2Feed,
-) -> Result<(), XmlWriteError> {
-    write_rss2_feed_header(w, feed)?;
-    for item in &feed.items {
-        write_rss2_item(w, item)?;
-    }
-    write_rss2_feed_footer(w)
-}
+use super::types::Rss2Item;
 
 /// Open `<rss>` + `<channel>` and emit all channel-level metadata + feed-level
 /// extension blocks. Stops just before items so the caller can stream them in.
-pub(in super::super) fn write_rss2_feed_header<W: std::io::Write>(
+///
+/// Always declares the well-known extension namespaces (`itunes`, `podcast`,
+/// `content`, `dc`, `media`, plus `atom` when the channel carries any
+/// `atom_links`). The header is written before items are known, so the writer
+/// can't gate declarations on what items actually use — declaring up front
+/// keeps the document well-formed for any item the caller goes on to emit.
+pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
     w: &mut Writer<W>,
-    feed: &Rss2Feed,
+    channel: &Rss2Channel,
 ) -> Result<(), XmlWriteError> {
     let mut rss_tag = BytesStart::new("rss");
     rss_tag.push_attribute(("version", "2.0"));
 
-    let needs_itunes = feed.extensions.itunes.is_some()
-        || feed.items.iter().any(|i| i.extensions.itunes.is_some());
-    let needs_podcast = feed.extensions.podcast.is_some()
-        || feed.items.iter().any(|i| i.extensions.podcast.is_some());
-    let needs_dc = feed.extensions.dublin_core.is_some()
-        || feed
-            .items
-            .iter()
-            .any(|i| i.extensions.dublin_core.is_some());
-    let needs_content = feed.items.iter().any(|i| i.extensions.content.is_some());
-    let needs_media = feed.items.iter().any(|i| i.extensions.media.is_some());
-    let needs_atom = !feed.atom_links.is_empty();
-
-    if needs_itunes {
-        ns::push_xmlns_itunes(&mut rss_tag);
-    }
-    if needs_podcast {
-        ns::push_xmlns_podcast(&mut rss_tag);
-    }
-    if needs_dc {
-        ns::push_xmlns_dc(&mut rss_tag);
-    }
-    if needs_content {
-        ns::push_xmlns_content(&mut rss_tag);
-    }
-    if needs_media {
-        ns::push_xmlns_media(&mut rss_tag);
-    }
-    if needs_atom {
+    ns::push_xmlns_itunes(&mut rss_tag);
+    ns::push_xmlns_podcast(&mut rss_tag);
+    ns::push_xmlns_dc(&mut rss_tag);
+    ns::push_xmlns_content(&mut rss_tag);
+    ns::push_xmlns_media(&mut rss_tag);
+    if !channel.atom_links.is_empty() {
         ns::push_xmlns_atom(&mut rss_tag);
     }
 
     w.write_event(Event::Start(rss_tag))?;
     w.write_event(Event::Start(BytesStart::new("channel")))?;
 
-    write_text_elem(w, "title", &feed.title)?;
-    write_text_elem(w, "link", &feed.link)?;
-    write_text_elem(w, "description", &feed.description)?;
-    write_opt_text_elem(w, "language", feed.language.as_deref())?;
-    write_opt_text_elem(w, "copyright", feed.copyright.as_deref())?;
-    write_opt_text_elem(w, "managingEditor", feed.managing_editor.as_deref())?;
-    write_opt_text_elem(w, "webMaster", feed.web_master.as_deref())?;
+    write_text_elem(w, "title", &channel.title)?;
+    write_text_elem(w, "link", &channel.link)?;
+    write_text_elem(w, "description", &channel.description)?;
+    write_opt_text_elem(w, "language", channel.language.as_deref())?;
+    write_opt_text_elem(w, "copyright", channel.copyright.as_deref())?;
+    write_opt_text_elem(w, "managingEditor", channel.managing_editor.as_deref())?;
+    write_opt_text_elem(w, "webMaster", channel.web_master.as_deref())?;
 
-    if let Some(ts) = &feed.pub_date {
+    if let Some(ts) = &channel.pub_date {
         write_text_elem(w, "pubDate", &format_rss2_date(ts))?;
     }
-    if let Some(ts) = &feed.last_build_date {
+    if let Some(ts) = &channel.last_build_date {
         write_text_elem(w, "lastBuildDate", &format_rss2_date(ts))?;
     }
 
-    for cat in &feed.categories {
+    for cat in &channel.categories {
         let mut tag = BytesStart::new("category");
         if let Some(domain) = &cat.domain {
             tag.push_attribute(("domain", domain.as_str()));
@@ -89,14 +62,14 @@ pub(in super::super) fn write_rss2_feed_header<W: std::io::Write>(
         w.write_event(Event::End(BytesEnd::new("category")))?;
     }
 
-    write_opt_text_elem(w, "generator", feed.generator.as_deref())?;
-    write_opt_text_elem(w, "docs", feed.docs.as_deref())?;
+    write_opt_text_elem(w, "generator", channel.generator.as_deref())?;
+    write_opt_text_elem(w, "docs", channel.docs.as_deref())?;
 
-    if let Some(ttl) = feed.ttl {
+    if let Some(ttl) = channel.ttl {
         write_text_elem(w, "ttl", &ttl.to_string())?;
     }
 
-    if let Some(img) = &feed.image {
+    if let Some(img) = &channel.image {
         w.write_event(Event::Start(BytesStart::new("image")))?;
         write_text_elem(w, "url", &img.url)?;
         write_text_elem(w, "title", &img.title)?;
@@ -111,7 +84,7 @@ pub(in super::super) fn write_rss2_feed_header<W: std::io::Write>(
         w.write_event(Event::End(BytesEnd::new("image")))?;
     }
 
-    for atom_link in &feed.atom_links {
+    for atom_link in &channel.atom_links {
         let mut tag = BytesStart::new("atom:link");
         tag.push_attribute(("href", atom_link.href.as_str()));
         if let Some(rel) = &atom_link.rel {
@@ -132,22 +105,22 @@ pub(in super::super) fn write_rss2_feed_header<W: std::io::Write>(
         w.write_event(Event::Empty(tag))?;
     }
 
-    if let Some(itunes) = &feed.extensions.itunes {
+    if let Some(itunes) = &channel.extensions.itunes {
         ext_write::write_itunes_feed(w, itunes)?;
     }
-    if let Some(podcast) = &feed.extensions.podcast {
+    if let Some(podcast) = &channel.extensions.podcast {
         ext_write::write_podcast_feed(w, podcast)?;
     }
-    if let Some(dc) = &feed.extensions.dublin_core {
+    if let Some(dc) = &channel.extensions.dublin_core {
         ext_write::write_dc_feed_fields(w, dc)?;
     }
 
     Ok(())
 }
 
-/// Close `</channel></rss>`. Pairs with [`write_rss2_feed_header`] so callers
+/// Close `</channel></rss>`. Pairs with [`write_rss2_channel_open`] so callers
 /// can interleave items from an external source between the two.
-pub(in super::super) fn write_rss2_feed_footer<W: std::io::Write>(
+pub(in super::super) fn write_rss2_channel_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new("channel")))?;
@@ -266,8 +239,8 @@ mod tests {
         assert_eq!(feed.description, "A test blog");
     }
 
-    #[test]
-    fn feed_serializes_to_valid_xml() {
+    #[tokio::test]
+    async fn feed_serializes_to_valid_xml() {
         let feed = Rss2Feed::builder()
             .title("Test Feed")
             .link("https://example.com")
@@ -280,7 +253,8 @@ mod tests {
             )
             .build();
 
-        let xml = feed.to_string();
+        let xml_bytes = feed.to_xml().await.expect("serialize");
+        let xml = String::from_utf8(xml_bytes).expect("utf-8");
         assert!(xml.contains("<?xml"));
         assert!(xml.contains(r#"<rss version="2.0""#));
         assert!(xml.contains("<title>Test Feed</title>"));
@@ -303,8 +277,8 @@ mod tests {
         assert_eq!(item.itunes(), item.extension::<ITunes>());
     }
 
-    #[test]
-    fn itunes_namespaced_xml_emitted_when_extension_present() {
+    #[tokio::test]
+    async fn itunes_namespaced_xml_emitted_when_extension_present() {
         let feed = Rss2Feed::builder()
             .title("Podcast")
             .link("https://example.com")
@@ -333,7 +307,8 @@ mod tests {
             )
             .build();
 
-        let xml = feed.to_string();
+        let xml_bytes = feed.to_xml().await.expect("serialize");
+        let xml = String::from_utf8(xml_bytes).expect("utf-8");
         assert!(xml.contains("xmlns:itunes="));
         assert!(xml.contains("itunes:author"));
         assert!(xml.contains("itunes:duration"));

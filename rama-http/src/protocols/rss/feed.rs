@@ -8,7 +8,7 @@
 
 use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
-use crate::{Body, Response, StatusCode};
+use crate::{Body, Response};
 
 use super::atom::AtomFeed;
 use super::error::FeedParseError;
@@ -111,31 +111,21 @@ impl From<AtomFeed> for Feed {
 
 impl IntoResponse for Rss2Feed {
     fn into_response(self) -> Response {
-        match self.to_xml() {
-            Ok(xml) => (Headers::single(ContentType::rss()), Body::from(xml)).into_response(),
-            Err(err) => {
-                rama_core::telemetry::tracing::error!(
-                    error = %err,
-                    "rss feed serialization failed; returning 500",
-                );
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-        }
+        (
+            Headers::single(ContentType::rss()),
+            Body::from_stream(self.into_stream_writer()),
+        )
+            .into_response()
     }
 }
 
 impl IntoResponse for AtomFeed {
     fn into_response(self) -> Response {
-        match self.to_xml() {
-            Ok(xml) => (Headers::single(ContentType::atom()), Body::from(xml)).into_response(),
-            Err(err) => {
-                rama_core::telemetry::tracing::error!(
-                    error = %err,
-                    "atom feed serialization failed; returning 500",
-                );
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }
-        }
+        (
+            Headers::single(ContentType::atom()),
+            Body::from_stream(self.into_stream_writer()),
+        )
+            .into_response()
     }
 }
 
@@ -155,7 +145,7 @@ impl IntoResponse for Feed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::header;
+    use crate::{StatusCode, header};
 
     #[test]
     fn rss2_into_response_sets_content_type() {

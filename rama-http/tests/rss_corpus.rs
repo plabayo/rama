@@ -73,11 +73,9 @@ async fn corpus_serializes_to_wellformed_xml() {
     for path in corpus_files() {
         let bytes = load(&path);
         let feed = parse_bytes(bytes).await;
-        let out = match feed {
-            Feed::Rss2(f) => f.to_xml(),
-            Feed::Atom(f) => f.to_xml(),
-        }
-        .unwrap_or_else(|err| panic!("{}: serialize: {err}", name(&path)));
+        let out = serialize(feed)
+            .await
+            .unwrap_or_else(|err| panic!("{}: serialize: {err}", name(&path)));
         // Round-trip through the reader once more to assert well-formedness.
         let mut r = quick_xml::Reader::from_reader(out.as_slice());
         loop {
@@ -97,11 +95,7 @@ async fn corpus_round_trips_losslessly() {
     for path in corpus_files() {
         let bytes = load(&path);
         let first = parse_bytes(bytes).await;
-        let serialized = match &first {
-            Feed::Rss2(f) => f.to_xml(),
-            Feed::Atom(f) => f.to_xml(),
-        }
-        .unwrap();
+        let serialized = serialize(first.clone()).await.unwrap();
         let second = parse_bytes(serialized).await;
         assert_eq!(
             first,
@@ -109,6 +103,14 @@ async fn corpus_round_trips_losslessly() {
             "{}: model not equal after parse -> serialize -> parse",
             name(&path)
         );
+    }
+}
+
+/// Drain a [`Feed`] through its async stream writer into a single buffer.
+async fn serialize(feed: Feed) -> Result<Vec<u8>, rama_core::error::BoxError> {
+    match feed {
+        Feed::Rss2(f) => f.to_xml().await,
+        Feed::Atom(f) => f.to_xml().await,
     }
 }
 
@@ -172,17 +174,18 @@ async fn cdata_terminator_round_trips() {
     let original = feed.items[0]
         .content()
         .and_then(|c| c.encoded.as_deref())
-        .expect("content:encoded");
+        .expect("content:encoded")
+        .to_owned();
     assert!(
         original.contains("]]>"),
         "fixture should carry literal `]]>`, got {original:?}"
     );
-    let serialized = feed.to_xml().unwrap();
+    let serialized = feed.to_xml().await.unwrap();
     let Feed::Rss2(feed2) = parse_bytes(serialized).await else {
         panic!()
     };
     let after = feed2.items[0].content().and_then(|c| c.encoded.as_deref());
-    assert_eq!(Some(original), after);
+    assert_eq!(Some(original.as_str()), after);
 }
 
 /// Non-conventional Atom prefix must be detected and fully parsed.
@@ -320,38 +323,64 @@ async fn from_body_handles_chunked_streams() {
     }
 }
 
-/// `to_byte_stream` chunks must reassemble byte-for-byte equal to `to_xml`.
+/// Whole-feed write through [`FeedStreamWriter::from_feed`] must produce
+/// byte-for-byte the same XML as draining a strongly-typed stream writer
+/// (which is what `Rss2Feed::to_xml` / `AtomFeed::to_xml` do under the hood).
 #[tokio::test]
-async fn to_byte_stream_matches_to_xml() {
+async fn feed_stream_writer_matches_typed_writer() {
     use rama_core::futures::StreamExt as _;
+    use rama_http::protocols::rss::FeedStreamWriter;
 
     for path in corpus_files() {
         let bytes = load(&path);
         let feed = parse_bytes(bytes).await;
-        let blob = match &feed {
-            Feed::Rss2(f) => f.to_xml().unwrap(),
-            Feed::Atom(f) => f.to_xml().unwrap(),
-        };
-        let mut streamed = Vec::new();
-        let stream: std::pin::Pin<
-            Box<
-                dyn rama_core::futures::Stream<
-                        Item = Result<rama_core::bytes::Bytes, rama_core::error::BoxError>,
-                    > + Send,
-            >,
-        > = match feed {
-            Feed::Rss2(f) => Box::pin(f.to_byte_stream()),
-            Feed::Atom(f) => Box::pin(f.to_byte_stream()),
-        };
-        let mut s = stream;
-        while let Some(chunk) = s.next().await {
-            streamed.extend_from_slice(&chunk.unwrap());
+        let typed = serialize(feed.clone()).await.unwrap();
+        let mut umbrella = FeedStreamWriter::from_feed(feed);
+        let mut umbrella_bytes = Vec::new();
+        while let Some(chunk) = umbrella.next().await {
+            umbrella_bytes.extend_from_slice(&chunk.unwrap());
         }
         assert_eq!(
-            blob,
-            streamed,
-            "{}: to_byte_stream bytes != to_xml bytes",
+            typed,
+            umbrella_bytes,
+            "{}: FeedStreamWriter::from_feed bytes diverge from typed writer",
             name(&path),
         );
     }
+}
+
+/// Caller-supplied async item stream: build a feed by piping items from a
+/// faux "database" (a stream that yields one item at a time) through the
+/// streaming writer, then parse the result back and check item count.
+#[tokio::test]
+async fn rss2_stream_writer_from_async_item_source() {
+    use rama_core::futures::StreamExt as _;
+    use rama_http::protocols::rss::{Rss2Channel, Rss2Item, Rss2StreamWriter};
+
+    let channel = Rss2Channel {
+        title: "From DB".into(),
+        link: "https://example.com".into(),
+        description: "stream".into(),
+        ..Default::default()
+    };
+
+    let items = rama_core::futures::stream::iter((0..5).map(|n| {
+        Ok::<_, std::convert::Infallible>(
+            Rss2Item::new()
+                .with_title(format!("Item {n}"))
+                .with_link(format!("https://example.com/{n}")),
+        )
+    }));
+
+    let mut writer = Rss2StreamWriter::new(channel, items);
+    let mut buf = Vec::new();
+    while let Some(chunk) = writer.next().await {
+        buf.extend_from_slice(&chunk.unwrap());
+    }
+
+    let Feed::Rss2(parsed) = parse_bytes(buf).await else {
+        panic!("expected RSS");
+    };
+    assert_eq!(parsed.items.len(), 5);
+    assert_eq!(parsed.title, "From DB");
 }
