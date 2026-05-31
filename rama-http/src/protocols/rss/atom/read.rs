@@ -414,7 +414,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             Ok(Action::Continue)
                         }
                     }
-                    elem::AUTHOR | elem::CONTRIBUTOR if !self.in_source => {
+                    elem::AUTHOR if !self.in_source => {
                         self.current_author = AtomPerson::new("");
                         if self.in_entry {
                             self.in_author = true;
@@ -423,7 +423,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    elem::AUTHOR | elem::CONTRIBUTOR if !self.in_source => {
+                    elem::CONTRIBUTOR if !self.in_source => {
                         self.current_contributor = AtomPerson::new("");
                         if self.in_entry {
                             self.in_contributor = true;
@@ -602,6 +602,20 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         if t == "xhtml" {
             let xml = capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf).await?;
             self.depth -= 1;
+            // Children of `<atom:source>` belong to the source, not the
+            // enclosing entry. The text/html path is intercepted by the
+            // `in_source` branch in `handle_end`, but the xhtml path
+            // bypasses that (it consumes events inline and never returns an
+            // `Event::End` to `handle_end`) so we have to route here
+            // explicitly. AtomSource only carries id/title/updated, so any
+            // xhtml-typed source child other than `<title>` has nowhere to
+            // land and is intentionally dropped.
+            if self.in_source {
+                if which == elem::TITLE {
+                    self.current_source.title = Some(AtomText::xhtml(xml));
+                }
+                return Ok(Action::Continue);
+            }
             match which {
                 elem::TITLE => {
                     if self.in_entry {

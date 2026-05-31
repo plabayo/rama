@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:e9d4f0e2-5b3b-4a82-8a4f-1c2dfbb01a55</id>
+  <title type="text">Atom feed with contributors at both levels</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <author>
+    <name>Primary Author</name>
+  </author>
+  <contributor>
+    <name>Feed Contributor A</name>
+    <email>a@example.com</email>
+  </contributor>
+  <contributor>
+    <name>Feed Contributor B</name>
+  </contributor>
+  <entry>
+    <id>urn:uuid:e9d4f0e2-5b3b-4a82-8a4f-1c2dfbb01a55:e1</id>
+    <title type="text">Entry with its own contributors</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <author><name>Entry Author</name></author>
+    <contributor><name>Entry Contributor</name></contributor>
+  </entry>
+</feed>

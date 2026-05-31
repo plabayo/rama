@@ -142,6 +142,64 @@ async fn atom_source_does_not_leak_into_entry() {
     assert_eq!(src.id.as_deref(), Some("https://origin.example.com/feed"));
 }
 
+/// Atom `<contributor>` must land in `contributors`, not `authors`.
+/// Regression for a parser bug where both `<author>` and `<contributor>`
+/// Start arms had the same body and contributors were silently merged into
+/// authors.
+#[tokio::test]
+async fn atom_contributors_do_not_merge_into_authors() {
+    let bytes = load(&corpus_dir().join("edge-atom-contributors.atom.xml"));
+    let Feed::Atom(feed) = parse_bytes(bytes).await else {
+        panic!("expected Atom");
+    };
+
+    // Feed level
+    assert_eq!(feed.authors.len(), 1, "exactly one feed-level author");
+    assert_eq!(feed.authors[0].name, "Primary Author");
+    assert_eq!(
+        feed.contributors.len(),
+        2,
+        "both feed-level contributors retained, not merged into authors",
+    );
+    let contrib_names: Vec<&str> = feed.contributors.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(contrib_names, ["Feed Contributor A", "Feed Contributor B"]);
+    assert_eq!(feed.contributors[0].email.as_deref(), Some("a@example.com"));
+
+    // Entry level
+    let entry = &feed.entries[0];
+    assert_eq!(entry.authors.len(), 1);
+    assert_eq!(entry.authors[0].name, "Entry Author");
+    assert_eq!(entry.contributors.len(), 1);
+    assert_eq!(entry.contributors[0].name, "Entry Contributor");
+}
+
+/// xhtml-typed `<title>` (and other typed text constructs) inside an Atom
+/// `<source>` must NOT overwrite the enclosing entry's own title/rights/etc.
+/// Regression for a parser bug where `start_typed_text` bypassed the
+/// `<source>` containment check on the xhtml path.
+#[tokio::test]
+async fn atom_xhtml_source_title_does_not_leak_into_entry() {
+    use rama_http::protocols::rss::AtomTextKind;
+    let bytes = load(&corpus_dir().join("edge-atom-source-xhtml.atom.xml"));
+    let Feed::Atom(feed) = parse_bytes(bytes).await else {
+        panic!("expected Atom");
+    };
+    let entry = &feed.entries[0];
+
+    // Entry's own title must be untouched.
+    assert_eq!(entry.title.value, "Republished item");
+    assert_eq!(entry.title.kind, AtomTextKind::Text);
+
+    // Source's xhtml title is captured on the source itself.
+    let src = entry.source.as_ref().expect("source parsed");
+    let src_title = src.title.as_ref().expect("source has a title");
+    assert_eq!(src_title.kind, AtomTextKind::Xhtml);
+    assert!(
+        src_title.value.contains("<em>Origin</em>"),
+        "xhtml subtree captured: {src_title:?}",
+    );
+}
+
 /// Attributes carrying `&`/`"`/`<` must come back unescaped (no `&amp;` left in
 /// `Rss2Enclosure.url` etc.).
 #[tokio::test]
