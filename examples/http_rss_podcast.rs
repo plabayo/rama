@@ -39,7 +39,7 @@ use rama::{
     http::{
         Body,
         headers::ContentType,
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         protocols::rss::{
             Rss2Channel, Rss2Enclosure, Rss2Feed, Rss2Guid, Rss2Item, Rss2StreamWriter,
             feed_ext::{
@@ -227,7 +227,8 @@ async fn main() {
     );
 
     graceful.spawn_task(async move {
-        let app = TraceLayer::new_for_http().into_layer(Arc::new(
+        let middlewares = (TraceLayer::new_for_http(), ErrorHandlerLayer::new());
+        let app = middlewares.into_layer(Arc::new(
             Router::new()
                 .with_get("/podcast.rss", podcast_feed)
                 .with_get("/podcast-stream.rss", podcast_stream),

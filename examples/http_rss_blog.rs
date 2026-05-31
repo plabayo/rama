@@ -30,7 +30,7 @@ use jiff::Timestamp;
 use rama::{
     Layer,
     http::{
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         protocols::rss::{
             AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText, Rss2Feed, Rss2Guid,
             Rss2Item,
@@ -130,7 +130,8 @@ async fn main() {
     );
 
     graceful.spawn_task(async move {
-        let app = TraceLayer::new_for_http().into_layer(Arc::new(
+        let middlewares = (TraceLayer::new_for_http(), ErrorHandlerLayer::new());
+        let app = middlewares.into_layer(Arc::new(
             Router::new()
                 .with_get("/feed.rss", rss2_feed)
                 .with_get("/feed.atom", atom_feed),
