@@ -358,4 +358,63 @@ mod test {
             assert_eq!(actual, case.expected, "Failed on input: {}", case.input);
         }
     }
+
+    /// Regression test for [GHSA-cwv4-h3j5-w3cf]: filenames containing
+    /// HTML metacharacters must be HTML-escaped (and URI-unsafe bytes
+    /// percent-encoded) before being spliced into the directory listing
+    /// page. Driven straight against `generate_directory_html` rather
+    /// than through a real `tempdir`, because every dangerous filename
+    /// shape here (`<`, `>`, `"`) is unrepresentable on NTFS — the
+    /// filesystem-driven version panics on Windows runners.
+    ///
+    /// [GHSA-cwv4-h3j5-w3cf]: https://github.com/plabayo/rama/security/advisories/GHSA-cwv4-h3j5-w3cf
+    #[test]
+    fn test_escape_xss_in_listing() {
+        let entries = [
+            "\"><img src=x onerror=alert(1)>.txt",
+            "<script src=x>alert.txt",
+            "a&b.txt",
+            "quote\"test.txt",
+            "single'test.txt",
+        ]
+        .into_iter()
+        .map(|name| DirEntry::new(name.to_owned(), false, SystemTime::UNIX_EPOCH, 0))
+        .collect();
+
+        let uri: Uri = "/".parse().expect("static `/` is a valid uri");
+        let payload = generate_directory_html(entries, &uri);
+
+        // No raw HTML/JS injection survives — the dangerous shape is the
+        // unescaped `<…>` tag, so it's enough to confirm those bytes
+        // never reach the parser.
+        assert!(
+            !payload.contains("<script src=x>"),
+            "raw <script> tag present in body: {payload}",
+        );
+        assert!(
+            !payload.contains("<img src=x"),
+            "raw <img> tag present in body: {payload}",
+        );
+
+        // Escaped forms are emitted instead — link *text* goes through
+        // the `html!` macro's `IntoHtml::escape_and_write`.
+        assert!(payload.contains("&lt;script src=x&gt;alert"));
+        assert!(payload.contains("&lt;img src=x"));
+        assert!(payload.contains("a&amp;b.txt"));
+        assert!(payload.contains("&quot;test.txt"));
+        assert!(payload.contains("&#x27;test.txt"));
+
+        // Per-row href values are built through
+        // `rama_net::uri::Uri::path_mut`, which percent-encodes the
+        // URI-unsafe bytes (`"`, `<`, `>`, space, …) and leaves
+        // URI-safe ones (`&`, `'`) alone — the latter then pass through
+        // the html attribute writer, which HTML-escapes them. Both
+        // properties together rule out a future regression that spliced
+        // `entry.name` raw into the href again.
+        assert!(payload.contains(r#"href="/quote%22test.txt""#));
+        assert!(payload.contains(r#"href="/%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E.txt""#));
+        assert!(payload.contains(r#"href="/%3Cscript%20src=x%3Ealert.txt""#));
+        assert!(payload.contains(r#"href="/a&amp;b.txt""#));
+        assert!(payload.contains(r#"href="/single&#x27;test.txt""#));
+    }
 }
