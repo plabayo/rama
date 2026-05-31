@@ -49,7 +49,7 @@ use rama::{
         server::HttpServer,
         service::web::{
             WebService,
-            extract::multipart::{Multipart, MultipartError},
+            extract::multipart::{Multipart, MultipartRejection},
             response::{Html, IntoResponse},
         },
     },
@@ -114,7 +114,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn handle_upload(mut multipart: Multipart) -> Result<Response, MultipartError> {
+async fn handle_upload(mut multipart: Multipart) -> Result<Response, MultipartRejection> {
     let mut summary = String::new();
     while let Some(field) = multipart.next_field().await? {
         let name = field.name().unwrap_or("<unnamed>").to_owned();

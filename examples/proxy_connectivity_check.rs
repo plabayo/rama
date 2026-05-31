@@ -45,6 +45,7 @@ use rama::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
+            into_response::IntoResponseLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
@@ -52,7 +53,7 @@ use rama::{
         },
         matcher::{DomainMatcher, MethodMatcher},
         server::HttpServer,
-        service::web::{StaticService, response::Html},
+        service::web::response::Html,
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
@@ -64,6 +65,7 @@ use rama::{
         server::{LazyConnector, Socks5PeekRouter},
     },
     rt::Executor,
+    service::StaticOutput,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -77,7 +79,7 @@ use std::{convert::Infallible, time::Duration};
 
 fn new_example_hijack_svc() -> impl Clone + Service<Request, Output = Response, Error = Infallible>
 {
-    StaticService::new(Html(
+    IntoResponseLayer::new().into_layer(StaticOutput::new(Html(
         r##"<!doctype html>
 <html>
 <head>
@@ -126,7 +128,7 @@ fn new_example_hijack_svc() -> impl Clone + Service<Request, Output = Response, 
 </body>
 </html>
 "##,
-    ))
+    )))
 }
 
 #[tokio::main]

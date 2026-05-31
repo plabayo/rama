@@ -28,7 +28,7 @@ macro_rules! __define_http_rejection {
         pub struct $name:ident;
     ) => {
         $(#[$m])*
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         #[non_exhaustive]
         pub struct $name;
 

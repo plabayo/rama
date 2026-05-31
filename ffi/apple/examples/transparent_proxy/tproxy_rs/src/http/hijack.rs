@@ -6,6 +6,7 @@ use rama::{
     http::{
         HeaderValue, Request, Response, StatusCode,
         header::CONTENT_TYPE,
+        layer::error_handling::ErrorHandler,
         service::web::{
             Router,
             response::{Html, IntoResponse},
@@ -16,17 +17,19 @@ use rama::{
 pub fn new_service(
     root_ca_pem: Bytes,
 ) -> impl Service<Request, Output = Response, Error = Infallible> {
-    Router::new()
-        .with_get("/", Html(STATIC_INDEX_PAGE))
-        .with_get("/ping", StatusCode::OK)
-        .with_get("/data/root.ca.pem", move || {
-            let mut resp = root_ca_pem.clone().into_response();
-            resp.headers_mut().insert(
-                CONTENT_TYPE,
-                HeaderValue::from_static("application/x-pem-file"),
-            );
-            std::future::ready(resp)
-        })
+    ErrorHandler::new(
+        Router::new()
+            .with_get("/", Html(STATIC_INDEX_PAGE))
+            .with_get("/ping", StatusCode::OK)
+            .with_get("/data/root.ca.pem", move || {
+                let mut resp = root_ca_pem.clone().into_response();
+                resp.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/x-pem-file"),
+                );
+                std::future::ready(resp)
+            }),
+    )
 }
 
 const STATIC_INDEX_PAGE: &str = r#"<!doctype html>

@@ -2,8 +2,9 @@ use rama::{
     extensions::Extensions,
     http::{
         client::EasyHttpWebClient, headers::SecWebSocketProtocol,
-        ws::handshake::client::HttpClientWebSocketExt,
+        layer::error_handling::ErrorHandlerLayer, ws::handshake::client::HttpClientWebSocketExt,
     },
+    layer::ArcLayer,
     net::address::HostWithPort,
     rt::Executor,
     tcp::client::default_tcp_connect,
@@ -566,6 +567,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     }
 
     let http_svc = (
+        ArcLayer::new(),
         MapResponseBodyLayer::new_boxed_streaming_body(),
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
@@ -574,6 +576,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
             StrictTransportSecurity::including_subdomains_for_max_seconds(31536000),
         ),
         AddRequiredResponseHeadersLayer::new(),
+        ErrorHandlerLayer::new(),
     )
         .into_layer(
             Router::new_with_state(CaInfo {
@@ -620,7 +623,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
         HaProxyLayer::new().with_peek(true),
         TlsAcceptorLayer::new(tls_acceptor_data),
     )
-        .into_layer(HttpServer::auto(Executor::default()).service(Arc::new(http_svc)));
+        .into_layer(HttpServer::auto(Executor::default()).service(http_svc));
 
     tracing::info!("spawning tcp listener for remote tls issuer");
 

@@ -910,6 +910,10 @@ mod hijack;
 #[doc(inline)]
 pub use hijack::{HijackLayer, HijackService};
 
+mod into_err;
+#[doc(inline)]
+pub use into_err::{IntoErr, IntoErrLayer};
+
 mod layer_fn;
 #[doc(inline)]
 pub use layer_fn::{LayerFn, layer_fn};

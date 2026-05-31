@@ -9,8 +9,9 @@ use rama::{
         HeaderName, HeaderValue, Request,
         headers::exotic::XClacksOverhead,
         layer::{
-            catch_panic::CatchPanicLayer, required_header::AddRequiredResponseHeadersLayer,
-            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            catch_panic::CatchPanicLayer, error_handling::ErrorHandlerLayer,
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
         },
         matcher::HttpMatcher,
         server::HttpServer,
@@ -89,6 +90,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
         referrer_layer,
         frame_layer,
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
+        ErrorHandlerLayer::new(),
     );
 
     let router = Router::new()
@@ -100,7 +102,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandHttpTest) -> Result<(),
             HttpMatcher::custom(true),
             endpoint::method::handler,
         )
-        .with_sub_service(
+        .with_endpoint_service(
             "/request-compression",
             endpoint::request_compression::service(),
         )

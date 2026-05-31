@@ -13,6 +13,7 @@ use rama::{
         client::proxy::layer::SetProxyAuthHttpHeaderLayer,
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
+        layer::error_handling::ErrorHandlerLayer,
         layer::retry::{ManagedPolicy, RetryLayer},
         matcher::HttpMatcher,
         server::HttpServer,
@@ -23,6 +24,7 @@ use rama::{
         },
         ws::handshake::{matcher::WebSocketMatcher, server::WebSocketAcceptor},
     },
+    layer::ArcLayer,
     layer::ConsumeErrLayer,
     net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
     rt::Executor,
@@ -43,7 +45,7 @@ async fn test_http_mitm_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63003",
-                Arc::new(
+                (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
                     Router::new()
                         .with_match_route(
                             "/echo",
@@ -132,24 +134,26 @@ async fn test_http_mitm_proxy() {
     let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().set_enable_connect_protocol();
     let tcp_service = TlsAcceptorLayer::new(data).into_layer(
-        http_tp.service(Arc::new(
-            Router::new()
-                .with_match_route(
-                    "/echo",
-                    HttpMatcher::custom(WebSocketMatcher::new()),
-                    ConsumeErrLayer::trace_as_debug().into_layer(
-                        WebSocketAcceptor::new()
-                            .with_per_message_deflate_overwrite_extensions()
-                            .into_echo_service(),
-                    ),
-                )
-                .with_get("/{*any}", async |req: Request| {
-                    Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    }))
-                }),
-        )),
+        http_tp.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                Router::new()
+                    .with_match_route(
+                        "/echo",
+                        HttpMatcher::custom(WebSocketMatcher::new()),
+                        ConsumeErrLayer::trace_as_debug().into_layer(
+                            WebSocketAcceptor::new()
+                                .with_per_message_deflate_overwrite_extensions()
+                                .into_echo_service(),
+                        ),
+                    )
+                    .with_get("/{*any}", async |req: Request| {
+                        Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                    }),
+            ),
+        ),
     );
 
     tokio::spawn(async {
@@ -171,7 +175,10 @@ async fn test_http_mitm_proxy() {
 
     let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(
-        http_1_over_tls_server.service(Arc::new(Router::new().with_get("/ping", "pong"))),
+        http_1_over_tls_server.service(
+            (ArcLayer::new(), ErrorHandlerLayer::new())
+                .into_layer(Router::new().with_get("/ping", "pong")),
+        ),
     );
 
     tokio::spawn(async {

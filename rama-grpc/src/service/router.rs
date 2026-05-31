@@ -53,7 +53,7 @@ impl Service<Request> for GrpcRouter {
                 Status::unimplemented(arcstr!("service name not found in uri path"))
                     .try_into_http::<Body>()
                     .into_box_error()
-                    .into_response(),
+                    .unwrap_or_else(|e| e.into_response()),
             );
         };
 
@@ -63,7 +63,7 @@ impl Service<Request> for GrpcRouter {
             ))
             .try_into_http::<Body>()
             .into_box_error()
-            .into_response());
+            .unwrap_or_else(|e| e.into_response()));
         };
 
         svc.serve(req).await

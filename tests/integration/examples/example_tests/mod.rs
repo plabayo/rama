@@ -7,6 +7,8 @@ mod haproxy_client_ip;
 #[cfg(feature = "http-full")]
 mod http_abort;
 #[cfg(feature = "http-full")]
+mod http_advanced_router;
+#[cfg(feature = "http-full")]
 mod http_anti_bot_infinite_resource;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;

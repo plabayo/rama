@@ -33,18 +33,17 @@ use rama::{
         header,
         layer::{
             compression::CompressionLayer,
+            error_handling::ErrorHandlerLayer,
             sensitive_headers::{
                 SetSensitiveRequestHeadersLayer, SetSensitiveResponseHeadersLayer,
             },
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
         },
         server::HttpServer,
-        service::web::{
-            IntoEndpointService,
-            response::{Html, IntoResponse},
-        },
+        service::web::{IntoEndpointService, response::Html},
     },
-    layer::{MapOutputLayer, TimeoutLayer, TraceErrLayer},
+    layer::ArcLayer,
+    layer::{TimeoutLayer, TraceErrLayer},
     net::stream::{
         SocketInfo,
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
@@ -81,6 +80,7 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
 
         let http_service = (
+            ArcLayer::new(),
             CompressionLayer::new(),
             SetSensitiveRequestHeadersLayer::from_shared(sensitive_headers.clone()),
             TraceLayer::new_for_http()
@@ -98,7 +98,7 @@ async fn main() {
                         .with_latency_unit(LatencyUnit::Micros),
                 ),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
-            MapOutputLayer::new(IntoResponse::into_response),
+            ErrorHandlerLayer::new(),
         )
             .into_layer(
                 (|req: Request| {
@@ -132,7 +132,7 @@ async fn main() {
                 .into_endpoint_service(),
             );
 
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(http_service));
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(http_service);
 
         TcpListener::bind_address("127.0.0.1:62010", exec)
             .await

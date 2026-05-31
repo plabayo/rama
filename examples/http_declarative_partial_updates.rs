@@ -72,6 +72,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
+use rama_http::layer::error_handling::ErrorHandlerLayer;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -205,6 +206,7 @@ async fn main() {
             AddRequiredResponseHeadersLayer::default(),
             StreamCompressionLayer::new(),
             ArcLayer::new(),
+            ErrorHandlerLayer::default(),
         )
             .into_layer(Router::new().with_get("/", dashboard));
         listener.serve(HttpServer::auto(exec).service(app)).await;
