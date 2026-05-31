@@ -421,6 +421,15 @@ where
             .is_extended_connect_protocol_enabled()
     }
 
+    pub(crate) fn peer_initial_settings(&self) -> Option<frame::Settings> {
+        self.inner
+            .lock()
+            .actions
+            .send
+            .peer_initial_settings()
+            .cloned()
+    }
+
     pub(crate) fn current_max_send_streams(&self) -> usize {
         let me = self.inner.lock();
         me.counts.max_send_streams()

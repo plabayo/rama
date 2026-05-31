@@ -38,6 +38,13 @@ pub(super) struct Send {
 
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
+
+    /// The initial SETTINGS frame received from the remote peer.
+    ///
+    /// Captured on the first non-ACK `SETTINGS` frame received and never
+    /// overwritten by later updates. Exposed so callers (notably an MITM
+    /// relay) can mirror upstream settings onto a sibling connection.
+    peer_initial_settings: Option<frame::Settings>,
 }
 
 /// A value to detect which public API has called `poll_reset`.
@@ -57,6 +64,7 @@ impl Send {
             prioritize: Prioritize::try_new(config)?,
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
+            peer_initial_settings: None,
         })
     }
 
@@ -484,6 +492,11 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), Error> {
+        // Snapshot the first non-ACK settings frame; later updates are ignored.
+        if self.peer_initial_settings.is_none() {
+            self.peer_initial_settings = Some(settings.clone());
+        }
+
         if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
@@ -648,5 +661,9 @@ impl Send {
 
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.is_extended_connect_protocol_enabled
+    }
+
+    pub(crate) fn peer_initial_settings(&self) -> Option<&frame::Settings> {
+        self.peer_initial_settings.as_ref()
     }
 }

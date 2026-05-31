@@ -572,6 +572,16 @@ where
         self.inner.is_extended_connect_protocol_enabled()
     }
 
+    /// Returns the initial `SETTINGS` frame received from the remote peer,
+    /// if one has been observed on this connection yet.
+    ///
+    /// The frame is captured the first time it is received and is not
+    /// overwritten by subsequent SETTINGS updates from the peer.
+    #[must_use]
+    pub fn peer_initial_settings(&self) -> Option<Settings> {
+        self.inner.peer_initial_settings()
+    }
+
     /// Returns the current max send streams
     #[must_use]
     pub fn current_max_send_streams(&self) -> usize {

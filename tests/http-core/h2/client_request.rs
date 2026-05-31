@@ -1587,6 +1587,101 @@ async fn extended_connect_protocol_enabled_during_handshake() {
 
 #[tokio::test]
 #[ignore]
+async fn peer_initial_settings_captured_during_handshake() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv
+            .assert_client_handshake_with_settings(
+                frames::settings()
+                    .with_enable_connect_protocol(1)
+                    .with_max_concurrent_streams(123)
+                    .with_max_frame_size(65_535),
+            )
+            .await;
+        assert_default_settings!(settings);
+
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        h2.drive(response).await.unwrap();
+
+        let peer_settings = client
+            .peer_initial_settings()
+            .expect("peer SETTINGS frame should have been captured");
+        assert_eq!(
+            peer_settings.config.enable_connect_protocol,
+            Some(1),
+            "captured peer SETTINGS must mirror the server-advertised CONNECT flag",
+        );
+        assert_eq!(
+            peer_settings.config.max_concurrent_streams,
+            Some(123),
+            "captured peer SETTINGS must mirror max_concurrent_streams",
+        );
+        assert_eq!(
+            peer_settings.config.max_frame_size,
+            Some(65_535),
+            "captured peer SETTINGS must mirror max_frame_size",
+        );
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn peer_initial_settings_absent_before_handshake() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+        srv.recv_frame(
+            frames::headers(1)
+                .request("GET", "https://example.com/")
+                .eos(),
+        )
+        .await;
+        srv.send_frame(frames::headers(1).response(200).eos()).await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+
+        // After a server that sent a default SETTINGS frame we still
+        // expect the snapshot to be present — just with default values.
+        let request = Request::get("https://example.com/").body(()).unwrap();
+        let (response, _) = client.send_request(request, true).unwrap();
+        h2.drive(response).await.unwrap();
+
+        let peer_settings = client
+            .peer_initial_settings()
+            .expect("default peer SETTINGS frame should still be captured");
+        assert_eq!(
+            peer_settings.config.enable_connect_protocol, None,
+            "default SETTINGS must not advertise CONNECT",
+        );
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn invalid_connect_protocol_enabled_setting() {
     h2_support::trace_init!();
 

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::Version;
-use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
+use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture, frame::Settings};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Default, Extension)]
@@ -71,3 +71,17 @@ pub struct H2ClientContextParams {
 /// otherwise this will be set automatically by things such
 /// tls alpn
 pub struct TargetHttpVersion(pub Version);
+
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+/// The initial h2 [`Settings`] frame received from the peer.
+///
+/// Set as an extension on every h2 response by the client, so
+/// downstream consumers (e.g. an MITM relay mirroring upstream
+/// SETTINGS onto its ingress connection) can observe the peer's
+/// advertised parameters without poking at connection internals.
+///
+/// This captures the *first* non-ACK `SETTINGS` frame received
+/// from the peer during the connection's lifetime; subsequent
+/// updates are not reflected here.
+pub struct PeerH2Settings(pub Settings);
