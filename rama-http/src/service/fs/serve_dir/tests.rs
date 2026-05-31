@@ -588,6 +588,7 @@ async fn empty_directory_without_index() {
     assert!(body.is_empty());
 }
 
+#[cfg(feature = "html")]
 #[tokio::test]
 async fn serve_directory_as_file_tree() {
     let svc =
@@ -603,6 +604,72 @@ async fn serve_directory_as_file_tree() {
     assert!(payload.contains("Directory listing for"));
     assert!(payload.contains("hello.txt"));
     assert!(payload.contains("index.html"));
+}
+
+/// Regression test for [GHSA-cwv4-h3j5-w3cf]: filenames that contain HTML
+/// metacharacters must be HTML-escaped before being spliced into the
+/// directory listing page. A raw `<script>` or `<img …>` in the body would
+/// be executed by the browser as part of the listing's own origin.
+///
+/// [GHSA-cwv4-h3j5-w3cf]: https://github.com/plabayo/rama/security/advisories/GHSA-cwv4-h3j5-w3cf
+#[cfg(feature = "html")]
+#[tokio::test]
+async fn serve_directory_as_file_tree_escapes_xss() {
+    // Filenames are constrained to characters that are legal on the test
+    // host's filesystem (no `/`, no NUL) but still cover every HTML
+    // metacharacter the escaper has to handle: `&`, `<`, `>`, `"`, `'`.
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let payloads = [
+        "\"><img src=x onerror=alert(1)>.txt",
+        "<script src=x>alert.txt",
+        "a&b.txt",
+        "quote\"test.txt",
+        "single'test.txt",
+    ];
+    for name in payloads {
+        std::fs::write(tmp.path().join(name), b"").expect("write payload file");
+    }
+
+    let svc = ServeDir::new(tmp.path()).with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+
+    let req = Request::new(Body::empty());
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
+
+    let payload = res.into_body().try_into_string().await.unwrap();
+
+    // No raw HTML/JS injection survives — the dangerous shape is the
+    // unescaped `<…>` tag, so it's enough to confirm those bytes never
+    // reach the parser. Substrings like `onerror=alert(1)` are fine
+    // *inside* escaped text and are not asserted on.
+    assert!(
+        !payload.contains("<script src=x>"),
+        "raw <script> tag present in body: {payload}",
+    );
+    assert!(
+        !payload.contains("<img src=x"),
+        "raw <img> tag present in body: {payload}",
+    );
+
+    // Escaped forms are emitted instead.
+    assert!(payload.contains("&lt;script src=x&gt;alert"));
+    assert!(payload.contains("&lt;img src=x"));
+    assert!(payload.contains("a&amp;b.txt"));
+    assert!(payload.contains("&quot;test.txt"));
+    assert!(payload.contains("&#x27;test.txt"));
+
+    // Per-row href values are built through `rama_net::uri::Uri::path_mut`,
+    // which percent-encodes the URI-unsafe bytes (`"`, `<`, `>`, space, …)
+    // and leaves URI-safe ones (`&`, `'`) alone — the latter then pass
+    // through the html attribute writer, which HTML-escapes them. Both
+    // properties together rule out a future regression that spliced
+    // `entry.name` raw into the href again.
+    assert!(payload.contains(r#"href="/quote%22test.txt""#));
+    assert!(payload.contains(r#"href="/%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E.txt""#));
+    assert!(payload.contains(r#"href="/%3Cscript%20src=x%3Ealert.txt""#));
+    assert!(payload.contains(r#"href="/a&amp;b.txt""#));
+    assert!(payload.contains(r#"href="/single&#x27;test.txt""#));
 }
 
 #[tokio::test]

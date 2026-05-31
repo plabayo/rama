@@ -1,3 +1,10 @@
+use std::{convert::Infallible, io};
+
+use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
+use rama_core::{Service, error::BoxError};
+use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
+
 use super::open_file::{FileOpened, OpenFileOutput};
 use crate::headers::encoding::Encoding;
 use crate::{
@@ -5,13 +12,11 @@ use crate::{
     body::util::BodyExt,
     header::{self, ALLOW},
     service::fs::AsyncReadBody,
-    service::web::response::{Html, IntoResponse},
+    service::web::response::IntoResponse,
 };
-use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing;
-use rama_core::{Service, error::BoxError};
-use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
-use std::{convert::Infallible, io};
+
+#[cfg(feature = "html")]
+use crate::service::web::response::Html;
 
 /// Consume the result of opening a file and create an appropriate HTTP response.
 /// Handles various file opening outcomes including success, redirection, HTML listing, and errors.
@@ -34,6 +39,7 @@ where
             Ok(res)
         }
 
+        #[cfg(feature = "html")]
         Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
 
         Ok(OpenFileOutput::FileNotFound | OpenFileOutput::InvalidFilename) => {
