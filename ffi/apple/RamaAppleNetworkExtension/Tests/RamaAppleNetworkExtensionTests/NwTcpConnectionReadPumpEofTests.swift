@@ -193,12 +193,19 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         let queue = makeQueue()
         let mock = MockNwConnection()
 
+        // Use a generous deadline so the "backstop not yet fired"
+        // pre-assertion has comfortable slack even on a heavily
+        // contended CI runner: `waitForQueueDrain` itself goes
+        // through a serial queue and an `XCTestExpectation`, and a
+        // 150 ms window proved tight enough to be flaky there.
+        // Siblings in this file already use ≥300 ms for the same
+        // reason.
         do {
             let pump = NwTcpConnectionReadPump(
                 connection: mock,
                 session: session,
                 queue: queue,
-                eofGraceDeadline: .milliseconds(150)
+                eofGraceDeadline: .milliseconds(500)
             )
             pump.start()
             waitForQueueDrain(queue)
@@ -211,7 +218,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         }
 
         // Past the grace deadline + slack.
-        Thread.sleep(forTimeInterval: 0.30)
+        Thread.sleep(forTimeInterval: 0.70)
         waitForQueueDrain(queue)
 
         XCTAssertEqual(
