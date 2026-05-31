@@ -538,6 +538,12 @@ where
     pub(crate) fn current_max_recv_streams(&self) -> usize {
         self.h2_tx.current_max_recv_streams()
     }
+    pub(crate) fn peer_settings_handle(&self) -> crate::client::conn::http2::H2PeerSettingsHandle
+    where
+        B::Data: Send + Sync,
+    {
+        crate::client::conn::http2::H2PeerSettingsHandle::from_h2_sender(&self.h2_tx)
+    }
 }
 
 pin_project! {

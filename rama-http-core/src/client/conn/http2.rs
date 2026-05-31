@@ -12,9 +12,11 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
-use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::proto::h2::frame::{SettingOrder, Settings, SettingsConfig};
 use rama_http_types::{Request, Response, StreamingBody};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::Notify;
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::Incoming as IncomingBody;
@@ -245,6 +247,89 @@ where
     /// [1]: https://datatracker.ietf.org/doc/html/rfc7540#section-5.1.2
     pub fn current_max_recv_streams(&self) -> usize {
         self.inner.1.current_max_recv_streams()
+    }
+
+    /// Returns a cloneable, type-erased handle to query the peer's
+    /// initial h2 SETTINGS frame on this connection. The handle stays
+    /// usable after the connection is spawned (consumed as a future),
+    /// so callers can `spawn(conn)` first and then `await` the handle.
+    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle
+    where
+        B::Data: Send + Sync,
+    {
+        self.inner.1.peer_settings_handle()
+    }
+}
+
+/// Cloneable, type-erased handle for querying the peer's initial h2
+/// SETTINGS frame on an established connection. Obtained from
+/// [`Connection::peer_settings_handle`]; survives the connection being
+/// spawned so callers can `spawn(conn)` first and then `await` here.
+#[derive(Clone)]
+pub struct H2PeerSettingsHandle {
+    snapshot: Arc<dyn Fn() -> Option<Settings> + Send + Sync>,
+    closed: Arc<dyn Fn() -> bool + Send + Sync>,
+    notifier: Arc<Notify>,
+}
+
+impl fmt::Debug for H2PeerSettingsHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("H2PeerSettingsHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl H2PeerSettingsHandle {
+    /// Constructs a handle from an underlying `h2::client::SendRequest`.
+    /// Each closure captures a cheap (`Arc`-bumped) clone of the sender.
+    pub(crate) fn from_h2_sender<B>(sender: &crate::h2::client::SendRequest<B>) -> Self
+    where
+        B: rama_core::bytes::Buf + Send + Sync + 'static,
+    {
+        let snap_sender = sender.clone();
+        let closed_sender = sender.clone();
+        let notifier = sender.peer_settings_notify();
+        Self {
+            snapshot: Arc::new(move || snap_sender.peer_initial_settings()),
+            closed: Arc::new(move || closed_sender.peer_settings_closed()),
+            notifier,
+        }
+    }
+
+    /// Returns the peer's initial SETTINGS frame if it has been
+    /// captured. `None` while the connection is still pre-SETTINGS, or
+    /// if the connection died before SETTINGS arrived.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<Settings> {
+        (self.snapshot)()
+    }
+
+    /// Resolves to the peer's initial SETTINGS once captured, or `None`
+    /// if the connection terminates before SETTINGS arrives. See
+    /// [`crate::h2::client::SendRequest::await_peer_initial_settings`]
+    /// for the underlying semantics — including the timeout caveat for
+    /// adversarial peers.
+    pub async fn await_settings(&self) -> Option<Settings> {
+        if let Some(s) = self.snapshot() {
+            return Some(s);
+        }
+        if (self.closed)() {
+            return None;
+        }
+        loop {
+            let notified = self.notifier.notified();
+            tokio::pin!(notified);
+            // Enable interest BEFORE re-checking the field to avoid a
+            // missed wake between the check and the `await`.
+            notified.as_mut().enable();
+            if let Some(s) = self.snapshot() {
+                return Some(s);
+            }
+            if (self.closed)() {
+                return None;
+            }
+            notified.await;
+        }
     }
 }
 

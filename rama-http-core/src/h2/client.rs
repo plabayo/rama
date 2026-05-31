@@ -582,6 +582,24 @@ where
         self.inner.peer_initial_settings()
     }
 
+    /// Returns `true` if the connection terminated before the peer's
+    /// initial SETTINGS frame could be captured. Once `true`, calls to
+    /// [`Self::await_peer_initial_settings`] resolve to `None`.
+    #[must_use]
+    pub fn peer_settings_closed(&self) -> bool {
+        self.inner.peer_settings_closed()
+    }
+
+    /// Returns a handle to the notify used internally by
+    /// [`Self::await_peer_initial_settings`] to wake waiters when the
+    /// peer's initial SETTINGS arrive (or when the connection closes
+    /// before that). Exposed so higher-level wrappers can implement
+    /// their own awaiters with the same semantics.
+    #[must_use]
+    pub fn peer_settings_notify(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.inner.peer_settings_notify()
+    }
+
     /// Resolves to the initial `SETTINGS` frame sent by the remote peer.
     ///
     /// Returns `Some(settings)` once the peer's initial SETTINGS frame has

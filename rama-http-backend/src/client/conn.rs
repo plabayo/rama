@@ -11,6 +11,7 @@ use rama_http::{
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
 };
+use rama_http_core::client::conn::http2::H2PeerSettingsHandle;
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
     Request, Version,
@@ -254,6 +255,54 @@ where
             .context_debug_field("version", version)
             .into_opaque_error()),
     }
+}
+
+/// Establish an HTTP/2 connection on the pre-established IO (bytes)
+/// stream *without* a triggering request, and return both the
+/// [`HttpClientService`] and a [`H2PeerSettingsHandle`] that resolves
+/// to the peer's initial SETTINGS frame once received.
+///
+/// Used by MITM relays that need to observe upstream h2 SETTINGS before
+/// the ingress server's initial SETTINGS frame is written to the
+/// downstream client. Unlike [`http_connect`], this function takes no
+/// `Request` and applies default h2 builder settings.
+pub async fn http2_eager_handshake<IO, BodyConnection>(
+    io: IO,
+    exec: Executor,
+) -> Result<(HttpClientService<BodyConnection>, H2PeerSettingsHandle), OpaqueError>
+where
+    IO: Io + Unpin + ExtensionsRef,
+    BodyConnection:
+        StreamingBody<Data: Send + Sync + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    let extensions = io.extensions().clone();
+
+    tracing::trace!("eager h2 client handshake");
+    let builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
+    let peer_handle = conn.peer_settings_handle();
+
+    let conn_span = tracing::trace_root_span!(
+        "h2::conn::serve",
+        otel.kind = "client",
+        network.protocol.name = "http",
+        network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+    );
+
+    exec.into_spawn_task(
+        async move {
+            if let Err(err) = conn.await {
+                log_connection_termination(&err);
+            }
+        }
+        .instrument(conn_span),
+    );
+
+    let svc = HttpClientService {
+        sender: SendRequest::Http2(sender),
+        extensions,
+    };
+    Ok((svc, peer_handle))
 }
 
 impl<S, BodyIn, BodyConnection> Service<Request<BodyIn>> for HttpConnector<S, BodyConnection>
