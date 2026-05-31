@@ -27,7 +27,7 @@ use rama_http::{
 };
 use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
-    conn::{PeerH2Settings, TargetHttpVersion},
+    conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
 };
 use rama_net::test_utils::client::{MockConnectorService, MockSocket};
 use tokio_util::sync::CancellationToken;
@@ -613,6 +613,72 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
         Some(upstream_max_concurrent_streams),
         "relay must mirror upstream's max_concurrent_streams",
     );
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+/// Smoke test: when the egress IO carries `H2ClientContextParams` *in
+/// addition to* `TargetHttpVersion(HTTP_2)`, the eager-handshake path
+/// must read and apply those params (not silently drop them).
+///
+/// We can't easily observe per-knob
+/// effects from the test harness without frame-level upstream hooks,
+/// so this asserts the simpler invariant that the full
+/// eager → request → response round-trip still succeeds with non-default
+/// client params present. Regression guard for the parity issue.
+#[tokio::test]
+async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(server_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    let egress = MockSocket::new(relay_egress_stream);
+    egress
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+    // Non-default client-side h2 knobs. Values are chosen valid + small
+    // enough not to interact with the test harness's frame sizes.
+    egress.extensions().insert(H2ClientContextParams {
+        max_header_list_size: Some(65_536),
+        init_stream_window_size: Some(131_072),
+        ..Default::default()
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
+            .await
+            .unwrap();
+    });
+
+    let request = create_test_request(Version::HTTP_2);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let response = conn
+        .serve(create_test_request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();

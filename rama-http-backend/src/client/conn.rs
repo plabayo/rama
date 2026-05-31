@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{Extensions, ExtensionsRef},
     io::Io,
     rt::Executor,
 };
@@ -63,6 +63,64 @@ fn log_connection_termination(err: &rama_http_core::Error) {
         tracing::trace!(error = ?err, "connection closed by peer / transport");
     } else {
         tracing::debug!(error = ?err, "connection failed");
+    }
+}
+
+/// Apply request- (or egress-IO-) scoped h2 builder knobs onto `builder`.
+///
+/// Reads `H2ClientContextParams` and falls back to a bare
+/// `PseudoHeaderOrder` from `extensions`. Shared between the
+/// request-driven h2 path in [`http_connect`] and the eager-handshake
+/// path in [`http2_eager_handshake`] so both honor the same
+/// UA-emulation surface.
+fn apply_h2_client_extensions_to_builder(
+    builder: &mut rama_http_core::client::conn::http2::Builder,
+    extensions: &Extensions,
+    enable_connect_protocol: bool,
+) {
+    if enable_connect_protocol {
+        // e.g. used for h2 bootstrap support for WebSocket — only ever
+        // requested on a per-request basis by the lazy path.
+        builder.set_enable_connect_protocol(1);
+    }
+
+    if let Some(params) = extensions
+        .get_ref::<H2ClientContextParams>()
+        .or_else(|| extensions.get_ref())
+    {
+        if let Some(order) = params.headers_pseudo_order.clone() {
+            builder.set_headers_pseudo_order(order);
+        } else if let Some(pseudo_order) = extensions.get_ref::<PseudoHeaderOrder>().cloned() {
+            builder.set_headers_pseudo_order(pseudo_order);
+        }
+
+        if let Some(ref frames) = params.early_frames {
+            let v = frames.as_slice().to_vec();
+            builder.set_early_frames(v);
+        }
+        if let Some(sz) = params.init_stream_window_size {
+            builder.set_initial_stream_window_size(sz);
+        }
+        if let Some(sz) = params.init_connection_window_size {
+            builder.set_initial_connection_window_size(sz);
+        }
+        if let Some(d) = params.keep_alive_interval {
+            builder.set_keep_alive_interval(d);
+        }
+        if let Some(d) = params.keep_alive_timeout {
+            builder.set_keep_alive_timeout(d);
+        }
+        if let Some(keep_alive) = params.keep_alive_while_idle {
+            builder.set_keep_alive_while_idle(keep_alive);
+        }
+        if let Some(sz) = params.max_header_list_size {
+            builder.set_max_header_list_size(sz);
+        }
+        if let Some(adaptive_window) = params.adaptive_window {
+            builder.set_adaptive_window(adaptive_window);
+        }
+    } else if let Some(pseudo_order) = extensions.get_ref::<PseudoHeaderOrder>().cloned() {
+        builder.set_headers_pseudo_order(pseudo_order);
     }
 }
 
@@ -128,49 +186,12 @@ where
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
 
-            if req.extensions().get_ref::<Protocol>().is_some() {
-                // e.g. used for h2 bootstrap support for WebSocket
-                builder.set_enable_connect_protocol(1);
-            }
-
-            if let Some(params) = req
-                .extensions()
-                .get_ref::<H2ClientContextParams>()
-                .or_else(|| req.extensions().get_ref())
-            {
-                if let Some(order) = params.headers_pseudo_order.clone() {
-                    builder.set_headers_pseudo_order(order);
-                }
-                if let Some(ref frames) = params.early_frames {
-                    let v = frames.as_slice().to_vec();
-                    builder.set_early_frames(v);
-                }
-                if let Some(sz) = params.init_stream_window_size {
-                    builder.set_initial_stream_window_size(sz);
-                }
-                if let Some(sz) = params.init_connection_window_size {
-                    builder.set_initial_connection_window_size(sz);
-                }
-                if let Some(d) = params.keep_alive_interval {
-                    builder.set_keep_alive_interval(d);
-                }
-                if let Some(d) = params.keep_alive_timeout {
-                    builder.set_keep_alive_timeout(d);
-                }
-                if let Some(keep_alive) = params.keep_alive_while_idle {
-                    builder.set_keep_alive_while_idle(keep_alive);
-                }
-                if let Some(sz) = params.max_header_list_size {
-                    builder.set_max_header_list_size(sz);
-                }
-                if let Some(adaptive_window) = params.adaptive_window {
-                    builder.set_adaptive_window(adaptive_window);
-                }
-            } else if let Some(pseudo_order) =
-                req.extensions().get_ref::<PseudoHeaderOrder>().cloned()
-            {
-                builder.set_headers_pseudo_order(pseudo_order);
-            }
+            let enable_connect_protocol = req.extensions().get_ref::<Protocol>().is_some();
+            apply_h2_client_extensions_to_builder(
+                &mut builder,
+                req.extensions(),
+                enable_connect_protocol,
+            );
 
             let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
 
@@ -264,8 +285,12 @@ where
 ///
 /// Used by MITM relays that need to observe upstream h2 SETTINGS before
 /// the ingress server's initial SETTINGS frame is written to the
-/// downstream client. Unlike [`http_connect`], this function takes no
-/// `Request` and applies default h2 builder settings.
+/// downstream client. Like the h2 arm of [`http_connect`], request-
+/// scoped builder knobs ([`H2ClientContextParams`], [`PseudoHeaderOrder`])
+/// are read from the egress IO's extensions and applied — letting
+/// UA-emulation profiles flow through the eager path as well. The
+/// per-request `Protocol` extension is intentionally NOT honored here:
+/// there is no request yet at eager-handshake time.
 pub async fn http2_eager_handshake<IO, BodyConnection>(
     io: IO,
     exec: Executor,
@@ -278,7 +303,8 @@ where
     let extensions = io.extensions().clone();
 
     tracing::trace!("eager h2 client handshake");
-    let builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
+    apply_h2_client_extensions_to_builder(&mut builder, &extensions, false);
     let (sender, conn) = builder.handshake(io).await.into_opaque_error()?;
     let peer_handle = conn.peer_settings_handle();
 
