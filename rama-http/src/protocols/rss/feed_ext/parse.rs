@@ -14,7 +14,6 @@
 
 use quick_xml::name::ResolveResult;
 
-use super::super::parse_util::{Attrs, attr_value, parse_rss2_date};
 use super::names::{attr, content, dc, itunes, media, podcast};
 use super::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
@@ -22,11 +21,12 @@ use super::{
     PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
     PodcastSoundbite, PodcastTrailer, PodcastTranscript,
 };
+use crate::protocols::rss::parse_util::{Attrs, attr_value, parse_rss2_date};
 
 /// Recognised XML namespaces. Anything outside this set is treated as unknown
 /// and ignored by the accumulators.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(in super::super) enum Ns {
+pub(in crate::protocols::rss) enum Ns {
     /// No namespace — RSS 2.0 core elements (`<rss>`, `<channel>`, `<item>`, …).
     None,
     /// `http://www.w3.org/2005/Atom` — Atom 1.0 core.
@@ -49,8 +49,8 @@ pub(in super::super) enum Ns {
 /// recognise. Comparison is on the namespace URI bytes, so the actual prefix
 /// the document uses is irrelevant. URIs come from [`super::ns`] so the writer
 /// and parser never disagree on a single byte.
-pub(in super::super) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
-    use super::super::ns;
+pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
+    use crate::protocols::rss::ns;
     const ATOM: &[u8] = ns::ATOM_NS.as_bytes();
     const ITUNES: &[u8] = ns::ITUNES_NS.as_bytes();
     const PODCAST: &[u8] = ns::PODCAST_NS.as_bytes();
@@ -205,7 +205,7 @@ impl_set_dc!(set_dc_feed, DublinCoreFeed);
 
 /// Accumulates item-/entry-level extension elements into an [`ItemExtensions`].
 #[derive(Default)]
-pub(in super::super) struct ItemExtAcc {
+pub(in crate::protocols::rss) struct ItemExtAcc {
     itunes: ITunes,
     has_itunes: bool,
     dc: DublinCore,
@@ -230,7 +230,12 @@ pub(in super::super) struct ItemExtAcc {
 
 impl ItemExtAcc {
     /// Handle a start event; returns `true` if the element was consumed.
-    pub(in super::super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
+    pub(in crate::protocols::rss) fn on_start(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        e: &Attrs<'_>,
+    ) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, attr::HREF) {
@@ -268,7 +273,12 @@ impl ItemExtAcc {
     }
 
     /// Handle a self-closing element; returns `true` if consumed.
-    pub(in super::super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
+    pub(in crate::protocols::rss) fn on_empty(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        e: &Attrs<'_>,
+    ) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, attr::HREF) {
@@ -333,7 +343,12 @@ impl ItemExtAcc {
     /// Handle an end event carrying the element's text. Returns `Some(text)`
     /// when the element was not consumed (so the caller can do its own
     /// core-element processing).
-    pub(in super::super) fn on_end(&mut self, ns: Ns, local: &str, text: String) -> Option<String> {
+    pub(in crate::protocols::rss) fn on_end(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        text: String,
+    ) -> Option<String> {
         match (ns, local) {
             // iTunes item text elements
             (Ns::ITunes, itunes::TITLE) => self.itunes.title = Some(text),
@@ -450,7 +465,7 @@ impl ItemExtAcc {
         None
     }
 
-    pub(in super::super) fn finish(self) -> ItemExtensions {
+    pub(in crate::protocols::rss) fn finish(self) -> ItemExtensions {
         ItemExtensions {
             itunes: self.has_itunes.then_some(self.itunes),
             podcast: self.has_podcast.then_some(self.podcast),
@@ -463,7 +478,7 @@ impl ItemExtAcc {
 
 /// Accumulates channel-/feed-level extension elements into a [`FeedExtensions`].
 #[derive(Default)]
-pub(in super::super) struct FeedExtAcc {
+pub(in crate::protocols::rss) struct FeedExtAcc {
     itunes: ITunesFeed,
     has_itunes: bool,
     dc: DublinCoreFeed,
@@ -478,7 +493,12 @@ pub(in super::super) struct FeedExtAcc {
 }
 
 impl FeedExtAcc {
-    pub(in super::super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
+    pub(in crate::protocols::rss) fn on_start(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        e: &Attrs<'_>,
+    ) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, attr::HREF) {
@@ -507,7 +527,12 @@ impl FeedExtAcc {
         true
     }
 
-    pub(in super::super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
+    pub(in crate::protocols::rss) fn on_empty(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        e: &Attrs<'_>,
+    ) -> bool {
         match (ns, local) {
             (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, attr::HREF) {
@@ -548,7 +573,12 @@ impl FeedExtAcc {
         true
     }
 
-    pub(in super::super) fn on_end(&mut self, ns: Ns, local: &str, text: String) -> Option<String> {
+    pub(in crate::protocols::rss) fn on_end(
+        &mut self,
+        ns: Ns,
+        local: &str,
+        text: String,
+    ) -> Option<String> {
         match (ns, local) {
             // iTunes feed text elements
             (Ns::ITunes, itunes::AUTHOR) => self.itunes.author = Some(text),
@@ -637,7 +667,7 @@ impl FeedExtAcc {
         None
     }
 
-    pub(in super::super) fn finish(self) -> FeedExtensions {
+    pub(in crate::protocols::rss) fn finish(self) -> FeedExtensions {
         FeedExtensions {
             itunes: self.has_itunes.then_some(self.itunes),
             podcast: self.has_podcast.then_some(self.podcast),

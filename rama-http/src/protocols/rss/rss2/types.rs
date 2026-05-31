@@ -1,7 +1,7 @@
 use jiff::Timestamp;
 
-use super::super::atom::AtomLink;
-use super::super::feed_ext::{
+use crate::protocols::rss::atom::AtomLink;
+use crate::protocols::rss::feed_ext::{
     Content, DublinCore, FeedExtension, ITunes, ItemExtensionGet, ItemExtensions, MediaRss, Podcast,
 };
 
@@ -33,7 +33,7 @@ pub struct Rss2Feed {
     /// Serialized with `xmlns:atom` declared on `<rss>` when non-empty.
     pub atom_links: Vec<AtomLink>,
     pub items: Vec<Rss2Item>,
-    pub extensions: super::super::feed_ext::FeedExtensions,
+    pub extensions: crate::protocols::rss::feed_ext::FeedExtensions,
 }
 
 impl Rss2Feed {
@@ -43,20 +43,20 @@ impl Rss2Feed {
     }
 
     /// Stream the feed as XML bytes. Equivalent to
-    /// [`super::super::Rss2StreamWriter::from_feed`]; provided as a method for
+    /// [`crate::protocols::rss::Rss2StreamWriter::from_feed`]; provided as a method for
     /// discoverability when starting from a whole in-memory feed.
     ///
     /// Plugs directly into [`crate::Body::from_stream`].
     #[must_use]
     pub fn into_stream_writer(
         self,
-    ) -> super::super::Rss2StreamWriter<
+    ) -> crate::protocols::rss::Rss2StreamWriter<
         rama_core::futures::stream::BoxStream<
             'static,
             Result<Rss2Item, rama_core::error::BoxError>,
         >,
     > {
-        super::super::Rss2StreamWriter::from_feed(self)
+        crate::protocols::rss::Rss2StreamWriter::from_feed(self)
     }
 
     /// Drain [`Self::into_stream_writer`] into an in-memory `Vec<u8>`. The

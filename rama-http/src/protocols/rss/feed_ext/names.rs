@@ -25,8 +25,8 @@ macro_rules! decl_ext {
                 // The consts need to be usable by the per-format readers and
                 // writers under `super::rss2` / `super::atom`, but should not
                 // leak past the rss module.
-                pub(in super::super::super::super) const $name: &str = $local;
-                pub(in super::super::super::super) const [<$name _TAG>]: &str =
+                pub(in crate::protocols::rss) const $name: &str = $local;
+                pub(in crate::protocols::rss) const [<$name _TAG>]: &str =
                     concat!($prefix, ":", $local);
             )+
         }
@@ -34,7 +34,7 @@ macro_rules! decl_ext {
 }
 
 /// iTunes podcast namespace (`http://www.itunes.com/dtds/podcast-1.0.dtd`).
-pub(in super::super) mod itunes {
+pub(in crate::protocols::rss) mod itunes {
     decl_ext! { "itunes",
         TITLE        => "title",
         AUTHOR       => "author",
@@ -59,7 +59,7 @@ pub(in super::super) mod itunes {
 }
 
 /// Podcasting 2.0 namespace (`https://podcastindex.org/namespace/1.0`).
-pub(in super::super) mod podcast {
+pub(in crate::protocols::rss) mod podcast {
     decl_ext! { "podcast",
         GUID        => "guid",
         LOCKED      => "locked",
@@ -79,7 +79,7 @@ pub(in super::super) mod podcast {
 }
 
 /// Media RSS namespace (`http://search.yahoo.com/mrss/`).
-pub(in super::super) mod media {
+pub(in crate::protocols::rss) mod media {
     decl_ext! { "media",
         CONTENT     => "content",
         TITLE       => "title",
@@ -92,7 +92,7 @@ pub(in super::super) mod media {
 
 /// Dublin Core namespace (`http://purl.org/dc/elements/1.1/`). Fields are
 /// flat — same set on item-level and feed-level.
-pub(in super::super) mod dc {
+pub(in crate::protocols::rss) mod dc {
     decl_ext! { "dc",
         TITLE       => "title",
         CREATOR     => "creator",
@@ -114,7 +114,7 @@ pub(in super::super) mod dc {
 
 /// `content:encoded` namespace (`http://purl.org/rss/1.0/modules/content/`).
 /// The only element we read from this namespace is `encoded`.
-pub(in super::super) mod content {
+pub(in crate::protocols::rss) mod content {
     decl_ext! { "content",
         ENCODED => "encoded",
     }
@@ -124,11 +124,11 @@ pub(in super::super) mod content {
 /// these are namespace-qualified in real-world feeds (the host element's
 /// namespace governs), so one bare `&str` constant per name serves both
 /// sides.
-pub(in super::super) mod attr {
+pub(in crate::protocols::rss) mod attr {
     macro_rules! decl_attr {
         ($($name:ident => $lit:literal),+ $(,)?) => {
             $(
-                pub(in super::super::super::super) const $name: &str = $lit;
+                pub(in crate::protocols::rss) const $name: &str = $lit;
             )+
         };
     }

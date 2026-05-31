@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 
 use jiff::Timestamp;
 
-use super::super::atom::AtomLink;
-use super::super::feed_ext::FeedExtensions;
 use super::types::{Missing, Present, Rss2Category, Rss2Feed, Rss2Image, Rss2Item};
+use crate::protocols::rss::atom::AtomLink;
+use crate::protocols::rss::feed_ext::FeedExtensions;
 
 /// Type-state builder for [`Rss2Feed`].
 ///

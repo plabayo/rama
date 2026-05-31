@@ -4,13 +4,15 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::feed_ext::names::{attr, content};
-use super::super::feed_ext::write as ext_write;
-use super::super::ns;
-use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::names::elem;
 use super::read::Rss2Channel;
 use super::types::Rss2Item;
+use crate::protocols::rss::feed_ext::names::{attr, content};
+use crate::protocols::rss::feed_ext::write as ext_write;
+use crate::protocols::rss::ns;
+use crate::protocols::rss::ser::{
+    XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem,
+};
 
 /// Open `<rss>` + `<channel>` and emit all channel-level metadata + feed-level
 /// extension blocks. Stops just before items so the caller can stream them in.
@@ -20,7 +22,7 @@ use super::types::Rss2Item;
 /// `atom_links`). The header is written before items are known, so the writer
 /// can't gate declarations on what items actually use — declaring up front
 /// keeps the document well-formed for any item the caller goes on to emit.
-pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     w: &mut Writer<W>,
     channel: &Rss2Channel,
 ) -> Result<(), XmlWriteError> {
@@ -122,7 +124,7 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
 
 /// Close `</channel></rss>`. Pairs with [`write_rss2_channel_open`] so callers
 /// can interleave items from an external source between the two.
-pub(in super::super) fn write_rss2_channel_close<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_rss2_channel_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new(elem::CHANNEL)))?;
@@ -130,7 +132,7 @@ pub(in super::super) fn write_rss2_channel_close<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn write_rss2_item<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
     w: &mut Writer<W>,
     item: &Rss2Item,
 ) -> Result<(), XmlWriteError> {
@@ -212,7 +214,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn format_rss2_date(ts: &Timestamp) -> String {
+pub(in crate::protocols::rss) fn format_rss2_date(ts: &Timestamp) -> String {
     use jiff::fmt::rfc2822;
     use jiff::tz::TimeZone;
     let zdt = ts.to_zoned(TimeZone::UTC);
@@ -229,8 +231,8 @@ pub(in super::super) fn format_rss2_date(ts: &Timestamp) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::feed_ext::{FeedExtensions, ITunes, ITunesFeed, ItemExtensions};
-    use super::super::types::{Rss2Feed, Rss2Guid, Rss2Item};
+    use crate::protocols::rss::feed_ext::{FeedExtensions, ITunes, ITunesFeed, ItemExtensions};
+    use crate::protocols::rss::rss2::types::{Rss2Feed, Rss2Guid, Rss2Item};
 
     #[test]
     fn builder_enforces_all_required_fields() {

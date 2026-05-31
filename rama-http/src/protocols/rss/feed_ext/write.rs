@@ -8,15 +8,15 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::rss2::format_rss2_date;
-use super::super::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
 use super::names::{attr, dc, itunes, media, podcast};
 use super::{
     DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed,
     PodcastLocation, PodcastPerson, PodcastRemoteItem,
 };
+use crate::protocols::rss::rss2::format_rss2_date;
+use crate::protocols::rss::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
 
-pub(in super::super) fn write_itunes_feed<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_itunes_feed<W: std::io::Write>(
     w: &mut Writer<W>,
     itunes: &ITunesFeed,
 ) -> Result<(), XmlWriteError> {
@@ -58,7 +58,7 @@ pub(in super::super) fn write_itunes_feed<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn write_itunes_item<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_itunes_item<W: std::io::Write>(
     w: &mut Writer<W>,
     itunes: &ITunes,
 ) -> Result<(), XmlWriteError> {
@@ -93,7 +93,7 @@ pub(in super::super) fn write_itunes_item<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn write_podcast_feed<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_podcast_feed<W: std::io::Write>(
     w: &mut Writer<W>,
     pc: &PodcastFeed,
 ) -> Result<(), XmlWriteError> {
@@ -145,7 +145,7 @@ pub(in super::super) fn write_podcast_feed<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn write_podcast_item<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
     w: &mut Writer<W>,
     pc: &Podcast,
 ) -> Result<(), XmlWriteError> {
@@ -321,14 +321,14 @@ macro_rules! impl_dc_fields {
 impl_dc_fields!(DublinCore);
 impl_dc_fields!(DublinCoreFeed);
 
-pub(in super::super) fn write_dc_item_fields<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_dc_item_fields<W: std::io::Write>(
     w: &mut Writer<W>,
     dc: &DublinCore,
 ) -> Result<(), XmlWriteError> {
     write_dc_fields(w, &dc.fields())
 }
 
-pub(in super::super) fn write_dc_feed_fields<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_dc_feed_fields<W: std::io::Write>(
     w: &mut Writer<W>,
     dc: &DublinCoreFeed,
 ) -> Result<(), XmlWriteError> {
@@ -359,7 +359,7 @@ fn write_dc_fields<W: std::io::Write>(
     Ok(())
 }
 
-pub(in super::super) fn write_media_item<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_media_item<W: std::io::Write>(
     w: &mut Writer<W>,
     m: &MediaRss,
 ) -> Result<(), XmlWriteError> {

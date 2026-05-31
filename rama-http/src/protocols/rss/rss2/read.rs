@@ -17,14 +17,14 @@ use rama_core::futures::stream::BoxStream;
 use rama_core::telemetry::tracing;
 use tokio::io::AsyncBufRead;
 
-use super::super::atom::AtomLink;
-use super::super::error::{CollectError, FeedParseError, Rss2CollectError};
-use super::super::feed_ext::FeedExtensions;
-use super::super::feed_ext::names::attr;
-use super::super::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
-use super::super::parse_util::{attr_value, enclosure_from_attrs, parse_rss2_date};
 use super::names::elem;
 use super::{Rss2Category, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source};
+use crate::protocols::rss::atom::AtomLink;
+use crate::protocols::rss::error::{CollectError, FeedParseError, Rss2CollectError};
+use crate::protocols::rss::feed_ext::FeedExtensions;
+use crate::protocols::rss::feed_ext::names::attr;
+use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
+use crate::protocols::rss::parse_util::{attr_value, enclosure_from_attrs, parse_rss2_date};
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
 /// carries *except* its `items`. Re-combine with item events via
@@ -112,7 +112,7 @@ impl Rss2FeedStream {
         Self::new_with_mode(reader, true).await
     }
 
-    pub(in super::super) async fn new_with_mode<R>(
+    pub(in crate::protocols::rss) async fn new_with_mode<R>(
         reader: R,
         strict: bool,
     ) -> Result<Self, FeedParseError>
@@ -396,7 +396,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 if !consumed && !self.in_item && ns == Ns::Atom && local == "link" {
                     self.channel
                         .atom_links
-                        .push(super::super::parse_util::atom_link_from_attrs(&e));
+                        .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
                     return Ok(Action::Continue);
                 }
                 if consumed || ns != Ns::None {
@@ -468,7 +468,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 if !self.in_item && ns == Ns::Atom && local == "link" {
                     self.channel
                         .atom_links
-                        .push(super::super::parse_util::atom_link_from_attrs(&e));
+                        .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
                     return Ok(Action::Continue);
                 }
                 if ns == Ns::None && self.in_item && local == "enclosure" {

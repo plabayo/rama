@@ -1,9 +1,9 @@
 use jiff::Timestamp;
 
-use super::super::feed_ext::{
+use crate::protocols::rss::feed_ext::{
     Content, DublinCore, FeedExtension, ITunes, ItemExtensionGet, ItemExtensions, MediaRss, Podcast,
 };
-use super::super::rss2::Missing;
+use crate::protocols::rss::rss2::Missing;
 
 /// Atom text construct: a string body plus a [`AtomTextKind`] that says how
 /// to interpret/serialize it. Equivalent of the spec's "Text Construct"
@@ -263,7 +263,7 @@ pub struct AtomFeed {
     pub rights: Option<AtomText>,
     pub subtitle: Option<AtomText>,
     pub entries: Vec<AtomEntry>,
-    pub extensions: super::super::feed_ext::FeedExtensions,
+    pub extensions: crate::protocols::rss::feed_ext::FeedExtensions,
 }
 
 impl AtomFeed {
@@ -273,20 +273,20 @@ impl AtomFeed {
     }
 
     /// Stream the feed as XML bytes. Equivalent to
-    /// [`super::super::AtomStreamWriter::from_feed`]; provided as a method for
+    /// [`crate::protocols::rss::AtomStreamWriter::from_feed`]; provided as a method for
     /// discoverability when starting from a whole in-memory feed.
     ///
     /// Plugs directly into [`crate::Body::from_stream`].
     #[must_use]
     pub fn into_stream_writer(
         self,
-    ) -> super::super::AtomStreamWriter<
+    ) -> crate::protocols::rss::AtomStreamWriter<
         rama_core::futures::stream::BoxStream<
             'static,
             Result<AtomEntry, rama_core::error::BoxError>,
         >,
     > {
-        super::super::AtomStreamWriter::from_feed(self)
+        crate::protocols::rss::AtomStreamWriter::from_feed(self)
     }
 
     /// Drain [`Self::into_stream_writer`] into an in-memory `Vec<u8>`.

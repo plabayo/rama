@@ -3,23 +3,25 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::feed_ext::names::attr;
-use super::super::feed_ext::write as ext_write;
-use super::super::ns;
-use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
 use super::names::elem;
 use super::read::AtomHeader;
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText, AtomTextKind,
+};
+use crate::protocols::rss::feed_ext::names::attr;
+use crate::protocols::rss::feed_ext::write as ext_write;
+use crate::protocols::rss::ns;
+use crate::protocols::rss::ser::{
+    XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem,
 };
 
 /// Open `<feed>` and emit all feed-level metadata + extension blocks. Stops
 /// just before entries so the caller can stream them in.
 ///
 /// Always declares the well-known extension namespaces (`itunes`, `podcast`,
-/// `dc`, `media`); see the comment in [`super::super::rss2::write_rss2_channel_open`]
+/// `dc`, `media`); see the comment in [`crate::protocols::rss::rss2::write_rss2_channel_open`]
 /// for why.
-pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     w: &mut Writer<W>,
     header: &AtomHeader,
 ) -> Result<(), XmlWriteError> {
@@ -83,14 +85,14 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
 }
 
 /// Close `</feed>`. Pairs with [`write_atom_feed_open`].
-pub(in super::super) fn write_atom_feed_close<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_atom_feed_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::End(BytesEnd::new(elem::FEED)))?;
     Ok(())
 }
 
-pub(in super::super) fn write_atom_entry<W: std::io::Write>(
+pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
     w: &mut Writer<W>,
     entry: &AtomEntry,
 ) -> Result<(), XmlWriteError> {
@@ -295,7 +297,9 @@ fn write_atom_category<W: std::io::Write>(
 mod tests {
     use jiff::Timestamp;
 
-    use super::super::types::{AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText};
+    use crate::protocols::rss::atom::types::{
+        AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
+    };
 
     #[test]
     fn builder_enforces_all_required_fields() {

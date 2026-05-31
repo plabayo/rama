@@ -16,18 +16,18 @@ use rama_core::futures::stream::BoxStream;
 use rama_core::telemetry::tracing;
 use tokio::io::AsyncBufRead;
 
-use super::super::atom::{
+use super::names::elem;
+use crate::protocols::rss::atom::{
     AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson,
     AtomSource, AtomText,
 };
-use super::super::error::{AtomCollectError, CollectError, FeedParseError};
-use super::super::feed_ext::FeedExtensions;
-use super::super::feed_ext::names::attr;
-use super::super::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
-use super::super::parse_util::{
+use crate::protocols::rss::error::{AtomCollectError, CollectError, FeedParseError};
+use crate::protocols::rss::feed_ext::FeedExtensions;
+use crate::protocols::rss::feed_ext::names::attr;
+use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
+use crate::protocols::rss::parse_util::{
     atom_category_from_attrs, atom_link_from_attrs, attr_value, make_atom_text, parse_rfc3339_lax,
 };
-use super::names::elem;
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
 /// carries except its `entries`.
@@ -116,7 +116,7 @@ impl AtomFeedStream {
         Self::new_with_mode(reader, true).await
     }
 
-    pub(in super::super) async fn new_with_mode<R>(
+    pub(in crate::protocols::rss) async fn new_with_mode<R>(
         reader: R,
         strict: bool,
     ) -> Result<Self, FeedParseError>

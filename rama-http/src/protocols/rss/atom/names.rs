@@ -1,28 +1,28 @@
 //! Core Atom 1.0 element local-name constants. Same single-source guarantee
-//! as [`super::super::feed_ext::names`]: parser and writer reference the
+//! as [`crate::protocols::rss::feed_ext::names`]: parser and writer reference the
 //! same const so a typo can't desync them.
 
-pub(in super::super) mod elem {
-    pub(in super::super::super) const FEED: &str = "feed";
-    pub(in super::super::super) const ENTRY: &str = "entry";
-    pub(in super::super::super) const ID: &str = "id";
-    pub(in super::super::super) const TITLE: &str = "title";
-    pub(in super::super::super) const UPDATED: &str = "updated";
-    pub(in super::super::super) const PUBLISHED: &str = "published";
-    pub(in super::super::super) const AUTHOR: &str = "author";
-    pub(in super::super::super) const CONTRIBUTOR: &str = "contributor";
-    pub(in super::super::super) const LINK: &str = "link";
-    pub(in super::super::super) const CATEGORY: &str = "category";
-    pub(in super::super::super) const GENERATOR: &str = "generator";
-    pub(in super::super::super) const ICON: &str = "icon";
-    pub(in super::super::super) const LOGO: &str = "logo";
-    pub(in super::super::super) const RIGHTS: &str = "rights";
-    pub(in super::super::super) const SUBTITLE: &str = "subtitle";
-    pub(in super::super::super) const SUMMARY: &str = "summary";
-    pub(in super::super::super) const CONTENT: &str = "content";
-    pub(in super::super::super) const SOURCE: &str = "source";
-    pub(in super::super::super) const NAME: &str = "name";
-    pub(in super::super::super) const EMAIL: &str = "email";
-    pub(in super::super::super) const URI: &str = "uri";
-    pub(in super::super::super) const DIV: &str = "div";
+pub(in crate::protocols::rss) mod elem {
+    pub(in crate::protocols::rss) const FEED: &str = "feed";
+    pub(in crate::protocols::rss) const ENTRY: &str = "entry";
+    pub(in crate::protocols::rss) const ID: &str = "id";
+    pub(in crate::protocols::rss) const TITLE: &str = "title";
+    pub(in crate::protocols::rss) const UPDATED: &str = "updated";
+    pub(in crate::protocols::rss) const PUBLISHED: &str = "published";
+    pub(in crate::protocols::rss) const AUTHOR: &str = "author";
+    pub(in crate::protocols::rss) const CONTRIBUTOR: &str = "contributor";
+    pub(in crate::protocols::rss) const LINK: &str = "link";
+    pub(in crate::protocols::rss) const CATEGORY: &str = "category";
+    pub(in crate::protocols::rss) const GENERATOR: &str = "generator";
+    pub(in crate::protocols::rss) const ICON: &str = "icon";
+    pub(in crate::protocols::rss) const LOGO: &str = "logo";
+    pub(in crate::protocols::rss) const RIGHTS: &str = "rights";
+    pub(in crate::protocols::rss) const SUBTITLE: &str = "subtitle";
+    pub(in crate::protocols::rss) const SUMMARY: &str = "summary";
+    pub(in crate::protocols::rss) const CONTENT: &str = "content";
+    pub(in crate::protocols::rss) const SOURCE: &str = "source";
+    pub(in crate::protocols::rss) const NAME: &str = "name";
+    pub(in crate::protocols::rss) const EMAIL: &str = "email";
+    pub(in crate::protocols::rss) const URI: &str = "uri";
+    pub(in crate::protocols::rss) const DIV: &str = "div";
 }

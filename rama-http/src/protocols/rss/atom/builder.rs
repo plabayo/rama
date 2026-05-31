@@ -2,11 +2,11 @@ use std::marker::PhantomData;
 
 use jiff::Timestamp;
 
-use super::super::feed_ext::FeedExtensions;
-use super::super::rss2::{Missing, Present};
 use super::types::{
     AtomCategory, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson, AtomText,
 };
+use crate::protocols::rss::feed_ext::FeedExtensions;
+use crate::protocols::rss::rss2::{Missing, Present};
 
 /// Type-state builder for [`AtomFeed`].
 ///

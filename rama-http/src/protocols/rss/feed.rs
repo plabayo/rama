@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn atom_into_response_sets_content_type() {
-        use super::super::atom::{AtomFeed, AtomText};
+        use crate::protocols::rss::atom::{AtomFeed, AtomText};
         use jiff::Timestamp;
         let feed = AtomFeed::builder()
             .id("urn:x:1")
