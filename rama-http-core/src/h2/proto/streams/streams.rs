@@ -430,6 +430,14 @@ where
             .cloned()
     }
 
+    pub(crate) fn peer_settings_closed(&self) -> bool {
+        self.inner.lock().actions.send.peer_settings_closed()
+    }
+
+    pub(crate) fn peer_settings_notify(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        self.inner.lock().actions.send.peer_settings_notify()
+    }
+
     pub(crate) fn current_max_send_streams(&self) -> usize {
         let me = self.inner.lock();
         me.counts.max_send_streams()
@@ -1002,6 +1010,11 @@ impl Inner {
                 .into(),
             );
         }
+
+        // Wake any task awaiting peer SETTINGS so they can resolve to
+        // `None` instead of hanging when the connection dies before the
+        // peer's initial SETTINGS frame arrives.
+        actions.send.notify_peer_settings_closed();
 
         self.extensions
             .get_ref_or_insert(ConnectionHealthWatcher::default)

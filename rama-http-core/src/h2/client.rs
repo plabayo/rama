@@ -582,6 +582,49 @@ where
         self.inner.peer_initial_settings()
     }
 
+    /// Resolves to the initial `SETTINGS` frame sent by the remote peer.
+    ///
+    /// Returns `Some(settings)` once the peer's initial SETTINGS frame has
+    /// been received and processed by the connection task. Returns `None`
+    /// if the connection terminates before SETTINGS arrives (e.g. the peer
+    /// is non-compliant or the transport dies during handshake).
+    ///
+    /// The h2 spec requires the server's first frame to be `SETTINGS`, so
+    /// this future will normally resolve very shortly after a successful
+    /// handshake — typically within one or two poll cycles of the spawned
+    /// connection task. There is no need to send a request first.
+    ///
+    /// Even so, callers handling untrusted peers should wrap this in a
+    /// timeout (e.g. [`tokio::time::timeout`]): a non-compliant peer that
+    /// keeps the transport alive without sending SETTINGS would otherwise
+    /// keep this future pending indefinitely until the underlying
+    /// connection eventually times out at the transport layer.
+    pub async fn await_peer_initial_settings(&self) -> Option<Settings> {
+        // Fast path: already captured (or already closed).
+        if let Some(settings) = self.inner.peer_initial_settings() {
+            return Some(settings);
+        }
+        if self.inner.peer_settings_closed() {
+            return None;
+        }
+
+        let notify = self.inner.peer_settings_notify();
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            // Enable interest BEFORE re-checking the field to avoid a
+            // missed wake between the check and the `await`.
+            notified.as_mut().enable();
+            if let Some(settings) = self.inner.peer_initial_settings() {
+                return Some(settings);
+            }
+            if self.inner.peer_settings_closed() {
+                return None;
+            }
+            notified.await;
+        }
+    }
+
     /// Returns the current max send streams
     #[must_use]
     pub fn current_max_send_streams(&self) -> usize {

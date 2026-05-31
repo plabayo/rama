@@ -9,8 +9,10 @@ use rama_core::bytes::Buf;
 use rama_core::telemetry::tracing;
 use rama_http_types::proto::h2::frame::{self, Reason};
 use tokio::io::AsyncWrite;
+use tokio::sync::Notify;
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 /// Manages state transitions related to outbound frames.
@@ -45,6 +47,17 @@ pub(super) struct Send {
     /// overwritten by later updates. Exposed so callers (notably an MITM
     /// relay) can mirror upstream settings onto a sibling connection.
     peer_initial_settings: Option<frame::Settings>,
+
+    /// Set to `true` once the connection has been observed closed (via the
+    /// EOF path) *before* the peer's initial SETTINGS frame arrived. Used
+    /// by [`crate::h2::client::SendRequest::await_peer_initial_settings`]
+    /// to resolve to `None` instead of hanging on broken/non-compliant
+    /// peers.
+    peer_settings_closed: bool,
+
+    /// Wakes any task awaiting the first peer SETTINGS frame. Fires once
+    /// on first capture, and once on EOF (if no SETTINGS captured yet).
+    peer_settings_notify: Arc<Notify>,
 }
 
 /// A value to detect which public API has called `poll_reset`.
@@ -65,6 +78,8 @@ impl Send {
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
             peer_initial_settings: None,
+            peer_settings_closed: false,
+            peer_settings_notify: Arc::new(Notify::new()),
         })
     }
 
@@ -495,6 +510,8 @@ impl Send {
         // Snapshot the first non-ACK settings frame; later updates are ignored.
         if self.peer_initial_settings.is_none() {
             self.peer_initial_settings = Some(settings.clone());
+            // Wake any tasks parked in `await_peer_initial_settings`.
+            self.peer_settings_notify.notify_waiters();
         }
 
         if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
@@ -665,5 +682,23 @@ impl Send {
 
     pub(crate) fn peer_initial_settings(&self) -> Option<&frame::Settings> {
         self.peer_initial_settings.as_ref()
+    }
+
+    pub(crate) fn peer_settings_closed(&self) -> bool {
+        self.peer_settings_closed
+    }
+
+    pub(crate) fn peer_settings_notify(&self) -> Arc<Notify> {
+        self.peer_settings_notify.clone()
+    }
+
+    /// Marks the connection-closed-before-settings state and wakes any
+    /// waiters so they can resolve to `None`. No-op if the peer's
+    /// initial SETTINGS were already captured.
+    pub(crate) fn notify_peer_settings_closed(&mut self) {
+        if self.peer_initial_settings.is_none() && !self.peer_settings_closed {
+            self.peer_settings_closed = true;
+            self.peer_settings_notify.notify_waiters();
+        }
     }
 }

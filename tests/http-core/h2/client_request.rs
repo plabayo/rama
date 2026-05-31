@@ -1682,6 +1682,112 @@ async fn peer_initial_settings_absent_before_handshake() {
 
 #[tokio::test]
 #[ignore]
+async fn await_peer_initial_settings_resolves_without_request() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv
+            .assert_client_handshake_with_settings(
+                frames::settings()
+                    .with_enable_connect_protocol(1)
+                    .with_max_concurrent_streams(50),
+            )
+            .await;
+        assert_default_settings!(settings);
+        // Keep the conn alive while the client drives — no request, no
+        // additional frames. The `srv` task ending will drop the mock
+        // and close the connection, but only after `join` sees both
+        // sides done.
+    };
+
+    let h2 = async move {
+        let (client, mut h2) = client::handshake(io).await.unwrap();
+        // No request — just drive the connection until the client
+        // observes the peer's initial SETTINGS frame.
+        let peer_settings = h2
+            .drive(client.await_peer_initial_settings())
+            .await
+            .expect("peer SETTINGS frame must arrive without a request");
+        assert_eq!(peer_settings.config.enable_connect_protocol, Some(1));
+        assert_eq!(peer_settings.config.max_concurrent_streams, Some(50));
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn await_peer_initial_settings_resolves_none_when_conn_closes_pre_settings() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        // Read the client preface but never send the server preface
+        // SETTINGS — then drop the connection. This simulates a
+        // non-compliant peer / a transport that dies during handshake.
+        srv.read_preface().await.unwrap();
+        srv.close_without_notify();
+    };
+
+    let h2 = async move {
+        let (client, h2) = client::handshake(io).await.unwrap();
+        // Drive the connection so it can observe the close.
+        let conn_task = tokio::spawn(async move {
+            // The conn future resolves with an EOF error here; the close
+            // is the point of the test, so the error is expected.
+            assert!(h2.await.is_err(), "conn must error on EOF");
+        });
+        let peer_settings = client.await_peer_initial_settings().await;
+        assert!(
+            peer_settings.is_none(),
+            "must resolve to None when the conn closes before peer SETTINGS",
+        );
+        conn_task.await.unwrap();
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn await_peer_initial_settings_idempotent() {
+    h2_support::trace_init!();
+    let (io, mut srv) = mock::new();
+
+    let srv = async move {
+        let settings = srv
+            .assert_client_handshake_with_settings(
+                frames::settings().with_max_concurrent_streams(7),
+            )
+            .await;
+        assert_default_settings!(settings);
+    };
+
+    let h2 = async move {
+        let (client, mut h2) = client::handshake(io).await.unwrap();
+        let first = h2
+            .drive(client.await_peer_initial_settings())
+            .await
+            .expect("first await must yield captured peer SETTINGS");
+        // Second call must resolve via the fast path without needing
+        // the conn to be driven — settings are already captured.
+        let second = client
+            .await_peer_initial_settings()
+            .await
+            .expect("second await must yield the same captured SETTINGS");
+        assert_eq!(
+            first.config.max_concurrent_streams,
+            second.config.max_concurrent_streams,
+        );
+        assert_eq!(first.config.max_concurrent_streams, Some(7));
+    };
+
+    join(srv, h2).await;
+}
+
+#[tokio::test]
+#[ignore]
 async fn invalid_connect_protocol_enabled_setting() {
     h2_support::trace_init!();
 
