@@ -4,6 +4,7 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
+use super::super::ext_names::content;
 use super::super::ext_write;
 use super::super::ns;
 use super::super::read::Rss2Channel;
@@ -179,12 +180,12 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
         w.write_event(Event::End(BytesEnd::new("source")))?;
     }
 
-    if let Some(content) = &item.extensions.content
-        && let Some(encoded) = &content.encoded
+    if let Some(c) = &item.extensions.content
+        && let Some(encoded) = &c.encoded
     {
-        w.write_event(Event::Start(BytesStart::new("content:encoded")))?;
+        w.write_event(Event::Start(BytesStart::new(content::ENCODED_TAG)))?;
         write_cdata_escaped(w, encoded)?;
-        w.write_event(Event::End(BytesEnd::new("content:encoded")))?;
+        w.write_event(Event::End(BytesEnd::new(content::ENCODED_TAG)))?;
     }
 
     if let Some(dc) = &item.extensions.dublin_core {

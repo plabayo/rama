@@ -14,6 +14,7 @@
 
 use quick_xml::name::ResolveResult;
 
+use super::ext_names::{content, dc, itunes, media, podcast};
 use super::feed_ext::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
     MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
@@ -175,24 +176,24 @@ fn podcast_remote_item_from_attrs(e: &Attrs<'_>) -> PodcastRemoteItem {
 // one macro generates a setter for each so parsing stays single-sourced.
 macro_rules! impl_set_dc {
     ($name:ident, $t:ty) => {
-        fn $name(dc: &mut $t, has: &mut bool, local: &str, text: String) {
+        fn $name(d: &mut $t, has: &mut bool, local: &str, text: String) {
             *has = true;
             match local {
-                "title" => dc.title = Some(text),
-                "creator" => dc.creator = Some(text),
-                "subject" => dc.subject = Some(text),
-                "description" => dc.description = Some(text),
-                "publisher" => dc.publisher = Some(text),
-                "contributor" => dc.contributor = Some(text),
-                "date" => dc.date = parse_rss2_date(&text),
-                "type" => dc.type_ = Some(text),
-                "format" => dc.format = Some(text),
-                "identifier" => dc.identifier = Some(text),
-                "source" => dc.source = Some(text),
-                "language" => dc.language = Some(text),
-                "relation" => dc.relation = Some(text),
-                "coverage" => dc.coverage = Some(text),
-                "rights" => dc.rights = Some(text),
+                dc::TITLE => d.title = Some(text),
+                dc::CREATOR => d.creator = Some(text),
+                dc::SUBJECT => d.subject = Some(text),
+                dc::DESCRIPTION => d.description = Some(text),
+                dc::PUBLISHER => d.publisher = Some(text),
+                dc::CONTRIBUTOR => d.contributor = Some(text),
+                dc::DATE => d.date = parse_rss2_date(&text),
+                dc::TYPE => d.type_ = Some(text),
+                dc::FORMAT => d.format = Some(text),
+                dc::IDENTIFIER => d.identifier = Some(text),
+                dc::SOURCE => d.source = Some(text),
+                dc::LANGUAGE => d.language = Some(text),
+                dc::RELATION => d.relation = Some(text),
+                dc::COVERAGE => d.coverage = Some(text),
+                dc::RIGHTS => d.rights = Some(text),
                 _ => *has = false,
             }
         }
@@ -231,29 +232,31 @@ impl ItemExtAcc {
     /// Handle a start event; returns `true` if the element was consumed.
     pub(super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
-            (Ns::ITunes, "image") => {
+            (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, b"href") {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
             }
-            (Ns::Media, "content") => {
+            (Ns::Media, media::CONTENT) => {
                 self.pending_media.push(media_content_from_attrs(e));
             }
-            (Ns::Podcast, "person") => self.pending_person = Some(podcast_person_from_attrs(e)),
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::PERSON) => {
+                self.pending_person = Some(podcast_person_from_attrs(e))
+            }
+            (Ns::Podcast, podcast::LOCATION) => {
                 self.pending_location = Some(podcast_location_from_attrs(e))
             }
-            (Ns::Podcast, "soundbite") => {
+            (Ns::Podcast, podcast::SOUNDBITE) => {
                 self.pending_soundbite = Some(podcast_soundbite_from_attrs(e));
             }
-            (Ns::Podcast, "season") => {
+            (Ns::Podcast, podcast::SEASON) => {
                 self.pending_season = Some(PodcastSeason {
                     number: 0,
                     name: attr_value(e, b"name"),
                 });
             }
-            (Ns::Podcast, "episode") => {
+            (Ns::Podcast, podcast::EPISODE) => {
                 self.pending_episode = Some(PodcastEpisode {
                     number: 0.0,
                     display: attr_value(e, b"display"),
@@ -267,55 +270,55 @@ impl ItemExtAcc {
     /// Handle a self-closing element; returns `true` if consumed.
     pub(super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
-            (Ns::ITunes, "image") => {
+            (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, b"href") {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
             }
-            (Ns::Media, "content") => {
+            (Ns::Media, media::CONTENT) => {
                 self.media.contents.push(media_content_from_attrs(e));
                 self.has_media = true;
             }
-            (Ns::Media, "thumbnail") => {
+            (Ns::Media, media::THUMBNAIL) => {
                 self.media.thumbnail = Some(media_thumbnail_from_attrs(e));
                 self.has_media = true;
             }
-            (Ns::Podcast, "transcript") => {
+            (Ns::Podcast, podcast::TRANSCRIPT) => {
                 self.podcast
                     .transcripts
                     .push(podcast_transcript_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "chapters") => {
+            (Ns::Podcast, podcast::CHAPTERS) => {
                 self.podcast.chapters = Some(PodcastChapters {
                     url: attr_value(e, b"url").unwrap_or_default(),
                     type_: attr_value(e, b"type").unwrap_or_default(),
                 });
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "person") => {
+            (Ns::Podcast, podcast::PERSON) => {
                 self.podcast.persons.push(podcast_person_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::LOCATION) => {
                 self.podcast.location = Some(podcast_location_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "soundbite") => {
+            (Ns::Podcast, podcast::SOUNDBITE) => {
                 self.podcast
                     .soundbites
                     .push(podcast_soundbite_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "season") => {
+            (Ns::Podcast, podcast::SEASON) => {
                 self.podcast.season = Some(PodcastSeason {
                     number: 0,
                     name: attr_value(e, b"name"),
                 });
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "episode") => {
+            (Ns::Podcast, podcast::EPISODE) => {
                 self.podcast.episode = Some(PodcastEpisode {
                     number: 0.0,
                     display: attr_value(e, b"display"),
@@ -333,33 +336,33 @@ impl ItemExtAcc {
     pub(super) fn on_end(&mut self, ns: Ns, local: &str, text: String) -> Option<String> {
         match (ns, local) {
             // iTunes item text elements
-            (Ns::ITunes, "title") => self.itunes.title = Some(text),
-            (Ns::ITunes, "author") => self.itunes.author = Some(text),
-            (Ns::ITunes, "subtitle") => self.itunes.subtitle = Some(text),
-            (Ns::ITunes, "summary") => self.itunes.summary = Some(text),
-            (Ns::ITunes, "duration") => self.itunes.duration = Some(text),
-            (Ns::ITunes, "explicit") => self.itunes.explicit = Some(is_truthy(&text)),
-            (Ns::ITunes, "episode") => self.itunes.episode = text.trim().parse().ok(),
-            (Ns::ITunes, "season") => self.itunes.season = text.trim().parse().ok(),
-            (Ns::ITunes, "episodeType") => self.itunes.episode_type = Some(text),
-            (Ns::ITunes, "keywords") => self.itunes.keywords = Some(text),
-            (Ns::ITunes, "block") => self.itunes.block = Some(is_truthy(&text)),
+            (Ns::ITunes, itunes::TITLE) => self.itunes.title = Some(text),
+            (Ns::ITunes, itunes::AUTHOR) => self.itunes.author = Some(text),
+            (Ns::ITunes, itunes::SUBTITLE) => self.itunes.subtitle = Some(text),
+            (Ns::ITunes, itunes::SUMMARY) => self.itunes.summary = Some(text),
+            (Ns::ITunes, itunes::DURATION) => self.itunes.duration = Some(text),
+            (Ns::ITunes, itunes::EXPLICIT) => self.itunes.explicit = Some(is_truthy(&text)),
+            (Ns::ITunes, itunes::EPISODE) => self.itunes.episode = text.trim().parse().ok(),
+            (Ns::ITunes, itunes::SEASON) => self.itunes.season = text.trim().parse().ok(),
+            (Ns::ITunes, itunes::EPISODE_TYPE) => self.itunes.episode_type = Some(text),
+            (Ns::ITunes, itunes::KEYWORDS) => self.itunes.keywords = Some(text),
+            (Ns::ITunes, itunes::BLOCK) => self.itunes.block = Some(is_truthy(&text)),
             // content:encoded
-            (Ns::Content, "encoded") => {
+            (Ns::Content, content::ENCODED) => {
                 self.content = Some(Content {
                     encoded: Some(text),
                 });
                 return None;
             }
             // Media RSS
-            (Ns::Media, "content") => {
+            (Ns::Media, media::CONTENT) => {
                 if let Some(m) = self.pending_media.pop() {
                     self.media.contents.push(m);
                     self.has_media = true;
                 }
                 return None;
             }
-            (Ns::Media, "title") => {
+            (Ns::Media, media::TITLE) => {
                 if let Some(m) = self.pending_media.last_mut() {
                     m.title = Some(text);
                 } else {
@@ -368,7 +371,7 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Media, "description") => {
+            (Ns::Media, media::DESCRIPTION) => {
                 if let Some(m) = self.pending_media.last_mut() {
                     m.description = Some(text);
                 } else {
@@ -377,18 +380,18 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Media, "keywords") => {
+            (Ns::Media, media::KEYWORDS) => {
                 self.media.keywords = Some(text);
                 self.has_media = true;
                 return None;
             }
-            (Ns::Media, "rating") => {
+            (Ns::Media, media::RATING) => {
                 self.media.rating = Some(text);
                 self.has_media = true;
                 return None;
             }
             // Podcast 2.0 item-level pending finalizers
-            (Ns::Podcast, "person") => {
+            (Ns::Podcast, podcast::PERSON) => {
                 if let Some(mut p) = self.pending_person.take() {
                     p.name = text;
                     self.podcast.persons.push(p);
@@ -396,7 +399,7 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::LOCATION) => {
                 if let Some(mut l) = self.pending_location.take() {
                     l.name = text;
                     self.podcast.location = Some(l);
@@ -404,7 +407,7 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "soundbite") => {
+            (Ns::Podcast, podcast::SOUNDBITE) => {
                 if let Some(mut s) = self.pending_soundbite.take() {
                     if !text.is_empty() {
                         s.title = Some(text);
@@ -414,7 +417,7 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "season") => {
+            (Ns::Podcast, podcast::SEASON) => {
                 if let Some(mut s) = self.pending_season.take() {
                     s.number = text.trim().parse().unwrap_or(0);
                     self.podcast.season = Some(s);
@@ -422,7 +425,7 @@ impl ItemExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "episode") => {
+            (Ns::Podcast, podcast::EPISODE) => {
                 if let Some(mut ep) = self.pending_episode.take() {
                     ep.number = text
                         .trim()
@@ -477,22 +480,28 @@ pub(super) struct FeedExtAcc {
 impl FeedExtAcc {
     pub(super) fn on_start(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
-            (Ns::ITunes, "image") => {
+            (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, b"href") {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
             }
-            (Ns::ITunes, "owner") => {
+            (Ns::ITunes, itunes::OWNER) => {
                 self.in_itunes_owner = true;
                 self.has_itunes = true;
             }
-            (Ns::Podcast, "person") => self.pending_person = Some(podcast_person_from_attrs(e)),
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::PERSON) => {
+                self.pending_person = Some(podcast_person_from_attrs(e))
+            }
+            (Ns::Podcast, podcast::LOCATION) => {
                 self.pending_location = Some(podcast_location_from_attrs(e))
             }
-            (Ns::Podcast, "funding") => self.pending_funding = Some(podcast_funding_from_attrs(e)),
-            (Ns::Podcast, "trailer") => self.pending_trailer = Some(podcast_trailer_from_attrs(e)),
+            (Ns::Podcast, podcast::FUNDING) => {
+                self.pending_funding = Some(podcast_funding_from_attrs(e))
+            }
+            (Ns::Podcast, podcast::TRAILER) => {
+                self.pending_trailer = Some(podcast_trailer_from_attrs(e))
+            }
             _ => return false,
         }
         true
@@ -500,37 +509,37 @@ impl FeedExtAcc {
 
     pub(super) fn on_empty(&mut self, ns: Ns, local: &str, e: &Attrs<'_>) -> bool {
         match (ns, local) {
-            (Ns::ITunes, "image") => {
+            (Ns::ITunes, itunes::IMAGE) => {
                 if let Some(href) = attr_value(e, b"href") {
                     self.itunes.image = Some(href);
                     self.has_itunes = true;
                 }
             }
-            (Ns::ITunes, "category") => {
+            (Ns::ITunes, itunes::CATEGORY) => {
                 if let Some(v) = attr_value(e, b"text") {
                     self.itunes.categories.push(v);
                     self.has_itunes = true;
                 }
             }
-            (Ns::Podcast, "remoteItem") => {
+            (Ns::Podcast, podcast::REMOTE_ITEM) => {
                 self.podcast
                     .remote_items
                     .push(podcast_remote_item_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "person") => {
+            (Ns::Podcast, podcast::PERSON) => {
                 self.podcast.persons.push(podcast_person_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::LOCATION) => {
                 self.podcast.location = Some(podcast_location_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "funding") => {
+            (Ns::Podcast, podcast::FUNDING) => {
                 self.podcast.fundings.push(podcast_funding_from_attrs(e));
                 self.has_podcast = true;
             }
-            (Ns::Podcast, "trailer") => {
+            (Ns::Podcast, podcast::TRAILER) => {
                 self.podcast.trailers.push(podcast_trailer_from_attrs(e));
                 self.has_podcast = true;
             }
@@ -542,43 +551,47 @@ impl FeedExtAcc {
     pub(super) fn on_end(&mut self, ns: Ns, local: &str, text: String) -> Option<String> {
         match (ns, local) {
             // iTunes feed text elements
-            (Ns::ITunes, "author") => self.itunes.author = Some(text),
-            (Ns::ITunes, "title") => self.itunes.title = Some(text),
-            (Ns::ITunes, "subtitle") => self.itunes.subtitle = Some(text),
-            (Ns::ITunes, "summary") => self.itunes.summary = Some(text),
-            (Ns::ITunes, "type") => self.itunes.type_ = Some(text),
-            (Ns::ITunes, "explicit") => self.itunes.explicit = Some(is_truthy(&text)),
-            (Ns::ITunes, "new-feed-url") => self.itunes.new_feed_url = Some(text),
-            (Ns::ITunes, "block") => self.itunes.block = Some(is_truthy(&text)),
-            (Ns::ITunes, "complete") => self.itunes.complete = Some(is_truthy(&text)),
-            (Ns::ITunes, "name") if self.in_itunes_owner => self.itunes.owner_name = Some(text),
-            (Ns::ITunes, "email") if self.in_itunes_owner => self.itunes.owner_email = Some(text),
-            (Ns::ITunes, "owner") => {
+            (Ns::ITunes, itunes::AUTHOR) => self.itunes.author = Some(text),
+            (Ns::ITunes, itunes::TITLE) => self.itunes.title = Some(text),
+            (Ns::ITunes, itunes::SUBTITLE) => self.itunes.subtitle = Some(text),
+            (Ns::ITunes, itunes::SUMMARY) => self.itunes.summary = Some(text),
+            (Ns::ITunes, itunes::TYPE) => self.itunes.type_ = Some(text),
+            (Ns::ITunes, itunes::EXPLICIT) => self.itunes.explicit = Some(is_truthy(&text)),
+            (Ns::ITunes, itunes::NEW_FEED_URL) => self.itunes.new_feed_url = Some(text),
+            (Ns::ITunes, itunes::BLOCK) => self.itunes.block = Some(is_truthy(&text)),
+            (Ns::ITunes, itunes::COMPLETE) => self.itunes.complete = Some(is_truthy(&text)),
+            (Ns::ITunes, itunes::NAME) if self.in_itunes_owner => {
+                self.itunes.owner_name = Some(text)
+            }
+            (Ns::ITunes, itunes::EMAIL) if self.in_itunes_owner => {
+                self.itunes.owner_email = Some(text)
+            }
+            (Ns::ITunes, itunes::OWNER) => {
                 self.in_itunes_owner = false;
                 return None;
             }
             // Podcast 2.0 feed text elements + pending finalizers
-            (Ns::Podcast, "guid") => {
+            (Ns::Podcast, podcast::GUID) => {
                 self.podcast.guid = Some(text);
                 self.has_podcast = true;
                 return None;
             }
-            (Ns::Podcast, "locked") => {
+            (Ns::Podcast, podcast::LOCKED) => {
                 self.podcast.locked = Some(is_truthy(&text));
                 self.has_podcast = true;
                 return None;
             }
-            (Ns::Podcast, "medium") => {
+            (Ns::Podcast, podcast::MEDIUM) => {
                 self.podcast.medium = Some(text);
                 self.has_podcast = true;
                 return None;
             }
-            (Ns::Podcast, "license") => {
+            (Ns::Podcast, podcast::LICENSE) => {
                 self.podcast.license = Some(text);
                 self.has_podcast = true;
                 return None;
             }
-            (Ns::Podcast, "person") => {
+            (Ns::Podcast, podcast::PERSON) => {
                 if let Some(mut p) = self.pending_person.take() {
                     p.name = text;
                     self.podcast.persons.push(p);
@@ -586,7 +599,7 @@ impl FeedExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "location") => {
+            (Ns::Podcast, podcast::LOCATION) => {
                 if let Some(mut l) = self.pending_location.take() {
                     l.name = text;
                     self.podcast.location = Some(l);
@@ -594,7 +607,7 @@ impl FeedExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "funding") => {
+            (Ns::Podcast, podcast::FUNDING) => {
                 if let Some(mut f) = self.pending_funding.take() {
                     if !text.is_empty() {
                         f.title = Some(text);
@@ -604,7 +617,7 @@ impl FeedExtAcc {
                 }
                 return None;
             }
-            (Ns::Podcast, "trailer") => {
+            (Ns::Podcast, podcast::TRAILER) => {
                 if let Some(mut t) = self.pending_trailer.take() {
                     t.title = text;
                     self.podcast.trailers.push(t);

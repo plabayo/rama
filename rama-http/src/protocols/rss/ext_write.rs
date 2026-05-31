@@ -8,6 +8,7 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
+use super::ext_names::{dc, itunes, media, podcast};
 use super::feed_ext::{
     DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed,
     PodcastLocation, PodcastPerson, PodcastRemoteItem,
@@ -19,40 +20,40 @@ pub(super) fn write_itunes_feed<W: std::io::Write>(
     w: &mut Writer<W>,
     itunes: &ITunesFeed,
 ) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "itunes:title", itunes.title.as_deref())?;
-    write_opt_text_elem(w, "itunes:author", itunes.author.as_deref())?;
-    write_opt_text_elem(w, "itunes:subtitle", itunes.subtitle.as_deref())?;
-    write_opt_text_elem(w, "itunes:summary", itunes.summary.as_deref())?;
+    write_opt_text_elem(w, itunes::TITLE_TAG, itunes.title.as_deref())?;
+    write_opt_text_elem(w, itunes::AUTHOR_TAG, itunes.author.as_deref())?;
+    write_opt_text_elem(w, itunes::SUBTITLE_TAG, itunes.subtitle.as_deref())?;
+    write_opt_text_elem(w, itunes::SUMMARY_TAG, itunes.summary.as_deref())?;
     if let Some(img) = &itunes.image {
-        let mut tag = BytesStart::new("itunes:image");
+        let mut tag = BytesStart::new(itunes::IMAGE_TAG);
         tag.push_attribute(("href", img.as_str()));
         w.write_event(Event::Empty(tag))?;
     }
     for cat in &itunes.categories {
-        let mut tag = BytesStart::new("itunes:category");
+        let mut tag = BytesStart::new(itunes::CATEGORY_TAG);
         tag.push_attribute(("text", cat.as_str()));
         w.write_event(Event::Empty(tag))?;
     }
     if let Some(explicit) = itunes.explicit {
         write_text_elem(
             w,
-            "itunes:explicit",
+            itunes::EXPLICIT_TAG,
             if explicit { "true" } else { "false" },
         )?;
     }
-    write_opt_text_elem(w, "itunes:type", itunes.type_.as_deref())?;
-    write_opt_text_elem(w, "itunes:new-feed-url", itunes.new_feed_url.as_deref())?;
+    write_opt_text_elem(w, itunes::TYPE_TAG, itunes.type_.as_deref())?;
+    write_opt_text_elem(w, itunes::NEW_FEED_URL_TAG, itunes.new_feed_url.as_deref())?;
     if let Some(block) = itunes.block {
-        write_text_elem(w, "itunes:block", if block { "Yes" } else { "No" })?;
+        write_text_elem(w, itunes::BLOCK_TAG, if block { "Yes" } else { "No" })?;
     }
     if let Some(complete) = itunes.complete {
-        write_text_elem(w, "itunes:complete", if complete { "Yes" } else { "No" })?;
+        write_text_elem(w, itunes::COMPLETE_TAG, if complete { "Yes" } else { "No" })?;
     }
     if itunes.owner_name.is_some() || itunes.owner_email.is_some() {
-        w.write_event(Event::Start(BytesStart::new("itunes:owner")))?;
-        write_opt_text_elem(w, "itunes:name", itunes.owner_name.as_deref())?;
-        write_opt_text_elem(w, "itunes:email", itunes.owner_email.as_deref())?;
-        w.write_event(Event::End(BytesEnd::new("itunes:owner")))?;
+        w.write_event(Event::Start(BytesStart::new(itunes::OWNER_TAG)))?;
+        write_opt_text_elem(w, itunes::NAME_TAG, itunes.owner_name.as_deref())?;
+        write_opt_text_elem(w, itunes::EMAIL_TAG, itunes.owner_email.as_deref())?;
+        w.write_event(Event::End(BytesEnd::new(itunes::OWNER_TAG)))?;
     }
     Ok(())
 }
@@ -61,66 +62,66 @@ pub(super) fn write_itunes_item<W: std::io::Write>(
     w: &mut Writer<W>,
     itunes: &ITunes,
 ) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "itunes:title", itunes.title.as_deref())?;
-    write_opt_text_elem(w, "itunes:author", itunes.author.as_deref())?;
-    write_opt_text_elem(w, "itunes:subtitle", itunes.subtitle.as_deref())?;
-    write_opt_text_elem(w, "itunes:summary", itunes.summary.as_deref())?;
+    write_opt_text_elem(w, itunes::TITLE_TAG, itunes.title.as_deref())?;
+    write_opt_text_elem(w, itunes::AUTHOR_TAG, itunes.author.as_deref())?;
+    write_opt_text_elem(w, itunes::SUBTITLE_TAG, itunes.subtitle.as_deref())?;
+    write_opt_text_elem(w, itunes::SUMMARY_TAG, itunes.summary.as_deref())?;
     if let Some(img) = &itunes.image {
-        let mut tag = BytesStart::new("itunes:image");
+        let mut tag = BytesStart::new(itunes::IMAGE_TAG);
         tag.push_attribute(("href", img.as_str()));
         w.write_event(Event::Empty(tag))?;
     }
-    write_opt_text_elem(w, "itunes:duration", itunes.duration.as_deref())?;
+    write_opt_text_elem(w, itunes::DURATION_TAG, itunes.duration.as_deref())?;
     if let Some(explicit) = itunes.explicit {
         write_text_elem(
             w,
-            "itunes:explicit",
+            itunes::EXPLICIT_TAG,
             if explicit { "true" } else { "false" },
         )?;
     }
     if let Some(ep) = itunes.episode {
-        write_text_elem(w, "itunes:episode", &ep.to_string())?;
+        write_text_elem(w, itunes::EPISODE_TAG, &ep.to_string())?;
     }
     if let Some(s) = itunes.season {
-        write_text_elem(w, "itunes:season", &s.to_string())?;
+        write_text_elem(w, itunes::SEASON_TAG, &s.to_string())?;
     }
-    write_opt_text_elem(w, "itunes:episodeType", itunes.episode_type.as_deref())?;
-    write_opt_text_elem(w, "itunes:keywords", itunes.keywords.as_deref())?;
+    write_opt_text_elem(w, itunes::EPISODE_TYPE_TAG, itunes.episode_type.as_deref())?;
+    write_opt_text_elem(w, itunes::KEYWORDS_TAG, itunes.keywords.as_deref())?;
     if let Some(block) = itunes.block {
-        write_text_elem(w, "itunes:block", if block { "Yes" } else { "No" })?;
+        write_text_elem(w, itunes::BLOCK_TAG, if block { "Yes" } else { "No" })?;
     }
     Ok(())
 }
 
 pub(super) fn write_podcast_feed<W: std::io::Write>(
     w: &mut Writer<W>,
-    podcast: &PodcastFeed,
+    pc: &PodcastFeed,
 ) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "podcast:guid", podcast.guid.as_deref())?;
-    if let Some(locked) = podcast.locked {
-        write_text_elem(w, "podcast:locked", if locked { "yes" } else { "no" })?;
+    write_opt_text_elem(w, podcast::GUID_TAG, pc.guid.as_deref())?;
+    if let Some(locked) = pc.locked {
+        write_text_elem(w, podcast::LOCKED_TAG, if locked { "yes" } else { "no" })?;
     }
-    for f in &podcast.fundings {
-        let mut tag = BytesStart::new("podcast:funding");
+    for f in &pc.fundings {
+        let mut tag = BytesStart::new(podcast::FUNDING_TAG);
         tag.push_attribute(("url", f.url.as_str()));
         if let Some(title) = &f.title {
             w.write_event(Event::Start(tag))?;
             w.write_event(Event::Text(BytesText::new(title)))?;
-            w.write_event(Event::End(BytesEnd::new("podcast:funding")))?;
+            w.write_event(Event::End(BytesEnd::new(podcast::FUNDING_TAG)))?;
         } else {
             w.write_event(Event::Empty(tag))?;
         }
     }
-    write_opt_text_elem(w, "podcast:medium", podcast.medium.as_deref())?;
-    write_opt_text_elem(w, "podcast:license", podcast.license.as_deref())?;
-    for person in &podcast.persons {
+    write_opt_text_elem(w, podcast::MEDIUM_TAG, pc.medium.as_deref())?;
+    write_opt_text_elem(w, podcast::LICENSE_TAG, pc.license.as_deref())?;
+    for person in &pc.persons {
         write_podcast_person(w, person)?;
     }
-    if let Some(loc) = &podcast.location {
+    if let Some(loc) = &pc.location {
         write_podcast_location(w, loc)?;
     }
-    for trailer in &podcast.trailers {
-        let mut tag = BytesStart::new("podcast:trailer");
+    for trailer in &pc.trailers {
+        let mut tag = BytesStart::new(podcast::TRAILER_TAG);
         tag.push_attribute(("url", trailer.url.as_str()));
         if let Some(pd) = &trailer.pub_date {
             tag.push_attribute(("pubDate", format_rss2_date(pd).as_str()));
@@ -136,9 +137,9 @@ pub(super) fn write_podcast_feed<W: std::io::Write>(
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&trailer.title)))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:trailer")))?;
+        w.write_event(Event::End(BytesEnd::new(podcast::TRAILER_TAG)))?;
     }
-    for ri in &podcast.remote_items {
+    for ri in &pc.remote_items {
         write_podcast_remote_item(w, ri)?;
     }
     Ok(())
@@ -146,10 +147,10 @@ pub(super) fn write_podcast_feed<W: std::io::Write>(
 
 pub(super) fn write_podcast_item<W: std::io::Write>(
     w: &mut Writer<W>,
-    podcast: &Podcast,
+    pc: &Podcast,
 ) -> Result<(), XmlWriteError> {
-    for tr in &podcast.transcripts {
-        let mut tag = BytesStart::new("podcast:transcript");
+    for tr in &pc.transcripts {
+        let mut tag = BytesStart::new(podcast::TRANSCRIPT_TAG);
         tag.push_attribute(("url", tr.url.as_str()));
         tag.push_attribute(("type", tr.type_.as_str()));
         if let Some(lang) = &tr.language {
@@ -160,47 +161,47 @@ pub(super) fn write_podcast_item<W: std::io::Write>(
         }
         w.write_event(Event::Empty(tag))?;
     }
-    if let Some(ch) = &podcast.chapters {
-        let mut tag = BytesStart::new("podcast:chapters");
+    if let Some(ch) = &pc.chapters {
+        let mut tag = BytesStart::new(podcast::CHAPTERS_TAG);
         tag.push_attribute(("url", ch.url.as_str()));
         tag.push_attribute(("type", ch.type_.as_str()));
         w.write_event(Event::Empty(tag))?;
     }
-    for sb in &podcast.soundbites {
-        let mut tag = BytesStart::new("podcast:soundbite");
+    for sb in &pc.soundbites {
+        let mut tag = BytesStart::new(podcast::SOUNDBITE_TAG);
         tag.push_attribute(("startTime", sb.start_time.to_string().as_str()));
         tag.push_attribute(("duration", sb.duration.to_string().as_str()));
         if let Some(title) = &sb.title {
             w.write_event(Event::Start(tag))?;
             w.write_event(Event::Text(BytesText::new(title)))?;
-            w.write_event(Event::End(BytesEnd::new("podcast:soundbite")))?;
+            w.write_event(Event::End(BytesEnd::new(podcast::SOUNDBITE_TAG)))?;
         } else {
             w.write_event(Event::Empty(tag))?;
         }
     }
-    for person in &podcast.persons {
+    for person in &pc.persons {
         write_podcast_person(w, person)?;
     }
-    if let Some(loc) = &podcast.location {
+    if let Some(loc) = &pc.location {
         write_podcast_location(w, loc)?;
     }
-    if let Some(season) = &podcast.season {
-        let mut tag = BytesStart::new("podcast:season");
+    if let Some(season) = &pc.season {
+        let mut tag = BytesStart::new(podcast::SEASON_TAG);
         if let Some(name) = &season.name {
             tag.push_attribute(("name", name.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&season.number.to_string())))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:season")))?;
+        w.write_event(Event::End(BytesEnd::new(podcast::SEASON_TAG)))?;
     }
-    if let Some(ep) = &podcast.episode {
-        let mut tag = BytesStart::new("podcast:episode");
+    if let Some(ep) = &pc.episode {
+        let mut tag = BytesStart::new(podcast::EPISODE_TAG);
         if let Some(display) = &ep.display {
             tag.push_attribute(("display", display.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&ep.number.to_string())))?;
-        w.write_event(Event::End(BytesEnd::new("podcast:episode")))?;
+        w.write_event(Event::End(BytesEnd::new(podcast::EPISODE_TAG)))?;
     }
     Ok(())
 }
@@ -209,7 +210,7 @@ fn write_podcast_remote_item<W: std::io::Write>(
     w: &mut Writer<W>,
     ri: &PodcastRemoteItem,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("podcast:remoteItem");
+    let mut tag = BytesStart::new(podcast::REMOTE_ITEM_TAG);
     tag.push_attribute(("feedGuid", ri.feed_guid.as_str()));
     if let Some(item_guid) = &ri.item_guid {
         tag.push_attribute(("itemGuid", item_guid.as_str()));
@@ -231,7 +232,7 @@ fn write_podcast_person<W: std::io::Write>(
     w: &mut Writer<W>,
     person: &PodcastPerson,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("podcast:person");
+    let mut tag = BytesStart::new(podcast::PERSON_TAG);
     if let Some(role) = &person.role {
         tag.push_attribute(("role", role.as_str()));
     }
@@ -246,7 +247,7 @@ fn write_podcast_person<W: std::io::Write>(
     }
     w.write_event(Event::Start(tag))?;
     w.write_event(Event::Text(BytesText::new(&person.name)))?;
-    w.write_event(Event::End(BytesEnd::new("podcast:person")))?;
+    w.write_event(Event::End(BytesEnd::new(podcast::PERSON_TAG)))?;
     Ok(())
 }
 
@@ -254,7 +255,7 @@ fn write_podcast_location<W: std::io::Write>(
     w: &mut Writer<W>,
     loc: &PodcastLocation,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("podcast:location");
+    let mut tag = BytesStart::new(podcast::LOCATION_TAG);
     if let Some(geo) = &loc.geo {
         tag.push_attribute(("geo", geo.as_str()));
     }
@@ -263,7 +264,7 @@ fn write_podcast_location<W: std::io::Write>(
     }
     w.write_event(Event::Start(tag))?;
     w.write_event(Event::Text(BytesText::new(&loc.name)))?;
-    w.write_event(Event::End(BytesEnd::new("podcast:location")))?;
+    w.write_event(Event::End(BytesEnd::new(podcast::LOCATION_TAG)))?;
     Ok(())
 }
 
@@ -336,42 +337,42 @@ pub(super) fn write_dc_feed_fields<W: std::io::Write>(
 
 fn write_dc_fields<W: std::io::Write>(
     w: &mut Writer<W>,
-    dc: &DcView<'_>,
+    view: &DcView<'_>,
 ) -> Result<(), XmlWriteError> {
-    write_opt_text_elem(w, "dc:title", dc.title)?;
-    write_opt_text_elem(w, "dc:creator", dc.creator)?;
-    write_opt_text_elem(w, "dc:subject", dc.subject)?;
-    write_opt_text_elem(w, "dc:description", dc.description)?;
-    write_opt_text_elem(w, "dc:publisher", dc.publisher)?;
-    write_opt_text_elem(w, "dc:contributor", dc.contributor)?;
-    if let Some(d) = dc.date {
-        write_text_elem(w, "dc:date", &d.to_string())?;
+    write_opt_text_elem(w, dc::TITLE_TAG, view.title)?;
+    write_opt_text_elem(w, dc::CREATOR_TAG, view.creator)?;
+    write_opt_text_elem(w, dc::SUBJECT_TAG, view.subject)?;
+    write_opt_text_elem(w, dc::DESCRIPTION_TAG, view.description)?;
+    write_opt_text_elem(w, dc::PUBLISHER_TAG, view.publisher)?;
+    write_opt_text_elem(w, dc::CONTRIBUTOR_TAG, view.contributor)?;
+    if let Some(d) = view.date {
+        write_text_elem(w, dc::DATE_TAG, &d.to_string())?;
     }
-    write_opt_text_elem(w, "dc:type", dc.type_)?;
-    write_opt_text_elem(w, "dc:format", dc.format)?;
-    write_opt_text_elem(w, "dc:identifier", dc.identifier)?;
-    write_opt_text_elem(w, "dc:source", dc.source)?;
-    write_opt_text_elem(w, "dc:language", dc.language)?;
-    write_opt_text_elem(w, "dc:relation", dc.relation)?;
-    write_opt_text_elem(w, "dc:coverage", dc.coverage)?;
-    write_opt_text_elem(w, "dc:rights", dc.rights)?;
+    write_opt_text_elem(w, dc::TYPE_TAG, view.type_)?;
+    write_opt_text_elem(w, dc::FORMAT_TAG, view.format)?;
+    write_opt_text_elem(w, dc::IDENTIFIER_TAG, view.identifier)?;
+    write_opt_text_elem(w, dc::SOURCE_TAG, view.source)?;
+    write_opt_text_elem(w, dc::LANGUAGE_TAG, view.language)?;
+    write_opt_text_elem(w, dc::RELATION_TAG, view.relation)?;
+    write_opt_text_elem(w, dc::COVERAGE_TAG, view.coverage)?;
+    write_opt_text_elem(w, dc::RIGHTS_TAG, view.rights)?;
     Ok(())
 }
 
 pub(super) fn write_media_item<W: std::io::Write>(
     w: &mut Writer<W>,
-    media: &MediaRss,
+    m: &MediaRss,
 ) -> Result<(), XmlWriteError> {
-    for mc in &media.contents {
-        let mut tag = BytesStart::new("media:content");
+    for mc in &m.contents {
+        let mut tag = BytesStart::new(media::CONTENT_TAG);
         if let Some(url) = &mc.url {
             tag.push_attribute(("url", url.as_str()));
         }
         if let Some(t) = &mc.type_ {
             tag.push_attribute(("type", t.as_str()));
         }
-        if let Some(m) = &mc.medium {
-            tag.push_attribute(("medium", m.as_str()));
+        if let Some(medium) = &mc.medium {
+            tag.push_attribute(("medium", medium.as_str()));
         }
         if let Some(d) = mc.duration {
             tag.push_attribute(("duration", d.to_string().as_str()));
@@ -391,15 +392,15 @@ pub(super) fn write_media_item<W: std::io::Write>(
         let has_children = mc.title.is_some() || mc.description.is_some();
         if has_children {
             w.write_event(Event::Start(tag))?;
-            write_opt_text_elem(w, "media:title", mc.title.as_deref())?;
-            write_opt_text_elem(w, "media:description", mc.description.as_deref())?;
-            w.write_event(Event::End(BytesEnd::new("media:content")))?;
+            write_opt_text_elem(w, media::TITLE_TAG, mc.title.as_deref())?;
+            write_opt_text_elem(w, media::DESCRIPTION_TAG, mc.description.as_deref())?;
+            w.write_event(Event::End(BytesEnd::new(media::CONTENT_TAG)))?;
         } else {
             w.write_event(Event::Empty(tag))?;
         }
     }
-    if let Some(thumb) = &media.thumbnail {
-        let mut tag = BytesStart::new("media:thumbnail");
+    if let Some(thumb) = &m.thumbnail {
+        let mut tag = BytesStart::new(media::THUMBNAIL_TAG);
         tag.push_attribute(("url", thumb.url.as_str()));
         if let Some(width) = thumb.width {
             tag.push_attribute(("width", width.to_string().as_str()));
@@ -409,9 +410,9 @@ pub(super) fn write_media_item<W: std::io::Write>(
         }
         w.write_event(Event::Empty(tag))?;
     }
-    write_opt_text_elem(w, "media:title", media.title.as_deref())?;
-    write_opt_text_elem(w, "media:description", media.description.as_deref())?;
-    write_opt_text_elem(w, "media:keywords", media.keywords.as_deref())?;
-    write_opt_text_elem(w, "media:rating", media.rating.as_deref())?;
+    write_opt_text_elem(w, media::TITLE_TAG, m.title.as_deref())?;
+    write_opt_text_elem(w, media::DESCRIPTION_TAG, m.description.as_deref())?;
+    write_opt_text_elem(w, media::KEYWORDS_TAG, m.keywords.as_deref())?;
+    write_opt_text_elem(w, media::RATING_TAG, m.rating.as_deref())?;
     Ok(())
 }
