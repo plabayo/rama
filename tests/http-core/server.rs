@@ -2664,6 +2664,98 @@ async fn http2_keep_alive_with_responsive_client() {
 }
 
 #[tokio::test]
+async fn http2_server_context_params_override_initial_settings() {
+    use rama::http::conn::H2ServerContextParams;
+
+    let (listener, addr) = setup_tcp_listener();
+
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
+        // Stamp per-connection overrides on the IO extensions. The
+        // server builder's defaults DO NOT advertise CONNECT and use
+        // the default max_concurrent_streams (200) / max_frame_size
+        // (16kb); these overrides should be reflected on the wire.
+        socket.extensions.insert(H2ServerContextParams {
+            enable_connect_protocol: Some(true),
+            max_concurrent_streams: Some(42),
+            max_frame_size: Some(32_768),
+            ..Default::default()
+        });
+
+        http2::Builder::new(Executor::new())
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
+            .await
+            .expect("serve_connection");
+    });
+
+    // Use the lower-level h2 client API so we can call
+    // `await_peer_initial_settings` on the SendRequest directly.
+    let tcp = connect_async(addr).await;
+    let tcp = ServiceInput::new(tcp);
+    let (client, conn) = rama::http::core::h2::client::handshake(tcp)
+        .await
+        .expect("h2 handshake");
+    tokio::spawn(async move {
+        // Conn resolves once both sides hang up; result is unused.
+        drop(conn.await);
+    });
+
+    // Capture what the server actually sent in its initial SETTINGS
+    // frame — wire-level proof the overrides took effect.
+    let peer = tokio::time::timeout(Duration::from_secs(5), client.await_peer_initial_settings())
+        .await
+        .expect("server SETTINGS must arrive within 5s")
+        .expect("server SETTINGS must not be lost on close");
+
+    assert_eq!(
+        peer.config.enable_connect_protocol,
+        Some(1),
+        "CONNECT must be advertised because of override",
+    );
+    assert_eq!(peer.config.max_concurrent_streams, Some(42));
+    assert_eq!(peer.config.max_frame_size, Some(32_768));
+}
+
+#[tokio::test]
+async fn http2_server_context_params_absent_keeps_builder_defaults() {
+    // Sanity check: without H2ServerContextParams, the builder's
+    // configured values flow through unchanged.
+    let (listener, addr) = setup_tcp_listener();
+
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
+        http2::Builder::new(Executor::new())
+            .with_max_concurrent_streams(17)
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
+            .await
+            .expect("serve_connection");
+    });
+
+    let tcp = connect_async(addr).await;
+    let tcp = ServiceInput::new(tcp);
+    let (client, conn) = rama::http::core::h2::client::handshake(tcp)
+        .await
+        .expect("h2 handshake");
+    tokio::spawn(async move {
+        // Conn resolves once both sides hang up; result is unused.
+        drop(conn.await);
+    });
+
+    let peer = tokio::time::timeout(Duration::from_secs(5), client.await_peer_initial_settings())
+        .await
+        .expect("server SETTINGS must arrive within 5s")
+        .expect("server SETTINGS must not be lost on close");
+
+    assert_eq!(peer.config.max_concurrent_streams, Some(17));
+    assert_eq!(
+        peer.config.enable_connect_protocol, None,
+        "CONNECT must NOT be advertised by default",
+    );
+}
+
+#[tokio::test]
 async fn http2_check_date_header_disabled() {
     let (listener, addr) = setup_tcp_listener();
 

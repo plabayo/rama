@@ -11,6 +11,8 @@ use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_http::{Request, Response};
+use rama_http_types::conn::H2ServerContextParams;
+use std::borrow::Cow;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -296,13 +298,65 @@ impl Builder {
     ///
     /// This returns a Future that must be polled in order for HTTP to be
     /// driven on the connection.
+    ///
+    /// The IO's [`Extensions`] are checked for an [`H2ServerContextParams`]:
+    /// if present, its fields override the corresponding builder defaults
+    /// for *this* connection only, before the initial SETTINGS frame is
+    /// sent. Used primarily by MITM relays mirroring upstream SETTINGS.
+    ///
+    /// [`Extensions`]: rama_core::extensions::Extensions
     pub fn serve_connection<S, I>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: Service<Request<IncomingBody>, Output = Response, Error = Infallible>,
         I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsRef + 'static,
     {
-        let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());
+        let h2_builder = if let Some(params) = io.extensions().get_ref::<H2ServerContextParams>() {
+            let mut cfg = self.h2_builder.clone();
+            apply_h2_server_context_params(&mut cfg, params);
+            Cow::Owned(cfg)
+        } else {
+            Cow::Borrowed(&self.h2_builder)
+        };
+        let proto = proto::h2::Server::new(io, service, &h2_builder, self.exec.clone());
         Connection { conn: proto }
+    }
+}
+
+/// Per-connection override: applies non-`None` fields of `params` onto
+/// `cfg`. Mirrors the public builder setters one-to-one.
+fn apply_h2_server_context_params(
+    cfg: &mut proto::h2::server::Config,
+    params: &H2ServerContextParams,
+) {
+    if let Some(v) = params.enable_connect_protocol {
+        cfg.enable_connect_protocol = v;
+    }
+    if let Some(v) = params.max_concurrent_streams {
+        cfg.max_concurrent_streams = Some(v);
+    }
+    if let Some(v) = params.header_table_size {
+        cfg.header_table_size = Some(v);
+    }
+    if let Some(v) = params.max_frame_size {
+        cfg.max_frame_size = v;
+    }
+    if let Some(v) = params.max_header_list_size {
+        cfg.max_header_list_size = v;
+    }
+    if let Some(v) = params.initial_stream_window_size {
+        cfg.adaptive_window = false;
+        cfg.initial_stream_window_size = v;
+    }
+    if let Some(v) = params.initial_connection_window_size {
+        cfg.adaptive_window = false;
+        cfg.initial_conn_window_size = v;
+    }
+    if let Some(adaptive) = params.adaptive_window {
+        cfg.adaptive_window = adaptive;
+        if adaptive {
+            cfg.initial_conn_window_size = proto::h2::SPEC_WINDOW_SIZE;
+            cfg.initial_stream_window_size = proto::h2::SPEC_WINDOW_SIZE;
+        }
     }
 }
 
