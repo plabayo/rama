@@ -11,6 +11,7 @@ use tokio::time::sleep;
 
 use rama_core::{
     Layer, Service,
+    extensions::ExtensionsRef,
     futures::future::{join, join_all},
     graceful::Shutdown,
     io::BridgeIo,
@@ -24,7 +25,10 @@ use rama_http::{
     body::util::BodyExt as _,
     layer::set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
 };
-use rama_http_types::{Body, Request, Response, StatusCode, Version};
+use rama_http_types::{
+    Body, Request, Response, StatusCode, Version,
+    conn::{PeerH2Settings, TargetHttpVersion},
+};
 use rama_net::test_utils::client::{MockConnectorService, MockSocket};
 use tokio_util::sync::CancellationToken;
 
@@ -495,6 +499,122 @@ async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
         .expect("relay task should finish after ingress disconnect")
         .expect("relay completion signal");
 
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+/// Verifies the relay's eager phase-2 path mirrors the upstream's
+/// initial h2 SETTINGS onto its own ingress SETTINGS frame.
+///
+/// Upstream advertises `enable_connect_protocol=true` plus a custom
+/// `max_concurrent_streams`. The relay's egress IO carries
+/// `TargetHttpVersion(HTTP_2)`, which triggers eager phase-2 init: the
+/// relay handshakes egress, captures upstream SETTINGS, and stamps
+/// them as `H2ServerContextParams` on the ingress IO. The downstream
+/// client reads back the relay's SETTINGS frame via the
+/// `PeerH2Settings` response extension and we assert it matches.
+#[tokio::test]
+async fn test_h2_mitm_relay_mirrors_upstream_settings_connect_on() {
+    test_mitm_relay_mirrors_h2_settings_inner(true, 42).await;
+}
+
+/// Counterpart of the previous test: upstream does NOT advertise
+/// CONNECT and uses a different `max_concurrent_streams`. The relay
+/// must not advertise CONNECT downstream, even though earlier
+/// (pre-#932) versions did unconditionally.
+#[tokio::test]
+async fn test_h2_mitm_relay_mirrors_upstream_settings_connect_off() {
+    test_mitm_relay_mirrors_h2_settings_inner(false, 7).await;
+}
+
+async fn test_mitm_relay_mirrors_h2_settings_inner(
+    upstream_enables_connect: bool,
+    upstream_max_concurrent_streams: u32,
+) {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    // Upstream h2 server configured with the SETTINGS we want the
+    // relay to mirror back out to its downstream client.
+    graceful.spawn_task_fn(async move |guard| {
+        let mut server = HttpServer::auto(Executor::graceful(guard));
+        if upstream_enables_connect {
+            server.h2_mut().set_enable_connect_protocol();
+        }
+        server
+            .h2_mut()
+            .set_max_concurrent_streams(upstream_max_concurrent_streams);
+        server
+            .service(service_fn(server_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    // Egress IO carries TargetHttpVersion(HTTP_2) so the relay takes
+    // the eager phase-2 branch and actually mirrors. Without this,
+    // the relay would fall through to the lazy path and the ingress
+    // would keep its server-defaults (no mirror).
+    let egress = MockSocket::new(relay_egress_stream);
+    egress
+        .extensions()
+        .insert(TargetHttpVersion(Version::HTTP_2));
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(MockSocket::new(relay_ingress_stream), egress))
+            .await
+            .unwrap();
+    });
+
+    // Client speaks h2 to the relay. The response carries
+    // `PeerH2Settings` — i.e. the SETTINGS frame the *relay*
+    // advertised. That is what we assert against.
+    let request = create_test_request(Version::HTTP_2);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let response = conn
+        .serve(create_test_request(Version::HTTP_2))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let peer = response
+        .extensions()
+        .get_ref::<PeerH2Settings>()
+        .expect("client must observe relay's initial SETTINGS frame");
+
+    if upstream_enables_connect {
+        assert_eq!(
+            peer.0.config.enable_connect_protocol,
+            Some(1),
+            "relay must mirror upstream's enable_connect_protocol=1",
+        );
+    } else {
+        assert_ne!(
+            peer.0.config.enable_connect_protocol,
+            Some(1),
+            "relay must NOT advertise CONNECT when upstream doesn't",
+        );
+    }
+    assert_eq!(
+        peer.0.config.max_concurrent_streams,
+        Some(upstream_max_concurrent_streams),
+        "relay must mirror upstream's max_concurrent_streams",
+    );
+
+    drop(conn);
     cancel_drop_guard.disarm().cancel();
     graceful.shutdown().await;
 }
