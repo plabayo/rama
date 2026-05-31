@@ -32,9 +32,14 @@ use rama::{
     error::ErrorContext,
     extensions::ExtensionsRef,
     http::{
-        Request, StatusCode, layer::required_header::AddRequiredResponseHeaders,
-        server::HttpServer, service::web::Router,
+        Request, StatusCode,
+        layer::{
+            error_handling::ErrorHandlerLayer, required_header::AddRequiredResponseHeadersLayer,
+        },
+        server::HttpServer,
+        service::web::{Router, response::ErrorResponse},
     },
+    layer::ArcLayer,
     net::{forwarded::Forwarded, stream::SocketInfo},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -46,7 +51,7 @@ use rama::{
     },
 };
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -63,25 +68,30 @@ async fn main() {
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard);
-        let tcp_http_service = HttpServer::auto(exec.clone()).service(Arc::new(
-            AddRequiredResponseHeaders::new(Router::new().with_get(
-                "/",
-                async |req: Request| -> Result<String, (StatusCode, String)> {
-                    let client_ip = req
-                        .extensions()
-                        .get_ref::<Forwarded>()
-                        .and_then(|f| f.client_ip())
-                        .or_else(|| {
-                            req.extensions()
-                                .get_ref::<SocketInfo>()
-                                .map(|info| info.peer_addr().ip_addr)
-                        })
-                        .context("failed to fetch client IP")
-                        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-                    Ok(client_ip.to_string())
-                },
-            )),
-        ));
+        let tcp_http_service = HttpServer::auto(exec.clone()).service(
+            (
+                ArcLayer::new(),
+                AddRequiredResponseHeadersLayer::new(),
+                ErrorHandlerLayer::new(),
+            )
+                .into_layer(Router::new().with_get(
+                    "/",
+                    async |req: Request| -> Result<String, ErrorResponse> {
+                        let client_ip = req
+                            .extensions()
+                            .get_ref::<Forwarded>()
+                            .and_then(|f| f.client_ip())
+                            .or_else(|| {
+                                req.extensions()
+                                    .get_ref::<SocketInfo>()
+                                    .map(|info| info.peer_addr().ip_addr)
+                            })
+                            .context("failed to fetch client IP")
+                            .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+                        Ok(client_ip.to_string())
+                    },
+                )),
+        );
 
         TcpListener::bind_address("127.0.0.1:62025", exec)
             .await

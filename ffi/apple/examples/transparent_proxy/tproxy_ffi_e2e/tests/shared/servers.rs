@@ -11,6 +11,7 @@ use rama::{
         headers::ContentType,
         layer::{
             compression::{CompressionLayer, predicate::Always},
+            error_handling::ErrorHandlerLayer,
             map_response_body::MapResponseBodyLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             upgrade::{
@@ -220,6 +221,7 @@ fn http_app(
             ),
             MapResponseBodyLayer::new_boxed_streaming_body(),
             CompressionLayer::new().with_compress_predicate(Always::new()),
+            ErrorHandlerLayer::new(),
         )
             .into_layer(router),
     )

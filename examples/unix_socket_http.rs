@@ -30,10 +30,12 @@
 
 #[cfg(target_family = "unix")]
 mod unix_example {
-    use std::sync::Arc;
-
     use rama::{
-        http::{server::HttpServer, service::web::Router},
+        Layer,
+        http::{
+            layer::error_handling::ErrorHandlerLayer, server::HttpServer, service::web::Router,
+        },
+        layer::ArcLayer,
         rt::Executor,
         telemetry::tracing::{
             self,
@@ -69,8 +71,10 @@ mod unix_example {
             );
             listener
                 .serve(
-                    HttpServer::new_http1(exec)
-                        .service(Arc::new(Router::new().with_get("/ping", "pong"))),
+                    HttpServer::new_http1(exec).service(
+                        (ArcLayer::new(), ErrorHandlerLayer::new())
+                            .into_layer(Router::new().with_get("/ping", "pong")),
+                    ),
                 )
                 .await;
         });

@@ -385,6 +385,7 @@ pub enum DirectoryServeMode {
     NotFound,
     /// Show the file tree of the directory as file tree
     /// which can be navigated.
+    #[cfg(feature = "html")]
     HtmlFileList,
 }
 
@@ -396,6 +397,7 @@ impl fmt::Display for DirectoryServeMode {
             match self {
                 Self::AppendIndexHtml => "append-index",
                 Self::NotFound => "not-found",
+                #[cfg(feature = "html")]
                 Self::HtmlFileList => "html-file-list",
             }
         )
@@ -410,10 +412,24 @@ impl FromStr for DirectoryServeMode {
             match(s) {
                 "append-index" | "append_index" => Ok(Self::AppendIndexHtml),
                 "not-found" | "not_found" => Ok(Self::NotFound),
-                "html-file-list" | "html_file_list" => Ok(Self::HtmlFileList),
+                "html-file-list" | "html_file_list" => html_file_list_from_str(),
                 _ => Err(OpaqueError::from_static_str("invalid DirectoryServeMode str")),
             }
         }
+    }
+}
+
+#[inline(always)]
+fn html_file_list_from_str() -> Result<DirectoryServeMode, OpaqueError> {
+    #[cfg(feature = "html")]
+    {
+        Ok(DirectoryServeMode::HtmlFileList)
+    }
+    #[cfg(not(feature = "html"))]
+    {
+        Err(OpaqueError::from_static_str(
+            "invalid DirectoryServeMode str: html file list requires html feature",
+        ))
     }
 }
 

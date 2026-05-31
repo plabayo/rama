@@ -732,7 +732,7 @@ mod test {
     async fn test_multipart_field_limit_exceeded() {
         let service = WebService::default().with_post(
             "/",
-            async |mut mp: Multipart| -> Result<StatusCode, MultipartError> {
+            async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
                 let f = mp.next_field().await?.unwrap();
                 _ = f.bytes().await?;
                 Ok(StatusCode::OK)

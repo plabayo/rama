@@ -734,6 +734,10 @@ name = "http_web_router"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_advanced_router"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_anti_bot_infinite_resource"
 required-features = ["http-full"]
 
@@ -938,3 +942,4 @@ required-features = ["http-full", "boring"]
 [[example]]
 name = "ws_over_h2"
 required-features = ["http-full", "boring"]
+

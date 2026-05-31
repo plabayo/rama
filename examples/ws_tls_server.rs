@@ -21,11 +21,12 @@
 use rama::{
     Layer,
     http::{
+        layer::error_handling::ErrorHandlerLayer,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
     },
-    layer::ConsumeErrLayer,
+    layer::{ArcLayer, ConsumeErrLayer},
     net::tls::{
         ApplicationProtocol,
         server::{SelfSignedData, ServerAuth, ServerConfig},
@@ -40,7 +41,7 @@ use rama::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
@@ -62,13 +63,15 @@ async fn main() {
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
     graceful.spawn_task_fn(async |guard| {
-        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(Arc::new(
-            Router::new().with_get("/", Html(INDEX)).with_get(
-                "/echo",
-                ConsumeErrLayer::trace_as_debug()
-                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+        let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(
+            (ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(
+                Router::new().with_get("/", Html(INDEX)).with_get(
+                    "/echo",
+                    ConsumeErrLayer::trace_as_debug()
+                        .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                ),
             ),
-        ));
+        );
 
         let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
 

@@ -33,7 +33,7 @@ use rama::{
     Layer,
     futures::async_stream::stream_fn,
     http::{
-        layer::trace::TraceLayer,
+        layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
@@ -90,7 +90,7 @@ async fn main() {
             handlers::test,
         ));
 
-        let app = (TraceLayer::new_for_http()).into_layer(router);
+        let app = (TraceLayer::new_for_http(), ErrorHandlerLayer::new()).into_layer(router);
         listener.serve(HttpServer::auto(exec).service(app)).await;
     });
 

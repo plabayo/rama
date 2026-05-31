@@ -150,7 +150,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::Uri;
-    use crate::service::web::IntoEndpointService;
+    use crate::{layer::into_response::IntoResponseService, service::web::IntoEndpointService};
     use rama_http_headers::HeaderMapExt;
     use rama_net::http::uri::UriMatchReplaceRule;
 
@@ -164,7 +164,7 @@ mod tests {
                 UriMatchReplaceRule::try_new("https://www.*", "https://$1").unwrap(),
                 UriMatchReplaceRule::try_new("*", "$1").unwrap(), // always matches, but redirect should ignore same uris
             ],
-            StatusCode::OK.into_endpoint_service(),
+            IntoResponseService::new(StatusCode::OK.into_endpoint_service()),
         );
 
         for (input_uri, expected_option) in [
