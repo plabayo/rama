@@ -588,6 +588,7 @@ async fn empty_directory_without_index() {
     assert!(body.is_empty());
 }
 
+#[cfg(feature = "html")]
 #[tokio::test]
 async fn serve_directory_as_file_tree() {
     let svc =
