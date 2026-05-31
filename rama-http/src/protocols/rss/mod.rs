@@ -48,13 +48,9 @@ pub mod feed_ext;
 
 mod atom;
 mod error;
-mod ext_names;
-mod ext_parse;
-mod ext_write;
 mod feed;
 mod ns;
 mod parse_util;
-mod read;
 mod rss2;
 mod ser;
 mod stream;
@@ -62,15 +58,14 @@ mod stream;
 pub use error::{
     AtomCollectError, CollectError, FeedCollectError, FeedParseError, Rss2CollectError,
 };
-pub use read::{AtomFeedStream, AtomHeader, FeedStream, Rss2Channel, Rss2FeedStream};
 
 // ---------------------------------------------------------------------------
 // Re-exports: RSS 2.0
 // ---------------------------------------------------------------------------
 
 pub use rss2::{
-    Missing, Present, Rss2Category, Rss2Enclosure, Rss2Feed, Rss2FeedBuilder, Rss2Guid, Rss2Image,
-    Rss2Item, Rss2Source,
+    Missing, Present, Rss2Category, Rss2Channel, Rss2Enclosure, Rss2Feed, Rss2FeedBuilder,
+    Rss2FeedStream, Rss2Guid, Rss2Image, Rss2Item, Rss2Source,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,8 +73,8 @@ pub use rss2::{
 // ---------------------------------------------------------------------------
 
 pub use atom::{
-    AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomFeedBuilder, AtomGenerator, AtomLink,
-    AtomPerson, AtomSource, AtomText, AtomTextKind,
+    AtomCategory, AtomContent, AtomEntry, AtomFeed, AtomFeedBuilder, AtomFeedStream, AtomGenerator,
+    AtomHeader, AtomLink, AtomPerson, AtomSource, AtomText, AtomTextKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +82,7 @@ pub use atom::{
 // ---------------------------------------------------------------------------
 
 pub use feed::{EnclosureView, Feed, FeedItem};
-pub use stream::{AtomStreamWriter, FeedStreamWriter, Rss2StreamWriter};
+pub use stream::{AtomStreamWriter, FeedStream, FeedStreamWriter, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------
 // Re-exports: Extensions

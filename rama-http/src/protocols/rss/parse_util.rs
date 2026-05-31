@@ -8,7 +8,7 @@
 use jiff::Timestamp;
 
 use super::atom::{AtomCategory, AtomLink, AtomText};
-use super::ext_names::attr;
+use super::feed_ext::names::attr;
 use super::rss2::Rss2Enclosure;
 
 /// Short alias kept so attribute-extraction helper signatures fit on a line.

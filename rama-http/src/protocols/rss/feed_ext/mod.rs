@@ -5,11 +5,19 @@
 //! [`FeedExtensions::get`] methods or the inherent shortcuts on item/feed
 //! types (`.itunes()`, `.podcast()`, etc.) to access extension data.
 
+// Per-extension type definitions, organised by namespace.
 pub mod content;
 pub mod dublin_core;
 pub mod itunes;
 pub mod media;
 pub mod podcast;
+
+// Shared parser / writer / element + attribute names. Internal infrastructure
+// the per-format readers and writers (in [`super::rss2`] and [`super::atom`])
+// call into.
+pub(super) mod names;
+pub(super) mod parse;
+pub(super) mod write;
 
 pub use content::Content;
 pub use dublin_core::{DublinCore, DublinCoreFeed};

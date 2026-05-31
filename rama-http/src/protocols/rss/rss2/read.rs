@@ -19,11 +19,12 @@ use tokio::io::AsyncBufRead;
 
 use super::super::atom::AtomLink;
 use super::super::error::{CollectError, FeedParseError, Rss2CollectError};
-use super::super::ext_names::attr;
-use super::super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::feed_ext::FeedExtensions;
+use super::super::feed_ext::names::attr;
+use super::super::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::parse_util::{attr_value, enclosure_from_attrs, parse_rss2_date};
-use super::super::rss2::{Rss2Category, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source};
+use super::names::elem;
+use super::{Rss2Category, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source};
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
 /// carries *except* its `items`. Re-combine with item events via
@@ -111,7 +112,10 @@ impl Rss2FeedStream {
         Self::new_with_mode(reader, true).await
     }
 
-    pub(super) async fn new_with_mode<R>(reader: R, strict: bool) -> Result<Self, FeedParseError>
+    pub(in super::super) async fn new_with_mode<R>(
+        reader: R,
+        strict: bool,
+    ) -> Result<Self, FeedParseError>
     where
         R: AsyncBufRead + Unpin + Send + 'static,
     {
@@ -400,11 +404,11 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 }
 
                 match local {
-                    "rss" | "channel" => {
+                    elem::RSS | elem::CHANNEL => {
                         self.saw_root = true;
                         Ok(Action::Continue)
                     }
-                    "item" => {
+                    elem::ITEM => {
                         // Entering a new item context: finalise the channel
                         // header (if not yet flushed) and reset per-item state.
                         let first_item = !self.in_item;
@@ -419,15 +423,15 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                             Ok(Action::Continue)
                         }
                     }
-                    "image" if !self.in_item => {
+                    elem::IMAGE if !self.in_item => {
                         self.in_image_block = true;
                         Ok(Action::Continue)
                     }
-                    "enclosure" if self.in_item => {
+                    elem::ENCLOSURE if self.in_item => {
                         self.current_item.enclosures.push(enclosure_from_attrs(&e));
                         Ok(Action::Continue)
                     }
-                    "guid" if self.in_item => {
+                    elem::GUID if self.in_item => {
                         let permalink = attr_value(&e, attr::IS_PERMALINK)
                             .map(|v| v != "false")
                             .unwrap_or(true);
@@ -437,11 +441,11 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         });
                         Ok(Action::Continue)
                     }
-                    "source" if self.in_item => {
+                    elem::SOURCE if self.in_item => {
                         self.pending_source_url = attr_value(&e, attr::URL);
                         Ok(Action::Continue)
                     }
-                    "category" => {
+                    elem::CATEGORY => {
                         self.pending_category_domain = attr_value(&e, attr::DOMAIN);
                         Ok(Action::Continue)
                     }
@@ -532,28 +536,28 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 return Ok(Action::Continue);
             }
             match local {
-                "title" => self.current_item.title = Some(text),
-                "link" => self.current_item.link = Some(text),
-                "description" => self.current_item.description = Some(text),
-                "author" => self.current_item.author = Some(text),
-                "comments" => self.current_item.comments = Some(text),
-                "pubDate" => self.current_item.pub_date = parse_rss2_date(&text),
-                "guid" => {
+                elem::TITLE => self.current_item.title = Some(text),
+                elem::LINK => self.current_item.link = Some(text),
+                elem::DESCRIPTION => self.current_item.description = Some(text),
+                elem::AUTHOR => self.current_item.author = Some(text),
+                elem::COMMENTS => self.current_item.comments = Some(text),
+                elem::PUB_DATE => self.current_item.pub_date = parse_rss2_date(&text),
+                elem::GUID => {
                     if let Some(guid) = &mut self.current_item.guid {
                         guid.value = text;
                     }
                 }
-                "category" => self.current_item.categories.push(Rss2Category {
+                elem::CATEGORY => self.current_item.categories.push(Rss2Category {
                     name: text,
                     domain: self.pending_category_domain.take(),
                 }),
-                "source" => {
+                elem::SOURCE => {
                     self.current_item.source = Some(Rss2Source {
                         title: text,
                         url: self.pending_source_url.take().unwrap_or_default(),
                     });
                 }
-                "item" => {
+                elem::ITEM => {
                     self.current_item.extensions = std::mem::take(&mut self.item_acc).finish();
                     let item = std::mem::take(&mut self.current_item);
                     self.in_item = false;
@@ -563,13 +567,13 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             }
         } else if self.in_image_block {
             match local {
-                "url" => self.image_url = text,
-                "title" => self.image_title = text,
-                "link" => self.image_link = text,
-                "width" => self.image_width = text.parse().ok(),
-                "height" => self.image_height = text.parse().ok(),
-                "description" => self.image_description = Some(text),
-                "image" => {
+                elem::URL => self.image_url = text,
+                elem::TITLE => self.image_title = text,
+                elem::LINK => self.image_link = text,
+                elem::WIDTH => self.image_width = text.parse().ok(),
+                elem::HEIGHT => self.image_height = text.parse().ok(),
+                elem::DESCRIPTION => self.image_description = Some(text),
+                elem::IMAGE => {
                     self.in_image_block = false;
                     self.channel.image = Some(Rss2Image {
                         url: std::mem::take(&mut self.image_url),
@@ -590,19 +594,19 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 return Ok(Action::Continue);
             }
             match local {
-                "title" => self.channel.title = text,
-                "link" => self.channel.link = text,
-                "description" => self.channel.description = text,
-                "language" => self.channel.language = Some(text),
-                "copyright" => self.channel.copyright = Some(text),
-                "managingEditor" => self.channel.managing_editor = Some(text),
-                "webMaster" => self.channel.web_master = Some(text),
-                "pubDate" => self.channel.pub_date = parse_rss2_date(&text),
-                "lastBuildDate" => self.channel.last_build_date = parse_rss2_date(&text),
-                "generator" => self.channel.generator = Some(text),
-                "ttl" => self.channel.ttl = text.parse().ok(),
-                "docs" => self.channel.docs = Some(text),
-                "category" => self.channel.categories.push(Rss2Category {
+                elem::TITLE => self.channel.title = text,
+                elem::LINK => self.channel.link = text,
+                elem::DESCRIPTION => self.channel.description = text,
+                elem::LANGUAGE => self.channel.language = Some(text),
+                elem::COPYRIGHT => self.channel.copyright = Some(text),
+                elem::MANAGING_EDITOR => self.channel.managing_editor = Some(text),
+                elem::WEB_MASTER => self.channel.web_master = Some(text),
+                elem::PUB_DATE => self.channel.pub_date = parse_rss2_date(&text),
+                elem::LAST_BUILD_DATE => self.channel.last_build_date = parse_rss2_date(&text),
+                elem::GENERATOR => self.channel.generator = Some(text),
+                elem::TTL => self.channel.ttl = text.parse().ok(),
+                elem::DOCS => self.channel.docs = Some(text),
+                elem::CATEGORY => self.channel.categories.push(Rss2Category {
                     name: text,
                     domain: self.pending_category_domain.take(),
                 }),

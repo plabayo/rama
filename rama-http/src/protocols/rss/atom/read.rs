@@ -21,12 +21,13 @@ use super::super::atom::{
     AtomSource, AtomText,
 };
 use super::super::error::{AtomCollectError, CollectError, FeedParseError};
-use super::super::ext_names::attr;
-use super::super::ext_parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::feed_ext::FeedExtensions;
+use super::super::feed_ext::names::attr;
+use super::super::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use super::super::parse_util::{
     atom_category_from_attrs, atom_link_from_attrs, attr_value, make_atom_text, parse_rfc3339_lax,
 };
+use super::names::elem;
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
 /// carries except its `entries`.
@@ -115,7 +116,10 @@ impl AtomFeedStream {
         Self::new_with_mode(reader, true).await
     }
 
-    pub(super) async fn new_with_mode<R>(reader: R, strict: bool) -> Result<Self, FeedParseError>
+    pub(in super::super) async fn new_with_mode<R>(
+        reader: R,
+        strict: bool,
+    ) -> Result<Self, FeedParseError>
     where
         R: AsyncBufRead + Unpin + Send + 'static,
     {
@@ -391,11 +395,11 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 }
 
                 match local {
-                    "feed" => {
+                    elem::FEED => {
                         self.saw_root = true;
                         Ok(Action::Continue)
                     }
-                    "entry" => {
+                    elem::ENTRY => {
                         let first_entry = !self.in_entry;
                         self.in_entry = true;
                         self.current_entry =
@@ -410,7 +414,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             Ok(Action::Continue)
                         }
                     }
-                    "author" if !self.in_source => {
+                    elem::AUTHOR | elem::CONTRIBUTOR if !self.in_source => {
                         self.current_author = AtomPerson::new("");
                         if self.in_entry {
                             self.in_author = true;
@@ -419,7 +423,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    "contributor" if !self.in_source => {
+                    elem::AUTHOR | elem::CONTRIBUTOR if !self.in_source => {
                         self.current_contributor = AtomPerson::new("");
                         if self.in_entry {
                             self.in_contributor = true;
@@ -455,7 +459,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    "title" => {
+                    elem::TITLE => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("title", t).await
@@ -470,7 +474,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         drop(e);
                         self.start_typed_text("content", t).await
                     }
-                    "rights" => {
+                    elem::RIGHTS => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
                         self.start_typed_text("rights", t).await
@@ -599,7 +603,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             let xml = capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf).await?;
             self.depth -= 1;
             match which {
-                "title" => {
+                elem::TITLE => {
                     if self.in_entry {
                         self.current_entry.title = AtomText::xhtml(xml);
                         self.current_entry_title_set = true;
@@ -607,23 +611,23 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         self.header.title = AtomText::xhtml(xml);
                     }
                 }
-                "summary" => {
+                elem::SUMMARY => {
                     self.current_entry.summary = Some(AtomText::xhtml(xml));
                 }
-                "content" => {
+                elem::CONTENT => {
                     self.current_entry.content = Some(AtomContent {
                         value: AtomText::xhtml(xml),
                         src: None,
                     });
                 }
-                "rights" => {
+                elem::RIGHTS => {
                     if self.in_entry {
                         self.current_entry.rights = Some(AtomText::xhtml(xml));
                     } else {
                         self.header.rights = Some(AtomText::xhtml(xml));
                     }
                 }
-                "subtitle" => {
+                elem::SUBTITLE => {
                     self.header.subtitle = Some(AtomText::xhtml(xml));
                 }
                 _ => {}
@@ -631,11 +635,11 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             return Ok(Action::Continue);
         }
         match which {
-            "title" => self.current_title_type = t,
-            "summary" => self.current_summary_type = t,
-            "content" => self.current_content_type = t,
-            "rights" => self.current_rights_type = t,
-            "subtitle" => self.current_subtitle_type = t,
+            elem::TITLE => self.current_title_type = t,
+            elem::SUMMARY => self.current_summary_type = t,
+            elem::CONTENT => self.current_content_type = t,
+            elem::RIGHTS => self.current_rights_type = t,
+            elem::SUBTITLE => self.current_subtitle_type = t,
             _ => {}
         }
         Ok(Action::Continue)
@@ -658,13 +662,13 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         // Source sub-elements: route into current_source, then close on </source>.
         if self.in_source && ns == Ns::Atom {
             match local {
-                "id" => self.current_source.id = Some(text),
-                "title" => {
+                elem::ID => self.current_source.id = Some(text),
+                elem::TITLE => {
                     self.current_source.title =
                         Some(make_atom_text(&self.current_title_type, text));
                 }
-                "updated" => self.current_source.updated = parse_rfc3339_lax(&text),
-                "source" => {
+                elem::UPDATED => self.current_source.updated = parse_rfc3339_lax(&text),
+                elem::SOURCE => {
                     self.in_source = false;
                     let source = std::mem::replace(
                         &mut self.current_source,
@@ -689,36 +693,36 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 return Ok(Action::Continue);
             }
             match local {
-                "id" => {
+                elem::ID => {
                     self.current_entry.id = text;
                     self.current_entry_id_set = true;
                 }
-                "title" => {
+                elem::TITLE => {
                     self.current_entry.title = make_atom_text(&self.current_title_type, text);
                     self.current_entry_title_set = true;
                 }
-                "updated" => {
+                elem::UPDATED => {
                     if let Some(ts) = parse_rfc3339_lax(&text) {
                         self.current_entry.updated = ts;
                         self.current_entry_updated_parsed = true;
                     }
                 }
-                "published" => self.current_entry.published = parse_rfc3339_lax(&text),
-                "summary" => {
+                elem::PUBLISHED => self.current_entry.published = parse_rfc3339_lax(&text),
+                elem::SUMMARY => {
                     self.current_entry.summary =
                         Some(make_atom_text(&self.current_summary_type, text));
                 }
-                "content" => {
+                elem::CONTENT => {
                     self.current_entry.content = Some(AtomContent {
                         value: make_atom_text(&self.current_content_type, text),
                         src: None,
                     });
                 }
-                "rights" => {
+                elem::RIGHTS => {
                     self.current_entry.rights =
                         Some(make_atom_text(&self.current_rights_type, text));
                 }
-                "entry" => {
+                elem::ENTRY => {
                     if self.strict {
                         if !self.current_entry_id_set {
                             return Err(FeedParseError::new("Atom entry missing required <id>"));
@@ -752,23 +756,23 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             return Ok(Action::Continue);
         }
         match local {
-            "id" => self.header.id = text,
-            "title" => self.header.title = make_atom_text(&self.current_title_type, text),
-            "updated" => {
+            elem::ID => self.header.id = text,
+            elem::TITLE => self.header.title = make_atom_text(&self.current_title_type, text),
+            elem::UPDATED => {
                 if let Some(ts) = parse_rfc3339_lax(&text) {
                     self.header.updated = ts;
                     self.feed_updated_parsed = true;
                 }
             }
-            "subtitle" => {
+            elem::SUBTITLE => {
                 self.header.subtitle = Some(make_atom_text(&self.current_subtitle_type, text));
             }
-            "rights" => {
+            elem::RIGHTS => {
                 self.header.rights = Some(make_atom_text(&self.current_rights_type, text));
             }
-            "logo" => self.header.logo = Some(text),
-            "icon" => self.header.icon = Some(text),
-            "generator" => {
+            elem::LOGO => self.header.logo = Some(text),
+            elem::ICON => self.header.icon = Some(text),
+            elem::GENERATOR => {
                 if let Some(mut g) = self.pending_generator.take() {
                     g.value = text;
                     self.header.generator = Some(g);
@@ -787,10 +791,10 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             }
         };
         match local {
-            "name" => person.name = text,
-            "email" => person.email = Some(text),
-            "uri" => person.uri = Some(text),
-            "author" | "contributor" => {
+            elem::NAME => person.name = text,
+            elem::EMAIL => person.email = Some(text),
+            elem::URI => person.uri = Some(text),
+            elem::AUTHOR | elem::CONTRIBUTOR => {
                 let finalised = std::mem::replace(person, AtomPerson::new(""));
                 match kind {
                     PersonKind::EntryAuthor => {

@@ -20,11 +20,13 @@ macro_rules! decl_ext {
     ($prefix:literal, $($name:ident => $local:literal),+ $(,)?) => {
         rama_utils::macros::paste! {
             $(
-                // `super::super` from inside the per-namespace module reaches
-                // the `protocols::rss` module — the consts are usable by
-                // ext_parse + ext_write but don't leak further.
-                pub(in super::super) const $name: &str = $local;
-                pub(in super::super) const [<$name _TAG>]: &str =
+                // From inside the per-namespace module (e.g. `itunes`):
+                // super = itunes, super² = names, super³ = feed_ext, super⁴ = rss.
+                // The consts need to be usable by the per-format readers and
+                // writers under `super::rss2` / `super::atom`, but should not
+                // leak past the rss module.
+                pub(in super::super::super::super) const $name: &str = $local;
+                pub(in super::super::super::super) const [<$name _TAG>]: &str =
                     concat!($prefix, ":", $local);
             )+
         }
@@ -32,7 +34,7 @@ macro_rules! decl_ext {
 }
 
 /// iTunes podcast namespace (`http://www.itunes.com/dtds/podcast-1.0.dtd`).
-pub(super) mod itunes {
+pub(in super::super) mod itunes {
     decl_ext! { "itunes",
         TITLE        => "title",
         AUTHOR       => "author",
@@ -57,7 +59,7 @@ pub(super) mod itunes {
 }
 
 /// Podcasting 2.0 namespace (`https://podcastindex.org/namespace/1.0`).
-pub(super) mod podcast {
+pub(in super::super) mod podcast {
     decl_ext! { "podcast",
         GUID        => "guid",
         LOCKED      => "locked",
@@ -77,7 +79,7 @@ pub(super) mod podcast {
 }
 
 /// Media RSS namespace (`http://search.yahoo.com/mrss/`).
-pub(super) mod media {
+pub(in super::super) mod media {
     decl_ext! { "media",
         CONTENT     => "content",
         TITLE       => "title",
@@ -90,7 +92,7 @@ pub(super) mod media {
 
 /// Dublin Core namespace (`http://purl.org/dc/elements/1.1/`). Fields are
 /// flat — same set on item-level and feed-level.
-pub(super) mod dc {
+pub(in super::super) mod dc {
     decl_ext! { "dc",
         TITLE       => "title",
         CREATOR     => "creator",
@@ -112,7 +114,7 @@ pub(super) mod dc {
 
 /// `content:encoded` namespace (`http://purl.org/rss/1.0/modules/content/`).
 /// The only element we read from this namespace is `encoded`.
-pub(super) mod content {
+pub(in super::super) mod content {
     decl_ext! { "content",
         ENCODED => "encoded",
     }
@@ -122,11 +124,11 @@ pub(super) mod content {
 /// these are namespace-qualified in real-world feeds (the host element's
 /// namespace governs), so one bare `&str` constant per name serves both
 /// sides.
-pub(super) mod attr {
+pub(in super::super) mod attr {
     macro_rules! decl_attr {
         ($($name:ident => $lit:literal),+ $(,)?) => {
             $(
-                pub(in super::super::super) const $name: &str = $lit;
+                pub(in super::super::super::super) const $name: &str = $lit;
             )+
         };
     }

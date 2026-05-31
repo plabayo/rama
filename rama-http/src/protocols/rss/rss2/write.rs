@@ -4,11 +4,12 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::ext_names::{attr, content};
-use super::super::ext_write;
+use super::super::feed_ext::names::{attr, content};
+use super::super::feed_ext::write as ext_write;
 use super::super::ns;
-use super::super::read::Rss2Channel;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
+use super::names::elem;
+use super::read::Rss2Channel;
 use super::types::Rss2Item;
 
 /// Open `<rss>` + `<channel>` and emit all channel-level metadata + feed-level
@@ -23,7 +24,7 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
     w: &mut Writer<W>,
     channel: &Rss2Channel,
 ) -> Result<(), XmlWriteError> {
-    let mut rss_tag = BytesStart::new("rss");
+    let mut rss_tag = BytesStart::new(elem::RSS);
     rss_tag.push_attribute((attr::VERSION, "2.0"));
 
     ns::push_xmlns_itunes(&mut rss_tag);
@@ -36,57 +37,57 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
     }
 
     w.write_event(Event::Start(rss_tag))?;
-    w.write_event(Event::Start(BytesStart::new("channel")))?;
+    w.write_event(Event::Start(BytesStart::new(elem::CHANNEL)))?;
 
-    write_text_elem(w, "title", &channel.title)?;
-    write_text_elem(w, "link", &channel.link)?;
-    write_text_elem(w, "description", &channel.description)?;
-    write_opt_text_elem(w, "language", channel.language.as_deref())?;
-    write_opt_text_elem(w, "copyright", channel.copyright.as_deref())?;
-    write_opt_text_elem(w, "managingEditor", channel.managing_editor.as_deref())?;
-    write_opt_text_elem(w, "webMaster", channel.web_master.as_deref())?;
+    write_text_elem(w, elem::TITLE, &channel.title)?;
+    write_text_elem(w, elem::LINK, &channel.link)?;
+    write_text_elem(w, elem::DESCRIPTION, &channel.description)?;
+    write_opt_text_elem(w, elem::LANGUAGE, channel.language.as_deref())?;
+    write_opt_text_elem(w, elem::COPYRIGHT, channel.copyright.as_deref())?;
+    write_opt_text_elem(w, elem::MANAGING_EDITOR, channel.managing_editor.as_deref())?;
+    write_opt_text_elem(w, elem::WEB_MASTER, channel.web_master.as_deref())?;
 
     if let Some(ts) = &channel.pub_date {
-        write_text_elem(w, "pubDate", &format_rss2_date(ts))?;
+        write_text_elem(w, elem::PUB_DATE, &format_rss2_date(ts))?;
     }
     if let Some(ts) = &channel.last_build_date {
-        write_text_elem(w, "lastBuildDate", &format_rss2_date(ts))?;
+        write_text_elem(w, elem::LAST_BUILD_DATE, &format_rss2_date(ts))?;
     }
 
     for cat in &channel.categories {
-        let mut tag = BytesStart::new("category");
+        let mut tag = BytesStart::new(elem::CATEGORY);
         if let Some(domain) = &cat.domain {
             tag.push_attribute((attr::DOMAIN, domain.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&cat.name)))?;
-        w.write_event(Event::End(BytesEnd::new("category")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::CATEGORY)))?;
     }
 
-    write_opt_text_elem(w, "generator", channel.generator.as_deref())?;
-    write_opt_text_elem(w, "docs", channel.docs.as_deref())?;
+    write_opt_text_elem(w, elem::GENERATOR, channel.generator.as_deref())?;
+    write_opt_text_elem(w, elem::DOCS, channel.docs.as_deref())?;
 
     if let Some(ttl) = channel.ttl {
-        write_text_elem(w, "ttl", &ttl.to_string())?;
+        write_text_elem(w, elem::TTL, &ttl.to_string())?;
     }
 
     if let Some(img) = &channel.image {
-        w.write_event(Event::Start(BytesStart::new("image")))?;
-        write_text_elem(w, "url", &img.url)?;
-        write_text_elem(w, "title", &img.title)?;
-        write_text_elem(w, "link", &img.link)?;
+        w.write_event(Event::Start(BytesStart::new(elem::IMAGE)))?;
+        write_text_elem(w, elem::URL, &img.url)?;
+        write_text_elem(w, elem::TITLE, &img.title)?;
+        write_text_elem(w, elem::LINK, &img.link)?;
         if let Some(width) = img.width {
-            write_text_elem(w, "width", &width.to_string())?;
+            write_text_elem(w, elem::WIDTH, &width.to_string())?;
         }
         if let Some(height) = img.height {
-            write_text_elem(w, "height", &height.to_string())?;
+            write_text_elem(w, elem::HEIGHT, &height.to_string())?;
         }
-        write_opt_text_elem(w, "description", img.description.as_deref())?;
-        w.write_event(Event::End(BytesEnd::new("image")))?;
+        write_opt_text_elem(w, elem::DESCRIPTION, img.description.as_deref())?;
+        w.write_event(Event::End(BytesEnd::new(elem::IMAGE)))?;
     }
 
     for atom_link in &channel.atom_links {
-        let mut tag = BytesStart::new("atom:link");
+        let mut tag = BytesStart::new(elem::ATOM_LINK);
         tag.push_attribute((attr::HREF, atom_link.href.as_str()));
         if let Some(rel) = &atom_link.rel {
             tag.push_attribute((attr::REL, rel.as_str()));
@@ -124,8 +125,8 @@ pub(in super::super) fn write_rss2_channel_open<W: std::io::Write>(
 pub(in super::super) fn write_rss2_channel_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
-    w.write_event(Event::End(BytesEnd::new("channel")))?;
-    w.write_event(Event::End(BytesEnd::new("rss")))?;
+    w.write_event(Event::End(BytesEnd::new(elem::CHANNEL)))?;
+    w.write_event(Event::End(BytesEnd::new(elem::RSS)))?;
     Ok(())
 }
 
@@ -133,27 +134,27 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
     w: &mut Writer<W>,
     item: &Rss2Item,
 ) -> Result<(), XmlWriteError> {
-    w.write_event(Event::Start(BytesStart::new("item")))?;
+    w.write_event(Event::Start(BytesStart::new(elem::ITEM)))?;
 
-    write_opt_text_elem(w, "title", item.title.as_deref())?;
-    write_opt_text_elem(w, "link", item.link.as_deref())?;
-    write_opt_text_elem(w, "description", item.description.as_deref())?;
-    write_opt_text_elem(w, "author", item.author.as_deref())?;
+    write_opt_text_elem(w, elem::TITLE, item.title.as_deref())?;
+    write_opt_text_elem(w, elem::LINK, item.link.as_deref())?;
+    write_opt_text_elem(w, elem::DESCRIPTION, item.description.as_deref())?;
+    write_opt_text_elem(w, elem::AUTHOR, item.author.as_deref())?;
 
     for cat in &item.categories {
-        let mut tag = BytesStart::new("category");
+        let mut tag = BytesStart::new(elem::CATEGORY);
         if let Some(domain) = &cat.domain {
             tag.push_attribute((attr::DOMAIN, domain.as_str()));
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&cat.name)))?;
-        w.write_event(Event::End(BytesEnd::new("category")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::CATEGORY)))?;
     }
 
-    write_opt_text_elem(w, "comments", item.comments.as_deref())?;
+    write_opt_text_elem(w, elem::COMMENTS, item.comments.as_deref())?;
 
     for enc in &item.enclosures {
-        let mut tag = BytesStart::new("enclosure");
+        let mut tag = BytesStart::new(elem::ENCLOSURE);
         tag.push_attribute((attr::URL, enc.url.as_str()));
         tag.push_attribute((attr::LENGTH, enc.length.to_string().as_str()));
         tag.push_attribute((attr::TYPE, enc.type_.as_str()));
@@ -161,26 +162,26 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
     }
 
     if let Some(guid) = &item.guid {
-        let mut tag = BytesStart::new("guid");
+        let mut tag = BytesStart::new(elem::GUID);
         tag.push_attribute((
             attr::IS_PERMALINK,
             if guid.permalink { "true" } else { "false" },
         ));
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&guid.value)))?;
-        w.write_event(Event::End(BytesEnd::new("guid")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::GUID)))?;
     }
 
     if let Some(ts) = &item.pub_date {
-        write_text_elem(w, "pubDate", &format_rss2_date(ts))?;
+        write_text_elem(w, elem::PUB_DATE, &format_rss2_date(ts))?;
     }
 
     if let Some(src) = &item.source {
-        let mut tag = BytesStart::new("source");
+        let mut tag = BytesStart::new(elem::SOURCE);
         tag.push_attribute((attr::URL, src.url.as_str()));
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&src.title)))?;
-        w.write_event(Event::End(BytesEnd::new("source")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::SOURCE)))?;
     }
 
     if let Some(c) = &item.extensions.content
@@ -207,7 +208,7 @@ pub(in super::super) fn write_rss2_item<W: std::io::Write>(
         ext_write::write_media_item(w, media)?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("item")))?;
+    w.write_event(Event::End(BytesEnd::new(elem::ITEM)))?;
     Ok(())
 }
 

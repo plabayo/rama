@@ -3,11 +3,12 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::super::ext_names::attr;
-use super::super::ext_write;
+use super::super::feed_ext::names::attr;
+use super::super::feed_ext::write as ext_write;
 use super::super::ns;
-use super::super::read::AtomHeader;
 use super::super::ser::{XmlWriteError, write_cdata_escaped, write_opt_text_elem, write_text_elem};
+use super::names::elem;
+use super::read::AtomHeader;
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText, AtomTextKind,
 };
@@ -22,7 +23,7 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
     w: &mut Writer<W>,
     header: &AtomHeader,
 ) -> Result<(), XmlWriteError> {
-    let mut feed_tag = BytesStart::new("feed");
+    let mut feed_tag = BytesStart::new(elem::FEED);
     ns::push_xmlns_atom_default(&mut feed_tag);
     ns::push_xmlns_itunes(&mut feed_tag);
     ns::push_xmlns_podcast(&mut feed_tag);
@@ -31,12 +32,12 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
 
     w.write_event(Event::Start(feed_tag))?;
 
-    write_text_elem(w, "id", &header.id)?;
-    write_atom_text(w, "title", &header.title)?;
-    write_text_elem(w, "updated", &header.updated.to_string())?;
+    write_text_elem(w, elem::ID, &header.id)?;
+    write_atom_text(w, elem::TITLE, &header.title)?;
+    write_text_elem(w, elem::UPDATED, &header.updated.to_string())?;
 
     for author in &header.authors {
-        write_atom_person(w, "author", author)?;
+        write_atom_person(w, elem::AUTHOR, author)?;
     }
     for link in &header.links {
         write_atom_link(w, link)?;
@@ -45,10 +46,10 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
         write_atom_category(w, cat)?;
     }
     for contrib in &header.contributors {
-        write_atom_person(w, "contributor", contrib)?;
+        write_atom_person(w, elem::CONTRIBUTOR, contrib)?;
     }
     if let Some(generator) = &header.generator {
-        let mut tag = BytesStart::new("generator");
+        let mut tag = BytesStart::new(elem::GENERATOR);
         if let Some(uri) = &generator.uri {
             tag.push_attribute((attr::URI, uri.as_str()));
         }
@@ -57,15 +58,15 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
         }
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&generator.value)))?;
-        w.write_event(Event::End(BytesEnd::new("generator")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::GENERATOR)))?;
     }
-    write_opt_text_elem(w, "icon", header.icon.as_deref())?;
-    write_opt_text_elem(w, "logo", header.logo.as_deref())?;
+    write_opt_text_elem(w, elem::ICON, header.icon.as_deref())?;
+    write_opt_text_elem(w, elem::LOGO, header.logo.as_deref())?;
     if let Some(rights) = &header.rights {
-        write_atom_text(w, "rights", rights)?;
+        write_atom_text(w, elem::RIGHTS, rights)?;
     }
     if let Some(subtitle) = &header.subtitle {
-        write_atom_text(w, "subtitle", subtitle)?;
+        write_atom_text(w, elem::SUBTITLE, subtitle)?;
     }
 
     if let Some(itunes) = &header.extensions.itunes {
@@ -85,7 +86,7 @@ pub(in super::super) fn write_atom_feed_open<W: std::io::Write>(
 pub(in super::super) fn write_atom_feed_close<W: std::io::Write>(
     w: &mut Writer<W>,
 ) -> Result<(), XmlWriteError> {
-    w.write_event(Event::End(BytesEnd::new("feed")))?;
+    w.write_event(Event::End(BytesEnd::new(elem::FEED)))?;
     Ok(())
 }
 
@@ -93,20 +94,20 @@ pub(in super::super) fn write_atom_entry<W: std::io::Write>(
     w: &mut Writer<W>,
     entry: &AtomEntry,
 ) -> Result<(), XmlWriteError> {
-    w.write_event(Event::Start(BytesStart::new("entry")))?;
+    w.write_event(Event::Start(BytesStart::new(elem::ENTRY)))?;
 
-    write_text_elem(w, "id", &entry.id)?;
-    write_atom_text(w, "title", &entry.title)?;
-    write_text_elem(w, "updated", &entry.updated.to_string())?;
+    write_text_elem(w, elem::ID, &entry.id)?;
+    write_atom_text(w, elem::TITLE, &entry.title)?;
+    write_text_elem(w, elem::UPDATED, &entry.updated.to_string())?;
 
     for author in &entry.authors {
-        write_atom_person(w, "author", author)?;
+        write_atom_person(w, elem::AUTHOR, author)?;
     }
     for link in &entry.links {
         write_atom_link(w, link)?;
     }
     if let Some(summary) = &entry.summary {
-        write_atom_text(w, "summary", summary)?;
+        write_atom_text(w, elem::SUMMARY, summary)?;
     }
     if let Some(content) = &entry.content {
         write_atom_content(w, content)?;
@@ -115,24 +116,24 @@ pub(in super::super) fn write_atom_entry<W: std::io::Write>(
         write_atom_category(w, cat)?;
     }
     for contrib in &entry.contributors {
-        write_atom_person(w, "contributor", contrib)?;
+        write_atom_person(w, elem::CONTRIBUTOR, contrib)?;
     }
     if let Some(published) = &entry.published {
-        write_text_elem(w, "published", &published.to_string())?;
+        write_text_elem(w, elem::PUBLISHED, &published.to_string())?;
     }
     if let Some(rights) = &entry.rights {
-        write_atom_text(w, "rights", rights)?;
+        write_atom_text(w, elem::RIGHTS, rights)?;
     }
     if let Some(source) = &entry.source {
-        w.write_event(Event::Start(BytesStart::new("source")))?;
-        write_opt_text_elem(w, "id", source.id.as_deref())?;
+        w.write_event(Event::Start(BytesStart::new(elem::SOURCE)))?;
+        write_opt_text_elem(w, elem::ID, source.id.as_deref())?;
         if let Some(title) = &source.title {
-            write_atom_text(w, "title", title)?;
+            write_atom_text(w, elem::TITLE, title)?;
         }
         if let Some(updated) = &source.updated {
-            write_text_elem(w, "updated", &updated.to_string())?;
+            write_text_elem(w, elem::UPDATED, &updated.to_string())?;
         }
-        w.write_event(Event::End(BytesEnd::new("source")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::SOURCE)))?;
     }
 
     if let Some(dc) = &entry.extensions.dublin_core {
@@ -148,7 +149,7 @@ pub(in super::super) fn write_atom_entry<W: std::io::Write>(
         ext_write::write_media_item(w, media)?;
     }
 
-    w.write_event(Event::End(BytesEnd::new("entry")))?;
+    w.write_event(Event::End(BytesEnd::new(elem::ENTRY)))?;
     Ok(())
 }
 
@@ -156,7 +157,7 @@ fn write_atom_content<W: std::io::Write>(
     w: &mut Writer<W>,
     content: &AtomContent,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("content");
+    let mut tag = BytesStart::new(elem::CONTENT);
     if let Some(src) = &content.src {
         // Out-of-line content: AtomContent::out_of_line stuffs the MIME type
         // into the AtomText body so we can serialise it back out here.
@@ -167,7 +168,7 @@ fn write_atom_content<W: std::io::Write>(
         tag.push_attribute((attr::TYPE, content.value.kind.type_attr()));
         w.write_event(Event::Start(tag))?;
         write_atom_text_body(w, &content.value)?;
-        w.write_event(Event::End(BytesEnd::new("content")))?;
+        w.write_event(Event::End(BytesEnd::new(elem::CONTENT)))?;
     }
     Ok(())
 }
@@ -207,11 +208,11 @@ fn write_atom_text_body<W: std::io::Write>(
                     "atom xhtml content is not well-formed XML",
                 )));
             }
-            let mut div = BytesStart::new("div");
+            let mut div = BytesStart::new(elem::DIV);
             div.push_attribute(("xmlns", ns::XHTML_NS));
             w.write_event(Event::Start(div))?;
             w.write_event(Event::Text(BytesText::from_escaped(s)))?;
-            w.write_event(Event::End(BytesEnd::new("div")))?;
+            w.write_event(Event::End(BytesEnd::new(elem::DIV)))?;
         }
     }
     Ok(())
@@ -242,9 +243,9 @@ fn write_atom_person<W: std::io::Write>(
     person: &AtomPerson,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::Start(BytesStart::new(tag_name)))?;
-    write_text_elem(w, "name", &person.name)?;
-    write_opt_text_elem(w, "email", person.email.as_deref())?;
-    write_opt_text_elem(w, "uri", person.uri.as_deref())?;
+    write_text_elem(w, elem::NAME, &person.name)?;
+    write_opt_text_elem(w, elem::EMAIL, person.email.as_deref())?;
+    write_opt_text_elem(w, elem::URI, person.uri.as_deref())?;
     w.write_event(Event::End(BytesEnd::new(tag_name)))?;
     Ok(())
 }
@@ -253,7 +254,7 @@ fn write_atom_link<W: std::io::Write>(
     w: &mut Writer<W>,
     link: &AtomLink,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("link");
+    let mut tag = BytesStart::new(elem::LINK);
     tag.push_attribute((attr::HREF, link.href.as_str()));
     if let Some(rel) = &link.rel {
         tag.push_attribute((attr::REL, rel.as_str()));
@@ -278,7 +279,7 @@ fn write_atom_category<W: std::io::Write>(
     w: &mut Writer<W>,
     cat: &AtomCategory,
 ) -> Result<(), XmlWriteError> {
-    let mut tag = BytesStart::new("category");
+    let mut tag = BytesStart::new(elem::CATEGORY);
     tag.push_attribute((attr::TERM, cat.term.as_str()));
     if let Some(scheme) = &cat.scheme {
         tag.push_attribute((attr::SCHEME, scheme.as_str()));

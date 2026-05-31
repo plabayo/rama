@@ -22,8 +22,8 @@ use crate::{Body, Response};
 
 use super::atom::{AtomEntry, AtomFeed, AtomLink};
 use super::error::FeedParseError;
-use super::read::FeedStream;
 use super::rss2::{Rss2Enclosure, Rss2Feed, Rss2Item};
+use super::stream::FeedStream;
 
 /// A feed in either RSS 2.0 or Atom 1.0 format.
 #[derive(Debug, Clone, PartialEq)]
