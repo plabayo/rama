@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use jiff::Timestamp;
+use rama_utils::macros::generate_set_and_with;
 
 use super::types::{
     AtomCategory, AtomEntry, AtomFeed, AtomGenerator, AtomLink, AtomPerson, AtomText,
@@ -123,76 +124,93 @@ impl<I, T> AtomFeedBuilder<I, T, Missing> {
 }
 
 impl<I, T, U> AtomFeedBuilder<I, T, U> {
-    #[must_use]
-    pub fn author(mut self, author: AtomPerson) -> Self {
-        self.authors.push(author);
-        self
+    generate_set_and_with! {
+        /// Append a feed-level author. Call multiple times to add more.
+        pub fn author(mut self, author: AtomPerson) -> Self {
+            self.authors.push(author);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn link(mut self, link: AtomLink) -> Self {
-        self.links.push(link);
-        self
+    generate_set_and_with! {
+        /// Append a feed-level `<link>`. Call multiple times to add more.
+        pub fn link(mut self, link: AtomLink) -> Self {
+            self.links.push(link);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn category(mut self, cat: AtomCategory) -> Self {
-        self.categories.push(cat);
-        self
+    generate_set_and_with! {
+        /// Append a feed-level category. Call multiple times to add more.
+        pub fn category(mut self, cat: AtomCategory) -> Self {
+            self.categories.push(cat);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn contributor(mut self, c: AtomPerson) -> Self {
-        self.contributors.push(c);
-        self
+    generate_set_and_with! {
+        /// Append a feed-level contributor. Call multiple times to add more.
+        pub fn contributor(mut self, c: AtomPerson) -> Self {
+            self.contributors.push(c);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn generator(mut self, generator: AtomGenerator) -> Self {
-        self.generator = Some(generator);
-        self
+    generate_set_and_with! {
+        pub fn generator(mut self, generator: AtomGenerator) -> Self {
+            self.generator = Some(generator);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
-        self
+    generate_set_and_with! {
+        pub fn icon(mut self, icon: impl Into<String>) -> Self {
+            self.icon = Some(icon.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn logo(mut self, logo: impl Into<String>) -> Self {
-        self.logo = Some(logo.into());
-        self
+    generate_set_and_with! {
+        pub fn logo(mut self, logo: impl Into<String>) -> Self {
+            self.logo = Some(logo.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn rights(mut self, rights: impl Into<AtomText>) -> Self {
-        self.rights = Some(rights.into());
-        self
+    generate_set_and_with! {
+        pub fn rights(mut self, rights: impl Into<AtomText>) -> Self {
+            self.rights = Some(rights.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<AtomText>) -> Self {
-        self.subtitle = Some(subtitle.into());
-        self
+    generate_set_and_with! {
+        pub fn subtitle(mut self, subtitle: impl Into<AtomText>) -> Self {
+            self.subtitle = Some(subtitle.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn entry(mut self, entry: AtomEntry) -> Self {
-        self.entries.push(entry);
-        self
+    generate_set_and_with! {
+        /// Append a single entry. Call multiple times to attach more.
+        pub fn entry(mut self, entry: AtomEntry) -> Self {
+            self.entries.push(entry);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn entries(mut self, entries: impl IntoIterator<Item = AtomEntry>) -> Self {
-        self.entries.extend(entries);
-        self
+    generate_set_and_with! {
+        pub fn entries(mut self, entries: impl IntoIterator<Item = AtomEntry>) -> Self {
+            self.entries.extend(entries);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn feed_extensions(mut self, ext: FeedExtensions) -> Self {
-        self.extensions = ext;
-        self
+    generate_set_and_with! {
+        pub fn feed_extensions(mut self, ext: FeedExtensions) -> Self {
+            self.extensions = ext;
+            self
+        }
     }
 }
 

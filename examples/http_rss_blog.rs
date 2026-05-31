@@ -58,9 +58,9 @@ async fn rss2_feed() -> impl IntoResponse {
         .title("The Rama Blog")
         .link("https://ramaproxy.org/blog")
         .description("News and articles from the Rama project")
-        .language("en")
-        .generator("rama/http_rss_blog example")
-        .items(BLOG_POSTS.iter().map(|p| {
+        .with_language("en")
+        .with_generator("rama/http_rss_blog example")
+        .with_items(BLOG_POSTS.iter().map(|p| {
             Rss2Item::new()
                 .with_title(p.title)
                 .with_link(p.url)
@@ -83,11 +83,11 @@ async fn atom_feed() -> impl IntoResponse {
         .id("https://ramaproxy.org/feed.atom")
         .title("The Rama Blog")
         .updated(ts)
-        .author(AtomPerson::new("Rama Team").with_email("team@ramaproxy.org"))
-        .link(AtomLink::alternate("https://ramaproxy.org/blog"))
-        .link(AtomLink::self_link("https://ramaproxy.org/feed.atom"))
-        .subtitle(AtomText::text("News and articles from the Rama project"))
-        .entries(BLOG_POSTS.iter().map(|p| {
+        .with_author(AtomPerson::new("Rama Team").with_email("team@ramaproxy.org"))
+        .with_link(AtomLink::alternate("https://ramaproxy.org/blog"))
+        .with_link(AtomLink::self_link("https://ramaproxy.org/feed.atom"))
+        .with_subtitle(AtomText::text("News and articles from the Rama project"))
+        .with_entries(BLOG_POSTS.iter().map(|p| {
             AtomEntry::new(p.url, p.title, ts)
                 .with_author(AtomPerson::new("Rama Team"))
                 .with_link(AtomLink::alternate(p.url))

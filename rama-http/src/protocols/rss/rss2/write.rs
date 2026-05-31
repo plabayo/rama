@@ -252,7 +252,7 @@ mod tests {
             .title("Test Feed")
             .link("https://example.com")
             .description("A test feed")
-            .item(
+            .with_item(
                 Rss2Item::new()
                     .with_title("Post 1")
                     .with_link("https://example.com/1")
@@ -286,23 +286,22 @@ mod tests {
 
     #[tokio::test]
     async fn itunes_namespaced_xml_emitted_when_extension_present() {
-        let feed = Rss2Feed::builder()
-            .title("Podcast")
-            .link("https://example.com")
-            .description("A podcast")
-            .feed_extensions(FeedExtensions {
-                itunes: Some(ITunesFeed {
-                    author: Some("Host Name".into()),
-                    categories: vec!["Technology".into()],
-                    explicit: Some(false),
+        let feed =
+            Rss2Feed::builder()
+                .title("Podcast")
+                .link("https://example.com")
+                .description("A podcast")
+                .with_feed_extensions(FeedExtensions {
+                    itunes: Some(ITunesFeed {
+                        author: Some("Host Name".into()),
+                        categories: vec!["Technology".into()],
+                        explicit: Some(false),
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            })
-            .item(
-                Rss2Item::new()
-                    .with_title("Episode 1")
-                    .with_extensions(ItemExtensions {
+                })
+                .with_item(Rss2Item::new().with_title("Episode 1").with_extensions(
+                    ItemExtensions {
                         itunes: Some(ITunes {
                             duration: Some("30:00".into()),
                             episode: Some(1),
@@ -310,9 +309,9 @@ mod tests {
                             ..Default::default()
                         }),
                         ..Default::default()
-                    }),
-            )
-            .build();
+                    },
+                ))
+                .build();
 
         let xml_bytes = feed.to_xml().await.expect("serialize");
         let xml = String::from_utf8(xml_bytes).expect("utf-8");

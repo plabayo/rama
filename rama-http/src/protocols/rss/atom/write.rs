@@ -321,9 +321,9 @@ mod tests {
             .id("https://example.com/feed")
             .title("My Blog")
             .updated(ts)
-            .author(AtomPerson::new("Author"))
-            .link(AtomLink::alternate("https://example.com"))
-            .entry(
+            .with_author(AtomPerson::new("Author"))
+            .with_link(AtomLink::alternate("https://example.com"))
+            .with_entry(
                 AtomEntry::new("https://example.com/1", "Post 1", ts)
                     .with_content(AtomContent::html("<p>Hello</p>")),
             )
@@ -353,7 +353,7 @@ mod tests {
             .id("urn:f")
             .title("T")
             .updated(ts)
-            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>broken"),
                 src: None,
             }))
@@ -366,7 +366,7 @@ mod tests {
             .id("urn:f")
             .title("T")
             .updated(ts)
-            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>ok</p>"),
                 src: None,
             }))
@@ -381,7 +381,7 @@ mod tests {
             .id("urn:f")
             .title("T")
             .updated(ts)
-            .entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
+            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>hi</p>"),
                 src: None,
             }))

@@ -1,4 +1,5 @@
 use jiff::Timestamp;
+use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::feed_ext::{
     Content, DublinCore, FeedExtension, ITunes, ItemExtensionGet, ItemExtensions, MediaRss, Podcast,
@@ -94,16 +95,18 @@ impl AtomPerson {
         }
     }
 
-    #[must_use]
-    pub fn with_email(mut self, email: impl Into<String>) -> Self {
-        self.email = Some(email.into());
-        self
+    generate_set_and_with! {
+        pub fn email(mut self, email: impl Into<String>) -> Self {
+            self.email = Some(email.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_uri(mut self, uri: impl Into<String>) -> Self {
-        self.uri = Some(uri.into());
-        self
+    generate_set_and_with! {
+        pub fn uri(mut self, uri: impl Into<String>) -> Self {
+            self.uri = Some(uri.into());
+            self
+        }
     }
 }
 
@@ -339,52 +342,63 @@ impl AtomEntry {
         }
     }
 
-    #[must_use]
-    pub fn with_author(mut self, author: AtomPerson) -> Self {
-        self.authors.push(author);
-        self
+    generate_set_and_with! {
+        /// Append an author. Call multiple times to attach more.
+        pub fn author(mut self, author: AtomPerson) -> Self {
+            self.authors.push(author);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_content(mut self, content: AtomContent) -> Self {
-        self.content = Some(content);
-        self
+    generate_set_and_with! {
+        pub fn content(mut self, content: AtomContent) -> Self {
+            self.content = Some(content);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_link(mut self, link: AtomLink) -> Self {
-        self.links.push(link);
-        self
+    generate_set_and_with! {
+        /// Append a link. Call multiple times to attach more.
+        pub fn link(mut self, link: AtomLink) -> Self {
+            self.links.push(link);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_summary(mut self, summary: impl Into<AtomText>) -> Self {
-        self.summary = Some(summary.into());
-        self
+    generate_set_and_with! {
+        pub fn summary(mut self, summary: impl Into<AtomText>) -> Self {
+            self.summary = Some(summary.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_category(mut self, cat: AtomCategory) -> Self {
-        self.categories.push(cat);
-        self
+    generate_set_and_with! {
+        /// Append a category. Call multiple times to attach more.
+        pub fn category(mut self, cat: AtomCategory) -> Self {
+            self.categories.push(cat);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_published(mut self, ts: Timestamp) -> Self {
-        self.published = Some(ts);
-        self
+    generate_set_and_with! {
+        pub fn published(mut self, ts: Timestamp) -> Self {
+            self.published = Some(ts);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_rights(mut self, rights: impl Into<AtomText>) -> Self {
-        self.rights = Some(rights.into());
-        self
+    generate_set_and_with! {
+        pub fn rights(mut self, rights: impl Into<AtomText>) -> Self {
+            self.rights = Some(rights.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_extensions(mut self, ext: ItemExtensions) -> Self {
-        self.extensions = ext;
-        self
+    generate_set_and_with! {
+        pub fn extensions(mut self, ext: ItemExtensions) -> Self {
+            self.extensions = ext;
+            self
+        }
     }
 
     #[must_use]

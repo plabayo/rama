@@ -864,8 +864,8 @@ mod tests {
             .title("Round")
             .link("https://example.com")
             .description("desc")
-            .item(Rss2Item::new().with_title("Item A"))
-            .item(Rss2Item::new().with_title("Item B"))
+            .with_item(Rss2Item::new().with_title("Item A"))
+            .with_item(Rss2Item::new().with_title("Item B"))
             .build();
         let xml = drain(Rss2StreamWriter::from_feed(feed)).await;
         assert!(xml.contains("<title>Round</title>"), "{xml}");

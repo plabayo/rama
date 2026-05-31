@@ -72,9 +72,9 @@ async fn podcast_feed() -> impl IntoResponse {
         .title("Netstack.FM")
         .link("https://netstack.fm")
         .description("The podcast about Rust networking and systems programming.")
-        .language("en")
-        .generator("rama/http_rss_podcast example")
-        .feed_extensions(FeedExtensions {
+        .with_language("en")
+        .with_generator("rama/http_rss_podcast example")
+        .with_feed_extensions(FeedExtensions {
             itunes: Some(ITunesFeed {
                 author: Some("Netstack.FM".into()),
                 owner_name: Some("Glen De Cauwsemaecker".into()),
@@ -92,7 +92,7 @@ async fn podcast_feed() -> impl IntoResponse {
             }),
             ..Default::default()
         })
-        .items(EPISODES.iter().map(make_episode_item))
+        .with_items(EPISODES.iter().map(make_episode_item))
         .build()
 }
 

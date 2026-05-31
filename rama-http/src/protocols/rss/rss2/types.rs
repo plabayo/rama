@@ -1,4 +1,5 @@
 use jiff::Timestamp;
+use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::atom::AtomLink;
 use crate::protocols::rss::feed_ext::{
@@ -97,65 +98,76 @@ impl Rss2Item {
         Self::default()
     }
 
-    #[must_use]
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = Some(title.into());
-        self
+    generate_set_and_with! {
+        pub fn title(mut self, title: impl Into<String>) -> Self {
+            self.title = Some(title.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_link(mut self, link: impl Into<String>) -> Self {
-        self.link = Some(link.into());
-        self
+    generate_set_and_with! {
+        pub fn link(mut self, link: impl Into<String>) -> Self {
+            self.link = Some(link.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_description(mut self, desc: impl Into<String>) -> Self {
-        self.description = Some(desc.into());
-        self
+    generate_set_and_with! {
+        pub fn description(mut self, desc: impl Into<String>) -> Self {
+            self.description = Some(desc.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_author(mut self, author: impl Into<String>) -> Self {
-        self.author = Some(author.into());
-        self
+    generate_set_and_with! {
+        pub fn author(mut self, author: impl Into<String>) -> Self {
+            self.author = Some(author.into());
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_category(mut self, cat: Rss2Category) -> Self {
-        self.categories.push(cat);
-        self
+    generate_set_and_with! {
+        /// Append a category. Call multiple times to attach more.
+        pub fn category(mut self, cat: Rss2Category) -> Self {
+            self.categories.push(cat);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_guid(mut self, guid: Rss2Guid) -> Self {
-        self.guid = Some(guid);
-        self
+    generate_set_and_with! {
+        pub fn guid(mut self, guid: Rss2Guid) -> Self {
+            self.guid = Some(guid);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_pub_date(mut self, date: Timestamp) -> Self {
-        self.pub_date = Some(date);
-        self
+    generate_set_and_with! {
+        pub fn pub_date(mut self, date: Timestamp) -> Self {
+            self.pub_date = Some(date);
+            self
+        }
     }
 
-    /// Append an `<enclosure>`. Call multiple times to attach more than one.
-    #[must_use]
-    pub fn with_enclosure(mut self, enc: Rss2Enclosure) -> Self {
-        self.enclosures.push(enc);
-        self
+    generate_set_and_with! {
+        /// Append an `<enclosure>`. Call multiple times to attach more than one.
+        pub fn enclosure(mut self, enc: Rss2Enclosure) -> Self {
+            self.enclosures.push(enc);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_source(mut self, src: Rss2Source) -> Self {
-        self.source = Some(src);
-        self
+    generate_set_and_with! {
+        pub fn source(mut self, src: Rss2Source) -> Self {
+            self.source = Some(src);
+            self
+        }
     }
 
-    #[must_use]
-    pub fn with_extensions(mut self, ext: ItemExtensions) -> Self {
-        self.extensions = ext;
-        self
+    generate_set_and_with! {
+        pub fn extensions(mut self, ext: ItemExtensions) -> Self {
+            self.extensions = ext;
+            self
+        }
     }
 
     #[must_use]
@@ -208,10 +220,11 @@ impl Rss2Category {
         }
     }
 
-    #[must_use]
-    pub fn with_domain(mut self, domain: impl Into<String>) -> Self {
-        self.domain = Some(domain.into());
-        self
+    generate_set_and_with! {
+        pub fn domain(mut self, domain: impl Into<String>) -> Self {
+            self.domain = Some(domain.into());
+            self
+        }
     }
 }
 
