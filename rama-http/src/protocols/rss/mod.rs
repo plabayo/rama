@@ -85,7 +85,7 @@ pub use atom::{
 // Re-exports: Feed umbrella, parsing, streaming
 // ---------------------------------------------------------------------------
 
-pub use feed::Feed;
+pub use feed::{EnclosureView, Feed, FeedItem};
 pub use stream::{AtomStreamWriter, FeedStreamWriter, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------

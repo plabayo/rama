@@ -10,11 +10,17 @@
 //! time `FeedStream::new` returns the caller can already inspect channel/feed
 //! metadata via [`FeedStream::channel`] / [`FeedStream::header`].
 
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+use jiff::Timestamp;
+use rama_core::futures::Stream;
 use rama_core::futures::stream::BoxStream;
 use tokio::io::AsyncBufRead;
 
-use super::super::Feed;
+use super::super::atom::AtomText;
 use super::super::error::{CollectError, FeedCollectError, FeedParseError};
+use super::super::feed::{Feed, FeedItem, pick_alternate, pick_rel};
 use super::super::parse_util::{detect_atom, detect_rss};
 use super::{AtomFeedStream, AtomHeader, Rss2Channel, Rss2FeedStream};
 
@@ -148,6 +154,176 @@ impl FeedStream {
         match self {
             Self::Rss2(s) => Feed::Rss2(s.collect_lossy().await),
             Self::Atom(s) => Feed::Atom(s.collect_lossy().await),
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Cross-format accessors over the header.
+    //
+    // These mirror the ones on [`Feed`] / [`FeedItem`] so a caller that's
+    // streaming a feed of unknown format can inspect the header (parsed at
+    // stream construction time) without having to match on the variant.
+    // -----------------------------------------------------------------
+
+    /// See [`Feed::title`].
+    #[must_use]
+    pub fn title(&self) -> &str {
+        match self {
+            Self::Rss2(s) => &s.channel().title,
+            Self::Atom(s) => s.header().title.value(),
+        }
+    }
+
+    /// See [`Feed::description`].
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => Some(&s.channel().description),
+            Self::Atom(s) => s.header().subtitle.as_ref().map(AtomText::value),
+        }
+    }
+
+    /// See [`Feed::link`].
+    #[must_use]
+    pub fn link(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => Some(&s.channel().link),
+            Self::Atom(s) => pick_alternate(&s.header().links).map(|l| l.href.as_str()),
+        }
+    }
+
+    /// See [`Feed::self_link`].
+    #[must_use]
+    pub fn self_link(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => pick_rel(&s.channel().atom_links, "self").map(|l| l.href.as_str()),
+            Self::Atom(s) => pick_rel(&s.header().links, "self").map(|l| l.href.as_str()),
+        }
+    }
+
+    /// See [`Feed::id`].
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(_) => None,
+            Self::Atom(s) => Some(&s.header().id),
+        }
+    }
+
+    /// See [`Feed::language`].
+    #[must_use]
+    pub fn language(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => s.channel().language.as_deref(),
+            Self::Atom(_) => None,
+        }
+    }
+
+    /// See [`Feed::copyright`].
+    #[must_use]
+    pub fn copyright(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => s.channel().copyright.as_deref(),
+            Self::Atom(s) => s.header().rights.as_ref().map(AtomText::value),
+        }
+    }
+
+    /// See [`Feed::generator`].
+    #[must_use]
+    pub fn generator(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => s.channel().generator.as_deref(),
+            Self::Atom(s) => s.header().generator.as_ref().map(|g| g.value.as_str()),
+        }
+    }
+
+    /// See [`Feed::image_url`].
+    #[must_use]
+    pub fn image_url(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(s) => s.channel().image.as_ref().map(|i| i.url.as_str()),
+            Self::Atom(s) => s.header().logo.as_deref(),
+        }
+    }
+
+    /// See [`Feed::icon_url`].
+    #[must_use]
+    pub fn icon_url(&self) -> Option<&str> {
+        match self {
+            Self::Rss2(_) => None,
+            Self::Atom(s) => s.header().icon.as_deref(),
+        }
+    }
+
+    /// See [`Feed::published`].
+    #[must_use]
+    pub fn published(&self) -> Option<Timestamp> {
+        match self {
+            Self::Rss2(s) => s.channel().pub_date,
+            Self::Atom(_) => None,
+        }
+    }
+
+    /// See [`Feed::updated`].
+    #[must_use]
+    pub fn updated(&self) -> Option<Timestamp> {
+        match self {
+            Self::Rss2(s) => s.channel().last_build_date,
+            Self::Atom(s) => Some(s.header().updated),
+        }
+    }
+
+    /// See [`Feed::authors`].
+    #[must_use]
+    pub fn authors(&self) -> Vec<&str> {
+        match self {
+            Self::Rss2(s) => {
+                let c = s.channel();
+                [c.managing_editor.as_deref(), c.web_master.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            }
+            Self::Atom(s) => s.header().authors.iter().map(|p| p.name.as_str()).collect(),
+        }
+    }
+
+    /// See [`Feed::categories`].
+    #[must_use]
+    pub fn categories(&self) -> Vec<&str> {
+        match self {
+            Self::Rss2(s) => s
+                .channel()
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect(),
+            Self::Atom(s) => s
+                .header()
+                .categories
+                .iter()
+                .map(|c| c.term.as_str())
+                .collect(),
+        }
+    }
+}
+
+/// `FeedStream` is itself a `Stream` of [`FeedItem`]s: each inner stream
+/// yields its strongly-typed item, and the dispatch here wraps it in the
+/// umbrella enum so a caller can iterate format-agnostically.
+impl Stream for FeedStream {
+    type Item = Result<FeedItem, FeedParseError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this {
+            Self::Rss2(s) => Pin::new(s)
+                .poll_next(cx)
+                .map(|opt| opt.map(|r| r.map(FeedItem::Rss2))),
+            Self::Atom(s) => Pin::new(s)
+                .poll_next(cx)
+                .map(|opt| opt.map(|r| r.map(FeedItem::Atom))),
         }
     }
 }
