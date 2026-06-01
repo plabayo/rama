@@ -385,6 +385,10 @@ typedef struct {
     /// egress NWParameters via NEAppProxyFlow.setMetadata(_:) before
     /// constructing the NWConnection. Defaults to true on the Rust side.
     bool preserve_original_meta_data;
+    /// When false (Rust-side default), Swift sets preferNoProxies = true on
+    /// egress to break the stacked-proxy loop. Scopes the SystemConfiguration
+    /// proxy table only — other NE providers / VPNs are unaffected.
+    bool allow_system_proxy;
 } RamaNwEgressParameters;
 
 /// Options for the egress NWConnection on TCP flows.

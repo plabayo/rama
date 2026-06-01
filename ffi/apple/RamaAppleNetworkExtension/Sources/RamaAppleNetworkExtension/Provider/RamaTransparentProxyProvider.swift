@@ -1195,11 +1195,19 @@ extension RamaTransparentProxyProvider {
 /// enforces the timeout via a millisecond-precision DispatchWorkItem
 /// (see `handleTcpFlow`), so we have a single canonical timeout
 /// instead of two with mismatched precision.
+///
+/// Sets `preferNoProxies = true` unless the engine opts in via
+/// `allow_system_proxy` — breaks the stacked-proxy loop documented in
+/// the `tproxy` module preamble (Apple TN3134). Only scopes the
+/// SystemConfiguration proxy table; other NE providers / VPNs are
+/// unaffected.
 func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
     if let opts {
         applyNwEgressParameters(opts.parameters, to: params)
     }
+    // `opts == nil` matches Rust-side default (`allow_system_proxy: false`).
+    params.preferNoProxies = !(opts?.parameters.allow_system_proxy ?? false)
     return params
 }
 

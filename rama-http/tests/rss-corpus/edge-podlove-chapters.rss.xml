@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:psc="http://podlove.org/simple-chapters" version="2.0">
+  <channel>
+    <title>Podcast with Podlove Simple Chapters</title>
+    <link>https://example.com/</link>
+    <description>One episode with inline psc chapters.</description>
+    <item>
+      <title>Episode with chapters</title>
+      <link>https://example.com/ep1</link>
+      <description>Chapter markers via psc.</description>
+      <psc:chapters version="1.2">
+        <psc:chapter start="00:00:00.000" title="Intro"/>
+        <psc:chapter start="00:02:34.500" title="Sponsor" href="https://sponsor.example.com"/>
+        <psc:chapter start="00:05:42" title="Main topic" image="https://example.com/chapter3.png"/>
+        <psc:chapter start="01:02:03.456" title="Wrap-up"/>
+      </psc:chapters>
+    </item>
+  </channel>
+</rss>

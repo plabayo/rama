@@ -374,6 +374,8 @@ pub struct NwEgressParameters {
     ///
     /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
+    /// See [`crate::tproxy::NwEgressParameters::allow_system_proxy`].
+    pub allow_system_proxy: bool,
 }
 
 impl NwEgressParameters {
@@ -392,6 +394,7 @@ impl NwEgressParameters {
             attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
             prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
             preserve_original_meta_data: p.preserve_original_meta_data,
+            allow_system_proxy: p.allow_system_proxy,
         }
     }
 }
@@ -784,6 +787,27 @@ mod tests {
         assert!(rust.preserve_original_meta_data);
         let ffi = NwEgressParameters::from_rust_type(&rust);
         assert!(ffi.preserve_original_meta_data);
+    }
+
+    /// Pin `allow_system_proxy: false` default — flipping re-enables
+    /// the stacked-proxy loop.
+    #[test]
+    fn ffi_egress_params_allow_system_proxy_default_round_trip() {
+        let rust = tproxy::NwEgressParameters::default();
+        assert!(!rust.allow_system_proxy);
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(!ffi.allow_system_proxy);
+    }
+
+    /// Opt-in round-trip — catches a regression that hard-codes `false`.
+    #[test]
+    fn ffi_egress_params_allow_system_proxy_opt_in_round_trip() {
+        let rust = tproxy::NwEgressParameters {
+            allow_system_proxy: true,
+            ..tproxy::NwEgressParameters::default()
+        };
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(ffi.allow_system_proxy);
     }
 
     #[test]

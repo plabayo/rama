@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: a single item carrying multiple <enclosure> elements (e.g. an
+     audio + a video rendition). The RSS 2.0 spec is ambiguous about this but
+     real-world feeds do it; we store all of them in `Rss2Item.enclosures`. -->
+<rss version="2.0">
+  <channel>
+    <title>Multi-enclosure</title>
+    <link>https://example.com/me</link>
+    <description>An item with two enclosures.</description>
+    <item>
+      <title>Audio + video rendition</title>
+      <guid isPermaLink="false">me-1</guid>
+      <enclosure url="https://cdn.example.com/me-1.mp3" length="48000000" type="audio/mpeg"/>
+      <enclosure url="https://cdn.example.com/me-1.mp4" length="220000000" type="video/mp4"/>
+    </item>
+  </channel>
+</rss>

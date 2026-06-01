@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: attribute values carrying `&` (escaped as `&amp;`), `<` and
+     quote characters. These must round-trip verbatim through parse->serialize.
+     Real-world podcast/blog feeds routinely include query-string `&` in
+     enclosure URLs and tracking links. -->
+<rss version="2.0">
+  <channel>
+    <title>Ampersand Test</title>
+    <link>https://example.com/?a=1&amp;b=2</link>
+    <description>Attributes with ampersands and special chars.</description>
+    <item>
+      <title>Item with tracked URLs</title>
+      <link>https://example.com/post?utm_source=a&amp;utm_medium=b</link>
+      <guid isPermaLink="true">https://example.com/post?utm_source=a&amp;utm_medium=b</guid>
+      <enclosure url="https://cdn.example.com/x?token=a&amp;b=2&amp;c=&quot;3&quot;" length="1" type="audio/mpeg"/>
+      <category domain="https://example.com/?tag=a&amp;b=2">News &amp; Notes</category>
+    </item>
+  </channel>
+</rss>

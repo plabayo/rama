@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:c0ffee00-0000-4000-8000-000000000001</id>
+  <title type="text">Aggregator republishing with xhtml source title</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:c0ffee00-0000-4000-8000-000000000002</id>
+    <title type="text">Republished item</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <link rel="alternate" href="https://aggregator.example.com/r/1"/>
+    <source>
+      <id>https://origin.example.com/feed.atom</id>
+      <title type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><em>Origin</em></div></title>
+      <updated>2025-05-19T08:00:00Z</updated>
+    </source>
+  </entry>
+</feed>

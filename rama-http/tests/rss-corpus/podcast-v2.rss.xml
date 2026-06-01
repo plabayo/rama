@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"
+     xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Pod 2.0 Example</title>
+    <link>https://example.com/p2</link>
+    <description>Demonstrates Podcasting 2.0 namespace elements.</description>
+    <language>en</language>
+    <podcast:guid>917393e3-1b1e-5cee-ace4-906dbf3eaf68</podcast:guid>
+    <podcast:locked owner="alice@example.com">no</podcast:locked>
+    <podcast:medium>podcast</podcast:medium>
+    <podcast:license>CC-BY-4.0</podcast:license>
+    <podcast:funding url="https://example.com/p2/donate">Support the show</podcast:funding>
+    <podcast:person role="host" href="https://example.com/alice" img="https://example.com/alice.jpg">Alice</podcast:person>
+    <podcast:location geo="geo:40.7128,-74.0060" osm="R8398124">New York, NY</podcast:location>
+    <podcast:trailer url="https://cdn.example.com/p2/trailer.mp3" pubDate="Sun, 11 May 2025 09:00:00 GMT" length="2400000" type="audio/mpeg" season="1">Trailer for Season 1</podcast:trailer>
+    <item>
+      <title>S1E1 — Pilot</title>
+      <link>https://example.com/p2/1</link>
+      <description>The first episode.</description>
+      <guid isPermaLink="true">https://example.com/p2/1</guid>
+      <pubDate>Mon, 12 May 2025 09:00:00 GMT</pubDate>
+      <enclosure url="https://cdn.example.com/p2/ep1.mp3" length="48000000" type="audio/mpeg"/>
+      <itunes:duration>30:14</itunes:duration>
+      <podcast:transcript url="https://example.com/p2/1.vtt" type="text/vtt" language="en" rel="captions"/>
+      <podcast:chapters url="https://example.com/p2/1-chapters.json" type="application/json+chapters"/>
+      <podcast:soundbite startTime="120.5" duration="42.0">Best bit at 2 minutes</podcast:soundbite>
+      <podcast:person role="guest">Bob</podcast:person>
+      <podcast:season name="Season One">1</podcast:season>
+      <podcast:episode display="Pilot">1</podcast:episode>
+    </item>
+  </channel>
+</rss>

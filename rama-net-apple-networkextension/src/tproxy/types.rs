@@ -149,6 +149,11 @@ pub struct NwEgressParameters {
     /// it if you need downstream observers to see this extension as the
     /// source.
     pub preserve_original_meta_data: bool,
+    /// Default `false` → Swift sets `preferNoProxies = true` on egress,
+    /// bypassing system / PAC HTTP/SOCKS proxies to break the stacked-proxy
+    /// loop (see [`crate::tproxy`]). Only scopes the SystemConfiguration
+    /// proxy table; other NE providers and VPNs are unaffected.
+    pub allow_system_proxy: bool,
 }
 
 impl Default for NwEgressParameters {
@@ -160,6 +165,7 @@ impl Default for NwEgressParameters {
             required_interface_type: None,
             attribution: None,
             preserve_original_meta_data: true,
+            allow_system_proxy: false,
         }
     }
 }

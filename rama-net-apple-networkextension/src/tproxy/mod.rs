@@ -63,8 +63,20 @@
 //! the handler's passthrough policy. There is no rama-side fix;
 //! this is a framework-level constraint.
 //!
+//! ## System HTTP/SOCKS proxy loop
+//!
+//! With a system HTTP/SOCKS proxy enabled (Charles, Proxyman, corporate
+//! PAC, …) the kernel routes our egress back through it, the proxy
+//! re-emits, and we intercept again — a loop. Swift sets
+//! `NWParameters.preferNoProxies = true` on egress by default (see
+//! `makeTcpNwParameters` + Apple TN3134); opt back in via
+//! [`NwEgressParameters::allow_system_proxy`]. Scope is the
+//! SystemConfiguration proxy table only — other NE providers and VPN
+//! tunnels in the stack are unaffected.
+//!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data
+//! [`NwEgressParameters::allow_system_proxy`]: types::NwEgressParameters::allow_system_proxy
 
 #[cfg(feature = "dial9")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]

@@ -67,6 +67,7 @@
 - [Declarative Partial Updates](./http/declarative_partial_updates.md)
 - [WebSockets (WS)](./http/ws.md)
 - [HTTP Archive format (HAR)](./http/har.md)
+- [RSS and Atom Feeds](./http/rss.md)
 - [Binary Bodies and Multipart Uploads](./http/multipart.md)
 
 # Deploy
