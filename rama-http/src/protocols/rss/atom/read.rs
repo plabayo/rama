@@ -624,10 +624,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         // Out-of-line <content src=".." type=".."/>
                         if let Some(src) = attr_value(&e, attr::SRC) {
                             let type_ = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
-                            self.current_entry.content = Some(AtomContent {
-                                value: AtomText::text(type_),
-                                src: Some(src),
-                            });
+                            self.current_entry.content = Some(AtomContent::out_of_line(src, type_));
                         }
                     }
                     _ => {}
@@ -741,6 +738,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     self.current_entry.content = Some(AtomContent {
                         value: AtomText::xhtml(xml),
                         src: None,
+                        out_of_line_type: None,
                     });
                 }
                 elem::RIGHTS => {
@@ -863,6 +861,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     self.current_entry.content = Some(AtomContent {
                         value: make_atom_text(&self.current_content_type, text),
                         src: None,
+                        out_of_line_type: None,
                     });
                 }
                 elem::RIGHTS => {

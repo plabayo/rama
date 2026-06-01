@@ -165,10 +165,16 @@ fn write_atom_content<W: std::io::Write>(
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new(elem::CONTENT);
     if let Some(src) = &content.src {
-        // Out-of-line content: AtomContent::out_of_line stuffs the MIME type
-        // into the AtomText body so we can serialise it back out here.
+        // Out-of-line content: the MIME type lives in `out_of_line_type`;
+        // we fall back to the inline kind ("text"/"html"/"xhtml") if the
+        // caller didn't set one, so misuse can never produce a malformed
+        // `type=` attribute.
         tag.push_attribute((attr::SRC, src.as_str()));
-        tag.push_attribute((attr::TYPE, content.value.value.as_str()));
+        let mime = content
+            .out_of_line_type
+            .as_deref()
+            .unwrap_or_else(|| content.value.kind.type_attr());
+        tag.push_attribute((attr::TYPE, mime));
         w.write_event(Event::Empty(tag))?;
     } else {
         tag.push_attribute((attr::TYPE, content.value.kind.type_attr()));
@@ -373,6 +379,7 @@ mod tests {
             .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>broken"),
                 src: None,
+                out_of_line_type: None,
             }))
             .build();
         bad.to_xml()
@@ -386,6 +393,7 @@ mod tests {
             .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>ok</p>"),
                 src: None,
+                out_of_line_type: None,
             }))
             .build();
         ok.to_xml().await.expect("valid xhtml should serialize");
@@ -401,6 +409,7 @@ mod tests {
             .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
                 value: AtomText::xhtml("<p>hi</p>"),
                 src: None,
+                out_of_line_type: None,
             }))
             .build();
         let xml_bytes = feed.to_xml().await.expect("serialize");

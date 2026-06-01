@@ -224,11 +224,28 @@ impl AtomGenerator {
     }
 }
 
-/// An Atom content element.
+/// An Atom `<content>` element.
+///
+/// Two shapes:
+///
+/// * **Inline** — `src` is `None`. The body lives in `value`; its
+///   [`AtomText::kind`] drives the wire `type=` attribute (text/html/xhtml).
+/// * **Out-of-line** — `src` is `Some(url)`. The body lives at the URL,
+///   and `out_of_line_type` carries the wire `type=` attribute (e.g.
+///   `"text/html"`). When `out_of_line_type` is `None` the writer falls
+///   back to `value.kind.type_attr()`.
+///
+/// The `out_of_line_type` field exists so the MIME type can't accidentally
+/// be conflated with the body. Earlier versions stuffed the type into
+/// `value.value` and the writer wrote it back from there; constructing
+/// `AtomContent { value: AtomText::html("real body"), src: Some(_) }` then
+/// produced `type="real body"` on the wire. Now the body and the MIME
+/// type are two distinct slots.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomContent {
     pub value: AtomText,
     pub src: Option<String>,
+    pub out_of_line_type: Option<String>,
 }
 
 impl AtomContent {
@@ -237,6 +254,7 @@ impl AtomContent {
         Self {
             value: AtomText::text(s),
             src: None,
+            out_of_line_type: None,
         }
     }
 
@@ -245,14 +263,16 @@ impl AtomContent {
         Self {
             value: AtomText::html(s),
             src: None,
+            out_of_line_type: None,
         }
     }
 
     #[must_use]
-    pub fn out_of_line(src: impl Into<String>, type_: impl Into<String>) -> Self {
+    pub fn out_of_line(src: impl Into<String>, mime: impl Into<String>) -> Self {
         Self {
-            value: AtomText::text(type_),
+            value: AtomText::text(""),
             src: Some(src.into()),
+            out_of_line_type: Some(mime.into()),
         }
     }
 }
