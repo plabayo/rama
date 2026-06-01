@@ -119,6 +119,11 @@ pub mod fuzz_bridge;
 pub use crate::h2::error::{Error, Reason};
 pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream};
 
+/// Internal re-export of the shared per-connection peer-SETTINGS state
+/// cell, surfaced here so the outer `rama-http-core::client::conn::http2`
+/// module can construct observer handles without `feature = "unstable"`.
+pub(crate) use crate::h2::proto::PeerSettingsState;
+
 #[cfg(feature = "unstable")]
 #[cfg_attr(docsrs, doc(cfg(feature = "unstable")))]
 pub use codec::{Codec, SendError};

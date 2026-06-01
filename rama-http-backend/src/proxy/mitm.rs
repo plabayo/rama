@@ -1,5 +1,6 @@
 use std::convert::TryFrom;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rama_core::{
     Layer, Service,
@@ -17,21 +18,30 @@ use rama_core::{
 };
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri, Version,
+    conn::{H2ServerContextParams, TargetHttpVersion},
     service::web::response::IntoResponse,
 };
 use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
 };
+use rama_http_types::proto::h2::frame::Settings;
 use rama_net::client::EstablishedClientConnection;
 
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    client::{HttpClientService, http_connect},
+    client::{HttpClientService, http_connect, http2_eager_handshake},
     server::HttpServer,
 };
+
+/// Default hard cap on how long we wait for the upstream's initial h2
+/// SETTINGS frame during eager egress handshake before giving up and
+/// treating the connection as non-compliant. Keeps adversarial /
+/// dead-but-open peers from stalling the relay indefinitely. Override
+/// per-instance with [`HttpMitmRelay::with_eager_peer_settings_timeout`].
+pub const DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, Default)]
 /// Default [`Response`] used in case the inner (egress)
@@ -122,6 +132,7 @@ pub struct HttpMitmRelay<M = DefaultMiddleware> {
     http_server: HttpServer<AutoConnBuilder>,
     middleware: M,
     exec: Executor,
+    eager_peer_settings_timeout: Duration,
 }
 
 impl HttpMitmRelay {
@@ -129,21 +140,12 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
+        // Baseline CONNECT-on for the *lazy* path (plain h2, no ALPN).
+        // The eager path in `serve()` overrides this per-conn via
+        // `H2ServerContextParams`, which is what closes #932 for TLS h2.
+        // See `rama_http_core::server::conn::http2::apply_h2_server_context_params`.
         let mut http_server = HttpServer::auto(exec.clone());
         http_server.h2_mut().set_enable_connect_protocol();
-        // h2 SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 8441) is
-        // intentionally advertised here. This may cause issues as enabling
-        // it unconditionally is incorrect for an invisible proxy:
-        // we'd tell every client we accept h2 Extended CONNECT
-        // even when the upstream doesn't, and the client
-        // (browser) would then attempt h2 WebSocket against an
-        // upstream that 400s it. The principled fix is to mirror
-        // the upstream's SETTINGS — tracked in
-        // https://github.com/plabayo/rama/issues/932. Until that
-        // lands, clients fall back to their h1 WebSocket path,
-        // which is universally supported.
-        //
-        // Until than you might see 400s... this comment tells you why.
         Self {
             http_server,
             middleware: (
@@ -151,6 +153,7 @@ impl HttpMitmRelay {
                 ArcLayer::new(),
             ),
             exec,
+            eager_peer_settings_timeout: DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT,
         }
     }
 
@@ -163,6 +166,7 @@ impl HttpMitmRelay {
             http_server: self.http_server,
             middleware,
             exec: self.exec,
+            eager_peer_settings_timeout: self.eager_peer_settings_timeout,
         }
     }
 }
@@ -191,6 +195,18 @@ impl<M> HttpMitmRelay<M> {
     pub fn h2_mut(&mut self) -> &mut H2ConnBuilder {
         self.http_server.h2_mut()
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Hard cap on how long the eager phase-2 init waits for the
+        /// upstream's initial h2 SETTINGS frame before giving up and
+        /// proceeding without mirroring. Defaults to
+        /// [`DEFAULT_EAGER_PEER_SETTINGS_TIMEOUT`]. Only applies when
+        /// the egress IO carries `TargetHttpVersion(HTTP_2)`.
+        pub fn eager_peer_settings_timeout(mut self, timeout: Duration) -> Self {
+            self.eager_peer_settings_timeout = timeout;
+            self
+        }
+    }
 }
 
 impl<Ingress, Egress, M> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M>
@@ -214,14 +230,71 @@ where
         BridgeIo(ingress_stream, egress_stream): BridgeIo<Ingress, Egress>,
     ) -> Result<Self::Output, Self::Error> {
         let token = CancellationToken::new();
-
-        let relay_state = Arc::new(Mutex::new(RelayState::new(
-            egress_stream,
-            self.middleware.clone(),
-        )));
         let request_guard = self.exec.guard().cloned();
 
         tracing::debug!("HTTP MITM Relay: start");
+
+        // Eager phase-2: when egress ALPN signals h2 (via
+        // `TargetHttpVersion(HTTP_2)`), handshake egress now to mirror
+        // upstream's initial SETTINGS onto ingress before its own
+        // SETTINGS frame is written. Only the *initial* frame is
+        // mirrored — subsequent upstream SETTINGS updates are handled
+        // by the h2 stack on each side. Other versions: lazy path.
+        let egress_is_h2 = egress_stream
+            .extensions()
+            .get_ref::<TargetHttpVersion>()
+            .map(|t| t.0 == Version::HTTP_2)
+            .unwrap_or(false);
+
+        let relay_state = if egress_is_h2 {
+            let exec = request_guard
+                .clone()
+                .map_or_else(Executor::default, Executor::graceful);
+            match http2_eager_handshake::<_, Body>(egress_stream, exec).await {
+                Ok((conn, peer_handle)) => {
+                    let timeout_dur = self.eager_peer_settings_timeout;
+                    let peer_settings =
+                        tokio::time::timeout(timeout_dur, peer_handle.await_settings())
+                            .await
+                            .unwrap_or_else(|_| {
+                                tracing::debug!(
+                                    "eager egress h2 peer SETTINGS not received within {:?}",
+                                    timeout_dur,
+                                );
+                                None
+                            });
+                    let mirrored = if let Some(peer) = peer_settings.as_ref() {
+                        tracing::trace!("mirroring upstream h2 SETTINGS onto ingress: {peer:?}",);
+                        // `peer: &Arc<PeerH2Settings>`. The mirror fn
+                        // takes the underlying `&Settings`.
+                        mirror_peer_settings(&peer.0)
+                    } else {
+                        // Fail-safe: force CONNECT off so a timeout /
+                        // broken upstream can't re-trigger #932 through
+                        // the relay's baseline CONNECT-on default.
+                        tracing::debug!(
+                            "no upstream h2 SETTINGS captured; forcing CONNECT off on ingress",
+                        );
+                        H2ServerContextParams {
+                            enable_connect_protocol: Some(false),
+                            ..H2ServerContextParams::default()
+                        }
+                    };
+                    ingress_stream.extensions().insert(mirrored);
+                    let client = self.middleware.clone().layer(conn);
+                    Arc::new(Mutex::new(RelayState::Http2 { client }))
+                }
+                Err(err) => {
+                    tracing::debug!("eager egress h2 handshake failed: {err}");
+                    return Err(err.into());
+                }
+            }
+        } else {
+            Arc::new(Mutex::new(RelayState::new(
+                egress_stream,
+                self.middleware.clone(),
+            )))
+        };
 
         let result = self
             .http_server
@@ -671,6 +744,32 @@ where
             close_ingress.cancel();
             Err(err)
         }
+    }
+}
+
+/// Project upstream's initial SETTINGS onto `H2ServerContextParams` for
+/// the relay's ingress. Two fields carry across; the rest are
+/// per-direction budgets with no cross-direction meaning.
+///
+/// - `enable_connect_protocol` (RFC 8441): capability advertisement,
+///   transitively meaningful. Authoritative-wins: always emits
+///   `Some(true|false)` so this overrides the relay's builder baseline
+///   (which #932 needs when upstream omits CONNECT).
+/// - `max_concurrent_streams`: backpressure policy (relay multiplexes
+///   downstream onto one upstream conn), not a transparent mirror.
+///   Per RFC 9113 §6.5.2 `Some(0)` is legal — propagated as-is.
+fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
+    let cfg = &settings.config;
+    H2ServerContextParams {
+        enable_connect_protocol: Some(cfg.enable_connect_protocol.map(|v| v != 0).unwrap_or(false)),
+        max_concurrent_streams: cfg.max_concurrent_streams,
+        // Per-direction budgets — not mirrored. See fn docstring.
+        header_table_size: None,
+        max_frame_size: None,
+        max_header_list_size: None,
+        initial_stream_window_size: None,
+        initial_connection_window_size: None,
+        adaptive_window: None,
     }
 }
 

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::Version;
-use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
+use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture, frame::Settings};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Default, Extension)]
@@ -71,3 +71,57 @@ pub struct H2ClientContextParams {
 /// otherwise this will be set automatically by things such
 /// tls alpn
 pub struct TargetHttpVersion(pub Version);
+
+#[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(http))]
+/// Per-conn override for the h2 server's initial SETTINGS frame, set on
+/// the IO's [`Extensions`]. Any field left `None` retains the builder
+/// default. `Some(value)` overrides one-to-one; this type can't express
+/// "explicitly unset" — set the builder directly if you need that.
+///
+/// Used primarily by MITM relays. Note: [`HttpMitmRelay`][] only
+/// auto-populates `enable_connect_protocol` and `max_concurrent_streams`;
+/// other fields are independent per-direction budgets and remain
+/// available as direct per-conn overrides for callers who want them.
+///
+/// [`HttpMitmRelay`]: https://docs.rs/rama-http-backend/latest/rama_http_backend/proxy/mitm/struct.HttpMitmRelay.html
+/// [`Extensions`]: rama_core::extensions::Extensions
+pub struct H2ServerContextParams {
+    /// Whether to advertise the [extended CONNECT protocol][1] in the
+    /// initial SETTINGS frame.
+    ///
+    /// [1]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
+    pub enable_connect_protocol: Option<bool>,
+
+    /// `SETTINGS_MAX_CONCURRENT_STREAMS`.
+    pub max_concurrent_streams: Option<u32>,
+
+    /// `SETTINGS_HEADER_TABLE_SIZE`.
+    pub header_table_size: Option<u32>,
+
+    /// `SETTINGS_MAX_FRAME_SIZE`.
+    pub max_frame_size: Option<u32>,
+
+    /// `SETTINGS_MAX_HEADER_LIST_SIZE`.
+    pub max_header_list_size: Option<u32>,
+
+    /// `SETTINGS_INITIAL_WINDOW_SIZE` (stream-level flow control).
+    pub initial_stream_window_size: Option<u32>,
+
+    /// Connection-level flow-control window.
+    pub initial_connection_window_size: Option<u32>,
+
+    /// Whether to use adaptive flow control. If `Some(true)`, the
+    /// stream/connection window-size overrides above are reset to the
+    /// spec default before adaptive control takes over.
+    pub adaptive_window: Option<bool>,
+}
+
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(http))]
+/// The peer's initial (first non-ACK) h2 [`Settings`] frame, set as an
+/// extension on every h2 client response. Captured once per connection;
+/// subsequent SETTINGS updates are not reflected. Stored once in
+/// `Arc<PeerH2Settings>` and shared per-response via
+/// [`rama_core::extensions::Extensions::insert_arc`].
+pub struct PeerH2Settings(pub Settings);

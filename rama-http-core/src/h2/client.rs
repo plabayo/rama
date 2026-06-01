@@ -572,6 +572,55 @@ where
         self.inner.is_extended_connect_protocol_enabled()
     }
 
+    /// Returns the peer's initial SETTINGS frame, wrapped in the
+    /// extension type [`rama_http_types::conn::PeerH2Settings`], if one
+    /// has been observed on this connection yet.
+    ///
+    /// The frame is captured the first time it is received and is not
+    /// overwritten by subsequent SETTINGS updates from the peer. The
+    /// returned `Arc` is cheap to clone — the connection stores the
+    /// pre-built extension once and reuses it for every response via
+    /// `Extensions::insert_arc`, so per-response observers pay only a
+    /// single atomic bump.
+    #[must_use]
+    pub fn peer_initial_settings(
+        &self,
+    ) -> Option<std::sync::Arc<rama_http_types::conn::PeerH2Settings>> {
+        self.inner.peer_settings_state().snapshot()
+    }
+
+    /// Returns a cheap clone of the connection's shared
+    /// `PeerSettingsState` cell. Observer handles built on this clone do
+    /// NOT prolong the connection's lifetime — the cell lives
+    /// independently of the request dispatcher.
+    #[must_use]
+    pub(crate) fn peer_settings_state(&self) -> std::sync::Arc<crate::h2::PeerSettingsState> {
+        self.inner.peer_settings_state()
+    }
+
+    /// Resolves to the initial `SETTINGS` frame sent by the remote peer.
+    ///
+    /// Returns `Some(settings)` once the peer's initial SETTINGS frame has
+    /// been received and processed by the connection task. Returns `None`
+    /// if the connection terminates before SETTINGS arrives (e.g. the peer
+    /// is non-compliant or the transport dies during handshake).
+    ///
+    /// The h2 spec requires the server's first frame to be `SETTINGS`, so
+    /// this future will normally resolve very shortly after a successful
+    /// handshake — typically within one or two poll cycles of the spawned
+    /// connection task. There is no need to send a request first.
+    ///
+    /// Even so, callers handling untrusted peers should wrap this in a
+    /// timeout (e.g. [`tokio::time::timeout`]): a non-compliant peer that
+    /// keeps the transport alive without sending SETTINGS would otherwise
+    /// keep this future pending indefinitely until the underlying
+    /// connection eventually times out at the transport layer.
+    pub async fn await_peer_initial_settings(
+        &self,
+    ) -> Option<std::sync::Arc<rama_http_types::conn::PeerH2Settings>> {
+        self.inner.peer_settings_state().await_settings().await
+    }
+
     /// Returns the current max send streams
     #[must_use]
     pub fn current_max_send_streams(&self) -> usize {

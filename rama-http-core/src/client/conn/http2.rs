@@ -14,6 +14,7 @@ use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response, StreamingBody};
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch::{self, TrySendError};
@@ -245,6 +246,72 @@ where
     /// [1]: https://datatracker.ietf.org/doc/html/rfc7540#section-5.1.2
     pub fn current_max_recv_streams(&self) -> usize {
         self.inner.1.current_max_recv_streams()
+    }
+
+    /// Returns a cloneable, type-erased handle to query the peer's
+    /// initial h2 SETTINGS frame on this connection. The handle stays
+    /// usable after the connection is spawned (consumed as a future),
+    /// so callers can `spawn(conn)` first and then `await` the handle.
+    pub fn peer_settings_handle(&self) -> H2PeerSettingsHandle
+    where
+        B::Data: Send + Sync,
+    {
+        self.inner.1.peer_settings_handle()
+    }
+}
+
+/// Cloneable handle for querying the peer's initial h2 SETTINGS frame
+/// on an established connection. Obtained from
+/// [`Connection::peer_settings_handle`]; survives the connection being
+/// spawned so callers can `spawn(conn)` first and then `await` here.
+///
+/// The handle holds only an `Arc` to a small shared state cell — it
+/// carries **no** reference to the request dispatcher. Retaining a
+/// handle therefore does not prolong the underlying connection: once
+/// the last `SendRequest` is dropped, the connection task shuts down
+/// normally regardless of how many handles remain.
+#[derive(Clone)]
+pub struct H2PeerSettingsHandle {
+    state: Arc<crate::h2::PeerSettingsState>,
+}
+
+impl fmt::Debug for H2PeerSettingsHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("H2PeerSettingsHandle")
+            .finish_non_exhaustive()
+    }
+}
+
+impl H2PeerSettingsHandle {
+    /// Constructs a handle from an underlying `h2::client::SendRequest`.
+    /// The handle holds an `Arc` to the connection's `PeerSettingsState`
+    /// cell only — *not* a SendRequest clone — so it does not prolong
+    /// the connection's lifetime.
+    pub(crate) fn from_h2_sender<B>(sender: &crate::h2::client::SendRequest<B>) -> Self
+    where
+        B: rama_core::bytes::Buf + Send + Sync + 'static,
+    {
+        Self {
+            state: sender.peer_settings_state(),
+        }
+    }
+
+    /// Returns the peer's initial SETTINGS frame, wrapped in
+    /// [`rama_http_types::conn::PeerH2Settings`], if it has been
+    /// captured. `None` while the connection is still pre-SETTINGS, or
+    /// if the connection died before SETTINGS arrived.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<Arc<rama_http_types::conn::PeerH2Settings>> {
+        self.state.snapshot()
+    }
+
+    /// Resolves to the peer's initial SETTINGS once captured, or `None`
+    /// if the connection terminates before SETTINGS arrives. See
+    /// [`crate::h2::client::SendRequest::await_peer_initial_settings`]
+    /// for the underlying semantics — including the timeout caveat for
+    /// adversarial peers.
+    pub async fn await_settings(&self) -> Option<Arc<rama_http_types::conn::PeerH2Settings>> {
+        self.state.await_settings().await
     }
 }
 

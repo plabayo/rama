@@ -3,7 +3,7 @@ use super::{
     StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
-use crate::h2::proto::{self, Error, Initiator};
+use crate::h2::proto::{self, Error, Initiator, PeerSettingsState};
 
 use rama_core::bytes::Buf;
 use rama_core::telemetry::tracing;
@@ -11,6 +11,7 @@ use rama_http_types::proto::h2::frame::{self, Reason};
 use tokio::io::AsyncWrite;
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
 /// Manages state transitions related to outbound frames.
@@ -38,6 +39,14 @@ pub(super) struct Send {
 
     /// If extended connect protocol is enabled.
     is_extended_connect_protocol_enabled: bool,
+
+    /// Shared per-connection state cell holding the peer's initial
+    /// SETTINGS frame (captured on first non-ACK SETTINGS receipt and
+    /// never overwritten) plus a connection-closed signal. Cloning the
+    /// `Arc` is cheap and the cell lives independently of the request
+    /// dispatcher — so observer handles (e.g. an MITM relay's eager
+    /// awaiter) can hold a clone without prolonging the connection.
+    peer_settings_state: Arc<PeerSettingsState>,
 }
 
 /// A value to detect which public API has called `poll_reset`.
@@ -57,6 +66,7 @@ impl Send {
             prioritize: Prioritize::try_new(config)?,
             is_push_enabled: true,
             is_extended_connect_protocol_enabled: false,
+            peer_settings_state: PeerSettingsState::new(),
         })
     }
 
@@ -484,6 +494,11 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), Error> {
+        // Snapshot the first non-ACK settings frame; later updates are
+        // ignored. The state cell handles the once-only semantics and
+        // wakes any tasks parked in `await_peer_initial_settings`.
+        self.peer_settings_state.set_snapshot(settings);
+
         if let Some(val) = settings.config.enable_connect_protocol.map(|v| v != 0) {
             self.is_extended_connect_protocol_enabled = val;
         }
@@ -648,5 +663,20 @@ impl Send {
 
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.is_extended_connect_protocol_enabled
+    }
+
+    /// Returns a clone of the shared `Arc<PeerSettingsState>` for this
+    /// connection. The clone is cheap (one atomic bump) and is the
+    /// canonical handle for observing the peer's initial SETTINGS frame
+    /// without keeping the dispatcher alive.
+    pub(crate) fn peer_settings_state(&self) -> Arc<PeerSettingsState> {
+        self.peer_settings_state.clone()
+    }
+
+    /// Marks the connection-closed-before-settings state and wakes any
+    /// waiters so they can resolve to `None`. No-op if the peer's
+    /// initial SETTINGS were already captured.
+    pub(crate) fn notify_peer_settings_closed(&self) {
+        self.peer_settings_state.mark_closed();
     }
 }

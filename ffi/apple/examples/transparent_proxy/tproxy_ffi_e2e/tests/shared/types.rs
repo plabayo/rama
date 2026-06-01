@@ -37,6 +37,11 @@ pub(crate) type SharedObservations = Arc<Mutex<Vec<HttpObservation>>>;
 pub(crate) struct PortBlock {
     pub(crate) http: u16,
     pub(crate) https: u16,
+    /// Same shape as [`Self::https`] but with `set_enable_connect_protocol`
+    /// intentionally NOT called on the h2 listener. Used by the #932
+    /// apple-FFI regression to verify the relay's mirror correctly
+    /// omits CONNECT on the ingress when upstream omits it.
+    pub(crate) https_no_connect: u16,
     pub(crate) raw_tcp: u16,
     pub(crate) raw_tls: u16,
     pub(crate) udp: u16,

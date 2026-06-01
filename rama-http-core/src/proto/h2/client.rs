@@ -538,6 +538,12 @@ where
     pub(crate) fn current_max_recv_streams(&self) -> usize {
         self.h2_tx.current_max_recv_streams()
     }
+    pub(crate) fn peer_settings_handle(&self) -> crate::client::conn::http2::H2PeerSettingsHandle
+    where
+        B::Data: Send + Sync,
+    {
+        crate::client::conn::http2::H2PeerSettingsHandle::from_h2_sender(&self.h2_tx)
+    }
 }
 
 pin_project! {
@@ -698,6 +704,7 @@ where
                     send_stream: Some(send_stream),
                     exec: self.executor.clone(),
                     cancel_tx: Some(cancel_tx),
+                    h2_tx: self.h2_tx.clone(),
                 },
                 call_back: Some(f.cb),
             },
@@ -725,6 +732,10 @@ pin_project! {
         send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
         exec: Executor,
         cancel_tx: Option<oneshot::Sender<()>>,
+        // Handle to the underlying h2 connection, kept solely so we can
+        // snapshot the peer's initial SETTINGS frame at response-receipt
+        // time and surface it as a `PeerH2Settings` response extension.
+        h2_tx: SendRequest<SendBuf<<B as StreamingBody>::Data>>,
     }
 }
 
@@ -763,6 +774,14 @@ where
             Ok(res) => {
                 // record that we got the response headers
                 ping.record_non_data();
+
+                // Snapshot the peer's initial SETTINGS frame and attach it
+                // to the response extensions. By the time HEADERS arrives
+                // the peer's SETTINGS frame has already been received
+                // (h2 spec requires it first), so this is reliable.
+                if let Some(peer) = this.h2_tx.peer_initial_settings() {
+                    res.extensions().insert_arc(peer);
+                }
 
                 let content_length = headers::content_length_parse_all(res.headers());
                 if let (Some(mut send_stream), StatusCode::OK) = (send_stream, res.status()) {

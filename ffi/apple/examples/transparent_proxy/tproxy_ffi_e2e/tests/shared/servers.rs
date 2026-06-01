@@ -247,6 +247,24 @@ pub(crate) async fn spawn_http_server(
 pub(crate) async fn spawn_https_server(
     observations: SharedObservations,
 ) -> (u16, tokio::task::JoinHandle<()>) {
+    spawn_https_server_inner(observations, true).await
+}
+
+/// Variant of [`spawn_https_server`] whose h2 listener does **not**
+/// advertise the extended CONNECT protocol (RFC 8441). Used by the
+/// `#932` apple-FFI regression test to confirm the relay's mirror
+/// correctly propagates the "no CONNECT" signal all the way through
+/// the apple TLS MITM layer to the downstream client.
+pub(crate) async fn spawn_https_server_no_connect(
+    observations: SharedObservations,
+) -> (u16, tokio::task::JoinHandle<()>) {
+    spawn_https_server_inner(observations, false).await
+}
+
+async fn spawn_https_server_inner(
+    observations: SharedObservations,
+    advertise_connect: bool,
+) -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
@@ -257,7 +275,9 @@ pub(crate) async fn spawn_https_server(
     .build();
 
     let mut server = HttpServer::auto(Executor::default());
-    server.h2_mut().set_enable_connect_protocol();
+    if advertise_connect {
+        server.h2_mut().set_enable_connect_protocol();
+    }
     let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
         .await
         .expect("bind https server");
