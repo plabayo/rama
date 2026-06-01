@@ -749,6 +749,17 @@ where
 /// ingress IO. We only carry forward upstream-authoritative knobs
 /// (what the peer told us it supports); purely local buffering knobs
 /// like `max_send_buf_size` are left at the ingress server's defaults.
+///
+/// **Mirror policy: authoritative-wins.** The relay always reflects
+/// what the upstream actually advertised, even when that means
+/// *overriding* a value the user set on the relay's own h2 builder.
+/// The rationale: the whole point of the mirror is to keep the relay
+/// from over-promising capabilities the upstream doesn't have — a user
+/// who explicitly enabled CONNECT downstream via `relay.h2_mut()` but
+/// connects to an upstream that doesn't support it would otherwise
+/// reintroduce the exact failure mode #932 is fixing. So when upstream
+/// is silent on `enable_connect_protocol` we explicitly mirror it as
+/// `Some(false)` rather than leaving the field unset.
 fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
     let cfg = &settings.config;
     H2ServerContextParams {

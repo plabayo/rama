@@ -324,6 +324,15 @@ impl Builder {
 
 /// Per-connection override: applies non-`None` fields of `params` onto
 /// `cfg`. Mirrors the public builder setters one-to-one.
+///
+/// Ordering note: when both `initial_*_window_size` and
+/// `adaptive_window` are set, the adaptive_window branch runs **last**
+/// and resets the window sizes to the spec default before flipping
+/// adaptive mode on. This matches the documented public-builder
+/// behavior (enabling adaptive overrides explicit window sizes); it
+/// differs from the public builder only in that the order is fixed
+/// here rather than determined by caller chain order. Set
+/// `adaptive_window: Some(false)` to keep explicit window sizes.
 fn apply_h2_server_context_params(
     cfg: &mut proto::h2::server::Config,
     params: &H2ServerContextParams,

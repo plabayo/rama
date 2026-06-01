@@ -602,9 +602,13 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
             "relay must mirror upstream's enable_connect_protocol=1",
         );
     } else {
-        assert_ne!(
-            peer.0.config.enable_connect_protocol,
-            Some(1),
+        // Stricter than `!= Some(1)`: lock in the wire-omission
+        // semantics. The mirror produces Some(false) → the ingress h2
+        // server's Config has enable_connect_protocol=false (the
+        // default) → it is omitted from the initial SETTINGS frame on
+        // the wire → the client sees `None` in PeerH2Settings.
+        assert_eq!(
+            peer.0.config.enable_connect_protocol, None,
             "relay must NOT advertise CONNECT when upstream doesn't",
         );
     }

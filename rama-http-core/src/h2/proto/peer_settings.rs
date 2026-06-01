@@ -63,6 +63,16 @@ impl PeerSettingsState {
     /// *initial* peer SETTINGS only). Idempotency is enforced by
     /// `OnceLock::set` returning `Err` once initialised; only the
     /// first-writer-wins path fires the notify.
+    ///
+    /// Note on capture timing: this runs at the top of
+    /// `apply_remote_settings`, before that method does any further
+    /// validation that could return `Err` (e.g. initial-window
+    /// underflow). In practice the distinction is invisible to callers
+    /// — when validation fails the connection tears down via
+    /// `library_go_away` and any waiters resolve through the EOF /
+    /// closed path rather than seeing the spec-invalid snapshot — but
+    /// strictly speaking the captured frame is "first non-ACK
+    /// SETTINGS received," not "first successfully processed."
     pub(crate) fn set_snapshot(&self, settings: &frame::Settings) {
         if self.snapshot.set(Arc::new(settings.clone())).is_ok() {
             self.notify.notify_waiters();

@@ -84,6 +84,13 @@ pub struct TargetHttpVersion(pub Version);
 /// by transparent proxies / MITM relays that need to mirror upstream h2
 /// settings onto a sibling ingress connection.
 ///
+/// Where the underlying builder field is itself `Option<T>` (e.g.
+/// `max_concurrent_streams`, `header_table_size`), `Some(value)` here
+/// overrides to `Some(value)` on the builder. This extension cannot
+/// express "explicitly unset" / "no limit" — that's intentional, since
+/// the mirroring use case always produces concrete values; configure
+/// the server builder directly if you need that.
+///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct H2ServerContextParams {
     /// Whether to advertise the [extended CONNECT protocol][1] in the
