@@ -759,7 +759,7 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             unsafe {
                 (*session).activate(
-                    move |bytes: $crate::__private::Bytes| -> RamaTcpDeliverStatus {
+                    move |bytes: &[u8]| -> RamaTcpDeliverStatus {
                         let Some(callback) = on_write_to_egress else {
                             // No Swift writer registered: behave as accepted
                             // so the bridge keeps pulling bytes; they go

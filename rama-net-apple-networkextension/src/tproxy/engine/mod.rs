@@ -131,12 +131,14 @@ const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
 /// hands us in one `flow.readData` / `connection.receive` callback
 /// (typically 4–64 KiB).
 ///
-/// 32 chunks is sized for L4 transparent forwarding (the design centre of
-/// this engine). At ~16 KiB per chunk that gives ~512 KiB of worst-case
-/// headroom per direction, ~1 MiB per flow under saturation. Handlers
-/// that terminate HTTP/2 (or other heavy fan-in protocols) should raise
-/// this via [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
-const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 32;
+/// 8 chunks is sized for L4 transparent forwarding (the design centre of
+/// this engine): the bridge copies each chunk out into the duplex
+/// immediately, so deep per-flow queues buy little and just pin memory.
+/// At ~16 KiB per chunk that is ~128 KiB of worst-case headroom per
+/// direction, ~256 KiB per flow under saturation. Handlers that terminate
+/// HTTP/2 (or other heavy fan-in protocols) should raise this via
+/// [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
+const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 8;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
 /// lossy, so on a full channel we drop the datagram rather than block; the
 /// bound is just a memory cap.
@@ -155,7 +157,7 @@ pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(1);
 /// so the Rust producer (the bridge) can pause when Swift's pending
 /// queue is full and resume only after the matching `signal_*_drain`
 /// call from Swift.
-type BytesStatusSink = Arc<dyn Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static>;
+type BytesStatusSink = Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static>;
 /// UDP datagram sink. Carries the per-datagram peer in addition to
 /// the payload — see [`crate::Datagram`] for the direction-dependent
 /// meaning of `peer`.
@@ -386,7 +388,7 @@ where
         on_server_closed: OnClosed,
     ) -> SessionFlowAction<TransparentProxyTcpSession>
     where
-        OnBytes: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
+        OnBytes: Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
         OnClosed: Fn() + Send + Sync + 'static,
     {
@@ -715,7 +717,7 @@ impl TransparentProxyTcpSession {
         on_egress_read_demand: OnEgressDemand,
         on_close_egress: OnEgressClose,
     ) where
-        OnEgressWrite: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
+        OnEgressWrite: Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static,
         OnEgressDemand: Fn() + Send + Sync + 'static,
         OnEgressClose: Fn() + Send + Sync + 'static,
     {
@@ -990,7 +992,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     handler: H,
 ) -> SessionFlowAction<TransparentProxyTcpSession>
 where
-    OnBytes: Fn(Bytes) -> TcpDeliverStatus + Send + Sync + 'static,
+    OnBytes: Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static,
     OnDemand: Fn() + Send + Sync + 'static,
     OnClosed: Fn() + Send + Sync + 'static,
     H: TransparentProxyHandler,
@@ -1865,7 +1867,7 @@ fn guarded_bytes_status_sink(
     callback_active: Arc<parking_lot::Mutex<bool>>,
     user_bytes_sink: BytesStatusSink,
 ) -> BytesStatusSink {
-    Arc::new(move |bytes: Bytes| -> TcpDeliverStatus {
+    Arc::new(move |bytes: &[u8]| -> TcpDeliverStatus {
         let active = callback_active.lock();
         if !*active {
             return TcpDeliverStatus::Closed;
@@ -2042,7 +2044,7 @@ async fn run_tcp_bridge(
         // Drain any pending replay before reading more from the duplex.
         if let Some(bytes) = pending_to_server.take() {
             let chunk_len = bytes.len() as u64;
-            match on_server_bytes(bytes.clone()) {
+            match on_server_bytes(&bytes) {
                 TcpDeliverStatus::Accepted => {
                     // Count this chunk against `bytes_sent` here, on
                     // the replay's accepted return — the original
@@ -2178,14 +2180,19 @@ async fn run_tcp_bridge(
                         // `connection.send`. On `Paused`, hold the chunk
                         // (Swift did NOT take it) and suspend the bridge
                         // until `signal_*_drain` fires.
-                        let bytes = Bytes::copy_from_slice(&buf[..n]);
-                        match on_server_bytes(bytes.clone()) {
+                        //
+                        // The sink only borrows `&[u8]` — Swift copies into
+                        // its own `Data` synchronously — so the common
+                        // (Accepted) path needs no owned allocation. We only
+                        // copy into a `Bytes` on `Paused`, where the chunk
+                        // must outlive `buf` across the drain await.
+                        match on_server_bytes(&buf[..n]) {
                             TcpDeliverStatus::Accepted => {
                                 bytes_sent += n as u64;
                                 progress.fetch_add(1, Ordering::Relaxed);
                             }
                             TcpDeliverStatus::Paused => {
-                                pending_to_server = Some(bytes);
+                                pending_to_server = Some(Bytes::copy_from_slice(&buf[..n]));
                                 // See `paused_drain_max_wait` doc; mirrors
                                 // the bound on the replay-side wait above.
                                 tokio::select! {
