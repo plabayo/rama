@@ -231,14 +231,27 @@ fn write_atom_text_body<W: std::io::Write>(
 /// are not legal inside a content element and would produce invalid XML if
 /// emitted verbatim, so they are rejected here even though `quick-xml`'s
 /// tokenizer accepts them.
+///
+/// Validates depth-counted in-place; no allocation. (Earlier versions
+/// wrapped the fragment in a synthetic `<x>…</x>` so it would parse as a
+/// single rooted document — that allocation is unnecessary, we just need
+/// to assert depth ends at zero.)
 fn xhtml_well_formed(fragment: &str) -> bool {
-    let wrapped = format!("<x>{fragment}</x>");
-    let mut reader = quick_xml::Reader::from_str(&wrapped);
+    let mut reader = quick_xml::Reader::from_str(fragment);
+    let mut depth: i32 = 0;
     loop {
         match reader.read_event() {
-            Ok(Event::Eof) => return true,
+            Ok(Event::Eof) => return depth == 0,
+            Ok(Event::Start(_)) => depth += 1,
+            Ok(Event::End(_)) => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            Ok(Event::Empty(_) | Event::Text(_) | Event::CData(_) | Event::Comment(_)) => {}
             Ok(Event::Decl(_) | Event::DocType(_) | Event::PI(_)) | Err(_) => return false,
-            Ok(_) => {}
+            Ok(_) => return false,
         }
     }
 }
