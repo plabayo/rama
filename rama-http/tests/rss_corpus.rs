@@ -237,13 +237,14 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 let recognised = is_recognised(&rr);
                 harvest_attrs(&e, recognised, &mut tokens);
             }
-            Event::Text(e)
+            Event::Text(e) => {
                 if *stack.last().unwrap_or(&true)
-                    && let Ok(t) = e.unescape() =>
-            {
-                let t = t.trim();
-                if !t.is_empty() && !looks_like_date(t) {
-                    tokens.push(t.to_owned());
+                    && let Ok(t) = e.unescape()
+                {
+                    let t = t.trim();
+                    if !t.is_empty() && !looks_like_date(t) {
+                        tokens.push(t.to_owned());
+                    }
                 }
             }
             Event::CData(e) => {
