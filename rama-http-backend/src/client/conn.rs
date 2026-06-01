@@ -73,6 +73,18 @@ fn log_connection_termination(err: &rama_http_core::Error) {
 /// request-driven h2 path in [`http_connect`] and the eager-handshake
 /// path in [`http2_eager_handshake`] so both honor the same
 /// UA-emulation surface.
+///
+/// **Eager vs. lazy parameter sources.** The two callers pass
+/// different `extensions` arguments:
+///
+/// - `http_connect` (lazy) passes `req.extensions()` — request-scoped.
+/// - `http2_eager_handshake` (eager) passes the egress IO's
+///   `extensions()` — connection-scoped, since no request exists yet.
+///
+/// Users of the eager path who want UA emulation knobs applied must
+/// stamp them on the egress IO before the relay's `serve()`; the
+/// per-request path is not consulted on the eager branch, because
+/// the egress handshake happens *before* any request flows.
 fn apply_h2_client_extensions_to_builder(
     builder: &mut rama_http_core::client::conn::http2::Builder,
     extensions: &Extensions,

@@ -7,6 +7,24 @@
 //! observer handles (e.g. an MITM relay's eager-handshake awaiter). The
 //! observers carry no reference to the request dispatcher, so retaining
 //! a handle does not extend the connection's lifetime.
+//!
+//! # INVARIANT: single-writer state cell
+//!
+//! `set_snapshot` and `mark_closed` are both invoked exclusively from
+//! the connection-driver task (`Send::apply_remote_settings` via
+//! `Settings::poll_send` for capture; `Streams::recv_eof` for close).
+//! That task is single-threaded, so the two mutators never overlap.
+//! Observers via `snapshot()` / `is_closed()` / `await_settings()`
+//! run on arbitrary tasks and use only the `OnceLock` / `AtomicBool`
+//! atomic-ordering guarantees for visibility.
+//!
+//! The interleaving correctness argument depends on this invariant.
+//! Adding a second writer (e.g. allowing some external code to call
+//! `set_snapshot`) would require re-deriving the no-missed-wake +
+//! no-double-wake properties from scratch. The atomic-only operations
+//! used here would *still* compose correctly under concurrent
+//! writers, but please confirm the soundness argument explicitly if
+//! you ever break this invariant.
 
 use rama_http_types::proto::h2::frame;
 use std::sync::Arc;

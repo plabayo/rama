@@ -243,6 +243,17 @@ where
         // and mirror the relevant bits onto the ingress server before
         // its own initial SETTINGS frame is written. Other versions
         // fall through to the original lazy path.
+        //
+        // BY DESIGN: only the *initial* SETTINGS frame is mirrored.
+        // RFC 9113 §6.5 allows either peer to send SETTINGS updates
+        // mid-connection, but the ingress h2 server's SETTINGS frame
+        // is written once at handshake — we don't re-issue it. This is
+        // sufficient for the relay's job: initial parity is what
+        // governs the downstream client's protocol choices (e.g. RFC
+        // 8441 Extended CONNECT), and once a stream is open the h2
+        // stack on both sides handles dynamic adjustments
+        // (WINDOW_UPDATE for flow control, per-stream limits) without
+        // needing the SETTINGS frame to be reissued.
         let egress_is_h2 = egress_stream
             .extensions()
             .get_ref::<TargetHttpVersion>()

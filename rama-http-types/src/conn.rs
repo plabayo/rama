@@ -91,6 +91,19 @@ pub struct TargetHttpVersion(pub Version);
 /// the mirroring use case always produces concrete values; configure
 /// the server builder directly if you need that.
 ///
+/// Note that the [`HttpMitmRelay`][] does NOT auto-populate every
+/// field on this struct from the upstream SETTINGS frame — most h2
+/// SETTINGS are per-direction (e.g. `header_table_size`,
+/// `max_frame_size`, `initial_stream_window_size`) and have no
+/// cross-direction meaning across the relay boundary, so blindly
+/// mirroring them would couple buffer/decoder budgets that should be
+/// independent. The relay mirrors `enable_connect_protocol` (RFC 8441
+/// capability advertisement) and `max_concurrent_streams` (as
+/// backpressure policy) only. Other fields remain available as direct
+/// per-connection overrides for callers that explicitly want them.
+///
+/// [`HttpMitmRelay`]: https://docs.rs/rama-http-backend/latest/rama_http_backend/proxy/mitm/struct.HttpMitmRelay.html
+///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct H2ServerContextParams {
     /// Whether to advertise the [extended CONNECT protocol][1] in the
