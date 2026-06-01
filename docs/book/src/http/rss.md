@@ -48,9 +48,13 @@ Rama gives you:
 - **Type-state builders** that make `RSS 2.0` (`title` + `link` + `description`)
   and `Atom 1.0` (`id` + `title` + `updated`) required fields a compile-time
   obligation — you cannot call `.build()` until the required fields are set.
-- **Spec-compliant serialization** with namespace prefixes declared only when
-  needed and CDATA properly escaped (including the `]]>` case that breaks naive
-  emitters).
+- **Spec-compliant serialization** with the well-known extension namespaces
+  (`itunes`, `podcast`, `dc`, `content`, `media`) declared up front on the
+  root element and CDATA properly escaped (including the `]]>` case that
+  breaks naive emitters). The streaming writer commits the channel/feed
+  header before any item is seen, so declaring the recognised extensions
+  on the root keeps the document namespace-well-formed regardless of what
+  the item stream actually carries.
 - **Lenient parsing by default, strict opt-in.** Unknown elements are skipped;
   malformed entities and missing required fields are tolerated. A strict mode
   is available on every reader entry point for the cases where you'd rather

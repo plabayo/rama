@@ -423,8 +423,14 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         if first_item {
                             Ok(Action::FirstItemStarted)
                         } else {
-                            // Nested / re-opened <item> in malformed input;
-                            // we silently reset and keep going.
+                            // Nested / re-opened <item> in malformed input.
+                            // Lenient mode silently resets and keeps going;
+                            // emit a debug trace so operators can spot it.
+                            tracing::debug!(
+                                "rss2: nested or re-opened <item> at depth {} — \
+                                 partial outer item discarded",
+                                self.depth,
+                            );
                             Ok(Action::Continue)
                         }
                     }

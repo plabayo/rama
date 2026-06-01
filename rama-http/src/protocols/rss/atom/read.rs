@@ -720,6 +720,10 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     if let Some(ts) = parse_rfc3339_lax(&text) {
                         self.current_entry.updated = ts;
                         self.current_entry_updated_parsed = true;
+                    } else if self.strict {
+                        return Err(FeedParseError::new(format!(
+                            "Atom entry <updated> could not be parsed as RFC 3339: {text:?}"
+                        )));
                     }
                 }
                 elem::PUBLISHED => self.current_entry.published = parse_rfc3339_lax(&text),
@@ -777,6 +781,10 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 if let Some(ts) = parse_rfc3339_lax(&text) {
                     self.header.updated = ts;
                     self.feed_updated_parsed = true;
+                } else if self.strict {
+                    return Err(FeedParseError::new(format!(
+                        "Atom feed <updated> could not be parsed as RFC 3339: {text:?}"
+                    )));
                 }
             }
             elem::SUBTITLE => {
