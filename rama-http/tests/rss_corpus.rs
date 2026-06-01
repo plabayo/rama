@@ -550,6 +550,73 @@ async fn strict_atom_rejects_xhtml_without_div_wrapper() {
     );
 }
 
+/// Nested or re-opened `<item>` / `<entry>` is malformed input. Strict mode
+/// rejects (matching the doc: "structural violations surface"); lenient mode
+/// silently resets (and traces) — the outer partial is discarded.
+#[tokio::test]
+async fn strict_rejects_nested_item_and_entry() {
+    // RSS: nested <item>.
+    const RSS: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>T</title>
+  <link>https://example.com</link>
+  <description>D</description>
+  <item>
+    <title>outer</title>
+    <item>
+      <title>nested</title>
+    </item>
+  </item>
+</channel></rss>"#;
+    let cursor = std::io::Cursor::new(RSS.to_vec());
+    let reader = tokio::io::BufReader::new(cursor);
+    let stream = FeedStream::new_strict(reader).await.expect("header valid");
+    let err = stream
+        .collect()
+        .await
+        .expect_err("strict mode must reject nested <item>");
+    assert!(
+        err.error.message.contains("nested or re-opened <item>"),
+        "error mentions nested item: {}",
+        err.error,
+    );
+
+    // Atom: nested <entry>.
+    const ATOM: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:f</id>
+  <title>T</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:e1</id>
+    <title>outer</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <entry>
+      <id>urn:uuid:e2</id>
+      <title>nested</title>
+      <updated>2025-05-20T12:00:00Z</updated>
+    </entry>
+  </entry>
+</feed>"#;
+    let cursor = std::io::Cursor::new(ATOM.to_vec());
+    let reader = tokio::io::BufReader::new(cursor);
+    let stream = FeedStream::new_strict(reader).await.expect("header valid");
+    let err = stream
+        .collect()
+        .await
+        .expect_err("strict mode must reject nested <entry>");
+    assert!(
+        err.error.message.contains("nested or re-opened <entry>"),
+        "error mentions nested entry: {}",
+        err.error,
+    );
+
+    // Lenient: both parse (the outer partial is discarded, the inner takes its
+    // slot) — no error, the document is consumed end-to-end.
+    let _ = parse_bytes(RSS.to_vec()).await;
+    let _ = parse_bytes(ATOM.to_vec()).await;
+}
+
 /// `FeedItem::content()` returns `None` for Atom out-of-line content
 /// (`<content src="..." type="..."/>`) — the body lives at a remote URL,
 /// not in the feed.

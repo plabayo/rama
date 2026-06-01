@@ -417,20 +417,31 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         // Entering a new item context: finalise the channel
                         // header (if not yet flushed) and reset per-item state.
                         let first_item = !self.in_item;
+                        if !first_item {
+                            // Nested / re-opened <item> in malformed input.
+                            // Strict mode advertises that structural
+                            // violations surface; reject here. Lenient
+                            // resets and keeps going (the outer partial
+                            // item is discarded) but emits a debug trace
+                            // so operators can spot the malformation.
+                            if self.strict {
+                                return Err(FeedParseError::new(format!(
+                                    "RSS 2.0: nested or re-opened <item> at depth {}",
+                                    self.depth,
+                                )));
+                            }
+                            tracing::debug!(
+                                "rss2: nested or re-opened <item> at depth {} — \
+                                 partial outer item discarded",
+                                self.depth,
+                            );
+                        }
                         self.in_item = true;
                         self.current_item = Rss2Item::default();
                         self.item_acc = ItemExtAcc::default();
                         if first_item {
                             Ok(Action::FirstItemStarted)
                         } else {
-                            // Nested / re-opened <item> in malformed input.
-                            // Lenient mode silently resets and keeps going;
-                            // emit a debug trace so operators can spot it.
-                            tracing::debug!(
-                                "rss2: nested or re-opened <item> at depth {} — \
-                                 partial outer item discarded",
-                                self.depth,
-                            );
                             Ok(Action::Continue)
                         }
                     }

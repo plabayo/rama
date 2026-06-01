@@ -457,6 +457,23 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     }
                     elem::ENTRY => {
                         let first_entry = !self.in_entry;
+                        if !first_entry {
+                            // Nested / re-opened <entry> in malformed input.
+                            // Strict rejects (matches RSS behaviour). Lenient
+                            // resets and keeps going; the outer partial entry
+                            // is discarded — trace so operators can spot it.
+                            if self.strict {
+                                return Err(FeedParseError::new(format!(
+                                    "Atom: nested or re-opened <entry> at depth {}",
+                                    self.depth,
+                                )));
+                            }
+                            tracing::debug!(
+                                "atom: nested or re-opened <entry> at depth {} — \
+                                 partial outer entry discarded",
+                                self.depth,
+                            );
+                        }
                         self.in_entry = true;
                         self.current_entry =
                             AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH);
