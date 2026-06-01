@@ -554,6 +554,35 @@ impl FeedStream {
         }
     }
 
+    /// Drain into a feed retaining only items / entries the predicate accepts.
+    /// Mirrors [`Rss2FeedStream::collect_filtered`] and
+    /// [`AtomFeedStream::collect_filtered`] for the format-agnostic case
+    /// (the predicate sees a [`FeedItem`] so the same closure works across
+    /// both formats).
+    pub async fn collect_filtered<F>(self, mut predicate: F) -> Result<Feed, FeedCollectError>
+    where
+        F: FnMut(&FeedItem) -> bool + Send,
+    {
+        match self {
+            Self::Rss2(s) => s
+                .collect_filtered(|i| predicate(&FeedItem::Rss2(i.clone())))
+                .await
+                .map(Feed::Rss2)
+                .map_err(|e| CollectError {
+                    error: e.error,
+                    partial: Feed::Rss2(e.partial),
+                }),
+            Self::Atom(s) => s
+                .collect_filtered(|e| predicate(&FeedItem::Atom(e.clone())))
+                .await
+                .map(Feed::Atom)
+                .map_err(|e| CollectError {
+                    error: e.error,
+                    partial: Feed::Atom(e.partial),
+                }),
+        }
+    }
+
     // -----------------------------------------------------------------
     // Cross-format accessors over the header.
     //

@@ -2,7 +2,7 @@ use jiff::Timestamp;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::feed_ext::{
-    Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast,
+    Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast, PodloveChapters,
 };
 use crate::protocols::rss::rss2::Missing;
 
@@ -459,5 +459,11 @@ impl AtomEntry {
     #[must_use]
     pub fn media(&self) -> Option<&MediaRss> {
         self.extensions.media.as_deref()
+    }
+
+    /// Podlove Simple Chapters extension (`<psc:chapters>` markers).
+    #[must_use]
+    pub fn podlove(&self) -> Option<&PodloveChapters> {
+        self.extensions.podlove.as_deref()
     }
 }

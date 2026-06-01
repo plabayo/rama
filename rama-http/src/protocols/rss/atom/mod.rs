@@ -1,5 +1,5 @@
 mod builder;
-mod names;
+pub(in crate::protocols::rss) mod names;
 mod read;
 mod types;
 mod write;

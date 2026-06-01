@@ -41,9 +41,10 @@
 //! ## Extensions
 //!
 //! All extension fields are in the [`feed_ext`] sub-module.  Items expose
-//! inherent shortcuts (`.itunes()`, `.podcast()`, etc.) for the five
-//! supported namespaces (iTunes, Podcasting 2.0, Dublin Core,
-//! `content:encoded`, Media RSS).
+//! inherent shortcuts (`.itunes()`, `.podcast()`, `.dublin_core()`,
+//! `.content()`, `.media()`, `.podlove()`) for the six supported
+//! namespaces: iTunes, Podcasting 2.0, Dublin Core, `content:encoded`,
+//! Media RSS, and Podlove Simple Chapters (item-level only).
 
 pub mod feed_ext;
 

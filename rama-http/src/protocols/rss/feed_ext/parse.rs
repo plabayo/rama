@@ -535,7 +535,6 @@ pub(in crate::protocols::rss) struct FeedExtAcc {
     podcast: PodcastFeed,
     has_podcast: bool,
     in_itunes_owner: bool,
-    in_podcast_locked: bool,
     pending_locked_owner: Option<String>,
     pending_person: Option<PodcastPerson>,
     pending_location: Option<PodcastLocation>,
@@ -591,7 +590,6 @@ impl FeedExtAcc {
                 // `<podcast:locked owner="...">yes|no</podcast:locked>` — the
                 // owner attribute lives only on the Start; capture it now and
                 // finalise on End alongside the truthy text content.
-                self.in_podcast_locked = true;
                 self.pending_locked_owner = attr_value(e, attr::OWNER);
             }
             _ => return false,
@@ -681,7 +679,6 @@ impl FeedExtAcc {
             (Ns::Podcast, podcast::LOCKED) => {
                 self.podcast.locked = Some(is_truthy(&text));
                 self.podcast.locked_owner = self.pending_locked_owner.take();
-                self.in_podcast_locked = false;
                 self.has_podcast = true;
                 return None;
             }

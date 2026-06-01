@@ -20,6 +20,7 @@ use tokio::io::AsyncBufRead;
 use super::names::elem;
 use super::{Rss2Category, Rss2Feed, Rss2Guid, Rss2Image, Rss2Item, Rss2Source};
 use crate::protocols::rss::atom::AtomLink;
+use crate::protocols::rss::atom::names::elem as atom_elem;
 use crate::protocols::rss::error::{CollectError, FeedParseError, Rss2CollectError};
 use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
@@ -398,7 +399,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 } else {
                     self.feed_acc.on_start(ns, local, &e)
                 };
-                if !consumed && !self.in_item && ns == Ns::Atom && local == "link" {
+                if !consumed && !self.in_item && ns == Ns::Atom && local == atom_elem::LINK {
                     self.channel
                         .atom_links
                         .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
@@ -487,13 +488,13 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 if consumed {
                     return Ok(Action::Continue);
                 }
-                if !self.in_item && ns == Ns::Atom && local == "link" {
+                if !self.in_item && ns == Ns::Atom && local == atom_elem::LINK {
                     self.channel
                         .atom_links
                         .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
                     return Ok(Action::Continue);
                 }
-                if ns == Ns::None && self.in_item && local == "enclosure" {
+                if ns == Ns::None && self.in_item && local == elem::ENCLOSURE {
                     self.current_item.enclosures.push(enclosure_from_attrs(&e));
                 }
                 Ok(Action::Continue)

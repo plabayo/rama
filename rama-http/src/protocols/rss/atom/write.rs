@@ -8,7 +8,7 @@ use super::read::AtomHeader;
 use super::types::{
     AtomCategory, AtomContent, AtomEntry, AtomLink, AtomPerson, AtomText, AtomTextKind,
 };
-use crate::protocols::rss::feed_ext::names::attr;
+use crate::protocols::rss::feed_ext::names::{attr, content};
 use crate::protocols::rss::feed_ext::write as ext_write;
 use crate::protocols::rss::ns;
 use crate::protocols::rss::ser::{
@@ -31,6 +31,7 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     ns::push_xmlns_podcast(&mut feed_tag);
     ns::push_xmlns_dc(&mut feed_tag);
     ns::push_xmlns_media(&mut feed_tag);
+    ns::push_xmlns_content(&mut feed_tag);
     ns::push_xmlns_psc(&mut feed_tag);
 
     w.write_event(Event::Start(feed_tag))?;
@@ -154,6 +155,16 @@ pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
     if let Some(chapters) = &entry.extensions.podlove {
         ext_write::write_podlove_chapters(w, chapters)?;
     }
+    // Atom has native <content>, so <content:encoded> is rare in Atom
+    // feeds — but the parser fills the field if the input carries it
+    // (mixed feeds happen), so the writer must round-trip it through.
+    if let Some(c) = &entry.extensions.content
+        && let Some(encoded) = &c.encoded
+    {
+        w.write_event(Event::Start(BytesStart::new(content::ENCODED_TAG)))?;
+        write_cdata_escaped(w, encoded)?;
+        w.write_event(Event::End(BytesEnd::new(content::ENCODED_TAG)))?;
+    }
 
     w.write_event(Event::End(BytesEnd::new(elem::ENTRY)))?;
     Ok(())
@@ -257,6 +268,10 @@ fn xhtml_well_formed(fragment: &str) -> bool {
             }
             Ok(Event::Empty(_) | Event::Text(_) | Event::CData(_) | Event::Comment(_)) => {}
             Ok(Event::Decl(_) | Event::DocType(_) | Event::PI(_)) | Err(_) => return false,
+            #[expect(
+                unreachable_patterns,
+                reason = "future-proof against new quick_xml Event variants"
+            )]
             Ok(_) => return false,
         }
     }

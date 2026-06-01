@@ -49,8 +49,9 @@ Rama gives you:
   and `Atom 1.0` (`id` + `title` + `updated`) required fields a compile-time
   obligation — you cannot call `.build()` until the required fields are set.
 - **Spec-compliant serialization** with the well-known extension namespaces
-  (`itunes`, `podcast`, `dc`, `content`, `media`) declared up front on the
-  root element and CDATA properly escaped (including the `]]>` case that
+  (`itunes`, `podcast`, `dc`, `content`, `media`, `psc` — Podlove Simple
+  Chapters, item-level only) declared up front on the root element and
+  CDATA properly escaped (including the `]]>` case that
   breaks naive emitters). The streaming writer commits the channel/feed
   header before any item is seen, so declaring the recognised extensions
   on the root keeps the document namespace-well-formed regardless of what

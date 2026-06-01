@@ -1,11 +1,13 @@
 //! RSS/Atom feed extension system.
 //!
-//! There are five supported extension namespaces: iTunes, Podcasting 2.0,
-//! Dublin Core, `content:encoded`, and Media RSS. Each contributes a typed
-//! struct stored on [`ItemExtensions`] (item-level) and [`FeedExtensions`]
+//! Six supported extension namespaces: iTunes, Podcasting 2.0, Dublin Core,
+//! `content:encoded`, Media RSS, and Podlove Simple Chapters
+//! ([`PodloveChapters`], item-level only). Each contributes a typed struct
+//! stored on [`ItemExtensions`] (item-level) and [`FeedExtensions`]
 //! (feed/channel-level) — direct field access (`item.extensions.itunes`)
 //! or via the inherent shortcuts on the per-format item/feed types
-//! (`.itunes()`, `.podcast()`, etc.).
+//! (`.itunes()`, `.podcast()`, `.dublin_core()`, `.content()`, `.media()`,
+//! `.podlove()`).
 
 // Per-extension type definitions, organised by namespace.
 pub mod content;
@@ -39,8 +41,8 @@ pub use podlove::{PodloveChapter, PodloveChapters};
 
 /// Extension container for feed items (RSS 2.0 items and Atom entries).
 ///
-/// Each present extension is boxed so the empty case is just five
-/// pointer-sized `None`s (40 B on a 64-bit target), not five inline
+/// Each present extension is boxed so the empty case is just six
+/// pointer-sized `None`s (48 B on a 64-bit target), not six inline
 /// extension structs (≥800 B). Most items have at most one or two
 /// extensions populated; the boxed-Option shape pays heap only for what's
 /// actually set and lets `Box<T>` auto-deref carry the field-access API.
