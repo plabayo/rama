@@ -210,7 +210,12 @@ pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
         w.write_event(Event::Text(BytesText::new(&season.number.to_string())))?;
         w.write_event(Event::End(BytesEnd::new(podcast::SEASON_TAG)))?;
     }
-    if let Some(ep) = &pc.episode {
+    if let Some(ep) = &pc.episode
+        && ep.number.is_finite()
+    {
+        // Skip non-finite numbers (NaN/+Inf/-Inf): the parser rejects
+        // them too and emitting "NaN" as element text produces a value
+        // that no podcast client can interpret.
         let mut tag = BytesStart::new(podcast::EPISODE_TAG);
         if let Some(display) = &ep.display {
             tag.push_attribute((attr::DISPLAY, display.as_str()));

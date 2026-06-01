@@ -457,13 +457,15 @@ impl FeedStream {
         // returns whatever's currently buffered, which on a multi-chunk
         // `Body` stream can be a few bytes per `fill_buf` call. We instead
         // read into a local probe buffer until we have at least
-        // `PROBE_MIN_BYTES` (or EOF), then prepend it back to the reader via
-        // `Cursor::chain` so the inner stream sees the full document.
+        // `PROBE_MIN_BYTES` (or EOF), then prepend it back to the reader
+        // via `Cursor::chain` so the inner stream sees the full document.
+        // The loop exits as soon as `probe.len() >= PROBE_MIN_BYTES`, so
+        // probe.len() is bounded by `PROBE_MIN_BYTES + CHUNK - 1` (≈ 1279).
         const PROBE_MIN_BYTES: usize = 1024;
-        const PROBE_MAX_BYTES: usize = 2048;
+        const CHUNK: usize = 256;
         let mut reader = reader;
-        let mut probe = Vec::with_capacity(PROBE_MAX_BYTES);
-        let mut chunk = [0u8; 256];
+        let mut probe = Vec::with_capacity(PROBE_MIN_BYTES + CHUNK);
+        let mut chunk = [0u8; CHUNK];
         while probe.len() < PROBE_MIN_BYTES {
             match reader.read(&mut chunk).await {
                 Ok(0) => break,
@@ -475,8 +477,10 @@ impl FeedStream {
                 }
             }
         }
-        let probe_str =
-            std::str::from_utf8(&probe[..probe.len().min(PROBE_MAX_BYTES)]).unwrap_or("");
+        // probe may end mid multi-byte UTF-8 char; trim back to the
+        // last valid boundary before handing to the detectors.
+        let probe_str = std::str::from_utf8(&probe)
+            .unwrap_or_else(|e| std::str::from_utf8(&probe[..e.valid_up_to()]).unwrap_or(""));
         let is_atom = detect_atom(probe_str);
         let is_rss = !is_atom && detect_rss(probe_str);
 

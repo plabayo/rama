@@ -621,7 +621,10 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                     }
                     elem::CONTENT if self.in_entry && self.source_depth == 0 => {
-                        // Out-of-line <content src=".." type=".."/>
+                        // Out-of-line <content src=".." type=".."/>.
+                        // A self-closing <content type="html"/> with no src
+                        // is degenerate but valid; we drop it (no body, no
+                        // link — nothing useful to store).
                         if let Some(src) = attr_value(&e, attr::SRC) {
                             let type_ = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                             self.current_entry.content = Some(AtomContent::out_of_line(src, type_));

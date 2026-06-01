@@ -83,13 +83,18 @@ pub(crate) fn parse_start(s: &str) -> Duration {
 }
 
 /// Format a [`Duration`] as `HH:MM:SS.fff` — the canonical Podlove shape.
+///
+/// `parse_start` clamps anything non-finite or negative to `Duration::ZERO`,
+/// so values that come from a round-trip are always sane. User-constructed
+/// extreme `Duration`s (up to `Duration::MAX`) are clamped here with
+/// saturating arithmetic — no overflow panic in debug builds.
 #[must_use]
 pub(crate) fn format_start(d: Duration) -> String {
     let total_secs = d.as_secs_f64();
-    let hours = total_secs as u64 / 3600;
-    let rem = total_secs - (hours * 3600) as f64;
-    let mins = rem as u64 / 60;
-    let secs = rem - (mins * 60) as f64;
+    let hours = (total_secs as u64) / 3600;
+    let rem = total_secs - (hours.saturating_mul(3600) as f64);
+    let mins = (rem as u64) / 60;
+    let secs = rem - (mins.saturating_mul(60) as f64);
     // `{:06.3}` → zero-pad to 6 chars, 3 fractional digits (e.g. "05.700").
     format!("{hours:02}:{mins:02}:{secs:06.3}")
 }

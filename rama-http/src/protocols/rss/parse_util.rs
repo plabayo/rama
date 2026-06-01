@@ -33,7 +33,8 @@ pub(super) fn parse_rss2_date(s: &str) -> Option<Timestamp> {
     rfc2822::parse(s)
         .ok()
         .map(|zdt| zdt.timestamp())
-        .or_else(|| parse_rfc3339_lax(s))
+        // s is already trimmed; parse directly to avoid the second trim.
+        .or_else(|| s.parse::<Timestamp>().ok())
 }
 
 pub(super) fn parse_rfc3339_lax(s: &str) -> Option<Timestamp> {
@@ -135,7 +136,10 @@ fn first_element_local_name(s: &str) -> Option<&str> {
             .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
             .unwrap_or(rest.len());
         let qname = &rest[..qname_end];
-        return Some(qname.rsplit(':').next().unwrap_or(qname));
+        // `str::rsplit(':').next()` is always `Some` (an empty string
+        // yields `Some("")`), but `unwrap_or_default()` documents the
+        // safe fallback without an unreachable panic path.
+        return Some(qname.rsplit(':').next().unwrap_or_default());
     }
 }
 

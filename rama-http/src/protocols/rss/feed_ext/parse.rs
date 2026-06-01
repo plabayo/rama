@@ -88,8 +88,18 @@ fn media_content_from_attrs(e: &Attrs<'_>) -> MediaContent {
         url: attr_value(e, attr::URL),
         type_: attr_value(e, attr::TYPE),
         medium: attr_value(e, attr::MEDIUM),
+        // Media RSS spec calls for integer seconds but some publishers
+        // emit decimals (e.g. "42.5"). Accept both — float input is
+        // truncated to whole seconds, matching what the writer emits.
         duration: attr_value(e, attr::DURATION)
-            .and_then(|v| v.parse::<u64>().ok())
+            .and_then(|v| {
+                v.parse::<u64>().ok().or_else(|| {
+                    v.parse::<f64>()
+                        .ok()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .map(|n| n as u64)
+                })
+            })
             .map(std::time::Duration::from_secs),
         width: attr_value(e, attr::WIDTH).and_then(|v| v.parse().ok()),
         height: attr_value(e, attr::HEIGHT).and_then(|v| v.parse().ok()),
