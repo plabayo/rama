@@ -576,28 +576,22 @@ where
     /// if one has been observed on this connection yet.
     ///
     /// The frame is captured the first time it is received and is not
-    /// overwritten by subsequent SETTINGS updates from the peer.
+    /// overwritten by subsequent SETTINGS updates from the peer. The
+    /// returned `Arc` is cheap to clone — internal storage is
+    /// `Arc`-wrapped so per-response observers (e.g. the response
+    /// extension `PeerH2Settings`) pay only a single atomic bump.
     #[must_use]
-    pub fn peer_initial_settings(&self) -> Option<Settings> {
-        self.inner.peer_initial_settings()
+    pub fn peer_initial_settings(&self) -> Option<std::sync::Arc<Settings>> {
+        self.inner.peer_settings_state().snapshot()
     }
 
-    /// Returns `true` if the connection terminated before the peer's
-    /// initial SETTINGS frame could be captured. Once `true`, calls to
-    /// [`Self::await_peer_initial_settings`] resolve to `None`.
+    /// Returns a cheap clone of the connection's shared
+    /// `PeerSettingsState` cell. Observer handles built on this clone do
+    /// NOT prolong the connection's lifetime — the cell lives
+    /// independently of the request dispatcher.
     #[must_use]
-    pub fn peer_settings_closed(&self) -> bool {
-        self.inner.peer_settings_closed()
-    }
-
-    /// Returns a handle to the notify used internally by
-    /// [`Self::await_peer_initial_settings`] to wake waiters when the
-    /// peer's initial SETTINGS arrive (or when the connection closes
-    /// before that). Exposed so higher-level wrappers can implement
-    /// their own awaiters with the same semantics.
-    #[must_use]
-    pub fn peer_settings_notify(&self) -> std::sync::Arc<tokio::sync::Notify> {
-        self.inner.peer_settings_notify()
+    pub(crate) fn peer_settings_state(&self) -> std::sync::Arc<crate::h2::PeerSettingsState> {
+        self.inner.peer_settings_state()
     }
 
     /// Resolves to the initial `SETTINGS` frame sent by the remote peer.
@@ -617,30 +611,8 @@ where
     /// keeps the transport alive without sending SETTINGS would otherwise
     /// keep this future pending indefinitely until the underlying
     /// connection eventually times out at the transport layer.
-    pub async fn await_peer_initial_settings(&self) -> Option<Settings> {
-        // Fast path: already captured (or already closed).
-        if let Some(settings) = self.inner.peer_initial_settings() {
-            return Some(settings);
-        }
-        if self.inner.peer_settings_closed() {
-            return None;
-        }
-
-        let notify = self.inner.peer_settings_notify();
-        loop {
-            let notified = notify.notified();
-            tokio::pin!(notified);
-            // Enable interest BEFORE re-checking the field to avoid a
-            // missed wake between the check and the `await`.
-            notified.as_mut().enable();
-            if let Some(settings) = self.inner.peer_initial_settings() {
-                return Some(settings);
-            }
-            if self.inner.peer_settings_closed() {
-                return None;
-            }
-            notified.await;
-        }
+    pub async fn await_peer_initial_settings(&self) -> Option<std::sync::Arc<Settings>> {
+        self.inner.peer_settings_state().await_settings().await
     }
 
     /// Returns the current max send streams

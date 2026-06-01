@@ -421,21 +421,11 @@ where
             .is_extended_connect_protocol_enabled()
     }
 
-    pub(crate) fn peer_initial_settings(&self) -> Option<frame::Settings> {
-        self.inner
-            .lock()
-            .actions
-            .send
-            .peer_initial_settings()
-            .cloned()
-    }
-
-    pub(crate) fn peer_settings_closed(&self) -> bool {
-        self.inner.lock().actions.send.peer_settings_closed()
-    }
-
-    pub(crate) fn peer_settings_notify(&self) -> std::sync::Arc<tokio::sync::Notify> {
-        self.inner.lock().actions.send.peer_settings_notify()
+    /// Cheap clone of the shared `PeerSettingsState` cell — the canonical
+    /// handle for observing the peer's initial SETTINGS frame. Holding
+    /// the returned `Arc` does NOT extend the connection's lifetime.
+    pub(crate) fn peer_settings_state(&self) -> std::sync::Arc<super::super::PeerSettingsState> {
+        self.inner.lock().actions.send.peer_settings_state()
     }
 
     pub(crate) fn current_max_send_streams(&self) -> usize {

@@ -2755,6 +2755,76 @@ async fn http2_server_context_params_absent_keeps_builder_defaults() {
     );
 }
 
+/// Regression: the `H2PeerSettingsHandle` must NOT extend the
+/// connection's lifetime. Previously it captured two `SendRequest`
+/// clones inside `Arc<dyn Fn>` closures, which kept the dispatcher
+/// alive as long as the handle was held — i.e. a long-lived observer
+/// could prevent the conn task from ever shutting down. After the
+/// refactor the handle only holds an `Arc<PeerSettingsState>`; this
+/// test pins that invariant.
+#[tokio::test]
+async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
+    use rama::http::conn::H2ServerContextParams;
+    use rama::http::core::client::conn::http2 as h2_client;
+
+    let (listener, addr) = setup_tcp_listener();
+
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
+        let socket = ServiceInput::new(socket);
+        // Non-default SETTINGS so we have something distinct to
+        // observe via the handle.
+        socket.extensions.insert(H2ServerContextParams {
+            enable_connect_protocol: Some(true),
+            ..Default::default()
+        });
+        http2::Builder::new(Executor::new())
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
+            .await
+            .expect("serve_connection");
+    });
+
+    let tcp = connect_async(addr).await;
+    let tcp = ServiceInput::new(tcp);
+    let (client, conn) = h2_client::Builder::new(Executor::new())
+        .handshake::<_, Empty<Bytes>>(tcp)
+        .await
+        .expect("h2 handshake");
+
+    // Take the handle *before* spawning the conn future.
+    let handle = conn.peer_settings_handle();
+
+    let conn_join = tokio::spawn(async move {
+        // Conn resolves on shutdown; result ignored.
+        drop(conn.await);
+    });
+
+    // Wait for SETTINGS via the handle alone. This also exercises the
+    // notify-based wakeup path on the new state cell.
+    let settings = tokio::time::timeout(Duration::from_secs(5), handle.await_settings())
+        .await
+        .expect("SETTINGS must arrive within 5s")
+        .expect("conn must not close before SETTINGS");
+    assert_eq!(settings.config.enable_connect_protocol, Some(1));
+
+    // The critical regression assertion: dropping the SendRequest (the
+    // dispatcher's only public reference) must let the conn task
+    // terminate. With the old handle, this `timeout` would expire.
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(5), conn_join)
+        .await
+        .expect("conn task must terminate after dropping SendRequest")
+        .expect("conn task panicked");
+
+    // Handle still functional after conn shutdown — it owns its own
+    // `Arc<PeerSettingsState>` clone.
+    let snapshot = handle.snapshot();
+    assert!(
+        snapshot.is_some(),
+        "handle must retain captured SETTINGS after conn shutdown",
+    );
+}
+
 #[tokio::test]
 async fn http2_check_date_header_disabled() {
     let (listener, addr) = setup_tcp_listener();

@@ -1,5 +1,6 @@
 //! HTTP connection utilities.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::Version;
@@ -126,5 +127,7 @@ pub struct H2ServerContextParams {
 ///
 /// This captures the *first* non-ACK `SETTINGS` frame received
 /// from the peer during the connection's lifetime; subsequent
-/// updates are not reflected here.
-pub struct PeerH2Settings(pub Settings);
+/// updates are not reflected here. The settings frame is wrapped
+/// in `Arc` so per-response insertion costs only a single atomic
+/// bump rather than a struct copy.
+pub struct PeerH2Settings(pub Arc<Settings>);
