@@ -75,7 +75,7 @@ async fn podcast_feed() -> impl IntoResponse {
         .with_language("en")
         .with_generator("rama/http_rss_podcast example")
         .with_feed_extensions(FeedExtensions {
-            itunes: Some(ITunesFeed {
+            itunes: Some(Box::new(ITunesFeed {
                 author: Some("Netstack.FM".into()),
                 owner_name: Some("Glen De Cauwsemaecker".into()),
                 owner_email: Some("glen@plabayo.tech".into()),
@@ -84,12 +84,12 @@ async fn podcast_feed() -> impl IntoResponse {
                 type_: Some("episodic".into()),
                 summary: Some("The podcast about Rust networking and systems programming.".into()),
                 ..Default::default()
-            }),
-            podcast: Some(PodcastFeed {
+            })),
+            podcast: Some(Box::new(PodcastFeed {
                 locked: Some(false),
                 medium: Some("podcast".into()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         })
         .with_items(EPISODES.iter().map(make_episode_item))
@@ -170,7 +170,7 @@ fn make_episode_item(ep: &Episode) -> Rss2Item {
             ep.audio_type,
         ))
         .with_extensions(ItemExtensions {
-            itunes: Some(ITunes {
+            itunes: Some(Box::new(ITunes {
                 title: Some(ep.title.into()),
                 duration: Some(ep.duration.into()),
                 episode: Some(ep.episode_number),
@@ -178,8 +178,8 @@ fn make_episode_item(ep: &Episode) -> Rss2Item {
                 episode_type: Some("full".into()),
                 explicit: Some(false),
                 ..Default::default()
-            }),
-            podcast: Some(Podcast {
+            })),
+            podcast: Some(Box::new(Podcast {
                 season: Some(PodcastSeason {
                     number: ep.season,
                     name: Some(format!("Season {}", ep.season)),
@@ -189,7 +189,7 @@ fn make_episode_item(ep: &Episode) -> Rss2Item {
                     display: None,
                 }),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         })
 }

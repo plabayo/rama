@@ -418,26 +418,26 @@ impl AtomEntry {
 
     #[must_use]
     pub fn itunes(&self) -> Option<&ITunes> {
-        self.extensions.itunes.as_ref()
+        self.extensions.itunes.as_deref()
     }
 
     #[must_use]
     pub fn podcast(&self) -> Option<&Podcast> {
-        self.extensions.podcast.as_ref()
+        self.extensions.podcast.as_deref()
     }
 
     #[must_use]
     pub fn dublin_core(&self) -> Option<&DublinCore> {
-        self.extensions.dublin_core.as_ref()
+        self.extensions.dublin_core.as_deref()
     }
 
     #[must_use]
     pub fn content_ext(&self) -> Option<&Content> {
-        self.extensions.content.as_ref()
+        self.extensions.content.as_deref()
     }
 
     #[must_use]
     pub fn media(&self) -> Option<&MediaRss> {
-        self.extensions.media.as_ref()
+        self.extensions.media.as_deref()
     }
 }

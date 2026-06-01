@@ -68,9 +68,9 @@ async fn rss2_feed() -> impl IntoResponse {
                 .with_author("team@ramaproxy.org")
                 .with_guid(Rss2Guid::permalink(p.url))
                 .with_extensions(ItemExtensions {
-                    content: Some(Content {
+                    content: Some(Box::new(Content {
                         encoded: Some(format!("<p>{}</p>", p.body)),
-                    }),
+                    })),
                     ..Default::default()
                 })
         }))

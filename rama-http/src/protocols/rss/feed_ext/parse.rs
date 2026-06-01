@@ -473,11 +473,11 @@ impl ItemExtAcc {
 
     pub(in crate::protocols::rss) fn finish(self) -> ItemExtensions {
         ItemExtensions {
-            itunes: self.has_itunes.then_some(self.itunes),
-            podcast: self.has_podcast.then_some(self.podcast),
-            dublin_core: self.has_dc.then_some(self.dc),
-            content: self.content,
-            media: self.has_media.then_some(self.media),
+            itunes: self.has_itunes.then(|| Box::new(self.itunes)),
+            podcast: self.has_podcast.then(|| Box::new(self.podcast)),
+            dublin_core: self.has_dc.then(|| Box::new(self.dc)),
+            content: self.content.map(Box::new),
+            media: self.has_media.then(|| Box::new(self.media)),
         }
     }
 }
@@ -686,9 +686,9 @@ impl FeedExtAcc {
 
     pub(in crate::protocols::rss) fn finish(self) -> FeedExtensions {
         FeedExtensions {
-            itunes: self.has_itunes.then_some(self.itunes),
-            podcast: self.has_podcast.then_some(self.podcast),
-            dublin_core: self.has_dc.then_some(self.dc),
+            itunes: self.has_itunes.then(|| Box::new(self.itunes)),
+            podcast: self.has_podcast.then(|| Box::new(self.podcast)),
+            dublin_core: self.has_dc.then(|| Box::new(self.dc)),
         }
     }
 }

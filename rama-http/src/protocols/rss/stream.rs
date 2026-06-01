@@ -767,10 +767,10 @@ mod tests {
         let item = Rss2Item::new()
             .with_title("Ep1")
             .with_extensions(ItemExtensions {
-                itunes: Some(ITunes {
+                itunes: Some(Box::new(ITunes {
                     author: Some("A".into()),
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             });
         let items = rama_core::futures::stream::iter(vec![Ok::<_, std::convert::Infallible>(item)]);

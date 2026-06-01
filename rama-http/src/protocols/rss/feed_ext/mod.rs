@@ -36,13 +36,19 @@ pub use podcast::{
 // ---------------------------------------------------------------------------
 
 /// Extension container for feed items (RSS 2.0 items and Atom entries).
+///
+/// Each present extension is boxed so the empty case is just five
+/// pointer-sized `None`s (40 B on a 64-bit target), not five inline
+/// extension structs (≥800 B). Most items have at most one or two
+/// extensions populated; the boxed-Option shape pays heap only for what's
+/// actually set and lets `Box<T>` auto-deref carry the field-access API.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemExtensions {
-    pub itunes: Option<ITunes>,
-    pub podcast: Option<Podcast>,
-    pub dublin_core: Option<DublinCore>,
-    pub content: Option<Content>,
-    pub media: Option<MediaRss>,
+    pub itunes: Option<Box<ITunes>>,
+    pub podcast: Option<Box<Podcast>>,
+    pub dublin_core: Option<Box<DublinCore>>,
+    pub content: Option<Box<Content>>,
+    pub media: Option<Box<MediaRss>>,
 }
 
 impl ItemExtensions {
@@ -57,11 +63,14 @@ impl ItemExtensions {
 }
 
 /// Extension container for feeds (channel-level for RSS 2.0, feed-level for Atom).
+///
+/// Same boxed-Option shape as [`ItemExtensions`]; see that type for the
+/// rationale.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FeedExtensions {
-    pub itunes: Option<ITunesFeed>,
-    pub podcast: Option<PodcastFeed>,
-    pub dublin_core: Option<DublinCoreFeed>,
+    pub itunes: Option<Box<ITunesFeed>>,
+    pub podcast: Option<Box<PodcastFeed>>,
+    pub dublin_core: Option<Box<DublinCoreFeed>>,
 }
 
 impl FeedExtensions {

@@ -273,10 +273,10 @@ mod tests {
     #[test]
     fn item_extension_shortcuts_match_generic() {
         let item = Rss2Item::new().with_extensions(ItemExtensions {
-            itunes: Some(ITunes {
+            itunes: Some(Box::new(ITunes {
                 author: Some("Author".into()),
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         });
         assert!(item.itunes().is_some());
@@ -294,22 +294,22 @@ mod tests {
                 .link("https://example.com")
                 .description("A podcast")
                 .with_feed_extensions(FeedExtensions {
-                    itunes: Some(ITunesFeed {
+                    itunes: Some(Box::new(ITunesFeed {
                         author: Some("Host Name".into()),
                         categories: vec!["Technology".into()],
                         explicit: Some(false),
                         ..Default::default()
-                    }),
+                    })),
                     ..Default::default()
                 })
                 .with_item(Rss2Item::new().with_title("Episode 1").with_extensions(
                     ItemExtensions {
-                        itunes: Some(ITunes {
+                        itunes: Some(Box::new(ITunes {
                             duration: Some("30:00".into()),
                             episode: Some(1),
                             season: Some(1),
                             ..Default::default()
-                        }),
+                        })),
                         ..Default::default()
                     },
                 ))
