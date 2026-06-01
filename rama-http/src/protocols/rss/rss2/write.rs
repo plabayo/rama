@@ -280,8 +280,10 @@ mod tests {
             ..Default::default()
         });
         assert!(item.itunes().is_some());
-        assert!(item.extension::<ITunes>().is_some());
-        assert_eq!(item.itunes(), item.extension::<ITunes>());
+        assert_eq!(
+            item.itunes().and_then(|i| i.author.as_deref()),
+            Some("Author")
+        );
     }
 
     #[tokio::test]

@@ -41,8 +41,9 @@
 //! ## Extensions
 //!
 //! All extension fields are in the [`feed_ext`] sub-module.  Items expose
-//! inherent shortcuts (`.itunes()`, `.podcast()`, etc.) as well as a generic
-//! `.extension::<T>()` method.
+//! inherent shortcuts (`.itunes()`, `.podcast()`, etc.) for the five
+//! supported namespaces (iTunes, Podcasting 2.0, Dublin Core,
+//! `content:encoded`, Media RSS).
 
 pub mod feed_ext;
 
@@ -89,8 +90,8 @@ pub use stream::{AtomStreamWriter, FeedStream, FeedStreamWriter, Rss2StreamWrite
 // ---------------------------------------------------------------------------
 
 pub use feed_ext::{
-    Content, DublinCore, DublinCoreFeed, FeedExtension, FeedExtensions, ITunes, ITunesFeed,
-    ItemExtensions, MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters,
-    PodcastEpisode, PodcastFeed, PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem,
-    PodcastSeason, PodcastSoundbite, PodcastTrailer, PodcastTranscript,
+    Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
+    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
+    PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
+    PodcastSoundbite, PodcastTrailer, PodcastTranscript,
 };

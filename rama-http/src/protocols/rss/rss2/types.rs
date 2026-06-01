@@ -3,7 +3,7 @@ use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::atom::AtomLink;
 use crate::protocols::rss::feed_ext::{
-    Content, DublinCore, FeedExtension, ITunes, ItemExtensionGet, ItemExtensions, MediaRss, Podcast,
+    Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast,
 };
 
 // Type-state markers shared with the atom module.
@@ -193,14 +193,6 @@ impl Rss2Item {
     #[must_use]
     pub fn media(&self) -> Option<&MediaRss> {
         self.extensions.media.as_ref()
-    }
-
-    #[must_use]
-    pub fn extension<T>(&self) -> Option<&T>
-    where
-        T: FeedExtension + ItemExtensionGet,
-    {
-        self.extensions.get::<T>()
     }
 }
 

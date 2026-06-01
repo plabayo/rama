@@ -1,9 +1,11 @@
 //! RSS/Atom feed extension system.
 //!
-//! The [`FeedExtension`] trait is sealed; only the built-in extension types
-//! implement it.  Use the generic [`ItemExtensions::get`] /
-//! [`FeedExtensions::get`] methods or the inherent shortcuts on item/feed
-//! types (`.itunes()`, `.podcast()`, etc.) to access extension data.
+//! There are five supported extension namespaces: iTunes, Podcasting 2.0,
+//! Dublin Core, `content:encoded`, and Media RSS. Each contributes a typed
+//! struct stored on [`ItemExtensions`] (item-level) and [`FeedExtensions`]
+//! (feed/channel-level) — direct field access (`item.extensions.itunes`)
+//! or via the inherent shortcuts on the per-format item/feed types
+//! (`.itunes()`, `.podcast()`, etc.).
 
 // Per-extension type definitions, organised by namespace.
 pub mod content;
@@ -30,35 +32,6 @@ pub use podcast::{
 };
 
 // ---------------------------------------------------------------------------
-// Sealing
-// ---------------------------------------------------------------------------
-
-pub(crate) mod private {
-    pub trait Sealed {}
-}
-
-/// Marker trait for types that can be stored as feed extensions.
-///
-/// Sealed: only the built-in extension types implement this.
-pub trait FeedExtension: private::Sealed {}
-
-// ---------------------------------------------------------------------------
-// Generic accessor helpers (sealed)
-// ---------------------------------------------------------------------------
-
-pub trait ItemExtensionGet: private::Sealed {
-    fn get_from_item(ext: &ItemExtensions) -> Option<&Self>
-    where
-        Self: Sized;
-}
-
-pub trait FeedExtensionGet: private::Sealed {
-    fn get_from_feed(ext: &FeedExtensions) -> Option<&Self>
-    where
-        Self: Sized;
-}
-
-// ---------------------------------------------------------------------------
 // Extension containers
 // ---------------------------------------------------------------------------
 
@@ -73,11 +46,6 @@ pub struct ItemExtensions {
 }
 
 impl ItemExtensions {
-    #[must_use]
-    pub fn get<T: FeedExtension + ItemExtensionGet>(&self) -> Option<&T> {
-        T::get_from_item(self)
-    }
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.itunes.is_none()
@@ -97,11 +65,6 @@ pub struct FeedExtensions {
 }
 
 impl FeedExtensions {
-    #[must_use]
-    pub fn get<T: FeedExtension + FeedExtensionGet>(&self) -> Option<&T> {
-        T::get_from_feed(self)
-    }
-
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.itunes.is_none() && self.podcast.is_none() && self.dublin_core.is_none()

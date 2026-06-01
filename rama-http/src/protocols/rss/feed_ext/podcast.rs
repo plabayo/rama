@@ -2,9 +2,6 @@
 
 use jiff::Timestamp;
 
-use super::private;
-use super::{FeedExtension, FeedExtensionGet, FeedExtensions, ItemExtensionGet, ItemExtensions};
-
 /// A `podcast:transcript` element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PodcastTranscript {
@@ -105,15 +102,6 @@ pub struct Podcast {
     pub remote_items: Vec<PodcastRemoteItem>,
 }
 
-impl private::Sealed for Podcast {}
-impl FeedExtension for Podcast {}
-
-impl ItemExtensionGet for Podcast {
-    fn get_from_item(ext: &ItemExtensions) -> Option<&Self> {
-        ext.podcast.as_ref()
-    }
-}
-
 /// Podcasting 2.0 extension fields at the feed (channel) level.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PodcastFeed {
@@ -131,13 +119,4 @@ pub struct PodcastFeed {
     pub license: Option<String>,
     pub medium: Option<String>,
     pub remote_items: Vec<PodcastRemoteItem>,
-}
-
-impl private::Sealed for PodcastFeed {}
-impl FeedExtension for PodcastFeed {}
-
-impl FeedExtensionGet for PodcastFeed {
-    fn get_from_feed(ext: &FeedExtensions) -> Option<&Self> {
-        ext.podcast.as_ref()
-    }
 }

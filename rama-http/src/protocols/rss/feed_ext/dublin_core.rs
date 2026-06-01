@@ -2,9 +2,6 @@
 
 use jiff::Timestamp;
 
-use super::private;
-use super::{FeedExtension, FeedExtensionGet, FeedExtensions, ItemExtensionGet, ItemExtensions};
-
 /// Dublin Core extension fields for a feed item.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DublinCore {
@@ -25,15 +22,6 @@ pub struct DublinCore {
     pub rights: Option<String>,
 }
 
-impl private::Sealed for DublinCore {}
-impl FeedExtension for DublinCore {}
-
-impl ItemExtensionGet for DublinCore {
-    fn get_from_item(ext: &ItemExtensions) -> Option<&Self> {
-        ext.dublin_core.as_ref()
-    }
-}
-
 /// Dublin Core extension fields at the feed (channel) level.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DublinCoreFeed {
@@ -52,13 +40,4 @@ pub struct DublinCoreFeed {
     pub relation: Option<String>,
     pub coverage: Option<String>,
     pub rights: Option<String>,
-}
-
-impl private::Sealed for DublinCoreFeed {}
-impl FeedExtension for DublinCoreFeed {}
-
-impl FeedExtensionGet for DublinCoreFeed {
-    fn get_from_feed(ext: &FeedExtensions) -> Option<&Self> {
-        ext.dublin_core.as_ref()
-    }
 }

@@ -1,8 +1,5 @@
 //! Media RSS extension (<http://search.yahoo.com/mrss/>).
 
-use super::private;
-use super::{FeedExtension, ItemExtensionGet, ItemExtensions};
-
 /// A single `media:content` element.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MediaContent {
@@ -35,13 +32,4 @@ pub struct MediaRss {
     pub description: Option<String>,
     pub keywords: Option<String>,
     pub rating: Option<String>,
-}
-
-impl private::Sealed for MediaRss {}
-impl FeedExtension for MediaRss {}
-
-impl ItemExtensionGet for MediaRss {
-    fn get_from_item(ext: &ItemExtensions) -> Option<&Self> {
-        ext.media.as_ref()
-    }
 }
