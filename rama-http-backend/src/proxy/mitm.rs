@@ -140,14 +140,24 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
-        // CONNECT-protocol advertisement (RFC 8441) is no longer set
-        // unconditionally here. When the egress IO carries
-        // `TargetHttpVersion(HTTP_2)`, the relay's eager phase-2 init
-        // (see `serve`) handshakes egress first, captures the upstream's
-        // initial SETTINGS, and mirrors them onto the ingress connection
-        // via `H2ServerContextParams` — so we now only advertise CONNECT
-        // when the upstream actually supports it.
-        let http_server = HttpServer::auto(exec.clone());
+        // Baseline default: advertise the extended CONNECT protocol
+        // (RFC 8441) on the ingress h2 builder. This is the value used
+        // by the *lazy* relay path — i.e. plain h2 prior-knowledge where
+        // we have no ALPN signal to do the eager-phase-2 mirror against
+        // the upstream.
+        //
+        // For the EAGER path (egress IO carries `TargetHttpVersion(HTTP_2)`,
+        // typically from TLS-ALPN), `serve()` reads the upstream's
+        // initial SETTINGS and stamps an authoritative
+        // `H2ServerContextParams` on the ingress IO. That override wins
+        // over this baseline — so when upstream omits CONNECT (issue
+        // #932's case), the relay correctly omits it downstream
+        // regardless of this default. The lazy path retains the old
+        // best-effort behaviour for plain-h2 setups where upstream
+        // typically does support CONNECT (e.g. h2 prior-knowledge to a
+        // local service mesh).
+        let mut http_server = HttpServer::auto(exec.clone());
+        http_server.h2_mut().set_enable_connect_protocol();
         Self {
             http_server,
             middleware: (
