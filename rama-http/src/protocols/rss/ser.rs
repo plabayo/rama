@@ -39,7 +39,18 @@ pub(super) fn write_text_elem<W: std::io::Write>(
     value: &str,
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::Start(BytesStart::new(name)))?;
-    w.write_event(Event::Text(BytesText::new(value)))?;
+    // If the body carries markup-significant characters (`<` or `&`), emit
+    // as one or more CDATA sections rather than escaped entities. Both
+    // forms parse back to the same string, but CDATA stays close to the
+    // wire shape typical publishers emit (e.g. RSS `<description>`
+    // carrying inline HTML, which most readers expect to find verbatim).
+    // For plain text — the common case for titles, links, dates — the
+    // path stays the cheap `BytesText` escape.
+    if value.contains('<') || value.contains('&') {
+        write_cdata_escaped(w, value)?;
+    } else {
+        w.write_event(Event::Text(BytesText::new(value)))?;
+    }
     w.write_event(Event::End(BytesEnd::new(name)))?;
     Ok(())
 }
