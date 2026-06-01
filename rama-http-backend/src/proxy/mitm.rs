@@ -266,18 +266,29 @@ where
                                 );
                                 None
                             });
-                    if let Some(settings) = peer_settings.as_ref() {
+                    let mirrored = if let Some(settings) = peer_settings.as_ref() {
                         tracing::trace!(
                             "mirroring upstream h2 SETTINGS onto ingress: {settings:?}",
                         );
-                        ingress_stream
-                            .extensions()
-                            .insert(mirror_peer_settings(settings));
+                        mirror_peer_settings(settings)
                     } else {
+                        // Fail-safe: even when capture fails, we MUST
+                        // explicitly disable CONNECT on the ingress.
+                        // Otherwise, a user who set
+                        // `relay.h2_mut().set_enable_connect_protocol()`
+                        // on the builder defaults would have us
+                        // unconditionally re-advertise CONNECT to a
+                        // downstream client whose upstream may not
+                        // support it — reintroducing issue #932.
                         tracing::debug!(
-                            "no upstream h2 SETTINGS captured; ingress will use default server config",
+                            "no upstream h2 SETTINGS captured; forcing CONNECT off on ingress",
                         );
-                    }
+                        H2ServerContextParams {
+                            enable_connect_protocol: Some(false),
+                            ..H2ServerContextParams::default()
+                        }
+                    };
+                    ingress_stream.extensions().insert(mirrored);
                     let client = self.middleware.clone().layer(conn);
                     Arc::new(Mutex::new(RelayState::Http2 { client }))
                 }
@@ -746,31 +757,49 @@ where
 
 /// Project an upstream's initial h2 SETTINGS frame onto an
 /// [`H2ServerContextParams`] suitable for stamping on the relay's
-/// ingress IO. We only carry forward upstream-authoritative knobs
-/// (what the peer told us it supports); purely local buffering knobs
-/// like `max_send_buf_size` are left at the ingress server's defaults.
+/// ingress IO.
 ///
-/// **Mirror policy: authoritative-wins.** The relay always reflects
-/// what the upstream actually advertised, even when that means
-/// *overriding* a value the user set on the relay's own h2 builder.
-/// The rationale: the whole point of the mirror is to keep the relay
-/// from over-promising capabilities the upstream doesn't have — a user
-/// who explicitly enabled CONNECT downstream via `relay.h2_mut()` but
-/// connects to an upstream that doesn't support it would otherwise
-/// reintroduce the exact failure mode #932 is fixing. So when upstream
-/// is silent on `enable_connect_protocol` we explicitly mirror it as
-/// `Some(false)` rather than leaving the field unset.
+/// Two fields are carried forward, and only two:
+///
+/// 1. **`enable_connect_protocol`** (RFC 8441) — a capability
+///    advertisement that is transitively meaningful across the relay.
+///    If upstream advertises Extended CONNECT, the relay can advertise
+///    it downstream because it just forwards. If upstream omits it, the
+///    relay MUST omit it (this is #932's core fix). Authoritative-wins:
+///    we always emit `Some(true|false)`, overriding any builder default
+///    a user may have set on the relay's h2 builder — without that, a
+///    user who opted into CONNECT defaults would re-trigger #932 when
+///    talking to a non-CONNECT upstream.
+///
+/// 2. **`max_concurrent_streams`** — kept as an *explicit backpressure
+///    policy*, not as a transparent mirror. h2 SETTINGS frames are
+///    per-direction: upstream's value bounds upstream's accept capacity
+///    *from the relay-as-client*, which is not the same as the relay's
+///    accept capacity *from a downstream-as-client*. We use upstream's
+///    value anyway because it caps how much concurrency the relay can
+///    actually forward through its single egress h2 connection.
+///    Floored at 1 to guard against pathological upstream `Some(0)`.
+///
+/// Other initial-SETTINGS fields (`header_table_size`, `max_frame_size`,
+/// `max_header_list_size`, `initial_stream_window_size`) describe
+/// independent per-direction buffer/decoder budgets that have no
+/// cross-direction meaning. Mirroring them would silently couple
+/// budgets that should be independent, which is why we don't. These
+/// fields remain part of [`H2ServerContextParams`] for callers who
+/// want to set them directly per-connection.
 fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
     let cfg = &settings.config;
     H2ServerContextParams {
         enable_connect_protocol: Some(cfg.enable_connect_protocol.map(|v| v != 0).unwrap_or(false)),
-        max_concurrent_streams: cfg.max_concurrent_streams,
-        header_table_size: cfg.header_table_size,
-        max_frame_size: cfg.max_frame_size,
-        max_header_list_size: cfg.max_header_list_size,
-        initial_stream_window_size: cfg.initial_window_size,
-        // Connection-level window is the relay's own buffering concern;
-        // do not mirror.
+        // `max(1)`: protect the ingress server from upstream advertising
+        // `Some(0)` (legal on the wire but produces a non-functional
+        // connection). Any saner upstream value passes through unchanged.
+        max_concurrent_streams: cfg.max_concurrent_streams.map(|n| n.max(1)),
+        // Intentionally not mirrored — see fn docstring.
+        header_table_size: None,
+        max_frame_size: None,
+        max_header_list_size: None,
+        initial_stream_window_size: None,
         initial_connection_window_size: None,
         adaptive_window: None,
     }
