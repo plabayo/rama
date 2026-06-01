@@ -8,10 +8,11 @@ use quick_xml::{
     events::{BytesEnd, BytesStart, BytesText, Event},
 };
 
-use super::names::{attr, dc, itunes, media, podcast};
+use super::names::{attr, dc, itunes, media, podcast, psc};
+use super::podlove::format_start as format_psc_start;
 use super::{
     DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed,
-    PodcastLocation, PodcastPerson, PodcastRemoteItem,
+    PodcastLocation, PodcastPerson, PodcastRemoteItem, PodloveChapters,
 };
 use crate::protocols::rss::rss2::format_rss2_date;
 use crate::protocols::rss::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
@@ -434,5 +435,33 @@ pub(in crate::protocols::rss) fn write_media_item<W: std::io::Write>(
     write_opt_text_elem(w, media::DESCRIPTION_TAG, m.description.as_deref())?;
     write_opt_text_elem(w, media::KEYWORDS_TAG, m.keywords.as_deref())?;
     write_opt_text_elem(w, media::RATING_TAG, m.rating.as_deref())?;
+    Ok(())
+}
+
+pub(in crate::protocols::rss) fn write_podlove_chapters<W: std::io::Write>(
+    w: &mut Writer<W>,
+    chapters: &PodloveChapters,
+) -> Result<(), XmlWriteError> {
+    let version = if chapters.version.is_empty() {
+        "1.2"
+    } else {
+        chapters.version.as_str()
+    };
+    let mut tag = BytesStart::new(psc::CHAPTERS_TAG);
+    tag.push_attribute((attr::VERSION, version));
+    w.write_event(Event::Start(tag))?;
+    for ch in &chapters.chapters {
+        let mut t = BytesStart::new(psc::CHAPTER_TAG);
+        t.push_attribute((attr::START, format_psc_start(ch.start).as_str()));
+        t.push_attribute((attr::TITLE, ch.title.as_str()));
+        if let Some(href) = &ch.href {
+            t.push_attribute((attr::HREF, href.as_str()));
+        }
+        if let Some(image) = &ch.image {
+            t.push_attribute((attr::IMAGE, image.as_str()));
+        }
+        w.write_event(Event::Empty(t))?;
+    }
+    w.write_event(Event::End(BytesEnd::new(psc::CHAPTERS_TAG)))?;
     Ok(())
 }

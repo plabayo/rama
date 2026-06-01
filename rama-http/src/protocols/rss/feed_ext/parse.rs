@@ -14,12 +14,13 @@
 
 use quick_xml::name::ResolveResult;
 
-use super::names::{attr, content, dc, itunes, media, podcast};
+use super::names::{attr, content, dc, itunes, media, podcast, psc};
+use super::podlove::{PodloveChapter, parse_start as parse_psc_start};
 use super::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
     MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
     PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
-    PodcastSoundbite, PodcastTrailer, PodcastTranscript,
+    PodcastSoundbite, PodcastTrailer, PodcastTranscript, PodloveChapters,
 };
 use crate::protocols::rss::parse_util::{Attrs, attr_value, parse_rss2_date};
 
@@ -41,6 +42,9 @@ pub(in crate::protocols::rss) enum Ns {
     Media,
     /// `http://purl.org/rss/1.0/modules/content/` — carries `content:encoded`.
     Content,
+    /// `http://podlove.org/simple-chapters` — inline per-episode chapter
+    /// markers (separate from Podcasting 2.0's external `<podcast:chapters>`).
+    Psc,
     /// Any other / unknown namespace.
     Other,
 }
@@ -57,6 +61,7 @@ pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
     const DC: &[u8] = ns::DC_NS.as_bytes();
     const MEDIA: &[u8] = ns::MEDIA_NS.as_bytes();
     const CONTENT: &[u8] = ns::CONTENT_NS.as_bytes();
+    const PSC: &[u8] = ns::PSC_NS.as_bytes();
 
     match rr {
         ResolveResult::Unbound => Ns::None,
@@ -67,6 +72,7 @@ pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
             DC => Ns::Dc,
             MEDIA => Ns::Media,
             CONTENT => Ns::Content,
+            PSC => Ns::Psc,
             _ => Ns::Other,
         },
         ResolveResult::Unknown(_) => Ns::Other,
@@ -230,6 +236,10 @@ pub(in crate::protocols::rss) struct ItemExtAcc {
     pending_soundbite: Option<PodcastSoundbite>,
     pending_season: Option<PodcastSeason>,
     pending_episode: Option<PodcastEpisode>,
+    /// Open `<psc:chapters>` block accumulating its `<psc:chapter>` children.
+    /// Finalised into `podlove` on the matching End event.
+    pending_psc: Option<PodloveChapters>,
+    podlove: Option<PodloveChapters>,
 }
 
 impl ItemExtAcc {
@@ -269,6 +279,14 @@ impl ItemExtAcc {
                 self.pending_episode = Some(PodcastEpisode {
                     number: 0.0,
                     display: attr_value(e, attr::DISPLAY),
+                });
+            }
+            (Ns::Psc, psc::CHAPTERS) => {
+                // Spec default for version is "1.2" if the attribute is absent.
+                let version = attr_value(e, attr::VERSION).unwrap_or_else(|| "1.2".into());
+                self.pending_psc = Some(PodloveChapters {
+                    version,
+                    chapters: Vec::new(),
                 });
             }
             _ => return false,
@@ -344,6 +362,21 @@ impl ItemExtAcc {
                     .remote_items
                     .push(podcast_remote_item_from_attrs(e));
                 self.has_podcast = true;
+            }
+            (Ns::Psc, psc::CHAPTER) => {
+                // <psc:chapter> only makes sense inside a <psc:chapters>
+                // block; in lenient mode we accumulate into the open block
+                // and drop free-floating ones.
+                if let Some(chapters) = self.pending_psc.as_mut() {
+                    chapters.chapters.push(PodloveChapter {
+                        start: attr_value(e, attr::START)
+                            .map(|s| parse_psc_start(&s))
+                            .unwrap_or_default(),
+                        title: attr_value(e, attr::TITLE).unwrap_or_default(),
+                        href: attr_value(e, attr::HREF),
+                        image: attr_value(e, attr::IMAGE),
+                    });
+                }
             }
             _ => return false,
         }
@@ -468,6 +501,11 @@ impl ItemExtAcc {
                 set_dc_item(&mut self.dc, &mut self.has_dc, field, text);
                 return None;
             }
+            // Podlove Simple Chapters
+            (Ns::Psc, psc::CHAPTERS) => {
+                self.podlove = self.pending_psc.take();
+                return None;
+            }
             _ => return Some(text),
         }
         // Reached via the iTunes text arms above (they assign and fall through).
@@ -482,6 +520,7 @@ impl ItemExtAcc {
             dublin_core: self.has_dc.then(|| Box::new(self.dc)),
             content: self.content.map(Box::new),
             media: self.has_media.then(|| Box::new(self.media)),
+            podlove: self.podlove.map(Box::new),
         }
     }
 }

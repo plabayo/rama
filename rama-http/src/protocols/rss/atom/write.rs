@@ -31,6 +31,7 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     ns::push_xmlns_podcast(&mut feed_tag);
     ns::push_xmlns_dc(&mut feed_tag);
     ns::push_xmlns_media(&mut feed_tag);
+    ns::push_xmlns_psc(&mut feed_tag);
 
     w.write_event(Event::Start(feed_tag))?;
 
@@ -149,6 +150,9 @@ pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
     }
     if let Some(media) = &entry.extensions.media {
         ext_write::write_media_item(w, media)?;
+    }
+    if let Some(chapters) = &entry.extensions.podlove {
+        ext_write::write_podlove_chapters(w, chapters)?;
     }
 
     w.write_event(Event::End(BytesEnd::new(elem::ENTRY)))?;

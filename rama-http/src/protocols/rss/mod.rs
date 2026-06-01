@@ -93,5 +93,5 @@ pub use feed_ext::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
     MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
     PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
-    PodcastSoundbite, PodcastTrailer, PodcastTranscript,
+    PodcastSoundbite, PodcastTrailer, PodcastTranscript, PodloveChapter, PodloveChapters,
 };

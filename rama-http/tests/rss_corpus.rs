@@ -437,6 +437,52 @@ async fn feed_item_content_returns_none_for_atom_out_of_line() {
     );
 }
 
+/// Podlove Simple Chapters: `<psc:chapters>` and inner `<psc:chapter>` markers
+/// at item level must parse into PodloveChapters and survive round-trip.
+#[tokio::test]
+async fn podlove_chapters_preserved() {
+    use std::time::Duration;
+    let bytes = load(&corpus_dir().join("edge-podlove-chapters.rss.xml"));
+    let Feed::Rss2(feed) = parse_bytes(bytes).await else {
+        panic!("expected RSS");
+    };
+    let item = &feed.items[0];
+    let ch = item
+        .extensions
+        .podlove
+        .as_deref()
+        .expect("psc chapters parsed");
+    assert_eq!(ch.version, "1.2");
+    assert_eq!(ch.chapters.len(), 4, "all four chapter markers captured");
+
+    assert_eq!(ch.chapters[0].title, "Intro");
+    assert_eq!(ch.chapters[0].start, Duration::ZERO);
+
+    assert_eq!(ch.chapters[1].title, "Sponsor");
+    assert!(
+        (ch.chapters[1].start.as_secs_f64() - 154.5).abs() < 1e-6,
+        "00:02:34.500 → 154.5 s, got {:?}",
+        ch.chapters[1].start,
+    );
+    assert_eq!(
+        ch.chapters[1].href.as_deref(),
+        Some("https://sponsor.example.com"),
+    );
+
+    assert_eq!(ch.chapters[2].title, "Main topic");
+    assert_eq!(ch.chapters[2].start, Duration::from_secs(5 * 60 + 42));
+    assert_eq!(
+        ch.chapters[2].image.as_deref(),
+        Some("https://example.com/chapter3.png"),
+    );
+
+    assert_eq!(ch.chapters[3].title, "Wrap-up");
+    assert!(
+        (ch.chapters[3].start.as_secs_f64() - 3723.456).abs() < 1e-6,
+        "01:02:03.456 → 3723.456 s",
+    );
+}
+
 /// Multiple `<enclosure>` elements on one item must all survive the round-trip.
 #[tokio::test]
 async fn multiple_enclosures_preserved() {

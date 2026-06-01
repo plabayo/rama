@@ -34,6 +34,7 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     ns::push_xmlns_dc(&mut rss_tag);
     ns::push_xmlns_content(&mut rss_tag);
     ns::push_xmlns_media(&mut rss_tag);
+    ns::push_xmlns_psc(&mut rss_tag);
     if !channel.atom_links.is_empty() {
         ns::push_xmlns_atom(&mut rss_tag);
     }
@@ -208,6 +209,10 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
 
     if let Some(media) = &item.extensions.media {
         ext_write::write_media_item(w, media)?;
+    }
+
+    if let Some(chapters) = &item.extensions.podlove {
+        ext_write::write_podlove_chapters(w, chapters)?;
     }
 
     w.write_event(Event::End(BytesEnd::new(elem::ITEM)))?;

@@ -21,6 +21,7 @@ stress one specific area:
 | `edge-multiple-enclosures.rss.xml` | Item with both an audio and a video `<enclosure>`. |
 | `edge-atom-contributors.atom.xml` | `<contributor>` at both feed level and entry level — must NOT merge into `authors`. |
 | `edge-atom-source-xhtml.atom.xml` | `<source>` containing a `type="xhtml"` `<title>` — must NOT overwrite the enclosing entry's own title. |
+| `edge-podlove-chapters.rss.xml` | Item with `<psc:chapters>` containing several `<psc:chapter>` markers — exercises the Podlove Simple Chapters extension (separate from Podcasting 2.0's external-URL `<podcast:chapters>`). |
 
 The fixtures are intentionally synthetic — they're not scraped from any real
 podcast or blog — but they reproduce the shapes the corresponding *real* feeds

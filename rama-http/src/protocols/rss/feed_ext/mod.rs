@@ -13,6 +13,7 @@ pub mod dublin_core;
 pub mod itunes;
 pub mod media;
 pub mod podcast;
+pub mod podlove;
 
 // Shared parser / writer / element + attribute names. Internal infrastructure
 // the per-format readers and writers (in [`super::rss2`] and [`super::atom`])
@@ -30,6 +31,7 @@ pub use podcast::{
     PodcastPerson, PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastTrailer,
     PodcastTranscript,
 };
+pub use podlove::{PodloveChapter, PodloveChapters};
 
 // ---------------------------------------------------------------------------
 // Extension containers
@@ -49,6 +51,7 @@ pub struct ItemExtensions {
     pub dublin_core: Option<Box<DublinCore>>,
     pub content: Option<Box<Content>>,
     pub media: Option<Box<MediaRss>>,
+    pub podlove: Option<Box<PodloveChapters>>,
 }
 
 impl ItemExtensions {
@@ -59,6 +62,7 @@ impl ItemExtensions {
             && self.dublin_core.is_none()
             && self.content.is_none()
             && self.media.is_none()
+            && self.podlove.is_none()
     }
 }
 

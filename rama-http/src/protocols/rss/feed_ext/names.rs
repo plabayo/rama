@@ -120,6 +120,15 @@ pub(in crate::protocols::rss) mod content {
     }
 }
 
+/// Podlove Simple Chapters namespace
+/// (`http://podlove.org/simple-chapters`).
+pub(in crate::protocols::rss) mod psc {
+    decl_ext! { "psc",
+        CHAPTERS => "chapters",
+        CHAPTER  => "chapter",
+    }
+}
+
 /// XML attribute names used across the RSS / Atom parsers + writers. None of
 /// these are namespace-qualified in real-world feeds (the host element's
 /// namespace governs), so one bare `&str` constant per name serves both
@@ -173,5 +182,9 @@ pub(in crate::protocols::rss) mod attr {
         ITEM_GUID    => "itemGuid",
         FEED_URL     => "feedUrl",
         OWNER        => "owner",
+
+        // Podlove Simple Chapters
+        START        => "start",
+        IMAGE        => "image",
     }
 }

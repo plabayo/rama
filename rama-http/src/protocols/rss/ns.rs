@@ -33,6 +33,9 @@ pub(super) const MEDIA_NS: &str = "http://search.yahoo.com/mrss/";
 /// RSS 1.0 content module — carries `content:encoded` inside RSS 2.0 feeds.
 pub(super) const CONTENT_NS: &str = "http://purl.org/rss/1.0/modules/content/";
 
+/// Podlove Simple Chapters — <https://podlove.org/simple-chapters>.
+pub(super) const PSC_NS: &str = "http://podlove.org/simple-chapters";
+
 // ---------------------------------------------------------------------------
 // `xmlns:<prefix>` attribute helpers
 // ---------------------------------------------------------------------------
@@ -75,4 +78,9 @@ pub(super) fn push_xmlns_media(tag: &mut BytesStart<'_>) {
 /// Declare `xmlns:content` on the feed root.
 pub(super) fn push_xmlns_content(tag: &mut BytesStart<'_>) {
     tag.push_attribute(("xmlns:content", CONTENT_NS));
+}
+
+/// Declare `xmlns:psc` on the feed root.
+pub(super) fn push_xmlns_psc(tag: &mut BytesStart<'_>) {
+    tag.push_attribute(("xmlns:psc", PSC_NS));
 }
