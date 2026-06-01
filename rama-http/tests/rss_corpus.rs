@@ -119,7 +119,7 @@ async fn corpus_round_trips_losslessly() {
 /// `<source>` containment regressions).
 #[tokio::test]
 async fn happy_path_fixtures_preserve_significant_tokens() {
-    use std::collections::HashSet;
+    use ahash::HashSet;
     for path in corpus_files() {
         if name(&path).starts_with("edge-") {
             continue;
@@ -204,9 +204,8 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
 
     loop {
         buf.clear();
-        let (rr, ev) = match nsr.read_resolved_event_into(&mut buf) {
-            Ok(p) => p,
-            Err(_) => break,
+        let Ok((rr, ev)) = nsr.read_resolved_event_into(&mut buf) else {
+            break;
         };
         fn harvest_attrs(
             e: &quick_xml::events::BytesStart<'_>,
@@ -238,14 +237,13 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 let recognised = is_recognised(&rr);
                 harvest_attrs(&e, recognised, &mut tokens);
             }
-            Event::Text(e) => {
-                if *stack.last().unwrap_or(&true) {
-                    if let Ok(t) = e.unescape() {
-                        let t = t.trim();
-                        if !t.is_empty() && !looks_like_date(t) {
-                            tokens.push(t.to_owned());
-                        }
-                    }
+            Event::Text(e)
+                if *stack.last().unwrap_or(&true)
+                    && let Ok(t) = e.unescape() =>
+            {
+                let t = t.trim();
+                if !t.is_empty() && !looks_like_date(t) {
+                    tokens.push(t.to_owned());
                 }
             }
             Event::CData(e) => {

@@ -268,11 +268,6 @@ fn xhtml_well_formed(fragment: &str) -> bool {
             }
             Ok(Event::Empty(_) | Event::Text(_) | Event::CData(_) | Event::Comment(_)) => {}
             Ok(Event::Decl(_) | Event::DocType(_) | Event::PI(_)) | Err(_) => return false,
-            #[expect(
-                unreachable_patterns,
-                reason = "future-proof against new quick_xml Event variants"
-            )]
-            Ok(_) => return false,
         }
     }
 }
