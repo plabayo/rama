@@ -936,10 +936,31 @@ async fn capture_xhtml_subtree_async<R>(
 where
     R: AsyncBufRead + Unpin,
 {
+    const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
+
+    // The outer reader runs with `trim_text(true)` so core-Atom text fields
+    // come back without surrounding whitespace. Inside an xhtml subtree
+    // every space matters — `<p>foo</p> <p>bar</p>` and
+    // `<p>Hello <em>world</em> there</p>` both lose meaning if the inter-
+    // element whitespace is trimmed. Disable trimming for the capture and
+    // restore it before returning (errors included).
+    nsr.config_mut().trim_text(false);
+    let result = capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await;
+    nsr.config_mut().trim_text(true);
+    result
+}
+
+async fn capture_xhtml_subtree_inner<R>(
+    nsr: &mut NsReader<R>,
+    buf: &mut Vec<u8>,
+    strict: bool,
+    xhtml_ns_bytes: &[u8],
+) -> Result<String, FeedParseError>
+where
+    R: AsyncBufRead + Unpin,
+{
     use quick_xml::Writer;
     use quick_xml::name::ResolveResult;
-
-    const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
 
     let mut captured = Vec::<u8>::new();
     let mut depth: i32 = 0;
@@ -956,7 +977,7 @@ where
                 if depth == 0 && !saw_wrapper {
                     let is_div = e.local_name().as_ref() == b"div";
                     let in_xhtml_ns =
-                        matches!(rr, ResolveResult::Bound(n) if n.0 == XHTML_NS_BYTES);
+                        matches!(rr, ResolveResult::Bound(n) if n.0 == xhtml_ns_bytes);
                     if strict && !(is_div && in_xhtml_ns) {
                         return Err(FeedParseError::new(
                             "Atom xhtml content must be wrapped in a single \

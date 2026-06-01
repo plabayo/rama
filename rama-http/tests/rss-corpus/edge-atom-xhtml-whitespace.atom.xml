@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: an Atom xhtml text construct whose semantics depend on
+     significant whitespace between and around inline elements. With
+     `trim_text(true)` on the outer reader, a naive xhtml capture loses
+     those spaces and round-trips "Hello <em>world</em> there" as
+     "Hello<em>world</em>there". The capture must temporarily disable
+     trimming. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:xhtml-ws</id>
+  <title>XHTML whitespace</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:e1</id>
+    <title type="text">Whitespace-sensitive xhtml</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Hello <em>world</em> there</p><p>Sentence one.</p> <p>Sentence two.</p></div></content>
+  </entry>
+</feed>

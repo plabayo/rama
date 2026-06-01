@@ -1,9 +1,10 @@
 //! Smoke + round-trip tests against the vendored RSS / Atom feed corpus.
 //!
-//! See `tests/rss-corpus/README.md` for what each fixture covers. The general
-//! shape is: every `.xml` file under `tests/rss-corpus/` must parse, must
-//! re-serialize to well-formed XML, and (for happy-path fixtures) must parse
-//! again to a model equal to the first parse.
+//! Each `.xml` under `tests/rss-corpus/` is a self-contained feed pinning one
+//! specific behaviour; the XML comment at the top of each fixture states what
+//! it covers. Every fixture must parse, must re-serialize to well-formed XML,
+//! and must round-trip through parse → serialize → parse to an equal model.
+//! Specific edge cases get their own per-fixture test below.
 
 #![cfg(feature = "rss")]
 #![expect(
@@ -259,6 +260,38 @@ async fn atom_xhtml_source_title_does_not_leak_into_entry() {
     assert!(
         src_title.value.contains("<em>Origin</em>"),
         "xhtml subtree captured: {src_title:?}",
+    );
+}
+
+/// Atom xhtml text constructs must preserve whitespace between and around
+/// inline elements. The outer reader runs with `trim_text(true)` for core
+/// fields; the xhtml capture must toggle that off so significant spaces
+/// (`Hello <em>world</em> there` vs `Hello<em>world</em>there`) survive.
+#[tokio::test]
+async fn atom_xhtml_whitespace_preserved() {
+    use rama_http::protocols::rss::AtomTextKind;
+    let bytes = load(&corpus_dir().join("edge-atom-xhtml-whitespace.atom.xml"));
+    let Feed::Atom(feed) = parse_bytes(bytes).await else {
+        panic!("expected Atom");
+    };
+    let content = feed.entries[0].content.as_ref().expect("entry has content");
+    assert_eq!(content.value.kind, AtomTextKind::Xhtml);
+    // Inter-element whitespace between the inline <em> and the surrounding
+    // text must survive verbatim.
+    assert!(
+        content.value.value.contains("Hello <em>world</em> there"),
+        "intra-paragraph whitespace lost: {:?}",
+        content.value.value,
+    );
+    // Whitespace between sibling <p> blocks (a literal space) must also
+    // survive.
+    assert!(
+        content
+            .value
+            .value
+            .contains("<p>Sentence one.</p> <p>Sentence two.</p>"),
+        "inter-element whitespace lost: {:?}",
+        content.value.value,
     );
 }
 
