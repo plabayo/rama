@@ -868,7 +868,7 @@ async fn h2_mitm_relay_safe_fallback_inner(relay_h2_opts_into_connect: bool) {
         .expect("relay must send SETTINGS even after eager timeout");
 
     assert_eq!(
-        settings.config.enable_connect_protocol, None,
+        settings.0.config.enable_connect_protocol, None,
         "fail-safe: relay must NOT advertise CONNECT when upstream times out",
     );
 

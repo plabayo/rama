@@ -277,11 +277,11 @@ where
                                 );
                                 None
                             });
-                    let mirrored = if let Some(settings) = peer_settings.as_ref() {
-                        tracing::trace!(
-                            "mirroring upstream h2 SETTINGS onto ingress: {settings:?}",
-                        );
-                        mirror_peer_settings(settings)
+                    let mirrored = if let Some(peer) = peer_settings.as_ref() {
+                        tracing::trace!("mirroring upstream h2 SETTINGS onto ingress: {peer:?}",);
+                        // `peer: &Arc<PeerH2Settings>`. The mirror fn
+                        // takes the underlying `&Settings`.
+                        mirror_peer_settings(&peer.0)
                     } else {
                         // Fail-safe: even when capture fails, we MUST
                         // explicitly disable CONNECT on the ingress.
@@ -789,7 +789,10 @@ where
 ///    accept capacity *from a downstream-as-client*. We use upstream's
 ///    value anyway because it caps how much concurrency the relay can
 ///    actually forward through its single egress h2 connection.
-///    Floored at 1 to guard against pathological upstream `Some(0)`.
+///    Spec-faithful: per RFC 9113 §6.5.2 `0` is a legal value that
+///    "SHOULD NOT be treated as special" — it means "no streams
+///    accepted right now" and we propagate that to downstream exactly
+///    as upstream advertised it.
 ///
 /// Other initial-SETTINGS fields (`header_table_size`, `max_frame_size`,
 /// `max_header_list_size`, `initial_stream_window_size`) describe
@@ -802,10 +805,13 @@ fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
     let cfg = &settings.config;
     H2ServerContextParams {
         enable_connect_protocol: Some(cfg.enable_connect_protocol.map(|v| v != 0).unwrap_or(false)),
-        // `max(1)`: protect the ingress server from upstream advertising
-        // `Some(0)` (legal on the wire but produces a non-functional
-        // connection). Any saner upstream value passes through unchanged.
-        max_concurrent_streams: cfg.max_concurrent_streams.map(|n| n.max(1)),
+        // RFC 9113 §6.5.2: `Some(0)` is legal and `SHOULD NOT be
+        // treated as special`. Pass it through as-is — if upstream
+        // refuses all streams, the relay honestly tells downstream
+        // the same. Future SETTINGS updates from upstream (e.g. when
+        // a server warms up and raises its limit) are handled by the
+        // h2 stack at the egress side, not by this mirror.
+        max_concurrent_streams: cfg.max_concurrent_streams,
         // Intentionally not mirrored — see fn docstring.
         header_table_size: None,
         max_frame_size: None,

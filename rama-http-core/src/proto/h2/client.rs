@@ -22,8 +22,8 @@ use rama_http::{
     io::upgrade::{self, Upgraded},
 };
 use rama_http_types::{
-    Method, Request, Response, StatusCode, Version, conn::PeerH2Settings,
-    opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
+    Method, Request, Response, StatusCode, Version, opentelemetry::version_as_protocol_version,
+    proto::h2::frame::SettingOrder,
 };
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -779,8 +779,8 @@ where
                 // to the response extensions. By the time HEADERS arrives
                 // the peer's SETTINGS frame has already been received
                 // (h2 spec requires it first), so this is reliable.
-                if let Some(settings) = this.h2_tx.peer_initial_settings() {
-                    res.extensions().insert(PeerH2Settings(settings));
+                if let Some(peer) = this.h2_tx.peer_initial_settings() {
+                    res.extensions().insert_arc(peer);
                 }
 
                 let content_length = headers::content_length_parse_all(res.headers());

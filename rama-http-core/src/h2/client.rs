@@ -572,16 +572,20 @@ where
         self.inner.is_extended_connect_protocol_enabled()
     }
 
-    /// Returns the initial `SETTINGS` frame received from the remote peer,
-    /// if one has been observed on this connection yet.
+    /// Returns the peer's initial SETTINGS frame, wrapped in the
+    /// extension type [`rama_http_types::conn::PeerH2Settings`], if one
+    /// has been observed on this connection yet.
     ///
     /// The frame is captured the first time it is received and is not
     /// overwritten by subsequent SETTINGS updates from the peer. The
-    /// returned `Arc` is cheap to clone — internal storage is
-    /// `Arc`-wrapped so per-response observers (e.g. the response
-    /// extension `PeerH2Settings`) pay only a single atomic bump.
+    /// returned `Arc` is cheap to clone — the connection stores the
+    /// pre-built extension once and reuses it for every response via
+    /// `Extensions::insert_arc`, so per-response observers pay only a
+    /// single atomic bump.
     #[must_use]
-    pub fn peer_initial_settings(&self) -> Option<std::sync::Arc<Settings>> {
+    pub fn peer_initial_settings(
+        &self,
+    ) -> Option<std::sync::Arc<rama_http_types::conn::PeerH2Settings>> {
         self.inner.peer_settings_state().snapshot()
     }
 
@@ -611,7 +615,9 @@ where
     /// keeps the transport alive without sending SETTINGS would otherwise
     /// keep this future pending indefinitely until the underlying
     /// connection eventually times out at the transport layer.
-    pub async fn await_peer_initial_settings(&self) -> Option<std::sync::Arc<Settings>> {
+    pub async fn await_peer_initial_settings(
+        &self,
+    ) -> Option<std::sync::Arc<rama_http_types::conn::PeerH2Settings>> {
         self.inner.peer_settings_state().await_settings().await
     }
 

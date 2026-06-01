@@ -1622,17 +1622,17 @@ async fn peer_initial_settings_captured_during_handshake() {
             .peer_initial_settings()
             .expect("peer SETTINGS frame should have been captured");
         assert_eq!(
-            peer_settings.config.enable_connect_protocol,
+            peer_settings.0.config.enable_connect_protocol,
             Some(1),
             "captured peer SETTINGS must mirror the server-advertised CONNECT flag",
         );
         assert_eq!(
-            peer_settings.config.max_concurrent_streams,
+            peer_settings.0.config.max_concurrent_streams,
             Some(123),
             "captured peer SETTINGS must mirror max_concurrent_streams",
         );
         assert_eq!(
-            peer_settings.config.max_frame_size,
+            peer_settings.0.config.max_frame_size,
             Some(65_535),
             "captured peer SETTINGS must mirror max_frame_size",
         );
@@ -1672,7 +1672,7 @@ async fn peer_initial_settings_absent_before_handshake() {
             .peer_initial_settings()
             .expect("default peer SETTINGS frame should still be captured");
         assert_eq!(
-            peer_settings.config.enable_connect_protocol, None,
+            peer_settings.0.config.enable_connect_protocol, None,
             "default SETTINGS must not advertise CONNECT",
         );
     };
@@ -1709,8 +1709,8 @@ async fn await_peer_initial_settings_resolves_without_request() {
             .drive(client.await_peer_initial_settings())
             .await
             .expect("peer SETTINGS frame must arrive without a request");
-        assert_eq!(peer_settings.config.enable_connect_protocol, Some(1));
-        assert_eq!(peer_settings.config.max_concurrent_streams, Some(50));
+        assert_eq!(peer_settings.0.config.enable_connect_protocol, Some(1));
+        assert_eq!(peer_settings.0.config.max_concurrent_streams, Some(50));
     };
 
     join(srv, h2).await;
@@ -1777,10 +1777,10 @@ async fn await_peer_initial_settings_idempotent() {
             .await
             .expect("second await must yield the same captured SETTINGS");
         assert_eq!(
-            first.config.max_concurrent_streams,
-            second.config.max_concurrent_streams,
+            first.0.config.max_concurrent_streams,
+            second.0.config.max_concurrent_streams,
         );
-        assert_eq!(first.config.max_concurrent_streams, Some(7));
+        assert_eq!(first.0.config.max_concurrent_streams, Some(7));
     };
 
     join(srv, h2).await;

@@ -12,7 +12,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
-use rama_http_types::proto::h2::frame::{SettingOrder, Settings, SettingsConfig};
+use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response, StreamingBody};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -296,11 +296,12 @@ impl H2PeerSettingsHandle {
         }
     }
 
-    /// Returns the peer's initial SETTINGS frame if it has been
+    /// Returns the peer's initial SETTINGS frame, wrapped in
+    /// [`rama_http_types::conn::PeerH2Settings`], if it has been
     /// captured. `None` while the connection is still pre-SETTINGS, or
     /// if the connection died before SETTINGS arrived.
     #[must_use]
-    pub fn snapshot(&self) -> Option<Arc<Settings>> {
+    pub fn snapshot(&self) -> Option<Arc<rama_http_types::conn::PeerH2Settings>> {
         self.state.snapshot()
     }
 
@@ -309,7 +310,7 @@ impl H2PeerSettingsHandle {
     /// [`crate::h2::client::SendRequest::await_peer_initial_settings`]
     /// for the underlying semantics — including the timeout caveat for
     /// adversarial peers.
-    pub async fn await_settings(&self) -> Option<Arc<Settings>> {
+    pub async fn await_settings(&self) -> Option<Arc<rama_http_types::conn::PeerH2Settings>> {
         self.state.await_settings().await
     }
 }

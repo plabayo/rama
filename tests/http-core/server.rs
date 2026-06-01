@@ -2709,12 +2709,12 @@ async fn http2_server_context_params_override_initial_settings() {
         .expect("server SETTINGS must not be lost on close");
 
     assert_eq!(
-        peer.config.enable_connect_protocol,
+        peer.0.config.enable_connect_protocol,
         Some(1),
         "CONNECT must be advertised because of override",
     );
-    assert_eq!(peer.config.max_concurrent_streams, Some(42));
-    assert_eq!(peer.config.max_frame_size, Some(32_768));
+    assert_eq!(peer.0.config.max_concurrent_streams, Some(42));
+    assert_eq!(peer.0.config.max_frame_size, Some(32_768));
 }
 
 #[tokio::test]
@@ -2748,9 +2748,9 @@ async fn http2_server_context_params_absent_keeps_builder_defaults() {
         .expect("server SETTINGS must arrive within 5s")
         .expect("server SETTINGS must not be lost on close");
 
-    assert_eq!(peer.config.max_concurrent_streams, Some(17));
+    assert_eq!(peer.0.config.max_concurrent_streams, Some(17));
     assert_eq!(
-        peer.config.enable_connect_protocol, None,
+        peer.0.config.enable_connect_protocol, None,
         "CONNECT must NOT be advertised by default",
     );
 }
@@ -2805,7 +2805,7 @@ async fn http2_peer_settings_handle_does_not_extend_conn_lifetime() {
         .await
         .expect("SETTINGS must arrive within 5s")
         .expect("conn must not close before SETTINGS");
-    assert_eq!(settings.config.enable_connect_protocol, Some(1));
+    assert_eq!(settings.0.config.enable_connect_protocol, Some(1));
 
     // The critical regression assertion: dropping the SendRequest (the
     // dispatcher's only public reference) must let the conn task

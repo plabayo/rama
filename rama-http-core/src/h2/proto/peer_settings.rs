@@ -21,11 +21,15 @@
 //! The interleaving correctness argument depends on this invariant.
 //! Adding a second writer (e.g. allowing some external code to call
 //! `set_snapshot`) would require re-deriving the no-missed-wake +
-//! no-double-wake properties from scratch. The atomic-only operations
-//! used here would *still* compose correctly under concurrent
-//! writers, but please confirm the soundness argument explicitly if
-//! you ever break this invariant.
+//! no-double-wake properties from scratch. In particular, a
+//! concurrent `mark_closed` + `set_snapshot` race could produce the
+//! logically inconsistent state `snapshot=Some + closed=true`. The
+//! current single-writer property (both methods called from the
+//! connection task, behind the streams mutex) makes that state
+//! unreachable; if you ever lift that constraint, audit
+//! `await_settings` carefully.
 
+use rama_http_types::conn::PeerH2Settings;
 use rama_http_types::proto::h2::frame;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -35,16 +39,20 @@ use tokio::sync::Notify;
 /// Shared state cell exposing the peer's initial SETTINGS frame, plus a
 /// "connection died before SETTINGS" signal. See module docs.
 ///
-/// The snapshot is held in a `OnceLock<Arc<Settings>>`: write-once
+/// The snapshot is held in a `OnceLock<Arc<PeerH2Settings>>`: write-once
 /// semantics match exactly what we need, reads are lock-free atomic
-/// loads, and the standard library handles the once-only sync without
-/// us reimplementing it on top of a mutex.
+/// loads, the standard library handles the once-only sync without us
+/// reimplementing it on top of a mutex, and storing the
+/// already-extension-wrapped form lets the per-response hot path use
+/// [`rama_core::extensions::Extensions::insert_arc`] — a single Arc
+/// bump with zero allocations.
 #[derive(Debug)]
 pub(crate) struct PeerSettingsState {
-    /// The first non-ACK SETTINGS frame received from the peer, wrapped
-    /// in `Arc` so observers / response extensions can clone cheaply
-    /// without copying the ~80-byte frame each time. Set exactly once.
-    snapshot: OnceLock<Arc<frame::Settings>>,
+    /// The first non-ACK SETTINGS frame received from the peer, already
+    /// wrapped in the public [`PeerH2Settings`] extension type so the
+    /// per-response insertion is a single Arc clone (no allocation, no
+    /// double indirection). Set exactly once.
+    snapshot: OnceLock<Arc<PeerH2Settings>>,
     /// Set to `true` once the connection has been observed closed via
     /// the EOF path *without* having captured a SETTINGS frame first.
     /// Allows `await_settings` to resolve to `None` instead of hanging.
@@ -64,9 +72,9 @@ impl PeerSettingsState {
         })
     }
 
-    /// Cheap fast-path: return the captured Settings if any. Lock-free.
+    /// Cheap fast-path: return the captured peer SETTINGS extension if any.
     #[must_use]
-    pub(crate) fn snapshot(&self) -> Option<Arc<frame::Settings>> {
+    pub(crate) fn snapshot(&self) -> Option<Arc<PeerH2Settings>> {
         self.snapshot.get().cloned()
     }
 
@@ -83,16 +91,21 @@ impl PeerSettingsState {
     /// first-writer-wins path fires the notify.
     ///
     /// Note on capture timing: this runs at the top of
-    /// `apply_remote_settings`, before that method does any further
+    /// `apply_remote_settings`, *before* that method does any further
     /// validation that could return `Err` (e.g. initial-window
-    /// underflow). In practice the distinction is invisible to callers
-    /// — when validation fails the connection tears down via
-    /// `library_go_away` and any waiters resolve through the EOF /
-    /// closed path rather than seeing the spec-invalid snapshot — but
-    /// strictly speaking the captured frame is "first non-ACK
+    /// underflow). For the eager-handshake use case this is fine in
+    /// practice — there are no open streams yet at first SETTINGS, so
+    /// the spec-invalid frames that *could* slip through here would
+    /// also have caused the connection to tear down via
+    /// `library_go_away` before any waiter could observe them.
+    /// Strictly speaking though, the captured frame is "first non-ACK
     /// SETTINGS received," not "first successfully processed."
     pub(crate) fn set_snapshot(&self, settings: &frame::Settings) {
-        if self.snapshot.set(Arc::new(settings.clone())).is_ok() {
+        if self
+            .snapshot
+            .set(Arc::new(PeerH2Settings(settings.clone())))
+            .is_ok()
+        {
             self.notify.notify_waiters();
         }
     }
@@ -109,7 +122,7 @@ impl PeerSettingsState {
     /// if the connection terminates before SETTINGS arrive. Uses the
     /// standard Notify `register-interest → recheck → await` pattern to
     /// avoid missed wakes.
-    pub(crate) async fn await_settings(&self) -> Option<Arc<frame::Settings>> {
+    pub(crate) async fn await_settings(&self) -> Option<Arc<PeerH2Settings>> {
         // Fast path: already captured (or already closed).
         if let Some(s) = self.snapshot() {
             return Some(s);
