@@ -195,6 +195,16 @@ impl<T, L, D> Rss2FeedBuilder<T, L, D> {
     }
 
     generate_set_and_with! {
+        /// RSS 2.0 `<docs>` — URL pointing at the RSS specification this
+        /// document conforms to. Optional; the conventional value is
+        /// `https://www.rssboard.org/rss-specification`.
+        pub fn docs(mut self, docs: impl Into<String>) -> Self {
+            self.docs = Some(docs.into());
+            self
+        }
+    }
+
+    generate_set_and_with! {
         pub fn ttl(mut self, ttl: u32) -> Self {
             self.ttl = Some(ttl);
             self

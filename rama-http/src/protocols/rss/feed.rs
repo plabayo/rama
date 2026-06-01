@@ -100,6 +100,11 @@ impl FeedItem {
     /// `<description>` — many publishers put the full body there. The fallback
     /// means `summary()` and `content()` may return the same string on RSS
     /// items without `content:encoded`.
+    ///
+    /// For Atom out-of-line content (`<content src="..." type="..."/>`)
+    /// returns `None`: the body lives at the remote URL, not in the feed.
+    /// Use the per-format types directly if you need the `src` / `type`
+    /// pair.
     #[must_use]
     pub fn content(&self) -> Option<&str> {
         match self {
@@ -109,7 +114,11 @@ impl FeedItem {
                 .as_ref()
                 .and_then(|c| c.encoded.as_deref())
                 .or(i.description.as_deref()),
-            Self::Atom(e) => e.content.as_ref().map(|c| c.value.value.as_str()),
+            Self::Atom(e) => e
+                .content
+                .as_ref()
+                .filter(|c| c.src.is_none())
+                .map(|c| c.value.value.as_str()),
         }
     }
 

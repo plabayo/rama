@@ -335,6 +335,12 @@ impl ItemExtAcc {
                 });
                 self.has_podcast = true;
             }
+            (Ns::Podcast, podcast::REMOTE_ITEM) => {
+                self.podcast
+                    .remote_items
+                    .push(podcast_remote_item_from_attrs(e));
+                self.has_podcast = true;
+            }
             _ => return false,
         }
         true
@@ -486,6 +492,8 @@ pub(in crate::protocols::rss) struct FeedExtAcc {
     podcast: PodcastFeed,
     has_podcast: bool,
     in_itunes_owner: bool,
+    in_podcast_locked: bool,
+    pending_locked_owner: Option<String>,
     pending_person: Option<PodcastPerson>,
     pending_location: Option<PodcastLocation>,
     pending_funding: Option<PodcastFunding>,
@@ -521,6 +529,13 @@ impl FeedExtAcc {
             }
             (Ns::Podcast, podcast::TRAILER) => {
                 self.pending_trailer = Some(podcast_trailer_from_attrs(e))
+            }
+            (Ns::Podcast, podcast::LOCKED) => {
+                // `<podcast:locked owner="...">yes|no</podcast:locked>` — the
+                // owner attribute lives only on the Start; capture it now and
+                // finalise on End alongside the truthy text content.
+                self.in_podcast_locked = true;
+                self.pending_locked_owner = attr_value(e, attr::OWNER);
             }
             _ => return false,
         }
@@ -608,6 +623,8 @@ impl FeedExtAcc {
             }
             (Ns::Podcast, podcast::LOCKED) => {
                 self.podcast.locked = Some(is_truthy(&text));
+                self.podcast.locked_owner = self.pending_locked_owner.take();
+                self.in_podcast_locked = false;
                 self.has_podcast = true;
                 return None;
             }

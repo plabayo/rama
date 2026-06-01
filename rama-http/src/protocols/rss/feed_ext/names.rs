@@ -172,5 +172,6 @@ pub(in crate::protocols::rss) mod attr {
         FEED_GUID    => "feedGuid",
         ITEM_GUID    => "itemGuid",
         FEED_URL     => "feedUrl",
+        OWNER        => "owner",
     }
 }

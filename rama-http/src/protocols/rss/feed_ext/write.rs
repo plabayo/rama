@@ -99,7 +99,16 @@ pub(in crate::protocols::rss) fn write_podcast_feed<W: std::io::Write>(
 ) -> Result<(), XmlWriteError> {
     write_opt_text_elem(w, podcast::GUID_TAG, pc.guid.as_deref())?;
     if let Some(locked) = pc.locked {
-        write_text_elem(w, podcast::LOCKED_TAG, if locked { "yes" } else { "no" })?;
+        let body = if locked { "yes" } else { "no" };
+        if let Some(owner) = &pc.locked_owner {
+            let mut tag = BytesStart::new(podcast::LOCKED_TAG);
+            tag.push_attribute((attr::OWNER, owner.as_str()));
+            w.write_event(Event::Start(tag))?;
+            w.write_event(Event::Text(BytesText::new(body)))?;
+            w.write_event(Event::End(BytesEnd::new(podcast::LOCKED_TAG)))?;
+        } else {
+            write_text_elem(w, podcast::LOCKED_TAG, body)?;
+        }
     }
     for f in &pc.fundings {
         let mut tag = BytesStart::new(podcast::FUNDING_TAG);
@@ -202,6 +211,9 @@ pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&ep.number.to_string())))?;
         w.write_event(Event::End(BytesEnd::new(podcast::EPISODE_TAG)))?;
+    }
+    for ri in &pc.remote_items {
+        write_podcast_remote_item(w, ri)?;
     }
     Ok(())
 }

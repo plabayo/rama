@@ -277,6 +277,166 @@ async fn nonstandard_podcast_prefix_routes_by_uri() {
     assert_eq!(p.persons[0].name, "Alice");
 }
 
+/// `<podcast:locked owner="...">` must preserve the owner attribute, not
+/// just the truthy body. Regression for an audit finding.
+#[tokio::test]
+async fn podcast_locked_owner_attribute_preserved() {
+    let bytes = load(&corpus_dir().join("podcast-v2.rss.xml"));
+    let Feed::Rss2(feed) = parse_bytes(bytes).await else {
+        panic!("expected RSS");
+    };
+    let pf = feed.extensions.podcast.as_ref().expect("podcast feed ext");
+    assert_eq!(pf.locked, Some(false));
+    assert_eq!(
+        pf.locked_owner.as_deref(),
+        Some("alice@example.com"),
+        "owner attribute on <podcast:locked> must survive parse",
+    );
+}
+
+/// `<podcast:remoteItem>` is valid at *both* feed level and item level.
+/// Regression for an audit finding where item-level remoteItems were dropped.
+#[tokio::test]
+async fn podcast_remote_item_at_item_level_preserved() {
+    // Inline fixture — small enough to keep next to the test for clarity.
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Cross-feed value split</title>
+    <link>https://example.com</link>
+    <description>One item points at another publisher's episode.</description>
+    <item>
+      <title>Co-hosted episode</title>
+      <description>This episode borrows from another feed.</description>
+      <podcast:remoteItem feedGuid="urn:uuid:1111-2222"
+                          itemGuid="urn:uuid:aaaa-bbbb"
+                          feedUrl="https://other.example.com/feed.rss"
+                          medium="podcast"/>
+    </item>
+  </channel>
+</rss>"#;
+    let feed = parse_bytes(BYTES.to_vec()).await;
+    let Feed::Rss2(feed) = feed else {
+        panic!("expected RSS")
+    };
+    let p = feed.items[0].podcast().expect("podcast item ext");
+    assert_eq!(p.remote_items.len(), 1, "item-level remoteItem captured");
+    let ri = &p.remote_items[0];
+    assert_eq!(ri.feed_guid, "urn:uuid:1111-2222");
+    assert_eq!(ri.item_guid.as_deref(), Some("urn:uuid:aaaa-bbbb"));
+    assert_eq!(
+        ri.feed_url.as_deref(),
+        Some("https://other.example.com/feed.rss")
+    );
+    assert_eq!(ri.medium.as_deref(), Some("podcast"));
+}
+
+/// Strict RSS mode rejects a channel missing `<description>` (required by
+/// the spec alongside `<title>` and `<link>`).
+#[tokio::test]
+async fn strict_rss_rejects_channel_missing_description() {
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>T</title>
+  <link>https://example.com</link>
+</channel></rss>"#;
+    let cursor = std::io::Cursor::new(BYTES.to_vec());
+    let reader = tokio::io::BufReader::new(cursor);
+    let Err(err) = FeedStream::new_strict(reader).await else {
+        panic!("strict mode must reject a channel without description");
+    };
+    assert!(
+        err.message.contains("description"),
+        "error mentions the missing element: {err}"
+    );
+}
+
+/// Strict RSS mode rejects an item that carries neither `<title>` nor
+/// `<description>` (RSS 2.0 spec requires at least one).
+#[tokio::test]
+async fn strict_rss_rejects_item_without_title_or_description() {
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+  <title>T</title>
+  <link>https://example.com</link>
+  <description>D</description>
+  <item>
+    <link>https://example.com/x</link>
+  </item>
+</channel></rss>"#;
+    let cursor = std::io::Cursor::new(BYTES.to_vec());
+    let reader = tokio::io::BufReader::new(cursor);
+    // FeedStream::new_strict succeeds (channel header is OK); the error
+    // surfaces when the item finalises.
+    let stream = FeedStream::new_strict(reader)
+        .await
+        .expect("channel header is valid");
+    let collect = stream.collect().await;
+    let err = collect.expect_err("strict mode must reject an item without title or description");
+    assert!(
+        err.error.message.contains("title") || err.error.message.contains("description"),
+        "error mentions title/description: {}",
+        err.error,
+    );
+}
+
+/// Strict atom mode rejects xhtml content that isn't wrapped in a single
+/// XHTML-namespaced `<div>` (RFC 4287 §3.1.1.3).
+#[tokio::test]
+async fn strict_atom_rejects_xhtml_without_div_wrapper() {
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:c0ffee</id>
+  <title type="text">T</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:1</id>
+    <title type="xhtml"><p>missing wrapper</p></title>
+    <updated>2025-05-20T12:00:00Z</updated>
+  </entry>
+</feed>"#;
+    let cursor = std::io::Cursor::new(BYTES.to_vec());
+    let reader = tokio::io::BufReader::new(cursor);
+    let stream = FeedStream::new_strict(reader).await.expect("header valid");
+    let err = stream
+        .collect()
+        .await
+        .expect_err("strict mode must reject missing xhtml <div> wrapper");
+    assert!(
+        err.error.message.contains("xhtml") || err.error.message.contains("XHTML"),
+        "error mentions xhtml: {}",
+        err.error,
+    );
+}
+
+/// `FeedItem::content()` returns `None` for Atom out-of-line content
+/// (`<content src="..." type="..."/>`) — the body lives at a remote URL,
+/// not in the feed.
+#[tokio::test]
+async fn feed_item_content_returns_none_for_atom_out_of_line() {
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:1</id>
+  <title type="text">T</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>urn:uuid:e1</id>
+    <title type="text">E</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <content src="https://example.com/body.html" type="text/html"/>
+  </entry>
+</feed>"#;
+    let Feed::Atom(feed) = parse_bytes(BYTES.to_vec()).await else {
+        panic!("expected Atom");
+    };
+    let item = rama_http::protocols::rss::FeedItem::Atom(feed.entries[0].clone());
+    assert_eq!(
+        item.content(),
+        None,
+        "out-of-line content must not leak the MIME-type-stuffed body",
+    );
+}
+
 /// Multiple `<enclosure>` elements on one item must all survive the round-trip.
 #[tokio::test]
 async fn multiple_enclosures_preserved() {

@@ -362,6 +362,11 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                     "RSS 2.0 channel missing required <link>",
                 ));
             }
+            if channel.description.is_empty() {
+                return Err(FeedParseError::new(
+                    "RSS 2.0 channel missing required <description>",
+                ));
+            }
         }
         Ok(channel)
     }
@@ -561,6 +566,17 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                     self.current_item.extensions = std::mem::take(&mut self.item_acc).finish();
                     let item = std::mem::take(&mut self.current_item);
                     self.in_item = false;
+                    // RSS 2.0: an item must carry at least one of <title> or
+                    // <description>. Lenient mode keeps the malformed item;
+                    // strict mode rejects.
+                    if self.strict
+                        && item.title.as_deref().is_none_or(str::is_empty)
+                        && item.description.as_deref().is_none_or(str::is_empty)
+                    {
+                        return Err(FeedParseError::new(
+                            "RSS 2.0 item must carry at least one of <title> or <description>",
+                        ));
+                    }
                     return Ok(Action::ItemFinished(Box::new(item)));
                 }
                 _ => {}

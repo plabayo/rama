@@ -56,6 +56,13 @@ impl AtomText {
         }
     }
 
+    /// Construct an `xhtml` text construct.
+    ///
+    /// **Pass the inner markup only** — the wrapping
+    /// `<div xmlns="http://www.w3.org/1999/xhtml">…</div>` mandated by
+    /// RFC 4287 §3.1.1.3 is added on serialize and stripped on parse.
+    /// Passing a string that *includes* the wrapping `<div>` will cause
+    /// the writer to emit a redundant outer `<div>`.
     #[must_use]
     pub fn xhtml(s: impl Into<String>) -> Self {
         Self {
@@ -146,6 +153,14 @@ impl AtomLink {
         }
     }
 
+    /// Construct a `rel="self"` link with `type="application/atom+xml"` —
+    /// the conventional shape for an Atom feed's self-link.
+    ///
+    /// **Note**: if you're embedding an `<atom:link rel="self">` in an
+    /// **RSS** feed (the iTunes / Podcasting 2.0 requirement), use
+    /// [`AtomLink::new`] and set `type="application/rss+xml"` yourself —
+    /// the constructor here hardcodes the Atom MIME and would be wrong on
+    /// the wire.
     #[must_use]
     pub fn self_link(href: impl Into<String>) -> Self {
         Self {

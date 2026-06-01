@@ -99,6 +99,10 @@ pub struct Podcast {
     pub location: Option<PodcastLocation>,
     pub season: Option<PodcastSeason>,
     pub episode: Option<PodcastEpisode>,
+    /// `<podcast:remoteItem>` inside `<item>` — points the host episode at
+    /// another feed's item (used for cross-feed value-split or inter-publisher
+    /// references in Podcasting 2.0).
+    pub remote_items: Vec<PodcastRemoteItem>,
 }
 
 impl private::Sealed for Podcast {}
@@ -114,7 +118,12 @@ impl ItemExtensionGet for Podcast {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PodcastFeed {
     pub guid: Option<String>,
+    /// `<podcast:locked>` truthy content (yes/no → true/false).
     pub locked: Option<bool>,
+    /// `<podcast:locked owner="...">` attribute — the email of the host
+    /// authorised to approve a feed-import request. Optional per spec;
+    /// preserved on round-trip when present.
+    pub locked_owner: Option<String>,
     pub fundings: Vec<PodcastFunding>,
     pub persons: Vec<PodcastPerson>,
     pub location: Option<PodcastLocation>,

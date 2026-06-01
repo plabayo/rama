@@ -600,7 +600,8 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         t: String,
     ) -> Result<Action, FeedParseError> {
         if t == "xhtml" {
-            let xml = capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf).await?;
+            let xml =
+                capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf, self.strict).await?;
             self.depth -= 1;
             // Children of `<atom:source>` belong to the source, not the
             // enclosing entry. The text/html path is intercepted by the
@@ -848,40 +849,71 @@ enum PersonKind {
 
 /// Consume events from `nsr` until the matching End closes the enclosing
 /// `type="xhtml"` element, re-emitting child events into a string buffer.
-/// The single wrapping `<div xmlns="...xhtml">` and its closing End are
-/// stripped so the captured string is the raw inner markup the writer expects.
+///
+/// RFC 4287 §3.1.1.3 requires the content of an xhtml text construct to be
+/// **exactly one** XHTML-namespaced `<div>` element wrapping the real
+/// markup. In `strict` mode this is enforced (missing wrapper, wrong
+/// namespace, or non-`<div>` first element all fail). In lenient mode we
+/// keep absorbing whatever the publisher emitted: a first `<div>` (any
+/// namespace, or none) is treated as the wrapper; otherwise the inner
+/// content is captured verbatim.
+///
+/// On the wire the writer always emits a correctly-namespaced wrapper, so
+/// a round-tripped feed is always strict-clean.
 async fn capture_xhtml_subtree_async<R>(
     nsr: &mut NsReader<R>,
     buf: &mut Vec<u8>,
+    strict: bool,
 ) -> Result<String, FeedParseError>
 where
     R: AsyncBufRead + Unpin,
 {
     use quick_xml::Writer;
+    use quick_xml::name::ResolveResult;
+
+    const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
+
     let mut captured = Vec::<u8>::new();
     let mut depth: i32 = 0;
     let mut saw_wrapper = false;
     let mut writer = Writer::new(&mut captured);
     loop {
         buf.clear();
-        let (_, ev) = nsr
+        let (rr, ev) = nsr
             .read_resolved_event_into_async(buf)
             .await
             .map_err(|e| FeedParseError::new(format!("xhtml capture: {e}")))?;
         match ev {
             Event::Start(e) => {
-                if depth == 0 && !saw_wrapper && e.local_name().as_ref() == b"div" {
-                    saw_wrapper = true;
-                    depth += 1;
-                } else {
-                    depth += 1;
-                    writer
-                        .write_event(Event::Start(e))
-                        .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
+                if depth == 0 && !saw_wrapper {
+                    let is_div = e.local_name().as_ref() == b"div";
+                    let in_xhtml_ns =
+                        matches!(rr, ResolveResult::Bound(n) if n.0 == XHTML_NS_BYTES);
+                    if strict && !(is_div && in_xhtml_ns) {
+                        return Err(FeedParseError::new(
+                            "Atom xhtml content must be wrapped in a single \
+                             XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
+                        ));
+                    }
+                    if is_div {
+                        saw_wrapper = true;
+                        depth += 1;
+                        continue;
+                    }
                 }
+                depth += 1;
+                writer
+                    .write_event(Event::Start(e))
+                    .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
             }
             Event::End(e) => {
                 if depth == 0 {
+                    if strict && !saw_wrapper {
+                        return Err(FeedParseError::new(
+                            "Atom xhtml content must be wrapped in a single \
+                             XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
+                        ));
+                    }
                     drop(writer);
                     return String::from_utf8(captured).map_err(|err| {
                         FeedParseError::new(format!("xhtml inner is not utf-8: {err}"))
@@ -896,12 +928,32 @@ where
                         .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
                 }
             }
-            Event::Empty(e) => writer
-                .write_event(Event::Empty(e))
-                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
-            Event::Text(e) => writer
-                .write_event(Event::Text(e))
-                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
+            Event::Empty(e) => {
+                if depth == 0 && !saw_wrapper && strict {
+                    return Err(FeedParseError::new(
+                        "Atom xhtml content must be wrapped in a single \
+                         XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
+                    ));
+                }
+                writer
+                    .write_event(Event::Empty(e))
+                    .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
+            }
+            Event::Text(e) => {
+                // Non-whitespace text outside the wrapper violates the spec.
+                if depth == 0 && !saw_wrapper && strict {
+                    let s = e.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                    if !s.trim().is_empty() {
+                        return Err(FeedParseError::new(
+                            "Atom xhtml content must be wrapped in a single \
+                             XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
+                        ));
+                    }
+                }
+                writer
+                    .write_event(Event::Text(e))
+                    .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?;
+            }
             Event::CData(e) => writer
                 .write_event(Event::CData(e))
                 .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
