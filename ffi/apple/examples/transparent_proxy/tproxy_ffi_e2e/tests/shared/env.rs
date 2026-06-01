@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use super::{
     ffi::{EngineHandle, default_engine, initialize_ffi, test_storage_dir},
     servers::{
-        spawn_combined_proxy, spawn_http_server, spawn_https_server, spawn_raw_tcp_echo,
-        spawn_raw_tls_echo, spawn_udp_echo,
+        spawn_combined_proxy, spawn_http_server, spawn_https_server,
+        spawn_https_server_no_connect, spawn_raw_tcp_echo, spawn_raw_tls_echo, spawn_udp_echo,
     },
     types::{HttpObservation, PortBlock, SharedObservations},
 };
@@ -48,6 +48,8 @@ pub(crate) async fn setup_env() -> TestEnv {
 
     let (http_port, http_handle) = spawn_http_server(http_observations.clone()).await;
     let (https_port, https_handle) = spawn_https_server(https_observations.clone()).await;
+    let (https_no_connect_port, https_no_connect_handle) =
+        spawn_https_server_no_connect(https_observations.clone()).await;
     let (raw_tcp_port, raw_tcp_handle) = spawn_raw_tcp_echo().await;
     let (raw_tls_port, raw_tls_handle) = spawn_raw_tls_echo().await;
     let (udp_port, udp_handle) = spawn_udp_echo().await;
@@ -56,6 +58,7 @@ pub(crate) async fn setup_env() -> TestEnv {
     let ports = PortBlock {
         http: http_port,
         https: https_port,
+        https_no_connect: https_no_connect_port,
         raw_tcp: raw_tcp_port,
         raw_tls: raw_tls_port,
         udp: udp_port,
@@ -64,6 +67,7 @@ pub(crate) async fn setup_env() -> TestEnv {
     let server_handles = AbortOnDrop(vec![
         http_handle,
         https_handle,
+        https_no_connect_handle,
         raw_tcp_handle,
         raw_tls_handle,
         udp_handle,
