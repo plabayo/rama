@@ -529,12 +529,23 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             Event::End(e) => {
                 self.depth -= 1;
                 let ns = classify_ns(&rr);
-                let local = std::str::from_utf8(e.local_name().as_ref())
-                    .map(str::to_owned)
-                    .unwrap_or_default();
-                let text = std::mem::take(&mut self.text_buf);
+                // Copy the local name into a stack buffer so we can release
+                // the borrow on `self.buf` (held by `e`) before calling
+                // `handle_end`, which mutably borrows `&mut self`. Avoids
+                // the per-event String allocation the borrow-checker would
+                // otherwise force on this hot path.
+                //
+                // 64 bytes covers every RSS/Atom/extension element name in
+                // our vocabulary; longer or non-UTF-8 names fall through
+                // to "" (which matches nothing) — same outcome as before.
+                let mut stack = [0u8; 64];
+                let local_bytes = e.local_name();
+                let n = local_bytes.as_ref().len().min(stack.len());
+                stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
                 drop(e);
-                self.handle_end(ns, &local, text)
+                let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
+                let text = std::mem::take(&mut self.text_buf);
+                self.handle_end(ns, local, text)
             }
             Event::Eof => {
                 if self.strict && self.depth > 0 {
