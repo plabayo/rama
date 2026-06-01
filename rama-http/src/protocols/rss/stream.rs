@@ -671,37 +671,28 @@ impl FeedStream {
     }
 
     /// See [`Feed::authors`].
-    #[must_use]
-    pub fn authors(&self) -> Vec<&str> {
+    pub fn authors(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
             Self::Rss2(s) => {
                 let c = s.channel();
-                [c.managing_editor.as_deref(), c.web_master.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .filter(|v| !v.is_empty())
-                    .collect()
+                Either::A(
+                    [c.managing_editor.as_deref(), c.web_master.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .filter(|v| !v.is_empty()),
+                )
             }
-            Self::Atom(s) => s.header().authors.iter().map(|p| p.name.as_str()).collect(),
+            Self::Atom(s) => Either::B(s.header().authors.iter().map(|p| p.name.as_str())),
         }
     }
 
     /// See [`Feed::categories`].
-    #[must_use]
-    pub fn categories(&self) -> Vec<&str> {
+    pub fn categories(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
-            Self::Rss2(s) => s
-                .channel()
-                .categories
-                .iter()
-                .map(|c| c.name.as_str())
-                .collect(),
-            Self::Atom(s) => s
-                .header()
-                .categories
-                .iter()
-                .map(|c| c.term.as_str())
-                .collect(),
+            Self::Rss2(s) => Either::A(s.channel().categories.iter().map(|c| c.name.as_str())),
+            Self::Atom(s) => Either::B(s.header().categories.iter().map(|c| c.term.as_str())),
         }
     }
 }

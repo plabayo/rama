@@ -169,7 +169,7 @@ async fn feed_item_enclosures_normalised_across_formats() {
         panic!()
     };
     let item: FeedItem = rss.items.into_iter().next().expect("one item").into();
-    let encs = item.enclosures();
+    let encs: Vec<_> = item.enclosures().collect();
     assert!(
         !encs.is_empty(),
         "fixture should declare at least one enclosure",

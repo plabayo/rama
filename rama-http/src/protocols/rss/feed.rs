@@ -123,10 +123,10 @@ impl FeedItem {
     }
 
     /// Item-level authors. RSS yields `<author>` (if any) plus the
-    /// `dc:creator` extension (if set); Atom yields the `<author>` Person
-    /// names. Duplicates and empty strings are dropped.
-    #[must_use]
-    pub fn authors(&self) -> Vec<&str> {
+    /// `dc:creator` extension (if set, deduplicated against `<author>`);
+    /// Atom yields the `<author>` Person names. Empty strings are dropped.
+    pub fn authors(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
             Self::Rss2(i) => {
                 let primary = i.author.as_deref();
@@ -135,15 +135,24 @@ impl FeedItem {
                     .dublin_core
                     .as_ref()
                     .and_then(|d| d.creator.as_deref());
-                let mut out = Vec::with_capacity(2);
-                for s in [primary, dc_creator].into_iter().flatten() {
-                    if !s.is_empty() && !out.contains(&s) {
-                        out.push(s);
-                    }
-                }
-                out
+                Either::A(
+                    [primary, dc_creator]
+                        .into_iter()
+                        .flatten()
+                        .filter(|s| !s.is_empty())
+                        // Two-element dedup: if dc:creator == <author>, skip it.
+                        .scan(None::<&str>, |last, s| {
+                            if Some(s) == *last {
+                                Some(None)
+                            } else {
+                                *last = Some(s);
+                                Some(Some(s))
+                            }
+                        })
+                        .flatten(),
+                )
             }
-            Self::Atom(e) => e.authors.iter().map(|p| p.name.as_str()).collect(),
+            Self::Atom(e) => Either::B(e.authors.iter().map(|p| p.name.as_str())),
         }
     }
 
@@ -166,27 +175,27 @@ impl FeedItem {
     }
 
     /// Item-level category names / terms.
-    #[must_use]
-    pub fn categories(&self) -> Vec<&str> {
+    pub fn categories(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
-            Self::Rss2(i) => i.categories.iter().map(|c| c.name.as_str()).collect(),
-            Self::Atom(e) => e.categories.iter().map(|c| c.term.as_str()).collect(),
+            Self::Rss2(i) => Either::A(i.categories.iter().map(|c| c.name.as_str())),
+            Self::Atom(e) => Either::B(e.categories.iter().map(|c| c.term.as_str())),
         }
     }
 
     /// Attached binaries (podcast audio etc.). RSS `<enclosure>` | Atom
     /// `<link rel="enclosure">`. The two encodings normalise to the same
     /// `(url, length, mime)` triple via [`EnclosureView`].
-    #[must_use]
-    pub fn enclosures(&self) -> Vec<EnclosureView<'_>> {
+    pub fn enclosures(&self) -> impl Iterator<Item = EnclosureView<'_>> {
+        use rama_core::combinators::Either;
         match self {
-            Self::Rss2(i) => i.enclosures.iter().map(EnclosureView::from).collect(),
-            Self::Atom(e) => e
-                .links
-                .iter()
-                .filter(|l| l.rel.as_deref() == Some("enclosure"))
-                .map(EnclosureView::from)
-                .collect(),
+            Self::Rss2(i) => Either::A(i.enclosures.iter().map(EnclosureView::from)),
+            Self::Atom(e) => Either::B(
+                e.links
+                    .iter()
+                    .filter(|l| l.rel.as_deref() == Some("enclosure"))
+                    .map(EnclosureView::from),
+            ),
         }
     }
 }
@@ -434,25 +443,26 @@ impl Feed {
 
     /// Feed-level authors. RSS yields `[managingEditor, webMaster]` (filtered,
     /// in declaration order). Atom yields the `<author>` Person list (names).
-    #[must_use]
-    pub fn authors(&self) -> Vec<&str> {
+    pub fn authors(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
-            Self::Rss2(f) => [f.managing_editor.as_deref(), f.web_master.as_deref()]
-                .into_iter()
-                .flatten()
-                .filter(|s| !s.is_empty())
-                .collect(),
-            Self::Atom(f) => f.authors.iter().map(|p| p.name.as_str()).collect(),
+            Self::Rss2(f) => Either::A(
+                [f.managing_editor.as_deref(), f.web_master.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(|s| !s.is_empty()),
+            ),
+            Self::Atom(f) => Either::B(f.authors.iter().map(|p| p.name.as_str())),
         }
     }
 
     /// Feed-level category names (RSS `<category>` names / Atom `<category>`
     /// terms).
-    #[must_use]
-    pub fn categories(&self) -> Vec<&str> {
+    pub fn categories(&self) -> impl Iterator<Item = &str> {
+        use rama_core::combinators::Either;
         match self {
-            Self::Rss2(f) => f.categories.iter().map(|c| c.name.as_str()).collect(),
-            Self::Atom(f) => f.categories.iter().map(|c| c.term.as_str()).collect(),
+            Self::Rss2(f) => Either::A(f.categories.iter().map(|c| c.name.as_str())),
+            Self::Atom(f) => Either::B(f.categories.iter().map(|c| c.term.as_str())),
         }
     }
 }
