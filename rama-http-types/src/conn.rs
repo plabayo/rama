@@ -74,35 +74,17 @@ pub struct TargetHttpVersion(pub Version);
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]
-/// Optional parameters that can be set in the [`Extensions`] of an h2
-/// server IO to override the connection's initial SETTINGS frame on a
-/// per-connection basis.
+/// Per-conn override for the h2 server's initial SETTINGS frame, set on
+/// the IO's [`Extensions`]. Any field left `None` retains the builder
+/// default. `Some(value)` overrides one-to-one; this type can't express
+/// "explicitly unset" — set the builder directly if you need that.
 ///
-/// Mirrors the per-connection knobs of the h2 server builder; any field
-/// left `None` retains the server's configured default. Used primarily
-/// by transparent proxies / MITM relays that need to mirror upstream h2
-/// settings onto a sibling ingress connection.
-///
-/// Where the underlying builder field is itself `Option<T>` (e.g.
-/// `max_concurrent_streams`, `header_table_size`), `Some(value)` here
-/// overrides to `Some(value)` on the builder. This extension cannot
-/// express "explicitly unset" / "no limit" — that's intentional, since
-/// the mirroring use case always produces concrete values; configure
-/// the server builder directly if you need that.
-///
-/// Note that the [`HttpMitmRelay`][] does NOT auto-populate every
-/// field on this struct from the upstream SETTINGS frame — most h2
-/// SETTINGS are per-direction (e.g. `header_table_size`,
-/// `max_frame_size`, `initial_stream_window_size`) and have no
-/// cross-direction meaning across the relay boundary, so blindly
-/// mirroring them would couple buffer/decoder budgets that should be
-/// independent. The relay mirrors `enable_connect_protocol` (RFC 8441
-/// capability advertisement) and `max_concurrent_streams` (as
-/// backpressure policy) only. Other fields remain available as direct
-/// per-connection overrides for callers that explicitly want them.
+/// Used primarily by MITM relays. Note: [`HttpMitmRelay`][] only
+/// auto-populates `enable_connect_protocol` and `max_concurrent_streams`;
+/// other fields are independent per-direction budgets and remain
+/// available as direct per-conn overrides for callers who want them.
 ///
 /// [`HttpMitmRelay`]: https://docs.rs/rama-http-backend/latest/rama_http_backend/proxy/mitm/struct.HttpMitmRelay.html
-///
 /// [`Extensions`]: rama_core::extensions::Extensions
 pub struct H2ServerContextParams {
     /// Whether to advertise the [extended CONNECT protocol][1] in the
@@ -137,19 +119,9 @@ pub struct H2ServerContextParams {
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
-/// The initial h2 [`Settings`] frame received from the peer.
-///
-/// Set as an extension on every h2 response by the client, so
-/// downstream consumers (e.g. an MITM relay mirroring upstream
-/// SETTINGS onto its ingress connection) can observe the peer's
-/// advertised parameters without poking at connection internals.
-///
-/// This captures the *first* non-ACK `SETTINGS` frame received
-/// from the peer during the connection's lifetime; subsequent
-/// updates are not reflected here. The connection stores this
-/// wrapped in `Arc<PeerH2Settings>` once at first capture, and
-/// reuses the same `Arc` for every response via
-/// [`rama_core::extensions::Extensions::insert_arc`] — so per-response
-/// insertion is a single atomic bump with zero allocations on the
-/// hot path.
+/// The peer's initial (first non-ACK) h2 [`Settings`] frame, set as an
+/// extension on every h2 client response. Captured once per connection;
+/// subsequent SETTINGS updates are not reflected. Stored once in
+/// `Arc<PeerH2Settings>` and shared per-response via
+/// [`rama_core::extensions::Extensions::insert_arc`].
 pub struct PeerH2Settings(pub Settings);

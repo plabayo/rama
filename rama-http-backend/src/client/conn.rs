@@ -66,25 +66,12 @@ fn log_connection_termination(err: &rama_http_core::Error) {
     }
 }
 
-/// Apply request- (or egress-IO-) scoped h2 builder knobs onto `builder`.
-///
-/// Reads `H2ClientContextParams` and falls back to a bare
-/// `PseudoHeaderOrder` from `extensions`. Shared between the
-/// request-driven h2 path in [`http_connect`] and the eager-handshake
-/// path in [`http2_eager_handshake`] so both honor the same
-/// UA-emulation surface.
-///
-/// **Eager vs. lazy parameter sources.** The two callers pass
-/// different `extensions` arguments:
-///
-/// - `http_connect` (lazy) passes `req.extensions()` — request-scoped.
-/// - `http2_eager_handshake` (eager) passes the egress IO's
-///   `extensions()` — connection-scoped, since no request exists yet.
-///
-/// Users of the eager path who want UA emulation knobs applied must
-/// stamp them on the egress IO before the relay's `serve()`; the
-/// per-request path is not consulted on the eager branch, because
-/// the egress handshake happens *before* any request flows.
+/// Apply h2 builder knobs from `extensions` (looks up
+/// `H2ClientContextParams`, falls back to a bare `PseudoHeaderOrder`).
+/// Shared between the lazy [`http_connect`] path (passes
+/// `req.extensions()`) and the eager [`http2_eager_handshake`] path
+/// (passes egress IO's `extensions()`). The eager path doesn't see
+/// request-scoped extensions — stamp on the egress IO instead.
 fn apply_h2_client_extensions_to_builder(
     builder: &mut rama_http_core::client::conn::http2::Builder,
     extensions: &Extensions,

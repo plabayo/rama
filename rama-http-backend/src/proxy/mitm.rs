@@ -140,22 +140,10 @@ impl HttpMitmRelay {
     #[must_use]
     /// Create a new [`HttpMitmRelay`], ready to serve.
     pub fn new(exec: Executor) -> Self {
-        // Baseline default: advertise the extended CONNECT protocol
-        // (RFC 8441) on the ingress h2 builder. This is the value used
-        // by the *lazy* relay path — i.e. plain h2 prior-knowledge where
-        // we have no ALPN signal to do the eager-phase-2 mirror against
-        // the upstream.
-        //
-        // For the EAGER path (egress IO carries `TargetHttpVersion(HTTP_2)`,
-        // typically from TLS-ALPN), `serve()` reads the upstream's
-        // initial SETTINGS and stamps an authoritative
-        // `H2ServerContextParams` on the ingress IO. That override wins
-        // over this baseline — so when upstream omits CONNECT (issue
-        // #932's case), the relay correctly omits it downstream
-        // regardless of this default. The lazy path retains the old
-        // best-effort behaviour for plain-h2 setups where upstream
-        // typically does support CONNECT (e.g. h2 prior-knowledge to a
-        // local service mesh).
+        // Baseline CONNECT-on for the *lazy* path (plain h2, no ALPN).
+        // The eager path in `serve()` overrides this per-conn via
+        // `H2ServerContextParams`, which is what closes #932 for TLS h2.
+        // See `rama_http_core::server::conn::http2::apply_h2_server_context_params`.
         let mut http_server = HttpServer::auto(exec.clone());
         http_server.h2_mut().set_enable_connect_protocol();
         Self {
@@ -246,24 +234,12 @@ where
 
         tracing::debug!("HTTP MITM Relay: start");
 
-        // Eager phase-2 init: when the egress IO already exposes ALPN
-        // (or any other authoritative signal) as
-        // `TargetHttpVersion(HTTP_2)`, handshake the egress connection
-        // *now* so we can observe the upstream's initial SETTINGS frame
-        // and mirror the relevant bits onto the ingress server before
-        // its own initial SETTINGS frame is written. Other versions
-        // fall through to the original lazy path.
-        //
-        // BY DESIGN: only the *initial* SETTINGS frame is mirrored.
-        // RFC 9113 §6.5 allows either peer to send SETTINGS updates
-        // mid-connection, but the ingress h2 server's SETTINGS frame
-        // is written once at handshake — we don't re-issue it. This is
-        // sufficient for the relay's job: initial parity is what
-        // governs the downstream client's protocol choices (e.g. RFC
-        // 8441 Extended CONNECT), and once a stream is open the h2
-        // stack on both sides handles dynamic adjustments
-        // (WINDOW_UPDATE for flow control, per-stream limits) without
-        // needing the SETTINGS frame to be reissued.
+        // Eager phase-2: when egress ALPN signals h2 (via
+        // `TargetHttpVersion(HTTP_2)`), handshake egress now to mirror
+        // upstream's initial SETTINGS onto ingress before its own
+        // SETTINGS frame is written. Only the *initial* frame is
+        // mirrored — subsequent upstream SETTINGS updates are handled
+        // by the h2 stack on each side. Other versions: lazy path.
         let egress_is_h2 = egress_stream
             .extensions()
             .get_ref::<TargetHttpVersion>()
@@ -293,14 +269,9 @@ where
                         // takes the underlying `&Settings`.
                         mirror_peer_settings(&peer.0)
                     } else {
-                        // Fail-safe: even when capture fails, we MUST
-                        // explicitly disable CONNECT on the ingress.
-                        // Otherwise, a user who set
-                        // `relay.h2_mut().set_enable_connect_protocol()`
-                        // on the builder defaults would have us
-                        // unconditionally re-advertise CONNECT to a
-                        // downstream client whose upstream may not
-                        // support it — reintroducing issue #932.
+                        // Fail-safe: force CONNECT off so a timeout /
+                        // broken upstream can't re-trigger #932 through
+                        // the relay's baseline CONNECT-on default.
                         tracing::debug!(
                             "no upstream h2 SETTINGS captured; forcing CONNECT off on ingress",
                         );
@@ -776,53 +747,23 @@ where
     }
 }
 
-/// Project an upstream's initial h2 SETTINGS frame onto an
-/// [`H2ServerContextParams`] suitable for stamping on the relay's
-/// ingress IO.
+/// Project upstream's initial SETTINGS onto `H2ServerContextParams` for
+/// the relay's ingress. Two fields carry across; the rest are
+/// per-direction budgets with no cross-direction meaning.
 ///
-/// Two fields are carried forward, and only two:
-///
-/// 1. **`enable_connect_protocol`** (RFC 8441) — a capability
-///    advertisement that is transitively meaningful across the relay.
-///    If upstream advertises Extended CONNECT, the relay can advertise
-///    it downstream because it just forwards. If upstream omits it, the
-///    relay MUST omit it (this is #932's core fix). Authoritative-wins:
-///    we always emit `Some(true|false)`, overriding any builder default
-///    a user may have set on the relay's h2 builder — without that, a
-///    user who opted into CONNECT defaults would re-trigger #932 when
-///    talking to a non-CONNECT upstream.
-///
-/// 2. **`max_concurrent_streams`** — kept as an *explicit backpressure
-///    policy*, not as a transparent mirror. h2 SETTINGS frames are
-///    per-direction: upstream's value bounds upstream's accept capacity
-///    *from the relay-as-client*, which is not the same as the relay's
-///    accept capacity *from a downstream-as-client*. We use upstream's
-///    value anyway because it caps how much concurrency the relay can
-///    actually forward through its single egress h2 connection.
-///    Spec-faithful: per RFC 9113 §6.5.2 `0` is a legal value that
-///    "SHOULD NOT be treated as special" — it means "no streams
-///    accepted right now" and we propagate that to downstream exactly
-///    as upstream advertised it.
-///
-/// Other initial-SETTINGS fields (`header_table_size`, `max_frame_size`,
-/// `max_header_list_size`, `initial_stream_window_size`) describe
-/// independent per-direction buffer/decoder budgets that have no
-/// cross-direction meaning. Mirroring them would silently couple
-/// budgets that should be independent, which is why we don't. These
-/// fields remain part of [`H2ServerContextParams`] for callers who
-/// want to set them directly per-connection.
+/// - `enable_connect_protocol` (RFC 8441): capability advertisement,
+///   transitively meaningful. Authoritative-wins: always emits
+///   `Some(true|false)` so this overrides the relay's builder baseline
+///   (which #932 needs when upstream omits CONNECT).
+/// - `max_concurrent_streams`: backpressure policy (relay multiplexes
+///   downstream onto one upstream conn), not a transparent mirror.
+///   Per RFC 9113 §6.5.2 `Some(0)` is legal — propagated as-is.
 fn mirror_peer_settings(settings: &Settings) -> H2ServerContextParams {
     let cfg = &settings.config;
     H2ServerContextParams {
         enable_connect_protocol: Some(cfg.enable_connect_protocol.map(|v| v != 0).unwrap_or(false)),
-        // RFC 9113 §6.5.2: `Some(0)` is legal and `SHOULD NOT be
-        // treated as special`. Pass it through as-is — if upstream
-        // refuses all streams, the relay honestly tells downstream
-        // the same. Future SETTINGS updates from upstream (e.g. when
-        // a server warms up and raises its limit) are handled by the
-        // h2 stack at the egress side, not by this mirror.
         max_concurrent_streams: cfg.max_concurrent_streams,
-        // Intentionally not mirrored — see fn docstring.
+        // Per-direction budgets — not mirrored. See fn docstring.
         header_table_size: None,
         max_frame_size: None,
         max_header_list_size: None,
