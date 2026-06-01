@@ -31,6 +31,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 ///
 /// * `max-age=31536000`
 /// * `max-age=15768000 ; includeSubdomains`
+/// * `max-age=31536000; includeSubDomains; preload`
 ///
 /// # Example
 ///
@@ -38,13 +39,19 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// use std::time::Duration;
 /// use rama_http_headers::StrictTransportSecurity;
 ///
-/// let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000);
+/// let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
+///     .with_preload();
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct StrictTransportSecurity {
     /// Signals the UA that the HSTS Policy applies to this HSTS Host as well as
     /// any subdomains of the host's domain name.
     include_subdomains: bool,
+
+    /// Signals that the host is (or wishes to be) on the Chromium/Mozilla
+    /// HSTS preload list. Not part of RFC 6797 but is the convention
+    /// required for <https://hstspreload.org> eligibility.
+    preload: bool,
 
     /// Specifies the number of seconds, after the reception of the STS header
     /// field, during which the UA regards the host (from whom the message was
@@ -63,6 +70,7 @@ impl StrictTransportSecurity {
         Self {
             max_age: Seconds::new(max_age),
             include_subdomains: true,
+            preload: false,
         }
     }
 
@@ -76,6 +84,7 @@ impl StrictTransportSecurity {
         Self {
             max_age: Seconds::from_duration_rounded(dur),
             include_subdomains: true,
+            preload: false,
         }
     }
 
@@ -91,6 +100,7 @@ impl StrictTransportSecurity {
         Seconds::try_from_duration(dur).map(|max_age| Self {
             max_age,
             include_subdomains: true,
+            preload: false,
         })
     }
 
@@ -100,6 +110,7 @@ impl StrictTransportSecurity {
         Self {
             max_age: Seconds::new(max_age),
             include_subdomains: false,
+            preload: false,
         }
     }
 
@@ -113,6 +124,7 @@ impl StrictTransportSecurity {
         Self {
             max_age: Seconds::from_duration_rounded(dur),
             include_subdomains: false,
+            preload: false,
         }
     }
 
@@ -128,7 +140,23 @@ impl StrictTransportSecurity {
         Seconds::try_from_duration(dur).map(|max_age| Self {
             max_age,
             include_subdomains: false,
+            preload: false,
         })
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Mark this STS header as `preload`-eligible.
+        ///
+        /// The `preload` directive is a Chromium/Mozilla extension required for
+        /// [HSTS preload list](https://hstspreload.org) eligibility — sites
+        /// listed there get HSTS protection on the user's *very first* visit.
+        /// Per the preload list submission rules `preload` is only meaningful
+        /// alongside `max-age` ≥ 31536000 and `includeSubDomains`; this builder
+        /// does not enforce that, but callers should set both.
+        pub fn preload(mut self, preload: bool) -> Self {
+            self.preload = preload;
+            self
+        }
     }
 
     // getters
@@ -137,6 +165,12 @@ impl StrictTransportSecurity {
     #[must_use]
     pub fn include_subdomains(&self) -> bool {
         self.include_subdomains
+    }
+
+    /// Get whether the `preload` directive is set.
+    #[must_use]
+    pub fn preload(&self) -> bool {
+        self.preload
     }
 
     /// Get the max-age.
@@ -149,6 +183,7 @@ impl StrictTransportSecurity {
 enum Directive {
     MaxAge(u64),
     IncludeSubdomains,
+    Preload,
     Unknown,
 }
 
@@ -158,6 +193,8 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
         .map(|sub| {
             if sub.eq_ignore_ascii_case("includeSubdomains") {
                 Some(Directive::IncludeSubdomains)
+            } else if sub.eq_ignore_ascii_case("preload") {
+                Some(Directive::Preload)
             } else {
                 let mut sub = sub.splitn(2, '=');
                 match (sub.next(), sub.next()) {
@@ -173,18 +210,21 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
                 }
             }
         })
-        .try_fold((None, None), |res, dir| match (res, dir) {
-            ((None, sub), Some(Directive::MaxAge(age))) => Some((Some(age), sub)),
-            ((age, None), Some(Directive::IncludeSubdomains)) => Some((age, Some(()))),
-            ((Some(_), _), Some(Directive::MaxAge(_)))
-            | ((_, Some(_)), Some(Directive::IncludeSubdomains))
+        .try_fold((None, None, None), |res, dir| match (res, dir) {
+            ((None, sub, pre), Some(Directive::MaxAge(age))) => Some((Some(age), sub, pre)),
+            ((age, None, pre), Some(Directive::IncludeSubdomains)) => Some((age, Some(()), pre)),
+            ((age, sub, None), Some(Directive::Preload)) => Some((age, sub, Some(()))),
+            ((Some(_), _, _), Some(Directive::MaxAge(_)))
+            | ((_, Some(_), _), Some(Directive::IncludeSubdomains))
+            | ((_, _, Some(_)), Some(Directive::Preload))
             | (_, None) => None,
             (res, _) => Some(res),
         })
         .and_then(|res| match res {
-            (Some(age), sub) => Some(StrictTransportSecurity {
+            (Some(age), sub, pre) => Some(StrictTransportSecurity {
                 max_age: Seconds::new(age),
                 include_subdomains: sub.is_some(),
+                preload: pre.is_some(),
             }),
             _ => None,
         })
@@ -213,11 +253,14 @@ impl HeaderEncode for StrictTransportSecurity {
 
         impl fmt::Display for Adapter<'_> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "max-age={}", self.0.max_age)?;
                 if self.0.include_subdomains {
-                    write!(f, "max-age={}; includeSubdomains", self.0.max_age)
-                } else {
-                    write!(f, "max-age={}", self.0.max_age)
+                    f.write_str("; includeSubDomains")?;
                 }
+                if self.0.preload {
+                    f.write_str("; preload")?;
+                }
+                Ok(())
             }
         }
 
@@ -237,6 +280,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
+                preload: false,
                 max_age: Seconds::new(31536000),
             }
         );
@@ -254,6 +298,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
+                preload: false,
                 max_age: Seconds::new(31536000),
             }
         );
@@ -266,6 +311,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: false,
+                preload: false,
                 max_age: Seconds::new(31536000),
             }
         );
@@ -279,6 +325,7 @@ mod tests {
             h,
             StrictTransportSecurity {
                 include_subdomains: true,
+                preload: false,
                 max_age: Seconds::new(15768000),
             }
         );
@@ -306,6 +353,92 @@ mod tests {
             test_decode::<StrictTransportSecurity>(&["max-age=1; max-age=2"]),
             None,
         );
+    }
+
+    #[test]
+    fn test_parse_preload() {
+        for raw in [
+            "max-age=31536000; includeSubDomains; preload",
+            "max-age=31536000; includeSubDomains; Preload",
+            "max-age=31536000; includeSubDomains; PRELOAD",
+        ] {
+            let h = test_decode::<StrictTransportSecurity>(&[raw]).unwrap_or_else(|| {
+                panic!("failed to decode {raw}");
+            });
+            assert_eq!(
+                h,
+                StrictTransportSecurity {
+                    include_subdomains: true,
+                    preload: true,
+                    max_age: Seconds::new(31536000),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_preload_without_subdomains() {
+        let h = test_decode::<StrictTransportSecurity>(&["max-age=31536000; preload"]).unwrap();
+        assert_eq!(
+            h,
+            StrictTransportSecurity {
+                include_subdomains: false,
+                preload: true,
+                max_age: Seconds::new(31536000),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_duplicate_preload_rejected() {
+        assert_eq!(
+            test_decode::<StrictTransportSecurity>(&["max-age=1; preload; preload"]),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_encode_canonical_order() {
+        let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
+            .with_preload();
+        let map = super::super::test_encode(sts);
+        let raw = map
+            .get(StrictTransportSecurity::name())
+            .expect("header set")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(raw, "max-age=31536000; includeSubDomains; preload");
+    }
+
+    #[test]
+    fn test_encode_preload_excluding_subdomains() {
+        let sts = StrictTransportSecurity::excluding_subdomains_for_max_seconds(31_536_000)
+            .with_preload();
+        let map = super::super::test_encode(sts);
+        let raw = map
+            .get(StrictTransportSecurity::name())
+            .expect("header set")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(raw, "max-age=31536000; preload");
+    }
+
+    #[test]
+    fn test_preload_round_trip_idempotent() {
+        let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
+            .with_preload();
+        let map = super::super::test_encode(sts.clone());
+        let raw = map
+            .get(StrictTransportSecurity::name())
+            .expect("header set")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let parsed = test_decode::<StrictTransportSecurity>(&[raw.as_str()])
+            .expect("re-decode of canonical form");
+        assert_eq!(parsed, sts);
     }
 }
 

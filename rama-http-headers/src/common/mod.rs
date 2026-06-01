@@ -38,6 +38,13 @@ pub use self::content_security_policy::{
 };
 pub use self::content_type::ContentType;
 pub use self::cookie::Cookie;
+pub use self::cross_origin_embedder_policy::{
+    CrossOriginEmbedderPolicy, CrossOriginEmbedderPolicyReportOnly, CrossOriginEmbedderPolicyValue,
+};
+pub use self::cross_origin_opener_policy::{
+    CrossOriginOpenerPolicy, CrossOriginOpenerPolicyReportOnly, CrossOriginOpenerPolicyValue,
+};
+pub use self::cross_origin_resource_policy::CrossOriginResourcePolicy;
 pub use self::date::Date;
 pub use self::etag::ETag;
 pub use self::expect::Expect;
@@ -54,6 +61,9 @@ pub use self::last_modified::LastModified;
 //pub use self::link::{Link, LinkValue, RelationType, MediaDesc};
 pub use self::location::Location;
 pub use self::origin::Origin;
+pub use self::permissions_policy::{
+    AllowlistSource, PermissionsPolicy, PermissionsPolicyDirective, PermissionsPolicyDirectiveName,
+};
 pub use self::pragma::Pragma;
 //pub use self::prefer::{Prefer, Preference};
 //pub use self::preference_applied::PreferenceApplied;
@@ -165,6 +175,10 @@ mod content_range;
 mod content_security_policy;
 mod content_type;
 mod cookie;
+mod cross_origin_embedder_policy;
+mod cross_origin_opener_policy;
+mod cross_origin_policy_util;
+mod cross_origin_resource_policy;
 mod date;
 mod etag;
 mod expect;
@@ -181,6 +195,7 @@ mod last_modified;
 //mod link;
 mod location;
 mod origin;
+mod permissions_policy;
 mod pragma;
 //mod prefer;
 //mod preference_applied;

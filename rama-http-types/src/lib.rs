@@ -93,6 +93,17 @@ pub mod header {
     // new standard sec-headers
     static_header!["sec-gpc"];
 
+    // additional W3C / Fetch / HTML standard security headers
+    // not yet covered by hyperium/http's name table
+    static_header![
+        "permissions-policy",
+        "cross-origin-embedder-policy",
+        "cross-origin-embedder-policy-report-only",
+        "cross-origin-opener-policy",
+        "cross-origin-opener-policy-report-only",
+        "cross-origin-resource-policy",
+    ];
+
     // standard
     static_header!["keep-alive", "proxy-connection", "last-event-id"];
 
