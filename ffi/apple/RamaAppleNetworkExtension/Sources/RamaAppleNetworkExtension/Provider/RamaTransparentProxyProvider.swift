@@ -1153,14 +1153,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let parsed = parseEndpointString(raw)
         let typeName = String(reflecting: type(of: endpoint))
         if parsed != nil {
-            RamaTransparentProxyEngineHandle.log(
-                level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-                message: "endpointHostPort: KVC fallback succeeded for \(typeName): raw=\(raw)"
+            RamaLog.debug(
+                "endpointHostPort: KVC fallback succeeded for \(typeName): raw=\(raw)"
             )
         } else {
-            RamaTransparentProxyEngineHandle.log(
-                level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-                message: "endpointHostPort: all fallbacks failed for \(typeName): raw=\(raw)"
+            RamaLog.debug(
+                "endpointHostPort: all fallbacks failed for \(typeName): raw=\(raw)"
             )
         }
         return parsed
@@ -1237,9 +1235,8 @@ private func applyFlowMetadata(_ flow: NEAppProxyFlow, _ params: NWParameters) {
     // silently in production.
     let selector = NSSelectorFromString("setMetadata:")
     if !flow.responds(to: selector) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: "applyFlowMetadata: NEAppProxyFlow does not respond to setMetadata: on this macOS version; egress NWParameters will not carry source-app metadata"
+        RamaLog.debug(
+            "applyFlowMetadata: NEAppProxyFlow does not respond to setMetadata: on this macOS version; egress NWParameters will not carry source-app metadata"
         )
         return
     }

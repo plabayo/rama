@@ -174,9 +174,8 @@ final class NwTcpConnectionReadPump {
                         // replay; do NOT issue another receive until
                         // `resume()`.
                         if self.pendingData == nil {
-                            RamaTransparentProxyEngineHandle.log(
-                                level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-                                message: "tcp egress read pump: replay buffer occupied (\(data.count) B); egress channel full"
+                            RamaLog.trace(
+                                "tcp egress read pump: replay buffer occupied (\(data.count) B); egress channel full"
                             )
                         }
                         self.pendingData = data

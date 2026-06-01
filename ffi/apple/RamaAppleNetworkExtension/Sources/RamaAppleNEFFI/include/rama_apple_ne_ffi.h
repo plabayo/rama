@@ -60,20 +60,6 @@ typedef struct {
     size_t cap;
 } RamaBytesOwned;
 
-/// Log level for `rama_log`.
-typedef enum {
-    /// Extremely verbose diagnostic logs.
-    RAMA_LOG_LEVEL_TRACE = 0,
-    /// Debug logs.
-    RAMA_LOG_LEVEL_DEBUG = 1,
-    /// Informational logs.
-    RAMA_LOG_LEVEL_INFO = 2,
-    /// Warning logs.
-    RAMA_LOG_LEVEL_WARN = 3,
-    /// Error logs.
-    RAMA_LOG_LEVEL_ERROR = 4,
-} RamaLogLevel;
-
 /// Transport protocol for one intercepted flow.
 typedef enum {
     /// TCP flow.
@@ -490,16 +476,6 @@ typedef struct {
     void* context;
     RamaTcpPromoteRequestFn on_promote_request;
 } RamaTransparentProxyTcpPromoteCallbacks;
-
-// Logging
-
-/// Forward a log message to Rust tracing.
-///
-/// `message` is borrowed for the duration of the call.
-void rama_log(
-    uint32_t level,
-    RamaBytesView message
-);
 
 /// Resolve a macOS audit token to a PID.
 ///

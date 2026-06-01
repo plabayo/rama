@@ -873,11 +873,6 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_log(level: u32, message: $crate::ffi::BytesView) {
-            unsafe { $crate::ffi::log_callback(level, message) };
-        }
-
-        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_owned_bytes_free(bytes: $crate::ffi::BytesOwned) {
             unsafe { bytes.free() };
         }

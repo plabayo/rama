@@ -497,50 +497,33 @@ final class TransparentProxyCore: @unchecked Sendable {
     // moved flow-handling methods still have the same surface available.
 
     func logTrace(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-            message: message
-        )
+        RamaLog.trace(message)
     }
 
     func logDebug(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message: message
-        )
+        RamaLog.debug(message)
     }
 
     func logInfo(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_INFO.rawValue),
-            message: message
-        )
+        RamaLog.info(message)
     }
 
     func logError(_ message: String) {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
-            message: message
-        )
+        RamaLog.error(message)
     }
 
     /// Emit a lifecycle / critical event.
     ///
-    /// Routed through `LifecycleLog` (Apple `os.Logger`, direct) AND
-    /// through the Rust tracing path. The direct route guarantees the
-    /// message is in `log show` regardless of the Rust subscriber's
-    /// current INFO-level mapping; the Rust route keeps the message in
-    /// the unified stderr / dial9 trace for the demo binary. See
-    /// `LifecycleLog` for the gap that motivates the dual path.
+    /// Routed through `LifecycleLog`, a dedicated `os.Logger` sink that
+    /// emits at `OS_LOG_TYPE_DEFAULT` so the message is always present
+    /// in `log show` for post-incident debugging.
     func logLifecycle(_ message: String) {
         LifecycleLog.notice(message)
-        logInfo(message)
     }
 
     /// Lifecycle-error counterpart of [`logLifecycle`].
     func logLifecycleError(_ message: String) {
         LifecycleLog.error(message)
-        logError(message)
     }
 
     func logFlowMessage(_ message: FlowLogMessage) {

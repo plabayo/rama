@@ -92,10 +92,8 @@ func ramaUdpPeer(from neEndpoint: NWEndpoint) -> RamaUdpPeer? {
     unexpectedEndpointLoggedFlag = true
     unexpectedEndpointLoggedLock.unlock()
     if !alreadyLogged {
-        RamaTransparentProxyEngineHandle.log(
-            level: UInt32(RAMA_LOG_LEVEL_DEBUG.rawValue),
-            message:
-                "udp readDatagrams returned an NWEndpoint subclass that exposes neither NWHostEndpoint nor a `hostname`/`port` KVC pair (\(type(of: neEndpoint))); peer attribution dropped for affected datagrams. This is the first occurrence in this process."
+        RamaLog.debug(
+            "udp readDatagrams returned an NWEndpoint subclass that exposes neither NWHostEndpoint nor a `hostname`/`port` KVC pair (\(type(of: neEndpoint))); peer attribution dropped for affected datagrams. This is the first occurrence in this process."
         )
     }
     return nil
