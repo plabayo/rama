@@ -827,7 +827,8 @@ final class RamaTcpSessionHandle {
                 has_required_interface_type: false, required_interface_type: 0,
                 has_attribution: false, attribution: 0,
                 prohibited_interface_types_mask: 0,
-                preserve_original_meta_data: true
+                preserve_original_meta_data: true,
+                allow_system_proxy: false
             ),
             has_connect_timeout_ms: false,
             connect_timeout_ms: 0,

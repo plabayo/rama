@@ -63,8 +63,37 @@
 //! the handler's passthrough policy. There is no rama-side fix;
 //! this is a framework-level constraint.
 //!
+//! ## System HTTP/SOCKS proxy loop
+//!
+//! When the user has a system-level HTTP/SOCKS proxy enabled (Charles,
+//! Proxyman, BurpSuite, corporate PAC, antivirus MITM gateway, …),
+//! the kernel will by default route any `NWConnection` — including
+//! the egress connection this extension opens after deciding to
+//! intercept — back through that proxy. The proxy re-emits the
+//! traffic, our `NETransparentProxyProvider` intercepts it again,
+//! and the loop is self-reinforcing.
+//!
+//! A transparent proxy that has already decided to intercept a flow
+//! has no use case for re-entering the system proxy on its egress
+//! hop; the system proxy logically sits *above* the transparent
+//! proxy, not below it. Accordingly, the Swift bridge sets
+//! `NWParameters.preferNoProxies = true` on every egress connection
+//! by default (see `makeTcpNwParameters`). This is the
+//! framework-blessed knob for the scenario, called out by Apple's
+//! `NWParameters.preferNoProxies` documentation and TN3134
+//! ("Network Extension transparent-proxy app").
+//!
+//! Opt out via [`NwEgressParameters::allow_system_proxy`] only when
+//! you intentionally want the egress to honour the user's system
+//! proxy (e.g. nested debugging where you've routed the extension's
+//! egress through your own external interception tool and accept
+//! responsibility for breaking the loop yourself, typically by
+//! carving the rama extension's destinations out of the upstream
+//! proxy's scope).
+//!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data
+//! [`NwEgressParameters::allow_system_proxy`]: types::NwEgressParameters::allow_system_proxy
 
 #[cfg(feature = "dial9")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]

@@ -374,6 +374,13 @@ pub struct NwEgressParameters {
     ///
     /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
+    /// When `false` (the default), Swift sets `NWParameters.preferNoProxies =
+    /// true` on the egress `NWConnection` so the kernel skips any system /
+    /// PAC HTTP/SOCKS proxy on our egress hop. Guards against a stacked-proxy
+    /// loop where the system proxy bounces our egress back to us.
+    ///
+    /// See [`crate::tproxy::NwEgressParameters::allow_system_proxy`].
+    pub allow_system_proxy: bool,
 }
 
 impl NwEgressParameters {
@@ -392,6 +399,7 @@ impl NwEgressParameters {
             attribution: p.attribution.map(attribution_to_u8).unwrap_or(0),
             prohibited_interface_types_mask: interface_types_to_mask(&p.prohibited_interface_types),
             preserve_original_meta_data: p.preserve_original_meta_data,
+            allow_system_proxy: p.allow_system_proxy,
         }
     }
 }
@@ -784,6 +792,33 @@ mod tests {
         assert!(rust.preserve_original_meta_data);
         let ffi = NwEgressParameters::from_rust_type(&rust);
         assert!(ffi.preserve_original_meta_data);
+    }
+
+    /// Locks in `allow_system_proxy: false` as the FFI default for
+    /// [`NwEgressParameters`]. Flipping this default would re-introduce
+    /// the stacked-proxy loop when a user has a system HTTP/SOCKS proxy
+    /// (Charles, Proxyman, corporate PAC, …) enabled: our egress
+    /// `NWConnection` would be routed back through that proxy, the
+    /// proxy would re-emit, and we'd intercept again.
+    #[test]
+    fn ffi_egress_params_allow_system_proxy_default_round_trip() {
+        let rust = tproxy::NwEgressParameters::default();
+        assert!(!rust.allow_system_proxy);
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(!ffi.allow_system_proxy);
+    }
+
+    /// Round-trips `allow_system_proxy: true` so the opt-in path is
+    /// covered too (the default test alone leaves a regression that
+    /// hard-codes `false` undetectable).
+    #[test]
+    fn ffi_egress_params_allow_system_proxy_opt_in_round_trip() {
+        let rust = tproxy::NwEgressParameters {
+            allow_system_proxy: true,
+            ..tproxy::NwEgressParameters::default()
+        };
+        let ffi = NwEgressParameters::from_rust_type(&rust);
+        assert!(ffi.allow_system_proxy);
     }
 
     #[test]
