@@ -56,11 +56,11 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// };
 ///
 /// let pp = PermissionsPolicy::empty()
-///     .with(PermissionsPolicyDirective::allow(
+///     .with_directive(PermissionsPolicyDirective::allow(
 ///         PermissionsPolicyDirectiveName::Camera,
 ///         AllowlistSource::SelfOrigin,
 ///     ))
-///     .with(PermissionsPolicyDirective::deny(
+///     .with_directive(PermissionsPolicyDirective::deny(
 ///         // Unknown / vendor / draft feature names land in the
 ///         // auto-generated `Unknown` variant via `From<&str>`.
 ///         PermissionsPolicyDirectiveName::from("x-vendor-experimental"),
@@ -87,31 +87,25 @@ impl PermissionsPolicy {
         self.directives.iter()
     }
 
-    /// Generic escape hatch: append or replace a directive by name.
-    /// If a directive with the same name exists, its allow-list is
-    /// overwritten in place (order preserved); otherwise it's
-    /// appended.
-    #[must_use]
-    pub fn with(mut self, directive: PermissionsPolicyDirective) -> Self {
-        self.upsert(directive);
-        self
-    }
-
-    /// In-place sibling of [`with`](Self::with).
-    pub fn set(&mut self, directive: PermissionsPolicyDirective) -> &mut Self {
-        self.upsert(directive);
-        self
-    }
-
-    fn upsert(&mut self, directive: PermissionsPolicyDirective) {
-        if let Some(slot) = self
-            .directives
-            .iter_mut()
-            .find(|d| d.name == directive.name)
-        {
-            slot.allow_list = directive.allow_list;
-        } else {
-            self.directives.push(directive);
+    generate_set_and_with! {
+        /// Generic escape hatch: append or replace a directive by
+        /// name. If a directive with the same name exists, its
+        /// allow-list is overwritten in place (order preserved);
+        /// otherwise it's appended.
+        ///
+        /// The macro generates the `&mut self` sibling
+        /// [`set_directive`](Self::set_directive).
+        pub fn directive(mut self, directive: PermissionsPolicyDirective) -> Self {
+            if let Some(slot) = self
+                .directives
+                .iter_mut()
+                .find(|d| d.name == directive.name)
+            {
+                slot.allow_list = directive.allow_list;
+            } else {
+                self.directives.push(directive);
+            }
+            self
         }
     }
 
@@ -119,12 +113,14 @@ impl PermissionsPolicy {
     //
     // Each macro invocation generates both a `with_deny_*` (chaining,
     // takes ownership) and a `set_deny_*` (`&mut self`) form. Body
-    // routes through `upsert` so all paths share one canonical write.
+    // routes through `set_directive` so all paths share one canonical
+    // write — taking advantage of the `&mut Self` return on the
+    // generated setter.
 
     generate_set_and_with! {
         /// Set `camera=()` (deny-all).
         pub fn deny_camera(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Camera,
             ));
             self
@@ -133,7 +129,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `microphone=()` (deny-all).
         pub fn deny_microphone(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Microphone,
             ));
             self
@@ -142,7 +138,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `geolocation=()` (deny-all).
         pub fn deny_geolocation(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Geolocation,
             ));
             self
@@ -151,7 +147,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `payment=()` (deny-all).
         pub fn deny_payment(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Payment,
             ));
             self
@@ -160,7 +156,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `usb=()` (deny-all).
         pub fn deny_usb(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Usb,
             ));
             self
@@ -172,7 +168,7 @@ impl PermissionsPolicy {
         /// [`deny_browsing_topics`](Self::with_deny_browsing_topics)
         /// to also block Topics API, FLoC's shipped successor.
         pub fn deny_interest_cohort(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::InterestCohort,
             ));
             self
@@ -182,7 +178,7 @@ impl PermissionsPolicy {
         /// Set `browsing-topics=()` (deny-all). Opts the site out of
         /// the Topics API (Privacy Sandbox).
         pub fn deny_browsing_topics(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::BrowsingTopics,
             ));
             self
@@ -192,7 +188,7 @@ impl PermissionsPolicy {
         /// Set `attribution-reporting=()` (deny-all). Opts the site
         /// out of the Attribution Reporting API (Privacy Sandbox).
         pub fn deny_attribution_reporting(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::AttributionReporting,
             ));
             self
@@ -201,7 +197,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `accelerometer=()` (deny-all).
         pub fn deny_accelerometer(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Accelerometer,
             ));
             self
@@ -210,7 +206,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `ambient-light-sensor=()` (deny-all).
         pub fn deny_ambient_light_sensor(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::AmbientLightSensor,
             ));
             self
@@ -219,7 +215,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `autoplay=()` (deny-all).
         pub fn deny_autoplay(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Autoplay,
             ));
             self
@@ -228,7 +224,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `battery=()` (deny-all).
         pub fn deny_battery(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Battery,
             ));
             self
@@ -237,7 +233,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `bluetooth=()` (deny-all).
         pub fn deny_bluetooth(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Bluetooth,
             ));
             self
@@ -246,7 +242,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `display-capture=()` (deny-all).
         pub fn deny_display_capture(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::DisplayCapture,
             ));
             self
@@ -255,7 +251,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `encrypted-media=()` (deny-all).
         pub fn deny_encrypted_media(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::EncryptedMedia,
             ));
             self
@@ -264,7 +260,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `fullscreen=()` (deny-all).
         pub fn deny_fullscreen(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Fullscreen,
             ));
             self
@@ -273,7 +269,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `gyroscope=()` (deny-all).
         pub fn deny_gyroscope(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Gyroscope,
             ));
             self
@@ -282,7 +278,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `idle-detection=()` (deny-all).
         pub fn deny_idle_detection(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::IdleDetection,
             ));
             self
@@ -291,7 +287,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `magnetometer=()` (deny-all).
         pub fn deny_magnetometer(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Magnetometer,
             ));
             self
@@ -300,7 +296,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `midi=()` (deny-all).
         pub fn deny_midi(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::Midi,
             ));
             self
@@ -309,7 +305,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `picture-in-picture=()` (deny-all).
         pub fn deny_picture_in_picture(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::PictureInPicture,
             ));
             self
@@ -318,7 +314,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `publickey-credentials-get=()` (deny-all).
         pub fn deny_publickey_credentials_get(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::PublickeyCredentialsGet,
             ));
             self
@@ -327,7 +323,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `screen-wake-lock=()` (deny-all).
         pub fn deny_screen_wake_lock(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::ScreenWakeLock,
             ));
             self
@@ -336,7 +332,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `sync-xhr=()` (deny-all).
         pub fn deny_sync_xhr(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::SyncXhr,
             ));
             self
@@ -345,7 +341,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `web-share=()` (deny-all).
         pub fn deny_web_share(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::WebShare,
             ));
             self
@@ -354,7 +350,7 @@ impl PermissionsPolicy {
     generate_set_and_with! {
         /// Set `xr-spatial-tracking=()` (deny-all).
         pub fn deny_xr_spatial_tracking(mut self) -> Self {
-            self.upsert(PermissionsPolicyDirective::deny(
+            self.set_directive(PermissionsPolicyDirective::deny(
                 PermissionsPolicyDirectiveName::XrSpatialTracking,
             ));
             self
@@ -384,8 +380,9 @@ impl HeaderDecode for PermissionsPolicy {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         // The spec allows the header to be set multiple times — the
         // user agent intersects all returned policies. For round-
-        // tripping we concatenate them preserving order, then upsert
-        // so repeats collapse to the last-seen allow-list.
+        // tripping we concatenate them preserving order, then route
+        // through `set_directive` so repeats collapse to the
+        // last-seen allow-list.
         let mut out = Self::empty();
         let mut any = false;
         for value in values {
@@ -403,7 +400,7 @@ impl HeaderDecode for PermissionsPolicy {
                     // surprising than logging it and moving on.
                     continue;
                 };
-                out.upsert(directive);
+                out.set_directive(directive);
             }
         }
         if !any {
@@ -477,7 +474,6 @@ fn parse_directive(s: &str) -> Option<PermissionsPolicyDirective> {
 mod tests {
     use super::super::{test_decode, test_encode};
     use super::*;
-    use std::borrow::Cow;
 
     #[test]
     fn empty_renders_to_empty_string() {
@@ -498,11 +494,11 @@ mod tests {
     fn keyword_shortcuts_share_path_with_generic_with() {
         // The shortcut and the generic hatch should produce identical
         // typed state, which falls out of routing both through
-        // `upsert`.
+        // `set_directive`.
         let via_shortcut = PermissionsPolicy::empty().with_deny_camera();
-        let via_generic = PermissionsPolicy::empty().with(PermissionsPolicyDirective::deny(
-            PermissionsPolicyDirectiveName::Camera,
-        ));
+        let via_generic = PermissionsPolicy::empty().with_directive(
+            PermissionsPolicyDirective::deny(PermissionsPolicyDirectiveName::Camera),
+        );
         assert_eq!(via_shortcut, via_generic);
     }
 
@@ -510,7 +506,7 @@ mod tests {
     fn set_mutates_in_place() {
         let mut pp = PermissionsPolicy::empty();
         pp.set_deny_camera();
-        pp.set(PermissionsPolicyDirective::allow(
+        pp.set_directive(PermissionsPolicyDirective::allow(
             PermissionsPolicyDirectiveName::Microphone,
             AllowlistSource::SelfOrigin,
         ));
@@ -519,11 +515,11 @@ mod tests {
 
     #[test]
     fn allow_list_self_and_origin_render() {
-        let pp = PermissionsPolicy::empty().with(PermissionsPolicyDirective::allow_from(
+        let pp = PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::allow_from(
             PermissionsPolicyDirectiveName::Camera,
             [
                 AllowlistSource::SelfOrigin,
-                AllowlistSource::Origin(Cow::Borrowed("https://example.com")),
+                AllowlistSource::origin("https://example.com"),
             ],
         ));
         assert_eq!(pp.to_string(), r#"camera=(self "https://example.com")"#);
@@ -531,13 +527,13 @@ mod tests {
 
     #[test]
     fn wildcard_and_src_render() {
-        let pp_wild = PermissionsPolicy::empty().with(PermissionsPolicyDirective::allow(
+        let pp_wild = PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::allow(
             PermissionsPolicyDirectiveName::Camera,
             AllowlistSource::Wildcard,
         ));
         assert_eq!(pp_wild.to_string(), "camera=(*)");
 
-        let pp_src = PermissionsPolicy::empty().with(PermissionsPolicyDirective::allow(
+        let pp_src = PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::allow(
             PermissionsPolicyDirectiveName::Camera,
             AllowlistSource::Src,
         ));
@@ -551,7 +547,7 @@ mod tests {
         // generated `Unknown` path. (The registry grows over time,
         // so any name we picked would risk becoming a real variant
         // in a future revision.)
-        let pp = PermissionsPolicy::empty().with(PermissionsPolicyDirective::deny(
+        let pp = PermissionsPolicy::empty().with_directive(PermissionsPolicyDirective::deny(
             PermissionsPolicyDirectiveName::from("x-vendor-experimental"),
         ));
         assert_eq!(pp.to_string(), "x-vendor-experimental=()");
@@ -646,7 +642,7 @@ mod tests {
             directives[0].allow_list.as_slice(),
             &[
                 AllowlistSource::SelfOrigin,
-                AllowlistSource::Origin(Cow::Owned("https://a.example".to_owned())),
+                AllowlistSource::origin("https://a.example"),
                 AllowlistSource::Wildcard,
             ]
         );
@@ -727,11 +723,11 @@ mod tests {
         let pp = PermissionsPolicy::empty()
             .with_deny_camera()
             .with_deny_microphone()
-            .with(PermissionsPolicyDirective::allow_from(
+            .with_directive(PermissionsPolicyDirective::allow_from(
                 PermissionsPolicyDirectiveName::Geolocation,
                 [
                     AllowlistSource::SelfOrigin,
-                    AllowlistSource::Origin(Cow::Borrowed("https://example.com")),
+                    AllowlistSource::origin("https://example.com"),
                 ],
             ));
         let map = test_encode(pp.clone());

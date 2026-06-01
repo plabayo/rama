@@ -3,6 +3,7 @@ use std::fmt;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::macros::enums::enum_builder;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::util::{self};
@@ -63,16 +64,22 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReferrerPolicy(NonEmptySmallVec<2, Policy>);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
-enum Policy {
-    NoReferrer,
-    NoReferrerWhenDowngrade,
-    SameOrigin,
-    Origin,
-    OriginWhenCrossOrigin,
-    UnsafeUrl,
-    StrictOrigin,
-    StrictOriginWhenCrossOrigin,
+enum_builder! {
+    /// One of the eight recognised `Referrer-Policy` tokens. The
+    /// auto-generated `Unknown(String)` variant is unreachable from
+    /// the [`HeaderDecode`] impl — it only stores recognised tokens —
+    /// but the macro produces it unconditionally.
+    @String
+    enum Policy {
+        NoReferrer => "no-referrer",
+        NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
+        SameOrigin => "same-origin",
+        Origin => "origin",
+        OriginWhenCrossOrigin => "origin-when-cross-origin",
+        UnsafeUrl => "unsafe-url",
+        StrictOrigin => "strict-origin",
+        StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
+    }
 }
 
 impl ReferrerPolicy {
@@ -154,7 +161,12 @@ impl HeaderDecode for ReferrerPolicy {
                 if trimmed.is_empty() {
                     continue;
                 }
-                if let Some(p) = Policy::from_token(trimmed) {
+                // `strict_parse` is case-insensitive and rejects
+                // unknown tokens (including the dropped Gecko-only
+                // legacy aliases `never` / `default` / `always`).
+                // Unknown tokens are skipped so the chain falls
+                // through to the next recognised one.
+                if let Some(p) = Policy::strict_parse(trimmed) {
                     all.push(p);
                 }
             }
@@ -184,47 +196,6 @@ impl HeaderEncode for ReferrerPolicy {
         }
 
         values.extend(::std::iter::once(util::fmt(Adapter(self))));
-    }
-}
-
-impl Policy {
-    fn from_token(s: &str) -> Option<Self> {
-        // Tokens are ASCII case-insensitive per spec.
-        //
-        // The legacy Gecko-only aliases `never` (→ no-referrer),
-        // `default` (→ no-referrer-when-downgrade), and `always`
-        // (→ unsafe-url) were dropped from the W3C Referrer Policy
-        // spec and are intentionally NOT recognised — a server still
-        // sending them would have its policy fall through to the user
-        // agent default in real browsers.
-        Some(match s {
-            x if x.eq_ignore_ascii_case("no-referrer") => Self::NoReferrer,
-            x if x.eq_ignore_ascii_case("no-referrer-when-downgrade") => {
-                Self::NoReferrerWhenDowngrade
-            }
-            x if x.eq_ignore_ascii_case("same-origin") => Self::SameOrigin,
-            x if x.eq_ignore_ascii_case("origin") => Self::Origin,
-            x if x.eq_ignore_ascii_case("origin-when-cross-origin") => Self::OriginWhenCrossOrigin,
-            x if x.eq_ignore_ascii_case("strict-origin") => Self::StrictOrigin,
-            x if x.eq_ignore_ascii_case("strict-origin-when-cross-origin") => {
-                Self::StrictOriginWhenCrossOrigin
-            }
-            x if x.eq_ignore_ascii_case("unsafe-url") => Self::UnsafeUrl,
-            _ => return None,
-        })
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::NoReferrer => "no-referrer",
-            Self::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
-            Self::SameOrigin => "same-origin",
-            Self::Origin => "origin",
-            Self::OriginWhenCrossOrigin => "origin-when-cross-origin",
-            Self::StrictOrigin => "strict-origin",
-            Self::StrictOriginWhenCrossOrigin => "strict-origin-when-cross-origin",
-            Self::UnsafeUrl => "unsafe-url",
-        }
     }
 }
 

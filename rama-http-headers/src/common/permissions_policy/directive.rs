@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fmt;
 
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
@@ -126,57 +125,64 @@ enum_builder! {
     }
 }
 
-/// Allowlist token shapes per the W3C Permissions Policy spec.
-///
-/// No `None` variant — the deny-all directive is represented by an
-/// empty [`PermissionsPolicyDirective::allow_list`] so that the typed
-/// state and the wire form (`feature=()`) line up one-to-one.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AllowlistSource {
-    /// `self` — same-origin only (no surrounding quotes on the wire,
-    /// unlike CSP).
-    SelfOrigin,
-    /// `*` — any origin.
-    Wildcard,
-    /// `"https://example.com"` — a specific origin. Always emitted as
-    /// a double-quoted RFC 8941 sf-string.
-    Origin(Cow<'static, str>),
-    /// `src` — legacy `<iframe allow=…>` token, lets the iframe inherit
-    /// from its `src` attribute. Rare outside iframe context.
-    Src,
-}
-
-impl fmt::Display for AllowlistSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SelfOrigin => f.write_str("self"),
-            Self::Wildcard => f.write_str("*"),
-            Self::Origin(o) => write!(f, "\"{o}\""),
-            Self::Src => f.write_str("src"),
-        }
+enum_builder! {
+    /// Allowlist token shapes per the W3C Permissions Policy spec.
+    ///
+    /// The deny-all directive is represented by an empty
+    /// [`PermissionsPolicyDirective::allow_list`] (no `None` variant
+    /// here) so that the typed state and the wire form
+    /// (`feature=()`) line up one-to-one.
+    ///
+    /// Specific origins (e.g. `"https://example.com"`) land in the
+    /// auto-generated [`Unknown`](Self::Unknown) variant — use
+    /// [`Self::origin`] to construct one with the required RFC 8941
+    /// sf-string double-quoting baked in.
+    @String
+    pub enum AllowlistSource {
+        /// `self` — same-origin only (no surrounding quotes on the
+        /// wire, unlike CSP).
+        SelfOrigin => "self",
+        /// `*` — any origin.
+        Wildcard => "*",
+        /// `src` — legacy `<iframe allow=…>` token, lets the iframe
+        /// inherit from its `src` attribute. Rare outside iframe
+        /// context.
+        Src => "src",
     }
 }
 
 impl AllowlistSource {
-    /// Parse a single allowlist token (one of `self`, `*`, `src`, or a
-    /// quoted origin). Returns `None` on a structurally invalid token
-    /// — caller decides whether to drop the directive or just the
-    /// token.
+    /// Construct an origin allow-list source from a bare origin string
+    /// — the surrounding RFC 8941 sf-string double-quotes are added
+    /// for you. Pass `https://example.com`, not `"https://example.com"`.
+    #[must_use]
+    pub fn origin(origin: impl AsRef<str>) -> Self {
+        Self::Unknown(format!("\"{}\"", origin.as_ref()))
+    }
+
+    /// Parse a single allowlist token. Returns `None` on a
+    /// structurally invalid token — caller decides whether to drop
+    /// the directive or just the token.
     pub(crate) fn from_token(s: &str) -> Option<Self> {
-        if s.eq_ignore_ascii_case("self") {
-            Some(Self::SelfOrigin)
-        } else if s == "*" {
-            Some(Self::Wildcard)
-        } else if s.eq_ignore_ascii_case("src") {
-            Some(Self::Src)
-        } else if let Some(inner) = s.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        if let Some(inner) = s.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+            // Quoted sf-string origin. Keep the quotes on the stored
+            // value so Display (macro-generated for `Unknown`) emits
+            // the canonical wire form unchanged.
             if inner.is_empty() {
                 None
             } else {
-                Some(Self::Origin(Cow::Owned(inner.to_owned())))
+                Some(Self::Unknown(format!("\"{inner}\"")))
             }
         } else {
-            None
+            // Bare keyword: macro-generated `From<&str>` matches
+            // `self`/`*`/`src` case-insensitively and falls through
+            // to `Unknown(String)` otherwise. We reject the latter —
+            // only quoted strings are valid non-keyword tokens per
+            // the spec.
+            match Self::from(s) {
+                Self::Unknown(_) => None,
+                parsed => Some(parsed),
+            }
         }
     }
 }
