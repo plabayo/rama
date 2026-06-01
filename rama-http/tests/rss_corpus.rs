@@ -107,6 +107,167 @@ async fn corpus_round_trips_losslessly() {
     }
 }
 
+/// Happy-path fixtures must preserve every significant text/attribute value
+/// through parse -> serialize. Strengthens `corpus_round_trips_losslessly`:
+/// model-equality alone hides parser-side drops (both parses miss the field,
+/// so the assertion holds even though data was lost). This harvest checks
+/// every non-date token in a recognised namespace from the input also
+/// appears in the serialized output, catching silent parser drops.
+///
+/// Edge-case fixtures (filename `edge-*`) are excluded — they deliberately
+/// exercise behaviour where some input is expected to drop (e.g. the
+/// `<source>` containment regressions).
+#[tokio::test]
+async fn happy_path_fixtures_preserve_significant_tokens() {
+    use std::collections::HashSet;
+    for path in corpus_files() {
+        if name(&path).starts_with("edge-") {
+            continue;
+        }
+        let bytes = load(&path);
+        let feed = parse_bytes(bytes.clone()).await;
+        let out = serialize(feed).await.unwrap();
+        let input_tokens: HashSet<String> =
+            harvest_significant_tokens(&bytes).into_iter().collect();
+        let output_tokens: HashSet<String> = harvest_significant_tokens(&out).into_iter().collect();
+        // Numeric tokens may reformat losslessly (e.g. "42.0" -> "42")
+        // because Duration/u64/etc. don't preserve trailing zeros. Treat
+        // a missing string token as found if its f64 value matches any
+        // output token's f64 value.
+        let output_numeric: HashSet<u64> = output_tokens
+            .iter()
+            .filter_map(|s| s.parse::<f64>().ok())
+            .map(f64::to_bits)
+            .collect();
+        let missing: Vec<&String> = input_tokens
+            .difference(&output_tokens)
+            .filter(|s| {
+                s.parse::<f64>()
+                    .ok()
+                    .is_none_or(|v| !output_numeric.contains(&v.to_bits()))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{}: parse -> serialize dropped tokens: {missing:?}",
+            name(&path),
+        );
+    }
+}
+
+/// Walk a feed XML and collect every "significant" text + attribute value
+/// from elements in a recognised namespace. Filters out tokens that are
+/// expected to be reformatted by our writer (RFC 822/3339 date strings),
+/// namespace-declaration URIs (xmlns attribute values), and pure whitespace.
+fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
+    use quick_xml::NsReader;
+    use quick_xml::events::Event;
+    use quick_xml::name::ResolveResult;
+
+    const RECOGNISED_NS: &[&[u8]] = &[
+        b"http://www.w3.org/2005/Atom",
+        b"http://www.itunes.com/dtds/podcast-1.0.dtd",
+        b"https://podcastindex.org/namespace/1.0",
+        b"http://purl.org/dc/elements/1.1/",
+        b"http://search.yahoo.com/mrss/",
+        b"http://purl.org/rss/1.0/modules/content/",
+        b"http://podlove.org/simple-chapters",
+    ];
+
+    fn is_recognised(rr: &ResolveResult<'_>) -> bool {
+        match rr {
+            // RSS core has no namespace; the channel/item elements are
+            // always significant.
+            ResolveResult::Unbound => true,
+            ResolveResult::Bound(n) => RECOGNISED_NS.contains(&n.0),
+            ResolveResult::Unknown(_) => false,
+        }
+    }
+
+    // RFC 822 ("Mon, 12 May 2025 09:00:00 GMT") and RFC 3339
+    // ("2025-05-12T09:00:00Z") both reformat through our parser; exclude.
+    fn looks_like_date(s: &str) -> bool {
+        (s.contains(", ") && (s.ends_with("GMT") || s.ends_with("UTC")))
+            || (s.len() >= 10
+                && s.as_bytes().get(4) == Some(&b'-')
+                && s.as_bytes().get(7) == Some(&b'-')
+                && s.contains('T'))
+    }
+
+    let mut nsr = NsReader::from_reader(xml);
+    nsr.config_mut().trim_text(true);
+    let mut tokens = Vec::new();
+    let mut buf = Vec::new();
+    // Stack of "recognised" flags per open element — the text inside
+    // inherits the recognition of its enclosing element.
+    let mut stack: Vec<bool> = Vec::new();
+
+    loop {
+        buf.clear();
+        let (rr, ev) = match nsr.read_resolved_event_into(&mut buf) {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        fn harvest_attrs(
+            e: &quick_xml::events::BytesStart<'_>,
+            recognised: bool,
+            tokens: &mut Vec<String>,
+        ) {
+            if !recognised {
+                return;
+            }
+            for attr in e.attributes().filter_map(Result::ok) {
+                if attr.key.as_ref().starts_with(b"xmlns") {
+                    continue;
+                }
+                if let Ok(v) = attr.unescape_value() {
+                    let v = v.trim();
+                    if !v.is_empty() && !looks_like_date(v) {
+                        tokens.push(v.to_owned());
+                    }
+                }
+            }
+        }
+        match ev {
+            Event::Start(e) => {
+                let recognised = is_recognised(&rr);
+                harvest_attrs(&e, recognised, &mut tokens);
+                stack.push(recognised);
+            }
+            Event::Empty(e) => {
+                let recognised = is_recognised(&rr);
+                harvest_attrs(&e, recognised, &mut tokens);
+            }
+            Event::Text(e) => {
+                if *stack.last().unwrap_or(&true) {
+                    if let Ok(t) = e.unescape() {
+                        let t = t.trim();
+                        if !t.is_empty() && !looks_like_date(t) {
+                            tokens.push(t.to_owned());
+                        }
+                    }
+                }
+            }
+            Event::CData(e) => {
+                if *stack.last().unwrap_or(&true)
+                    && let Ok(s) = std::str::from_utf8(e.as_ref())
+                {
+                    let s = s.trim();
+                    if !s.is_empty() {
+                        tokens.push(s.to_owned());
+                    }
+                }
+            }
+            Event::End(_) => {
+                stack.pop();
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    tokens
+}
+
 /// Drain a [`Feed`] through its async stream writer into a single buffer.
 async fn serialize(feed: Feed) -> Result<Vec<u8>, rama_core::error::BoxError> {
     match feed {
