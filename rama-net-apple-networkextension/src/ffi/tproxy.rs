@@ -374,11 +374,6 @@ pub struct NwEgressParameters {
     ///
     /// See [`crate::tproxy::NwEgressParameters::preserve_original_meta_data`].
     pub preserve_original_meta_data: bool,
-    /// When `false` (the default), Swift sets `NWParameters.preferNoProxies =
-    /// true` on the egress `NWConnection` so the kernel skips any system /
-    /// PAC HTTP/SOCKS proxy on our egress hop. Guards against a stacked-proxy
-    /// loop where the system proxy bounces our egress back to us.
-    ///
     /// See [`crate::tproxy::NwEgressParameters::allow_system_proxy`].
     pub allow_system_proxy: bool,
 }
@@ -794,12 +789,8 @@ mod tests {
         assert!(ffi.preserve_original_meta_data);
     }
 
-    /// Locks in `allow_system_proxy: false` as the FFI default for
-    /// [`NwEgressParameters`]. Flipping this default would re-introduce
-    /// the stacked-proxy loop when a user has a system HTTP/SOCKS proxy
-    /// (Charles, Proxyman, corporate PAC, …) enabled: our egress
-    /// `NWConnection` would be routed back through that proxy, the
-    /// proxy would re-emit, and we'd intercept again.
+    /// Pin `allow_system_proxy: false` default — flipping re-enables
+    /// the stacked-proxy loop.
     #[test]
     fn ffi_egress_params_allow_system_proxy_default_round_trip() {
         let rust = tproxy::NwEgressParameters::default();
@@ -808,9 +799,7 @@ mod tests {
         assert!(!ffi.allow_system_proxy);
     }
 
-    /// Round-trips `allow_system_proxy: true` so the opt-in path is
-    /// covered too (the default test alone leaves a regression that
-    /// hard-codes `false` undetectable).
+    /// Opt-in round-trip — catches a regression that hard-codes `false`.
     #[test]
     fn ffi_egress_params_allow_system_proxy_opt_in_round_trip() {
         let rust = tproxy::NwEgressParameters {

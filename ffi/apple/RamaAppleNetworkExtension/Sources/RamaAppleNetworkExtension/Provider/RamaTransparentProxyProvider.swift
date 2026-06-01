@@ -1196,40 +1196,18 @@ extension RamaTransparentProxyProvider {
 /// (see `handleTcpFlow`), so we have a single canonical timeout
 /// instead of two with mismatched precision.
 ///
-/// ## `preferNoProxies` default
-///
-/// By default — i.e. when the engine hasn't explicitly opted in via
-/// `NwEgressParameters.allow_system_proxy = true` — this sets
-/// `params.preferNoProxies = true`. That tells the macOS Network
-/// framework to skip any HTTP/SOCKS proxy configured at the system or
-/// PAC level for *our* egress hop.
-///
-/// Why: when a user has Charles, Proxyman, BurpSuite, a corporate PAC,
-/// or any other system-level HTTP proxy enabled, the kernel would
-/// otherwise re-route our egress `NWConnection` back through that
-/// proxy, which re-emits the traffic, which our
-/// `NETransparentProxyProvider` intercepts again — an infinite loop. A
-/// transparent proxy that has already decided to intercept a flow has
-/// no use case for re-entering the system proxy on the egress hop;
-/// the system proxy logically sits *above* the transparent proxy, not
-/// below it. This is the framework-blessed knob for the scenario (see
-/// Apple's `NWParameters.preferNoProxies` documentation and TN3134).
-///
-/// Set `allow_system_proxy = true` only when you intentionally want
-/// the egress to honour the user's system proxy (e.g. you've routed
-/// the extension's egress through your own external interception tool
-/// and accept responsibility for breaking the loop yourself).
+/// Sets `preferNoProxies = true` unless the engine opts in via
+/// `allow_system_proxy` — breaks the stacked-proxy loop documented in
+/// the `tproxy` module preamble (Apple TN3134). Only scopes the
+/// SystemConfiguration proxy table; other NE providers / VPNs are
+/// unaffected.
 func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     let params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
     if let opts {
         applyNwEgressParameters(opts.parameters, to: params)
     }
-    // Default-deny the system proxy on egress. When `opts` is nil we
-    // fall through to the same default the Rust side carries
-    // (`allow_system_proxy: false`), so the loop guard is in effect
-    // regardless of whether the engine supplied custom egress options.
-    let allowSystemProxy = opts?.parameters.allow_system_proxy ?? false
-    params.preferNoProxies = !allowSystemProxy
+    // `opts == nil` matches Rust-side default (`allow_system_proxy: false`).
+    params.preferNoProxies = !(opts?.parameters.allow_system_proxy ?? false)
     return params
 }
 

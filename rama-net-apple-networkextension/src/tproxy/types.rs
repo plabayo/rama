@@ -149,27 +149,10 @@ pub struct NwEgressParameters {
     /// it if you need downstream observers to see this extension as the
     /// source.
     pub preserve_original_meta_data: bool,
-    /// When `false` (the default), Swift sets `NWParameters.preferNoProxies =
-    /// true` on the egress `NWConnection` so the kernel skips any HTTP/SOCKS
-    /// proxy configured at the system or PAC level for *our* egress hop.
-    ///
-    /// This is the framework-level guard against a self-reinforcing
-    /// stacked-proxy loop: when the user has Charles, Proxyman, BurpSuite,
-    /// a corporate PAC, an antivirus MITM gateway, or any other system-level
-    /// HTTP proxy enabled, our intercepted flow's egress `NWConnection`
-    /// would otherwise be re-routed back through that proxy, which itself
-    /// re-emits the traffic, which we then intercept again — an infinite
-    /// loop. A `NETransparentProxyProvider` that has already chosen to
-    /// intercept a flow has no use case for re-entering the system proxy on
-    /// the egress hop; the system proxy logically sits *above* the
-    /// transparent proxy, not below it.
-    ///
-    /// Set to `true` only when you intentionally want the egress to honour
-    /// the user's system proxy — e.g. nested debugging where you've routed
-    /// the extension's egress through your own external interception tool
-    /// and accept responsibility for breaking the loop yourself (typically
-    /// by carving the rama extension's destinations out of the upstream
-    /// proxy's scope).
+    /// Default `false` → Swift sets `preferNoProxies = true` on egress,
+    /// bypassing system / PAC HTTP/SOCKS proxies to break the stacked-proxy
+    /// loop (see [`crate::tproxy`]). Only scopes the SystemConfiguration
+    /// proxy table; other NE providers and VPNs are unaffected.
     pub allow_system_proxy: bool,
 }
 
