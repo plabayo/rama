@@ -266,8 +266,18 @@ struct AtomReader<R: AsyncBufRead + Unpin + Send> {
     in_feed_contributor: bool,
     current_author: AtomPerson,
     current_contributor: AtomPerson,
-    in_source: bool,
+    /// Nesting depth of open `<atom:source>` elements. Zero means we are
+    /// not currently inside a source. The outermost source is depth 1; a
+    /// (malformed) nested `<source>` inside another bumps to 2, 3, … so the
+    /// inner `</source>` does not prematurely finalise the outer one.
+    /// Only depth-1 children mutate [`Self::current_source`]; deeper ones
+    /// are silently dropped (or in strict mode rejected at the Start).
+    source_depth: u32,
     current_source: AtomSource,
+    /// Type attribute of the source's `<title>` — kept separate from the
+    /// outer entry's `current_title_type` so a `<source><title type="html">`
+    /// can't leak its type back to a still-open outer `<title>`.
+    current_source_title_type: String,
 
     current_title_type: String,
     current_summary_type: String,
@@ -303,12 +313,13 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             in_feed_contributor: false,
             current_author: AtomPerson::new(""),
             current_contributor: AtomPerson::new(""),
-            in_source: false,
+            source_depth: 0,
             current_source: AtomSource {
                 id: None,
                 title: None,
                 updated: None,
             },
+            current_source_title_type: String::from("text"),
             current_title_type: String::from("text"),
             current_summary_type: String::from("text"),
             current_content_type: String::from("text"),
@@ -459,7 +470,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             Ok(Action::Continue)
                         }
                     }
-                    elem::AUTHOR if !self.in_source => {
+                    elem::AUTHOR if self.source_depth == 0 => {
                         self.current_author = AtomPerson::new("");
                         if self.in_entry {
                             self.in_author = true;
@@ -468,7 +479,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    elem::CONTRIBUTOR if !self.in_source => {
+                    elem::CONTRIBUTOR if self.source_depth == 0 => {
                         self.current_contributor = AtomPerson::new("");
                         if self.in_entry {
                             self.in_contributor = true;
@@ -477,16 +488,23 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    "source" if self.in_entry && !self.in_source => {
-                        self.in_source = true;
-                        self.current_source = AtomSource {
-                            id: None,
-                            title: None,
-                            updated: None,
-                        };
+                    elem::SOURCE if self.in_entry => {
+                        self.source_depth += 1;
+                        if self.source_depth == 1 {
+                            self.current_source = AtomSource {
+                                id: None,
+                                title: None,
+                                updated: None,
+                            };
+                            self.current_source_title_type = String::from("text");
+                        } else if self.strict {
+                            return Err(FeedParseError::new(
+                                "Atom <source> may not be nested inside another <source>",
+                            ));
+                        }
                         Ok(Action::Continue)
                     }
-                    "link" if !self.in_source => {
+                    elem::LINK if self.source_depth == 0 => {
                         let link = atom_link_from_attrs(&e);
                         if self.in_entry {
                             self.current_entry.links.push(link);
@@ -495,7 +513,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         }
                         Ok(Action::Continue)
                     }
-                    "category" if !self.in_source => {
+                    elem::CATEGORY if self.source_depth == 0 => {
                         let cat = atom_category_from_attrs(&e);
                         if self.in_entry {
                             self.current_entry.categories.push(cat);
@@ -507,29 +525,29 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     elem::TITLE => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
-                        self.start_typed_text("title", t).await
+                        self.start_typed_text(elem::TITLE, t).await
                     }
-                    "summary" if self.in_entry => {
+                    elem::SUMMARY if self.in_entry => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
-                        self.start_typed_text("summary", t).await
+                        self.start_typed_text(elem::SUMMARY, t).await
                     }
-                    "content" if self.in_entry && !self.in_source => {
+                    elem::CONTENT if self.in_entry && self.source_depth == 0 => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
-                        self.start_typed_text("content", t).await
+                        self.start_typed_text(elem::CONTENT, t).await
                     }
                     elem::RIGHTS => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
-                        self.start_typed_text("rights", t).await
+                        self.start_typed_text(elem::RIGHTS, t).await
                     }
-                    "subtitle" if !self.in_entry => {
+                    elem::SUBTITLE if !self.in_entry => {
                         let t = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                         drop(e);
-                        self.start_typed_text("subtitle", t).await
+                        self.start_typed_text(elem::SUBTITLE, t).await
                     }
-                    "generator" if !self.in_source => {
+                    elem::GENERATOR if self.source_depth == 0 => {
                         self.pending_generator = Some(AtomGenerator {
                             value: String::new(),
                             uri: attr_value(&e, attr::URI),
@@ -569,7 +587,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     return Ok(Action::Continue);
                 }
                 match local {
-                    "link" if !self.in_source => {
+                    elem::LINK if self.source_depth == 0 => {
                         let link = atom_link_from_attrs(&e);
                         if self.in_entry {
                             self.current_entry.links.push(link);
@@ -577,7 +595,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             self.header.links.push(link);
                         }
                     }
-                    "category" if !self.in_source => {
+                    elem::CATEGORY if self.source_depth == 0 => {
                         let cat = atom_category_from_attrs(&e);
                         if self.in_entry {
                             self.current_entry.categories.push(cat);
@@ -585,7 +603,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             self.header.categories.push(cat);
                         }
                     }
-                    "content" if self.in_entry && !self.in_source => {
+                    elem::CONTENT if self.in_entry && self.source_depth == 0 => {
                         // Out-of-line <content src=".." type=".."/>
                         if let Some(src) = attr_value(&e, attr::SRC) {
                             let type_ = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
@@ -665,14 +683,16 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             self.depth -= 1;
             // Children of `<atom:source>` belong to the source, not the
             // enclosing entry. The text/html path is intercepted by the
-            // `in_source` branch in `handle_end`, but the xhtml path
-            // bypasses that (it consumes events inline and never returns an
-            // `Event::End` to `handle_end`) so we have to route here
-            // explicitly. AtomSource only carries id/title/updated, so any
-            // xhtml-typed source child other than `<title>` has nowhere to
-            // land and is intentionally dropped.
-            if self.in_source {
-                if which == elem::TITLE {
+            // source branch in `handle_end`, but the xhtml path bypasses
+            // that (it consumes events inline and never returns an
+            // `Event::End` to `handle_end`) so we route here explicitly.
+            // AtomSource only carries id/title/updated, so any xhtml-typed
+            // source child other than `<title>` has nowhere to land and
+            // is intentionally dropped. Only the OUTERMOST source's title
+            // is captured — inner (malformed nested) sources' xhtml is
+            // discarded entirely.
+            if self.source_depth > 0 {
+                if self.source_depth == 1 && which == elem::TITLE {
                     self.current_source.title = Some(AtomText::xhtml(xml));
                 }
                 return Ok(Action::Continue);
@@ -709,6 +729,17 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             }
             return Ok(Action::Continue);
         }
+        // Inside a `<source>` only `<title>` is meaningful (id and updated
+        // carry no type); writing into the outer entry's `current_*_type`
+        // would leak the source's typing back to the entry. Keep the
+        // source's title type isolated and ignore the rest. Inside a
+        // nested (malformed) source the typing is discarded entirely.
+        if self.source_depth > 0 {
+            if self.source_depth == 1 && which == elem::TITLE {
+                self.current_source_title_type = t;
+            }
+            return Ok(Action::Continue);
+        }
         match which {
             elem::TITLE => self.current_title_type = t,
             elem::SUMMARY => self.current_summary_type = t,
@@ -734,17 +765,14 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         if self.in_feed_contributor && ns == Ns::Atom {
             return Ok(self.handle_person_end(local, text, &PersonKind::FeedContributor));
         }
-        // Source sub-elements: route into current_source, then close on </source>.
-        if self.in_source && ns == Ns::Atom {
-            match local {
-                elem::ID => self.current_source.id = Some(text),
-                elem::TITLE => {
-                    self.current_source.title =
-                        Some(make_atom_text(&self.current_title_type, text));
-                }
-                elem::UPDATED => self.current_source.updated = parse_rfc3339_lax(&text),
-                elem::SOURCE => {
-                    self.in_source = false;
+        // Source sub-elements: route into current_source, then close on the
+        // outermost </source>. Inner sources (malformed nesting) just
+        // decrement the depth — neither their children nor their close
+        // touch the outer source's accumulated state.
+        if self.source_depth > 0 && ns == Ns::Atom {
+            if local == elem::SOURCE {
+                self.source_depth -= 1;
+                if self.source_depth == 0 {
                     let source = std::mem::replace(
                         &mut self.current_source,
                         AtomSource {
@@ -755,7 +783,19 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     );
                     self.current_entry.source = Some(source);
                 }
-                _ => {}
+                return Ok(Action::Continue);
+            }
+            // Only the outermost source's children mutate current_source.
+            if self.source_depth == 1 {
+                match local {
+                    elem::ID => self.current_source.id = Some(text),
+                    elem::TITLE => {
+                        self.current_source.title =
+                            Some(make_atom_text(&self.current_source_title_type, text));
+                    }
+                    elem::UPDATED => self.current_source.updated = parse_rfc3339_lax(&text),
+                    _ => {}
+                }
             }
             return Ok(Action::Continue);
         }
@@ -975,7 +1015,7 @@ where
         match ev {
             Event::Start(e) => {
                 if depth == 0 && !saw_wrapper {
-                    let is_div = e.local_name().as_ref() == b"div";
+                    let is_div = e.local_name().as_ref() == elem::DIV.as_bytes();
                     let in_xhtml_ns =
                         matches!(rr, ResolveResult::Bound(n) if n.0 == xhtml_ns_bytes);
                     if strict && !(is_div && in_xhtml_ns) {

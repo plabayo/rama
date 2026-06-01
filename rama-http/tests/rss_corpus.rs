@@ -263,6 +263,52 @@ async fn atom_xhtml_source_title_does_not_leak_into_entry() {
     );
 }
 
+/// Nested `<source>` is invalid Atom. A naive parser using a single
+/// `in_source` boolean lets the inner `</source>` prematurely finalise the
+/// outer one and the outer source's remaining children then leak into the
+/// enclosing entry. With proper depth tracking the outer source preserves
+/// its full state and only the inner is dropped. Strict mode rejects the
+/// nesting outright.
+#[tokio::test]
+async fn atom_nested_source_does_not_corrupt_entry() {
+    let bytes = load(&corpus_dir().join("edge-atom-source-nested.atom.xml"));
+
+    // Lenient: outer source preserved verbatim, inner dropped, entry clean.
+    let Feed::Atom(feed) = parse_bytes(bytes.clone()).await else {
+        panic!("expected Atom");
+    };
+    let entry = &feed.entries[0];
+    assert_eq!(entry.id, "https://aggregator.example.com/republished/1");
+    assert_eq!(entry.links.len(), 1, "exactly the entry's own <link>");
+
+    let src = entry.source.as_ref().expect("source parsed");
+    assert_eq!(src.id.as_deref(), Some("https://outer.example.com/feed"));
+    // The outer source's title must NOT be overwritten by the inner.
+    let title = src.title.as_ref().expect("outer source has a title");
+    assert_eq!(title.value, "Outer source");
+    // The outer <updated>, which appears AFTER the inner </source>, must
+    // still land on the outer source — proving the inner </source> did
+    // not finalise the outer prematurely.
+    assert!(
+        src.updated.is_some(),
+        "outer source <updated> after inner </source> must be captured",
+    );
+
+    // Strict: the nested <source> Start raises an error.
+    let cursor = std::io::Cursor::new(bytes);
+    let reader = tokio::io::BufReader::new(cursor);
+    let stream = FeedStream::new_strict(reader)
+        .await
+        .expect("feed header parses");
+    let collect = stream.collect().await;
+    let err = collect.expect_err("strict mode must reject nested <source>");
+    assert!(
+        err.error.message.contains("nested"),
+        "error mentions nested source: {}",
+        err.error,
+    );
+}
+
 /// Atom xhtml text constructs must preserve whitespace between and around
 /// inline elements. The outer reader runs with `trim_text(true)` for core
 /// fields; the xhtml capture must toggle that off so significant spaces
