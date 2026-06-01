@@ -1,5 +1,7 @@
 //! Podcasting 2.0 namespace extension (<https://podcastindex.org/namespace/1.0>).
 
+use std::time::Duration;
+
 use jiff::Timestamp;
 
 /// A `podcast:transcript` element.
@@ -18,11 +20,12 @@ pub struct PodcastChapters {
     pub type_: String,
 }
 
-/// A `podcast:soundbite` element.
+/// A `podcast:soundbite` element. Podcasting 2.0 spec uses decimal seconds
+/// for both start and duration (sub-second precision is meaningful).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PodcastSoundbite {
-    pub start_time: f64,
-    pub duration: f64,
+    pub start_time: Duration,
+    pub duration: Duration,
     pub title: Option<String>,
 }
 

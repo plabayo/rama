@@ -1,12 +1,16 @@
 //! Media RSS extension (<http://search.yahoo.com/mrss/>).
 
+use std::time::Duration;
+
 /// A single `media:content` element.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MediaContent {
     pub url: Option<String>,
     pub type_: Option<String>,
     pub medium: Option<String>,
-    pub duration: Option<u64>,
+    /// Media RSS spec carries `duration` as integer seconds. Sub-second
+    /// precision is dropped on serialise.
+    pub duration: Option<Duration>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub file_size: Option<u64>,

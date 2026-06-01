@@ -82,7 +82,9 @@ fn media_content_from_attrs(e: &Attrs<'_>) -> MediaContent {
         url: attr_value(e, attr::URL),
         type_: attr_value(e, attr::TYPE),
         medium: attr_value(e, attr::MEDIUM),
-        duration: attr_value(e, attr::DURATION).and_then(|v| v.parse().ok()),
+        duration: attr_value(e, attr::DURATION)
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(std::time::Duration::from_secs),
         width: attr_value(e, attr::WIDTH).and_then(|v| v.parse().ok()),
         height: attr_value(e, attr::HEIGHT).and_then(|v| v.parse().ok()),
         file_size: attr_value(e, attr::FILE_SIZE).and_then(|v| v.parse().ok()),
@@ -136,19 +138,21 @@ fn podcast_trailer_from_attrs(e: &Attrs<'_>) -> PodcastTrailer {
     }
 }
 
-/// Parse an `f64` attribute, rejecting non-finite values (NaN/+Inf/-Inf).
-/// Most podcast clients refuse such timestamps and some crash on them.
-fn finite_f64(e: &Attrs<'_>, name: &str) -> f64 {
+/// Parse a non-negative decimal-seconds attribute into a [`Duration`].
+/// Rejects non-finite (NaN/+Inf/-Inf) and negative values — most podcast
+/// clients refuse such timestamps and some crash on them. Returns
+/// [`Duration::ZERO`] when the attribute is absent or unparseable.
+fn duration_attr(e: &Attrs<'_>, name: &str) -> std::time::Duration {
     attr_value(e, name)
         .and_then(|v| v.parse::<f64>().ok())
-        .filter(|v| v.is_finite())
+        .and_then(|v| std::time::Duration::try_from_secs_f64(v).ok())
         .unwrap_or_default()
 }
 
 fn podcast_soundbite_from_attrs(e: &Attrs<'_>) -> PodcastSoundbite {
     PodcastSoundbite {
-        start_time: finite_f64(e, attr::START_TIME),
-        duration: finite_f64(e, attr::DURATION),
+        start_time: duration_attr(e, attr::START_TIME),
+        duration: duration_attr(e, attr::DURATION),
         title: None,
     }
 }

@@ -178,8 +178,14 @@ pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
     }
     for sb in &pc.soundbites {
         let mut tag = BytesStart::new(podcast::SOUNDBITE_TAG);
-        tag.push_attribute((attr::START_TIME, sb.start_time.to_string().as_str()));
-        tag.push_attribute((attr::DURATION, sb.duration.to_string().as_str()));
+        tag.push_attribute((
+            attr::START_TIME,
+            sb.start_time.as_secs_f64().to_string().as_str(),
+        ));
+        tag.push_attribute((
+            attr::DURATION,
+            sb.duration.as_secs_f64().to_string().as_str(),
+        ));
         if let Some(title) = &sb.title {
             w.write_event(Event::Start(tag))?;
             w.write_event(Event::Text(BytesText::new(title)))?;
@@ -387,7 +393,9 @@ pub(in crate::protocols::rss) fn write_media_item<W: std::io::Write>(
             tag.push_attribute((attr::MEDIUM, medium.as_str()));
         }
         if let Some(d) = mc.duration {
-            tag.push_attribute((attr::DURATION, d.to_string().as_str()));
+            // Media RSS spec: integer seconds. Sub-second precision (if any)
+            // is intentionally dropped here.
+            tag.push_attribute((attr::DURATION, d.as_secs().to_string().as_str()));
         }
         if let Some(width) = mc.width {
             tag.push_attribute((attr::WIDTH, width.to_string().as_str()));
