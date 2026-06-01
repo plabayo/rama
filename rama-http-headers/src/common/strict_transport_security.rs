@@ -40,7 +40,7 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 /// use rama_http_headers::StrictTransportSecurity;
 ///
 /// let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
-///     .with_preload();
+///     .with_preload(true);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct StrictTransportSecurity {
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn test_encode_canonical_order() {
         let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
-            .with_preload();
+            .with_preload(true);
         let map = super::super::test_encode(sts);
         let raw = map
             .get(StrictTransportSecurity::name())
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn test_encode_preload_excluding_subdomains() {
         let sts = StrictTransportSecurity::excluding_subdomains_for_max_seconds(31_536_000)
-            .with_preload();
+            .with_preload(true);
         let map = super::super::test_encode(sts);
         let raw = map
             .get(StrictTransportSecurity::name())
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn test_preload_round_trip_idempotent() {
         let sts = StrictTransportSecurity::including_subdomains_for_max_seconds(31_536_000)
-            .with_preload();
+            .with_preload(true);
         let map = super::super::test_encode(sts.clone());
         let raw = map
             .get(StrictTransportSecurity::name())

@@ -3,6 +3,7 @@ use std::fmt;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::collections::smallvec::SmallVec;
+use rama_utils::macros::generate_set_and_with;
 
 use crate::util::{self};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -110,23 +111,24 @@ impl ReferrerPolicy {
         })
     }
 
-    /// Append a fallback policy.
-    ///
-    /// Multiple calls compound; emitted order is preserved on the wire
-    /// (oldest-known first → newest-known last). Browsers walk right-
-    /// to-left and select the last token they recognise, so the
-    /// *appended* policy is the one a modern client will pick — call
-    /// this on your older / pre-CSP3 baseline and pass the modern
-    /// token you want.
-    ///
-    /// The argument's full policy list is appended in order (so
-    /// chaining preserves any fallback chain it already carried).
-    #[must_use]
-    pub fn with_fallback(mut self, policy: Self) -> Self {
-        let (head, tail) = (policy.0.head, policy.0.tail);
-        self.0.tail.push(head);
-        self.0.tail.extend(tail);
-        self
+    generate_set_and_with! {
+        /// Append a fallback policy.
+        ///
+        /// Multiple calls compound; emitted order is preserved on the
+        /// wire (oldest-known first → newest-known last). Browsers
+        /// walk right-to-left and select the last token they
+        /// recognise, so the *appended* policy is the one a modern
+        /// client will pick — call this on your older / pre-CSP3
+        /// baseline and pass the modern token you want.
+        ///
+        /// The argument's full policy list is appended in order (so
+        /// chaining preserves any fallback chain it already carried).
+        pub fn fallback(mut self, policy: Self) -> Self {
+            let (head, tail) = (policy.0.head, policy.0.tail);
+            self.0.tail.push(head);
+            self.0.tail.extend(tail);
+            self
+        }
     }
 }
 

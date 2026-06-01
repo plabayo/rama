@@ -109,11 +109,11 @@ impl CrossOriginEmbedderPolicy {
         }
     }
 
-    /// Chainable: set the `report-to` endpoint name.
-    #[must_use]
-    pub fn with_report_to(mut self, endpoint: impl Into<Cow<'static, str>>) -> Self {
-        self.report_to = Some(endpoint.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn report_to(mut self, endpoint: impl Into<Cow<'static, str>>) -> Self {
+            self.report_to = Some(endpoint.into());
+            self
+        }
     }
 }
 
@@ -173,11 +173,11 @@ impl CrossOriginEmbedderPolicyReportOnly {
         }
     }
 
-    /// Chainable: set the `report-to` endpoint name.
-    #[must_use]
-    pub fn with_report_to(mut self, endpoint: impl Into<Cow<'static, str>>) -> Self {
-        self.report_to = Some(endpoint.into());
-        self
+    rama_utils::macros::generate_set_and_with! {
+        pub fn report_to(mut self, endpoint: impl Into<Cow<'static, str>>) -> Self {
+            self.report_to = Some(endpoint.into());
+            self
+        }
     }
 }
 
