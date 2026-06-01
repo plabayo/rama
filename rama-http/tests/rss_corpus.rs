@@ -483,6 +483,61 @@ async fn podlove_chapters_preserved() {
     );
 }
 
+/// Apple Podcasts' canonical category shape nests subcategories inside their
+/// parent `<itunes:category>`. The parent name lives on the Start event's
+/// `text` attribute; a parser that only handles the self-closing form silently
+/// drops every top-level category name. Regression for an audit finding.
+#[tokio::test]
+async fn itunes_nested_categories_parent_text_preserved() {
+    let bytes = load(&corpus_dir().join("podcast-itunes.rss.xml"));
+    let Feed::Rss2(feed) = parse_bytes(bytes).await else {
+        panic!("expected RSS");
+    };
+    let itunes = feed.extensions.itunes.as_deref().expect("itunes feed ext");
+    assert_eq!(
+        itunes.categories,
+        vec!["Technology".to_owned(), "Software How-To".to_owned()],
+        "parent <itunes:category text=...> must be captured alongside its nested subcategory",
+    );
+}
+
+/// `<itunes:category>` appears in three wire shapes in the wild — all three
+/// must flatten to the same `categories: Vec<String>`.
+///
+/// 1. Self-closing empty (common in flat publisher feeds: BBC, NPR, …).
+/// 2. Start + nested empty subcategory + End (Apple canonical).
+/// 3. Start + End with no children (rare but valid).
+#[tokio::test]
+async fn itunes_category_all_three_wire_shapes_flatten() {
+    const BYTES: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>T</title>
+    <link>https://example.com</link>
+    <description>D</description>
+    <itunes:category text="News"/>
+    <itunes:category text="Technology">
+      <itunes:category text="Software How-To"/>
+    </itunes:category>
+    <itunes:category text="Education"></itunes:category>
+  </channel>
+</rss>"#;
+    let Feed::Rss2(feed) = parse_bytes(BYTES.to_vec()).await else {
+        panic!("expected RSS");
+    };
+    let itunes = feed.extensions.itunes.as_deref().expect("itunes feed ext");
+    assert_eq!(
+        itunes.categories,
+        vec![
+            "News".to_owned(),
+            "Technology".to_owned(),
+            "Software How-To".to_owned(),
+            "Education".to_owned(),
+        ],
+        "every wire shape of <itunes:category> must contribute its name",
+    );
+}
+
 /// Multiple `<enclosure>` elements on one item must all survive the round-trip.
 #[tokio::test]
 async fn multiple_enclosures_preserved() {

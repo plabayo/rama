@@ -15,8 +15,13 @@
     <itunes:type>episodic</itunes:type>
     <itunes:explicit>false</itunes:explicit>
     <itunes:image href="https://example.com/podcast/cover.jpg"/>
-    <itunes:category text="Technology"/>
-    <itunes:category text="Software How-To"/>
+    <!-- Apple Podcasts canonical category shape: subcategory is nested inside
+         the parent <itunes:category>, NOT a flat sibling. The parser must
+         pick up the parent's `text` attribute on the Start event (not only
+         on Empty), or the parent name is silently lost. -->
+    <itunes:category text="Technology">
+      <itunes:category text="Software How-To"/>
+    </itunes:category>
     <itunes:owner>
       <itunes:name>Alice</itunes:name>
       <itunes:email>alice@example.com</itunes:email>

@@ -557,6 +557,20 @@ impl FeedExtAcc {
                     self.has_itunes = true;
                 }
             }
+            (Ns::ITunes, itunes::CATEGORY) => {
+                // Apple's canonical shape nests subcategories inside their
+                // parent: `<itunes:category text="Technology">
+                //   <itunes:category text="Software How-To"/>
+                // </itunes:category>`. The parent's Start event carries the
+                // parent name on the `text` attribute, which the self-closing
+                // arm (in `on_empty`) would never see. Both forms flatten to
+                // the same `categories` Vec; the writer emits them as flat
+                // siblings.
+                if let Some(v) = attr_value(e, attr::TEXT) {
+                    self.itunes.categories.push(v);
+                    self.has_itunes = true;
+                }
+            }
             (Ns::ITunes, itunes::OWNER) => {
                 self.in_itunes_owner = true;
                 self.has_itunes = true;
