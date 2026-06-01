@@ -173,6 +173,68 @@ async fn atom_contributors_do_not_merge_into_authors() {
     assert_eq!(entry.contributors[0].name, "Entry Contributor");
 }
 
+/// RFC 4287 §3.2: an Atom `<author>`/`<contributor>` may only contain
+/// `<name>`/`<uri>`/`<email>`. Disallowed children (`<link>`, `<category>`,
+/// `<content>`, `<source>`, …) must NOT leak into the enclosing entry/feed.
+/// Lenient mode silently ignores them; strict mode rejects.
+#[tokio::test]
+async fn atom_person_disallowed_children_do_not_leak() {
+    let bytes = load(&corpus_dir().join("edge-atom-person-malformed.atom.xml"));
+
+    // Lenient: parses, person-subtree children dropped, entry/feed untouched.
+    let Feed::Atom(feed) = parse_bytes(bytes.clone()).await else {
+        panic!("expected Atom");
+    };
+
+    // Feed level: no link/category leaked from <author> or <contributor>.
+    assert!(
+        feed.links.is_empty(),
+        "no feed-level links must come from <author>/<contributor> subtrees, got {:?}",
+        feed.links,
+    );
+    assert!(
+        feed.categories.is_empty(),
+        "no feed-level categories must come from <author>/<contributor> subtrees, got {:?}",
+        feed.categories,
+    );
+    assert_eq!(feed.authors[0].name, "Feed Author");
+    assert_eq!(
+        feed.authors[0].uri.as_deref(),
+        Some("https://example.com/feed-author")
+    );
+    assert_eq!(feed.contributors[0].name, "Feed Contributor");
+
+    // Entry level: only the entry's own link/category/content (the ones
+    // outside any person subtree) survive.
+    let entry = &feed.entries[0];
+    assert_eq!(entry.links.len(), 1, "exactly the entry's own <link>");
+    assert_eq!(entry.links[0].href, "https://example.com/entry/1");
+    assert_eq!(entry.categories.len(), 1);
+    assert_eq!(entry.categories[0].term, "legit-entry-category");
+    let content = entry.content.as_ref().expect("entry has its own content");
+    assert_eq!(content.value.value, "Real entry content.");
+    assert!(
+        entry.source.is_none(),
+        "<source> inside <author> must not become the entry's source",
+    );
+    // The xhtml-typed <content> inside <author> must have been consumed
+    // (depth stays synced) but its captured value discarded — the entry's
+    // own text content survives untouched.
+
+    // Strict: rejects on the first disallowed person child. The feed-level
+    // <author><link/> trips during header read, so the error surfaces from
+    // `new_strict` itself.
+    let cursor = std::io::Cursor::new(bytes);
+    let reader = tokio::io::BufReader::new(cursor);
+    let Err(err) = FeedStream::new_strict(reader).await else {
+        panic!("strict mode must reject disallowed person children");
+    };
+    assert!(
+        err.message.contains("Atom person element"),
+        "error mentions the person constraint: {err}",
+    );
+}
+
 /// xhtml-typed `<title>` (and other typed text constructs) inside an Atom
 /// `<source>` must NOT overwrite the enclosing entry's own title/rights/etc.
 /// Regression for a parser bug where `start_typed_text` bypassed the

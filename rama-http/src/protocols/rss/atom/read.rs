@@ -361,6 +361,16 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         Ok(header)
     }
 
+    /// RFC 4287 §3.2: an Atom Person construct contains exactly `<name>`,
+    /// optionally `<uri>` and `<email>`. Anything else is malformed and must
+    /// NOT leak side effects into the enclosing entry/feed. Used by both the
+    /// Start and Empty arms of [`Self::step`]; the `in_person` boolean is
+    /// inlined at the call sites (a method call would borrow `self` as a
+    /// unit and clash with the `self.buf` borrow held by the current event).
+    fn person_child_is_valid(local: &str) -> bool {
+        matches!(local, elem::NAME | elem::URI | elem::EMAIL)
+    }
+
     async fn step(&mut self) -> Result<Action, FeedParseError> {
         self.buf.clear();
         let (rr, ev) = match self.nsr.read_resolved_event_into_async(&mut self.buf).await {
@@ -381,6 +391,41 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 let local_name = e.local_name();
                 let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
                 self.text_buf.clear();
+
+                // Person-construct containment: any non-{name,uri,email}
+                // child of an <author>/<contributor> must not mutate the
+                // enclosing entry/feed state (link/category/content/typed
+                // text/etc.) Strict mode rejects; lenient mode swallows.
+                // For type="xhtml" typed-text we still consume the inner
+                // subtree so the parser depth stays in sync.
+                // (Inline the four-bool check rather than calling
+                // `self.in_person()` — the latter would borrow `self` as
+                // a unit and clash with the `self.buf` borrow held by `ev`.
+                // Reading individual bool fields is a split borrow.)
+                let in_person = self.in_author
+                    || self.in_feed_author
+                    || self.in_contributor
+                    || self.in_feed_contributor;
+                if in_person && !Self::person_child_is_valid(local) {
+                    if self.strict {
+                        return Err(FeedParseError::new(format!(
+                            "Atom person element may only contain <name>/<uri>/<email>, \
+                             found <{local}>"
+                        )));
+                    }
+                    if matches!(
+                        local,
+                        elem::TITLE | elem::SUMMARY | elem::CONTENT | elem::RIGHTS | elem::SUBTITLE
+                    ) && attr_value(&e, attr::TYPE).as_deref() == Some("xhtml")
+                    {
+                        drop(e);
+                        let _ =
+                            capture_xhtml_subtree_async(&mut self.nsr, &mut self.buf, self.strict)
+                                .await?;
+                        self.depth -= 1;
+                    }
+                    return Ok(Action::Continue);
+                }
 
                 let consumed = if self.in_entry {
                     self.entry_acc.on_start(ns, local, &e)
@@ -499,6 +544,21 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 let ns = classify_ns(&rr);
                 let local_name = e.local_name();
                 let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+
+                // Same person-construct containment as for Start events.
+                let in_person = self.in_author
+                    || self.in_feed_author
+                    || self.in_contributor
+                    || self.in_feed_contributor;
+                if in_person && !Self::person_child_is_valid(local) {
+                    if self.strict {
+                        return Err(FeedParseError::new(format!(
+                            "Atom person element may only contain <name>/<uri>/<email>, \
+                             found <{local}/>"
+                        )));
+                    }
+                    return Ok(Action::Continue);
+                }
 
                 let consumed = if self.in_entry {
                     self.entry_acc.on_empty(ns, local, &e)
