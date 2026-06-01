@@ -13,7 +13,7 @@ async fn test_http_rss_podcast() {
 
     // One-shot podcast feed
     let resp = runner
-        .get("http://127.0.0.1:62051/podcast.rss")
+        .get("http://127.0.0.1:62054/podcast.rss")
         .send()
         .await
         .unwrap();
@@ -37,7 +37,7 @@ async fn test_http_rss_podcast() {
 
     // Streaming podcast feed — same content, different path
     let stream_resp = runner
-        .get("http://127.0.0.1:62051/podcast-stream.rss")
+        .get("http://127.0.0.1:62054/podcast-stream.rss")
         .send()
         .await
         .unwrap();

@@ -13,7 +13,7 @@ async fn test_http_rss_blog() {
 
     // RSS 2.0 feed
     let rss_response = runner
-        .get("http://127.0.0.1:62050/feed.rss")
+        .get("http://127.0.0.1:62053/feed.rss")
         .send()
         .await
         .unwrap();
@@ -36,7 +36,7 @@ async fn test_http_rss_blog() {
 
     // Atom feed
     let atom_response = runner
-        .get("http://127.0.0.1:62050/feed.atom")
+        .get("http://127.0.0.1:62053/feed.atom")
         .send()
         .await
         .unwrap();
