@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: an Atom <author>/<contributor> with malformed children that
+     are NOT in RFC 4287 §3.2's allowed set (<name>/<uri>/<email>). A naive
+     parser that only flips an in_person flag will let the <link>,
+     <category>, <content>, etc. inside the person mutate the enclosing
+     entry/feed instead of being ignored. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:person-malformed</id>
+  <title>Person containment</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+
+  <!-- Feed-level author with disallowed children. None must leak into the
+       feed's links/categories. -->
+  <author>
+    <name>Feed Author</name>
+    <uri>https://example.com/feed-author</uri>
+    <email>feed-author@example.com</email>
+    <link rel="alternate" href="https://malicious.example.com/feed-author-link"/>
+    <category term="should-not-leak-into-feed"/>
+  </author>
+
+  <!-- Feed-level contributor with disallowed children. -->
+  <contributor>
+    <name>Feed Contributor</name>
+    <link rel="alternate" href="https://malicious.example.com/feed-contrib-link"/>
+    <category term="should-not-leak-into-feed-contrib"/>
+  </contributor>
+
+  <entry>
+    <id>urn:uuid:e1</id>
+    <title>Entry with malformed person children</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+
+    <!-- Entry-level author with disallowed children, including an xhtml-typed
+         element whose subtree must still be consumed (depth stays in sync)
+         but its captured value discarded. -->
+    <author>
+      <name>Entry Author</name>
+      <email>entry-author@example.com</email>
+      <link rel="alternate" href="https://malicious.example.com/entry-author-link"/>
+      <category term="should-not-leak-into-entry"/>
+      <content type="xhtml">
+        <div xmlns="http://www.w3.org/1999/xhtml">
+          <p>This must NOT overwrite the entry's own content.</p>
+        </div>
+      </content>
+      <source>
+        <id>https://malicious.example.com/source</id>
+      </source>
+    </author>
+
+    <!-- Entry-level contributor with disallowed children. -->
+    <contributor>
+      <name>Entry Contributor</name>
+      <link rel="alternate" href="https://malicious.example.com/entry-contrib-link"/>
+    </contributor>
+
+    <!-- The entry's own link/category/content must be the only ones present. -->
+    <link rel="alternate" href="https://example.com/entry/1"/>
+    <category term="legit-entry-category"/>
+    <content type="text">Real entry content.</content>
+  </entry>
+</feed>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: Podcasting 2.0 namespace bound to a non-conventional prefix
+     (`pod:` instead of `podcast:`). Prefix-string matching would skip these
+     elements entirely; namespace-URI matching does not. -->
+<rss version="2.0"
+     xmlns:pod="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Nonstandard Prefix</title>
+    <link>https://example.com/np</link>
+    <description>Same namespace URI, different prefix.</description>
+    <pod:guid>c81e728d-9d4c-3f63-af06-7f89cc14862c</pod:guid>
+    <pod:locked>yes</pod:locked>
+    <item>
+      <title>Episode under non-standard prefix</title>
+      <guid>np-1</guid>
+      <pod:person role="host">Alice</pod:person>
+      <pod:season>1</pod:season>
+    </item>
+  </channel>
+</rss>

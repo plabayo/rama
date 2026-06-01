@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: <content:encoded> payload that itself contains the literal
+     CDATA terminator `]]>`. A naive writer that wraps everything in a single
+     <![CDATA[ ... ]]> section would close the section early, producing invalid
+     XML and silently corrupting the round-tripped payload. We instead split
+     the section at every `]]>` per the standard `<![CDATA[..]]]]><![CDATA[>..]]>`
+     trick. -->
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel>
+    <title>CDATA Edge</title>
+    <link>https://example.com/cdata</link>
+    <description>Round-trips payload with `]]>` in it.</description>
+    <item>
+      <title>Embedded terminator</title>
+      <link>https://example.com/cdata/1</link>
+      <guid isPermaLink="false">cdata-1</guid>
+      <content:encoded><![CDATA[before-the-end ]]]]><![CDATA[> after-the-end <p>tag survives</p>]]></content:encoded>
+    </item>
+  </channel>
+</rss>

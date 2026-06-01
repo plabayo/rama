@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: a malformed Atom feed where one <source> is nested inside
+     another. RFC 4287 does not allow nesting; a naive parser tracking
+     <source> with a single boolean would let the inner </source>
+     prematurely close the outer one and let the outer source's remaining
+     children leak into the enclosing entry. This fixture pins that the
+     entry collects exactly its own fields, the outermost <source> is
+     fully preserved, and inner-source state is ignored. -->
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:uuid:nested-source</id>
+  <title>Nested source</title>
+  <updated>2025-05-20T12:00:00Z</updated>
+  <entry>
+    <id>https://aggregator.example.com/republished/1</id>
+    <title>Entry with nested source</title>
+    <updated>2025-05-20T12:00:00Z</updated>
+    <link rel="alternate" href="https://aggregator.example.com/republished/1"/>
+    <source>
+      <id>https://outer.example.com/feed</id>
+      <title>Outer source</title>
+      <source>
+        <id>https://inner.example.com/leak</id>
+        <title>Inner source — must NOT replace outer's title</title>
+      </source>
+      <updated>2025-05-19T10:00:00Z</updated>
+    </source>
+  </entry>
+</feed>

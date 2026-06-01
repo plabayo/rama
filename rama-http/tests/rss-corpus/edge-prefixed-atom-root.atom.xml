@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edge case: Atom root and children bound to the Atom namespace under a
+     non-default prefix. Prefix-string matching would miss this; resolved-URI
+     matching does not. -->
+<a:feed xmlns:a="http://www.w3.org/2005/Atom">
+  <a:id>urn:uuid:prefixed-root-1</a:id>
+  <a:title>Prefixed Root</a:title>
+  <a:updated>2025-05-12T09:00:00Z</a:updated>
+  <a:entry>
+    <a:id>urn:uuid:prefixed-root-entry-1</a:id>
+    <a:title>An entry under a non-default Atom prefix</a:title>
+    <a:updated>2025-05-12T09:00:00Z</a:updated>
+    <a:summary>Should parse identically to the default-namespace form.</a:summary>
+  </a:entry>
+</a:feed>

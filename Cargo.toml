@@ -165,6 +165,7 @@ prost-build = "0.14.3"
 prost-types = "0.14.3"
 protoc-bin-vendored = "3.2.0"
 psl = "2"
+quick-xml = "0.37"
 quickcheck = "1.1"
 quickcheck_macros = "1.2"
 quote = "1.0"
@@ -434,11 +435,13 @@ http-full = [
     "compression",
     "multipart",
     "html",
+    "rss",
     "dep:tokio",
     "rama-grpc?/transport",
 ]
 multipart = ["http", "rama-http?/multipart"]
 html = ["http", "rama-http?/html"]
+rss = ["http", "rama-http?/rss"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 fastcgi = ["dep:rama-fastcgi", "rama-fastcgi?/transport", "tcp"]
@@ -531,6 +534,7 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
+jiff = { workspace = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -747,6 +751,14 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_nd_json"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_rss_blog"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_rss_podcast"
 required-features = ["http-full"]
 
 [[example]]

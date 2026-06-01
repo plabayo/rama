@@ -71,6 +71,10 @@ mod http_rate_limit;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod http_record_har;
 #[cfg(feature = "http-full")]
+mod http_rss_blog;
+#[cfg(feature = "http-full")]
+mod http_rss_podcast;
+#[cfg(feature = "http-full")]
 mod http_service_fs;
 #[cfg(feature = "http-full")]
 mod http_service_hello;
