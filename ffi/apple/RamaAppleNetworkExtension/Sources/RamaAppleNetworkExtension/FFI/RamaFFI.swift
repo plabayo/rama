@@ -40,19 +40,6 @@ enum RamaTransparentProxyFlowActionBridge: UInt32 {
     case blocked = 3
 }
 
-/// Outcome discriminant of
-/// `rama_transparent_proxy_engine_drain_for_sleep`. Mirrors the
-/// `RamaDrainOutcome` C enum.
-enum RamaDrainOutcome: UInt32 {
-    /// Every pre-drain spawned task exited cooperatively before
-    /// the deadline.
-    case drained = 0
-    /// `maxWaitMs` elapsed before all guards dropped.
-    case timeout = 1
-    /// Engine already terminally stopped (or never started). No-op.
-    case alreadyStopped = 2
-}
-
 enum RamaTransparentProxyTcpSessionDecision {
     case intercept(RamaTcpSessionHandle)
     case passthrough
@@ -570,39 +557,6 @@ final class RamaTransparentProxyEngineHandle {
         defer { lock.unlock() }
         guard let p = enginePtr else { return }
         rama_transparent_proxy_engine_notify_system_wake(p)
-    }
-
-    /// Synchronous recoverable drain for system sleep.
-    ///
-    /// Block the caller (Apple's `sleepWithCompletionHandler:`) until
-    /// either every pre-drain spawned task exits, or `maxWaitMs`
-    /// elapses, or the engine is already terminally stopped. Returns
-    /// the FFI outcome cast to [`RamaDrainOutcome`] — see the
-    /// C header for the discriminant contract.
-    ///
-    /// Unlike `stop`, this is RECOVERABLE: post-drain the engine
-    /// continues to accept new flows on a fresh internal shutdown
-    /// installed at drain time. On wake there is no pre-sleep
-    /// backlog for new flows to compete with.
-    func drainForSleep(maxWaitMs: UInt32) -> RamaDrainOutcome {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let p = enginePtr else { return .alreadyStopped }
-        let raw = rama_transparent_proxy_engine_drain_for_sleep(p, maxWaitMs)
-        if let outcome = RamaDrainOutcome(rawValue: raw) {
-            return outcome
-        }
-        // Unknown discriminant — ABI skew between the Swift wrapper
-        // and the Rust FFI surface. Log loudly so the mismatch
-        // surfaces, then fall back to `.alreadyStopped` (the most
-        // conservative arm: caller treats us as no-op, doesn't keep
-        // waiting). The alternative silent fallback would hide a
-        // protocol bug as a quiet "is this thing even drained?"
-        // mystery.
-        RamaLog.error(
-            "drainForSleep: unknown RamaDrainOutcome discriminant \(raw); ABI skew between FFI shim and Swift wrapper — coercing to .alreadyStopped"
-        )
-        return .alreadyStopped
     }
 
     /// Forward a provider message into Rust and return the reply (or `nil` for

@@ -88,6 +88,22 @@ pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 /// unaffected.
 pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Default backstop on how long `engine.stop()` waits for engine-level
+/// graceful guards to drop. Tuned via
+/// [`TransparentProxyEngineBuilder::with_stop_drain_max_wait`].
+///
+/// A correct stop completes in sub-millisecond time once the trigger
+/// fires: the only guards held at the engine level are the per-flow
+/// signal-future parent guards (which drop immediately on cancel) and
+/// any [`TransparentProxyHandler::on_system_sleep`] /
+/// [`TransparentProxyHandler::on_system_wake`] hook tasks. Per-flow
+/// data tasks hold per-flow guards, not engine guards, so they are not
+/// awaited here. This bound therefore only bites a handler hook stuck
+/// on un-timed I/O; the right fix for that is to bound the hook, not to
+/// raise this. Kept short so a wedged hook cannot eat the whole Apple
+/// stop grace.
+pub const DEFAULT_STOP_DRAIN_MAX_WAIT: Duration = Duration::from_secs(5);
+
 /// Action taken when a flow handler exceeds the configured decision deadline.
 ///
 /// The deadline exists to prevent a hung handler from holding kernel flow
@@ -234,51 +250,27 @@ pub struct TransparentProxyEngine<H> {
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
+    /// Backstop on `shutdown_blocking`'s wait for engine guards to
+    /// drop; see [`DEFAULT_STOP_DRAIN_MAX_WAIT`].
+    stop_drain_max_wait: Duration,
     /// Engine-wide [`Shutdown`] + its `oneshot` trigger, held together
-    /// because [`drain_for_sleep`] needs to swap them as a unit (fire
-    /// the OLD pair, install a FRESH one so post-drain flows have a
-    /// clean graceful tree). `None` after `shutdown_blocking` has
-    /// taken them — the engine is terminally stopped.
-    ///
-    /// [`drain_for_sleep`]: TransparentProxyEngine::drain_for_sleep
+    /// so they move as a unit (the trigger fires the `Shutdown`'s inner
+    /// future). `None` after `shutdown_blocking` has taken them — the
+    /// engine is terminally stopped.
     shutdown: parking_lot::Mutex<Option<ShutdownPair>>,
 }
 
 /// Pair of an engine-wide [`Shutdown`] and the [`oneshot::Sender`]
 /// that fires its inner future.
 ///
-/// Kept together because they must move atomically across the
-/// recoverable-drain path: firing the trigger resolves the inner
-/// future, which lets the [`Shutdown`] propagate cancellation to all
-/// outstanding [`ShutdownGuard`]s; once the trigger is `send()`-ed it
-/// is consumed, and a future caller would need a fresh `Shutdown` to
-/// fire again.
+/// Kept together because they must move atomically: firing the trigger
+/// resolves the inner future, which lets the [`Shutdown`] propagate
+/// cancellation to all outstanding [`ShutdownGuard`]s; once the trigger
+/// is `send()`-ed it is consumed, and firing again would need a fresh
+/// `Shutdown`.
 struct ShutdownPair {
     shutdown: Shutdown,
     trigger: oneshot::Sender<()>,
-}
-
-/// Outcome of [`TransparentProxyEngine::drain_for_sleep`].
-///
-/// `#[repr(u32)]` so the value is stable for the FFI shim — Swift
-/// gates `handleSystemSleep`'s completion behaviour on which arm
-/// fired.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum DrainOutcome {
-    /// All outstanding [`ShutdownGuard`]s observed cancellation and
-    /// dropped before the deadline. Engine is quiet.
-    Drained = 0,
-    /// Deadline elapsed before all guards dropped. The engine is
-    /// still functional — new flows post-drain register against a
-    /// fresh [`Shutdown`] — but some pre-drain tasks may still be
-    /// running. Apple sleeps the process anyway; on wake they
-    /// resume but with the OLD cancellation already signalled,
-    /// they'll bail at their next yield point.
-    Timeout = 1,
-    /// Engine was already terminally stopped (`shutdown_blocking`
-    /// had taken the pair). No-op.
-    AlreadyStopped = 2,
 }
 
 /// Build a fresh [`ShutdownPair`] bound to the engine's runtime.
@@ -1774,6 +1766,16 @@ impl<H> Drop for TransparentProxyEngine<H> {
     }
 }
 
+/// Slack added to `stop_drain_max_wait` to form the OUTER hard cap on
+/// `shutdown_blocking`. The inner [`Shutdown::shutdown_with_limit`]
+/// only time-limits its guard-drop phase; its earlier
+/// cancellation-propagation phase is unbounded and could wedge if the
+/// runtime is starved. The outer [`tokio::time::timeout`] guarantees
+/// `stop` returns regardless. Sized so the inner limit always wins in
+/// every non-pathological case — the outer firing means the engine is
+/// genuinely wedged.
+const STOP_HARD_CAP_SLACK: Duration = Duration::from_secs(2);
+
 impl<H> TransparentProxyEngine<H> {
     #[expect(clippy::needless_pass_by_ref_mut, reason = "contract")]
     fn shutdown_blocking(&mut self, reason: i32) {
@@ -1782,129 +1784,42 @@ impl<H> TransparentProxyEngine<H> {
         };
 
         tracing::info!(reason, "transparent proxy engine stopping");
-        _ = pair.trigger.send(());
+        let ShutdownPair { shutdown, trigger } = pair;
+        _ = trigger.send(());
 
-        let time = block_on_async_task(&self.rt, pair.shutdown.shutdown());
-        tracing::info!(?time, reason, "transparent proxy engine stopped");
-    }
-}
-
-impl<H> TransparentProxyEngine<H>
-where
-    H: TransparentProxyHandler,
-{
-    /// Recoverable drain for system sleep.
-    ///
-    /// Swap the engine-wide [`Shutdown`] state for a fresh one, fire
-    /// the old one's trigger, and block on the old [`Shutdown`]'s
-    /// drain with a deadline.
-    ///
-    /// ## What this drain DOES and DOES NOT wait for
-    ///
-    /// The drain awaits every [`ShutdownGuard`] of the OLD
-    /// [`Shutdown`] to drop. The only engine-level guards held
-    /// past the swap are the `parent_guard`s captured by each
-    /// per-flow `Shutdown::new` signal-future (`select! { _ =
-    /// parent_guard.cancelled() => …}`). The moment the trigger
-    /// fires those select arms resolve, the closures end, the
-    /// `parent_guard`s drop — within milliseconds.
-    ///
-    /// Per-flow service / bridge tasks hold *per-flow*
-    /// `flow_guard`s (of the per-flow [`Shutdown`]), NOT engine
-    /// guards. They are NOT on the drain's accounting. They DO
-    /// observe `flow_guard.cancelled()` via the per-flow [`Shutdown`]
-    /// cascade and exit cooperatively at their next yield — but
-    /// this is asynchronous to the drain's return.
-    ///
-    /// So `Drained` means "the cancellation signal has been
-    /// fully propagated through the engine guard tree and any
-    /// engine-spawned handler hooks (e.g. `on_system_sleep`) have
-    /// completed", NOT "every spawned task has finished cleaning
-    /// up". The load-bearing fix the drain provides for the
-    /// post-wake stall is the FRESH-pair swap: new flows arriving
-    /// after wake register against a clean tree, so they don't
-    /// queue behind any straggler tasks left over from before
-    /// sleep. Those stragglers unwind on their own time across
-    /// the suspension boundary.
-    ///
-    /// ## Outcomes
-    /// - [`DrainOutcome::Drained`] — every pre-drain engine-level
-    ///   [`ShutdownGuard`] dropped before `max_wait`. The handler
-    ///   hook (if any) completed.
-    /// - [`DrainOutcome::Timeout`] — `max_wait` elapsed first.
-    ///   The OLD shutdown has been signalled; still-running tasks
-    ///   observe cancellation at their next yield. The engine
-    ///   continues to accept new flows on the FRESH pair installed
-    ///   at swap time.
-    /// - [`DrainOutcome::AlreadyStopped`] — engine was terminally
-    ///   stopped via `shutdown_blocking` (e.g. extension stop fired
-    ///   in parallel); no fresh pair is installed; no-op.
-    ///
-    /// ## Use
-    ///
-    /// Designed to be invoked from Apple's
-    /// `NEProvider.sleepWithCompletionHandler:` override. The Swift
-    /// side drives every Swift-side per-flow teardown first; this
-    /// engine drain then propagates the cancellation through the
-    /// in-Rust tree before completion is signalled to Apple.
-    pub fn drain_for_sleep(&self, max_wait: Duration) -> DrainOutcome {
-        // Build the FRESH pair OUTSIDE the lock — `Shutdown::new`
-        // spawns onto the runtime; doing it under the mutex would
-        // hold contended state across an unbounded operation.
-        let fresh = build_shutdown_pair(&self.rt);
-
-        // Atomic swap, GUARDED against terminal-stop. If the slot
-        // is `None` the engine is permanently stopped (Drop or a
-        // racing `shutdown_blocking()` already took the pair) — we
-        // MUST NOT install `fresh`, otherwise subsequent
-        // `shutdown_guard()` calls would return guards from a fresh
-        // pair and the engine would appear alive again post-stop.
-        // Bail BEFORE the replace; `fresh` then drops here and its
-        // spawned signal-future task is GC'd cooperatively (it sees
-        // its `oneshot::Receiver`'s `Sender` half drop, exits).
-        //
-        // A racing `shutdown_guard()` reaching the lock between
-        // here and the trigger fire sees either OLD or NEW — both
-        // are valid (OLD: about-to-cancel, harmless; NEW: clean
-        // post-drain registration).
-        let old_pair = {
-            let mut slot = self.shutdown.lock();
-            if slot.is_none() {
-                return DrainOutcome::AlreadyStopped;
-            }
-            #[expect(
-                clippy::expect_used,
-                reason = "the is_none guard above proves slot is Some"
-            )]
-            slot.replace(fresh)
-                .expect("slot was Some by the guard above")
-        };
-
-        // Fire the OLD trigger so the OLD Shutdown's inner future
-        // resolves and guards observe cancellation. Send() returns
-        // `Err` only if the rx half is gone (i.e. the Shutdown's
-        // inner future already completed somehow); harmless either
-        // way.
-        _ = old_pair.trigger.send(());
-
-        let started = std::time::Instant::now();
-        let timed_out = block_on_async_task(&self.rt, async move {
-            tokio::time::timeout(max_wait, old_pair.shutdown.shutdown())
-                .await
-                .is_err()
+        // Two-layer bound so teardown always returns:
+        //   - INNER `shutdown_with_limit(max_wait)`: the graceful
+        //     "wait for engine guards to drop, but not forever" cap. A
+        //     correct stop resolves in sub-ms; this only bites a
+        //     handler hook wedged on un-timed I/O (see
+        //     [`DEFAULT_STOP_DRAIN_MAX_WAIT`]).
+        //   - OUTER `timeout(max_wait + slack)`: a hard cap covering
+        //     the inner's unbounded cancellation-propagation phase, so
+        //     `stop` returns even if the runtime is starved. The inner
+        //     wins in every non-pathological case.
+        let max_wait = self.stop_drain_max_wait;
+        let hard_cap = max_wait + STOP_HARD_CAP_SLACK;
+        let outcome = block_on_async_task(&self.rt, async move {
+            tokio::time::timeout(hard_cap, shutdown.shutdown_with_limit(max_wait)).await
         });
-        let elapsed = started.elapsed();
-
-        if timed_out {
-            tracing::warn!(
-                ?elapsed,
+        match outcome {
+            Ok(Ok(elapsed)) => {
+                tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
+            }
+            Ok(Err(_)) => tracing::warn!(
+                reason,
                 ?max_wait,
-                "drain_for_sleep timeout: some pre-drain tasks did not yield in time"
-            );
-            DrainOutcome::Timeout
-        } else {
-            tracing::info!(?elapsed, "drain_for_sleep complete");
-            DrainOutcome::Drained
+                "transparent proxy engine stop timed out waiting for guards to \
+                 drop; proceeding (a handler hook likely holds a guard with \
+                 un-timed I/O)"
+            ),
+            Err(_) => tracing::error!(
+                reason,
+                ?hard_cap,
+                "transparent proxy engine stop hit its hard cap before the \
+                 graceful drain returned; abandoning drain (engine runtime \
+                 likely wedged)"
+            ),
         }
     }
 }

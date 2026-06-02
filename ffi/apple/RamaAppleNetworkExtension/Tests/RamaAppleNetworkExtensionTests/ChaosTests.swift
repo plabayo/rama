@@ -34,7 +34,6 @@ final class ChaosTests: XCTestCase {
         .init(name: "readHardError") {
             $0.applyReadHardError(NSError(domain: "chaos", code: 4))
         },
-        .init(name: "systemSleep") { $0.applySystemSleep() },
     ]
 
     /// 200 fresh contexts. Each receives a random teardown variant,
@@ -82,10 +81,11 @@ final class ChaosTests: XCTestCase {
         }
     }
 
-    /// 100 contexts registered + `handleSystemSleep`. Expect every
-    /// teardown fires, every connection is cancelled exactly once,
-    /// and the completion handler resolves promptly.
-    func testHandleSystemSleepDrainsManyFlows() {
+    /// 100 contexts registered + `handleSystemSleep`. Sleep is a
+    /// brief pause-and-return: every flow must survive intact (no
+    /// teardown, no cancel) and the completion handler resolves
+    /// promptly.
+    func testHandleSystemSleepLeavesManyFlowsIntact() {
         let core = TransparentProxyCore()
         struct Bag {
             let flow: MockTcpFlow
@@ -109,10 +109,11 @@ final class ChaosTests: XCTestCase {
         core.handleSystemSleep { exp.fulfill() }
         wait(for: [exp], timeout: 5.0)
 
+        XCTAssertEqual(core.tcpFlowCount, 100, "sleep must not drop flows")
         for (i, bag) in bags.enumerated() {
-            XCTAssertTrue(bag.teardown.isDone, "bag[\(i)] teardown did not fire")
-            XCTAssertEqual(bag.conn.cancelCount, 1, "bag[\(i)] cancel must fire once")
-            XCTAssertEqual(bag.flow.closeReadCallCount, 1)
+            XCTAssertFalse(bag.teardown.isDone, "bag[\(i)] teardown must not fire")
+            XCTAssertEqual(bag.conn.cancelCount, 0, "bag[\(i)] must not be cancelled")
+            XCTAssertEqual(bag.flow.closeReadCallCount, 0)
         }
     }
 

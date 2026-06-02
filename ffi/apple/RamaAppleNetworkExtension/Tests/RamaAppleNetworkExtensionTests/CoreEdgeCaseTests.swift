@@ -73,17 +73,21 @@ final class CoreEdgeCaseTests: XCTestCase {
             ctx.mode != .viaRust
         }
 
+        // Re-fire EOFs each tick (not once): post-cutover the forwarder
+        // re-issues its own flow.readData / connection.receive, and a
+        // single EOF fired during the gap before that read is issued is
+        // lost (the mocks no-op when nothing is pending), stalling
+        // teardown. See `CoreTcpLifecycleTests.drainAndAwaitRemoval`.
         let completer = AtomicFlag()
         DispatchQueue.global().async {
             while !completer.load() {
                 _ = conn.completePendingSend(error: nil)
+                flow.completeRead(data: nil, error: nil)
+                _ = conn.completePendingReceive(isComplete: true)
                 Thread.sleep(forTimeInterval: 0.001)
             }
         }
         defer { completer.store(true) }
-
-        flow.completeRead(data: nil, error: nil)
-        _ = conn.completePendingReceive(isComplete: true)
 
         waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
     }
@@ -238,27 +242,33 @@ final class CoreEdgeCaseTests: XCTestCase {
         flow.completeOpen(error: nil)
         waitFor("egress receive in flight") { conn.pendingReceiveCount > 0 }
 
+        // The egress connection was started on the per-flow queue, so
+        // every teardown and state-handler hop runs there. A `sync`
+        // barrier on that serial queue flushes all pending async work
+        // deterministically — no sleeps, no races.
+        guard let flowQueue = conn.startInvocations.first else {
+            return XCTFail("egress connection must have been started on a queue")
+        }
+
         // Tear everything down — the engine is gone, ctx is gone,
-        // session is gone.
+        // session is gone. `detachEngine` cancels the egress
+        // connection ASYNC on the flow queue; flush so that cancel has
+        // landed before we sample the count (else we'd race detach's
+        // own cancel and misattribute it to the late transition below).
         core.detachEngine(reason: 0)
         XCTAssertEqual(core.tcpFlowCount, 0)
+        flowQueue.sync {}
 
-        // Now fire a state transition. The handler is still set on
-        // the mock connection because we haven't called
-        // simulateCancelled; this models the real case of a late
-        // kernel callback firing on a connection that production
-        // code has already abandoned.
-        //
-        // The handler must process this without crashing. Pre-fix
-        // behavior would have been a segfault if `ctx` had been
-        // captured strongly; with `[weak ctx]` everywhere the
-        // closure body bails out at the `guard let ctx` line.
-        conn.transition(to: .failed(.posix(.ECONNRESET)))
-
-        // Sanity: no extra cancel call, no flow.close invocations
-        // from this late transition.
+        // Now fire a late state transition. This models a late kernel
+        // callback firing on a connection production code has already
+        // abandoned. The handler hops to the flow queue and bails at
+        // `guard let connection = ctx.connection` (nil post-detach), so
+        // it must NOT cancel or close anything — and must not crash
+        // (pre-fix, a strong `ctx` capture would have segfaulted).
         let cancelsBefore = conn.cancelCount
-        Thread.sleep(forTimeInterval: 0.10)
+        conn.transition(to: .failed(.posix(.ECONNRESET)))
+        flowQueue.sync {}
+
         XCTAssertEqual(
             conn.cancelCount, cancelsBefore,
             "late state transition must not trigger any new cancel"

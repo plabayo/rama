@@ -155,10 +155,18 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
         std::future::ready(FlowAction::<NopSvc>::Passthrough)
     }
 
-    /// Notification that the system is about to sleep. The engine
-    /// has already drained every in-flight flow on the Swift side
-    /// before this fires — opportunity to flush metrics, snapshot
-    /// pending work, etc. Default: trace log.
+    /// Notification that the system is about to sleep. This is a
+    /// brief pause-and-return hook — flows are NOT torn down, so
+    /// don't assume a quiesced data path. Opportunity to flush
+    /// metrics, snapshot pending work, etc. Default: trace log.
+    ///
+    /// The returned future runs detached on the engine's graceful
+    /// [`Executor`] and holds an engine shutdown guard until it
+    /// completes. Bound any network I/O you do here with a timeout:
+    /// an un-timed fetch over a link that dies across the suspend
+    /// would otherwise hold the guard and delay `engine` teardown
+    /// (capped, but not for free). Same applies to
+    /// [`Self::on_system_wake`].
     fn on_system_sleep(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
         tracing::debug!(
             target: "rama_apple_ne::tproxy::lifecycle",
@@ -168,9 +176,12 @@ pub trait TransparentProxyHandler: Clone + Send + Sync + 'static {
     }
 
     /// Notification that the system has just resumed from sleep.
-    /// No flows are carried across; new flows arrive via
-    /// `match_tcp_flow` / `match_udp_flow` as normal. Default:
-    /// trace log.
+    /// Flows that did not survive the suspend are reaped by the
+    /// per-flow failure path; new flows arrive via `match_tcp_flow`
+    /// / `match_udp_flow` as normal. Default: trace log.
+    ///
+    /// See [`Self::on_system_sleep`] for the guard-holding /
+    /// un-timed-I/O contract — it applies here too.
     fn on_system_wake(&self, _exec: Executor) -> impl Future<Output = ()> + Send + '_ {
         tracing::debug!(
             target: "rama_apple_ne::tproxy::lifecycle",

@@ -250,37 +250,6 @@ macro_rules! __transparent_proxy_ffi_emit {
             engine.notify_system_wake();
         }
 
-        /// Synchronous recoverable drain for system sleep.
-        ///
-        /// Forwards to
-        /// [`TransparentProxyEngine::drain_for_sleep`]. Blocks the
-        /// calling thread (Apple's `sleepWithCompletionHandler:`)
-        /// until either every pre-drain spawned task exits
-        /// cooperatively, or `max_wait_ms` elapses, or the engine is
-        /// already terminally stopped.
-        ///
-        /// Returns the [`DrainOutcome`] discriminant as `u32`. A
-        /// `NULL` engine pointer returns the `AlreadyStopped` arm
-        /// so the caller can safely treat "no engine" identically
-        /// to "engine torn down mid-call". Out-of-bound values are
-        /// impossible — every variant is exhaustively mapped.
-        ///
-        /// [`TransparentProxyEngine::drain_for_sleep`]:
-        ///     crate::tproxy::engine::TransparentProxyEngine::drain_for_sleep
-        /// [`DrainOutcome`]: crate::tproxy::DrainOutcome
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn rama_transparent_proxy_engine_drain_for_sleep(
-            engine: *mut RamaTransparentProxyEngine,
-            max_wait_ms: u32,
-        ) -> u32 {
-            if engine.is_null() {
-                return $crate::tproxy::DrainOutcome::AlreadyStopped as u32;
-            }
-            let engine = unsafe { &*engine };
-            let max_wait = ::std::time::Duration::from_millis(u64::from(max_wait_ms));
-            engine.drain_for_sleep(max_wait) as u32
-        }
-
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_engine_handle_app_message(
             engine: *mut RamaTransparentProxyEngine,

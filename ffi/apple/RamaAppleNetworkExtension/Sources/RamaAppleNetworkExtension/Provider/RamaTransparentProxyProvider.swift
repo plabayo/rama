@@ -315,7 +315,7 @@ nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
-/// transition). Fail fast instead of hanging the 30 s connect timeout;
+/// transition). Fail fast instead of hanging the full connect timeout;
 /// a few seconds, not instant, rides out a sub-second connect blip that
 /// recovers to `.ready`. `var` for tests.
 nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000

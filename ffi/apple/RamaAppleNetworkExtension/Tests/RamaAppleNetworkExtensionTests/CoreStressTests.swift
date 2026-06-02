@@ -99,23 +99,29 @@ final class CoreStressTests: XCTestCase {
             contexts.allSatisfy { $0.mode != .viaRust }
         }
 
-        // One background completer iterates every connection.
+        // One background completer iterates every connection, driving
+        // every completion the promote teardown needs each tick. The
+        // EOFs are re-fired (not once): post-cutover each forwarder
+        // re-issues its own flow.readData / connection.receive, and a
+        // single EOF fired during the gap before that read is issued is
+        // lost (the mocks no-op when nothing is pending), stalling
+        // teardown. See `CoreTcpLifecycleTests.drainAndAwaitRemoval`.
         let completer = AtomicFlag()
         let capturedConns = conns
+        let capturedFlows = flows
         DispatchQueue.global().async {
             while !completer.load() {
                 for c in capturedConns {
                     _ = c.completePendingSend(error: nil)
+                    _ = c.completePendingReceive(isComplete: true)
+                }
+                for f in capturedFlows {
+                    f.completeRead(data: nil, error: nil)
                 }
                 Thread.sleep(forTimeInterval: 0.001)
             }
         }
         defer { completer.store(true) }
-
-        for (flow, conn) in zip(flows, conns) {
-            flow.completeRead(data: nil, error: nil)
-            _ = conn.completePendingReceive(isComplete: true)
-        }
 
         waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
     }
