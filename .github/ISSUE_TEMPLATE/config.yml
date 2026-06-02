@@ -3,6 +3,3 @@ contact_links:
   - name: Discord
     url: https://discord.gg/29EetaSYCD
     about: Ask questions, discuss ideas, or get help from the rama community.
-  - name: Security vulnerability
-    url: https://github.com/plabayo/rama/security/advisories
-    about: Please report security issues privately, never as a public issue. See SECURITY.md.
