@@ -21,7 +21,5 @@ to understand the change without having to reverse-engineer it from the diff.
 
 - [ ] This change is linked to an issue we have discussed (see above).
 - [ ] `just qa` passes locally (or I have explained below what I could not run).
-- [ ] Code is formatted (`just fmt`).
-- [ ] Commit history is clean and commit messages are descriptive.
-- [ ] I agree to the [contribution terms](../CONTRIBUTING.md#contribution-terms)
+- [ ] I agree to the [contribution terms](https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md#contribution-terms)
       and the Developer Certificate of Origin.
