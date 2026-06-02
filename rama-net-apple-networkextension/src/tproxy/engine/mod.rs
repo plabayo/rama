@@ -631,6 +631,12 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
+                // TODO(backpressure): lost-wakeup race. If the reader drains the
+                // channel empty between this `try_reserve` and the store, it
+                // clears `paused` before we set it, so the read-demand callback
+                // never re-fires and the flow stalls until the idle backstop.
+                // Pre-existing, rare at the default capacity; fix + a
+                // capacity-1 test deferred (mirror in `try_enqueue_egress`).
                 self.signals.ingress_paused.store(true, Ordering::Release);
                 TcpDeliverStatus::Paused
             }
