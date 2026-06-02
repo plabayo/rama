@@ -14,4 +14,5 @@ mod serve_stunnel;
 
 mod probe;
 mod resolve;
+mod send_feed;
 mod send_file;

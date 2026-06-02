@@ -54,6 +54,7 @@ mod writer;
 
 pub(super) async fn new(
     cfg: &SendCommand,
+    feed_tui: bool,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
     let writer = writer::try_new(cfg).await?;
 
@@ -67,6 +68,7 @@ pub(super) async fn new(
             move |inner| logger_body_res::ResponseBodyLogger {
                 inner,
                 writer: writer.clone(),
+                feed_tui,
             }
         }),
         cfg.emulate

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Atomic Notes</title>
+  <subtitle>small posts, atom format</subtitle>
+  <id>urn:uuid:atomic-notes</id>
+  <updated>2024-01-02T08:00:00Z</updated>
+  <link href="https://example.com/atom"/>
+  <entry>
+    <title>Hello from Atom</title>
+    <id>urn:uuid:atom-entry-1</id>
+    <updated>2024-01-02T08:00:00Z</updated>
+    <published>2024-01-02T08:00:00Z</published>
+    <link href="https://example.com/atom/hello"/>
+    <summary>The first atomic note.</summary>
+  </entry>
+</feed>

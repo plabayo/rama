@@ -13,6 +13,7 @@ use super::SendCommand;
 pub mod arg;
 
 mod client;
+mod feed;
 mod request;
 mod trace;
 mod ws;
@@ -35,7 +36,12 @@ pub async fn run(cfg: SendCommand, is_ws: bool) -> Result<(), BoxError> {
 }
 
 pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
-    let https_client = client::new(cfg).await?;
+    // The feed reader only applies to plain HTTP responses going to an
+    // interactive terminal; ws has its own TUI and redirected/file output is
+    // left untouched.
+    let feed_tui = !is_ws && feed::tui_gate_open(cfg);
+
+    let https_client = client::new(cfg, feed_tui).await?;
     let request = request::build(cfg, is_ws).await?;
 
     if is_ws {
@@ -64,6 +70,12 @@ pub async fn run_inner(cfg: &SendCommand, is_ws: bool) -> Result<(), BoxError> {
                     code: 22,
                 }));
             }
+        }
+
+        // The body logger leaves feed responses unwritten and tags them so we
+        // can hand the (still-streaming) body to the reader here.
+        if let Some(candidate) = feed::candidate_of(&resp) {
+            feed::run(resp, candidate).await?;
         }
     }
 
