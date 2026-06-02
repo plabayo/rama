@@ -87,7 +87,7 @@ where
     ) -> SessionFlowAction<TransparentProxyTcpSession> {
         self.new_tcp_session(
             meta,
-            move |bytes: Bytes| -> TcpDeliverStatus { on_server_bytes(bytes.as_ref()) },
+            move |bytes: &[u8]| -> TcpDeliverStatus { on_server_bytes(bytes) },
             move || on_client_read_demand(),
             move || on_server_closed(),
         )

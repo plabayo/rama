@@ -144,10 +144,8 @@ final class UdpClientWritePump: @unchecked Sendable {
             // them on the wire. Bias toward dropping the newest entry so
             // an unstuck pump first drains older queued work.
             if self.pending.count >= udpWritePumpMaxPending {
-                RamaTransparentProxyEngineHandle.log(
-                    level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-                    message:
-                        "udp client write pump full (>= \(udpWritePumpMaxPending) datagrams), dropping"
+                RamaLog.trace(
+                    "udp client write pump full (>= \(udpWritePumpMaxPending) datagrams), dropping"
                 )
                 return
             }
@@ -160,10 +158,8 @@ final class UdpClientWritePump: @unchecked Sendable {
             if depth > self.pendingCountHwm {
                 self.pendingCountHwm = depth
                 if depth > udpWritePumpHwmLogThreshold {
-                    RamaTransparentProxyEngineHandle.log(
-                        level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-                        message:
-                            "udp client write pump queue depth hwm=\(depth) cap=\(udpWritePumpMaxPending)"
+                    RamaLog.trace(
+                        "udp client write pump queue depth hwm=\(depth) cap=\(udpWritePumpMaxPending)"
                     )
                 }
             }

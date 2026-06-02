@@ -47,7 +47,7 @@ fn tcp_bridge_delivers_server_bytes() {
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
         move |bytes| {
             let mut lock = got_clone.lock();
-            lock.extend_from_slice(&bytes);
+            lock.extend_from_slice(bytes);
             _ = notify_tx.send(());
             TcpDeliverStatus::Accepted
         },
@@ -264,7 +264,7 @@ fn tcp_on_client_eof_drains_response_and_fires_close() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
         move |chunk| {
-            bytes_cb.lock().extend_from_slice(&chunk);
+            bytes_cb.lock().extend_from_slice(chunk);
             TcpDeliverStatus::Accepted
         },
         || {},

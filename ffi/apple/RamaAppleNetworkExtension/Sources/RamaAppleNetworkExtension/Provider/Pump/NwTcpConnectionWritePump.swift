@@ -63,9 +63,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
                 )
             },
             logHwm: { hwm in
-                RamaTransparentProxyEngineHandle.log(
-                    level: UInt32(RAMA_LOG_LEVEL_TRACE.rawValue),
-                    message: "tcp egress write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
+                RamaLog.trace(
+                    "tcp egress write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
                 )
             }
         )

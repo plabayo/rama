@@ -484,15 +484,6 @@ final class RamaTransparentProxyEngineHandle {
         }
     }
 
-    static func log(level: UInt32, message: String) {
-        let data = Data(message.utf8)
-        data.withUnsafeBytes { raw in
-            let ptr = raw.bindMemory(to: UInt8.self).baseAddress
-            let view = RamaBytesView(ptr: ptr, len: raw.count)
-            rama_log(level, view)
-        }
-    }
-
     func config() -> RamaTransparentProxyConfigBridge? {
         lock.lock()
         defer { lock.unlock() }
@@ -595,10 +586,8 @@ final class RamaTransparentProxyEngineHandle {
         // waiting). The alternative silent fallback would hide a
         // protocol bug as a quiet "is this thing even drained?"
         // mystery.
-        Self.log(
-            level: UInt32(RAMA_LOG_LEVEL_ERROR.rawValue),
-            message:
-                "drainForSleep: unknown RamaDrainOutcome discriminant \(raw); ABI skew between FFI shim and Swift wrapper — coercing to .alreadyStopped"
+        RamaLog.error(
+            "drainForSleep: unknown RamaDrainOutcome discriminant \(raw); ABI skew between FFI shim and Swift wrapper — coercing to .alreadyStopped"
         )
         return .alreadyStopped
     }
@@ -863,10 +852,8 @@ final class RamaTcpSessionHandle {
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
         if egressCallbackBox != nil {
-            RamaTransparentProxyEngineHandle.log(
-                level: UInt32(RAMA_LOG_LEVEL_WARN.rawValue),
-                message:
-                    "RamaTcpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
+            RamaLog.warn(
+                "RamaTcpSessionHandle.activate called twice; ignoring second call to avoid leaking the egress callback box"
             )
             return
         }
