@@ -60,6 +60,28 @@ typedef struct {
     size_t cap;
 } RamaBytesOwned;
 
+/// Swift→Rust ingress buffer that transfers buffer ownership to Rust, so
+/// it can be enqueued without copying.
+///
+/// Ownership: Rust takes ownership of `ptr`/`len` and calls `release(owner)`
+/// exactly once IFF the corresponding `_owned` call returns
+/// `RAMA_TCP_DELIVER_ACCEPTED` (0). On `RAMA_TCP_DELIVER_PAUSED` (1) /
+/// `RAMA_TCP_DELIVER_CLOSED` (2) the caller keeps ownership and `release` is
+/// NOT called (the caller must replay on paused, free on closed) — the same
+/// retain/replay discipline the borrowed `RamaBytesView` path requires.
+/// `release` may run on any thread. It may be NULL only when the caller
+/// cannot transfer ownership, in which case Rust copies defensively.
+typedef struct {
+    /// Pointer to the buffer; must stay valid until `release` runs.
+    const uint8_t* ptr;
+    /// Number of bytes at `ptr`.
+    size_t len;
+    /// Opaque owner handle passed back to `release` verbatim.
+    void* owner;
+    /// Releases `owner`; invoked exactly once, from any thread.
+    void (*release)(void* owner);
+} RamaBytesOwnedView;
+
 /// Transport protocol for one intercepted flow.
 typedef enum {
     /// TCP flow.
@@ -618,6 +640,16 @@ RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_client_bytes(
     RamaBytesView bytes
 );
 
+/// Owned-buffer variant of `rama_transparent_proxy_tcp_session_on_client_bytes`:
+/// the caller transfers ownership of `bytes` so Rust enqueues it without
+/// copying. See `RamaBytesOwnedView` for the ownership contract — Rust calls
+/// `release` IFF this returns `RAMA_TCP_DELIVER_ACCEPTED`; on PAUSED/CLOSED the
+/// caller keeps ownership.
+RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_client_bytes_owned(
+    RamaTransparentProxyTcpSession* session,
+    RamaBytesOwnedView bytes
+);
+
 /// Signal EOF on client->server TCP direction.
 void rama_transparent_proxy_tcp_session_on_client_eof(RamaTransparentProxyTcpSession* session);
 
@@ -654,6 +686,14 @@ void rama_transparent_proxy_tcp_session_activate(
 RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes(
     RamaTransparentProxyTcpSession* session,
     RamaBytesView bytes
+);
+
+/// Owned-buffer variant of `rama_transparent_proxy_tcp_session_on_egress_bytes`;
+/// same ownership contract as
+/// `rama_transparent_proxy_tcp_session_on_client_bytes_owned`.
+RamaTcpDeliverStatus rama_transparent_proxy_tcp_session_on_egress_bytes_owned(
+    RamaTransparentProxyTcpSession* session,
+    RamaBytesOwnedView bytes
 );
 
 /// Signal EOF on the egress NWConnection direction.

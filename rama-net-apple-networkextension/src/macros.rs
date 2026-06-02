@@ -451,6 +451,27 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_client_bytes(slice) }
         }
 
+        /// Owned-buffer variant of
+        /// `rama_transparent_proxy_tcp_session_on_client_bytes`: the
+        /// caller transfers ownership of the buffer so Rust can enqueue
+        /// it without copying. See `RamaBytesOwnedView` for the contract
+        /// — Rust takes ownership (and will invoke `release`) IFF this
+        /// returns `Accepted` (0). On `Paused` (1) / `Closed` (2) the
+        /// caller keeps ownership (and must replay on `Paused`, free on
+        /// `Closed`), and `release` is NOT called.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_bytes_owned(
+            session: *mut RamaTransparentProxyTcpSession,
+            bytes: $crate::ffi::BytesOwnedView,
+        ) -> RamaTcpDeliverStatus {
+            if session.is_null() {
+                // No session: ownership stays with the caller (the
+                // `Closed` contract), so we must NOT release here.
+                return RamaTcpDeliverStatus::Closed;
+            }
+            unsafe { (*session).on_client_bytes_owned(bytes) }
+        }
+
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_client_eof(
             session: *mut RamaTransparentProxyTcpSession,
@@ -837,6 +858,23 @@ macro_rules! __transparent_proxy_ffi_emit {
 
             let slice = unsafe { bytes.into_slice() };
             unsafe { (*session).on_egress_bytes(slice) }
+        }
+
+        /// Owned-buffer variant of
+        /// `rama_transparent_proxy_tcp_session_on_egress_bytes`; same
+        /// ownership contract as
+        /// `rama_transparent_proxy_tcp_session_on_client_bytes_owned`.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_on_egress_bytes_owned(
+            session: *mut RamaTransparentProxyTcpSession,
+            bytes: $crate::ffi::BytesOwnedView,
+        ) -> RamaTcpDeliverStatus {
+            if session.is_null() {
+                // No session: ownership stays with the caller (the
+                // `Closed` contract), so we must NOT release here.
+                return RamaTcpDeliverStatus::Closed;
+            }
+            unsafe { (*session).on_egress_bytes_owned(bytes) }
         }
 
         /// Signal EOF on the egress `NWConnection` direction.

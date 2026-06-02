@@ -432,6 +432,19 @@ private let ramaTcpOnPromoteRequestCallback:
         box.onPromoteRequest()
     }
 
+// ── Owned-ingress release thunk ───────────────────────────────────────────────
+
+/// Releases the `NSData` retained on the zero-copy owned-ingress path
+/// (`RamaBytesOwnedView.owner`). Rust calls this exactly once — from an
+/// arbitrary thread — when it drops the `Bytes` it built from the
+/// transferred buffer, balancing the `Unmanaged.passRetained` taken in
+/// `RamaTcpSessionHandle.deliverOwned`.
+private let ramaReleaseRetainedNSData: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+    context in
+    guard let context else { return }
+    Unmanaged<NSData>.fromOpaque(context).release()
+}
+
 final class RamaTransparentProxyEngineHandle {
     // Serialises `enginePtr` access so `stop()` can't free the engine
     // while another thread is mid-FFI call. The session handles already
@@ -777,20 +790,49 @@ final class RamaTcpSessionHandle {
     ///   * `.closed` — terminate the read pump; no demand will follow.
     @discardableResult
     func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        deliverOwned(data) { session, view in
+            tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_client_bytes_owned(session, view)
+            )
+        }
+    }
+
+    /// Hand `data` to Rust via the zero-copy owned-ingress path: bridge to
+    /// `NSData` (whose `bytes` pointer is stable for its lifetime, unlike
+    /// `Data.withUnsafeBytes`), retain it, and pass a release thunk so Rust
+    /// can hold the buffer across its async bridge without copying.
+    ///
+    /// Ownership: Rust releases our retain IFF it returns `.accepted`. On
+    /// `.paused` / `.closed` it leaves ownership with us, so we balance the
+    /// retain here — the caller's `Data` value is untouched and can be
+    /// replayed on `.paused`.
+    private func deliverOwned(
+        _ data: Data,
+        _ deliver: (OpaquePointer, RamaBytesOwnedView) -> RamaTcpDeliverStatusBridge
+    ) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return .closed }
 
-        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
-            let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return .closed }
-            let view = RamaBytesView(ptr: base, len: Int(data.count))
-            return tcpDeliverStatus(
-                rama_transparent_proxy_tcp_session_on_client_bytes(s, view)
-            )
+        let nsData = data as NSData
+        // +1 retain transferred to Rust (released by the thunk on
+        // `.accepted`, or balanced below otherwise). `nsData.bytes` stays
+        // valid for the retained NSData's lifetime.
+        let owner = Unmanaged.passRetained(nsData)
+        let view = RamaBytesOwnedView(
+            ptr: nsData.bytes.assumingMemoryBound(to: UInt8.self),
+            len: nsData.length,
+            owner: owner.toOpaque(),
+            release: ramaReleaseRetainedNSData
+        )
+        let status = deliver(s, view)
+        if status != .accepted {
+            // Rust did not take ownership; drop the retain we passed.
+            owner.release()
         }
+        return status
     }
 
     func onClientEof() {
@@ -879,18 +921,9 @@ final class RamaTcpSessionHandle {
     /// Same status contract as [`onClientBytes`] — see there.
     @discardableResult
     func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        guard !data.isEmpty else { return .accepted }
-
-        lock.lock()
-        defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return .closed }
-
-        return data.withUnsafeBytes { raw -> RamaTcpDeliverStatusBridge in
-            let base = raw.bindMemory(to: UInt8.self).baseAddress
-            guard let base else { return .closed }
-            let view = RamaBytesView(ptr: base, len: data.count)
-            return tcpDeliverStatus(
-                rama_transparent_proxy_tcp_session_on_egress_bytes(s, view)
+        deliverOwned(data) { session, view in
+            tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_egress_bytes_owned(session, view)
             )
         }
     }

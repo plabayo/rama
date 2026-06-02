@@ -593,16 +593,55 @@ impl TransparentProxyTcpSession {
             return TcpDeliverStatus::Accepted;
         }
         self.saw_client_bytes = true;
-        // Lock window is bounded: `try_reserve` + `permit.send` are
-        // both non-blocking. The lock is only contended with the
-        // promote path at cutover time.
+        self.try_enqueue_client(|| Bytes::copy_from_slice(bytes))
+    }
+
+    /// Owned-buffer counterpart of [`Self::on_client_bytes`]: Swift
+    /// transfers ownership of the read buffer instead of lending it, so
+    /// the common (`Accepted`) path enqueues a zero-copy [`Bytes`] backed
+    /// by the foreign allocation rather than copying it. See
+    /// [`BytesOwnedView`] for the ownership contract — crucially, the
+    /// buffer is consumed only on the reserve-success path, so a
+    /// `Paused`/`Closed` return leaves ownership with the caller (which
+    /// must still retain+replay on `Paused`, free on `Closed`).
+    ///
+    /// [`BytesOwnedView`]: crate::ffi::BytesOwnedView
+    #[must_use = "the caller must honor the returned backpressure / closed signal"]
+    pub fn on_client_bytes_owned(&mut self, view: crate::ffi::BytesOwnedView) -> TcpDeliverStatus {
+        if view.ptr.is_null() || view.len == 0 {
+            // Mirror `on_client_bytes`: empty input is "no bytes observed",
+            // so do NOT set `saw_client_bytes` (keeps the `on_client_eof`
+            // fast-cancel applicable). We did take ownership of the (empty)
+            // buffer, so release it here.
+            // SAFETY: ownership was transferred to us; release exactly once.
+            unsafe { view.release_now() };
+            return TcpDeliverStatus::Accepted;
+        }
+        self.saw_client_bytes = true;
+        // `view` is moved into the closure and consumed by `into_bytes`
+        // ONLY when a slot is reserved. On `Paused`/`Closed` the closure
+        // is dropped uncalled, leaving the foreign buffer owned by Swift.
+        //
+        // SAFETY: the FFI caller guarantees the buffer stays valid until
+        // its `release` runs, and that `release` is thread-safe.
+        self.try_enqueue_client(move || unsafe { view.into_bytes() })
+    }
+
+    /// Shared ingress (client→service) enqueue. `make` builds the chunk
+    /// and is invoked ONLY when a channel slot was reserved, so no owned
+    /// buffer is consumed on the `Paused` / `Closed` paths.
+    ///
+    /// Lock window is bounded: `try_reserve` + `permit.send` are both
+    /// non-blocking. The lock is only contended with the promote path at
+    /// cutover time.
+    fn try_enqueue_client(&self, make: impl FnOnce() -> Bytes) -> TcpDeliverStatus {
         let guard = self.client_tx.lock();
         let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
             Ok(permit) => {
-                permit.send(Bytes::copy_from_slice(bytes));
+                permit.send(make());
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
@@ -645,16 +684,37 @@ impl TransparentProxyTcpSession {
         if bytes.is_empty() {
             return TcpDeliverStatus::Accepted;
         }
-        // Same lock-discipline rationale as `on_client_bytes` —
-        // the only writer that contends is the promote fire
-        // closure dropping the sender on Ok ACK.
+        self.try_enqueue_egress(|| Bytes::copy_from_slice(bytes))
+    }
+
+    /// Owned-buffer counterpart of [`Self::on_egress_bytes`]; see
+    /// [`Self::on_client_bytes_owned`] and [`BytesOwnedView`] for the
+    /// zero-copy ownership contract.
+    ///
+    /// [`BytesOwnedView`]: crate::ffi::BytesOwnedView
+    #[must_use = "the caller must honor the returned backpressure / closed signal"]
+    pub fn on_egress_bytes_owned(&mut self, view: crate::ffi::BytesOwnedView) -> TcpDeliverStatus {
+        if view.ptr.is_null() || view.len == 0 {
+            // SAFETY: ownership was transferred to us; release exactly once.
+            unsafe { view.release_now() };
+            return TcpDeliverStatus::Accepted;
+        }
+        // SAFETY: see `on_client_bytes_owned` — buffer valid until its
+        // `release` runs, and consumed only on the reserve-success path.
+        self.try_enqueue_egress(move || unsafe { view.into_bytes() })
+    }
+
+    /// Shared egress (upstream→service) enqueue. Same lock discipline as
+    /// [`Self::try_enqueue_client`]; the only writer that contends is the
+    /// promote fire closure dropping the sender on Ok ACK.
+    fn try_enqueue_egress(&self, make: impl FnOnce() -> Bytes) -> TcpDeliverStatus {
         let guard = self.egress_tx.lock();
         let Some(tx) = guard.as_ref() else {
             return TcpDeliverStatus::Closed;
         };
         match tx.try_reserve() {
             Ok(permit) => {
-                permit.send(Bytes::copy_from_slice(bytes));
+                permit.send(make());
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
@@ -1087,7 +1147,7 @@ where
                 signing_id = meta_for_synthetic_close.source_app_signing_identifier.as_deref(),
                 decision = meta_for_synthetic_close
                     .intercept_decision
-                    .map(|d| d.to_string()),
+                    .map(tracing::field::display),
                 "transparent proxy tcp flow closed before activate",
             );
             #[cfg(feature = "dial9")]
@@ -2248,9 +2308,9 @@ async fn run_tcp_bridge(
 
 fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentProxyFlowMeta) {
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-    let local = meta.local_endpoint.as_ref().map(ToString::to_string);
-    let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
-    let decision = meta.intercept_decision.map(|d| d.to_string());
+    let local = meta.local_endpoint.as_ref().map(tracing::field::display);
+    let remote = meta.remote_endpoint.as_ref().map(tracing::field::display);
+    let decision = meta.intercept_decision.map(tracing::field::display);
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",
@@ -2302,9 +2362,9 @@ fn emit_tcp_bridge_close_event(
     // names suggested an absolute orientation that is not what the
     // bridge actually measures.
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-    let local = meta.local_endpoint.as_ref().map(ToString::to_string);
-    let remote = meta.remote_endpoint.as_ref().map(ToString::to_string);
-    let decision = meta.intercept_decision.map(|d| d.to_string());
+    let local = meta.local_endpoint.as_ref().map(tracing::field::display);
+    let remote = meta.remote_endpoint.as_ref().map(tracing::field::display);
+    let decision = meta.intercept_decision.map(tracing::field::display);
 
     tracing::info!(
         target: "rama_apple_ne::tproxy",

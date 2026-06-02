@@ -140,7 +140,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         }
 
         let egressOpts = session.getEgressConnectOptions()
-        let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 30_000
+        let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
         lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
         let nwParams = makeTcpNwParameters(egressOpts)
@@ -152,7 +152,8 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         guard let factory = core?.nwConnectionFactory,
             let connection = factory(remoteHost, meta.remotePort, nwParams)
         else {
-            core?.logDebug("handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session")
+            core?.logDebug(
+                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session")
             session.cancel()
             core?.removeTcpFlow(flowId)
             return true
@@ -353,7 +354,8 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     // MARK: - Phase: egress pump construction
 
-    private func buildEgressWritePump(connection: any NwConnectionLike) -> NwTcpConnectionWritePump {
+    private func buildEgressWritePump(connection: any NwConnectionLike) -> NwTcpConnectionWritePump
+    {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: flowQueue,
@@ -445,7 +447,8 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             // half-close and matched the Rust engine's asymmetric
             // on_client_eof / on_egress_eof contract incorrectly.
             onNaturalEof: { [weak self, weak session] in
-                self?.core?.logTrace("tcp client read EOF (half-close): forward to egress, keep download open")
+                self?.core?.logTrace(
+                    "tcp client read EOF (half-close): forward to egress, keep download open")
                 flow.closeReadWithError(nil)
                 session?.onClientEof()
             },

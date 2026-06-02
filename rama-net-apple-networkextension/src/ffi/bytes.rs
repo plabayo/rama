@@ -1,3 +1,6 @@
+use std::ffi::c_void;
+
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 
 #[repr(C)]
@@ -91,6 +94,129 @@ impl BytesView {
         }
         // SAFETY: caller contract guarantees pointer validity.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+/// Swift→Rust ingress buffer carrying an ownership-transfer handle, so
+/// Rust can hold the bytes across the async bridge without copying them.
+///
+/// # Ownership contract
+///
+/// The caller transfers ownership of the buffer to Rust. Rust takes
+/// ownership **iff** the corresponding `on_*_bytes_owned` call returns
+/// [`Accepted`] — it then invokes `release(owner)` exactly once when the
+/// wrapping [`Bytes`] (and all its clones) are dropped, on an arbitrary
+/// Tokio worker thread, so `release` MUST be safe to call from any
+/// thread. On [`Paused`] or [`Closed`] Rust does NOT take ownership and
+/// never calls `release`; the caller still owns the buffer (and must
+/// replay it on `Paused`, free it on `Closed`) — exactly the same
+/// retain/replay discipline the borrowed [`BytesView`] path already
+/// requires.
+///
+/// [`Accepted`]: crate::tproxy::TcpDeliverStatus::Accepted
+/// [`Paused`]: crate::tproxy::TcpDeliverStatus::Paused
+/// [`Closed`]: crate::tproxy::TcpDeliverStatus::Closed
+#[repr(C)]
+#[derive(Debug)]
+pub struct BytesOwnedView {
+    /// Start of the buffer; must stay valid for `len` bytes until
+    /// `release` runs.
+    pub ptr: *const u8,
+    /// Length of the buffer in bytes.
+    pub len: usize,
+    /// Opaque owner handle handed back to `release` verbatim.
+    pub owner: *mut c_void,
+    /// Releases `owner`. Invoked exactly once, from an arbitrary thread.
+    pub release: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+/// Owner stored inside a [`Bytes`] built from a [`BytesOwnedView`]; keeps
+/// the foreign buffer alive and releases it on drop.
+struct ForeignOwnedBuf {
+    ptr: *const u8,
+    len: usize,
+    owner: *mut c_void,
+    release: unsafe extern "C" fn(*mut c_void),
+}
+
+// SAFETY: the buffer is treated as immutable for the owner's lifetime
+// (only `as_ref` reads it), and `release` is documented to be callable
+// from any thread. `Bytes::from_owner` calls `as_ref` exactly once and
+// only ever drops the owner afterwards, so there is no concurrent access
+// that would require `Sync`.
+unsafe impl Send for ForeignOwnedBuf {}
+
+impl AsRef<[u8]> for ForeignOwnedBuf {
+    fn as_ref(&self) -> &[u8] {
+        if self.ptr.is_null() || self.len == 0 {
+            return &[];
+        }
+        // SAFETY: the FFI caller guarantees `ptr` is valid for `len`
+        // bytes until `release` runs, and Drop defers `release` until
+        // the last `Bytes` clone is gone.
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl Drop for ForeignOwnedBuf {
+    fn drop(&mut self) {
+        // SAFETY: `release` is invoked exactly once — `Bytes` drops its
+        // owner a single time, when the last clone is released.
+        unsafe { (self.release)(self.owner) };
+    }
+}
+
+impl BytesOwnedView {
+    /// Take ownership of the buffer and wrap it as a zero-copy [`Bytes`].
+    ///
+    /// Call this ONLY once Rust has committed to owning the buffer (the
+    /// channel slot was reserved). The returned `Bytes` releases the
+    /// foreign owner when its last clone drops.
+    ///
+    /// # Safety
+    ///
+    /// `ptr`/`len` must be valid until `release` runs, and `release`
+    /// (when `Some`) must be safe to call exactly once from any thread.
+    #[must_use]
+    pub unsafe fn into_bytes(self) -> Bytes {
+        let Some(release) = self.release else {
+            // Defensive: a caller that omits the releaser cannot transfer
+            // ownership, so copy rather than risk a leak / dangling read.
+            if self.ptr.is_null() || self.len == 0 {
+                return Bytes::new();
+            }
+            // SAFETY: caller contract on ptr/len for the call duration.
+            return Bytes::copy_from_slice(unsafe {
+                std::slice::from_raw_parts(self.ptr, self.len)
+            });
+        };
+        if self.ptr.is_null() || self.len == 0 {
+            // Empty payload: nothing to wrap, but we own the handle and
+            // must release it.
+            // SAFETY: `release` is valid and invoked exactly once here.
+            unsafe { release(self.owner) };
+            return Bytes::new();
+        }
+        Bytes::from_owner(ForeignOwnedBuf {
+            ptr: self.ptr,
+            len: self.len,
+            owner: self.owner,
+            release,
+        })
+    }
+
+    /// Release the owned buffer immediately without wrapping it — used on
+    /// the empty-payload `Accepted` shortcut where there is nothing to
+    /// enqueue but Rust has still taken ownership.
+    ///
+    /// # Safety
+    ///
+    /// `release` (when `Some`) must be safe to call exactly once.
+    pub unsafe fn release_now(self) {
+        if let Some(release) = self.release {
+            // SAFETY: invoked exactly once per ownership transfer.
+            unsafe { release(self.owner) };
+        }
     }
 }
 
@@ -360,5 +486,101 @@ mod udp_peer_scope_id_roundtrip {
             "host_utf8 must not include zone suffix; got {host}"
         );
         assert_eq!(host, "fe80::1");
+    }
+}
+
+#[cfg(test)]
+mod owned_view_ownership {
+    //! Pins the [`BytesOwnedView`] ownership contract: the foreign
+    //! `release` runs exactly once when (and only when) Rust takes
+    //! ownership, and never when an un-consumed view is dropped (the
+    //! `Paused`/`Closed` path, where Swift keeps the buffer).
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    unsafe extern "C" fn count_release(ctx: *mut c_void) {
+        // SAFETY: tests always pass a live `&AtomicUsize` as `ctx`.
+        let counter = unsafe { &*(ctx as *const AtomicUsize) };
+        counter.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn view(buf: &[u8], counter: &AtomicUsize) -> BytesOwnedView {
+        BytesOwnedView {
+            ptr: buf.as_ptr(),
+            len: buf.len(),
+            owner: std::ptr::from_ref(counter) as *mut c_void,
+            release: Some(count_release),
+        }
+    }
+
+    #[test]
+    fn into_bytes_releases_once_after_last_clone() {
+        let counter = AtomicUsize::new(0);
+        let buf = b"hello world".to_vec();
+        // SAFETY: `buf` outlives every `Bytes` derived from the view.
+        let bytes = unsafe { view(&buf, &counter).into_bytes() };
+        assert_eq!(bytes.as_ref(), b"hello world");
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "held: not released");
+        let clone = bytes.clone();
+        drop(bytes);
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "clone still holds it");
+        drop(clone);
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "released exactly once");
+        drop(buf);
+    }
+
+    #[test]
+    fn dropping_unconsumed_view_never_releases() {
+        let counter = AtomicUsize::new(0);
+        let buf = b"data".to_vec();
+        // Simulates the Paused/Closed path: the view falls out of scope
+        // without being consumed, so ownership stays with the caller.
+        {
+            let _unconsumed = view(&buf, &counter);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        drop(buf);
+    }
+
+    #[test]
+    fn release_now_releases_once() {
+        let counter = AtomicUsize::new(0);
+        let buf = b"x".to_vec();
+        // SAFETY: release is valid and called exactly once.
+        unsafe { view(&buf, &counter).release_now() };
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        drop(buf);
+    }
+
+    #[test]
+    fn empty_into_bytes_still_releases_owned_handle() {
+        let counter = AtomicUsize::new(0);
+        let v = BytesOwnedView {
+            ptr: std::ptr::null(),
+            len: 0,
+            owner: std::ptr::from_ref(&counter) as *mut c_void,
+            release: Some(count_release),
+        };
+        // SAFETY: empty payload; `into_bytes` releases the handle.
+        let bytes = unsafe { v.into_bytes() };
+        assert!(bytes.is_empty());
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn missing_releaser_falls_back_to_copy() {
+        let buf = b"copied".to_vec();
+        let v = BytesOwnedView {
+            ptr: buf.as_ptr(),
+            len: buf.len(),
+            owner: std::ptr::null_mut(),
+            release: None,
+        };
+        // SAFETY: ptr/len valid for the call; no releaser → copy.
+        let bytes = unsafe { v.into_bytes() };
+        assert_eq!(bytes.as_ref(), b"copied");
+        // Independent of `buf` now (copied), so dropping buf is safe.
+        drop(buf);
+        assert_eq!(bytes.as_ref(), b"copied");
     }
 }
