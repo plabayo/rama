@@ -20,6 +20,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     var egressReady = false
     var timeoutWork: DispatchWorkItem?
     var waitingWork: DispatchWorkItem?
+    var terminalDrainBackstop: DispatchWorkItem?
 
     // Late-bound: only set once the engine decision is .intercept.
     var sessionHandle: RamaTcpSessionHandle?
@@ -124,6 +125,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                     self.ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
                         self?.ctx.teardown?.applyDrainedClose(wasOpened: wasOpened)
                     }
+                    self.armTerminalDrainBackstop()
                 }
             }
         )
@@ -176,6 +178,43 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         }
         timeoutWork = work
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: work)
+    }
+
+    /// Backstop for the graceful close path.
+    ///
+    /// `onServerClosed` / `onCloseEgress` hand the flow to
+    /// `closeWhenDrained`, whose completion is gated on the write pump's
+    /// queue draining. A peer that has stopped reading leaves the
+    /// in-flight `flow.write` / `connection.send` completion deferred
+    /// indefinitely, so the drain never finishes, the drain-gated
+    /// teardown (`applyDrainedClose`) never runs, and the whole per-flow
+    /// graph orphans — the egress write pump's queued `Data`, its
+    /// dispatch continuations, the `flowQueue`, and the egress
+    /// `NWConnection` leak permanently (they outlive even the 15-min Rust
+    /// idle timeout, whose drop re-enters this same wedged drain).
+    ///
+    /// Once a terminal signal is observed the flow IS ending, so bound
+    /// the wait: force a full teardown if the graceful close hasn't
+    /// completed within `lingerCloseMs`. Idempotent — `applyFullTeardown`'s
+    /// sticky `done` flag makes this a no-op when the graceful path won,
+    /// and the nil-guard arms the timer at most once. Cost is one timer
+    /// per flow close (no hot-path impact), mirroring
+    /// `installConnectTimeout`. Setting `terminalSignalled` lets the
+    /// on-`stateQueue` maintenance watchdog reap the same wedge even when
+    /// this flow's own queue is starved (the failure mode that watchdog
+    /// exists for) — see `TransparentProxyCore.collectMaintenanceKicksLocked`.
+    func armTerminalDrainBackstop() {
+        ctx.terminalSignalled = true
+        guard terminalDrainBackstop == nil, ctx.teardown?.isDone != true else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.ctx.teardown?.isDone == false else { return }
+            self.core?.logDebug(
+                "tcp flow drain backstop fired; forcing teardown (peer not draining)")
+            self.ctx.teardown?.applyDrainBackstop()
+        }
+        terminalDrainBackstop = work
+        flowQueue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(lingerCloseMs)), execute: work)
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
@@ -262,6 +301,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                         return
                     }
                     self.ctx.egressWritePump?.closeWhenDrained()
+                    self.armTerminalDrainBackstop()
                 }
             }
         )

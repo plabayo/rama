@@ -55,6 +55,17 @@ final class TcpFlowContext: @unchecked Sendable {
     /// off-queue by the stop-the-world wake reconcile (same relaxation
     /// the sleep teardown already relies on).
     var egressReady = false
+    /// A terminal close signal (server EOF / egress close, `viaRust`
+    /// mode) was observed on `flowQueue` and the graceful drain +
+    /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
+    /// periodic maintenance watchdog (same relaxation as `egressReady`).
+    /// A flow still in the registry a maintenance tick after this is set
+    /// has a wedged drain (the peer stopped reading, so the in-flight
+    /// `flow.write` / `connection.send` completion never fired and
+    /// `closeWhenDrained` never finished) and is force-torn-down — see
+    /// `TcpFlowSession.armTerminalDrainBackstop` /
+    /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
+    var terminalSignalled = false
     /// Mode of the per-flow data path. Mutated only on the
     /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
     var mode: TcpFlowMode = .viaRust

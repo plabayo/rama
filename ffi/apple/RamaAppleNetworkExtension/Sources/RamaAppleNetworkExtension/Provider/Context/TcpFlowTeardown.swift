@@ -193,6 +193,28 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
+    /// The graceful close path (`onServerClosed`/`onCloseEgress` →
+    /// `closeWhenDrained` → `applyDrainedClose` / the egress drain)
+    /// stalled past its backstop: the peer stopped reading, so the
+    /// in-flight `flow.write` / `connection.send` completion never fired,
+    /// the pump never finished draining, and the drain-gated teardown
+    /// never ran. Force a full teardown so the per-flow graph (egress
+    /// write pump's queued `Data`, its dispatch continuations, the
+    /// `flowQueue`, and the egress `NWConnection`) can't orphan.
+    /// Idempotent via `done`, so a graceful close that beat the backstop
+    /// wins and this no-ops. Driven by the per-flow
+    /// `TcpFlowSession.armTerminalDrainBackstop` timer or, if that queue
+    /// is starved, by the on-`stateQueue` maintenance watchdog. Distinct
+    /// `domain` for trace attribution.
+    func applyDrainBackstop() {
+        let err = NSError(
+            domain: "rama.tproxy.drain-backstop", code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "graceful close drain stalled; flow force-dropped"
+            ])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
     /// Shared body for full teardowns.
     ///
     /// **Order matters** — pump cancel BEFORE kernel flow close:

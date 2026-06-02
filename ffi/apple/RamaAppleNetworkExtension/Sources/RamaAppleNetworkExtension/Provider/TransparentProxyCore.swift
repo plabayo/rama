@@ -221,6 +221,27 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// there); no lock needed.
     private var stuckPreReadyFlowIds: Set<ObjectIdentifier> = []
 
+    /// TCP flow IDs that had signalled a terminal close
+    /// (`ctx.terminalSignalled`) yet were still in the registry on the
+    /// previous maintenance tick. A flow present here AND still
+    /// closing-but-registered on the NEXT tick has a wedged graceful
+    /// drain (peer stopped reading → the in-flight write completion never
+    /// fired → `closeWhenDrained` never finished → the drain-gated
+    /// teardown never ran). The per-flow `armTerminalDrainBackstop` timer
+    /// normally reaps it within `lingerCloseMs`; this set is the
+    /// stateQueue-driven safety net for when that flow queue is starved.
+    ///
+    /// Only mutated from `stateQueue`; no lock needed.
+    private var stuckClosingFlowIds: Set<ObjectIdentifier> = []
+
+    /// Per-tick teardown work split by disposition: pre-ready flows get
+    /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`.
+    private struct MaintenanceKicks {
+        var preReadyStuck: [TcpFlowContext] = []
+        var closingStuck: [TcpFlowContext] = []
+        var isEmpty: Bool { preReadyStuck.isEmpty && closingStuck.isEmpty }
+    }
+
     private func startFlowCountReporting() {
         stopFlowCountReporting()
         let timer = DispatchSource.makeTimerSource(queue: stateQueue)
@@ -255,7 +276,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         flowCountReportingTimer = nil
         // Clear watchdog state so a future `attachEngine` doesn't
         // inherit stale "stuck" IDs from the previous lifecycle.
-        stateQueue.sync { self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false) }
+        stateQueue.sync {
+            self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false)
+            self.stuckClosingFlowIds.removeAll(keepingCapacity: false)
+        }
     }
 
     /// One maintenance tick, on-`stateQueue` half: emit flow-count
@@ -265,7 +289,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///
     /// MUST be called on `stateQueue` — both the timer handler and
     /// the test hook satisfy that.
-    private func collectMaintenanceKicksLocked() -> [TcpFlowContext] {
+    private func collectMaintenanceKicksLocked() -> MaintenanceKicks {
         // `stateQueue.sync` is unnecessary inside — the timer fires ON
         // `stateQueue`, so direct access to the maps is already
         // serialised correctly.
@@ -273,22 +297,37 @@ final class TransparentProxyCore: @unchecked Sendable {
         let udp = self.udpSessions.count
         self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
 
-        // Track the set of pre-`egressReady` IDs across ticks. An ID
-        // present in both the previous AND the current set has been
-        // stuck for ≥ one tick interval and gets force-torn-down via
-        // `applyConnectTimeout` — the same teardown the per-flow
-        // connect timer would fire, just driven from here so it
-        // survives the per-flow queue being starved.
-        var nowStuck: Set<ObjectIdentifier> = []
-        var toKick: [TcpFlowContext] = []
-        for (id, ctx) in tcpContexts where !ctx.egressReady {
-            nowStuck.insert(id)
-            if stuckPreReadyFlowIds.contains(id) {
-                toKick.append(ctx)
+        // Track two cross-tick "stuck" sets. An ID present in both the
+        // previous AND the current set has been stuck for ≥ one tick
+        // interval and gets force-torn-down — driven from here (on
+        // `stateQueue`, its own thread) so it survives the per-flow queue
+        // being starved.
+        //
+        //   * Pre-`egressReady`: still connecting → `applyConnectTimeout`,
+        //     the same teardown the per-flow connect timer would fire.
+        //   * Post-ready + `terminalSignalled`: a terminal close was
+        //     signalled but the flow never left the registry → its
+        //     graceful drain wedged → `applyDrainBackstop`, mirroring the
+        //     per-flow `armTerminalDrainBackstop` timer.
+        var nowStuckPreReady: Set<ObjectIdentifier> = []
+        var nowStuckClosing: Set<ObjectIdentifier> = []
+        var kicks = MaintenanceKicks()
+        for (id, ctx) in tcpContexts {
+            if !ctx.egressReady {
+                nowStuckPreReady.insert(id)
+                if stuckPreReadyFlowIds.contains(id) {
+                    kicks.preReadyStuck.append(ctx)
+                }
+            } else if ctx.terminalSignalled {
+                nowStuckClosing.insert(id)
+                if stuckClosingFlowIds.contains(id) {
+                    kicks.closingStuck.append(ctx)
+                }
             }
         }
-        stuckPreReadyFlowIds = nowStuck
-        return toKick
+        stuckPreReadyFlowIds = nowStuckPreReady
+        stuckClosingFlowIds = nowStuckClosing
+        return kicks
     }
 
     /// One maintenance tick, off-`stateQueue` half: actually fire the
@@ -302,24 +341,41 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Holding `stateQueue` across the body would deadlock there. The
     /// hop costs nothing in production and makes the watchdog robust
     /// to engine-less call paths.
-    private func fireWatchdogKicks(_ toKick: [TcpFlowContext]) {
-        guard !toKick.isEmpty else { return }
-        logLifecycle(
-            "watchdog: force-tearing down \(toKick.count) stale pre-ready flow(s)"
-        )
-        for ctx in toKick {
-            // Re-check `egressReady` ON `flowQueue`. The decision to
-            // kick was made on `stateQueue` from a `nonisolated`
-            // read of `ctx.egressReady`; between that and us getting
-            // here the flow may have raced into `.ready` (the
-            // legitimate happy path catching up just in time). The
-            // teardown's `applyConnectTimeout` has no internal
-            // ready-check — it'd cancel a healthy NWConnection and
-            // pop the registry. Mirror what `handleSystemWake`
-            // already does for the same race.
-            runFlowTeardown(ctx) {
-                guard !ctx.egressReady else { return }
-                ctx.teardown?.applyConnectTimeout()
+    private func fireWatchdogKicks(_ kicks: MaintenanceKicks) {
+        guard !kicks.isEmpty else { return }
+        if !kicks.preReadyStuck.isEmpty {
+            logLifecycle(
+                "watchdog: force-tearing down \(kicks.preReadyStuck.count) stale pre-ready flow(s)"
+            )
+            for ctx in kicks.preReadyStuck {
+                // Re-check `egressReady` ON `flowQueue`. The decision to
+                // kick was made on `stateQueue` from a `nonisolated`
+                // read of `ctx.egressReady`; between that and us getting
+                // here the flow may have raced into `.ready` (the
+                // legitimate happy path catching up just in time). The
+                // teardown's `applyConnectTimeout` has no internal
+                // ready-check — it'd cancel a healthy NWConnection and
+                // pop the registry. Mirror what `handleSystemWake`
+                // already does for the same race.
+                runFlowTeardown(ctx) {
+                    guard !ctx.egressReady else { return }
+                    ctx.teardown?.applyConnectTimeout()
+                }
+            }
+        }
+        if !kicks.closingStuck.isEmpty {
+            logLifecycle(
+                "watchdog: force-tearing down \(kicks.closingStuck.count) wedged closing flow(s)"
+            )
+            for ctx in kicks.closingStuck {
+                // No ready-race re-check needed: `applyDrainBackstop`
+                // routes through `applyFullTeardown`, whose sticky `done`
+                // flag makes it a no-op if the graceful close (or the
+                // per-flow backstop timer) already completed between the
+                // `stateQueue` decision and here.
+                runFlowTeardown(ctx) {
+                    ctx.teardown?.applyDrainBackstop()
+                }
             }
         }
     }
@@ -339,6 +395,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// Test hook: inspect the watchdog's "stuck since last tick" set.
         var testStuckPreReadyFlowIds: Set<ObjectIdentifier> {
             stateQueue.sync { self.stuckPreReadyFlowIds }
+        }
+
+        /// Test hook: inspect the watchdog's post-`.ready` "closing but
+        /// not yet removed" tracking set.
+        var testStuckClosingFlowIds: Set<ObjectIdentifier> {
+            stateQueue.sync { self.stuckClosingFlowIds }
         }
     #endif
 
@@ -382,6 +444,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             // first observation. Removing here keeps the watchdog's
             // tracking set in lockstep with the registry.
             self.stuckPreReadyFlowIds.remove(flowId)
+            self.stuckClosingFlowIds.remove(flowId)
         }
     }
 
