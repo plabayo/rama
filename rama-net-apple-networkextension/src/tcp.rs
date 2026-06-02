@@ -6,20 +6,23 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    ServiceInput,
     extensions::{Extensions, ExtensionsRef},
     rt::Executor,
 };
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::tproxy::engine::ffi_stream::FfiBridgeStream;
 
 pin_project! {
     /// A per-flow stream presented to the Rama user.
     ///
     /// This behaves like a normal bidirectional byte stream and implements
-    /// tokio [`AsyncRead`] + [`AsyncWrite`] + Rama [`Extensions`].
+    /// tokio [`AsyncRead`] + [`AsyncWrite`] + Rama [`Extensions`]. The read
+    /// side drains the client→service channel; the write side hands
+    /// service→client bytes straight to the Swift response sink.
     pub struct TcpFlow {
         #[pin]
-        inner: DuplexStream,
+        inner: FfiBridgeStream,
         extensions: Extensions,
         executor: Option<Executor>,
     }
@@ -27,26 +30,11 @@ pin_project! {
 
 impl TcpFlow {
     #[must_use]
-    pub(crate) fn new(inner: DuplexStream, executor: Option<Executor>) -> Self {
+    pub(crate) fn new(inner: FfiBridgeStream, executor: Option<Executor>) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
             executor,
-        }
-    }
-
-    /// Consume the [`TcpFlow`] by mapping the input and
-    /// returning this as a new generic [`ServiceInput`].
-    pub fn map_input<Input>(self, map: impl FnOnce(DuplexStream) -> Input) -> ServiceInput<Input> {
-        let Self {
-            inner: duplex_stream,
-            extensions,
-            executor: _,
-        } = self;
-
-        ServiceInput {
-            input: map(duplex_stream),
-            extensions,
         }
     }
 

@@ -658,7 +658,11 @@ fn engine_promote_ok_drains_inflight_bytes_then_emits_eof_to_service() {
         on_wake: None,
     };
 
-    let engine = build_engine(handler);
+    // The service parks in `into_passthrough().await` (not reading) while we
+    // push every in-flight byte before confirming, so all must buffer in the
+    // channel to drain after cutover. Size it for the whole payload (tiny
+    // 64-byte chunks here would overflow the default capacity).
+    let engine = build_engine_with_tcp_channel_capacity(handler, 64);
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),

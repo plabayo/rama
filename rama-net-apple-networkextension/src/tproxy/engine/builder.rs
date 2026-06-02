@@ -81,7 +81,8 @@ where
     RF: TransparentProxyAsyncRuntimeFactory,
 {
     rama_utils::macros::generate_set_and_with! {
-        /// Per-direction TCP duplex buffer size. `None` uses the default.
+        /// No effect; per-flow buffering is bounded by
+        /// [`Self::tcp_channel_capacity`].
         pub fn tcp_flow_buffer_size(mut self, size: Option<usize>) -> Self
         {
             self.tcp_flow_buffer_size = size;

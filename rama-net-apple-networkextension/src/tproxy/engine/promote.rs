@@ -662,7 +662,11 @@ where
             );
         } else if let Some(handle) = extensions.get_ref::<PromoteHandle>().cloned() {
             if let Err(err) = handle.into_passthrough().await {
-                tracing::warn!(
+                // Falling back to the in-Rust path is always safe (traffic
+                // keeps flowing), and the common cases are benign — no Swift
+                // promote callback registered, or the engine is shutting
+                // down — so this is debug, not warn.
+                tracing::debug!(
                     target: "rama_apple_ne::tproxy::promote",
                     error = %err,
                     "promote.into_passthrough failed; falling back to in-Rust data path",

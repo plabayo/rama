@@ -32,6 +32,7 @@ default = []
 dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
+atomic-waker = { workspace = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 libc = { workspace = true }
@@ -49,7 +50,7 @@ bindgen = { workspace = true }
 cc = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true
