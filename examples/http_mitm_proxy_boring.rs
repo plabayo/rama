@@ -411,30 +411,37 @@ where
     let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
 
     let mut ingress_socket_cfg: WebSocketConfig = Default::default();
-    if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
-        tracing::debug!("ingress request contains sec-websocket-extensions header");
-        if let Some(accept_pmd_cfg) = ingress_header.0.iter().find_map(|ext| {
-            if let WsExtension::PerMessageDeflate(cfg) = ext {
-                Some(cfg.clone())
-            } else {
-                None
-            }
-        }) {
-            tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
-            ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
-            response_parts.headers.typed_insert(
-                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg),
-            );
-        } else {
-            tracing::debug!(
-                "remove sec-websocket-extensions header if it exts: no ext was requested by ingress client"
-            );
-            _ = response_parts
-                .headers
-                .remove(SecWebSocketExtensions::name());
-        }
+    let ingress_pmd_cfg = parts_copy
+        .headers
+        .typed_get::<SecWebSocketExtensions>()
+        .and_then(|ingress_header| {
+            ingress_header.0.iter().find_map(|ext| {
+                if let WsExtension::PerMessageDeflate(cfg) = ext {
+                    Some(cfg.clone())
+                } else {
+                    None
+                }
+            })
+        });
+    // The ingress client only accepts the extensions it offered, so the response
+    // we return must reflect the ingress offer, not whatever the egress side (e.g.
+    // after UA emulation) happened to negotiate with the upstream. If the ingress
+    // client did not offer per-message-deflate we strip any extension header from
+    // the upstream response, otherwise the client fails the handshake with an
+    // extension mismatch.
+    if let Some(accept_pmd_cfg) = ingress_pmd_cfg {
+        tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
+        ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
+        response_parts.headers.typed_insert(
+            SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg),
+        );
     } else {
-        tracing::debug!("ingress request does not contain sec-websocket-extensions header");
+        tracing::debug!(
+            "ingress client did not offer per-message-deflate: strip any sec-websocket-extensions header from response"
+        );
+        _ = response_parts
+            .headers
+            .remove(SecWebSocketExtensions::name());
     }
 
     let response = Response::from_parts(response_parts, Body::empty());
