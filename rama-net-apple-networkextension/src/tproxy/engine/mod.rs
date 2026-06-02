@@ -23,7 +23,7 @@ use tokio::sync::{
     oneshot,
 };
 
-use self::ffi_stream::{FfiBridgeStream, TcpFlowByteCounters};
+use self::ffi_stream::{CloseReasonCell, FfiBridgeStream, TcpFlowByteCounters};
 
 use std::net::SocketAddr;
 
@@ -505,6 +505,10 @@ struct TcpSessionPendingData {
     /// Per-flow byte tallies shared with the streams; read by the service
     /// task to emit the flow's close event.
     byte_counters: Arc<TcpFlowByteCounters>,
+    /// Per-direction terminal close reason, recorded by each stream and read
+    /// by the service task to label that direction's close event.
+    ingress_close_reason: CloseReasonCell,
+    egress_close_reason: CloseReasonCell,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
     /// Flow-scoped guard, cloned into the per-flow stream executor.
@@ -775,6 +779,8 @@ impl TransparentProxyTcpSession {
             tcp_channel_capacity,
             tcp_paused_drain_max_wait,
             byte_counters,
+            ingress_close_reason,
+            egress_close_reason,
             meta,
             flow_guard,
             rt_handle,
@@ -795,6 +801,7 @@ impl TransparentProxyTcpSession {
             on_server_closed,
             signals.clone(),
             byte_counters.clone(),
+            ingress_close_reason,
             BridgeDirection::Ingress,
             paused_drain_wait,
         );
@@ -836,6 +843,7 @@ impl TransparentProxyTcpSession {
             guarded_egress_closed,
             signals,
             byte_counters,
+            egress_close_reason,
             BridgeDirection::Egress,
             paused_drain_wait,
         );
@@ -1041,6 +1049,8 @@ where
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
     let signals = Arc::new(TcpPerFlowSignals::new());
     let byte_counters = Arc::new(TcpFlowByteCounters::default());
+    let ingress_close_reason: CloseReasonCell = Arc::new(parking_lot::Mutex::new(None));
+    let egress_close_reason: CloseReasonCell = Arc::new(parking_lot::Mutex::new(None));
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
@@ -1066,6 +1076,8 @@ where
     // tracking on this long-lived per-flow service task.
     let meta_for_close = meta.clone();
     let counters_for_close = byte_counters.clone();
+    let ingress_reason_cell = ingress_close_reason.clone();
+    let egress_reason_cell = egress_close_reason.clone();
     let idle_guard = flow_guard.clone();
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
@@ -1127,16 +1139,21 @@ where
         let (ingress_received, ingress_sent) =
             counters_for_close.snapshot(BridgeDirection::Ingress);
         let (egress_received, egress_sent) = counters_for_close.snapshot(BridgeDirection::Egress);
+        let (ingress_reason, egress_reason) = resolve_tcp_close_reasons(
+            reason,
+            *ingress_reason_cell.lock(),
+            *egress_reason_cell.lock(),
+        );
         emit_tcp_bridge_close_event(
             BridgeDirection::Ingress,
-            reason,
+            ingress_reason,
             &meta_for_close,
             ingress_received,
             ingress_sent,
         );
         emit_tcp_bridge_close_event(
             BridgeDirection::Egress,
-            reason,
+            egress_reason,
             &meta_for_close,
             egress_received,
             egress_sent,
@@ -1165,6 +1182,8 @@ where
         tcp_channel_capacity,
         tcp_paused_drain_max_wait,
         byte_counters,
+        ingress_close_reason,
+        egress_close_reason,
         meta,
         flow_guard,
         rt_handle,
@@ -2083,6 +2102,62 @@ fn emit_decision_deadline_event(
         reason = %BridgeCloseReason::HandlerDeadline,
         "transparent proxy flow handler exceeded decision deadline",
     );
+}
+
+/// Resolve the per-direction close reasons for a flow's two close events.
+///
+/// `flow_reason` is the service task's outcome: `Shutdown` / `IdleTimeout`
+/// are flow-wide and apply to both directions; otherwise each direction
+/// reports the reason its own stream recorded (defaulting to a clean
+/// `PeerEofLeft` if it terminated without recording one).
+fn resolve_tcp_close_reasons(
+    flow_reason: BridgeCloseReason,
+    ingress: Option<BridgeCloseReason>,
+    egress: Option<BridgeCloseReason>,
+) -> (BridgeCloseReason, BridgeCloseReason) {
+    match flow_reason {
+        BridgeCloseReason::Shutdown | BridgeCloseReason::IdleTimeout => (flow_reason, flow_reason),
+        _ => (
+            ingress.unwrap_or(BridgeCloseReason::PeerEofLeft),
+            egress.unwrap_or(BridgeCloseReason::PeerEofLeft),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod close_reason_resolution {
+    use super::resolve_tcp_close_reasons;
+    use rama_net::proxy::BridgeCloseReason::*;
+
+    #[test]
+    fn flow_level_reasons_apply_to_both_directions() {
+        assert_eq!(
+            resolve_tcp_close_reasons(Shutdown, Some(PeerEofRight), None),
+            (Shutdown, Shutdown)
+        );
+        assert_eq!(
+            resolve_tcp_close_reasons(IdleTimeout, None, Some(PausedTimeout)),
+            (IdleTimeout, IdleTimeout)
+        );
+    }
+
+    #[test]
+    fn serve_completed_uses_per_direction_recorded_reason() {
+        // A write-side failure on one direction must NOT be logged as a
+        // clean EOF — this is the bug the per-direction cells fix.
+        assert_eq!(
+            resolve_tcp_close_reasons(PeerEofLeft, Some(PausedTimeout), Some(PeerEofRight)),
+            (PausedTimeout, PeerEofRight)
+        );
+    }
+
+    #[test]
+    fn serve_completed_defaults_unrecorded_direction_to_clean_eof() {
+        assert_eq!(
+            resolve_tcp_close_reasons(PeerEofLeft, None, None),
+            (PeerEofLeft, PeerEofLeft)
+        );
+    }
 }
 
 fn emit_tcp_bridge_close_event(

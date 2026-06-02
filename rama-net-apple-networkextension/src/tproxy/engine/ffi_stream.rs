@@ -18,7 +18,9 @@ use std::{
     time::Duration,
 };
 
+use parking_lot::Mutex;
 use rama_core::bytes::{Buf, Bytes};
+use rama_net::proxy::BridgeCloseReason;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::mpsc,
@@ -28,6 +30,10 @@ use tokio::{
 use super::{
     BridgeDirection, BytesStatusSink, ClosedSink, DemandSink, TcpDeliverStatus, TcpPerFlowSignals,
 };
+
+/// First terminal close reason observed for one direction's stream; read by
+/// the service task to label that direction's close event.
+pub(crate) type CloseReasonCell = Arc<Mutex<Option<BridgeCloseReason>>>;
 
 /// Per-flow byte tallies, indexed by [`BridgeDirection`]; read by the
 /// service task to emit the flow's close event.
@@ -92,6 +98,7 @@ pub(crate) struct FfiBridgeStream {
     // ── shared per-flow state ──
     signals: Arc<TcpPerFlowSignals>,
     counters: Arc<TcpFlowByteCounters>,
+    close_reason: CloseReasonCell,
     direction: BridgeDirection,
 }
 
@@ -104,6 +111,7 @@ impl FfiBridgeStream {
         on_closed: ClosedSink,
         signals: Arc<TcpPerFlowSignals>,
         counters: Arc<TcpFlowByteCounters>,
+        close_reason: CloseReasonCell,
         direction: BridgeDirection,
         paused_drain_max_wait: Duration,
     ) -> Self {
@@ -118,8 +126,14 @@ impl FfiBridgeStream {
             paused_backstop: None,
             signals,
             counters,
+            close_reason,
             direction,
         }
+    }
+
+    /// Record this direction's terminal close reason (first wins).
+    fn record_reason(&self, reason: BridgeCloseReason) {
+        self.close_reason.lock().get_or_insert(reason);
     }
 }
 
@@ -165,7 +179,10 @@ impl AsyncRead for FfiBridgeStream {
                     this.read_cursor = Some(bytes);
                 }
                 // Sender dropped → EOF.
-                Poll::Ready(None) => return Poll::Ready(Ok(())),
+                Poll::Ready(None) => {
+                    this.record_reason(BridgeCloseReason::PeerEofLeft);
+                    return Poll::Ready(Ok(()));
+                }
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -197,10 +214,13 @@ impl AsyncWrite for FfiBridgeStream {
                 Poll::Ready(Ok(buf.len()))
             }
             // Peer gone → broken pipe; the forwarder tears the flow down.
-            TcpDeliverStatus::Closed => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "transparent proxy: ffi peer closed the write side",
-            ))),
+            TcpDeliverStatus::Closed => {
+                this.record_reason(BridgeCloseReason::PeerEofRight);
+                Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "transparent proxy: ffi peer closed the write side",
+                )))
+            }
             TcpDeliverStatus::Paused => {
                 // Park for a drain wake (re-poll retries the same buffer) or
                 // the backstop deadline.
@@ -211,6 +231,7 @@ impl AsyncWrite for FfiBridgeStream {
                 match backstop.as_mut().poll(cx) {
                     Poll::Ready(()) => {
                         this.paused_backstop = None;
+                        this.record_reason(BridgeCloseReason::PausedTimeout);
                         // Drain never came: fire close (the service may
                         // ignore the error) and fail the write.
                         if !this.closed_fired {
@@ -307,7 +328,39 @@ mod tests {
         signals: Arc<TcpPerFlowSignals>,
         counters: Arc<TcpFlowByteCounters>,
     ) -> FfiBridgeStream {
-        FfiBridgeStream::new(rx, sink, demand, closed, signals, counters, dir, max_wait)
+        FfiBridgeStream::new(
+            rx,
+            sink,
+            demand,
+            closed,
+            signals,
+            counters,
+            Arc::new(Mutex::new(None)),
+            dir,
+            max_wait,
+        )
+    }
+
+    /// Stream with sane defaults + an inspectable close-reason cell.
+    fn stream_with_reason(
+        rx: mpsc::Receiver<Bytes>,
+        sink: BytesStatusSink,
+        dir: BridgeDirection,
+        max_wait: Duration,
+    ) -> (FfiBridgeStream, CloseReasonCell) {
+        let cell: CloseReasonCell = Arc::new(Mutex::new(None));
+        let s = FfiBridgeStream::new(
+            rx,
+            sink,
+            noop(),
+            noop(),
+            Arc::new(TcpPerFlowSignals::new()),
+            Arc::new(TcpFlowByteCounters::default()),
+            cell.clone(),
+            dir,
+            max_wait,
+        );
+        (s, cell)
     }
 
     #[tokio::test]
@@ -515,5 +568,55 @@ mod tests {
         );
         drop(s);
         assert_eq!(closed_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ── close-reason recording (so a write failure isn't logged as clean EOF) ──
+
+    #[tokio::test]
+    async fn read_eof_records_peer_eof_left() {
+        let (tx, rx) = mpsc::channel::<Bytes>(4);
+        drop(tx);
+        let (mut s, cell) = stream_with_reason(
+            rx,
+            accept_sink(),
+            BridgeDirection::Ingress,
+            Duration::from_secs(60),
+        );
+        let mut buf = [0u8; 8];
+        let _ = s.read(&mut buf).await.unwrap();
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofLeft));
+    }
+
+    #[tokio::test]
+    async fn write_closed_records_peer_eof_right() {
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let (mut s, cell) = stream_with_reason(
+            rx,
+            const_sink(TcpDeliverStatus::Closed),
+            BridgeDirection::Egress,
+            Duration::from_secs(60),
+        );
+        assert!(s.write_all(b"abc").await.is_err());
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofRight));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn backstop_records_paused_timeout() {
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let (mut s, cell) = stream_with_reason(
+            rx,
+            const_sink(TcpDeliverStatus::Paused),
+            BridgeDirection::Ingress,
+            Duration::from_millis(50),
+        );
+        let (_w, waker) = count_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(Pin::new(&mut s).poll_write(&mut cx, b"abc").is_pending());
+        tokio::time::advance(Duration::from_millis(60)).await;
+        assert!(matches!(
+            Pin::new(&mut s).poll_write(&mut cx, b"abc"),
+            Poll::Ready(Err(_))
+        ));
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::PausedTimeout));
     }
 }
