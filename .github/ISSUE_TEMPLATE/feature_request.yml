@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest an idea or improvement for rama.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing an idea!
+
+        For anything beyond a small change, please use this issue to discuss the
+        idea with us **before** you start coding, so we can align on the approach
+        and avoid having to reject hard work. See CONTRIBUTING.md ("Process").
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to do that rama makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work? API sketches or usage examples are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches or workarounds you have thought about.
+    validations:
+      required: false

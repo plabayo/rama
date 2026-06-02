@@ -1,0 +1,63 @@
+name: Bug Report
+description: Report a problem with rama so we can fix it.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report!
+
+        If you are not sure whether this is a bug, feel free to ask first on
+        [Discord](https://discord.gg/29EetaSYCD).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, including what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How can we reproduce it?
+      description: >-
+        Steps, a minimal code sample, or a failing test. The smaller the
+        reproduction, the faster we can help.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: rama-version
+    attributes:
+      label: rama version
+      description: Which version (or git commit) of rama are you using?
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform(s)
+      description: On which platform(s) does this happen?
+      multiple: true
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Android
+        - iOS
+        - Other / not platform-specific
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: >-
+        Paste any error messages, stack traces, or `tracing` output. This is
+        automatically formatted as code, so no backticks are needed.
+      render: shell
+    validations:
+      required: false
