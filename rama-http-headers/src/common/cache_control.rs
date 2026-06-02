@@ -98,59 +98,101 @@ impl CacheControl {
         }
     }
 
+    // presets
+
+    /// `public, immutable, max-age=31536000` — for content-hashed /
+    /// versioned URLs (e.g. `/theme.css?v=<git-sha>`).
+    ///
+    /// The URL changes whenever the content changes, so the cached response
+    /// is safe to keep for a year; `immutable` additionally stops the browser
+    /// from revalidating on reload. Reach for this only on content-hashed
+    /// URLs — on a stable URL whose body can change in place, use
+    /// [`Self::no_cache`] or [`Self::short_shared_revalidate`] instead.
+    #[must_use]
+    pub fn immutable_one_year() -> Self {
+        Self::new()
+            .with_public()
+            .with_immutable()
+            .with_max_age_seconds(31_536_000)
+    }
+
+    /// `no-cache` — the response is cacheable but must be revalidated with
+    /// the origin before reuse.
+    ///
+    /// The right default for service-worker scripts, HTML, or anything whose
+    /// URL is stable but whose body may change in place.
+    #[must_use]
+    pub fn no_cache() -> Self {
+        Self::new().with_no_cache()
+    }
+
+    /// `public, max-age=<secs>, must-revalidate` — a short shared cache for
+    /// non-fingerprinted but rarely-changing files (`robots.txt`,
+    /// `sitemap.xml`, `security.txt`).
+    ///
+    /// Lets a CDN absorb crawler bursts without making content updates
+    /// invisible for long.
+    #[must_use]
+    pub fn short_shared_revalidate(max_age_seconds: u32) -> Self {
+        Self::new()
+            .with_public()
+            .with_max_age_seconds(u64::from(max_age_seconds))
+            .with_must_revalidate()
+    }
+
     // getters
 
     /// Check if the `no-cache` directive is set.
     #[must_use]
-    pub fn no_cache(self) -> bool {
+    pub fn has_no_cache(self) -> bool {
         self.flags.contains(Flags::NO_CACHE)
     }
 
     /// Check if the `no-store` directive is set.
     #[must_use]
-    pub fn no_store(self) -> bool {
+    pub fn has_no_store(self) -> bool {
         self.flags.contains(Flags::NO_STORE)
     }
 
     /// Check if the `no-transform` directive is set.
     #[must_use]
-    pub fn no_transform(self) -> bool {
+    pub fn has_no_transform(self) -> bool {
         self.flags.contains(Flags::NO_TRANSFORM)
     }
 
     /// Check if the `only-if-cached` directive is set.
     #[must_use]
-    pub fn only_if_cached(self) -> bool {
+    pub fn has_only_if_cached(self) -> bool {
         self.flags.contains(Flags::ONLY_IF_CACHED)
     }
 
     /// Check if the `public` directive is set.
     #[must_use]
-    pub fn public(self) -> bool {
+    pub fn has_public(self) -> bool {
         self.flags.contains(Flags::PUBLIC)
     }
 
     /// Check if the `private` directive is set.
     #[must_use]
-    pub fn private(self) -> bool {
+    pub fn has_private(self) -> bool {
         self.flags.contains(Flags::PRIVATE)
     }
 
     /// Check if the `immutable` directive is set.
     #[must_use]
-    pub fn immutable(self) -> bool {
+    pub fn has_immutable(self) -> bool {
         self.flags.contains(Flags::IMMUTABLE)
     }
 
     /// Check if the `must-revalidate` directive is set.
     #[must_use]
-    pub fn must_revalidate(&self) -> bool {
+    pub fn has_must_revalidate(&self) -> bool {
         self.flags.contains(Flags::MUST_REVALIDATE)
     }
 
     /// Check if the `must-understand` directive is set.
     #[must_use]
-    pub fn must_understand(self) -> bool {
+    pub fn has_must_understand(self) -> bool {
         self.flags.contains(Flags::MUST_UNDERSTAND)
     }
 
@@ -623,7 +665,7 @@ mod tests {
         let headers = test_encode(cc.clone());
         assert_eq!(headers["cache-control"], "immutable");
         assert_eq!(test_decode::<CacheControl>(&["immutable"]).unwrap(), cc);
-        assert!(cc.immutable());
+        assert!(cc.has_immutable());
     }
 
     #[test]
@@ -635,7 +677,7 @@ mod tests {
             test_decode::<CacheControl>(&["must-revalidate"]).unwrap(),
             cc
         );
-        assert!(cc.must_revalidate());
+        assert!(cc.has_must_revalidate());
     }
 
     #[test]
@@ -647,7 +689,7 @@ mod tests {
             test_decode::<CacheControl>(&["must-understand"]).unwrap(),
             cc
         );
-        assert!(cc.must_understand());
+        assert!(cc.has_must_understand());
     }
 
     #[test]
@@ -682,5 +724,29 @@ mod tests {
                 .with_max_age_seconds(100),
         );
         assert_eq!(headers["cache-control"], "no-cache, max-age=100");
+    }
+
+    #[test]
+    fn preset_immutable_one_year() {
+        let headers = test_encode(CacheControl::immutable_one_year());
+        assert_eq!(
+            headers["cache-control"],
+            "public, immutable, max-age=31536000"
+        );
+    }
+
+    #[test]
+    fn preset_no_cache() {
+        let headers = test_encode(CacheControl::no_cache());
+        assert_eq!(headers["cache-control"], "no-cache");
+    }
+
+    #[test]
+    fn preset_short_shared_revalidate() {
+        let headers = test_encode(CacheControl::short_shared_revalidate(3600));
+        assert_eq!(
+            headers["cache-control"],
+            "must-revalidate, public, max-age=3600"
+        );
     }
 }

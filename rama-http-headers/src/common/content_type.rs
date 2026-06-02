@@ -251,6 +251,99 @@ impl ContentType {
         )
     }
 
+    /// A constructor to easily create a `Content-Type: image/svg+xml` header.
+    ///
+    /// ```
+    /// use rama_http_headers::ContentType;
+    ///
+    /// assert_eq!(ContentType::svg().to_string(), "image/svg+xml");
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn svg() -> Self {
+        Self(mime::IMAGE_SVG)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/xml; charset=utf-8` header.
+    ///
+    /// Distinct from [`Self::xml`] (which is `text/xml`): per
+    /// [RFC 7303](https://datatracker.ietf.org/doc/html/rfc7303) `application/xml`
+    /// is preferred for sitemaps/RSS/Atom, and the charset is stated explicitly
+    /// so the document's XML prolog and the HTTP `Content-Type` agree.
+    ///
+    /// ```
+    /// use rama_http_headers::ContentType;
+    ///
+    /// assert_eq!(
+    ///     ContentType::xml_utf8().to_string(),
+    ///     "application/xml; charset=utf-8",
+    /// );
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn xml_utf8() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(
+            Mime::from_str("application/xml; charset=utf-8")
+                .expect("application/xml; charset=utf-8 to be a valid mime"),
+        )
+    }
+
+    /// A constructor to easily create a `Content-Type: application/wasm` header.
+    ///
+    /// The spec mandates this exact value for `WebAssembly.instantiateStreaming`
+    /// to accept the response.
+    ///
+    /// ```
+    /// use rama_http_headers::ContentType;
+    ///
+    /// assert_eq!(ContentType::wasm().to_string(), "application/wasm");
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn wasm() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "static value which is expected to work, and validated with a unit-test"
+        )]
+        Self(Mime::from_str("application/wasm").expect("application/wasm to be a valid mime"))
+    }
+
+    /// A constructor to easily create a `Content-Type: font/woff2` header.
+    ///
+    /// ```
+    /// use rama_http_headers::ContentType;
+    ///
+    /// assert_eq!(ContentType::woff2().to_string(), "font/woff2");
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn woff2() -> Self {
+        Self(mime::FONT_WOFF2)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/manifest+json` header.
+    ///
+    /// Alias of [`Self::manifest_json`], named after the `.webmanifest` file
+    /// extension that web app manifests actually use; both coexist.
+    ///
+    /// ```
+    /// use rama_http_headers::ContentType;
+    ///
+    /// assert_eq!(
+    ///     ContentType::webmanifest().to_string(),
+    ///     "application/manifest+json",
+    /// );
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn webmanifest() -> Self {
+        Self::manifest_json()
+    }
+
     /// Reference to the internal [`Mime`].
     #[must_use]
     pub fn mime(&self) -> &Mime {
@@ -345,6 +438,29 @@ mod tests {
             test_decode::<ContentType>(&["application/manifest+json"]),
             Some(ContentType::manifest_json()),
         );
+    }
+
+    #[test]
+    fn xml_utf8_is_valid() {
+        _ = ContentType::xml_utf8();
+    }
+
+    #[test]
+    fn xml_utf8_roundtrip() {
+        assert_eq!(
+            test_decode::<ContentType>(&["application/xml; charset=utf-8"]),
+            Some(ContentType::xml_utf8()),
+        );
+    }
+
+    #[test]
+    fn wasm_is_valid() {
+        _ = ContentType::wasm();
+    }
+
+    #[test]
+    fn webmanifest_matches_manifest_json() {
+        assert_eq!(ContentType::webmanifest(), ContentType::manifest_json());
     }
 
     #[test]
