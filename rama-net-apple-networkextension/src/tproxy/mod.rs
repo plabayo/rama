@@ -82,7 +82,7 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
 pub mod dial9;
 
-mod engine;
+pub(crate) mod engine;
 
 mod types;
 

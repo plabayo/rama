@@ -2,7 +2,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -15,18 +15,15 @@ use rama_core::{
     rt::Executor,
     service::Service,
 };
-use rama_net::{
-    conn::is_connection_error,
-    proxy::{BridgeCloseReason, IdleGuard, ProxyTarget},
+use rama_net::proxy::{BridgeCloseReason, IdleGuard, ProxyTarget};
+
+use atomic_waker::AtomicWaker;
+use tokio::sync::{
+    mpsc::{self, error::TrySendError},
+    oneshot,
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::{
-        Notify,
-        mpsc::{self, error::TrySendError},
-        oneshot,
-    },
-};
+
+use self::ffi_stream::{FfiBridgeStream, TcpFlowByteCounters};
 
 use std::net::SocketAddr;
 
@@ -37,6 +34,8 @@ use crate::{
 
 mod svc_context;
 pub use self::svc_context::TransparentProxyServiceContext;
+
+pub(crate) mod ffi_stream;
 
 mod boxed;
 pub use self::boxed::{
@@ -116,15 +115,14 @@ impl std::fmt::Display for DecisionDeadlineAction {
     }
 }
 
-/// Default duplex buffer size between the per-flow bridge and the service.
-/// Two duplexes per TCP flow (ingress + egress) at this size each, fixed
-/// at flow creation, so this is a per-flow memory floor of `2× this`.
+/// Legacy default for the per-flow duplex buffer.
 ///
-/// 16 KiB matches the bridge's own read buffer ([`run_tcp_bridge`]). For
-/// L4 transparent forwarding this is plenty of burst absorption — the
-/// bridge always copies out before the next read. Handlers that terminate
-/// HTTP/2 (or other heavy fan-in protocols) should raise this via
-/// [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`].
+/// **No longer affects the data path.** The `tokio::io::duplex` + bridge
+/// task were removed in favor of channel/callback-backed streams
+/// ([`ffi_stream::FfiBridgeStream`]); per-flow buffering is now bounded by
+/// the mpsc channel capacity ([`DEFAULT_TCP_CHANNEL_CAPACITY`]). Retained
+/// only as the default for the still-exposed (now inert)
+/// [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`] setting.
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
 /// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
 /// will buffer before backpressuring Swift. Each chunk is whatever Swift
@@ -132,11 +130,12 @@ const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
 /// (typically 4–64 KiB).
 ///
 /// 8 chunks is sized for L4 transparent forwarding (the design centre of
-/// this engine): the bridge copies each chunk out into the duplex
-/// immediately, so deep per-flow queues buy little and just pin memory.
-/// At ~16 KiB per chunk that is ~128 KiB of worst-case headroom per
-/// direction, ~256 KiB per flow under saturation. Handlers that terminate
-/// HTTP/2 (or other heavy fan-in protocols) should raise this via
+/// this engine): the per-flow stream serves each chunk straight to the
+/// service / FFI sink, so this channel is the *only* per-flow buffer (the
+/// duplex is gone, #5) and deep queues just pin memory. At ~16 KiB per
+/// chunk that is ~128 KiB of worst-case headroom per direction, ~256 KiB
+/// per flow under saturation. Handlers that terminate HTTP/2 (or other
+/// heavy fan-in protocols) should raise this via
 /// [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
 const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 8;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
@@ -494,39 +493,34 @@ where
 struct TcpSessionPendingData {
     /// Delivers the completed `BridgeIo` to the waiting service task.
     bridge_tx: oneshot::Sender<BridgeIo<TcpFlow, NwTcpStream>>,
-    /// Ingress (client→Rust) bytes; handed to the ingress bridge at activate.
+    /// Ingress (client→Rust) bytes; becomes the `TcpFlow` read side at activate.
     client_rx: mpsc::Receiver<Bytes>,
-    /// Shared per-flow paused flags + drain notifications.
+    /// Shared per-flow paused flags + drain wakers.
     signals: Arc<TcpPerFlowSignals>,
     /// Rust→Swift: signal Swift it can resume reading from the intercepted flow.
-    /// Fired by the ingress bridge after it drained a chunk while
+    /// Fired by the `TcpFlow` read side after it drains a chunk while
     /// `signals.ingress_paused` was set.
     on_client_read_demand: DemandSink,
     /// Rust→Swift: response bytes back to the intercepted client flow.
-    /// Returns a [`TcpDeliverStatus`] so the bridge can pause when Swift's
-    /// writer pump is full and wait for the matching `signal_server_drain`.
+    /// Returns a [`TcpDeliverStatus`] so the `TcpFlow` write side can pause
+    /// when Swift's writer pump is full and wait for `signal_server_drain`.
     on_server_bytes: BytesStatusSink,
     /// Rust→Swift: ingress response stream done.
     on_server_closed: ClosedSink,
-    /// Both ingress and egress duplex buffer size.
-    tcp_flow_buffer_size: usize,
     /// Capacity of the bounded ingress and egress mpsc channels (in chunks).
     tcp_channel_capacity: usize,
-    /// Optional per-flow idle timeout. `None` disables idle detection.
-    tcp_idle_timeout: Option<Duration>,
-    /// Optional override for [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] applied to both
-    /// per-flow bridges. `None` means "use the engine default".
+    /// Optional override for [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] applied to
+    /// both per-flow stream write sides. `None` means "use the engine default".
     tcp_paused_drain_max_wait: Option<Duration>,
+    /// Per-flow byte tallies shared with the streams; read by the service
+    /// task to emit the flow's close event.
+    byte_counters: Arc<TcpFlowByteCounters>,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
-    /// Flow-scoped guard; held by bridge tasks to delay shutdown until they finish.
+    /// Flow-scoped guard, cloned into the per-flow stream executor.
     flow_guard: ShutdownGuard,
-    /// Runtime handle used to spawn bridge tasks from outside the async context.
-    ///
-    /// `activate` is called by Swift from an external (non-Tokio) thread after the
-    /// egress `NWConnection` is ready.  We cannot use `tokio::spawn` from there —
-    /// it requires an active runtime context.  Storing a `Handle` lets us call
-    /// `Handle::spawn`, which works from any thread on multi-thread runtimes.
+    /// Runtime handle, used to back the promote handle from `activate`
+    /// (which Swift may call from an external, non-Tokio thread).
     rt_handle: tokio::runtime::Handle,
     /// Handler-supplied egress options (may be `None` for NW defaults).
     egress_connect_options: Option<NwTcpConnectOptions>,
@@ -569,8 +563,6 @@ pub struct TransparentProxyTcpSession {
     pending: Option<TcpSessionPendingData>,
 
     // tasks
-    ingress_bridge_task: Option<tokio::task::JoinHandle<()>>,
-    egress_bridge_task: Option<tokio::task::JoinHandle<()>>,
     service_task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -732,14 +724,14 @@ impl TransparentProxyTcpSession {
     /// Idempotent — the underlying `Notify` collapses redundant signals into
     /// a single permit.
     pub fn signal_server_drain(&self) {
-        self.signals.ingress_drain.notify_one();
+        self.signals.ingress_drain.wake();
     }
 
     /// Symmetric counterpart of [`Self::signal_server_drain`] for the egress
     /// request direction. Called by Swift when its `NwTcpConnectionWritePump`
     /// has drained capacity after `on_write_to_egress` returned `Paused`.
     pub fn signal_egress_drain(&self) {
-        self.signals.egress_drain.notify_one();
+        self.signals.egress_drain.wake();
     }
 
     /// Called by Swift when the egress `NWConnection` closes or fails.
@@ -795,44 +787,56 @@ impl TransparentProxyTcpSession {
             on_client_read_demand,
             on_server_bytes,
             on_server_closed,
-            tcp_flow_buffer_size,
             tcp_channel_capacity,
-            tcp_idle_timeout,
             tcp_paused_drain_max_wait,
+            byte_counters,
             meta,
             flow_guard,
             rt_handle,
             egress_connect_options: _,
         } = pending;
 
-        // ingress stream (client ↔ service)
-        let (ingress_user, ingress_internal) = tokio::io::duplex(tcp_flow_buffer_size);
-        let ingress_stream =
-            TcpFlow::new(ingress_user, Some(Executor::graceful(flow_guard.clone())));
+        let paused_drain_wait =
+            tcp_paused_drain_max_wait.unwrap_or(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT);
         let remote_endpoint = meta.remote_endpoint.clone();
         let meta_arc = Arc::new(meta);
-        ingress_stream.extensions().insert_arc(meta_arc.clone());
+
+        // ── ingress stream (client ↔ service) ──
+        // read side drains `client_rx` (client→service); write side hands
+        // service→client bytes straight to `on_server_bytes`. No duplex, no
+        // bridge task — the forwarder drives this stream directly.
+        let ingress_inner = FfiBridgeStream::new(
+            client_rx,
+            on_server_bytes,
+            on_client_read_demand,
+            on_server_closed,
+            signals.clone(),
+            byte_counters.clone(),
+            BridgeDirection::Ingress,
+            paused_drain_wait,
+        );
+        let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::graceful(flow_guard)));
+        ingress_stream.extensions().insert_arc(meta_arc);
         if let Some(remote) = remote_endpoint {
             ingress_stream.extensions().insert(ProxyTarget(remote));
         }
         // Service-initiated hand-off back to Swift; see [`PromoteHandle`].
         // The handle is backed by the session's `PromoteRegistry` so
         // `into_passthrough` fires the FFI-registered Swift callback,
-        // awaits Swift's `confirm_promoted` ACK, and on success drops
-        // both ingress + egress senders so the bridges EOF the
-        // service after draining in-flight bytes.
+        // awaits Swift's `confirm_promoted` ACK, and on success drops both
+        // ingress + egress senders so the stream read sides EOF the service
+        // after draining in-flight bytes.
         ingress_stream
             .extensions()
-            .insert(self.promote_registry.clone().into_handle(rt_handle.clone()));
+            .insert(self.promote_registry.clone().into_handle(rt_handle));
 
-        // egress stream (service ↔ NWConnection)
-        let (egress_user, egress_internal) = tokio::io::duplex(tcp_flow_buffer_size);
-        let egress_stream = NwTcpStream::new(egress_user);
-
+        // ── egress stream (service ↔ NWConnection) ──
+        // read side drains `egress_client_rx` (upstream→service); write side
+        // hands service→upstream bytes straight to `on_write_to_egress`.
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
         *self.egress_tx.lock() = Some(egress_client_tx);
 
-        // guard egress callbacks
+        // guard egress callbacks against the post-cancel teardown race
         let egress_bytes_sink: BytesStatusSink = Arc::new(on_write_to_egress);
         let egress_closed_sink: ClosedSink = Arc::new(on_close_egress);
         let egress_demand_sink: DemandSink = Arc::new(on_egress_read_demand);
@@ -843,79 +847,28 @@ impl TransparentProxyTcpSession {
         let guarded_egress_demand =
             guarded_demand_sink(self.callback_active.clone(), egress_demand_sink);
 
-        // Spawn bridge tasks via the stored runtime handle so that `activate` can be
-        // called from an external (non-Tokio) thread — e.g. a Swift dispatch queue.
-        // We clone the flow_guard into each task to keep the shutdown barrier alive
-        // until the task completes, matching the semantics of `spawn_task`.
-        //
-        // Note: we deliberately do NOT route this spawn through dial9's
-        // per-future wake-tracking. `dial9_tokio_telemetry::spawn` reads
-        // `TelemetryHandle::current()` from a thread-local, which is only
-        // populated on dial9 worker threads. `activate` runs on a Swift
-        // dispatch queue, so even with the `dial9` feature on the wrapper
-        // would silently fall through to plain `tokio::spawn`. Runtime-level
-        // events (poll start/end, wake, scheduling delay) are still emitted
-        // on every poll because dial9 hooks the worker thread, so the loss
-        // is the per-future wake graph for these two bridge tasks only.
-
-        let paused_drain_wait =
-            tcp_paused_drain_max_wait.unwrap_or(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT);
-        // spawn ingress bridge (client ↔ service)
-        self.ingress_bridge_task = Some({
-            let guard = flow_guard.clone();
-            let meta = meta_arc.clone();
-            let signals = signals.clone();
-            rt_handle.spawn(async move {
-                run_tcp_bridge(
-                    ingress_internal,
-                    client_rx,
-                    signals,
-                    on_client_read_demand,
-                    on_server_bytes,
-                    on_server_closed,
-                    guard,
-                    meta,
-                    tcp_idle_timeout,
-                    paused_drain_wait,
-                    BridgeDirection::Ingress,
-                )
-                .await;
-            })
-        });
-
-        // spawn egress bridge (service ↔ NWConnection)
-        self.egress_bridge_task = Some({
-            let guard = flow_guard;
-            let meta = meta_arc;
-            rt_handle.spawn(async move {
-                run_tcp_bridge(
-                    egress_internal,
-                    egress_client_rx,
-                    signals,
-                    guarded_egress_demand,
-                    guarded_egress_bytes,
-                    guarded_egress_closed,
-                    guard,
-                    meta,
-                    tcp_idle_timeout,
-                    paused_drain_wait,
-                    BridgeDirection::Egress,
-                )
-                .await;
-            })
-        });
+        let egress_inner = FfiBridgeStream::new(
+            egress_client_rx,
+            guarded_egress_bytes,
+            guarded_egress_demand,
+            guarded_egress_closed,
+            signals,
+            byte_counters,
+            BridgeDirection::Egress,
+            paused_drain_wait,
+        );
+        let egress_stream = NwTcpStream::new(egress_inner);
 
         // deliver BridgeIo to the waiting service task
         if bridge_tx
             .send(BridgeIo(ingress_stream, egress_stream))
             .is_err()
         {
-            // Same situation as the UDP path: service task ended
-            // before activate (parent_guard cancelled, panic). The
-            // BridgeIo we built is dropped on send failure, which
-            // closes the per-flow ingress / egress channels —
-            // subsequent `on_client_bytes` etc. will report
-            // `Closed`.
+            // Same situation as the UDP path: service task ended before
+            // activate (parent_guard cancelled, panic). The BridgeIo we
+            // built is dropped on send failure, which closes the per-flow
+            // ingress / egress channels — subsequent `on_client_bytes` etc.
+            // will report `Closed`.
             tracing::debug!(
                 target: "rama_apple_ne::tproxy",
                 "tcp activate: bridge_tx.send dropped — service task ended before activate",
@@ -982,17 +935,19 @@ impl TransparentProxyTcpSession {
         // Order matters. See `guarded_datagram_sink` for the
         // callback_active contract.
         //
-        //   1. callback_active = false — any in-flight bridge dispatch
+        //   1. callback_active = false — any in-flight stream dispatch
         //      blocks here on the same sync mutex; further dispatches
         //      short-circuit.
         //   2. flow_stop_tx — fires `flow_guard.cancelled()` so the
-        //      bridge's biased select picks the shutdown arm.
-        //   3. notify_one — wake any bridge parked on Paused-wait so
-        //      it observes (1) and (2).
-        //   4. drop senders — natural EOF for `recv()` arms.
-        //   5. detach bridge tasks (let them finish their close
-        //      epilogue for dial9 / tracing); abort the service task
-        //      as a fallback for user code wedged outside bridge IO.
+        //      forwarder's biased select picks the shutdown arm and the
+        //      flow-level idle watcher exits.
+        //   3. drain wakers — wake any stream write side parked on a
+        //      `Paused` so it re-polls, observes (1) via the gated sink
+        //      (now `Closed`), and unwinds.
+        //   4. drop senders — natural EOF for the stream read sides.
+        //   5. abort the service task as a fallback for user code wedged
+        //      outside stream IO (its streams' `Drop` still fires the
+        //      gated close callbacks, no-op'd by (1)).
         *self.callback_active.lock() = false;
         // The receiver lives inside `flow_shutdown`'s inner future
         // and is dropped only when that future ends — which itself
@@ -1008,8 +963,8 @@ impl TransparentProxyTcpSession {
                 "tcp cancel: flow_stop_tx receiver already gone (engine shutdown raced ahead)",
             );
         }
-        self.signals.ingress_drain.notify_one();
-        self.signals.egress_drain.notify_one();
+        self.signals.ingress_drain.wake();
+        self.signals.egress_drain.wake();
         *self.client_tx.lock() = None;
         *self.egress_tx.lock() = None;
         self.pending = None;
@@ -1018,8 +973,6 @@ impl TransparentProxyTcpSession {
         // `EngineShuttingDown` instead of hanging on the ACK
         // forever.
         self.promote_registry.abort_pending();
-        _ = self.ingress_bridge_task.take();
-        _ = self.egress_bridge_task.take();
         if let Some(task) = self.service_task.take() {
             task.abort();
         }
@@ -1040,7 +993,10 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
-    tcp_flow_buffer_size: usize,
+    // The duplex is gone (#5): the duplex buffer size no longer applies to
+    // the in-Rust data path. Kept as a parameter for engine/builder ABI
+    // stability; the per-flow mpsc channel capacity now bounds buffering.
+    _tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
@@ -1104,6 +1060,7 @@ where
     let (client_tx, client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
     let (bridge_tx, bridge_rx) = oneshot::channel::<BridgeIo<TcpFlow, NwTcpStream>>();
     let signals = Arc::new(TcpPerFlowSignals::new());
+    let byte_counters = Arc::new(TcpFlowByteCounters::default());
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
@@ -1113,58 +1070,116 @@ where
     let on_client_read_demand_guarded =
         guarded_demand_sink(callback_active.clone(), Arc::new(on_client_read_demand));
 
-    // Capture the current runtime handle so `activate` can spawn bridge tasks from
-    // any thread (including an external Swift thread) via `Handle::spawn`.
+    // Capture the current runtime handle so `activate` (which Swift may
+    // call from an external, non-Tokio thread) can back the promote handle.
     let rt_handle = tokio::runtime::Handle::current();
 
     tracing::debug!(protocol = ?meta.protocol, "new tcp session (pending egress connection)");
 
-    // Service task waits for BridgeIo, then serves it.
+    // Service task waits for BridgeIo, then serves it under a flow-level
+    // idle backstop + cancellation watch.
     //
     // Spawn through the rama `Executor` (graceful-aware) instead of
     // `flow_guard.spawn_task` directly, so that with the `dial9`
     // feature on the inner `tokio::spawn` is replaced by
     // `dial9_tokio_telemetry::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
-    let meta_for_synthetic_close = meta.clone();
+    let meta_for_close = meta.clone();
+    let counters_for_close = byte_counters.clone();
+    let idle_guard = flow_guard.clone();
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before `activate`. Emit a synthetic close so
             // every `record_flow_opened` has a matching close in the
             // logs / dial9 trace. Mirrors the UDP path.
-            let age_ms =
-                u64::try_from(meta_for_synthetic_close.age().as_millis()).unwrap_or(u64::MAX);
+            let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             tracing::info!(
                 target: "rama_apple_ne::tproxy",
-                flow_id = meta_for_synthetic_close.flow_id,
-                protocol = %meta_for_synthetic_close.protocol,
+                flow_id = meta_for_close.flow_id,
+                protocol = %meta_for_close.protocol,
                 reason = %BridgeCloseReason::Shutdown,
                 age_ms,
                 bytes_received = 0_u64,
                 bytes_sent = 0_u64,
-                pid = meta_for_synthetic_close.source_app_pid,
-                bundle_id = meta_for_synthetic_close.source_app_bundle_identifier.as_deref(),
-                signing_id = meta_for_synthetic_close.source_app_signing_identifier.as_deref(),
-                decision = meta_for_synthetic_close
-                    .intercept_decision
-                    .map(tracing::field::display),
+                pid = meta_for_close.source_app_pid,
+                bundle_id = meta_for_close.source_app_bundle_identifier.as_deref(),
+                signing_id = meta_for_close.source_app_signing_identifier.as_deref(),
+                decision = meta_for_close.intercept_decision.map(tracing::field::display),
                 "transparent proxy tcp flow closed before activate",
             );
             #[cfg(feature = "dial9")]
-            crate::tproxy::dial9::record_flow_closed(
-                meta_for_synthetic_close.flow_id,
-                age_ms,
-                0,
-                0,
-            );
+            crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
             return;
         };
-        // `serve` is `Result<(), Infallible>`; the `let Ok(())` form
-        // depends on the `irrefutable_let_patterns` lint rather than
-        // language-level pattern irrefutability for `Result<_,
-        // Infallible>`. Drop the pattern entirely so future toolchain
-        // bumps can't silently break this.
-        _ = service.serve(bridge).await;
+
+        // Drive the service to completion, but apply the engine's
+        // `tcp_idle_timeout` and watch the flow guard at this level (the
+        // per-flow streams deliberately don't, leaving lifecycle to us +
+        // the forwarder). `serve` is `Result<(), Infallible>`; the value
+        // is irrelevant — we only care that it finished. On idle/shutdown
+        // we drop `serve`, whose stream `Drop` fires the gated close
+        // callbacks.
+        let reason = {
+            let mut serve = std::pin::pin!(service.serve(bridge));
+            let mut idle = tcp_idle_timeout.map(IdleGuard::new);
+            let mut last_progress = counters_for_close.total();
+            loop {
+                tokio::select! {
+                    biased;
+                    () = idle_guard.cancelled() => break BridgeCloseReason::Shutdown,
+                    _ = async {
+                        match idle.as_mut() {
+                            Some(g) => g.tick().await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    } => {
+                        let cur = counters_for_close.total();
+                        if cur != last_progress {
+                            last_progress = cur;
+                            if let Some(g) = idle.as_mut() {
+                                g.reset();
+                            }
+                            continue;
+                        }
+                        break BridgeCloseReason::IdleTimeout;
+                    }
+                    _ = serve.as_mut() => break BridgeCloseReason::PeerEofLeft,
+                }
+            }
+            // `serve` (and its streams) drop here on a force-close, firing
+            // the gated `on_*_closed` callbacks before we log the close.
+        };
+
+        let (ingress_received, ingress_sent) =
+            counters_for_close.snapshot(BridgeDirection::Ingress);
+        let (egress_received, egress_sent) = counters_for_close.snapshot(BridgeDirection::Egress);
+        emit_tcp_bridge_close_event(
+            BridgeDirection::Ingress,
+            reason,
+            &meta_for_close,
+            ingress_received,
+            ingress_sent,
+        );
+        emit_tcp_bridge_close_event(
+            BridgeDirection::Egress,
+            reason,
+            &meta_for_close,
+            egress_received,
+            egress_sent,
+        );
+        // dial9 collapses the two directions into one record using the
+        // INGRESS orientation (received = client→service, sent =
+        // service→client), matching the legacy bridge behavior.
+        #[cfg(feature = "dial9")]
+        {
+            let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
+            crate::tproxy::dial9::record_flow_closed(
+                meta_for_close.flow_id,
+                age_ms,
+                ingress_received,
+                ingress_sent,
+            );
+        }
     });
 
     let pending = TcpSessionPendingData {
@@ -1174,10 +1189,9 @@ where
         on_client_read_demand: on_client_read_demand_guarded,
         on_server_bytes: on_server_bytes_guarded,
         on_server_closed: on_server_closed_guarded,
-        tcp_flow_buffer_size,
         tcp_channel_capacity,
-        tcp_idle_timeout,
         tcp_paused_drain_max_wait,
+        byte_counters,
         meta,
         flow_guard,
         rt_handle,
@@ -1202,8 +1216,6 @@ where
         callback_active,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
-        ingress_bridge_task: None,
-        egress_bridge_task: None,
         service_task: Some(service_task),
     })
 }
@@ -2000,9 +2012,10 @@ fn guarded_datagram_sink(
     })
 }
 
-/// Direction tag for [`run_tcp_bridge`] used in close-log emission.
+/// Direction tag selecting per-direction signals/counters and used in
+/// close-log emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BridgeDirection {
+pub(crate) enum BridgeDirection {
     /// Client ↔ service ingress bridge (FFI client_rx ↔ service duplex).
     Ingress,
     /// Service ↔ NWConnection egress bridge.
@@ -2018,23 +2031,29 @@ impl std::fmt::Display for BridgeDirection {
     }
 }
 
-/// Per-flow backpressure flags and drain notifications, shared between the
-/// session's FFI surface and its two bridge tasks via a single `Arc`. One
-/// allocation instead of four (two `AtomicBool` + two `Notify`).
-struct TcpPerFlowSignals {
+/// Per-flow backpressure flags and drain wakers, shared between the
+/// session's FFI surface and its two per-flow streams via a single `Arc`.
+/// One allocation instead of four (two `AtomicBool` + two `AtomicWaker`).
+///
+/// `*_paused` is set by `on_*_bytes` when the ingress channel is full and
+/// cleared (edge-triggered, firing the read-demand callback) by the
+/// matching stream's `poll_read` when it drains a slot. `*_drain` is
+/// registered by the matching stream's `poll_write` while parked on
+/// `Paused` and woken by `signal_*_drain`.
+pub(crate) struct TcpPerFlowSignals {
     ingress_paused: AtomicBool,
-    ingress_drain: Notify,
+    ingress_drain: AtomicWaker,
     egress_paused: AtomicBool,
-    egress_drain: Notify,
+    egress_drain: AtomicWaker,
 }
 
 impl TcpPerFlowSignals {
     fn new() -> Self {
         Self {
             ingress_paused: AtomicBool::new(false),
-            ingress_drain: Notify::new(),
+            ingress_drain: AtomicWaker::new(),
             egress_paused: AtomicBool::new(false),
-            egress_drain: Notify::new(),
+            egress_drain: AtomicWaker::new(),
         }
     }
 
@@ -2045,265 +2064,12 @@ impl TcpPerFlowSignals {
         }
     }
 
-    fn drain(&self, dir: BridgeDirection) -> &Notify {
+    fn drain(&self, dir: BridgeDirection) -> &AtomicWaker {
         match dir {
             BridgeDirection::Ingress => &self.ingress_drain,
             BridgeDirection::Egress => &self.egress_drain,
         }
     }
-}
-
-#[expect(clippy::too_many_arguments)]
-async fn run_tcp_bridge(
-    internal: tokio::io::DuplexStream,
-    mut client_rx: mpsc::Receiver<Bytes>,
-    signals: Arc<TcpPerFlowSignals>,
-    on_read_demand: DemandSink,
-    on_server_bytes: BytesStatusSink,
-    on_server_closed: ClosedSink,
-    flow_guard: ShutdownGuard,
-    meta: Arc<TransparentProxyFlowMeta>,
-    idle_timeout: Option<Duration>,
-    paused_drain_max_wait: Duration,
-    direction: BridgeDirection,
-) {
-    let paused = signals.paused(direction);
-    let server_write_notify = signals.drain(direction);
-    let (mut read_half, mut write_half) = tokio::io::split(internal);
-    let mut buf = vec![0u8; 16 * 1024];
-    // Set to true once the write side is finished so we keep draining read_half even
-    // if the service dropped its read side before the bridge had a chance to read its
-    // response bytes.  Without this flag, a write failure would cause a `break` that
-    // races against any already-buffered server response bytes.
-    let mut write_done = false;
-    // Set to true once `on_server_bytes` reports the session is gone; we then
-    // exit the loop and fire `on_server_closed` once.
-    let mut server_closed = false;
-    // Bytes that `on_server_bytes` rejected with `Paused`. Swift does NOT
-    // take ownership on a `Paused` return, so we MUST replay this chunk
-    // after `server_write_notify` fires before reading any more from the
-    // duplex — otherwise we punch a hole in the byte stream and the
-    // downstream TLS layer surfaces "bad record MAC" once the gap reaches
-    // the decryptor. Symmetric to the Swift-side `pendingData` retain
-    // pattern for the Swift → Rust direction.
-    let mut pending_to_server: Option<Bytes> = None;
-
-    // Direction-relative byte counters. See `emit_tcp_bridge_close_event`
-    // for how the Ingress / Egress orientations resolve at log time.
-    let mut bytes_received: u64 = 0; // FFI peer → duplex (this side received)
-    let mut bytes_sent: u64 = 0; // duplex → FFI peer  (this side sent)
-    let progress = Arc::new(AtomicU64::new(0));
-    let mut last_progress: u64 = 0;
-    let mut idle = idle_timeout.map(IdleGuard::new);
-
-    let close_reason = loop {
-        if server_closed {
-            break BridgeCloseReason::PeerEofRight;
-        }
-
-        // Drain any pending replay before reading more from the duplex.
-        if let Some(bytes) = pending_to_server.take() {
-            let chunk_len = bytes.len() as u64;
-            match on_server_bytes(&bytes) {
-                TcpDeliverStatus::Accepted => {
-                    // Count this chunk against `bytes_sent` here, on
-                    // the replay's accepted return — the original
-                    // read in the main loop only counts for the first
-                    // successful delivery, never for chunks that
-                    // paused and were replayed.
-                    bytes_sent += chunk_len;
-                    progress.fetch_add(1, Ordering::Relaxed);
-                }
-                TcpDeliverStatus::Paused => {
-                    pending_to_server = Some(bytes);
-                    // Wait for drain or shutdown — never block here forever.
-                    // The `paused_drain_max_wait` arm catches a stuck
-                    // peer-side drain signal (lost / never invoked) so
-                    // the bridge can't wedge waiting for a notification
-                    // that never arrives.
-                    tokio::select! {
-                        biased;
-                        () = flow_guard.cancelled() => {
-                            break BridgeCloseReason::Shutdown;
-                        }
-                        () = server_write_notify.notified() => {
-                            continue;
-                        }
-                        () = tokio::time::sleep(paused_drain_max_wait) => {
-                            tracing::warn!(
-                                target: "rama_apple_ne::tproxy",
-                                flow_id = meta.flow_id,
-                                direction = %direction,
-                                wait_ms = u64::try_from(paused_drain_max_wait.as_millis()).unwrap_or(u64::MAX),
-                                "transparent proxy bridge: paused-wait timeout (replay) — peer drain signal lost?",
-                            );
-                            break BridgeCloseReason::PausedTimeout;
-                        }
-                    }
-                }
-                TcpDeliverStatus::Closed => {
-                    server_closed = true;
-                    continue;
-                }
-            }
-        }
-
-        tokio::select! {
-            // Biased: shutdown + idle drain immediately, and the write
-            // arm is preferred when both data arms are simultaneously
-            // ready. Accepted trade-off — the read arm yields a poll to
-            // the kernel buffer, which absorbs short backlog while the
-            // write side bursts. Cancel determinism wins over perfect
-            // read/write fairness for proxy traffic.
-            biased;
-
-            // Per-flow shutdown — drain immediately.
-            () = flow_guard.cancelled() => {
-                break BridgeCloseReason::Shutdown;
-            }
-
-            // Idle timeout — re-arm if progress observed; otherwise close.
-            _ = async {
-                match idle.as_mut() {
-                    Some(g) => g.tick().await,
-                    None => std::future::pending::<()>().await,
-                }
-            } => {
-                let cur = progress.load(Ordering::Relaxed);
-                if cur != last_progress {
-                    last_progress = cur;
-                    if let Some(g) = idle.as_mut() {
-                        g.reset();
-                    }
-                    continue;
-                }
-                break BridgeCloseReason::IdleTimeout;
-            }
-
-            maybe = client_rx.recv(), if !write_done => {
-                if let Some(bytes) = maybe {
-                    // We just freed a slot — if Swift was paused waiting for capacity,
-                    // wake it once. Edge-triggered: only the swap from `true` actually
-                    // fires the callback, so we never spam Swift with redundant demand
-                    // signals while the channel is draining.
-                    if paused.swap(false, Ordering::AcqRel) {
-                        on_read_demand();
-                    }
-                    let n = bytes.len() as u64;
-                    if let Err(err) = write_half.write_all(&bytes).await {
-                        if is_connection_error(&err) {
-                            tracing::trace!(direction = %direction, %err, "tcp bridge write_all conn error");
-                        } else {
-                            tracing::debug!(direction = %direction, %err, "tcp bridge write_all failed");
-                        }
-                        // The service dropped its read side (e.g. it already wrote its
-                        // response and returned).  Stop writing, but keep reading so
-                        // any buffered response bytes still reach the client.
-                        //
-                        // Close the receiver: any subsequent `try_send` from the FFI
-                        // side returns `TrySendError::Closed` so Swift stops queueing
-                        // bytes that no one will ever read. Without this the FFI tx
-                        // accumulates Bytes until the task aborts, which under
-                        // sustained load lets a single broken flow keep buffering.
-                        write_done = true;
-                        client_rx.close();
-                    } else {
-                        bytes_received += n;
-                        progress.fetch_add(1, Ordering::Relaxed);
-                    }
-                } else {
-                    // FFI sender dropped (EOF or cancel). Drain done; close
-                    // the write side so the service sees end-of-stream.
-                    _ = write_half.shutdown().await;
-                    write_done = true;
-                }
-            }
-            read_res = read_half.read(&mut buf) => {
-                match read_res {
-                    Ok(0) => {
-                        break BridgeCloseReason::PeerEofLeft;
-                    }
-                    Err(err) => {
-                        let conn_err = is_connection_error(&err);
-                        if conn_err {
-                            tracing::trace!(direction = %direction, %err, "tcp bridge read_half conn error");
-                        } else {
-                            tracing::debug!(direction = %direction, %err, "tcp bridge read_half failed");
-                        }
-                        break BridgeCloseReason::ReadErrorLeft;
-                    }
-                    Ok(n) => {
-                        // Symmetric backpressure: Swift's writer pump may be
-                        // full. We must not just hand it more bytes — that's
-                        // what leads to unbounded `pending` growth and
-                        // eventually `ENOBUFS` on `flow.write` /
-                        // `connection.send`. On `Paused`, hold the chunk
-                        // (Swift did NOT take it) and suspend the bridge
-                        // until `signal_*_drain` fires.
-                        //
-                        // The sink only borrows `&[u8]` — Swift copies into
-                        // its own `Data` synchronously — so the common
-                        // (Accepted) path needs no owned allocation. We only
-                        // copy into a `Bytes` on `Paused`, where the chunk
-                        // must outlive `buf` across the drain await.
-                        match on_server_bytes(&buf[..n]) {
-                            TcpDeliverStatus::Accepted => {
-                                bytes_sent += n as u64;
-                                progress.fetch_add(1, Ordering::Relaxed);
-                            }
-                            TcpDeliverStatus::Paused => {
-                                pending_to_server = Some(Bytes::copy_from_slice(&buf[..n]));
-                                // See `paused_drain_max_wait` doc; mirrors
-                                // the bound on the replay-side wait above.
-                                tokio::select! {
-                                    biased;
-                                    () = flow_guard.cancelled() => {
-                                        break BridgeCloseReason::Shutdown;
-                                    }
-                                    () = server_write_notify.notified() => {}
-                                    () = tokio::time::sleep(paused_drain_max_wait) => {
-                                        tracing::warn!(
-                                            target: "rama_apple_ne::tproxy",
-                                            flow_id = meta.flow_id,
-                                            direction = %direction,
-                                            wait_ms = u64::try_from(paused_drain_max_wait.as_millis()).unwrap_or(u64::MAX),
-                                            "transparent proxy bridge: paused-wait timeout — peer drain signal lost?",
-                                        );
-                                        break BridgeCloseReason::PausedTimeout;
-                                    }
-                                }
-                            }
-                            TcpDeliverStatus::Closed => {
-                                // Session torn down on the Swift side; no
-                                // demand will follow. Stop the loop after
-                                // this iteration so `on_server_closed`
-                                // fires exactly once.
-                                server_closed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    emit_tcp_bridge_close_event(direction, close_reason, &meta, bytes_received, bytes_sent);
-    // Emit the dial9 close event only from the Ingress direction so
-    // the flow appears once in the trace. The structured `tracing`
-    // event above is per-direction (each bridge logs its own
-    // direction-relative `bytes_received` / `bytes_sent`); dial9
-    // collapses the two views into a single record using the
-    // INGRESS bridge's counts, which on the ingress side mean:
-    //   - bytes_received = client → service (this side received)
-    //   - bytes_sent     = service → client (this side sent)
-    // For a faithful relay these match the egress view modulo MITM
-    // transformations.
-    #[cfg(feature = "dial9")]
-    if matches!(direction, BridgeDirection::Ingress) {
-        let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
-        crate::tproxy::dial9::record_flow_closed(meta.flow_id, age_ms, bytes_received, bytes_sent);
-    }
-    on_server_closed();
 }
 
 fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentProxyFlowMeta) {

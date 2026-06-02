@@ -6,24 +6,27 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::extensions::{Extensions, ExtensionsRef};
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::tproxy::engine::ffi_stream::FfiBridgeStream;
 
 pin_project! {
     /// Egress TCP stream backed by a pre-established `NWConnection`.
     ///
     /// Unlike [`crate::TcpFlow`], this type carries no intercepted-flow metadata.
-    /// It wraps the Rust side of a `tokio::io::duplex` pair whose other half is
-    /// bridged to a Swift-managed `NWConnection`.
+    /// The read side drains the upstream→service channel (bytes the Swift
+    /// `NWConnection` delivered); the write side hands service→upstream bytes
+    /// straight to the Swift egress-write sink.
     pub struct NwTcpStream {
         #[pin]
-        inner: DuplexStream,
+        inner: FfiBridgeStream,
         extensions: Extensions,
     }
 }
 
 impl NwTcpStream {
     #[must_use]
-    pub(crate) fn new(inner: DuplexStream) -> Self {
+    pub(crate) fn new(inner: FfiBridgeStream) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
