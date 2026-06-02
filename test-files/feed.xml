@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Rust Insights</title>
+    <link>https://example.com/rust</link>
+    <description>News and notes from the Rust world</description>
+    <item>
+      <title>Async streams explained</title>
+      <link>https://example.com/rust/async-streams</link>
+      <description>A tour of Stream and friends.</description>
+      <pubDate>Tue, 02 Jan 2024 08:00:00 GMT</pubDate>
+      <enclosure url="https://example.com/rust/async-streams.mp3" length="4096" type="audio/mpeg"/>
+    </item>
+    <item>
+      <title>Lifetimes without tears</title>
+      <link>https://example.com/rust/lifetimes</link>
+      <description>Borrow checker intuition.</description>
+      <pubDate>Tue, 09 Jan 2024 08:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
