@@ -658,12 +658,10 @@ fn engine_promote_ok_drains_inflight_bytes_then_emits_eof_to_service() {
         on_wake: None,
     };
 
-    // The service parks in `into_passthrough().await` (not reading)
-    // while we push every in-flight byte BEFORE confirming. Those bytes
-    // must all be ACCEPTED (buffered) so they drain to the service after
-    // cutover. Buffering is now the per-flow channel (the duplex is gone,
-    // #5); the test uses tiny 64-byte chunks, so size the channel to hold
-    // the whole payload (default cap-8 would only hold 512 B).
+    // The service parks in `into_passthrough().await` (not reading) while we
+    // push every in-flight byte before confirming, so all must buffer in the
+    // channel to drain after cutover. Size it for the whole payload (tiny
+    // 64-byte chunks here would overflow the default capacity).
     let engine = build_engine_with_tcp_channel_capacity(handler, 64);
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)

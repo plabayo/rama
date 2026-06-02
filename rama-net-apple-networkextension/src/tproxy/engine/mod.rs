@@ -115,27 +115,18 @@ impl std::fmt::Display for DecisionDeadlineAction {
     }
 }
 
-/// Legacy default for the per-flow duplex buffer.
-///
-/// **No longer affects the data path.** The `tokio::io::duplex` + bridge
-/// task were removed in favor of channel/callback-backed streams
-/// ([`ffi_stream::FfiBridgeStream`]); per-flow buffering is now bounded by
-/// the mpsc channel capacity ([`DEFAULT_TCP_CHANNEL_CAPACITY`]). Retained
-/// only as the default for the still-exposed (now inert)
-/// [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`] setting.
+/// Default for the [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`]
+/// setter, which has no effect — per-flow buffering is bounded by
+/// [`DEFAULT_TCP_CHANNEL_CAPACITY`].
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
 /// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
-/// will buffer before backpressuring Swift. Each chunk is whatever Swift
-/// hands us in one `flow.readData` / `connection.receive` callback
-/// (typically 4–64 KiB).
+/// buffers before backpressuring Swift. Each chunk is whatever Swift hands
+/// us in one `flow.readData` / `connection.receive` callback (typically
+/// 4–64 KiB).
 ///
-/// 8 chunks is sized for L4 transparent forwarding (the design centre of
-/// this engine): the per-flow stream serves each chunk straight to the
-/// service / FFI sink, so this channel is the *only* per-flow buffer (the
-/// duplex is gone, #5) and deep queues just pin memory. At ~16 KiB per
-/// chunk that is ~128 KiB of worst-case headroom per direction, ~256 KiB
-/// per flow under saturation. Handlers that terminate HTTP/2 (or other
-/// heavy fan-in protocols) should raise this via
+/// This channel is the only per-flow buffer, so deep queues just pin
+/// memory; 8 suits L4 forwarding (~128 KiB/direction at 16 KiB chunks).
+/// Handlers terminating HTTP/2 (or other heavy fan-in) should raise it via
 /// [`TransparentProxyEngineBuilder::tcp_channel_capacity`].
 const DEFAULT_TCP_CHANNEL_CAPACITY: usize = 8;
 /// Bound on the UDP ingress and egress channels. UDP datagrams are inherently
@@ -152,10 +143,9 @@ const DEFAULT_UDP_CHANNEL_CAPACITY: usize = 32;
 /// expiry.
 pub const DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT: Duration = Duration::from_mins(1);
 
-/// TCP response / upstream-write sink. Returns a [`TcpDeliverStatus`]
-/// so the Rust producer (the bridge) can pause when Swift's pending
-/// queue is full and resume only after the matching `signal_*_drain`
-/// call from Swift.
+/// TCP response / upstream-write sink. Returns a [`TcpDeliverStatus`] so the
+/// stream's write side can pause when Swift's pending queue is full and
+/// resume after the matching `signal_*_drain`.
 type BytesStatusSink = Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'static>;
 /// UDP datagram sink. Carries the per-datagram peer in addition to
 /// the payload — see [`crate::Datagram`] for the direction-dependent
@@ -548,8 +538,8 @@ pub struct TransparentProxyTcpSession {
     // wedge forever after cutover.
     egress_tx: Arc<parking_lot::Mutex<Option<mpsc::Sender<Bytes>>>>,
 
-    /// Shared paused flags + drain notifications for both directions.
-    /// One allocation, used by `on_*_bytes`, the bridges, and `signal_*_drain`.
+    /// Shared paused flags + drain wakers for both directions; used by
+    /// `on_*_bytes`, the per-flow streams, and `signal_*_drain`.
     signals: Arc<TcpPerFlowSignals>,
 
     // promote
@@ -646,18 +636,13 @@ impl TransparentProxyTcpSession {
 
     /// Called by Swift when the intercepted flow signals read-EOF.
     ///
-    /// We drop the per-flow ingress sender so the bridge's `recv()` drains
-    /// any buffered chunks and then returns `None`, which is its natural
-    /// EOF signal. Using a side-channel (e.g. a `watch::Sender<bool>`)
-    /// would create a select-fairness race against `read_half.read()`
-    /// that can either drop the last chunk (too-eager EOF) or starve the
-    /// response direction (over-prioritised EOF).
+    /// Drop the per-flow ingress sender: the stream's read side drains any
+    /// buffered chunks then sees `None` (EOF). Dropping the sender (vs a
+    /// side-channel flag) keeps the final chunk and the EOF strictly ordered.
     ///
     /// If the client EOFs without ever sending a byte (`!saw_client_bytes`),
-    /// route through `cancel()`: there's nothing for the service to do, and
-    /// dragging the bridges through a normal half-close just adds latency
-    /// before teardown. Note this is asymmetric with [`Self::on_egress_eof`]
-    /// — see that method.
+    /// route through `cancel()` — nothing for the service to do. Asymmetric
+    /// with [`Self::on_egress_eof`]; see there.
     pub fn on_client_eof(&mut self) {
         if !self.saw_client_bytes {
             self.cancel();
@@ -801,10 +786,8 @@ impl TransparentProxyTcpSession {
         let remote_endpoint = meta.remote_endpoint.clone();
         let meta_arc = Arc::new(meta);
 
-        // ── ingress stream (client ↔ service) ──
-        // read side drains `client_rx` (client→service); write side hands
-        // service→client bytes straight to `on_server_bytes`. No duplex, no
-        // bridge task — the forwarder drives this stream directly.
+        // ── ingress stream ──
+        // read = client→service channel; write = service→client sink.
         let ingress_inner = FfiBridgeStream::new(
             client_rx,
             on_server_bytes,
@@ -830,9 +813,8 @@ impl TransparentProxyTcpSession {
             .extensions()
             .insert(self.promote_registry.clone().into_handle(rt_handle));
 
-        // ── egress stream (service ↔ NWConnection) ──
-        // read side drains `egress_client_rx` (upstream→service); write side
-        // hands service→upstream bytes straight to `on_write_to_egress`.
+        // ── egress stream ──
+        // read = upstream→service channel; write = service→upstream sink.
         let (egress_client_tx, egress_client_rx) = mpsc::channel::<Bytes>(tcp_channel_capacity);
         *self.egress_tx.lock() = Some(egress_client_tx);
 
@@ -993,9 +975,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
-    // The duplex is gone (#5): the duplex buffer size no longer applies to
-    // the in-Rust data path. Kept as a parameter for engine/builder ABI
-    // stability; the per-flow mpsc channel capacity now bounds buffering.
+    // No effect; channel capacity bounds per-flow buffering.
     _tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
@@ -1112,13 +1092,9 @@ where
             return;
         };
 
-        // Drive the service to completion, but apply the engine's
-        // `tcp_idle_timeout` and watch the flow guard at this level (the
-        // per-flow streams deliberately don't, leaving lifecycle to us +
-        // the forwarder). `serve` is `Result<(), Infallible>`; the value
-        // is irrelevant — we only care that it finished. On idle/shutdown
-        // we drop `serve`, whose stream `Drop` fires the gated close
-        // callbacks.
+        // Run the service, applying the idle timeout and watching the flow
+        // guard here (the streams don't). On idle/shutdown we drop `serve`,
+        // whose streams' `Drop` fires the gated close callbacks.
         let reason = {
             let mut serve = std::pin::pin!(service.serve(bridge));
             let mut idle = tcp_idle_timeout.map(IdleGuard::new);
@@ -1146,8 +1122,6 @@ where
                     _ = serve.as_mut() => break BridgeCloseReason::PeerEofLeft,
                 }
             }
-            // `serve` (and its streams) drop here on a force-close, firing
-            // the gated `on_*_closed` callbacks before we log the close.
         };
 
         let (ingress_received, ingress_sent) =
@@ -1167,9 +1141,8 @@ where
             egress_received,
             egress_sent,
         );
-        // dial9 collapses the two directions into one record using the
-        // INGRESS orientation (received = client→service, sent =
-        // service→client), matching the legacy bridge behavior.
+        // dial9 records one row per flow using the INGRESS orientation
+        // (received = client→service, sent = service→client).
         #[cfg(feature = "dial9")]
         {
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
@@ -2016,9 +1989,9 @@ fn guarded_datagram_sink(
 /// close-log emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BridgeDirection {
-    /// Client ↔ service ingress bridge (FFI client_rx ↔ service duplex).
+    /// Client ↔ service direction.
     Ingress,
-    /// Service ↔ NWConnection egress bridge.
+    /// Service ↔ NWConnection (upstream) direction.
     Egress,
 }
 

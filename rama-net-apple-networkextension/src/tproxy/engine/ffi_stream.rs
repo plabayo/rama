@@ -1,21 +1,12 @@
-//! Channel/callback-backed per-flow stream that replaces the
-//! `tokio::io::duplex` + `run_tcp_bridge` task pair.
+//! Per-flow stream bridging a Swift FFI peer to the in-Rust service.
 //!
-//! Each TCP flow has two of these (one per direction-pair):
+//! Read side drains the per-flow `mpsc` channel (FFI peer → service),
+//! firing the read-demand callback when a slot frees. Write side calls the
+//! FFI status sink (service → FFI peer), parking on `Paused` until
+//! `signal_*_drain` wakes the registered waker, with a backstop deadline.
 //!
-//! * the **read** side drains the per-flow `mpsc` channel that the FFI
-//!   peer (Swift) feeds via `on_*_bytes[_owned]` — i.e. FFI peer →
-//!   service — firing the read-demand callback when a channel slot frees;
-//! * the **write** side hands bytes straight to the FFI status sink
-//!   (`on_server_bytes` / `on_write_to_egress`) — i.e. service → FFI peer
-//!   — parking on `Paused` until the matching `signal_*_drain` wakes the
-//!   registered waker (or a backstop timer fires).
-//!
-//! Removing the duplex deletes a whole `BytesMut` per direction plus two
-//! copies per chunk; removing the bridge task deletes a per-flow read
-//! buffer and two task hops per chunk. Idle-timeout and shutdown-on-cancel
-//! are owned one level up by the forwarder's select loop, so this stream
-//! deliberately does NOT watch the flow guard itself.
+//! Idle-timeout and cancellation are owned by the forwarder, so this stream
+//! does not watch the flow guard.
 
 use std::{
     future::Future,
@@ -38,11 +29,8 @@ use super::{
     BridgeDirection, BytesStatusSink, ClosedSink, DemandSink, TcpDeliverStatus, TcpPerFlowSignals,
 };
 
-/// Per-flow byte tallies, indexed by [`BridgeDirection`]. Shared (via
-/// `Arc`) between the two streams that increment them and the service
-/// task that reads them when emitting the flow's close event.
-///
-/// Orientation matches the legacy per-bridge counters:
+/// Per-flow byte tallies, indexed by [`BridgeDirection`]; read by the
+/// service task to emit the flow's close event.
 /// * Ingress: `received` = client→service, `sent` = service→client
 /// * Egress:  `received` = upstream→service, `sent` = service→upstream
 #[derive(Debug, Default)]
@@ -76,8 +64,7 @@ impl TcpFlowByteCounters {
         )
     }
 
-    /// Total bytes across both directions — used as a monotonic
-    /// progress signal by the flow-level idle backstop.
+    /// Total bytes both directions; progress signal for the idle backstop.
     pub(crate) fn total(&self) -> u64 {
         self.ingress_received.load(Ordering::Relaxed)
             + self.ingress_sent.load(Ordering::Relaxed)
@@ -89,8 +76,7 @@ impl TcpFlowByteCounters {
 pub(crate) struct FfiBridgeStream {
     // ── read side (FFI peer → service) ──
     rx: mpsc::Receiver<Bytes>,
-    /// The chunk currently being drained into reader buffers; `Bytes` is
-    /// advanced as it is consumed and cleared when empty.
+    /// Current chunk; advanced as consumed, cleared when empty.
     read_cursor: Option<Bytes>,
     on_read_demand: DemandSink,
 
@@ -99,9 +85,8 @@ pub(crate) struct FfiBridgeStream {
     on_closed: ClosedSink,
     closed_fired: bool,
     paused_drain_max_wait: Duration,
-    /// Armed on first `Paused`, disarmed on progress; backstops a peer
-    /// whose drain signal never arrives so a wedged write can't park
-    /// forever (mirrors the bridge's `paused_drain_max_wait`).
+    /// Reaps a write parked on `Paused` whose drain never arrives. Armed on
+    /// `Paused`, cleared on progress.
     paused_backstop: Option<Pin<Box<Sleep>>>,
 
     // ── shared per-flow state ──
@@ -111,10 +96,7 @@ pub(crate) struct FfiBridgeStream {
 }
 
 impl FfiBridgeStream {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "per-flow stream wiring; a builder/struct would add noise without simplifying the single call site in `activate`"
-    )]
+    #[expect(clippy::too_many_arguments, reason = "per-flow wiring; one call site")]
     pub(crate) fn new(
         rx: mpsc::Receiver<Bytes>,
         sink: BytesStatusSink,
@@ -147,8 +129,7 @@ impl AsyncRead for FfiBridgeStream {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        // `FfiBridgeStream` is `Unpin` (every field is), so unrestricted
-        // `&mut` access through the pin is sound.
+        // All fields are `Unpin`, so `get_mut` is sound.
         let this = self.get_mut();
         loop {
             if let Some(chunk) = this.read_cursor.as_mut() {
@@ -168,10 +149,8 @@ impl AsyncRead for FfiBridgeStream {
 
             match this.rx.poll_recv(cx) {
                 Poll::Ready(Some(bytes)) => {
-                    // A channel slot just freed — wake the FFI reader if it
-                    // paused waiting for capacity. Edge-triggered: only the
-                    // true→false swap fires the callback, so we never spam
-                    // the peer with redundant demand while the channel drains.
+                    // Slot freed: wake the FFI reader if it paused for
+                    // capacity. Edge-triggered so we don't re-spam demand.
                     if this
                         .signals
                         .paused(this.direction)
@@ -179,16 +158,13 @@ impl AsyncRead for FfiBridgeStream {
                     {
                         (this.on_read_demand)();
                     }
-                    // A zero-length chunk carries no data (e.g. a coalesced
-                    // empty write); skip it rather than report a spurious EOF.
+                    // Skip empty chunks (a 0-byte read would look like EOF).
                     if bytes.is_empty() {
                         continue;
                     }
                     this.read_cursor = Some(bytes);
-                    // loop to serve from the new cursor
                 }
-                // Sender dropped (`on_*_eof`, promote cutover, or cancel) —
-                // natural end-of-stream, surfaced as a 0-byte read.
+                // Sender dropped → EOF.
                 Poll::Ready(None) => return Poll::Ready(Ok(())),
                 Poll::Pending => return Poll::Pending,
             }
@@ -207,12 +183,9 @@ impl AsyncWrite for FfiBridgeStream {
             return Poll::Ready(Ok(0));
         }
 
-        // Register the drain waker BEFORE invoking the sink. The peer can
-        // only fire `signal_*_drain` at-or-after the sink observes the
-        // `Paused` condition, so registering first guarantees such a wake
-        // can never be lost in the window between the sink returning
-        // `Paused` and us parking. A spurious wake on the `Accepted` path
-        // just costs one extra poll.
+        // Register before calling the sink: `signal_*_drain` can only fire
+        // after the sink returns `Paused`, so registering first can't lose
+        // it. A spurious wake on `Accepted` just costs one poll.
         this.signals.drain(this.direction).register(cx.waker());
 
         match (this.sink)(buf) {
@@ -220,21 +193,17 @@ impl AsyncWrite for FfiBridgeStream {
                 this.counters
                     .sent(this.direction)
                     .fetch_add(buf.len() as u64, Ordering::Relaxed);
-                // Progress — disarm any backstop so the next stall starts
-                // a fresh deadline.
-                this.paused_backstop = None;
+                this.paused_backstop = None; // progress: re-arm fresh next time
                 Poll::Ready(Ok(buf.len()))
             }
-            // Peer is gone; surface as a broken pipe so the forwarder tears
-            // the flow down. (`copy_one_way` treats this as a write error.)
+            // Peer gone → broken pipe; the forwarder tears the flow down.
             TcpDeliverStatus::Closed => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "transparent proxy: ffi peer closed the write side",
             ))),
             TcpDeliverStatus::Paused => {
-                // Park until the drain waker fires (re-poll → retry the
-                // sink with the same buffer — `write_all` re-presents it)
-                // or the backstop deadline elapses.
+                // Park for a drain wake (re-poll retries the same buffer) or
+                // the backstop deadline.
                 let max_wait = this.paused_drain_max_wait;
                 let backstop = this
                     .paused_backstop
@@ -242,18 +211,15 @@ impl AsyncWrite for FfiBridgeStream {
                 match backstop.as_mut().poll(cx) {
                     Poll::Ready(()) => {
                         this.paused_backstop = None;
-                        // Backstop expired: this write direction is dead.
-                        // Fire the close callback now (mirrors the old
-                        // bridge's `PausedTimeout → on_server_closed`) so
-                        // the FFI peer is notified even if the service
-                        // ignores the write error we return.
+                        // Drain never came: fire close (the service may
+                        // ignore the error) and fail the write.
                         if !this.closed_fired {
                             this.closed_fired = true;
                             (this.on_closed)();
                         }
                         Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::TimedOut,
-                            "transparent proxy: paused-drain backstop — peer drain signal lost?",
+                            "transparent proxy: paused-drain backstop",
                         )))
                     }
                     Poll::Pending => Poll::Pending,
@@ -263,16 +229,12 @@ impl AsyncWrite for FfiBridgeStream {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // No intermediate buffer on our side — bytes go straight to the
-        // sink in `poll_write`, so there is nothing to flush.
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(())) // nothing buffered; bytes go straight to the sink
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        // Fire the FFI "write side done" callback exactly once. The sink is
-        // already wrapped by the `callback_active` gate, so a shutdown that
-        // races teardown is a no-op rather than a use-after-free.
+        // Fire the "write done" callback once (gated against teardown).
         if !this.closed_fired {
             this.closed_fired = true;
             (this.on_closed)();
@@ -283,10 +245,8 @@ impl AsyncWrite for FfiBridgeStream {
 
 impl Drop for FfiBridgeStream {
     fn drop(&mut self) {
-        // A force-close (idle backstop / shutdown drops the stream before a
-        // clean `poll_shutdown`) still owes the FFI peer its "write side
-        // done" signal. Exactly-once via `closed_fired`; the guarded sink
-        // no-ops if teardown already disarmed callbacks.
+        // Force-close (dropped before a clean `poll_shutdown`) still fires
+        // the gated "write done" callback, once.
         if !self.closed_fired {
             self.closed_fired = true;
             (self.on_closed)();
