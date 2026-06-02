@@ -572,42 +572,6 @@ void rama_transparent_proxy_engine_notify_system_wake(
     RamaTransparentProxyEngine* engine
 );
 
-/// Outcome discriminant for `rama_transparent_proxy_engine_drain_for_sleep`.
-///
-/// Stable across releases — Swift gates `sleepWithCompletionHandler:`
-/// behaviour on the discriminant. Mirrors `tproxy::DrainOutcome`.
-typedef enum RamaDrainOutcome {
-    /// Every pre-drain spawned task exited cooperatively before the
-    /// deadline; the engine runtime is quiet.
-    RAMA_DRAIN_OUTCOME_DRAINED = 0,
-    /// `max_wait_ms` elapsed before all guards dropped. The engine
-    /// continues to accept new flows on a fresh shutdown installed at
-    /// drain time; in-flight pre-drain tasks bail at their next yield.
-    RAMA_DRAIN_OUTCOME_TIMEOUT = 1,
-    /// Engine was already terminally stopped (NULL pointer, or
-    /// `_engine_stop` ran in parallel). No-op.
-    RAMA_DRAIN_OUTCOME_ALREADY_STOPPED = 2,
-} RamaDrainOutcome;
-
-/// Synchronous recoverable drain for system sleep. Block the calling
-/// thread (Apple's `sleepWithCompletionHandler:`) until either every
-/// pre-drain spawned task exits, or `max_wait_ms` elapses, or the
-/// engine is already terminally stopped. Returns the outcome
-/// discriminant as `uint32_t`; cast to `RamaDrainOutcome`.
-///
-/// Unlike `_engine_stop`, this is RECOVERABLE — a fresh internal
-/// shutdown is installed before the old one fires, so new flows
-/// arriving during / after the drain register against an alive
-/// graceful tree. Designed to be called from
-/// `NEProvider.sleep(completionHandler:)`; the Swift wrapper drives
-/// every Swift-side per-flow teardown first, then calls this to
-/// drain the in-Rust spawned tasks (service / bridge / handler hook)
-/// before completing the Apple sleep handler.
-uint32_t rama_transparent_proxy_engine_drain_for_sleep(
-    RamaTransparentProxyEngine* engine,
-    uint32_t max_wait_ms
-);
-
 // TCP flow lifecycle
 
 /// Create a TCP session for one intercepted flow.

@@ -205,9 +205,9 @@ final class LifecycleLogTests: XCTestCase {
         XCTAssertEqual(errors.values, ["core-lifecycle-error"])
     }
 
-    /// `handleSystemSleep` must emit a `"system sleep: …"` lifecycle
+    /// `handleSystemSleep` must emit a `"system sleep"` lifecycle
     /// notice before invoking the completion. This is the load-bearing
-    /// signal a post-incident `log show` needs to attribute the drain
+    /// signal a post-incident `log show` needs to attribute the sleep
     /// to our extension.
     func testHandleSystemSleepEmitsLifecycleNotice() {
         let core = makeCore()
@@ -217,8 +217,8 @@ final class LifecycleLogTests: XCTestCase {
         wait(for: [exp], timeout: 1.0)
 
         XCTAssertTrue(
-            captured.values.contains(where: { $0.hasPrefix("system sleep:") }),
-            "expected a 'system sleep: …' lifecycle notice; got \(captured.values)"
+            captured.values.contains("system sleep"),
+            "expected a 'system sleep' lifecycle notice; got \(captured.values)"
         )
     }
 

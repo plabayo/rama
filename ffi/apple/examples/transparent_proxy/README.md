@@ -348,6 +348,78 @@ keys and the egress handshake becomes plaintext.
   `sysextd` re-reads `Info.plist`. Required when changing
   `NEMachServiceName`, entitlements, or other install-time keys.
 
+### Diagnosing sleep/wake connectivity loss
+
+Symptom: after the machine sleeps and wakes, internet stops — apps hang,
+nothing loads — and it stays broken until the proxy is restarted. The
+provider is still alive (same PID) and still *intercepts* flows; the
+egress side just carries no data.
+
+Reproduce deterministically (locks the screen for ~100s — detach the
+Xcode debugger first, an attached debugger keeps the machine awake):
+
+```sh
+for i in $(seq 1 20); do
+  echo "===== cycle $i — $(date) ====="
+  sudo pmset schedule wakeorpoweron "$(date -v+60S '+%m/%d/%y %H:%M:%S')"
+  sudo pmset sleepnow
+  # script resumes on wake; fire fresh flows to two destinations
+  sleep 1
+  curl -sS -o /dev/null --max-time 5 -w 'curl1 %{http_code} t=%{time_total}\n' https://example.com/ &
+  curl -sS -o /dev/null --max-time 5 -w 'curl2 %{http_code} t=%{time_total}\n' https://cloudflare.com/ &
+  wait
+  sleep 5
+done
+```
+
+Capture **while still broken** (within minutes — `log show` only keeps
+`.info`/`.debug` for a short rolling window). Note the predicate adds
+`com.apple.network`, which carries the egress `NWConnection` / NECP path
+detail the standard bundle predicate omits:
+
+```sh
+DEST=$(mktemp -d /tmp/rama-tproxy-wake.XXXXXX)
+log show --last 8m --style ndjson --info --debug \
+  --predicate 'subsystem == "org.ramaproxy.example.tproxy"
+            OR subsystem == "com.apple.networkextension"
+            OR subsystem == "com.apple.network"
+            OR process == "org.ramaproxy.example.tproxy.dev.provider"' \
+  > "$DEST/system.ndjson"
+echo "$DEST"
+```
+
+Failure signature of intercept-but-no-forward:
+
+1. `transparent proxy tcp flow closed` with `bytes_sent=0` (client request
+   received, nothing returned), and many closes with `age_ms < 50` (flows
+   torn down almost immediately).
+2. Apple `... Closing reads ... closed by plugin` immediate-EOFs.
+
+The lifecycle lines are just `system sleep` / `system wake`: sleep is a
+brief pause-and-return (no engine drain, no flow teardown), and flows
+that don't survive the suspend are reaped post-wake by the per-flow
+`.failed` path. The historical root cause here was a blocking on-sleep
+engine drain that wedged on a non-yielding task and left the proxy
+intercepting traffic it could no longer forward — do not reintroduce a
+blocking drain on the sleep path.
+
+Triage one-liners over the captured bundle:
+
+```sh
+B="$DEST/system.ndjson"
+# egress health: client requests that got a reply (bytes_sent>0) vs total
+grep 'tcp flow closed ' "$B" | grep direction=ingress \
+  | grep -oE 'bytes_sent=[0-9]+' | awk -F= '{t++; if($2>0)o++} END{printf "%d/%d replied\n",o,t}'
+# immediate-EOF count (sub-50ms closes)
+grep 'tcp flow closed ' "$B" | grep -oE 'age_ms=[0-9]+' | awk -F= '$2<50{n++} END{print n" closes <50ms"}'
+```
+
+Confirm it's the proxy, not the link: while broken, restarting **only**
+the proxy (`just install-tproxy-dev`, or toggling the profile) restores
+connectivity without a reboot. (For the consuming product, replace the
+`org.ramaproxy.example.tproxy` ids with that product's subsystem /
+provider ids.)
+
 ## Stress + resource-usage testing
 
 ### One-click traffic stress

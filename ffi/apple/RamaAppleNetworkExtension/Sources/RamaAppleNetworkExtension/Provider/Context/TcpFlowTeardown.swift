@@ -180,17 +180,6 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyFullTeardown(error: error, driveForwarder: true)
     }
 
-    /// System sleep arrived. Drop the flow rather than freeze it:
-    /// NWConnections held across sleep usually wake up already
-    /// `.failed`, and the kernel NECP entry behind them is gone.
-    /// Distinct `domain` so traces can attribute the cause.
-    func applySystemSleep() {
-        let err = NSError(
-            domain: "rama.tproxy.system-sleep", code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "system entered sleep; flow dropped"])
-        applyFullTeardown(error: err, driveForwarder: true)
-    }
-
     /// Engine is being detached (stopProxy / re-attach). Drop the flow:
     /// the egress NWConnection must be cancelled here, otherwise its
     /// `stateUpdateHandler` keeps the per-flow graph alive and the

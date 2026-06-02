@@ -146,64 +146,21 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     // MARK: - System sleep / wake
 
-    /// Budget the engine drain blocks the sleep handler for.
+    /// Apple's `sleep(completionHandler:)` is a brief pause-and-return
+    /// hook: do minimal work and complete promptly.
     ///
-    /// Apple's documented contract for
-    /// `sleepWithCompletionHandler:` is "call the completion when
-    /// you're done"; the framework does not publish a specific
-    /// grace window. **Treat 5s as an empirical, observable
-    /// ceiling, not a documented guarantee.** Empirically Apple
-    /// gives at least several seconds before forcing suspension,
-    /// and we want enough budget for the engine drain's
-    /// cancellation propagation + any `on_system_sleep` handler
-    /// hook to complete. If a future host hook needs longer (e.g.
-    /// flushing a large metrics batch on sleep), bump this — but
-    /// ideally bump cautiously and pair with telemetry that flags
-    /// when the actual drain duration approaches the budget.
-    static let systemSleepEngineDrainBudgetMs: UInt32 = 5_000
-
-    /// Drop every active flow on sleep, then block until the Rust
-    /// engine confirms its spawned tasks have actually exited
-    /// cooperatively (or until [`systemSleepEngineDrainBudgetMs`]
-    /// elapses, whichever first).
-    ///
-    /// Each Swift-side TCP teardown is dispatched onto its own flow
-    /// queue first (`runFlowTeardown`) so it runs single-threaded
-    /// with that flow's kernel / NWConnection callbacks — the
-    /// teardown's `done` flag and slot mutations are
-    /// flow-queue-confined, so this avoids racing them. Then we drive
-    /// `engine.drainForSleep`, which fires the engine-wide shutdown
-    /// trigger; per-flow `Shutdown`s observe `parent_guard.cancelled()`
-    /// on the engine guard chain and the cascade unwinds every
-    /// in-Rust service / bridge / handler task. The drain blocks
-    /// until either all tasks exit or the budget elapses.
-    ///
-    /// Apple may suspend the process the moment we call `completion`.
-    /// Blocking on the drain BEFORE `completion` ensures the runtime
-    /// is genuinely quiet at the suspension point: no half-cancelled
-    /// service tasks, no hundreds of pending timer expirations to
-    /// catch up on after wake.
+    /// We deliberately do NOT tear flows down or block on an engine drain
+    /// here. A blocking drain can be wedged by any non-yielding engine
+    /// task (e.g. an in-flight handler fetch over a link that dies across
+    /// the suspend); it then times out and — worse — leaves the proxy
+    /// intercepting traffic it can no longer forward after wake. Flows
+    /// that don't survive the suspend are reaped post-wake by the per-flow
+    /// `.failed` path (`handleSystemWake` + `applyPostReadyFailure`), the
+    /// same route any mid-flight connection failure already takes.
     func handleSystemSleep(completion: @escaping () -> Void) {
         stopFlowCountReporting()
-        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
-        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applySystemSleep() } }
-        let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
-        for session in udp { session.ctx.terminate?(systemSleepError()) }
-        // Notify the handler's on_system_sleep hook FIRST so it has
-        // a chance to start running before the drain's cancellation
-        // cascades. The hook task is spawned through the engine's
-        // graceful executor, so the drain still bounds it.
         engine?.notifySystemSleep()
-
-        // Engine-side recoverable drain. Fires the engine-wide
-        // shutdown trigger and blocks until all guards drop or the
-        // budget expires. On wake a fresh shutdown is in place so
-        // new flows are unaffected.
-        let outcome = engine?.drainForSleep(maxWaitMs: Self.systemSleepEngineDrainBudgetMs)
-            ?? .alreadyStopped
-        logLifecycle(
-            "system sleep: drained tcp=\(tcp.count) udp=\(udp.count) flows; engine=\(outcome)"
-        )
+        logLifecycle("system sleep")
         completion()
     }
 
@@ -233,12 +190,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         if self.engine != nil {
             startFlowCountReporting()
         }
-    }
-
-    private func systemSleepError() -> NSError {
-        NSError(
-            domain: "rama.tproxy.system-sleep", code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "system entered sleep; flow dropped"])
     }
 
     private func engineDetachedError() -> NSError {

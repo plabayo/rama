@@ -85,7 +85,7 @@ final class RegistryCleanupTests: XCTestCase {
             case 5: bag.td.applyPostReadyFailure(nil)
             case 6: bag.td.applyFlowOpenFailure(NSError(domain: "x", code: 2))
             case 7: bag.td.applyReadHardError(NSError(domain: "x", code: 3))
-            default: bag.td.applySystemSleep()
+            default: bag.td.applySystemWake()
             }
         }
         XCTAssertEqual(
@@ -142,11 +142,13 @@ final class RegistryCleanupTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount, 0)
     }
 
-    // MARK: - sleep walks every registered flow
+    // MARK: - sleep leaves the registry intact
 
-    /// `handleSystemSleep` invokes teardown for every entry; the
-    /// registry is empty when the completion fires.
-    func testHandleSystemSleepDrainsRegistry() {
+    /// `handleSystemSleep` is a brief pause-and-return: it must NOT
+    /// tear flows down, so the registry is untouched when the
+    /// completion fires. Flows that don't survive the suspend are
+    /// reaped post-wake by the per-flow `.failed` path.
+    func testHandleSystemSleepLeavesRegistryIntact() {
         let core = TransparentProxyCore()
         var keepAlive: [(MockTcpFlow, MockNwConnection, TcpFlowContext, TcpFlowTeardown)] = []
         for _ in 0..<50 {
@@ -161,12 +163,15 @@ final class RegistryCleanupTests: XCTestCase {
             keepAlive.append((flow, conn, ctx, td))
         }
         XCTAssertEqual(core.tcpFlowCount, 50)
-        _ = keepAlive
 
         let exp = expectation(description: "sleep completion")
         core.handleSystemSleep { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertEqual(core.tcpFlowCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 50, "sleep must not drop flows")
+        for (_, conn, _, td) in keepAlive {
+            XCTAssertFalse(td.isDone, "teardown must not fire on sleep")
+            XCTAssertEqual(conn.cancelCount, 0)
+        }
     }
 }
