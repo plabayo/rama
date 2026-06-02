@@ -24,6 +24,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
     app_message_deadline: Option<Duration>,
+    stop_drain_max_wait: Option<Duration>,
     opaque_config: Option<Arc<[u8]>>,
     runtime_factory: R,
 }
@@ -48,6 +49,7 @@ where
             decision_deadline: None,
             decision_deadline_action: None,
             app_message_deadline: None,
+            stop_drain_max_wait: Some(super::DEFAULT_STOP_DRAIN_MAX_WAIT),
             opaque_config: None,
             runtime_factory: DefaultTransparentProxyAsyncRuntimeFactory::default(),
         }
@@ -69,6 +71,7 @@ where
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
             app_message_deadline: self.app_message_deadline,
+            stop_drain_max_wait: self.stop_drain_max_wait,
             opaque_config: self.opaque_config,
             runtime_factory,
         }
@@ -226,6 +229,25 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Backstop on how long `engine.stop()` waits for engine-level
+        /// graceful guards to drop before proceeding. Defaults to
+        /// [`DEFAULT_STOP_DRAIN_MAX_WAIT`] (5 seconds). A correct stop
+        /// resolves in sub-millisecond time; this only bites a handler
+        /// hook ([`TransparentProxyHandler::on_system_sleep`] /
+        /// `on_system_wake`) wedged on un-timed I/O. Tune rather than
+        /// disable — there is deliberately no opt-out to an unbounded
+        /// wait, since that is the hang this guards against.
+        ///
+        /// [`DEFAULT_STOP_DRAIN_MAX_WAIT`]: super::DEFAULT_STOP_DRAIN_MAX_WAIT
+        /// [`TransparentProxyHandler::on_system_sleep`]: super::TransparentProxyHandler::on_system_sleep
+        pub fn stop_drain_max_wait(mut self, wait: Duration) -> Self
+        {
+            self.stop_drain_max_wait = Some(wait);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         #[must_use]
         #[doc(hidden)]
         /// Unstable API only meant for generated code.
@@ -257,6 +279,7 @@ where
             decision_deadline,
             decision_deadline_action,
             app_message_deadline,
+            stop_drain_max_wait,
             opaque_config,
             runtime_factory,
         } = self;
@@ -325,6 +348,7 @@ where
             // in here so future `set_decision_deadline`-style
             // mutators (none today) would naturally reflect.
             app_message_deadline,
+            stop_drain_max_wait: stop_drain_max_wait.unwrap_or(super::DEFAULT_STOP_DRAIN_MAX_WAIT),
             shutdown: parking_lot::Mutex::new(Some(pair)),
         })
     }
@@ -358,5 +382,10 @@ impl<F, R> TransparentProxyEngineBuilder<F, R> {
     #[cfg(test)]
     pub(super) fn current_tcp_paused_drain_max_wait(&self) -> Option<Duration> {
         self.tcp_paused_drain_max_wait
+    }
+
+    #[cfg(test)]
+    pub(super) fn current_stop_drain_max_wait(&self) -> Option<Duration> {
+        self.stop_drain_max_wait
     }
 }

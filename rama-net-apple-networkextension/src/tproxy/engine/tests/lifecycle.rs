@@ -302,3 +302,51 @@ fn notify_system_sleep_with_default_handler_is_safe() {
     engine.notify_system_wake();
     engine.stop(0);
 }
+
+/// A task that holds an engine shutdown guard and never drops it
+/// (a stand-in for a handler hook stuck on un-timed I/O across a
+/// suspend) must not hang `engine.stop()`: the wait on guards is
+/// bounded by the configured `stop_drain_max_wait`, after which stop
+/// proceeds. Uses a short budget so the test stays fast.
+#[test]
+fn stop_is_bounded_when_a_guard_is_held_past_shutdown() {
+    use std::time::Instant;
+
+    let budget = Duration::from_millis(250);
+    let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), budget);
+    let guard = engine
+        .shutdown_guard()
+        .expect("a fresh engine has a live shutdown pair");
+    // Park a task that holds the guard forever on the engine runtime.
+    engine.rt.spawn(async move {
+        let _held = guard;
+        std::future::pending::<()>().await;
+    });
+
+    let started = Instant::now();
+    engine.stop(0);
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= budget,
+        "stop returned before the backstop ({elapsed:?}); the held guard \
+         did not actually block the wait"
+    );
+    assert!(
+        elapsed < budget + Duration::from_secs(5),
+        "stop did not return within the backstop window ({elapsed:?})"
+    );
+}
+
+/// The builder default for `stop_drain_max_wait` is the documented
+/// constant — pin it so a future edit can't silently drop the
+/// teardown backstop to an unbounded wait.
+#[test]
+fn builder_default_stop_drain_max_wait_is_the_constant() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()));
+    assert_eq!(
+        builder.current_stop_drain_max_wait(),
+        Some(DEFAULT_STOP_DRAIN_MAX_WAIT)
+    );
+}

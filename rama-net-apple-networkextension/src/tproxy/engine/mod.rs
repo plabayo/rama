@@ -88,6 +88,22 @@ pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 /// unaffected.
 pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Default backstop on how long `engine.stop()` waits for engine-level
+/// graceful guards to drop. Tuned via
+/// [`TransparentProxyEngineBuilder::with_stop_drain_max_wait`].
+///
+/// A correct stop completes in sub-millisecond time once the trigger
+/// fires: the only guards held at the engine level are the per-flow
+/// signal-future parent guards (which drop immediately on cancel) and
+/// any [`TransparentProxyHandler::on_system_sleep`] /
+/// [`TransparentProxyHandler::on_system_wake`] hook tasks. Per-flow
+/// data tasks hold per-flow guards, not engine guards, so they are not
+/// awaited here. This bound therefore only bites a handler hook stuck
+/// on un-timed I/O; the right fix for that is to bound the hook, not to
+/// raise this. Kept short so a wedged hook cannot eat the whole Apple
+/// stop grace.
+pub const DEFAULT_STOP_DRAIN_MAX_WAIT: Duration = Duration::from_secs(5);
+
 /// Action taken when a flow handler exceeds the configured decision deadline.
 ///
 /// The deadline exists to prevent a hung handler from holding kernel flow
@@ -234,6 +250,9 @@ pub struct TransparentProxyEngine<H> {
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
+    /// Backstop on `shutdown_blocking`'s wait for engine guards to
+    /// drop; see [`DEFAULT_STOP_DRAIN_MAX_WAIT`].
+    stop_drain_max_wait: Duration,
     /// Engine-wide [`Shutdown`] + its `oneshot` trigger, held together
     /// so they move as a unit (the trigger fires the `Shutdown`'s inner
     /// future). `None` after `shutdown_blocking` has taken them — the
@@ -1747,6 +1766,16 @@ impl<H> Drop for TransparentProxyEngine<H> {
     }
 }
 
+/// Slack added to `stop_drain_max_wait` to form the OUTER hard cap on
+/// `shutdown_blocking`. The inner [`Shutdown::shutdown_with_limit`]
+/// only time-limits its guard-drop phase; its earlier
+/// cancellation-propagation phase is unbounded and could wedge if the
+/// runtime is starved. The outer [`tokio::time::timeout`] guarantees
+/// `stop` returns regardless. Sized so the inner limit always wins in
+/// every non-pathological case — the outer firing means the engine is
+/// genuinely wedged.
+const STOP_HARD_CAP_SLACK: Duration = Duration::from_secs(2);
+
 impl<H> TransparentProxyEngine<H> {
     #[expect(clippy::needless_pass_by_ref_mut, reason = "contract")]
     fn shutdown_blocking(&mut self, reason: i32) {
@@ -1755,10 +1784,43 @@ impl<H> TransparentProxyEngine<H> {
         };
 
         tracing::info!(reason, "transparent proxy engine stopping");
-        _ = pair.trigger.send(());
+        let ShutdownPair { shutdown, trigger } = pair;
+        _ = trigger.send(());
 
-        let time = block_on_async_task(&self.rt, pair.shutdown.shutdown());
-        tracing::info!(?time, reason, "transparent proxy engine stopped");
+        // Two-layer bound so teardown always returns:
+        //   - INNER `shutdown_with_limit(max_wait)`: the graceful
+        //     "wait for engine guards to drop, but not forever" cap. A
+        //     correct stop resolves in sub-ms; this only bites a
+        //     handler hook wedged on un-timed I/O (see
+        //     [`DEFAULT_STOP_DRAIN_MAX_WAIT`]).
+        //   - OUTER `timeout(max_wait + slack)`: a hard cap covering
+        //     the inner's unbounded cancellation-propagation phase, so
+        //     `stop` returns even if the runtime is starved. The inner
+        //     wins in every non-pathological case.
+        let max_wait = self.stop_drain_max_wait;
+        let hard_cap = max_wait + STOP_HARD_CAP_SLACK;
+        let outcome = block_on_async_task(&self.rt, async move {
+            tokio::time::timeout(hard_cap, shutdown.shutdown_with_limit(max_wait)).await
+        });
+        match outcome {
+            Ok(Ok(elapsed)) => {
+                tracing::info!(?elapsed, reason, "transparent proxy engine stopped");
+            }
+            Ok(Err(_)) => tracing::warn!(
+                reason,
+                ?max_wait,
+                "transparent proxy engine stop timed out waiting for guards to \
+                 drop; proceeding (a handler hook likely holds a guard with \
+                 un-timed I/O)"
+            ),
+            Err(_) => tracing::error!(
+                reason,
+                ?hard_cap,
+                "transparent proxy engine stop hit its hard cap before the \
+                 graceful drain returned; abandoning drain (engine runtime \
+                 likely wedged)"
+            ),
+        }
     }
 }
 

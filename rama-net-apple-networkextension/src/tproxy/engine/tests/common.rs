@@ -237,3 +237,14 @@ pub(super) fn build_engine_with_udp_max_flow_lifetime(
         .build()
         .expect("build engine")
 }
+
+pub(super) fn build_engine_with_stop_drain_max_wait(
+    handler: TestHandler,
+    wait: Duration,
+) -> TransparentProxyEngine<TestHandler> {
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_stop_drain_max_wait(wait)
+        .build()
+        .expect("build engine")
+}
