@@ -132,17 +132,25 @@ final class CoreTcpLifecycleTests: XCTestCase {
             ctx.mode != .viaRust
         }
 
+        // Drive every async completion the promote teardown needs on a
+        // tight loop until the flow is gone. Single-shot EOF delivery
+        // is racy: post-cutover the forwarder re-issues its OWN
+        // `flow.readData` / `connection.receive`, and an EOF fired
+        // during the gap before that read is issued is lost (the mocks
+        // no-op when nothing is pending), stalling teardown. Re-firing
+        // each tick delivers EOF to whichever read/receive is pending
+        // whenever it appears; once a direction hits EOF and finishes,
+        // the extra calls no-op.
         let completer = AtomicFlag()
         DispatchQueue.global().async {
             while !completer.load() {
                 _ = conn.completePendingSend(error: nil)
+                flow.completeRead(data: nil, error: nil)
+                _ = conn.completePendingReceive(isComplete: true)
                 Thread.sleep(forTimeInterval: 0.001)
             }
         }
         defer { completer.store(true) }
-
-        flow.completeRead(data: nil, error: nil)
-        _ = conn.completePendingReceive(isComplete: true)
 
         waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
     }

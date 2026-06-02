@@ -73,17 +73,21 @@ final class CoreEdgeCaseTests: XCTestCase {
             ctx.mode != .viaRust
         }
 
+        // Re-fire EOFs each tick (not once): post-cutover the forwarder
+        // re-issues its own flow.readData / connection.receive, and a
+        // single EOF fired during the gap before that read is issued is
+        // lost (the mocks no-op when nothing is pending), stalling
+        // teardown. See `CoreTcpLifecycleTests.drainAndAwaitRemoval`.
         let completer = AtomicFlag()
         DispatchQueue.global().async {
             while !completer.load() {
                 _ = conn.completePendingSend(error: nil)
+                flow.completeRead(data: nil, error: nil)
+                _ = conn.completePendingReceive(isComplete: true)
                 Thread.sleep(forTimeInterval: 0.001)
             }
         }
         defer { completer.store(true) }
-
-        flow.completeRead(data: nil, error: nil)
-        _ = conn.completePendingReceive(isComplete: true)
 
         waitFor(description, timeout: timeout) { core.tcpFlowCount == 0 }
     }
