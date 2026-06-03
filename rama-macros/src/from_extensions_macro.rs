@@ -74,12 +74,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
             .ident
             .as_ref()
             .expect("named field always has an ident");
-        let (kind, inner) = classify_field(&field.ty).ok_or_else(|| {
-            syn::Error::new_spanned(
-                &field.ty,
-                "every field must be `Option<&'a T>` or `Option<Arc<T>>`",
-            )
-        })?;
+        let (kind, inner) = classify_field(&field.ty)?;
         let idx = Literal::usize_unsuffixed(i);
         let method = match kind {
             FieldKind::Ref => quote!(downcast_ref),
@@ -126,24 +121,48 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// Classify a field as `Option<&'a T>` or `Option<Arc<T>>` and extract `T`.
-fn classify_field(ty: &Type) -> Option<(FieldKind, &Type)> {
-    match option_inner(ty)? {
-        Type::Reference(reference) => Some((FieldKind::Ref, &reference.elem)),
+fn classify_field(ty: &Type) -> syn::Result<(FieldKind, &Type)> {
+    match option_inner(ty).ok_or_else(|| unsupported_field(ty))? {
+        Type::Reference(reference) if reference.mutability.is_some() => {
+            Err(syn::Error::new_spanned(
+                reference,
+                "`#[derive(FromExtensions)]` can only hand out shared references; \
+             use `Option<&'a T>`, not `&mut`",
+            ))
+        }
+        Type::Reference(reference) => Ok((FieldKind::Ref, &reference.elem)),
         Type::Path(type_path) => {
-            let segment = type_path.path.segments.last()?;
+            let segment = type_path
+                .path
+                .segments
+                .last()
+                .ok_or_else(|| unsupported_field(ty))?;
             if segment.ident != "Arc" {
-                return None;
+                return Err(unsupported_field(ty));
             }
             let PathArguments::AngleBracketed(args) = &segment.arguments else {
-                return None;
+                return Err(unsupported_field(ty));
             };
-            let GenericArgument::Type(inner) = args.args.first()? else {
-                return None;
+            if args.args.len() != 1 {
+                return Err(syn::Error::new_spanned(
+                    segment,
+                    "`#[derive(FromExtensions)]` supports only `Arc<T>` (no custom allocator)",
+                ));
+            }
+            let GenericArgument::Type(inner) = &args.args[0] else {
+                return Err(unsupported_field(ty));
             };
-            Some((FieldKind::Arc, inner))
+            Ok((FieldKind::Arc, inner))
         }
-        _ => None,
+        _ => Err(unsupported_field(ty)),
     }
+}
+
+fn unsupported_field(ty: &Type) -> syn::Error {
+    syn::Error::new_spanned(
+        ty,
+        "every `#[derive(FromExtensions)]` field must be `Option<&'a T>` or `Option<Arc<T>>`",
+    )
 }
 
 /// Extract `T` from `Option<T>`.

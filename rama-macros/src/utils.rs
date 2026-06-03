@@ -17,7 +17,18 @@ pub(crate) fn support_root_ts(
     individual_crate_name: &'static str,
     umbrella_module: Option<&'static str>,
 ) -> TokenStream {
-    // Prefer the umbrella crate
+    // Prefer the individual_crate_name crate directly (eg rama-core)
+    if let Ok(found) = crate_name(individual_crate_name) {
+        return match found {
+            FoundCrate::Itself => quote!(crate),
+            FoundCrate::Name(name) => {
+                let ident = Ident::new(&name, Span::call_site());
+                quote!(::#ident)
+            }
+        };
+    }
+
+    // Fallback to the umbrella crate
     if let Ok(found) = crate_name("rama") {
         let ident = match found {
             FoundCrate::Itself => Ident::new("rama", Span::call_site()),
@@ -28,17 +39,6 @@ pub(crate) fn support_root_ts(
             quote!(::#ident::#module)
         } else {
             quote!(::#ident)
-        };
-    }
-
-    // Fall back to the individual_crate_name crate directly (eg rama-core)
-    if let Ok(found) = crate_name(individual_crate_name) {
-        return match found {
-            FoundCrate::Itself => quote!(crate),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
         };
     }
 
