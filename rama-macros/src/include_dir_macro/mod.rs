@@ -3,8 +3,7 @@
 //! You probably don't want to use this crate directly.
 
 use proc_macro::{TokenStream, TokenTree};
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, Literal, Span};
+use proc_macro2::Literal;
 use quote::quote;
 use std::{
     error::Error,
@@ -12,6 +11,8 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+
+use crate::utils::support_root_ts;
 
 pub(super) fn execute(input: TokenStream) -> TokenStream {
     let tokens: Vec<_> = input.into_iter().collect();
@@ -22,7 +23,7 @@ pub(super) fn execute(input: TokenStream) -> TokenStream {
     };
 
     let path = resolve_path_from_callee(&path, get_env).unwrap();
-    let root_crate = support_root_ts();
+    let root_crate = support_root_ts("rama-utils", Some("utils"));
 
     expand_dir(&path, &path, &root_crate).into()
 }
@@ -285,35 +286,6 @@ fn get_env(variable: &str) -> Option<String> {
 fn track_path(_path: &Path) {
     // #[cfg(feature = "nightly")]
     // proc_macro::tracked_path::path(_path.to_string_lossy());
-}
-
-fn support_root_ts() -> proc_macro2::TokenStream {
-    // Prefer the umbrella crate
-    if let Ok(found) = crate_name("rama") {
-        let ident = match found {
-            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
-            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
-        };
-        return quote!(::#ident::utils);
-    }
-
-    // Fall back to the utils crate directly
-    if let Ok(found) = crate_name("rama-utils") {
-        return match found {
-            FoundCrate::Itself => quote!(crate),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
-        };
-    }
-
-    quote! {
-        { compile_error!(
-            "include_dir could not find support types. \
-             Add a dependency on `rama` or `rama-utils`."
-        ); }
-    }
 }
 
 #[cfg(test)]

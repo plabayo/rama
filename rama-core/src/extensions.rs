@@ -39,7 +39,7 @@ use std::sync::Arc;
 use rama_utils::collections::AppendOnlyVec;
 use rama_utils::macros::impl_deref;
 
-pub use rama_macros::Extension;
+pub use rama_macros::{Extension, FromExtensions};
 
 #[derive(Clone, Default)]
 /// A type map of protocol extensions.
@@ -268,6 +268,81 @@ impl Extensions {
             .rev()
             .find(|item| item.type_id == type_id)
             .and_then(|ext| ext.cloned_downcast())
+    }
+
+    /// Fetch several extension types in a single pass, returning a tuple of
+    /// `Option<&T>` mirroring the requested tuple. Each slot uses the same
+    /// search rule as [`Self::get_ref`] (newest-wins, walking the
+    /// [`Egress`] / [`Ingress`] wrappers and the parent chain), but the whole
+    /// structure is traversed only once instead of once per type.
+    ///
+    /// See [`Self::get_many_arc`] for an owned-[`Arc`] variant.
+    pub fn get_many_ref<'a, T: GetManyRef<'a>>(&'a self) -> T::Output {
+        T::get_many_ref(self)
+    }
+
+    /// Like [`Self::get_many_ref`], but returns a tuple of `Option<Arc<T>>`
+    /// (cheap, owned [`Arc`] clones) instead of borrowed references, the
+    /// multi-fetch counterpart of [`Self::get_arc`]. Same single-pass traversal.
+    pub fn get_many_arc<T: GetManyArc>(&self) -> T::Output {
+        T::get_many_arc(self)
+    }
+
+    /// Single iteration logic behind [`Self::get_many_ref`], [`Self::get_many_arc`]
+    /// and `#[derive(FromExtensions)]`. Hidden and not part of the public
+    /// API surface: call `get_many_ref`/`get_many_arc` or the derive instead.
+    ///
+    /// For each requested [`TypeId`] in `targets`, fill the matching slot in
+    /// `out` with the newest matching entry, walking wrappers and the parent
+    /// chain like [`Self::get_ref`]. Slots already `Some` are left untouched, so
+    /// callers may pre-fill or reuse the buffer. `targets[i]` fills `out[i]`
+    #[doc(hidden)]
+    pub fn get_many_erased<'a, const N: usize>(
+        &'a self,
+        targets: &[TypeId; N],
+        out: &mut [Option<&'a TypeErasedExtension>; N],
+    ) {
+        let egress_id = TypeId::of::<Egress<Self>>();
+        let ingress_id = TypeId::of::<Ingress<Self>>();
+        let mut remaining = out.iter().filter(|slot| slot.is_none()).count();
+        if remaining == 0 {
+            return;
+        }
+        for ext in self.extensions.iter().rev() {
+            for (i, &tid) in targets.iter().enumerate() {
+                if out[i].is_none() && ext.type_id == tid {
+                    out[i] = Some(ext);
+                    remaining -= 1;
+
+                    if remaining == 0 {
+                        return;
+                    }
+                }
+            }
+
+            if ext.type_id == egress_id
+                && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
+            {
+                eg.0.get_many_erased(targets, out);
+                remaining = out.iter().filter(|slot| slot.is_none()).count();
+                if remaining == 0 {
+                    return;
+                }
+            } else if ext.type_id == ingress_id
+                && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
+            {
+                ig.0.get_many_erased(targets, out);
+                remaining = out.iter().filter(|slot| slot.is_none()).count();
+                if remaining == 0 {
+                    return;
+                }
+            }
+        }
+        if remaining != 0
+            && let Some(parent) = self.parent()
+        {
+            parent.get_many_erased(targets, out);
+        }
     }
 
     /// Recursive find-or-create: return `&T` if one exists anywhere in this
@@ -538,6 +613,71 @@ impl Extensions {
     }
 }
 
+/// Helper trait powering [`Extensions::get_many_ref`]: implemented for tuples of
+/// [`Extension`] types (up to arity 12).
+pub trait GetManyRef<'a>: Sized {
+    /// Tuple of `Option<&'a T>` mirroring the requested tuple of types.
+    type Output;
+
+    #[doc(hidden)]
+    const SEALED: seal::Seal;
+    #[doc(hidden)]
+    fn get_many_ref(ext: &'a Extensions) -> Self::Output;
+}
+
+/// Helper trait powering [`Extensions::get_many_arc`]; the owned-[`Arc`]
+/// counterpart of [`GetManyRef`].
+pub trait GetManyArc: Sized {
+    /// Tuple of `Option<Arc<T>>` mirroring the requested tuple of types.
+    type Output;
+
+    #[doc(hidden)]
+    const SEALED: seal::Seal;
+    #[doc(hidden)]
+    fn get_many_arc(ext: &Extensions) -> Self::Output;
+}
+
+macro_rules! impl_get_many {
+    ($n:literal; $($T:ident => $idx:tt),+ $(,)?) => {
+        impl<'a, $($T: Extension),+> GetManyRef<'a> for ($($T,)+) {
+            type Output = ($(Option<&'a $T>,)+);
+
+            const SEALED: seal::Seal = seal::Seal;
+            fn get_many_ref(ext: &'a Extensions) -> Self::Output {
+                let targets = [$(TypeId::of::<$T>()),+];
+                let mut out: [Option<&'a TypeErasedExtension>; $n] = [None; $n];
+                ext.get_many_erased(&targets, &mut out);
+                ($(out[$idx].and_then(TypeErasedExtension::downcast_ref::<$T>),)+)
+            }
+        }
+
+        impl<$($T: Extension),+> GetManyArc for ($($T,)+) {
+            type Output = ($(Option<Arc<$T>>,)+);
+
+            const SEALED: seal::Seal = seal::Seal;
+            fn get_many_arc(ext: &Extensions) -> Self::Output {
+                let targets = [$(TypeId::of::<$T>()),+];
+                let mut out: [Option<&TypeErasedExtension>; $n] = [None; $n];
+                ext.get_many_erased(&targets, &mut out);
+                ($(out[$idx].and_then(TypeErasedExtension::cloned_downcast::<$T>),)+)
+            }
+        }
+    };
+}
+
+impl_get_many!(1; A => 0);
+impl_get_many!(2; A => 0, B => 1);
+impl_get_many!(3; A => 0, B => 1, C => 2);
+impl_get_many!(4; A => 0, B => 1, C => 2, D => 3);
+impl_get_many!(5; A => 0, B => 1, C => 2, D => 3, E => 4);
+impl_get_many!(6; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5);
+impl_get_many!(7; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6);
+impl_get_many!(8; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7);
+impl_get_many!(9; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8);
+impl_get_many!(10; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9);
+impl_get_many!(11; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9, K => 10);
+impl_get_many!(12; A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7, I => 8, J => 9, K => 10, L => 11);
+
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = f.debug_struct("Extensions");
@@ -784,6 +924,10 @@ macro_rules! impl_extensions_either {
 }
 
 crate::combinators::impl_either!(impl_extensions_either);
+
+mod seal {
+    pub struct Seal;
+}
 
 #[cfg(test)]
 mod tests {
@@ -1293,5 +1437,132 @@ mod tests {
             child.iter_ref::<RequestId>().next(),
             child.get_ref::<RequestId>()
         );
+    }
+
+    #[test]
+    fn get_many_present_and_absent() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+
+        let (id, sock, toggle) = ext.get_many_ref::<(RequestId, ConnSocketInfo, FeatureToggle)>();
+        assert_eq!(id, Some(&RequestId(7)));
+        assert_eq!(sock, Some(&ConnSocketInfo("a")));
+        assert_eq!(toggle, None);
+    }
+
+    #[test]
+    fn get_many_each_slot_matches_get_ref() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(1));
+        ext.insert(RequestId(2)); // newest wins
+        ext.insert(ConnSocketInfo("x"));
+
+        let (id, sock) = ext.get_many_ref::<(RequestId, ConnSocketInfo)>();
+        assert_eq!(id, ext.get_ref::<RequestId>());
+        assert_eq!(sock, ext.get_ref::<ConnSocketInfo>());
+        assert_eq!(id, Some(&RequestId(2)));
+    }
+
+    #[test]
+    fn get_many_walks_parent_chain() {
+        let parent = Extensions::new();
+        parent.insert(RequestId(1));
+        let child = parent.fork();
+        child.insert(ConnSocketInfo("x"));
+
+        let (id, sock) = child.get_many_ref::<(RequestId, ConnSocketInfo)>();
+        assert_eq!(id, Some(&RequestId(1)));
+        assert_eq!(sock, Some(&ConnSocketInfo("x")));
+    }
+
+    #[test]
+    fn get_many_walks_wrappers() {
+        let conn = Extensions::new();
+        conn.insert(ConnSocketInfo("in"));
+        let req = Extensions::new();
+        req.insert(RequestId(7));
+        req.insert(Ingress(conn));
+
+        let (id, sock) = req.get_many_ref::<(RequestId, ConnSocketInfo)>();
+        assert_eq!(id, Some(&RequestId(7)));
+        assert_eq!(sock, Some(&ConnSocketInfo("in")));
+    }
+
+    #[derive(FromExtensions)]
+    struct GatherView<'a> {
+        id: Option<&'a RequestId>,
+        sock: Option<&'a ConnSocketInfo>,
+        toggle: Option<&'a FeatureToggle>,
+    }
+
+    #[test]
+    fn derive_from_extensions_gathers_pieces() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+
+        let view = GatherView::from_extensions(&ext);
+        assert_eq!(view.id, Some(&RequestId(7)));
+        assert_eq!(view.sock, Some(&ConnSocketInfo("a")));
+        assert_eq!(view.toggle, None);
+        assert_eq!(view.id, ext.get_ref::<RequestId>());
+    }
+
+    #[test]
+    fn derive_from_extensions_walks_parent() {
+        let parent = Extensions::new();
+        parent.insert(RequestId(1));
+        let child = parent.fork();
+        child.insert(ConnSocketInfo("x"));
+
+        let view = GatherView::from_extensions(&child);
+        assert_eq!(view.id, Some(&RequestId(1)));
+        assert_eq!(view.sock, Some(&ConnSocketInfo("x")));
+        assert_eq!(view.toggle, None);
+    }
+
+    #[test]
+    fn get_many_arc_returns_owned_arcs() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+
+        let (id, sock) = ext.get_many_arc::<(RequestId, ConnSocketInfo)>();
+        assert_eq!(id.as_deref(), Some(&RequestId(7)));
+        assert_eq!(sock, None);
+    }
+
+    #[derive(FromExtensions)]
+    struct MixedView<'a> {
+        id_ref: Option<&'a RequestId>,
+        sock_arc: Option<Arc<ConnSocketInfo>>,
+    }
+
+    #[test]
+    fn derive_from_extensions_mixed_ref_and_arc() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+
+        let view = MixedView::from_extensions(&ext);
+        assert_eq!(view.id_ref, Some(&RequestId(7)));
+        assert_eq!(view.sock_arc.as_deref(), Some(&ConnSocketInfo("a")));
+    }
+
+    #[derive(FromExtensions)]
+    struct AllArc {
+        id_ref: Option<Arc<RequestId>>,
+        sock_arc: Option<Arc<ConnSocketInfo>>,
+    }
+
+    #[test]
+    fn derive_from_extensions_all_arc() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+
+        let view = AllArc::from_extensions(&ext);
+        assert_eq!(view.id_ref.as_deref(), Some(&RequestId(7)));
+        assert_eq!(view.sock_arc.as_deref(), Some(&ConnSocketInfo("a")));
     }
 }
