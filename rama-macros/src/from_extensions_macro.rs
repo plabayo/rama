@@ -1,7 +1,8 @@
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, Literal, Span, TokenStream};
+use proc_macro2::{Literal, Span, TokenStream};
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, GenericArgument, PathArguments, Type};
+
+use crate::utils::support_root_ts;
 
 enum FieldKind {
     /// `Option<&'a T>`, borrowed, gathered via `downcast_ref`.
@@ -62,7 +63,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    let root = support_root_ts();
+    let root = support_root_ts("rama-core", None);
 
     // Per field: the inner extension type `T` (for the target set) and the
     // assignment expression downcasting the matching slot to the field type.
@@ -161,33 +162,4 @@ fn option_inner(ty: &Type) -> Option<&Type> {
         return None;
     };
     Some(inner)
-}
-
-fn support_root_ts() -> TokenStream {
-    // Prefer the umbrella crate
-    if let Ok(found) = crate_name("rama") {
-        let ident = match found {
-            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
-            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
-        };
-        return quote!(::#ident);
-    }
-
-    // Fall back to the rama-core crate directly
-    if let Ok(found) = crate_name("rama-core") {
-        return match found {
-            FoundCrate::Itself => quote!(crate),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
-        };
-    }
-
-    quote! {
-        { compile_error!(
-            "FromExtensions derive could not find the Extensions type. \
-             Add a dependency on `rama` or `rama-core`."
-        ); }
-    }
 }

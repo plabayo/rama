@@ -170,6 +170,7 @@ mod from_extensions_macro;
 mod from_ref_macro;
 mod include_dir_macro;
 mod paste_macro;
+mod utils;
 
 #[proc_macro]
 pub fn paste(input: TokenStream) -> TokenStream {

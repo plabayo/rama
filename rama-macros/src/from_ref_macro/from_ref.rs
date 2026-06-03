@@ -1,11 +1,12 @@
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Ident, Span, TokenStream};
-use quote::{quote, quote_spanned};
+use proc_macro2::{Ident, TokenStream};
+use quote::quote_spanned;
 use syn::{
     Field, ItemStruct, Token, Type,
     parse::{Parse, ParseStream},
     spanned::Spanned,
 };
+
+use crate::utils::support_root_ts;
 
 use super::attr_parsing::{Combine, combine_unary_attribute, parse_attrs};
 
@@ -17,7 +18,7 @@ pub(crate) fn expand(item: ItemStruct) -> syn::Result<TokenStream> {
         ));
     }
 
-    let root_crate = support_root_ts();
+    let root_crate = support_root_ts("rama-core", None);
 
     let tokens = item
         .fields
@@ -99,34 +100,5 @@ impl Combine for FieldAttrs {
         let Self { skip } = other;
         combine_unary_attribute(&mut self.skip, skip)?;
         Ok(self)
-    }
-}
-
-fn support_root_ts() -> proc_macro2::TokenStream {
-    // Prefer the umbrella crate
-    if let Ok(found) = crate_name("rama") {
-        let ident = match found {
-            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
-            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
-        };
-        return quote!(::#ident);
-    }
-
-    // Fall back to the rama-core crate directly
-    if let Ok(found) = crate_name("rama-core") {
-        return match found {
-            FoundCrate::Itself => quote!(crate),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
-        };
-    }
-
-    quote! {
-        { compile_error!(
-            "from_ref could not find FromRef trait. \
-             Add a dependency on `rama` or `rama-core`."
-        ); }
     }
 }

@@ -1,7 +1,8 @@
-use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::{DeriveInput, GenericParam, parse_quote};
+
+use crate::utils::support_root_ts;
 
 const KNOWN_TAGS: &[&str] = &["tls", "http", "net", "ua", "proxy", "ws", "dns", "grpc"];
 
@@ -44,7 +45,7 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
         }
     }
 
-    let root_crate = support_root_ts();
+    let root_crate = support_root_ts("rama-core", None);
 
     let ident = item.ident;
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
@@ -63,35 +64,6 @@ pub(crate) fn expand(mut item: DeriveInput) -> syn::Result<TokenStream> {
     }
 
     Ok(output)
-}
-
-fn support_root_ts() -> proc_macro2::TokenStream {
-    // Prefer the umbrella crate
-    if let Ok(found) = crate_name("rama") {
-        let ident = match found {
-            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
-            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
-        };
-        return quote!(::#ident);
-    }
-
-    // Fall back to the rama-core crate directly
-    if let Ok(found) = crate_name("rama-core") {
-        return match found {
-            FoundCrate::Itself => quote!(crate),
-            FoundCrate::Name(name) => {
-                let ident = Ident::new(&name, Span::call_site());
-                quote!(::#ident)
-            }
-        };
-    }
-
-    quote! {
-        { compile_error!(
-            "extension derive could not find Extension trait. \
-             Add a dependency on `rama` or `rama-core`."
-        ); }
-    }
 }
 
 fn parse_tags(item: &DeriveInput) -> syn::Result<Vec<String>> {
