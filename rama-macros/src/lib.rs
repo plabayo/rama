@@ -166,6 +166,7 @@
 use proc_macro::TokenStream;
 
 mod extension_macro;
+mod from_extensions_macro;
 mod from_ref_macro;
 mod include_dir_macro;
 mod paste_macro;
@@ -215,4 +216,18 @@ pub fn derive_from_ref(item: TokenStream) -> TokenStream {
 #[proc_macro_derive(Extension, attributes(extension))]
 pub fn derive_extension(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, extension_macro::extension::expand)
+}
+
+/// Derive a `from_extensions` constructor that gathers extension pieces from a
+/// `rama_core::extensions::Extensions` store in a single pass.
+///
+/// Fields must be `Option<&'a T>` (borrowed) or `Option<Arc<T>>` (owned Arc
+/// clone), the two may be mixed. A borrowed field requires the struct to carry
+/// the matching lifetime (`struct View<'a>`) and an all-`Arc` struct needs no
+/// lifetime. Generates `fn from_extensions(ext: &Extensions) -> Self`, where
+/// each field uses the same lookup as `Extensions::get_ref` but the store is
+/// traversed only once.
+#[proc_macro_derive(FromExtensions)]
+pub fn derive_from_extensions(item: TokenStream) -> TokenStream {
+    from_ref_macro::expand_with(item, from_extensions_macro::expand)
 }
