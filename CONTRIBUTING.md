@@ -4,7 +4,7 @@
 
 This document will outline the basics of where to start if you wish to contribute to the project. There are many ways to help us out and and we appreciate all of them. We look forward to **your contribution!**
 
-**Please read this document until the end**
+**Estimate 5 min read  — please read it all the way through**
 
 ## Code Of Conduct
 
