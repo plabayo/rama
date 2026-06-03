@@ -28,7 +28,13 @@ enum CopyDirection {
     RightToLeft,
 }
 
-const DEFAULT_BUF_SIZE: usize = 8 * 1024;
+// 16 KiB is a middle ground: large enough to roughly halve the per-chunk
+// copy/syscall count vs the classic 8 KiB on bulk transfers, while keeping the
+// per-direction reused buffer small enough that holding two of them per live
+// flow stays cheap under high connection concurrency. Override per service via
+// [`IoForwardService::with_buf_size`] when a workload wants a different point on
+// that throughput-vs-resident-memory curve.
+const DEFAULT_BUF_SIZE: usize = 16 * 1024;
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 
 /// A proxy [`Service`] which takes a [`BridgeIo`]
