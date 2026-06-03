@@ -640,6 +640,26 @@ final class TransparentProxyCore: @unchecked Sendable {
             egressWritePump: egressWritePump,
             queue: flowQueue,
             logger: { [weak self] message in self?.logFlowMessage(message) },
+            drainStallDeadline: .milliseconds(Int(ctx.lingerCloseMs)),
+            onClosing: { [weak ctx] in
+                // The forwarder began winding a direction down. Mark the
+                // ctx so the on-`stateQueue` maintenance watchdog reaps
+                // this promoted flow too if `flowQueue` later starves —
+                // the same `terminalSignalled` net the `viaRust` close
+                // path arms. Set on `flowQueue`; read off-queue by the
+                // watchdog (same relaxation as `egressReady`).
+                ctx?.terminalSignalled = true
+            },
+            onDrainStall: { [weak ctx] in
+                // A finishing direction's drain wedged (peer stopped
+                // reading). Route through the shared full-teardown reaper
+                // — cancels the write pumps, closes the kernel flow,
+                // cancels + detaches the egress NWConnection (breaking the
+                // connection→handler→session retain cycle), cancels the
+                // forwarder, and drops the registry entry. Idempotent via
+                // the teardown's sticky `done`.
+                ctx?.teardown?.applyDrainBackstop()
+            },
             onTerminal: { [weak self, weak flow] in
                 // Both direct directions done. Close the
                 // kernel flow read+write sides + drop the

@@ -66,6 +66,13 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `TcpFlowSession.armTerminalDrainBackstop` /
     /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
     var terminalSignalled = false
+    /// Effective graceful-close linger budget for this flow (from the
+    /// egress connect options, else `defaultLingerCloseMs`). Set once by
+    /// `TcpFlowSession.startEgressConnection`; read by
+    /// `beginPromoteCutover` to size the promoted forwarder's drain
+    /// backstop so it matches the `viaRust` path's
+    /// `TcpFlowSession.armTerminalDrainBackstop` budget.
+    var lingerCloseMs: UInt32 = defaultLingerCloseMs
     /// Mode of the per-flow data path. Mutated only on the
     /// per-flow `DispatchQueue`. See [`TcpFlowMode`].
     var mode: TcpFlowMode = .viaRust

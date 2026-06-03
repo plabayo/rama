@@ -145,6 +145,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         let connectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
         lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
+        // Mirror the linger budget onto the ctx so a later promote
+        // cutover can size the forwarder's drain backstop identically
+        // to this flow's `armTerminalDrainBackstop`.
+        ctx.lingerCloseMs = lingerCloseMs
         let nwParams = makeTcpNwParameters(egressOpts)
 
         if egressOpts?.parameters.preserve_original_meta_data ?? true {

@@ -33,6 +33,11 @@ final class TcpDirectForwarderTests: XCTestCase {
         let egressWritePump: NwTcpConnectionWritePump
         let forwarder: TcpDirectForwarder
         var terminalCount = 0
+        /// Counts the forwarder's `onClosing` (first `.finishing`) and
+        /// `onDrainStall` (wedged-finish backstop) callbacks. Read via
+        /// `queue.sync` so assertions see all queue-ordered writes.
+        var closingCount = 0
+        var drainStallCount = 0
         /// Background thread that auto-fires pending send
         /// completions on the mock connection. The egress
         /// write pump serialises sends — each `send` call
@@ -58,7 +63,10 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// manually so the egress pump's `pendingBytes` can
         /// actually exceed `writePumpMaxPendingBytes` and
         /// force `.paused`.
-        init(_ tag: String, preDrained: Bool = true, autoCompleter: Bool = true) {
+        init(
+            _ tag: String, preDrained: Bool = true, autoCompleter: Bool = true,
+            drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs))
+        ) {
             queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
             // Move connection to .ready so the egress write pump
             // is willing to send. Real production wires this via
@@ -85,12 +93,17 @@ final class TcpDirectForwarderTests: XCTestCase {
             clientWritePump.markOpened()
 
             var capturedTerminalRef: (() -> Void)? = nil
+            var capturedClosingRef: (() -> Void)? = nil
+            var capturedDrainStallRef: (() -> Void)? = nil
             self.forwarder = TcpDirectForwarder(
                 flow: flow, connection: conn,
                 clientWritePump: clientWritePump,
                 egressWritePump: egressWritePump,
                 queue: queue,
                 logger: { _ in },
+                drainStallDeadline: drainStallDeadline,
+                onClosing: { capturedClosingRef?() },
+                onDrainStall: { capturedDrainStallRef?() },
                 onTerminal: { capturedTerminalRef?() }
             )
             forwarderRef = self.forwarder
@@ -100,6 +113,11 @@ final class TcpDirectForwarderTests: XCTestCase {
                 // assertions.
                 self.queue.async { self.terminalCount += 1 }
             }
+            // `onClosing` / `onDrainStall` already fire on `queue`; the
+            // counts are mutated there too, so plain increments stay
+            // serialised with the rest of the forwarder's state.
+            capturedClosingRef = { [weak self] in self?.closingCount += 1 }
+            capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
             if preDrained {
                 forwarder.markClientReadDrained()
                 forwarder.markEgressReadDrained()
@@ -885,6 +903,94 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.queue.sync { h.terminalCount }, 1,
             "onTerminal must fire so the flow is released; a wedged C→S leaks the kernel flow + ctx"
         )
+    }
+
+    // MARK: - Drain backstop (promoted-mode wedge reaper)
+
+    /// S→C drain wedge: the client (kernel) stopped reading, so the
+    /// client write pump's in-flight `flow.write` completion never
+    /// fires, `closeWhenDrained` never completes, and the direction
+    /// would sit in `.finishing` forever — orphaning the per-flow
+    /// graph in the registry. The per-direction backstop fires
+    /// `onClosing` once at finishing-begin (production sets
+    /// `ctx.terminalSignalled`) and `onDrainStall` after the deadline
+    /// (production routes it to a full teardown). This is the promoted
+    /// analogue of `TcpFlowSession.armTerminalDrainBackstop`.
+    func testS2CDrainStallForcesBackstopWhenClientNotReading() {
+        let h = Harness("s2c.wedge", drainStallDeadline: .milliseconds(30))
+        // Client writes are captured but never completed → the drain
+        // can never finish (peer not reading).
+        h.flow.captureWriteCompletions = true
+
+        h.forwarder.markRustS2CDone()
+        waitFor("s2c receive issued", timeout: 1.0) { h.conn.pendingReceiveCount >= 1 }
+        // One chunk → leaves an in-flight, never-completing client write.
+        _ = h.conn.completePendingReceive(data: Data([1, 2, 3]), isComplete: false)
+        waitFor("next s2c receive issued", timeout: 1.0) { h.conn.pendingReceiveCount >= 1 }
+        // Server EOF → the direction enters `.finishing` and waits on a
+        // drain that can never complete.
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true)
+
+        waitFor("s2c wedged in .finishing", timeout: 1.0) {
+            h.forwarder.s2cPhase == .finishing
+        }
+        XCTAssertEqual(
+            h.queue.sync { h.closingCount }, 1,
+            "onClosing fires once when the first direction begins finishing")
+        waitFor("drain backstop fires onDrainStall", timeout: 1.0) {
+            h.queue.sync { h.drainStallCount } == 1
+        }
+    }
+
+    /// A direction that drains cleanly (reaches `.finished`) must never
+    /// trip its backstop — the timer's same-direction `.finishing`
+    /// re-check no-ops once the drain completed.
+    func testNoDrainStallWhenS2CFinishesCleanly() {
+        let h = Harness("s2c.clean", drainStallDeadline: .milliseconds(30))
+        h.forwarder.markRustS2CDone()
+        waitFor("s2c receive issued", timeout: 1.0) { h.conn.pendingReceiveCount >= 1 }
+        // Server EOF with an empty buffer → drain completes immediately.
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true)
+
+        waitFor("s2c reaches .finished", timeout: 1.0) {
+            h.forwarder.s2cPhase == .finished
+        }
+        // Past the (now-cancelled) backstop window: it must not fire.
+        Thread.sleep(forTimeInterval: 0.06)
+        XCTAssertEqual(
+            h.queue.sync { h.drainStallCount }, 0,
+            "clean drain must not trip the backstop")
+        XCTAssertEqual(
+            h.queue.sync { h.closingCount }, 1,
+            "onClosing still fires once at finishing-begin")
+    }
+
+    /// Half-close hygiene: C→S finishes cleanly while S→C stays
+    /// `.active` (e.g. client SHUT_WR mid-download). The C→S backstop
+    /// must no-op (its direction reached `.finished`), the live S→C
+    /// direction must be untouched, and the flow must NOT be torn down.
+    func testHalfCloseLeavesActiveDirectionUntouched() {
+        let h = Harness("halfclose", drainStallDeadline: .milliseconds(30))
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        waitFor("c2s readData issued", timeout: 1.0) { h.flow.pendingReadCount >= 1 }
+        // C→S kernel half-close (EOF) → finishC2S; egress FIN drains via
+        // the harness auto-completer.
+        h.flow.completeRead(data: nil, error: nil)
+        waitFor("c2s reaches .finished", timeout: 1.0) {
+            h.forwarder.c2sPhase == .finished
+        }
+
+        Thread.sleep(forTimeInterval: 0.06)
+        XCTAssertEqual(
+            h.queue.sync { h.drainStallCount }, 0,
+            "a cleanly-finished direction must not trip the backstop")
+        XCTAssertEqual(h.forwarder.s2cPhase, .active, "live S→C direction untouched")
+        XCTAssertEqual(
+            h.queue.sync { h.terminalCount }, 0,
+            "flow must not tear down while one direction is still active")
     }
 
     // MARK: - Helpers

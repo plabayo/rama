@@ -51,6 +51,25 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// this to remove the flow.
     private let onTerminal: () -> Void
 
+    /// How long a direction may sit in `.finishing` (its write pump's
+    /// `closeWhenDrained` pending) before the drain is declared wedged
+    /// and the flow force-torn-down. Mirrors the `viaRust` path's
+    /// `lingerCloseMs`. See `armC2SBackstopLocked`.
+    private let drainStallDeadline: DispatchTimeInterval
+    /// Fired (once, on `queue`) the first time either direction enters
+    /// `.finishing`. Production sets `ctx.terminalSignalled` so the
+    /// on-`stateQueue` maintenance watchdog can also reap this flow if
+    /// `queue` later starves — the promoted-mode analogue of the
+    /// `viaRust` terminal-signal bookkeeping.
+    private let onClosing: () -> Void
+    /// Fired (on `queue`) when a `.finishing` direction is still stuck
+    /// `drainStallDeadline` later: the peer stopped reading, so the
+    /// `closeWhenDrained` completion never arrived and the forwarder
+    /// would otherwise never reach `.finished`. Production routes this
+    /// to `ctx.teardown.applyDrainBackstop()` (a full teardown), the
+    /// same reaper the `viaRust` backstop uses.
+    private let onDrainStall: () -> Void
+
     // Existing per-flow write pumps. We do NOT take ownership —
     // tests can also hand in standalone pumps. The forwarder
     // enqueues to them; when its read direction hits EOF it
@@ -136,6 +155,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `maybeFinish` calls collapse to one terminal callback.
     private var terminalFired: Bool = false
 
+    /// Drain backstop per direction. Armed when the direction enters
+    /// `.finishing`; cancelled when it reaches `.finished` (or on
+    /// terminal). At most one timer per direction (nil-guarded).
+    private var c2sBackstop: DispatchWorkItem?
+    private var s2cBackstop: DispatchWorkItem?
+    /// `onClosing` fired (once) for this forwarder.
+    private var closingSignalled: Bool = false
+
     // ── Init ─────────────────────────────────────────────────────
 
     init(
@@ -145,6 +172,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
         egressWritePump: NwTcpConnectionWritePump,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
+        drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
+        onClosing: @escaping () -> Void = {},
+        onDrainStall: @escaping () -> Void = {},
         onTerminal: @escaping () -> Void
     ) {
         self.flow = flow
@@ -153,6 +183,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.egressWritePump = egressWritePump
         self.queue = queue
         self.logger = logger
+        self.drainStallDeadline = drainStallDeadline
+        self.onClosing = onClosing
+        self.onDrainStall = onDrainStall
         self.onTerminal = onTerminal
     }
 
@@ -501,10 +534,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
             return
         }
         c2sPhase = .finishing
+        armC2SBackstopLocked()
         egressWritePump.closeWhenDrained { [weak self] in
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
+                self.c2sBackstop?.cancel()
+                self.c2sBackstop = nil
                 self.c2sPhase = .finished
                 self.maybeFireTerminalLocked()
             }
@@ -516,6 +552,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             return
         }
         s2cPhase = .finishing
+        armS2CBackstopLocked()
         // `TcpClientWritePump.closeWhenDrained` takes a
         // callback. Use it to detect drain completion so the
         // terminal-fire is paced by the pump's actual close.
@@ -523,10 +560,71 @@ final class TcpDirectForwarder: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
+                self.s2cBackstop?.cancel()
+                self.s2cBackstop = nil
                 self.s2cPhase = .finished
                 self.maybeFireTerminalLocked()
             }
         }
+    }
+
+    // ── Internal: drain backstop ─────────────────────────────────
+
+    /// First entry into `.finishing` (either direction) signals the
+    /// owner that the flow is closing. Mirrors the `viaRust` path
+    /// setting `ctx.terminalSignalled` so the maintenance watchdog can
+    /// reap a `queue`-starved promoted flow too.
+    private func signalClosingLocked() {
+        guard !closingSignalled else { return }
+        closingSignalled = true
+        onClosing()
+    }
+
+    /// Arm the C→S drain backstop. A direction still in `.finishing`
+    /// `drainStallDeadline` later has a wedged drain (the peer stopped
+    /// reading → the egress `connection.send` completion never fired →
+    /// `closeWhenDrained` never completed). Force a full teardown so
+    /// the per-flow graph can't orphan. The same-direction `.finishing`
+    /// re-check means a direction that drained cleanly (reached
+    /// `.finished`) never triggers it — so a half-close that leaves the
+    /// OTHER direction legitimately active is untouched.
+    private func armC2SBackstopLocked() {
+        signalClosingLocked()
+        guard c2sBackstop == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.cancelled, !self.terminalFired,
+                self.c2sPhase == .finishing
+            else { return }
+            self.logger(
+                FlowLogMessage(
+                    level: .debug,
+                    text:
+                        "promote forwarder C→S drain backstop fired; forcing teardown (peer not draining)"
+                ))
+            self.onDrainStall()
+        }
+        c2sBackstop = work
+        queue.asyncAfter(deadline: .now() + drainStallDeadline, execute: work)
+    }
+
+    /// S→C counterpart of `armC2SBackstopLocked`.
+    private func armS2CBackstopLocked() {
+        signalClosingLocked()
+        guard s2cBackstop == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.cancelled, !self.terminalFired,
+                self.s2cPhase == .finishing
+            else { return }
+            self.logger(
+                FlowLogMessage(
+                    level: .debug,
+                    text:
+                        "promote forwarder S→C drain backstop fired; forcing teardown (peer not draining)"
+                ))
+            self.onDrainStall()
+        }
+        s2cBackstop = work
+        queue.asyncAfter(deadline: .now() + drainStallDeadline, execute: work)
     }
 
     private func maybeFireTerminalLocked() {
@@ -538,6 +636,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func fireTerminalLocked() {
         guard !terminalFired else { return }
         terminalFired = true
+        // Any pending drain backstop is moot now.
+        c2sBackstop?.cancel()
+        c2sBackstop = nil
+        s2cBackstop?.cancel()
+        s2cBackstop = nil
         // Do NOT cancel the NWConnection here — the egress
         // write pump's `beginDraining` → FIN → linger watchdog
         // sequence handles connection lifecycle. Cancelling
