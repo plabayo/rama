@@ -3978,6 +3978,7 @@ dependencies = [
  "dial9-trace-format",
  "pin-project-lite",
  "rama-core",
+ "rama-crypto",
  "rama-http-types",
  "rama-net",
  "rama-utils",

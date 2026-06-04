@@ -110,14 +110,13 @@ where
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     pub fn default_with_executor(exec: Executor) -> Self {
-        let tls_config = rama_tls_rustls::client::TlsConnectorData::try_new_http_auto()
-            .expect("connector data with http auto");
+        let tls_config = crate::net::tls::client::TlsClientConfig::default();
 
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
-            .with_tls_support_using_rustls(Some(tls_config))
+            .with_tls_support_using_rustls(tls_config)
             .with_default_http_connector(exec)
             .build_client()
     }

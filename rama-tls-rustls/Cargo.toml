@@ -47,6 +47,7 @@ dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
+rama-crypto = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["tls", "http"] }
 rama-utils = { workspace = true }

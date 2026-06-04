@@ -59,6 +59,7 @@ use rama::{
     tls::{boring, rustls},
 };
 
+use rama_net::tls::client::TlsClientConfig;
 use rand::prelude::*;
 
 pub mod e2e_utils;
@@ -407,16 +408,14 @@ fn get_inner_client(
             .with_default_http_connector(Executor::default())
             .build_client(),
         Tls::Rustls => {
-            let tls_config = rustls::client::TlsConnectorDataBuilder::new()
-                .try_with_env_key_logger()
-                .unwrap()
-                .with_alpn_protocols(slice::from_ref(&proto))
-                .with_no_cert_verifier()
-                .with_store_server_certificate_chain(true)
-                .build();
+            let tls_config = TlsClientConfig::new()
+                .with_keylog(rama::net::tls::KeyLogIntent::Environment)
+                .with_alpn(vec![proto])
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_store_server_cert_chain(true);
             b.without_tls_proxy_support()
                 .with_proxy_support()
-                .with_tls_support_using_rustls(Some(tls_config))
+                .with_tls_support_using_rustls(tls_config)
                 .with_default_http_connector(Executor::default())
                 .build_client()
         }

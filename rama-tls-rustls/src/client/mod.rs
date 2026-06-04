@@ -6,11 +6,18 @@ pub use connector::{
     ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
 };
 
-mod connector_data;
+mod config;
 #[doc(inline)]
-pub use connector_data::{
-    TlsConnectorData, TlsConnectorDataBuilder, client_root_certs, self_signed_client_auth,
+pub use config::{
+    ModifyRustlsClientConfig, RustlsClientConfigExt, RustlsServerCertVerifier,
+    RustlsTlsConnectorConfig,
 };
+
+mod connector_data;
+pub(super) use connector_data::TlsConnectorData;
+
+#[doc(inline)]
+pub use connector_data::{client_root_certs, self_signed_client_auth};
 
 mod tls_stream;
 #[doc(inline)]

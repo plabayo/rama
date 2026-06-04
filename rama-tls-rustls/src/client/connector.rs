@@ -1,10 +1,13 @@
 use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
+use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 #[cfg(feature = "http")]
 use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext};
+#[cfg(feature = "http")]
+use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
@@ -13,12 +16,14 @@ use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::client::NegotiatedTlsParameters;
+#[cfg(feature = "http")]
+use rama_net::tls::client::TlsAlpn;
+use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::transport::TryRefIntoTransportContext;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::{error::ErrorExt, extensions::Extensions},
+    rama_core::error::ErrorExt,
     rama_http_types::{Version, conn::TargetHttpVersion},
 };
 
@@ -27,15 +32,18 @@ use ::{
 /// See [`TlsConnector`] for more information.
 #[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
-    connector_data: Option<TlsConnectorData>,
+    base_config: Option<TlsClientConfig>,
     kind: K,
 }
 
 impl<K> TlsConnectorLayer<K> {
     rama_utils::macros::generate_set_and_with! {
-        /// Define [`TlsConnectorData`] for this [`TlsConnectorLayer`].
-        pub fn connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-            self.connector_data = connector_data;
+        /// Define the base [`TlsClientConfig`] for this [`TlsConnectorLayer`].
+        ///
+        /// Per connection pieces inserted in the request's extensions are layered
+        /// on top of this base (newest-wins).
+        pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
+            self.base_config = base;
             self
         }
     }
@@ -48,7 +56,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     #[must_use]
     pub fn auto() -> Self {
         Self {
-            connector_data: None,
+            base_config: None,
             kind: ConnectorKindAuto,
         }
     }
@@ -60,7 +68,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
     #[must_use]
     pub fn secure() -> Self {
         Self {
-            connector_data: None,
+            base_config: None,
             kind: ConnectorKindSecure,
         }
     }
@@ -72,7 +80,7 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     #[must_use]
     pub fn tunnel(host: Option<Host>) -> Self {
         Self {
-            connector_data: None,
+            base_config: None,
             kind: ConnectorKindTunnel { host },
         }
     }
@@ -84,7 +92,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
     fn layer(&self, inner: S) -> Self::Service {
         TlsConnector {
             inner,
-            connector_data: self.connector_data.clone(),
+            base_config: self.base_config.clone(),
             kind: self.kind.clone(),
         }
     }
@@ -92,7 +100,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
     fn into_layer(self, inner: S) -> Self::Service {
         TlsConnector {
             inner,
-            connector_data: self.connector_data,
+            base_config: self.base_config,
             kind: self.kind,
         }
     }
@@ -114,7 +122,7 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 #[derive(Debug, Clone)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
-    connector_data: Option<TlsConnectorData>,
+    base_config: Option<TlsClientConfig>,
     kind: K,
 }
 
@@ -123,21 +131,18 @@ impl<S, K> TlsConnector<S, K> {
     pub const fn new(inner: S, kind: K) -> Self {
         Self {
             inner,
-            connector_data: None,
+            base_config: None,
             kind,
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define the [`TlsConnectorData`] for this [`TlsConnector`],
+        /// Define the base [`TlsClientConfig`] for this [`TlsConnector`].
         ///
-        /// NOTE: for a smooth interaction with HTTP you most likely do want to
-        /// create tls connector data to at the very least define the ALPN's correctly.
-        ///
-        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
-        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
-        pub fn connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-            self.connector_data = connector_data;
+        /// Per connection pieces inserted in the request's extensions are layered
+        /// on top of this base (newest-wins).
+        pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
+            self.base_config = base;
             self
         }
     }
@@ -333,32 +338,38 @@ where
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data<Input>(&self, input: &Input) -> Result<Option<TlsConnectorData>, BoxError>
+    fn connector_data<Input>(&self, input: &Input) -> Result<TlsConnectorData, BoxError>
     where
         Input: ExtensionsRef,
     {
-        let request_extensions = input.extensions();
-        let connector_data = request_extensions
-            .get_ref::<TlsConnectorData>()
-            .cloned()
-            .or(self.connector_data.clone());
+        // rustls needs a process default crypto provider before any config build
+        // ensure it once here (the connector is the entry point), not in build().
+        crate::ensure_default_crypto_provider();
 
+        let extensions = if let Some(base) = &self.base_config {
+            &input.extensions().with_base(base.as_extensions())
+        } else {
+            input.extensions()
+        };
+
+        // When HTTP pins a concrete target version, force the TLS ALPN to match
+        // it before the handshake
         #[cfg(feature = "http")]
-        let connector_data = resolve_http_connector_data(request_extensions, connector_data)?;
+        resolve_http_alpn(extensions)?;
 
-        Ok(connector_data)
+        let config = RustlsTlsConnectorConfig::from_extensions(extensions);
+        TlsConnectorData::try_from(config)
     }
 
     async fn handshake<T>(
         &self,
-        connector_data: Option<TlsConnectorData>,
+        connector_data: TlsConnectorData,
         maybe_server_host: Option<&Host>,
         stream: T,
     ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Io + ExtensionsRef + Unpin,
     {
-        let connector_data = connector_data.unwrap_or(TlsConnectorData::try_new()?);
         #[cfg(feature = "dial9")]
         let dial9_server_name = connector_data
             .server_name
@@ -426,33 +437,24 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
-/// Resolve request-scoped connector data for HTTP.
-///
-/// When HTTP sets a concrete [`TargetHttpVersion`], rustls ALPN needs to match
-/// that version before the handshake starts. Otherwise protocols like WebSocket
-/// can negotiate `h2` even though the request requires HTTP/1.1 upgrade.
+/// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
+/// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
+/// request requires an HTTP/1.1 upgrade.
 #[cfg(feature = "http")]
-fn resolve_http_connector_data(
-    request_extensions: &Extensions,
-    connector_data: Option<TlsConnectorData>,
-) -> Result<Option<TlsConnectorData>, BoxError> {
-    let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>() else {
-        return Ok(connector_data);
+fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
+    let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
+        return Ok(());
     };
 
     let target_alpn = ApplicationProtocol::try_from(target_version.0)?;
     tracing::trace!(
         ?target_version,
         ?target_alpn,
-        "resolving TLS connector data to match TargetHttpVersion",
+        "override TLS ALPN to match TargetHttpVersion",
     );
 
-    Ok(Some(
-        connector_data
-            .map(Ok)
-            .unwrap_or_else(TlsConnectorData::try_new)?
-            .with_alpn_protocols(&[target_alpn]),
-    ))
+    ext.insert(TlsAlpn(vec![target_alpn]));
+    Ok(())
 }
 
 #[cfg(feature = "http")]
@@ -532,112 +534,49 @@ mod tests {
     }
 
     #[cfg(feature = "http")]
-    mod connector_data_resolution {
+    mod http_alpn_resolution {
         use super::*;
         use rama_core::extensions::Extensions;
         use rama_http_types::{Version, conn::TargetHttpVersion};
         use rama_net::tls::ApplicationProtocol;
 
-        use crate::client::TlsConnectorDataBuilder;
-
-        fn make_http_auto() -> TlsConnectorData {
-            TlsConnectorDataBuilder::new()
-                .with_alpn_protocols_http_auto()
-                .build()
-        }
-
-        fn make_http_1() -> TlsConnectorData {
-            TlsConnectorDataBuilder::new()
-                .with_alpn_protocols_http_1()
-                .build()
+        fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
+            ext.get_ref::<TlsAlpn>().map(|a| a.0.clone())
         }
 
         #[test]
-        fn creates_http11_connector_data_when_missing() {
+        fn forces_http11_alpn_when_target_is_http11() {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            assert_eq!(
-                resolve_http_connector_data(&ext, None)
-                    .unwrap()
-                    .expect("connector data should be created")
-                    .client_config
-                    .alpn_protocols,
-                vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()],
-            );
+            resolve_http_alpn(&ext).unwrap();
+            assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
         }
 
         #[test]
-        fn creates_http2_connector_data_when_missing() {
+        fn forces_http2_alpn_when_target_is_http2() {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_2));
 
-            assert_eq!(
-                resolve_http_connector_data(&ext, None)
-                    .unwrap()
-                    .expect("connector data should be created")
-                    .client_config
-                    .alpn_protocols,
-                vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()],
-            );
+            resolve_http_alpn(&ext).unwrap();
+            assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_2]));
         }
 
         #[test]
-        fn leaves_missing_connector_data_undefined_without_target_version() {
+        fn leaves_alpn_untouched_without_target_version() {
             let ext = Extensions::new();
-            assert!(resolve_http_connector_data(&ext, None).unwrap().is_none());
+            resolve_http_alpn(&ext).unwrap();
+            assert_eq!(alpn_of(&ext), None);
         }
 
         #[test]
-        fn leaves_existing_connector_data_unchanged_without_target_version() {
+        fn overrides_existing_alpn_to_match_target() {
             let ext = Extensions::new();
-            let data = make_http_auto();
-            let arc_before = data.client_config.clone();
-
-            let data = resolve_http_connector_data(&ext, Some(data))
-                .unwrap()
-                .expect("existing connector data should be preserved");
-
-            assert!(std::sync::Arc::ptr_eq(&arc_before, &data.client_config));
-        }
-
-        #[test]
-        fn constrains_existing_connector_data_to_h1_when_target_is_http11() {
-            let ext = Extensions::new();
+            ext.insert(TlsAlpn::http_auto());
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            let data = make_http_auto();
-            assert_eq!(
-                data.client_config.alpn_protocols,
-                vec![
-                    ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-                    ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-                ],
-                "precondition: default auto has h2+h1.1"
-            );
-
-            let data = resolve_http_connector_data(&ext, Some(data))
-                .unwrap()
-                .expect("existing connector data should be preserved");
-            assert_eq!(
-                data.client_config.alpn_protocols,
-                vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()],
-            );
-        }
-
-        #[test]
-        fn does_not_clone_when_existing_h1_alpn_already_matches() {
-            let ext = Extensions::new();
-            ext.insert(TargetHttpVersion(Version::HTTP_11));
-
-            let data = make_http_1();
-            let arc_before = data.client_config.clone();
-
-            let data = resolve_http_connector_data(&ext, Some(data))
-                .unwrap()
-                .expect("existing connector data should be preserved");
-            // Same Arc — no clone occurred.
-            assert!(std::sync::Arc::ptr_eq(&arc_before, &data.client_config));
+            resolve_http_alpn(&ext).unwrap();
+            assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
         }
     }
 }

@@ -92,6 +92,7 @@ use rama::{
         },
     },
 };
+use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -112,12 +113,7 @@ async fn main() {
         )
         .init();
 
-    let tls_config = rama::tls::rustls::client::TlsConnectorDataBuilder::new()
-        .try_with_env_key_logger()
-        .expect("add env keylogger")
-        .with_alpn_protocols_http_auto()
-        .with_no_cert_verifier()
-        .build();
+    let tls_config = TlsClientConfig::default().with_server_verify(ServerVerifyMode::Disable);
 
     let graceful = crate::graceful::Shutdown::default();
 
@@ -125,7 +121,7 @@ async fn main() {
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
-        .with_tls_support_using_rustls(Some(tls_config))
+        .with_tls_support_using_rustls(tls_config)
         .with_default_http_connector(Executor::graceful(graceful.guard()))
         .build_client()
         .boxed();

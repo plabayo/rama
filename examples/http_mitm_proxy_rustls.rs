@@ -76,11 +76,9 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::{
-        client::TlsConnectorDataBuilder,
-        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-    },
+    tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
+use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
@@ -205,12 +203,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let tls_config = TlsConnectorDataBuilder::new()
-        .with_alpn_protocols_http_auto()
-        .try_with_env_key_logger()
-        .expect("with env keylogger")
-        .with_no_cert_verifier()
-        .build();
+    let tls_config = TlsClientConfig::default().with_server_verify(ServerVerifyMode::Disable);
 
     let state = req.extensions().get_ref::<State>().unwrap();
     let executor = state.exec.clone();
@@ -219,7 +212,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_default_transport_connector()
         .with_tls_proxy_support_using_rustls()
         .with_proxy_support()
-        .with_tls_support_using_rustls_and_default_http_version(Some(tls_config), Version::HTTP_11)
+        .with_tls_support_using_rustls_and_default_http_version(tls_config, Version::HTTP_11)
         .with_default_http_connector(executor)
         .build_client();
 
