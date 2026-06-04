@@ -47,13 +47,13 @@ use rama::{
     Layer,
     http::{
         Response,
-        html::{
-            IntoHtml, PreEscaped, body, div, end, h1, h2, head, html, li, meta, p, script, section,
-            span, start, style, title, ul, wbr,
-        },
         layer::{
             compression::stream::StreamCompressionLayer,
             required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
+        },
+        protocols::html::{
+            IntoHtml, PreEscaped, body, div, end, h1, h2, head, html, li, meta, p, script, section,
+            span, start, style, title, ul, wbr,
         },
         server::HttpServer,
         service::web::{

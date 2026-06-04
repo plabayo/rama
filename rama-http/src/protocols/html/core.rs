@@ -31,7 +31,7 @@ use std::{
 /// Compose nested HTML elements using macros:
 ///
 /// ```ignore
-/// use rama_http::html::*;
+/// use rama_http::protocols::html::*;
 ///
 /// struct Article { title: String, content: String, author: String }
 ///
@@ -50,7 +50,7 @@ use std::{
 /// and override [`IntoHtml::escape_and_write`]:
 ///
 /// ```ignore
-/// use rama_http::html::{IntoHtml, escape_into};
+/// use rama_http::protocols::html::{IntoHtml, escape_into};
 ///
 /// struct TextNode(String);
 ///

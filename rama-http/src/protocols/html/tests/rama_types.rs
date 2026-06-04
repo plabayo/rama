@@ -13,7 +13,7 @@ use rama_utils::{
     },
 };
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn arcstr_content_is_escaped() {

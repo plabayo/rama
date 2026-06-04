@@ -1,7 +1,7 @@
 //! Attribute syntax — required / optional / boolean / raw idents /
 //! string-literal names / value escaping.
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn basic_idents() {

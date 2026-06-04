@@ -43,7 +43,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 HTML templating support exposed by `rama-http` (and thus `rama`) under the
 `html` feature gate. End users should not depend on this crate directly —
 instead enable the `html` feature on `rama-http` (or `rama`) and use the
-macros re-exported from `rama_http::html` (or `rama::http::html`).
+macros re-exported from `rama_http::protocols::html` (or `rama::http::protocols::html`).
 
 The macros (one per HTML element name, e.g. `div!`, `span!`, `html!`, ...)
 are a permanent fork of [`vy-macros`](https://github.com/JonahLund/vy)

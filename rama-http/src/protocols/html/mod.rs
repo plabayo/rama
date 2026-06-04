@@ -8,7 +8,7 @@
 //! names — typically [web components] — see the [`custom!`] macro.
 //!
 //! ```ignore
-//! use rama_http::html::*;
+//! use rama_http::protocols::html::*;
 //! use rama_http::service::web::response::IntoResponse;
 //!
 //! async fn handler() -> impl IntoResponse {
@@ -49,7 +49,7 @@
 //! built on top of the macro layer:
 //!
 //! ```ignore
-//! use rama_http::html::*;
+//! use rama_http::protocols::html::*;
 //!
 //! struct UserIcon { user_id: u64, size: IconSize }
 //! enum IconSize { Sm, Md, Lg }
@@ -78,7 +78,7 @@ pub use self::core::{
 pub use self::response::HtmlBuf;
 
 // Re-exported so the proc-macros emitted by `rama-http-macros` can refer
-// to them via a single root path (`rama_http::html::Either{,3..9}`),
+// to them via a single root path (`rama_http::protocols::html::Either{,3..9}`),
 // without depending on the user knowing where `rama-core` lives.
 //
 // In practice the user normally only encounters these via `if`/`else if`

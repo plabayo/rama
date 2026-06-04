@@ -4,7 +4,7 @@
 
 #![allow(unused_braces)]
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 struct Article {
     title: &'static str,

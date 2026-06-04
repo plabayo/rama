@@ -4,7 +4,7 @@ use rama::{
     Service,
     http::{
         Request, Response,
-        html::*,
+        protocols::html::*,
         service::web::{
             IntoEndpointService,
             response::{Css, IntoResponse},

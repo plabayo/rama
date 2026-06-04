@@ -5,7 +5,7 @@
 
 #![allow(unused_braces)]
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn if_two_way() {

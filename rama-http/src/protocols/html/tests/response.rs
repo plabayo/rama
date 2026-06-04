@@ -2,7 +2,7 @@
 //! `Content-Type: text/html`, `html!(...)` auto-prepends `<!DOCTYPE html>`,
 //! etc.
 
-use crate::html::*;
+use crate::protocols::html::*;
 use crate::service::web::response::IntoResponse;
 
 use super::collect_body;

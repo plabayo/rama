@@ -10,7 +10,7 @@ use rama_utils::str::{
     smol_str::SmolStr,
 };
 
-use crate::html::core::{IntoHtml, PreEscaped, escape_into};
+use crate::protocols::html::core::{IntoHtml, PreEscaped, escape_into};
 
 macro_rules! impl_str_like {
     ($ty:ty) => {

@@ -1,6 +1,6 @@
 //! `custom!` — arbitrary-tag-name elements (web components etc.).
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn no_body() {

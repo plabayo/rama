@@ -31,10 +31,6 @@ pub mod body;
 
 pub mod convert;
 
-#[cfg(feature = "html")]
-#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
-pub mod html;
-
 pub mod matcher;
 
 pub mod layer;

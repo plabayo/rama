@@ -1,4 +1,4 @@
-//! Procedural macros powering `rama_http::html`.
+//! Procedural macros powering `rama_http::protocols::html`.
 //!
 //! End users should not depend on this crate directly — it is re-exported
 //! from `rama-http` (and thus `rama`) under the `html` feature gate.
@@ -70,13 +70,13 @@ fn render_with_prefix(head: ElementHead, body: ElementBody, prefix: &str) -> Tok
 
     let imports = ser.as_imports();
     let parts = ser.into_parts().into_iter().map(|part| match part {
-        Part::Str(s) => quote!(#root::html::PreEscaped(#s)),
+        Part::Str(s) => quote!(#root::protocols::html::PreEscaped(#s)),
         Part::Expr(e) => quote!(#e),
     });
 
     quote!({
         #imports;
-        #root::html::HtmlBuf(( #(#parts),* ))
+        #root::protocols::html::HtmlBuf(( #(#parts),* ))
     })
 }
 

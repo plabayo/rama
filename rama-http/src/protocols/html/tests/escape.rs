@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use crate::html::{IntoHtml, end, escape, escape_into, marker, start};
+use crate::protocols::html::{IntoHtml, end, escape, escape_into, marker, start};
 
 #[test]
 fn escape_returns_owned_when_needed() {

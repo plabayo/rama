@@ -7,7 +7,7 @@
 //! This example will create a server that listens on `127.0.0.1:62002`.
 //!
 //! It also showcases the type-safe HTML templating macros provided by
-//! [`rama::http::html`] (gated behind the `html` feature, included in
+//! [`rama::http::protocols::html`] (gated behind the `html` feature, included in
 //! `http-full`) — used here both for the input form and the success page.
 //!
 //! # Run the example
@@ -45,9 +45,9 @@
 )]
 
 use rama::Layer;
-use rama::http::html::{Either, body, br, form, h1, html, input, label, p};
 use rama::http::layer::trace::TraceLayer;
 use rama::http::matcher::HttpMatcher;
+use rama::http::protocols::html::{Either, body, br, form, h1, html, input, label, p};
 use rama::http::service::web::response::IntoResponse;
 use rama::http::service::web::{WebService, extract::Form};
 use rama::telemetry::tracing::{

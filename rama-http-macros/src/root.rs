@@ -3,7 +3,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::Ident;
 
-/// Resolve the root path under which `rama-http`'s `html` module lives.
+/// Resolve the root path under which `rama-http`'s `protocols::html`
+/// module lives.
 ///
 /// We try, in order:
 ///   1. the `rama-http` crate — produces `::rama_http` or `crate` when

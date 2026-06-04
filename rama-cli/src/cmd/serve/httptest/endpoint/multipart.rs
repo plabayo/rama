@@ -2,8 +2,8 @@ use rama::{
     Layer as _, Service,
     http::{
         Request, Response,
-        html::*,
         layer::error_handling::ErrorHandlerLayer,
+        protocols::html::*,
         service::web::{
             IntoEndpointService,
             extract::multipart::{Multipart, MultipartConfig},

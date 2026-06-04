@@ -45,7 +45,7 @@ Common examples include:
 ## Type-safe HTML templating
 
 For HTML responses, Rama ships a small templating library exposed under
-[`rama::http::html`](https://ramaproxy.org/docs/rama/http/html/index.html)
+[`rama::http::protocols::html`](https://ramaproxy.org/docs/rama/http/protocols/html/index.html)
 behind the `html` feature (included in `http-full`). It is a permanent
 fork of [`vy`](https://github.com/JonahLund/vy), reshaped to integrate
 with the rest of the rama ecosystem (using
@@ -62,7 +62,7 @@ only values wrapped in `PreEscaped(...)` are written verbatim. The
 its output is a complete page.
 
 ```rust,no_run
-use rama::http::html::{body, h1, html, p};
+use rama::http::protocols::html::{body, h1, html, p};
 use rama::http::service::web::response::IntoResponse;
 
 async fn home(name: String) -> impl IntoResponse {
@@ -83,7 +83,7 @@ custom!("user-icon", "data-user-id" = 42, size = "lg")
 ```
 
 Implementing the
-[`IntoHtml`](https://ramaproxy.org/docs/rama/http/html/trait.IntoHtml.html)
+[`IntoHtml`](https://ramaproxy.org/docs/rama/http/protocols/html/trait.IntoHtml.html)
 trait on your own type is the natural escape hatch for type-safe
 components — your type's `into_html` can return any composition of
 element macros, and the type can then be used wherever `IntoHtml` is

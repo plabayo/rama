@@ -1,6 +1,6 @@
 //! Element shape — open/close tags, nesting, void elements.
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn empty_single_tags() {

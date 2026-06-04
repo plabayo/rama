@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use crate::html::*;
+use crate::protocols::html::*;
 
 #[test]
 fn escapes_text_content() {

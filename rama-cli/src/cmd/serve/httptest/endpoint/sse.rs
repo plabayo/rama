@@ -4,8 +4,8 @@ use rama::{
     http::{
         Request, Response,
         headers::{Accept, HeaderMapExt as _},
-        html::*,
         mime,
+        protocols::html::*,
         service::web::response::{Css, IntoResponse, Script, Sse},
         sse::{
             Event,

@@ -4,8 +4,8 @@ use rama::{
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
         headers::ContentType,
-        html::*,
         proto::h2,
+        protocols::html::*,
         service::web::{
             extract::{Path, State as StateParam},
             response::{self, ErrorResponse, IntoResponse, Json},

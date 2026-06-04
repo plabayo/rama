@@ -6,7 +6,7 @@ use rama_utils::collections::{
     smallvec::{Array, SmallVec},
 };
 
-use crate::html::core::IntoHtml;
+use crate::protocols::html::core::IntoHtml;
 
 impl<A> IntoHtml for SmallVec<A>
 where

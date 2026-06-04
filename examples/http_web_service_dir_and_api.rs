@@ -33,11 +33,11 @@ use rama::{
     Layer,
     extensions::Extensions,
     http::{
-        html::{
-            PreEscaped, a, body, button, footer, form, h1, h2, head, html, link, p, style, title,
-        },
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,
+        protocols::html::{
+            PreEscaped, a, body, button, footer, form, h1, h2, head, html, link, p, style, title,
+        },
         server::HttpServer,
         service::web::{
             WebService,
@@ -115,9 +115,9 @@ async fn coin_page(State(state): State<Arc<AppState>>, ext: Extensions) -> impl 
         .ip_addr
         .is_loopback()
     {
-        rama::http::html::Either::A(a!(href = "/home", "🏠"))
+        rama::http::protocols::html::Either::A(a!(href = "/home", "🏠"))
     } else {
-        rama::http::html::Either::B("🌍")
+        rama::http::protocols::html::Either::B("🌍")
     };
 
     let count = state.counter.load(Ordering::Acquire);
