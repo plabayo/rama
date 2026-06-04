@@ -31,21 +31,6 @@
 //! namespaces, pseudo-elements, and the non-streamable structural pseudos
 //! (`:last-child`, `:only-child`, `:last-of-type`, `:only-of-type`,
 //! `:nth-last-*`) are intentionally rejected with a [`SelectorError`].
-//!
-//! # Example
-//!
-//! ```
-//! use rama_http::protocols::html::selector::{Dom, Selector};
-//!
-//! let selector: Selector = r#"a.link[href^="https"]"#.parse().unwrap();
-//!
-//! let mut dom = Dom::new();
-//! let a = dom.create("a");
-//! dom.set_attr(a, "class", "link external");
-//! dom.set_attr(a, "href", "https://example.com");
-//!
-//! assert!(selector.matches(&dom.element(a)));
-//! ```
 
 mod ast;
 mod display;

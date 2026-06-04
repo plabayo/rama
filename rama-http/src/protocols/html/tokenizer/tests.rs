@@ -8,7 +8,7 @@
 //! The html5lib conformance corpus is wired in a later slice (alongside
 //! streaming); anything a fuzzer surfaces should land here as a regression.
 
-use super::{Comment, Doctype, EndTag, StartTag, Text, TokenSink, tokenize};
+use super::{Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, tokenize};
 
 /// Sink that re-serializes every token's raw bytes, for the identity check.
 #[derive(Default)]
@@ -211,6 +211,61 @@ fn structure_text_runs_merge() {
 fn structure_bogus_comment() {
     assert_eq!(events(b"</>"), vec![Event::Comment(String::new())]);
     assert_eq!(events(b"<!x>"), vec![Event::Comment("x".to_owned())]);
+}
+
+// --- name hashing -------------------------------------------------------
+
+#[test]
+fn local_name_hash_basics() {
+    // ASCII case-insensitive, and `of` agrees with the `const` constructor.
+    assert_eq!(LocalNameHash::of(b"DIV"), LocalNameHash::of(b"div"));
+    assert_eq!(
+        LocalNameHash::of(b"script"),
+        LocalNameHash::from_static(b"script")
+    );
+    assert!(LocalNameHash::of(b"").is_none());
+    assert!(!LocalNameHash::of(b"div").is_none());
+}
+
+#[test]
+fn known_tags_are_collision_free() {
+    // The tree-builder simulator (next slice) dispatches text modes on these.
+    let tags: [&[u8]; 8] = [
+        b"script",
+        b"style",
+        b"textarea",
+        b"title",
+        b"plaintext",
+        b"iframe",
+        b"xmp",
+        b"noscript",
+    ];
+    for (i, a) in tags.iter().enumerate() {
+        for b in tags.iter().skip(i + 1) {
+            assert_ne!(LocalNameHash::of(a), LocalNameHash::of(b), "{a:?} vs {b:?}");
+        }
+    }
+}
+
+#[test]
+fn tag_name_hashes_are_exposed() {
+    #[derive(Default)]
+    struct Hashes {
+        start: Option<LocalNameHash>,
+        end: Option<LocalNameHash>,
+    }
+    impl TokenSink for Hashes {
+        fn start_tag(&mut self, tag: &StartTag<'_>) {
+            self.start = Some(tag.name_hash());
+        }
+        fn end_tag(&mut self, tag: &EndTag<'_>) {
+            self.end = Some(tag.name_hash());
+        }
+    }
+    let mut sink = Hashes::default();
+    tokenize(b"<Div></DIV>", &mut sink);
+    assert_eq!(sink.start, Some(LocalNameHash::of(b"div")));
+    assert_eq!(sink.end, Some(LocalNameHash::of(b"div")));
 }
 
 // --- robustness ---------------------------------------------------------

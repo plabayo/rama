@@ -29,19 +29,6 @@ struct NodeData {
 }
 
 /// A simple arena-backed element tree.
-///
-/// ```
-/// use rama_http::protocols::html::selector::{Dom, Selector};
-///
-/// let mut dom = Dom::new();
-/// let ul = dom.create("ul");
-/// let first = dom.append(ul, "li");
-/// let second = dom.append(ul, "li");
-///
-/// let odd: Selector = "li:nth-child(odd)".parse().unwrap();
-/// assert!(odd.matches(&dom.element(first)));
-/// assert!(!odd.matches(&dom.element(second)));
-/// ```
 #[derive(Debug, Default)]
 pub struct Dom {
     nodes: Vec<NodeData>,

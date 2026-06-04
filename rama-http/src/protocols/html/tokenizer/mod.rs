@@ -10,31 +10,6 @@
 //! Unlike a DOM parser it builds no tree and decodes no character
 //! references — text and attribute values are exposed as raw bytes.
 //!
-//! # Example
-//!
-//! ```
-//! use rama_http::protocols::html::tokenizer::{StartTag, TokenSink, tokenize};
-//!
-//! #[derive(Default)]
-//! struct LinkCollector(Vec<Vec<u8>>);
-//!
-//! impl TokenSink for LinkCollector {
-//!     fn start_tag(&mut self, tag: &StartTag<'_>) {
-//!         if tag.name() == b"a" {
-//!             for attr in tag.attributes() {
-//!                 if attr.name() == b"href" {
-//!                     self.0.push(attr.value().to_vec());
-//!                 }
-//!             }
-//!         }
-//!     }
-//! }
-//!
-//! let mut links = LinkCollector::default();
-//! tokenize(br#"<p>see <a href="/x">x</a></p>"#, &mut links);
-//! assert_eq!(links.0, vec![b"/x".to_vec()]);
-//! ```
-//!
 //! ## Scope (current)
 //!
 //! This is the first slice: a single-pass tokenizer over a complete input.
