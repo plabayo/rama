@@ -71,6 +71,7 @@ mod rama_impls;
 mod response;
 
 pub mod selector;
+pub mod tokenizer;
 
 #[doc(inline)]
 pub use self::core::{
