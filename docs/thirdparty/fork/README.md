@@ -103,6 +103,26 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/JonahLund/vy/blob/1280174f54774c24fa478475af17fd7f5814c91a/LICENSE>
     - Type: MIT
     - Copy: [./licenses/vy](./licenses/vy)
+- <https://github.com/cloudflare/lol-html/tree/02f139c4437b2da666a50d32e11d9158cbe0a393>
+  - Forked into private modules under
+    [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
+    as the foundation for rama's native streaming HTML parsing and
+    rewriting (the CSS selector engine, the HTML tokenizer, and the
+    selector-driven rewriter).
+  - Reasons for forking:
+    - A redesigned, ergonomic API: a visitor trait (your struct *is* the
+      shared state) plus a state-threaded closure escape hatch, replacing
+      lol-html's boxed-closure handlers that force `Rc<RefCell>` /
+      `Arc<Mutex>` for shared state and a duplicated `send::` module.
+    - Integration with the rest of the rama ecosystem — `IntoHtml` for
+      building replacement content, a native `Body` / `Layer` / `Service`
+      for streaming responses, and rama's error and string utilities.
+    - Fewer dependencies: the CSS selector parser is hand-rolled for the
+      streaming-safe subset, dropping `cssparser` and Servo's `selectors`.
+  - License:
+    - Original: <https://github.com/cloudflare/lol-html/blob/02f139c4437b2da666a50d32e11d9158cbe0a393/LICENSE>
+    - Type: BSD-3-Clause
+    - Copy: [./licenses/lol-html](./licenses/lol-html)
 
 [`rama_core::combinators::Either`]: https://docs.rs/rama-core/latest/rama_core/combinators/enum.Either.html
 

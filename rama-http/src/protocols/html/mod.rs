@@ -70,6 +70,8 @@ mod either_impls;
 mod rama_impls;
 mod response;
 
+pub mod selector;
+
 #[doc(inline)]
 pub use self::core::{
     End, IntoHtml, Marker, PreEscaped, Start, end, escape, escape_into, marker, start,

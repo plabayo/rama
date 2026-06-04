@@ -57,9 +57,16 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "selector_parse"
+path = "fuzz_targets/selector_parse.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["ua", "http", "net"] }
+rama = { path = "../", features = ["ua", "http", "net", "html"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]
