@@ -8,12 +8,13 @@
 //! drop (e.g. a stray `<`) are preserved as text, since this is the
 //! substrate for a byte-faithful rewriter, not a DOM builder.
 //!
-//! Text-mode switching for `<script>` / `<style>` / `<textarea>` / … and
-//! foreign content is handled by a later slice; here every element body is
-//! scanned as ordinary data, which is still byte-identical (only the token
-//! *structure* inside such elements differs).
+//! Raw-text element bodies (`<script>` / `<style>` / `<textarea>` /
+//! `<title>` / `<plaintext>` / …) are scanned in their correct text mode so
+//! their contents aren't mistaken for markup. Foreign content (SVG/MathML
+//! CDATA + namespaces) is handled by a later slice; identity holds either
+//! way.
 
-use memchr::memchr;
+use memchr::{memchr, memchr2};
 
 use super::name::LocalNameHash;
 use super::sink::TokenSink;
@@ -27,6 +28,69 @@ const COMMENT_PREFIX: &[u8] = b"<!--";
 const COMMENT_SUFFIX: &[u8] = b"-->";
 /// The DOCTYPE keyword (matched ASCII case-insensitively).
 const DOCTYPE_KEYWORD: &[u8] = b"doctype";
+
+/// The `<script>` tag name (its body is scanned as script-data).
+const SCRIPT_NAME: &[u8] = b"script";
+
+// Known tag-name hashes whose element bodies are parsed in a special text
+// mode rather than as ordinary data.
+const SCRIPT: LocalNameHash = LocalNameHash::from_static(b"script");
+const STYLE: LocalNameHash = LocalNameHash::from_static(b"style");
+const TEXTAREA: LocalNameHash = LocalNameHash::from_static(b"textarea");
+const TITLE: LocalNameHash = LocalNameHash::from_static(b"title");
+const PLAINTEXT: LocalNameHash = LocalNameHash::from_static(b"plaintext");
+const XMP: LocalNameHash = LocalNameHash::from_static(b"xmp");
+const IFRAME: LocalNameHash = LocalNameHash::from_static(b"iframe");
+const NOEMBED: LocalNameHash = LocalNameHash::from_static(b"noembed");
+const NOFRAMES: LocalNameHash = LocalNameHash::from_static(b"noframes");
+const NOSCRIPT: LocalNameHash = LocalNameHash::from_static(b"noscript");
+
+/// How an element's body is tokenized once its start tag is seen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextMode {
+    /// `<style>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`,
+    /// `<noscript>` — raw text until the matching end tag.
+    RawText,
+    /// `<textarea>`, `<title>` — like raw text (we keep bytes raw, so the
+    /// only practical difference from `RawText` is the element name).
+    RcData,
+    /// `<script>` — raw text with the HTML script-data escape rules.
+    ScriptData,
+    /// `<plaintext>` — everything to end of input is text.
+    PlainText,
+}
+
+/// Maps a start-tag name hash to the text mode for its body, if any.
+///
+/// `noscript` is treated as raw text (scripting-enabled behaviour), matching
+/// the common case for a rewriter.
+fn text_mode_for(name: LocalNameHash) -> Option<TextMode> {
+    if name == SCRIPT {
+        Some(TextMode::ScriptData)
+    } else if name == TEXTAREA || name == TITLE {
+        Some(TextMode::RcData)
+    } else if name == PLAINTEXT {
+        Some(TextMode::PlainText)
+    } else if name == STYLE
+        || name == XMP
+        || name == IFRAME
+        || name == NOEMBED
+        || name == NOFRAMES
+        || name == NOSCRIPT
+    {
+        Some(TextMode::RawText)
+    } else {
+        None
+    }
+}
+
+/// A pending raw-text scan triggered by a text-mode start tag.
+#[derive(Debug, Clone, Copy)]
+struct RawScan {
+    mode: TextMode,
+    /// Span of the element name, used to find the matching end tag.
+    name: Span,
+}
 
 /// Streaming-safe HTML tokenizer (single-pass, in this slice).
 ///
@@ -63,7 +127,12 @@ impl Tokenizer {
                 }
                 Construct::StartTag => {
                     emit_text(input, text_start, lt, sink);
-                    pos = self.scan_start_tag(input, lt, sink);
+                    let (close, raw_scan) = self.scan_start_tag(input, lt, sink);
+                    pos = if let Some(scan) = raw_scan {
+                        self.scan_raw_text(input, close, scan, sink)
+                    } else {
+                        close
+                    };
                     text_start = pos;
                 }
                 Construct::EndTag => {
@@ -92,7 +161,12 @@ impl Tokenizer {
         emit_text(input, text_start, input.len(), sink);
     }
 
-    fn scan_start_tag<S: TokenSink>(&mut self, input: &[u8], lt: usize, sink: &mut S) -> usize {
+    fn scan_start_tag<S: TokenSink>(
+        &mut self,
+        input: &[u8],
+        lt: usize,
+        sink: &mut S,
+    ) -> (usize, Option<RawScan>) {
         let name_start = lt + 1;
         let name_end = scan_tag_name(input, name_start);
         let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
@@ -109,7 +183,41 @@ impl Tokenizer {
             self_closing,
         };
         sink.start_tag(&tag);
-        close
+
+        // HTML text-mode elements ignore the self-closing flag: `<script/>`
+        // still opens a script-data context.
+        let raw_scan = text_mode_for(name_hash).map(|mode| RawScan {
+            mode,
+            name: Span::new(name_start, name_end),
+        });
+        (close, raw_scan)
+    }
+
+    /// Scans an element body in a raw text mode, emitting a [`Text`] token
+    /// for the content and (if found) the matching end tag. Returns the
+    /// position to resume ordinary scanning from.
+    fn scan_raw_text<S: TokenSink>(
+        &mut self,
+        input: &[u8],
+        content_start: usize,
+        scan: RawScan,
+        sink: &mut S,
+    ) -> usize {
+        let end = match scan.mode {
+            TextMode::PlainText => None,
+            TextMode::RawText | TextMode::RcData => {
+                let name = slice(input, scan.name.start, scan.name.end);
+                find_appropriate_end_tag(input, content_start, name)
+            }
+            TextMode::ScriptData => find_script_data_end(input, content_start),
+        };
+        if let Some(lt) = end {
+            emit_text(input, content_start, lt, sink);
+            self.scan_end_tag(input, lt, sink)
+        } else {
+            emit_text(input, content_start, input.len(), sink);
+            input.len()
+        }
     }
 
     fn scan_end_tag<S: TokenSink>(&mut self, input: &[u8], lt: usize, sink: &mut S) -> usize {
@@ -384,6 +492,143 @@ fn find_seq(input: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
         i = at + 1;
     }
     None
+}
+
+fn is_tag_terminator(b: u8) -> bool {
+    is_html_space(b) || b == b'/' || b == b'>'
+}
+
+/// Whether `lt` begins an "appropriate end tag" — `</name` for `name`
+/// (ASCII case-insensitive) followed by a tag terminator.
+fn is_appropriate_end_tag(input: &[u8], lt: usize, name: &[u8]) -> bool {
+    if input.get(lt + 1) != Some(&b'/') {
+        return false;
+    }
+    let start = lt + 2;
+    let end = start + name.len();
+    if !input
+        .get(start..end)
+        .is_some_and(|s| s.eq_ignore_ascii_case(name))
+    {
+        return false;
+    }
+    matches!(input.get(end), Some(&b) if is_tag_terminator(b))
+}
+
+/// Finds the first appropriate end tag for raw-text / RCDATA content,
+/// returning the position of its `<`.
+fn find_appropriate_end_tag(input: &[u8], from: usize, name: &[u8]) -> Option<usize> {
+    let mut i = from;
+    while let Some(rel) = memchr(b'<', input.get(i..).unwrap_or(&[])) {
+        let lt = i + rel;
+        if is_appropriate_end_tag(input, lt, name) {
+            return Some(lt);
+        }
+        i = lt + 1;
+    }
+    None
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ScriptState {
+    Data,
+    Escaped,
+    DoubleEscaped,
+}
+
+/// Finds the `</script>` that terminates a script element per the HTML
+/// script-data escape rules (handling `<!-- … -->` and nested `<script>`),
+/// returning the position of its `<`.
+fn find_script_data_end(input: &[u8], from: usize) -> Option<usize> {
+    let mut state = ScriptState::Data;
+    let mut i = from;
+    loop {
+        match state {
+            ScriptState::Data => {
+                let lt = i + memchr(b'<', input.get(i..).unwrap_or(&[]))?;
+                if is_appropriate_end_tag(input, lt, SCRIPT_NAME) {
+                    return Some(lt);
+                }
+                if input.get(lt + 1) == Some(&b'!')
+                    && input.get(lt + 2..).is_some_and(|s| s.starts_with(b"--"))
+                {
+                    state = ScriptState::Escaped;
+                    i = lt + 4;
+                } else {
+                    i = lt + 1;
+                }
+            }
+            ScriptState::Escaped => {
+                let at = i + memchr2(b'<', b'-', input.get(i..).unwrap_or(&[]))?;
+                if input.get(at) == Some(&b'-') {
+                    i = consume_comment_close(input, at, &mut state);
+                } else if is_appropriate_end_tag(input, at, SCRIPT_NAME) {
+                    // `</script>` ends the script even inside an escaped comment.
+                    return Some(at);
+                } else if let Some(after) = double_escape_start(input, at) {
+                    state = ScriptState::DoubleEscaped;
+                    i = after;
+                } else {
+                    i = at + 1;
+                }
+            }
+            ScriptState::DoubleEscaped => {
+                let at = i + memchr2(b'<', b'-', input.get(i..).unwrap_or(&[]))?;
+                if input.get(at) == Some(&b'-') {
+                    i = consume_comment_close(input, at, &mut state);
+                } else if let Some(after) = double_escape_end(input, at) {
+                    state = ScriptState::Escaped;
+                    i = after;
+                } else {
+                    i = at + 1;
+                }
+            }
+        }
+    }
+}
+
+/// At a `-` in (double-)escaped script data: `-->` returns to script-data,
+/// otherwise the dash is consumed. Returns the next scan position.
+fn consume_comment_close(input: &[u8], at: usize, state: &mut ScriptState) -> usize {
+    if input.get(at..).is_some_and(|s| s.starts_with(b"-->")) {
+        *state = ScriptState::Data;
+        at + 3
+    } else {
+        at + 1
+    }
+}
+
+/// `<script` (no slash) + terminator in escaped script data, entering the
+/// double-escaped state. Returns the position after the name.
+fn double_escape_start(input: &[u8], lt: usize) -> Option<usize> {
+    script_word_boundary(input, lt + 1)
+}
+
+/// `</script` + terminator in double-escaped script data, returning to the
+/// escaped state. Returns the position after the name.
+fn double_escape_end(input: &[u8], lt: usize) -> Option<usize> {
+    if input.get(lt + 1) != Some(&b'/') {
+        return None;
+    }
+    script_word_boundary(input, lt + 2)
+}
+
+/// If the ASCII-alpha run at `from` equals `script` (case-insensitive) and
+/// is followed by a tag terminator, returns the run's end position.
+fn script_word_boundary(input: &[u8], from: usize) -> Option<usize> {
+    let end = scan_ascii_alpha(input, from);
+    if end == from || !slice(input, from, end).eq_ignore_ascii_case(SCRIPT_NAME) {
+        return None;
+    }
+    matches!(input.get(end), Some(&b) if is_tag_terminator(b)).then_some(end)
+}
+
+fn scan_ascii_alpha(input: &[u8], from: usize) -> usize {
+    let mut i = from;
+    while input.get(i).is_some_and(u8::is_ascii_alphabetic) {
+        i += 1;
+    }
+    i
 }
 
 fn slice(input: &[u8], start: usize, end: usize) -> &[u8] {

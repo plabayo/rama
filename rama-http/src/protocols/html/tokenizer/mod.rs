@@ -12,10 +12,10 @@
 //!
 //! ## Scope (current)
 //!
-//! This is the first slice: a single-pass tokenizer over a complete input.
-//! Text-mode switching for `<script>` / `<style>` / `<textarea>` / … and
-//! foreign-content (SVG/MathML) handling, plus chunked streaming, land in
-//! later slices. The identity property already holds for all input.
+//! Single-pass over a complete input, with correct text-mode handling for
+//! `<script>` / `<style>` / `<textarea>` / `<title>` / `<plaintext>` / ….
+//! Foreign content (SVG/MathML CDATA + namespaces) and chunked streaming
+//! land in later slices. The identity property holds for all input.
 
 mod machine;
 mod name;

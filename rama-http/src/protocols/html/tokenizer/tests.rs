@@ -125,20 +125,28 @@ fn identity_corpus() {
         b"<!DOCTYPE html>",
         b"<!doctype HTML>",
         b"text <b>bold</b> & more <i>x</i>",
-        b"a < b and c > d",                      // stray angle brackets
-        b"<",                                    // lone '<' at EOF
-        b"<3 hearts",                            // '<' + digit is text
-        b"</>",                                  // empty end tag
-        b"<?php echo 1 ?>",                      // bogus comment
-        b"<!bogus>",                             // bogus comment
-        b"<![CDATA[x]]>",                        // CDATA-as-bogus-comment in HTML
-        b"<div class=\"a > b\">x</div>",         // '>' inside quotes
-        b"<unterminated attr=\"oops",            // unterminated quoted value
-        b"<tag",                                 // unterminated tag
-        b"<!-- unterminated comment",            // unterminated comment
-        b"<p\n  id = main\n>x</p>",              // whitespace around '='
-        b"<UL><LI>A<LI>B</UL>",                  // uppercase, optional end tags
-        "<p>caf\u{e9} \u{1f600}</p>".as_bytes(), // non-ascii text
+        b"a < b and c > d",                             // stray angle brackets
+        b"<",                                           // lone '<' at EOF
+        b"<3 hearts",                                   // '<' + digit is text
+        b"</>",                                         // empty end tag
+        b"<?php echo 1 ?>",                             // bogus comment
+        b"<!bogus>",                                    // bogus comment
+        b"<![CDATA[x]]>",                               // CDATA-as-bogus-comment in HTML
+        b"<div class=\"a > b\">x</div>",                // '>' inside quotes
+        b"<unterminated attr=\"oops",                   // unterminated quoted value
+        b"<tag",                                        // unterminated tag
+        b"<!-- unterminated comment",                   // unterminated comment
+        b"<p\n  id = main\n>x</p>",                     // whitespace around '='
+        b"<UL><LI>A<LI>B</UL>",                         // uppercase, optional end tags
+        br#"<script>var x = "</p>"; a<b;</script>"#,    // script: inner markup is text
+        b"<script><!--<script>a</script>-->b</script>", // nested script escape
+        b"<style>.a{color:red}</style>",                // rawtext
+        b"<textarea><p>hi</textarea>",                  // rcdata
+        b"<plaintext>a<b>c</plaintext>d",               // plaintext to EOF
+        b"<SCRIPT>x</ScRiPt>",                          // case-insensitive end tag
+        b"<style></styles></style>",                    // non-matching end tag is text
+        b"<script>alert(1)",                            // unterminated raw text
+        "<p>caf\u{e9} \u{1f600}</p>".as_bytes(),        // non-ascii text
     ] {
         assert_identity(input);
     }
@@ -211,6 +219,105 @@ fn structure_text_runs_merge() {
 fn structure_bogus_comment() {
     assert_eq!(events(b"</>"), vec![Event::Comment(String::new())]);
     assert_eq!(events(b"<!x>"), vec![Event::Comment("x".to_owned())]);
+}
+
+// --- text modes ---------------------------------------------------------
+
+#[test]
+fn text_mode_script_inner_markup_is_text() {
+    assert_eq!(
+        events(br#"<script>var x = "</p>"; a<b;</script>"#),
+        vec![
+            start("script", &[], false),
+            Event::Text(r#"var x = "</p>"; a<b;"#.to_owned()),
+            Event::End("script".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn text_mode_script_nested_escape() {
+    // The terminating `</script>` is the last one (after `-->`).
+    assert_eq!(
+        events(b"<script><!--<script>a</script>-->b</script>"),
+        vec![
+            start("script", &[], false),
+            Event::Text("<!--<script>a</script>-->b".to_owned()),
+            Event::End("script".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn text_mode_rawtext_rcdata() {
+    assert_eq!(
+        events(b"<style>.a{color:red}</style>"),
+        vec![
+            start("style", &[], false),
+            Event::Text(".a{color:red}".to_owned()),
+            Event::End("style".to_owned()),
+        ]
+    );
+    assert_eq!(
+        events(b"<textarea><p>hi</textarea>"),
+        vec![
+            start("textarea", &[], false),
+            Event::Text("<p>hi".to_owned()),
+            Event::End("textarea".to_owned()),
+        ]
+    );
+    assert_eq!(
+        events(b"<title>a<b>c</title>"),
+        vec![
+            start("title", &[], false),
+            Event::Text("a<b>c".to_owned()),
+            Event::End("title".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn text_mode_end_tag_matching() {
+    // `</styles>` is not an appropriate end tag for `<style>`.
+    assert_eq!(
+        events(b"<style></styles></style>"),
+        vec![
+            start("style", &[], false),
+            Event::Text("</styles>".to_owned()),
+            Event::End("style".to_owned()),
+        ]
+    );
+    // case-insensitive name match
+    assert_eq!(
+        events(b"<SCRIPT>x</ScRiPt>"),
+        vec![
+            start("SCRIPT", &[], false),
+            Event::Text("x".to_owned()),
+            Event::End("ScRiPt".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn text_mode_plaintext_runs_to_eof() {
+    assert_eq!(
+        events(b"<plaintext>a<b>c</plaintext>d"),
+        vec![
+            start("plaintext", &[], false),
+            Event::Text("a<b>c</plaintext>d".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn text_mode_unterminated_runs_to_eof() {
+    assert_eq!(
+        events(b"<script>alert(1)"),
+        vec![
+            start("script", &[], false),
+            Event::Text("alert(1)".to_owned()),
+        ]
+    );
 }
 
 // --- name hashing -------------------------------------------------------
