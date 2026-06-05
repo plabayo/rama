@@ -7,7 +7,7 @@ use super::super::tokenizer::{
     Cdata, Comment, Doctype, EndTag, StartTag, Text, TokenSink, Tokenizer,
 };
 use super::SelectorMatcher;
-use super::element::{Element, ElementContentHandler, HandlerResult};
+use super::element::{Element, ElementContentHandler, EndActions, HandlerResult};
 
 /// The [`TokenSink`] that drives matching + mutation + serialization.
 struct RewriteSink<H> {
@@ -16,6 +16,13 @@ struct RewriteSink<H> {
     output: Vec<u8>,
     /// Reused scratch for the selectors matching the current element.
     matched: Vec<usize>,
+    /// Deferred end-tag actions, one entry per open scope — kept in lockstep
+    /// with the matcher's open-element stack (see [`SelectorMatcher`]).
+    pending: Vec<EndActions>,
+    /// Number of open ancestors currently suppressing their content (from a
+    /// `remove` / `replace` / `set_inner_content`). While non-zero, token
+    /// output is swallowed.
+    suppress_depth: usize,
     /// First handler error, if any (aborts the rewrite).
     error: Option<BoxError>,
 }
@@ -31,13 +38,23 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
             handler,
             output,
             matched,
+            pending,
+            suppress_depth,
             error,
         } = self;
 
+        // Visible iff no enclosing element is suppressing its content.
+        let visible = *suppress_depth == 0;
         matched.clear();
-        matcher.push_element(tag, |index| matched.push(index));
+        let opened = matcher.push_element(tag, |index| matched.push(index));
+
         if matched.is_empty() {
-            output.extend_from_slice(tag.raw());
+            if visible {
+                output.extend_from_slice(tag.raw());
+            }
+            if opened {
+                pending.push(EndActions::passthrough());
+            }
             return;
         }
 
@@ -48,28 +65,62 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
                 break;
             }
         }
-        element.serialize_start(output);
+        let actions = element.serialize(output, visible);
+
+        if opened {
+            if actions.suppress_content {
+                *suppress_depth += 1;
+            }
+            pending.push(actions);
+        } else if visible {
+            // Void / self-closing: no children and no end tag, so the
+            // end-anchored content (if any) lands right here.
+            output.extend_from_slice(actions.append.as_bytes());
+            output.extend_from_slice(actions.after.as_bytes());
+        }
     }
 
     fn end_tag(&mut self, tag: &EndTag<'_>) {
-        self.matcher.pop_element(tag.name_hash());
-        self.output.extend_from_slice(tag.raw());
+        if self.error.is_some() {
+            self.output.extend_from_slice(tag.raw());
+            return;
+        }
+        if !self.matcher.pop_element(tag.name_hash()) {
+            // Stray end tag: emit verbatim unless inside suppressed content.
+            if self.suppress_depth == 0 {
+                self.output.extend_from_slice(tag.raw());
+            }
+            return;
+        }
+        let Some(actions) = self.pending.pop() else {
+            return;
+        };
+        if actions.suppress_content {
+            self.suppress_depth = self.suppress_depth.saturating_sub(1);
+        }
+        if self.suppress_depth == 0 {
+            self.output.extend_from_slice(actions.append.as_bytes());
+            if !actions.suppress_end_tag {
+                self.output.extend_from_slice(tag.raw());
+            }
+            self.output.extend_from_slice(actions.after.as_bytes());
+        }
     }
 
     fn text(&mut self, text: &Text<'_>) {
-        self.output.extend_from_slice(text.raw());
+        self.passthrough(text.raw());
     }
 
     fn comment(&mut self, comment: &Comment<'_>) {
-        self.output.extend_from_slice(comment.raw());
+        self.passthrough(comment.raw());
     }
 
     fn cdata(&mut self, cdata: &Cdata<'_>) {
-        self.output.extend_from_slice(cdata.raw());
+        self.passthrough(cdata.raw());
     }
 
     fn doctype(&mut self, doctype: &Doctype<'_>) {
-        self.output.extend_from_slice(doctype.raw());
+        self.passthrough(doctype.raw());
     }
 }
 
@@ -97,6 +148,8 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
                 handler,
                 output: Vec::new(),
                 matched: Vec::new(),
+                pending: Vec::new(),
+                suppress_depth: 0,
                 error: None,
             },
         }
@@ -140,6 +193,15 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
 }
 
 impl<H> RewriteSink<H> {
+    /// Emits a leaf token's raw bytes, unless it is inside suppressed content.
+    /// (On error the rewrite is doomed and its output discarded, so bytes are
+    /// passed through to keep the buffer well-formed for inspection.)
+    fn passthrough(&mut self, raw: &[u8]) {
+        if self.error.is_some() || self.suppress_depth == 0 {
+            self.output.extend_from_slice(raw);
+        }
+    }
+
     fn take_error(&mut self) -> Result<(), BoxError> {
         match self.error.take() {
             Some(err) => Err(err),
@@ -213,6 +275,7 @@ pub fn rewrite_str(html: &str, handlers: ElementContentHandlers<'_>) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::{ElementContentHandlers, HtmlRewriter, rewrite_str};
+    use crate::protocols::html::PreEscaped;
     use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult};
     use crate::protocols::html::selector::Selector;
 
@@ -333,5 +396,181 @@ mod tests {
         let out = String::from_utf8(rewriter.take_output()).expect("utf8");
         assert_eq!(out, r#"<a data-n="1">1</a><a data-n="2">2</a>"#);
         assert_eq!(rewriter.into_handler().count, 2);
+    }
+
+    // --- slice B: end-anchored edits ------------------------------------
+
+    #[test]
+    fn append_inserts_before_end_tag() {
+        let out = rewrite(
+            "<div>x</div>",
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.append_text("!");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<div>x!</div>");
+    }
+
+    #[test]
+    fn after_inserts_after_end_tag() {
+        let out = rewrite(
+            "<div>x</div>",
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.after_text("Y");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<div>x</div>Y");
+    }
+
+    #[test]
+    fn set_inner_content_replaces_children() {
+        let out = rewrite(
+            "<div>old<b>stuff</b></div>",
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.set_inner_text("new");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<div>new</div>");
+    }
+
+    #[test]
+    fn set_inner_content_keeps_attribute_edits() {
+        let out = rewrite(
+            r#"<div class="a">old</div>"#,
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.set_attribute("data-x", "1");
+                el.set_inner_text("new");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, r#"<div class="a" data-x="1">new</div>"#);
+    }
+
+    #[test]
+    fn replace_swaps_whole_element() {
+        let out = rewrite(
+            "a<p>hi</p>b",
+            ElementContentHandlers::new().on(sel("p"), |el| {
+                el.replace_text("X");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "aXb");
+    }
+
+    #[test]
+    fn replace_then_after() {
+        let out = rewrite(
+            "<p>hi</p>",
+            ElementContentHandlers::new().on(sel("p"), |el| {
+                el.replace_text("R");
+                el.after_text("A");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "RA");
+    }
+
+    #[test]
+    fn remove_drops_element_and_children() {
+        let out = rewrite(
+            "a<p>h<b>i</b></p>b",
+            ElementContentHandlers::new().on(sel("p"), |el| {
+                el.remove();
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn remove_keeps_before_and_after() {
+        let out = rewrite(
+            "x<p>hi</p>y",
+            ElementContentHandlers::new().on(sel("p"), |el| {
+                el.before_text("B");
+                el.remove();
+                el.after_text("A");
+                Ok(())
+            }),
+        );
+        // `before` then (element gone) then `after`.
+        assert_eq!(out, "xBAy");
+    }
+
+    #[test]
+    fn remove_and_keep_content_drops_only_tags() {
+        let out = rewrite(
+            "a<p>hi</p>b",
+            ElementContentHandlers::new().on(sel("p"), |el| {
+                el.remove_and_keep_content();
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "ahib");
+    }
+
+    #[test]
+    fn match_inside_removed_ancestor_is_swallowed() {
+        // The inner handler still runs, but its output is suppressed by the
+        // removed ancestor.
+        let out = rewrite(
+            "<div><a>x</a></div>",
+            ElementContentHandlers::new()
+                .on(sel("div"), |el| {
+                    el.remove();
+                    Ok(())
+                })
+                .on(sel("a"), |el| {
+                    el.set_attribute("data-hit", "1");
+                    Ok(())
+                }),
+        );
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn after_on_void_element() {
+        let out = rewrite(
+            "<img src=x>tail",
+            ElementContentHandlers::new().on(sel("img"), |el| {
+                el.after_text("Y");
+                Ok(())
+            }),
+        );
+        // No end tag for a void element: `after` lands right after it.
+        assert_eq!(out, "<img src=x>Ytail");
+    }
+
+    #[test]
+    fn append_accepts_into_html() {
+        let out = rewrite(
+            "<div>x</div>",
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.append(PreEscaped("<i>!</i>"));
+                Ok(())
+            }),
+        );
+        // `PreEscaped` content is written verbatim (the `IntoHtml` path).
+        assert_eq!(out, "<div>x<i>!</i></div>");
+    }
+
+    #[test]
+    fn remove_survives_chunk_boundaries() {
+        // Suppression state must persist across `write` calls.
+        let mut rewriter =
+            HtmlRewriter::from_handlers(ElementContentHandlers::new().on(sel("div"), |el| {
+                el.remove();
+                Ok(())
+            }));
+        for chunk in [&b"a<div>con"[..], b"tent</di", b"v>b"] {
+            rewriter.write(chunk).expect("write succeeds");
+        }
+        rewriter.end().expect("end succeeds");
+        let out = String::from_utf8(rewriter.take_output()).expect("utf8");
+        assert_eq!(out, "ab");
     }
 }

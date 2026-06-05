@@ -179,7 +179,16 @@ impl SelectorMatcher {
 
     /// Processes a start tag, invoking `on_match` once for each registered
     /// selector index that matches the element being opened.
-    pub(crate) fn push_element(&mut self, tag: &StartTag<'_>, mut on_match: impl FnMut(usize)) {
+    ///
+    /// Returns `true` if the element opened a new scope (was pushed onto the
+    /// stack) — i.e. it is neither void nor self-closing, so a matching end
+    /// tag is expected. The rewriter uses this to keep its deferred-action
+    /// stack in lockstep with the open-element stack.
+    pub(crate) fn push_element(
+        &mut self,
+        tag: &StartTag<'_>,
+        mut on_match: impl FnMut(usize),
+    ) -> bool {
         let n = self.selectors.len();
         let name = tag.name_hash();
         let parent_index = self.stack.len() - 1;
@@ -211,18 +220,26 @@ impl SelectorMatcher {
 
         self.stack[parent_index].record_child(name, self.tracks_type);
 
-        if !is_void(name) && !tag.is_self_closing() {
+        let opened = !is_void(name) && !tag.is_self_closing();
+        if opened {
             self.stack.push(Frame::new(name));
             self.states.extend_from_slice(&self.scratch);
         }
+        opened
     }
 
     /// Processes an end tag, popping the matching open element.
-    pub(crate) fn pop_element(&mut self, name: LocalNameHash) {
+    ///
+    /// Returns `true` if it closed an open scope (the top frame matched
+    /// `name`); `false` for a stray/mismatched end tag that pops nothing.
+    pub(crate) fn pop_element(&mut self, name: LocalNameHash) -> bool {
         if self.stack.len() > 1 && self.stack.last().is_some_and(|f| f.name == name) {
             self.stack.pop();
             let n = self.selectors.len();
             self.states.truncate(self.states.len() - n);
+            true
+        } else {
+            false
         }
     }
 }

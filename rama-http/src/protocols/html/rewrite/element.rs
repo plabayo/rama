@@ -41,22 +41,53 @@ struct EditedAttribute<'t> {
     value: Option<Cow<'t, [u8]>>,
 }
 
+/// What happens to the element's start tag, children and end tag as a whole.
+///
+/// These are mutually exclusive dispositions (last call wins); `before` /
+/// `after` / attribute edits apply on top of any of them.
+#[derive(Debug, Default)]
+enum ElementMode {
+    /// Emit the element unchanged (modulo attribute / `prepend` / `append`
+    /// edits).
+    #[default]
+    Normal,
+    /// Replace the element's children with this (pre-escaped) content; keep
+    /// the start and end tags.
+    Inner(String),
+    /// Replace the whole element (start tag … end tag) with this content.
+    Replace(String),
+    /// Remove the whole element, children included.
+    Remove,
+    /// Remove only the start and end tags, keeping the children.
+    RemoveKeepContent,
+}
+
 /// A matched element, for inspection and mutation by a handler.
 ///
-/// This handles start-tag-anchored edits: attribute changes, [`before`]
-/// (insert before the element) and [`prepend`] (insert as the first
-/// children). End-anchored edits (`after` / `append` / `set_inner` /
-/// `replace` / `remove`) land in a later slice.
+/// Start-anchored edits ([`before`], [`prepend`], attribute changes) take
+/// effect at the start tag; end-anchored edits ([`append`], [`after`],
+/// [`set_inner_content`], [`replace`], [`remove`],
+/// [`remove_and_keep_content`]) are deferred to the matching end tag by the
+/// rewriter.
 ///
 /// [`before`]: Element::before
 /// [`prepend`]: Element::prepend
+/// [`append`]: Element::append
+/// [`after`]: Element::after
+/// [`set_inner_content`]: Element::set_inner_content
+/// [`replace`]: Element::replace
+/// [`remove`]: Element::remove
+/// [`remove_and_keep_content`]: Element::remove_and_keep_content
 pub struct Element<'t> {
     tag: &'t StartTag<'t>,
     before: String,
     prepend: String,
+    append: String,
+    after: String,
     /// `None` until an attribute is edited; then it is the full attribute
     /// list to re-serialize.
     attributes: Option<Vec<EditedAttribute<'t>>>,
+    mode: ElementMode,
 }
 
 impl<'t> Element<'t> {
@@ -65,7 +96,10 @@ impl<'t> Element<'t> {
             tag,
             before: String::new(),
             prepend: String::new(),
+            append: String::new(),
+            after: String::new(),
             attributes: None,
+            mode: ElementMode::Normal,
         }
     }
 
@@ -153,6 +187,80 @@ impl<'t> Element<'t> {
         escape_into(&mut self.prepend, text.as_ref());
     }
 
+    /// Inserts HTML content as the element's last children (immediately
+    /// before the end tag). Accepts any [`IntoHtml`] value.
+    pub fn append(&mut self, content: impl IntoHtml) {
+        content.escape_and_write(&mut self.append);
+    }
+
+    /// Inserts escaped text as the element's last children.
+    pub fn append_text(&mut self, text: impl AsRef<str>) {
+        escape_into(&mut self.append, text.as_ref());
+    }
+
+    /// Inserts HTML content immediately after the element's end tag. Accepts
+    /// any [`IntoHtml`] value.
+    pub fn after(&mut self, content: impl IntoHtml) {
+        content.escape_and_write(&mut self.after);
+    }
+
+    /// Inserts escaped text immediately after the element's end tag.
+    pub fn after_text(&mut self, text: impl AsRef<str>) {
+        escape_into(&mut self.after, text.as_ref());
+    }
+
+    /// Replaces the element's children with the given [`IntoHtml`] content,
+    /// keeping the start and end tags (and any attribute edits).
+    pub fn set_inner_content(&mut self, content: impl IntoHtml) {
+        let mut inner = String::new();
+        content.escape_and_write(&mut inner);
+        self.mode = ElementMode::Inner(inner);
+    }
+
+    /// Replaces the element's children with escaped text.
+    pub fn set_inner_text(&mut self, text: impl AsRef<str>) {
+        let mut inner = String::new();
+        escape_into(&mut inner, text.as_ref());
+        self.mode = ElementMode::Inner(inner);
+    }
+
+    /// Replaces the whole element (start tag through end tag) with the given
+    /// [`IntoHtml`] content.
+    pub fn replace(&mut self, content: impl IntoHtml) {
+        let mut replacement = String::new();
+        content.escape_and_write(&mut replacement);
+        self.mode = ElementMode::Replace(replacement);
+    }
+
+    /// Replaces the whole element with escaped text.
+    pub fn replace_text(&mut self, text: impl AsRef<str>) {
+        let mut replacement = String::new();
+        escape_into(&mut replacement, text.as_ref());
+        self.mode = ElementMode::Replace(replacement);
+    }
+
+    /// Removes the whole element, children included.
+    pub fn remove(&mut self) {
+        self.mode = ElementMode::Remove;
+    }
+
+    /// Removes only the element's start and end tags, leaving its children in
+    /// place.
+    pub fn remove_and_keep_content(&mut self) {
+        self.mode = ElementMode::RemoveKeepContent;
+    }
+
+    /// Whether a [`remove`](Self::remove) /
+    /// [`remove_and_keep_content`](Self::remove_and_keep_content) /
+    /// [`replace`](Self::replace) disposition is in effect.
+    #[must_use]
+    pub fn is_removed(&self) -> bool {
+        matches!(
+            self.mode,
+            ElementMode::Remove | ElementMode::RemoveKeepContent | ElementMode::Replace(_)
+        )
+    }
+
     fn ensure_attributes(&mut self) {
         if self.attributes.is_none() {
             let attributes = self
@@ -167,32 +275,143 @@ impl<'t> Element<'t> {
         }
     }
 
-    /// Serializes the element's start tag (with any edits) plus its `before`
-    /// and `prepend` content, into `out`.
-    pub(crate) fn serialize_start(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(self.before.as_bytes());
-        match &self.attributes {
-            None => out.extend_from_slice(self.tag.raw()),
-            Some(attributes) => {
-                out.push(b'<');
-                out.extend_from_slice(self.tag.name());
-                for attr in attributes {
-                    out.push(b' ');
-                    out.extend_from_slice(&attr.name);
-                    if let Some(value) = &attr.value {
-                        out.extend_from_slice(b"=\"");
-                        push_attr_escaped(out, value);
-                        out.push(b'"');
-                    }
+    /// Emits the element's start-side output into `out` (only when `visible`
+    /// — i.e. not swallowed by an enclosing removed/replaced ancestor) and
+    /// returns the [`EndActions`] to apply at the matching end tag.
+    ///
+    /// Consumes `self`: after handlers have run, the element's edits are
+    /// frozen, so its owned buffers move into the output / end-actions
+    /// without copying.
+    pub(crate) fn serialize(self, out: &mut Vec<u8>, visible: bool) -> EndActions {
+        let Self {
+            tag,
+            before,
+            prepend,
+            append,
+            after,
+            attributes,
+            mode,
+        } = self;
+
+        match mode {
+            ElementMode::Normal => {
+                if visible {
+                    out.extend_from_slice(before.as_bytes());
+                    emit_start_tag(out, tag, attributes.as_deref());
+                    out.extend_from_slice(prepend.as_bytes());
                 }
-                if self.tag.is_self_closing() {
-                    out.extend_from_slice(b" />");
-                } else {
-                    out.push(b'>');
+                EndActions {
+                    append,
+                    after,
+                    suppress_content: false,
+                    suppress_end_tag: false,
+                }
+            }
+            ElementMode::Inner(inner) => {
+                if visible {
+                    out.extend_from_slice(before.as_bytes());
+                    emit_start_tag(out, tag, attributes.as_deref());
+                    out.extend_from_slice(prepend.as_bytes());
+                    out.extend_from_slice(inner.as_bytes());
+                }
+                EndActions {
+                    append,
+                    after,
+                    suppress_content: true,
+                    suppress_end_tag: false,
+                }
+            }
+            ElementMode::Replace(replacement) => {
+                if visible {
+                    out.extend_from_slice(before.as_bytes());
+                    out.extend_from_slice(replacement.as_bytes());
+                }
+                // The element (and its children/end tag) is gone; only
+                // `after` still applies, at the end-tag position.
+                EndActions {
+                    append: String::new(),
+                    after,
+                    suppress_content: true,
+                    suppress_end_tag: true,
+                }
+            }
+            ElementMode::Remove => {
+                if visible {
+                    out.extend_from_slice(before.as_bytes());
+                }
+                EndActions {
+                    append: String::new(),
+                    after,
+                    suppress_content: true,
+                    suppress_end_tag: true,
+                }
+            }
+            ElementMode::RemoveKeepContent => {
+                if visible {
+                    out.extend_from_slice(before.as_bytes());
+                    // Start tag dropped; `prepend` sits where it was.
+                    out.extend_from_slice(prepend.as_bytes());
+                }
+                EndActions {
+                    append,
+                    after,
+                    suppress_content: false,
+                    suppress_end_tag: true,
                 }
             }
         }
-        out.extend_from_slice(self.prepend.as_bytes());
+    }
+}
+
+/// Output to emit at an element's matching end tag, returned by
+/// [`Element::serialize`].
+pub(crate) struct EndActions {
+    /// Emitted just before the end tag (the element's last children).
+    pub(crate) append: String,
+    /// Emitted just after the end tag.
+    pub(crate) after: String,
+    /// Whether the element's children must be suppressed from the output.
+    pub(crate) suppress_content: bool,
+    /// Whether the end tag itself must be suppressed.
+    pub(crate) suppress_end_tag: bool,
+}
+
+impl EndActions {
+    /// The no-op actions for an opened element that needs no end-side edits
+    /// (an unmatched element, or one with only start-anchored edits).
+    pub(crate) fn passthrough() -> Self {
+        Self {
+            append: String::new(),
+            after: String::new(),
+            suppress_content: false,
+            suppress_end_tag: false,
+        }
+    }
+}
+
+/// Emits an element's start tag, re-serializing when attributes were edited
+/// (`edited` is `Some`) or passing the original bytes through verbatim.
+fn emit_start_tag(out: &mut Vec<u8>, tag: &StartTag<'_>, edited: Option<&[EditedAttribute<'_>]>) {
+    match edited {
+        None => out.extend_from_slice(tag.raw()),
+        Some(attributes) => {
+            out.push(b'<');
+            out.extend_from_slice(tag.name());
+            for attr in attributes {
+                out.push(b' ');
+                out.extend_from_slice(&attr.name);
+                if let Some(value) = &attr.value {
+                    out.extend_from_slice(b"=\"");
+                    push_attr_escaped(out, value);
+                    out.push(b'"');
+                }
+            }
+            if tag.is_self_closing() {
+                out.extend_from_slice(b" />");
+            } else {
+                out.push(b'>');
+            }
+        }
     }
 }
 
