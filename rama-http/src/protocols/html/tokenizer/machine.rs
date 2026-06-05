@@ -1,24 +1,25 @@
 //! The scan-based HTML tokenizer.
 //!
-//! This first slice processes a complete input buffer in one pass (no
-//! cross-chunk streaming yet — that is layered on later). It is built for
-//! verbatim re-serialization: the `raw` spans of the emitted tokens
-//! partition the input contiguously, so concatenating them reproduces the
-//! input exactly (the *identity* property). Bytes that the HTML spec would
-//! drop (e.g. a stray `<`) are preserved as text, since this is the
-//! substrate for a byte-faithful rewriter, not a DOM builder.
+//! This processes a complete input buffer in one pass (cross-chunk
+//! streaming is layered on later). It is built for verbatim
+//! re-serialization: the `raw` spans of the emitted tokens partition the
+//! input contiguously, so concatenating them reproduces the input exactly
+//! (the *identity* property). Bytes that the HTML spec would drop (e.g. a
+//! stray `<`) are preserved as text, since this is the substrate for a
+//! byte-faithful rewriter, not a DOM builder.
 //!
-//! Raw-text element bodies (`<script>` / `<style>` / `<textarea>` /
-//! `<title>` / `<plaintext>` / …) are scanned in their correct text mode so
-//! their contents aren't mistaken for markup. Foreign content (SVG/MathML
-//! CDATA + namespaces) is handled by a later slice; identity holds either
-//! way.
+//! A small context tracker supplies the open-element context the spec
+//! needs: raw-text element bodies (`<script>` / `<style>` / `<textarea>` /
+//! …) are scanned in their correct text mode, and `<![CDATA[ … ]]>` is real
+//! character data inside foreign content (SVG/MathML) but a bogus comment
+//! elsewhere.
 
 use memchr::{memchr, memchr2};
 
+use super::context::{ContextTracker, ParsingAmbiguityError, TextMode};
 use super::name::LocalNameHash;
 use super::sink::TokenSink;
-use super::token::{AttrRange, Comment, Doctype, EndTag, Span, StartTag, Text};
+use super::token::{AttrRange, Cdata, Comment, Doctype, EndTag, Span, StartTag, Text};
 
 /// `<!` — the markup-declaration opener.
 const MARKUP_DECL_PREFIX: &[u8] = b"<!";
@@ -26,110 +27,96 @@ const MARKUP_DECL_PREFIX: &[u8] = b"<!";
 const COMMENT_PREFIX: &[u8] = b"<!--";
 /// `-->` — the comment closer.
 const COMMENT_SUFFIX: &[u8] = b"-->";
+/// `<![CDATA[` — the CDATA-section opener.
+const CDATA_PREFIX: &[u8] = b"<![CDATA[";
+/// `]]>` — the CDATA-section closer.
+const CDATA_SUFFIX: &[u8] = b"]]>";
 /// The DOCTYPE keyword (matched ASCII case-insensitively).
 const DOCTYPE_KEYWORD: &[u8] = b"doctype";
-
 /// The `<script>` tag name (its body is scanned as script-data).
 const SCRIPT_NAME: &[u8] = b"script";
 
-// Known tag-name hashes whose element bodies are parsed in a special text
-// mode rather than as ordinary data.
-const SCRIPT: LocalNameHash = LocalNameHash::from_static(b"script");
-const STYLE: LocalNameHash = LocalNameHash::from_static(b"style");
-const TEXTAREA: LocalNameHash = LocalNameHash::from_static(b"textarea");
-const TITLE: LocalNameHash = LocalNameHash::from_static(b"title");
-const PLAINTEXT: LocalNameHash = LocalNameHash::from_static(b"plaintext");
-const XMP: LocalNameHash = LocalNameHash::from_static(b"xmp");
-const IFRAME: LocalNameHash = LocalNameHash::from_static(b"iframe");
-const NOEMBED: LocalNameHash = LocalNameHash::from_static(b"noembed");
-const NOFRAMES: LocalNameHash = LocalNameHash::from_static(b"noframes");
-const NOSCRIPT: LocalNameHash = LocalNameHash::from_static(b"noscript");
-
-/// How an element's body is tokenized once its start tag is seen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TextMode {
-    /// `<style>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`,
-    /// `<noscript>` — raw text until the matching end tag.
-    RawText,
-    /// `<textarea>`, `<title>` — like raw text (we keep bytes raw, so the
-    /// only practical difference from `RawText` is the element name).
-    RcData,
-    /// `<script>` — raw text with the HTML script-data escape rules.
-    ScriptData,
-    /// `<plaintext>` — everything to end of input is text.
-    PlainText,
-}
-
-/// Maps a start-tag name hash to the text mode for its body, if any.
-///
-/// `noscript` is treated as raw text (scripting-enabled behaviour), matching
-/// the common case for a rewriter.
-fn text_mode_for(name: LocalNameHash) -> Option<TextMode> {
-    if name == SCRIPT {
-        Some(TextMode::ScriptData)
-    } else if name == TEXTAREA || name == TITLE {
-        Some(TextMode::RcData)
-    } else if name == PLAINTEXT {
-        Some(TextMode::PlainText)
-    } else if name == STYLE
-        || name == XMP
-        || name == IFRAME
-        || name == NOEMBED
-        || name == NOFRAMES
-        || name == NOSCRIPT
-    {
-        Some(TextMode::RawText)
-    } else {
-        None
-    }
-}
-
-/// A pending raw-text scan triggered by a text-mode start tag.
-#[derive(Debug, Clone, Copy)]
-struct RawScan {
-    mode: TextMode,
-    /// Span of the element name, used to find the matching end tag.
-    name: Span,
-}
-
-/// Streaming-safe HTML tokenizer (single-pass, in this slice).
+/// A byte-faithful, low-allocation HTML tokenizer.
 ///
 /// Holds a reusable attribute buffer so tokenizing many documents does not
 /// re-allocate per tag.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Tokenizer {
     attributes: Vec<AttrRange>,
+    strict: bool,
+}
+
+impl Default for Tokenizer {
+    fn default() -> Self {
+        Self {
+            attributes: Vec::new(),
+            strict: true,
+        }
+    }
 }
 
 /// Tokenizes `input` in one pass, dispatching events to `sink`.
-pub fn tokenize<S: TokenSink>(input: &[u8], sink: &mut S) {
-    Tokenizer::new().tokenize(input, sink);
+///
+/// # Errors
+///
+/// Returns [`ParsingAmbiguityError`] if a text-mode element appears in a
+/// context whose parsing is genuinely ambiguous for a streaming parser
+/// (strict mode).
+pub fn tokenize<S: TokenSink>(input: &[u8], sink: &mut S) -> Result<(), ParsingAmbiguityError> {
+    Tokenizer::new().tokenize(input, sink)
 }
 
 impl Tokenizer {
-    /// Creates a new tokenizer.
+    /// Creates a new tokenizer (strict mode: ambiguous text-mode contexts
+    /// abort with an error rather than risk mis-tokenizing).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets strict mode. When disabled, ambiguous contexts are tokenized
+        /// best-effort instead of erroring.
+        pub fn strict(mut self, strict: bool) -> Self {
+            self.strict = strict;
+            self
+        }
+    }
+
     /// Tokenizes `input`, dispatching token events to `sink`.
-    pub fn tokenize<S: TokenSink>(&mut self, input: &[u8], sink: &mut S) {
+    ///
+    /// # Errors
+    ///
+    /// See [`tokenize`].
+    pub fn tokenize<S: TokenSink>(
+        &mut self,
+        input: &[u8],
+        sink: &mut S,
+    ) -> Result<(), ParsingAmbiguityError> {
+        let mut ctx = ContextTracker::new(self.strict);
         let mut pos = 0;
         let mut text_start = 0;
 
         while let Some(rel) = memchr(b'<', input.get(pos..).unwrap_or(&[])) {
             let lt = pos + rel;
-            match classify(input, lt) {
+            match classify(input, lt, ctx.cdata_allowed()) {
                 Construct::Text => {
                     // A `<` that doesn't begin markup stays part of the text run.
                     pos = lt + 1;
                 }
                 Construct::StartTag => {
                     emit_text(input, text_start, lt, sink);
-                    let (close, raw_scan) = self.scan_start_tag(input, lt, sink);
-                    pos = if let Some(scan) = raw_scan {
-                        self.scan_raw_text(input, close, scan, sink)
+                    let (close, name_hash, name, self_closing) =
+                        self.scan_start_tag(input, lt, sink);
+                    let text_mode = ctx.on_start_tag(
+                        name_hash,
+                        slice(input, name.start, name.end),
+                        &self.attributes,
+                        input,
+                        self_closing,
+                    )?;
+                    pos = if let Some(mode) = text_mode {
+                        self.scan_raw_text(input, close, RawScan { mode, name }, sink)
                     } else {
                         close
                     };
@@ -137,12 +124,19 @@ impl Tokenizer {
                 }
                 Construct::EndTag => {
                     emit_text(input, text_start, lt, sink);
-                    pos = self.scan_end_tag(input, lt, sink);
+                    let (close, name_hash, name) = self.scan_end_tag(input, lt, sink);
+                    ctx.on_end_tag(name_hash, slice(input, name.start, name.end));
+                    pos = close;
                     text_start = pos;
                 }
                 Construct::Comment => {
                     emit_text(input, text_start, lt, sink);
                     pos = scan_comment(input, lt, sink);
+                    text_start = pos;
+                }
+                Construct::Cdata => {
+                    emit_text(input, text_start, lt, sink);
+                    pos = scan_cdata(input, lt, sink);
                     text_start = pos;
                 }
                 Construct::Doctype => {
@@ -159,6 +153,7 @@ impl Tokenizer {
         }
 
         emit_text(input, text_start, input.len(), sink);
+        Ok(())
     }
 
     fn scan_start_tag<S: TokenSink>(
@@ -166,9 +161,10 @@ impl Tokenizer {
         input: &[u8],
         lt: usize,
         sink: &mut S,
-    ) -> (usize, Option<RawScan>) {
+    ) -> (usize, LocalNameHash, Span, bool) {
         let name_start = lt + 1;
         let name_end = scan_tag_name(input, name_start);
+        let name = Span::new(name_start, name_end);
         let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
 
         self.attributes.clear();
@@ -177,20 +173,39 @@ impl Tokenizer {
         let tag = StartTag {
             input,
             raw: Span::new(lt, close),
-            name: Span::new(name_start, name_end),
+            name,
             name_hash,
             attributes: &self.attributes,
             self_closing,
         };
         sink.start_tag(&tag);
+        (close, name_hash, name, self_closing)
+    }
 
-        // HTML text-mode elements ignore the self-closing flag: `<script/>`
-        // still opens a script-data context.
-        let raw_scan = text_mode_for(name_hash).map(|mode| RawScan {
-            mode,
-            name: Span::new(name_start, name_end),
-        });
-        (close, raw_scan)
+    fn scan_end_tag<S: TokenSink>(
+        &mut self,
+        input: &[u8],
+        lt: usize,
+        sink: &mut S,
+    ) -> (usize, LocalNameHash, Span) {
+        let name_start = lt + 2;
+        let name_end = scan_tag_name(input, name_start);
+        let name = Span::new(name_start, name_end);
+        let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
+
+        // End tags may carry (ignored) attributes; scan past them so that a
+        // `>` inside a quoted value does not close the tag prematurely.
+        self.attributes.clear();
+        let (close, _self_closing) = self.scan_attributes(input, name_end);
+
+        let tag = EndTag {
+            input,
+            raw: Span::new(lt, close),
+            name,
+            name_hash,
+        };
+        sink.end_tag(&tag);
+        (close, name_hash, name)
     }
 
     /// Scans an element body in a raw text mode, emitting a [`Text`] token
@@ -213,31 +228,12 @@ impl Tokenizer {
         };
         if let Some(lt) = end {
             emit_text(input, content_start, lt, sink);
-            self.scan_end_tag(input, lt, sink)
+            let (close, _name_hash, _name) = self.scan_end_tag(input, lt, sink);
+            close
         } else {
             emit_text(input, content_start, input.len(), sink);
             input.len()
         }
-    }
-
-    fn scan_end_tag<S: TokenSink>(&mut self, input: &[u8], lt: usize, sink: &mut S) -> usize {
-        let name_start = lt + 2;
-        let name_end = scan_tag_name(input, name_start);
-        let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
-
-        // End tags may carry (ignored) attributes; scan past them so that a
-        // `>` inside a quoted value does not close the tag prematurely.
-        self.attributes.clear();
-        let (close, _self_closing) = self.scan_attributes(input, name_end);
-
-        let tag = EndTag {
-            input,
-            raw: Span::new(lt, close),
-            name: Span::new(name_start, name_end),
-            name_hash,
-        };
-        sink.end_tag(&tag);
-        close
     }
 
     /// Parses a tag's attribute list starting at `from` (just after the tag
@@ -292,19 +288,28 @@ impl Tokenizer {
     }
 }
 
+/// A pending raw-text scan triggered by a text-mode start tag.
+#[derive(Debug, Clone, Copy)]
+struct RawScan {
+    mode: TextMode,
+    /// Span of the element name, used to find the matching end tag.
+    name: Span,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Construct {
     Text,
     StartTag,
     EndTag,
     Comment,
+    Cdata,
     Doctype,
     /// A bogus comment; the payload is the opener length to skip for `data`.
     BogusComment(usize),
 }
 
 /// Decides what construct (if any) the `<` at `lt` begins.
-fn classify(input: &[u8], lt: usize) -> Construct {
+fn classify(input: &[u8], lt: usize, cdata_allowed: bool) -> Construct {
     match input.get(lt + 1) {
         Some(b) if b.is_ascii_alphabetic() => Construct::StartTag,
         Some(b'/') => match input.get(lt + 2) {
@@ -317,6 +322,9 @@ fn classify(input: &[u8], lt: usize) -> Construct {
                 .is_some_and(|s| s.starts_with(COMMENT_PREFIX))
             {
                 Construct::Comment
+            } else if cdata_allowed && input.get(lt..).is_some_and(|s| s.starts_with(CDATA_PREFIX))
+            {
+                Construct::Cdata
             } else if starts_with_ci(
                 input.get(lt + MARKUP_DECL_PREFIX.len()..).unwrap_or(&[]),
                 DOCTYPE_KEYWORD,
@@ -347,6 +355,20 @@ fn scan_comment<S: TokenSink>(input: &[u8], lt: usize, sink: &mut S) -> usize {
         None => (input.len(), input.len()),
     };
     sink.comment(&Comment {
+        input,
+        raw: Span::new(lt, close),
+        data: Span::new(data_start.min(data_end), data_end),
+    });
+    close
+}
+
+fn scan_cdata<S: TokenSink>(input: &[u8], lt: usize, sink: &mut S) -> usize {
+    let data_start = lt + CDATA_PREFIX.len();
+    let (data_end, close) = match find_seq(input, data_start, CDATA_SUFFIX) {
+        Some(at) => (at, at + CDATA_SUFFIX.len()),
+        None => (input.len(), input.len()),
+    };
+    sink.cdata(&Cdata {
         input,
         raw: Span::new(lt, close),
         data: Span::new(data_start.min(data_end), data_end),
@@ -396,7 +418,7 @@ fn scan_bogus_comment<S: TokenSink>(
     sink.comment(&Comment {
         input,
         raw: Span::new(lt, close),
-        data: Span::new(data_start, data_end),
+        data: Span::new(data_start.min(data_end), data_end),
     });
     close
 }

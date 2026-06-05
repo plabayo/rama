@@ -211,6 +211,29 @@ impl<'i> Comment<'i> {
     }
 }
 
+/// A CDATA section, e.g. `<![CDATA[ x ]]>` (only emitted inside foreign
+/// content — SVG/MathML; elsewhere `<![CDATA[` is a bogus comment).
+#[derive(Debug)]
+pub struct Cdata<'i> {
+    pub(crate) input: &'i [u8],
+    pub(crate) raw: Span,
+    pub(crate) data: Span,
+}
+
+impl<'i> Cdata<'i> {
+    /// The section's inner data bytes (without `<![CDATA[` / `]]>`).
+    #[must_use]
+    pub fn data(&self) -> &'i [u8] {
+        self.data.slice(self.input)
+    }
+
+    /// The full source bytes of the CDATA section.
+    #[must_use]
+    pub fn raw(&self) -> &'i [u8] {
+        self.raw.slice(self.input)
+    }
+}
+
 /// A document type declaration, e.g. `<!DOCTYPE html>`.
 #[derive(Debug)]
 pub struct Doctype<'i> {

@@ -1,6 +1,6 @@
 //! The sink that receives tokens from the [`Tokenizer`](super::Tokenizer).
 
-use super::token::{Comment, Doctype, EndTag, StartTag, Text};
+use super::token::{Cdata, Comment, Doctype, EndTag, StartTag, Text};
 
 /// Receives token events as the tokenizer scans HTML.
 ///
@@ -26,6 +26,11 @@ pub trait TokenSink {
     /// Called for each comment.
     fn comment(&mut self, comment: &Comment<'_>) {
         let _ = comment;
+    }
+
+    /// Called for each CDATA section (only inside SVG/MathML foreign content).
+    fn cdata(&mut self, cdata: &Cdata<'_>) {
+        let _ = cdata;
     }
 
     /// Called for each doctype declaration.

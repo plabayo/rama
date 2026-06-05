@@ -17,6 +17,7 @@
 //! Foreign content (SVG/MathML CDATA + namespaces) and chunked streaming
 //! land in later slices. The identity property holds for all input.
 
+mod context;
 mod machine;
 mod name;
 mod sink;
@@ -25,7 +26,8 @@ mod token;
 #[cfg(test)]
 mod tests;
 
+pub use self::context::ParsingAmbiguityError;
 pub use self::machine::{Tokenizer, tokenize};
 pub use self::name::LocalNameHash;
 pub use self::sink::TokenSink;
-pub use self::token::{Attribute, Attributes, Comment, Doctype, EndTag, StartTag, Text};
+pub use self::token::{Attribute, Attributes, Cdata, Comment, Doctype, EndTag, StartTag, Text};

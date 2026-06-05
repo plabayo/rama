@@ -8,7 +8,9 @@
 //! The html5lib conformance corpus is wired in a later slice (alongside
 //! streaming); anything a fuzzer surfaces should land here as a regression.
 
-use super::{Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, tokenize};
+use super::{
+    Cdata, Comment, Doctype, EndTag, LocalNameHash, StartTag, Text, TokenSink, Tokenizer, tokenize,
+};
 
 /// Sink that re-serializes every token's raw bytes, for the identity check.
 #[derive(Default)]
@@ -29,6 +31,9 @@ impl TokenSink for Identity {
     fn comment(&mut self, comment: &Comment<'_>) {
         self.out.extend_from_slice(comment.raw());
     }
+    fn cdata(&mut self, cdata: &Cdata<'_>) {
+        self.out.extend_from_slice(cdata.raw());
+    }
     fn doctype(&mut self, doctype: &Doctype<'_>) {
         self.out.extend_from_slice(doctype.raw());
     }
@@ -36,7 +41,7 @@ impl TokenSink for Identity {
 
 fn assert_identity(input: &[u8]) {
     let mut sink = Identity::default();
-    tokenize(input, &mut sink);
+    tokenize(input, &mut sink).expect("not ambiguous");
     assert_eq!(
         sink.out,
         input,
@@ -55,6 +60,7 @@ enum Event {
     End(String),
     Text(String),
     Comment(String),
+    Cdata(String),
     Doctype(Option<String>),
 }
 
@@ -88,6 +94,9 @@ impl TokenSink for Collect {
     fn comment(&mut self, comment: &Comment<'_>) {
         self.events.push(Event::Comment(s(comment.data())));
     }
+    fn cdata(&mut self, cdata: &Cdata<'_>) {
+        self.events.push(Event::Cdata(s(cdata.data())));
+    }
     fn doctype(&mut self, doctype: &Doctype<'_>) {
         self.events.push(Event::Doctype(doctype.name().map(s)));
     }
@@ -95,7 +104,7 @@ impl TokenSink for Collect {
 
 fn events(input: &[u8]) -> Vec<Event> {
     let mut sink = Collect::default();
-    tokenize(input, &mut sink);
+    tokenize(input, &mut sink).expect("not ambiguous");
     sink.events
 }
 
@@ -370,7 +379,7 @@ fn tag_name_hashes_are_exposed() {
         }
     }
     let mut sink = Hashes::default();
-    tokenize(b"<Div></DIV>", &mut sink);
+    tokenize(b"<Div></DIV>", &mut sink).expect("not ambiguous");
     assert_eq!(sink.start, Some(LocalNameHash::of(b"div")));
     assert_eq!(sink.end, Some(LocalNameHash::of(b"div")));
 }
@@ -394,8 +403,88 @@ fn never_panics_on_garbage() {
         b"<![",
     ] {
         let mut sink = Identity::default();
-        tokenize(input, &mut sink);
+        tokenize(input, &mut sink).expect("not ambiguous");
         // identity must hold even for malformed input
         assert_eq!(sink.out, input);
     }
+}
+
+// --- foreign content (SVG / MathML) -------------------------------------
+
+#[test]
+fn foreign_cdata_is_real_in_svg() {
+    // Inside SVG, `<![CDATA[ … ]]>` is character data and its `<` is not markup.
+    assert_eq!(
+        events(b"<svg><![CDATA[x<y]]></svg>"),
+        vec![
+            start("svg", &[], false),
+            Event::Cdata("x<y".to_owned()),
+            Event::End("svg".to_owned()),
+        ]
+    );
+    assert_eq!(
+        events(b"<math><![CDATA[a]]></math>"),
+        vec![
+            start("math", &[], false),
+            Event::Cdata("a".to_owned()),
+            Event::End("math".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn cdata_is_bogus_comment_in_html() {
+    // Outside foreign content, `<![CDATA[ … ]]>` is a bogus comment.
+    assert_eq!(
+        events(b"<![CDATA[x]]>"),
+        vec![Event::Comment("[CDATA[x]]".to_owned())]
+    );
+}
+
+#[test]
+fn svg_html_integration_point_restores_html_rules() {
+    // Inside an SVG HTML-integration point, CDATA reverts to a bogus comment.
+    assert_eq!(
+        events(b"<svg><foreignObject><![CDATA[x]]></foreignObject></svg>"),
+        vec![
+            start("svg", &[], false),
+            start("foreignObject", &[], false),
+            Event::Comment("[CDATA[x]]".to_owned()),
+            Event::End("foreignObject".to_owned()),
+            Event::End("svg".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn foreign_content_identity() {
+    for input in [
+        &b"<svg><![CDATA[x<y]]></svg>"[..],
+        b"<math><![CDATA[a]]></math>",
+        b"<svg><foreignObject><![CDATA[x]]></foreignObject></svg>",
+        b"<svg><rect width=\"1\"/></svg>",
+    ] {
+        assert_identity(input);
+    }
+}
+
+#[test]
+fn ambiguous_context_bails_in_strict_mode() {
+    // `<style>` inside `<select>` is non-conforming and ambiguous to a
+    // streaming parser: strict mode aborts, lenient mode tokenizes anyway.
+    let input = b"<select><style>x</style></select>";
+
+    let mut strict = Collect::default();
+    assert!(tokenize(input, &mut strict).is_err());
+
+    let mut lenient = Collect::default();
+    Tokenizer::new()
+        .with_strict(false)
+        .tokenize(input, &mut lenient)
+        .expect("lenient never bails");
+    assert!(!lenient.events.is_empty());
+
+    // `<script>` is allowed in `<select>`, so it never bails.
+    let mut ok = Collect::default();
+    tokenize(b"<select><script>x</script></select>", &mut ok).expect("script in select is fine");
 }
