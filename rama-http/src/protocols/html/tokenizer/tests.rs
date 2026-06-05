@@ -329,6 +329,122 @@ fn text_mode_unterminated_runs_to_eof() {
     );
 }
 
+// --- streaming / chunk-invariance ---------------------------------------
+
+/// Coalesces adjacent `Text` events (text may be delivered in pieces while
+/// streaming; only its coalesced content is invariant).
+fn coalesce(events: Vec<Event>) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::new();
+    for event in events {
+        match event {
+            Event::Text(cur) => {
+                if let Some(Event::Text(prev)) = out.last_mut() {
+                    prev.push_str(&cur);
+                } else {
+                    out.push(Event::Text(cur));
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn oneshot_events(input: &[u8]) -> Vec<Event> {
+    let mut sink = Collect::default();
+    Tokenizer::new()
+        .with_strict(false)
+        .tokenize(input, &mut sink)
+        .expect("lenient");
+    sink.events
+}
+
+fn streamed_events(input: &[u8], split: usize) -> Vec<Event> {
+    let split = split.min(input.len());
+    let mut sink = Collect::default();
+    let mut tk = Tokenizer::new().with_strict(false);
+    tk.write(&input[..split], &mut sink).expect("lenient");
+    tk.write(&input[split..], &mut sink).expect("lenient");
+    tk.end(&mut sink).expect("lenient");
+    sink.events
+}
+
+fn streamed_identity(input: &[u8], split: usize) -> Vec<u8> {
+    let split = split.min(input.len());
+    let mut sink = Identity::default();
+    let mut tk = Tokenizer::new().with_strict(false);
+    tk.write(&input[..split], &mut sink).expect("lenient");
+    tk.write(&input[split..], &mut sink).expect("lenient");
+    tk.end(&mut sink).expect("lenient");
+    sink.out
+}
+
+#[test]
+fn chunk_invariance() {
+    let inputs: &[&[u8]] = &[
+        b"<p class=\"x\">hi <b>there</b></p>",
+        b"text <!-- a comment --> more",
+        b"<a href=\"a>b\" data-y='z'>link</a>",
+        b"<script><!--<script>x</script>-->y</script>tail",
+        b"<style>.a{color:red}</style>",
+        b"<textarea><p>raw</textarea>",
+        b"<!DOCTYPE html><html><body>x</body></html>",
+        b"<svg><![CDATA[a<b]]></svg>",
+        b"a < b & c > d",
+        b"<div/><br/>",
+        b"<!bogus><?pi?></>",
+        b"<UL><LI>a<LI>b</UL>",
+        // Regressions (fuzzer-found): a `\"` that is NOT an attribute value
+        // must not be treated as a quoted region by the completeness check.
+        b"<a \"x>y\">z",
+        b"<a b=\"x>y\">z",
+        b"<a<b \"c>d</a<b>",
+    ];
+
+    for input in inputs {
+        let expected = coalesce(oneshot_events(input));
+        for split in 0..=input.len() {
+            assert_eq!(
+                coalesce(streamed_events(input, split)),
+                expected,
+                "event mismatch splitting {:?} at {split}",
+                String::from_utf8_lossy(input)
+            );
+            assert_eq!(
+                streamed_identity(input, split),
+                *input,
+                "identity mismatch splitting {:?} at {split}",
+                String::from_utf8_lossy(input)
+            );
+        }
+    }
+}
+
+#[test]
+fn streaming_many_small_writes() {
+    // Feeding one byte at a time must match one-shot tokenization.
+    let input = b"<p id=main>hello <em>world</em></p>";
+    let mut sink = Collect::default();
+    let mut tk = Tokenizer::new();
+    for byte in input {
+        tk.write(std::slice::from_ref(byte), &mut sink)
+            .expect("not ambiguous");
+    }
+    tk.end(&mut sink).expect("not ambiguous");
+    assert_eq!(coalesce(sink.events), coalesce(events(input)));
+}
+
+#[test]
+fn tokenizer_is_reusable_after_end() {
+    let mut tk = Tokenizer::new();
+    let mut first = Collect::default();
+    tk.tokenize(b"<a>1</a>", &mut first).expect("ok");
+    let mut second = Collect::default();
+    tk.tokenize(b"<b>2</b>", &mut second).expect("ok");
+    assert_eq!(first.events, events(b"<a>1</a>"));
+    assert_eq!(second.events, events(b"<b>2</b>"));
+}
+
 // --- name hashing -------------------------------------------------------
 
 #[test]

@@ -204,6 +204,18 @@ impl ContextTracker {
         self.current_ns != Namespace::Html
     }
 
+    /// Non-mutating peek at the text mode a start tag would enter in the
+    /// current context (used by the streaming tokenizer to decide whether a
+    /// raw-text body is fully buffered before committing to it). Mirrors the
+    /// text-mode outcome of [`Self::on_start_tag`].
+    pub(crate) fn peek_text_mode(&self, name: LocalNameHash) -> Option<TextMode> {
+        if self.current_ns != Namespace::Html || name == SVG || name == MATH {
+            None
+        } else {
+            html_text_mode(name)
+        }
+    }
+
     /// Updates context for a start tag, returning the body's text mode (only
     /// possible in the HTML namespace).
     pub(crate) fn on_start_tag(

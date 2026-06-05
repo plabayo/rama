@@ -1,18 +1,26 @@
-//! The scan-based HTML tokenizer.
+//! The scan-based, resumable HTML tokenizer.
 //!
-//! This processes a complete input buffer in one pass (cross-chunk
-//! streaming is layered on later). It is built for verbatim
-//! re-serialization: the `raw` spans of the emitted tokens partition the
-//! input contiguously, so concatenating them reproduces the input exactly
-//! (the *identity* property). Bytes that the HTML spec would drop (e.g. a
-//! stray `<`) are preserved as text, since this is the substrate for a
-//! byte-faithful rewriter, not a DOM builder.
+//! The tokenizer owns a growable buffer and is driven by [`Tokenizer::write`]
+//! (feed a chunk) and [`Tokenizer::end`] (finalize); [`Tokenizer::tokenize`]
+//! is the one-shot convenience (`write` + `end`). Both paths share one
+//! resumable core, so a document tokenizes identically no matter how the
+//! input is split across `write` calls.
 //!
-//! A small context tracker supplies the open-element context the spec
-//! needs: raw-text element bodies (`<script>` / `<style>` / `<textarea>` /
-//! …) are scanned in their correct text mode, and `<![CDATA[ … ]]>` is real
-//! character data inside foreign content (SVG/MathML) but a bogus comment
-//! elsewhere.
+//! It is built for verbatim re-serialization: the `raw` spans of the emitted
+//! tokens partition the input contiguously, so concatenating them reproduces
+//! the input exactly (the *identity* property). Bytes the HTML spec would
+//! drop (e.g. a stray `<`) are preserved as text — this is the substrate for
+//! a byte-faithful rewriter, not a DOM builder.
+//!
+//! Atomic constructs (tags, comments, CDATA, doctype, and raw-text/script
+//! bodies) are retained whole until their terminator arrives; ordinary text
+//! streams in chunk-sized pieces. A small context tracker (see
+//! [`super::context`]) supplies the open-element context needed to pick the
+//! right text mode and to recognize CDATA in foreign content.
+//!
+//! > Memory note: a single unterminated raw-text/script body (or
+//! > `<plaintext>`) is buffered until its end tag or end of input; ordinary
+//! > text is not.
 
 use memchr::{memchr, memchr2};
 
@@ -36,20 +44,23 @@ const DOCTYPE_KEYWORD: &[u8] = b"doctype";
 /// The `<script>` tag name (its body is scanned as script-data).
 const SCRIPT_NAME: &[u8] = b"script";
 
-/// A byte-faithful, low-allocation HTML tokenizer.
-///
-/// Holds a reusable attribute buffer so tokenizing many documents does not
-/// re-allocate per tag.
+/// A byte-faithful, low-allocation, resumable HTML tokenizer.
 #[derive(Debug)]
 pub struct Tokenizer {
+    /// Bytes received but not yet fully tokenized.
+    buffer: Vec<u8>,
+    /// Reusable attribute-range scratch for the current tag.
     attributes: Vec<AttrRange>,
+    context: ContextTracker,
     strict: bool,
 }
 
 impl Default for Tokenizer {
     fn default() -> Self {
         Self {
+            buffer: Vec::new(),
             attributes: Vec::new(),
+            context: ContextTracker::new(true),
             strict: true,
         }
     }
@@ -79,11 +90,38 @@ impl Tokenizer {
         /// best-effort instead of erroring.
         pub fn strict(mut self, strict: bool) -> Self {
             self.strict = strict;
+            self.context = ContextTracker::new(strict);
             self
         }
     }
 
-    /// Tokenizes `input`, dispatching token events to `sink`.
+    /// Feeds a chunk of input, emitting every token that is now complete.
+    ///
+    /// # Errors
+    ///
+    /// See [`tokenize`].
+    pub fn write<S: TokenSink>(
+        &mut self,
+        chunk: &[u8],
+        sink: &mut S,
+    ) -> Result<(), ParsingAmbiguityError> {
+        self.buffer.extend_from_slice(chunk);
+        self.run(false, sink)
+    }
+
+    /// Finalizes the stream, emitting any remaining (possibly unterminated)
+    /// tokens, then resets for reuse.
+    ///
+    /// # Errors
+    ///
+    /// See [`tokenize`].
+    pub fn end<S: TokenSink>(&mut self, sink: &mut S) -> Result<(), ParsingAmbiguityError> {
+        let result = self.run(true, sink);
+        self.reset();
+        result
+    }
+
+    /// Tokenizes a complete `input` in one shot (`write` then `end`).
     ///
     /// # Errors
     ///
@@ -93,199 +131,95 @@ impl Tokenizer {
         input: &[u8],
         sink: &mut S,
     ) -> Result<(), ParsingAmbiguityError> {
-        let mut ctx = ContextTracker::new(self.strict);
+        if let Err(err) = self.write(input, sink) {
+            self.reset();
+            return Err(err);
+        }
+        self.end(sink)
+    }
+
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.context = ContextTracker::new(self.strict);
+    }
+
+    /// The resumable core. Emits all complete tokens from the buffer; if
+    /// `is_final` is false, stops at the first incomplete construct and
+    /// retains it (and the trailing text run) for the next call.
+    fn run<S: TokenSink>(
+        &mut self,
+        is_final: bool,
+        sink: &mut S,
+    ) -> Result<(), ParsingAmbiguityError> {
+        // Disjoint field borrows: the buffer is read while the attribute
+        // scratch and context are mutated.
+        let Self {
+            buffer,
+            attributes,
+            context,
+            ..
+        } = self;
+
         let mut pos = 0;
+        // Start of the pending (not-yet-emitted) text run.
         let mut text_start = 0;
 
-        while let Some(rel) = memchr(b'<', input.get(pos..).unwrap_or(&[])) {
+        loop {
+            let Some(rel) = memchr(b'<', buffer.get(pos..).unwrap_or(&[])) else {
+                // No more markup: the rest is text.
+                emit_text(buffer, text_start, buffer.len(), sink);
+                text_start = buffer.len();
+                break;
+            };
             let lt = pos + rel;
-            match classify(input, lt, ctx.cdata_allowed()) {
-                Construct::Text => {
-                    // A `<` that doesn't begin markup stays part of the text run.
-                    pos = lt + 1;
-                }
-                Construct::StartTag => {
-                    emit_text(input, text_start, lt, sink);
-                    let (close, name_hash, name, self_closing) =
-                        self.scan_start_tag(input, lt, sink);
-                    let text_mode = ctx.on_start_tag(
-                        name_hash,
-                        slice(input, name.start, name.end),
-                        &self.attributes,
-                        input,
-                        self_closing,
-                    )?;
-                    pos = if let Some(mode) = text_mode {
-                        self.scan_raw_text(input, close, RawScan { mode, name }, sink)
+
+            match classify(buffer, lt, context.cdata_allowed()) {
+                Resolve::Text => pos = lt + 1, // a `<` that isn't markup is text
+                Resolve::NeedMore => {
+                    if is_final {
+                        pos = lt + 1; // a trailing `<` at EOF is text
                     } else {
-                        close
-                    };
-                    text_start = pos;
+                        emit_text(buffer, text_start, lt, sink);
+                        text_start = lt;
+                        break;
+                    }
                 }
-                Construct::EndTag => {
-                    emit_text(input, text_start, lt, sink);
-                    let (close, name_hash, name) = self.scan_end_tag(input, lt, sink);
-                    ctx.on_end_tag(name_hash, slice(input, name.start, name.end));
-                    pos = close;
-                    text_start = pos;
-                }
-                Construct::Comment => {
-                    emit_text(input, text_start, lt, sink);
-                    pos = scan_comment(input, lt, sink);
-                    text_start = pos;
-                }
-                Construct::Cdata => {
-                    emit_text(input, text_start, lt, sink);
-                    pos = scan_cdata(input, lt, sink);
-                    text_start = pos;
-                }
-                Construct::Doctype => {
-                    emit_text(input, text_start, lt, sink);
-                    pos = scan_doctype(input, lt, sink);
-                    text_start = pos;
-                }
-                Construct::BogusComment(open_len) => {
-                    emit_text(input, text_start, lt, sink);
-                    pos = scan_bogus_comment(input, lt, open_len, sink);
+                Resolve::Construct(construct) => {
+                    if !is_final && !terminator_available(construct, buffer, lt, context) {
+                        emit_text(buffer, text_start, lt, sink);
+                        text_start = lt;
+                        break;
+                    }
+                    emit_text(buffer, text_start, lt, sink);
+                    pos = process(construct, attributes, context, buffer, lt, sink)?;
                     text_start = pos;
                 }
             }
         }
 
-        emit_text(input, text_start, input.len(), sink);
+        buffer.drain(..text_start);
         Ok(())
     }
+}
 
-    fn scan_start_tag<S: TokenSink>(
-        &mut self,
-        input: &[u8],
-        lt: usize,
-        sink: &mut S,
-    ) -> (usize, LocalNameHash, Span, bool) {
-        let name_start = lt + 1;
-        let name_end = scan_tag_name(input, name_start);
-        let name = Span::new(name_start, name_end);
-        let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
+/// The classification of a `<` and whether more input is needed to make it.
+enum Resolve {
+    /// The `<` is literal text (e.g. `< ` or `<3`).
+    Text,
+    /// More input is required to classify (only returned in non-final runs).
+    NeedMore,
+    Construct(Construct),
+}
 
-        self.attributes.clear();
-        let (close, self_closing) = self.scan_attributes(input, name_end);
-
-        let tag = StartTag {
-            input,
-            raw: Span::new(lt, close),
-            name,
-            name_hash,
-            attributes: &self.attributes,
-            self_closing,
-        };
-        sink.start_tag(&tag);
-        (close, name_hash, name, self_closing)
-    }
-
-    fn scan_end_tag<S: TokenSink>(
-        &mut self,
-        input: &[u8],
-        lt: usize,
-        sink: &mut S,
-    ) -> (usize, LocalNameHash, Span) {
-        let name_start = lt + 2;
-        let name_end = scan_tag_name(input, name_start);
-        let name = Span::new(name_start, name_end);
-        let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
-
-        // End tags may carry (ignored) attributes; scan past them so that a
-        // `>` inside a quoted value does not close the tag prematurely.
-        self.attributes.clear();
-        let (close, _self_closing) = self.scan_attributes(input, name_end);
-
-        let tag = EndTag {
-            input,
-            raw: Span::new(lt, close),
-            name,
-            name_hash,
-        };
-        sink.end_tag(&tag);
-        (close, name_hash, name)
-    }
-
-    /// Scans an element body in a raw text mode, emitting a [`Text`] token
-    /// for the content and (if found) the matching end tag. Returns the
-    /// position to resume ordinary scanning from.
-    fn scan_raw_text<S: TokenSink>(
-        &mut self,
-        input: &[u8],
-        content_start: usize,
-        scan: RawScan,
-        sink: &mut S,
-    ) -> usize {
-        let end = match scan.mode {
-            TextMode::PlainText => None,
-            TextMode::RawText | TextMode::RcData => {
-                let name = slice(input, scan.name.start, scan.name.end);
-                find_appropriate_end_tag(input, content_start, name)
-            }
-            TextMode::ScriptData => find_script_data_end(input, content_start),
-        };
-        if let Some(lt) = end {
-            emit_text(input, content_start, lt, sink);
-            let (close, _name_hash, _name) = self.scan_end_tag(input, lt, sink);
-            close
-        } else {
-            emit_text(input, content_start, input.len(), sink);
-            input.len()
-        }
-    }
-
-    /// Parses a tag's attribute list starting at `from` (just after the tag
-    /// name), filling `self.attributes`. Returns the position just past the
-    /// closing `>` (or end of input) and whether the tag was self-closing.
-    fn scan_attributes(&mut self, input: &[u8], from: usize) -> (usize, bool) {
-        let mut i = from;
-        loop {
-            i = skip_space(input, i);
-            match input.get(i) {
-                None => return (input.len(), false),
-                Some(b'>') => return (i + 1, false),
-                Some(b'/') => {
-                    if input.get(i + 1) == Some(&b'>') {
-                        return (i + 2, true);
-                    }
-                    i += 1; // stray solidus
-                }
-                Some(_) => i = self.scan_one_attribute(input, i),
-            }
-        }
-    }
-
-    fn scan_one_attribute(&mut self, input: &[u8], i: usize) -> usize {
-        let name_start = i;
-        let name_end = scan_attribute_name(input, i);
-
-        let after_ws = skip_space(input, name_end);
-        let (value, has_value, after) = if input.get(after_ws) == Some(&b'=') {
-            let value_pos = skip_space(input, after_ws + 1);
-            match input.get(value_pos) {
-                Some(&q @ (b'"' | b'\'')) => {
-                    let (value, after) = scan_quoted_value(input, value_pos, q);
-                    (value, true, after)
-                }
-                None => (Span::empty(value_pos), true, value_pos),
-                Some(_) => {
-                    let (value, after) = scan_unquoted_value(input, value_pos);
-                    (value, true, after)
-                }
-            }
-        } else {
-            (Span::empty(name_end), false, name_end)
-        };
-
-        self.attributes.push(AttrRange {
-            name: Span::new(name_start, name_end),
-            value,
-            has_value,
-        });
-        after
-    }
+#[derive(Debug, Clone, Copy)]
+enum Construct {
+    StartTag,
+    EndTag,
+    Comment,
+    Cdata,
+    Doctype,
+    /// A bogus comment; the payload is the opener length to skip for `data`.
+    BogusComment(usize),
 }
 
 /// A pending raw-text scan triggered by a text-mode start tag.
@@ -296,47 +230,267 @@ struct RawScan {
     name: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Construct {
-    Text,
-    StartTag,
-    EndTag,
-    Comment,
-    Cdata,
-    Doctype,
-    /// A bogus comment; the payload is the opener length to skip for `data`.
-    BogusComment(usize),
+/// Classifies the `<` at `lt`, signalling [`Resolve::NeedMore`] when the
+/// available bytes are only a prefix of a longer opener (`<!--`, `<![CDATA[`,
+/// `<!doctype`).
+fn classify(input: &[u8], lt: usize, cdata_allowed: bool) -> Resolve {
+    match input.get(lt + 1) {
+        None => Resolve::NeedMore,
+        Some(b) if b.is_ascii_alphabetic() => Resolve::Construct(Construct::StartTag),
+        Some(b'/') => match input.get(lt + 2) {
+            None => Resolve::NeedMore,
+            Some(c) if c.is_ascii_alphabetic() => Resolve::Construct(Construct::EndTag),
+            Some(_) => Resolve::Construct(Construct::BogusComment(2)),
+        },
+        Some(b'!') => classify_markup_declaration(input, lt, cdata_allowed),
+        Some(b'?') => Resolve::Construct(Construct::BogusComment(1)),
+        Some(_) => Resolve::Text,
+    }
 }
 
-/// Decides what construct (if any) the `<` at `lt` begins.
-fn classify(input: &[u8], lt: usize, cdata_allowed: bool) -> Construct {
-    match input.get(lt + 1) {
-        Some(b) if b.is_ascii_alphabetic() => Construct::StartTag,
-        Some(b'/') => match input.get(lt + 2) {
-            Some(c) if c.is_ascii_alphabetic() => Construct::EndTag,
-            _ => Construct::BogusComment(2),
-        },
-        Some(b'!') => {
-            if input
-                .get(lt..)
-                .is_some_and(|s| s.starts_with(COMMENT_PREFIX))
-            {
-                Construct::Comment
-            } else if cdata_allowed && input.get(lt..).is_some_and(|s| s.starts_with(CDATA_PREFIX))
-            {
-                Construct::Cdata
-            } else if starts_with_ci(
-                input.get(lt + MARKUP_DECL_PREFIX.len()..).unwrap_or(&[]),
-                DOCTYPE_KEYWORD,
-            ) {
-                Construct::Doctype
-            } else {
-                Construct::BogusComment(MARKUP_DECL_PREFIX.len())
+fn classify_markup_declaration(input: &[u8], lt: usize, cdata_allowed: bool) -> Resolve {
+    // Bytes after the `<!`.
+    let rest = input.get(lt + MARKUP_DECL_PREFIX.len()..).unwrap_or(&[]);
+
+    if rest.starts_with(b"--") {
+        return Resolve::Construct(Construct::Comment);
+    }
+    if is_strict_prefix(rest, b"--") {
+        return Resolve::NeedMore;
+    }
+    if cdata_allowed {
+        let cdata_inner = &CDATA_PREFIX[MARKUP_DECL_PREFIX.len()..]; // `[CDATA[`
+        if rest.starts_with(cdata_inner) {
+            return Resolve::Construct(Construct::Cdata);
+        }
+        if is_strict_prefix(rest, cdata_inner) {
+            return Resolve::NeedMore;
+        }
+    }
+    if starts_with_ci(rest, DOCTYPE_KEYWORD) {
+        return Resolve::Construct(Construct::Doctype);
+    }
+    if is_strict_prefix_ci(rest, DOCTYPE_KEYWORD) {
+        return Resolve::NeedMore;
+    }
+    Resolve::Construct(Construct::BogusComment(MARKUP_DECL_PREFIX.len()))
+}
+
+/// Whether the construct at `lt` has its terminator within the buffer (so it
+/// can be emitted without more input). For a text-mode start tag this also
+/// requires the body's end tag to be present.
+fn terminator_available(
+    construct: Construct,
+    input: &[u8],
+    lt: usize,
+    context: &ContextTracker,
+) -> bool {
+    match construct {
+        Construct::StartTag => {
+            let name_end = scan_tag_name(input, lt + 1);
+            let (close, _self_closing, complete) = scan_attributes(None, input, name_end);
+            if !complete {
+                return false;
+            }
+            let name = slice(input, lt + 1, name_end);
+            match context.peek_text_mode(LocalNameHash::of(name)) {
+                None => true,
+                Some(mode) => find_body_end(mode, input, close, name).is_some(),
             }
         }
-        Some(b'?') => Construct::BogusComment(1),
-        _ => Construct::Text,
+        Construct::EndTag => scan_attributes(None, input, scan_tag_name(input, lt + 2)).2,
+        Construct::Comment => find_seq(input, lt + COMMENT_PREFIX.len(), COMMENT_SUFFIX).is_some(),
+        Construct::Cdata => find_seq(input, lt + CDATA_PREFIX.len(), CDATA_SUFFIX).is_some(),
+        Construct::Doctype => {
+            let from = lt + MARKUP_DECL_PREFIX.len() + DOCTYPE_KEYWORD.len();
+            memchr(b'>', input.get(from..).unwrap_or(&[])).is_some()
+        }
+        Construct::BogusComment(open) => {
+            memchr(b'>', input.get(lt + open..).unwrap_or(&[])).is_some()
+        }
     }
+}
+
+/// Emits the construct at `lt`, returning the position just past it.
+fn process<S: TokenSink>(
+    construct: Construct,
+    attributes: &mut Vec<AttrRange>,
+    context: &mut ContextTracker,
+    input: &[u8],
+    lt: usize,
+    sink: &mut S,
+) -> Result<usize, ParsingAmbiguityError> {
+    Ok(match construct {
+        Construct::StartTag => {
+            let (close, name_hash, name, self_closing) =
+                scan_start_tag(attributes, input, lt, sink);
+            let text_mode = context.on_start_tag(
+                name_hash,
+                slice(input, name.start, name.end),
+                attributes,
+                input,
+                self_closing,
+            )?;
+            if let Some(mode) = text_mode {
+                scan_raw_text(attributes, input, close, RawScan { mode, name }, sink)
+            } else {
+                close
+            }
+        }
+        Construct::EndTag => {
+            let (close, name_hash, name) = scan_end_tag(attributes, input, lt, sink);
+            context.on_end_tag(name_hash, slice(input, name.start, name.end));
+            close
+        }
+        Construct::Comment => scan_comment(input, lt, sink),
+        Construct::Cdata => scan_cdata(input, lt, sink),
+        Construct::Doctype => scan_doctype(input, lt, sink),
+        Construct::BogusComment(open) => scan_bogus_comment(input, lt, open, sink),
+    })
+}
+
+fn scan_start_tag<S: TokenSink>(
+    attributes: &mut Vec<AttrRange>,
+    input: &[u8],
+    lt: usize,
+    sink: &mut S,
+) -> (usize, LocalNameHash, Span, bool) {
+    let name_start = lt + 1;
+    let name_end = scan_tag_name(input, name_start);
+    let name = Span::new(name_start, name_end);
+    let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
+
+    attributes.clear();
+    let (close, self_closing, _complete) = scan_attributes(Some(attributes), input, name_end);
+
+    let tag = StartTag {
+        input,
+        raw: Span::new(lt, close),
+        name,
+        name_hash,
+        attributes,
+        self_closing,
+    };
+    sink.start_tag(&tag);
+    (close, name_hash, name, self_closing)
+}
+
+fn scan_end_tag<S: TokenSink>(
+    attributes: &mut Vec<AttrRange>,
+    input: &[u8],
+    lt: usize,
+    sink: &mut S,
+) -> (usize, LocalNameHash, Span) {
+    let name_start = lt + 2;
+    let name_end = scan_tag_name(input, name_start);
+    let name = Span::new(name_start, name_end);
+    let name_hash = LocalNameHash::of(slice(input, name_start, name_end));
+
+    // End tags may carry (ignored) attributes; scan past them so that a `>`
+    // inside a quoted value does not close the tag prematurely.
+    attributes.clear();
+    let (close, _self_closing, _complete) = scan_attributes(Some(attributes), input, name_end);
+
+    let tag = EndTag {
+        input,
+        raw: Span::new(lt, close),
+        name,
+        name_hash,
+    };
+    sink.end_tag(&tag);
+    (close, name_hash, name)
+}
+
+/// Scans an element body in a raw text mode, emitting a [`Text`] token for
+/// the content and (if found) the matching end tag.
+fn scan_raw_text<S: TokenSink>(
+    attributes: &mut Vec<AttrRange>,
+    input: &[u8],
+    content_start: usize,
+    scan: RawScan,
+    sink: &mut S,
+) -> usize {
+    let name = slice(input, scan.name.start, scan.name.end);
+    if let Some(lt) = find_body_end(scan.mode, input, content_start, name) {
+        emit_text(input, content_start, lt, sink);
+        let (close, _name_hash, _name) = scan_end_tag(attributes, input, lt, sink);
+        close
+    } else {
+        emit_text(input, content_start, input.len(), sink);
+        input.len()
+    }
+}
+
+fn find_body_end(mode: TextMode, input: &[u8], content_start: usize, name: &[u8]) -> Option<usize> {
+    match mode {
+        TextMode::PlainText => None,
+        TextMode::RawText | TextMode::RcData => {
+            find_appropriate_end_tag(input, content_start, name)
+        }
+        TextMode::ScriptData => find_script_data_end(input, content_start),
+    }
+}
+
+/// Parses a tag's attribute list starting at `from` (just after the tag
+/// name), optionally recording attributes into `attributes`. Returns the
+/// position just past the closing `>` (or end of input), whether the tag was
+/// self-closing, and whether it actually closed (vs. running out of input).
+///
+/// Used for both emitting (with `Some` storage) and the streaming
+/// completeness check (`None`), so the two can never disagree on where a tag
+/// ends.
+fn scan_attributes(
+    mut attributes: Option<&mut Vec<AttrRange>>,
+    input: &[u8],
+    from: usize,
+) -> (usize, bool, bool) {
+    let mut i = from;
+    loop {
+        i = skip_space(input, i);
+        match input.get(i) {
+            None => return (input.len(), false, false),
+            Some(b'>') => return (i + 1, false, true),
+            Some(b'/') => {
+                if input.get(i + 1) == Some(&b'>') {
+                    return (i + 2, true, true);
+                }
+                i += 1; // stray solidus
+            }
+            Some(_) => i = scan_one_attribute(attributes.as_deref_mut(), input, i),
+        }
+    }
+}
+
+fn scan_one_attribute(attributes: Option<&mut Vec<AttrRange>>, input: &[u8], i: usize) -> usize {
+    let name_start = i;
+    let name_end = scan_attribute_name(input, i);
+
+    let after_ws = skip_space(input, name_end);
+    let (value, has_value, after) = if input.get(after_ws) == Some(&b'=') {
+        let value_pos = skip_space(input, after_ws + 1);
+        match input.get(value_pos) {
+            Some(&q @ (b'"' | b'\'')) => {
+                let (value, after) = scan_quoted_value(input, value_pos, q);
+                (value, true, after)
+            }
+            None => (Span::empty(value_pos), true, value_pos),
+            Some(_) => {
+                let (value, after) = scan_unquoted_value(input, value_pos);
+                (value, true, after)
+            }
+        }
+    } else {
+        (Span::empty(name_end), false, name_end)
+    };
+
+    if let Some(attributes) = attributes {
+        attributes.push(AttrRange {
+            name: Span::new(name_start, name_end),
+            value,
+            has_value,
+        });
+    }
+    after
 }
 
 fn emit_text<S: TokenSink>(input: &[u8], start: usize, end: usize, sink: &mut S) {
@@ -500,6 +654,19 @@ fn starts_with_ci(haystack: &[u8], lower_needle: &[u8]) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case(lower_needle))
 }
 
+/// Whether `bytes` is a strict (shorter) prefix of `whole`.
+fn is_strict_prefix(bytes: &[u8], whole: &[u8]) -> bool {
+    bytes.len() < whole.len() && whole.starts_with(bytes)
+}
+
+/// ASCII-case-insensitive [`is_strict_prefix`].
+fn is_strict_prefix_ci(bytes: &[u8], whole: &[u8]) -> bool {
+    bytes.len() < whole.len()
+        && whole
+            .get(..bytes.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(bytes))
+}
+
 /// Finds `needle` in `input[from..]`, returning the absolute start index.
 fn find_seq(input: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     let Some((&first, rest)) = needle.split_first() else {
@@ -635,8 +802,8 @@ fn double_escape_end(input: &[u8], lt: usize) -> Option<usize> {
     script_word_boundary(input, lt + 2)
 }
 
-/// If the ASCII-alpha run at `from` equals `script` (case-insensitive) and
-/// is followed by a tag terminator, returns the run's end position.
+/// If the ASCII-alpha run at `from` equals `script` (case-insensitive) and is
+/// followed by a tag terminator, returns the run's end position.
 fn script_word_boundary(input: &[u8], from: usize) -> Option<usize> {
     let end = scan_ascii_alpha(input, from);
     if end == from || !slice(input, from, end).eq_ignore_ascii_case(SCRIPT_NAME) {
