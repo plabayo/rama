@@ -414,7 +414,7 @@ pub enum HandshakeRelayClassification {
     /// chain as untrusted, or our local verifier rejected the peer's
     /// chain. Matches:
     /// - Peer alerts that signal trust validation failure:
-    ///   `unknown_ca`, `bad_certificate`, `certificate_expired`,
+    ///   `unknown_ca`, `certificate_expired`,
     ///   `certificate_revoked`, `certificate_unknown`.
     /// - Library validation outcomes: `CERTIFICATE_VERIFY_FAILED`,
     ///   `NO_MATCHING_ISSUER` (and OpenSSL-compatible `*untrusted*`).
@@ -460,11 +460,7 @@ where
 /// `CERTIFICATE_VERIFY_FAILED`).
 const CERT_TRUST_REASON_SUBSTRINGS: &[&str] = &[
     // Peer alerts that are trust-validation outcomes:
-    "unknown_ca",      // TLSV1_ALERT_UNKNOWN_CA
-    "bad_certificate", // *_ALERT_BAD_CERTIFICATE (signature failed / corrupt);
-    // also catches BAD_CERTIFICATE_HASH_VALUE /
-    // BAD_CERTIFICATE_STATUS_RESPONSE which are
-    // trust-pipeline (cert URL hash, OCSP).
+    "unknown_ca",          // TLSV1_ALERT_UNKNOWN_CA
     "certificate_expired", // *_ALERT_CERTIFICATE_EXPIRED
     "certificate_revoked", // *_ALERT_CERTIFICATE_REVOKED
     "certificate_unknown", // *_ALERT_CERTIFICATE_UNKNOWN (generic trust reject)
@@ -854,11 +850,6 @@ mod tests {
         for reason in [
             // Peer alerts that signal trust-validation failure:
             "TLSV1_ALERT_UNKNOWN_CA",
-            "SSLV3_ALERT_BAD_CERTIFICATE",
-            // BAD_CERTIFICATE_* (TLS-ext) are trust-pipeline outcomes,
-            // intentionally caught by the `bad_certificate` substring.
-            "TLSV1_ALERT_BAD_CERTIFICATE_HASH_VALUE",
-            "TLSV1_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE",
             "SSLV3_ALERT_CERTIFICATE_EXPIRED",
             "SSLV3_ALERT_CERTIFICATE_REVOKED",
             "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
@@ -891,9 +882,13 @@ mod tests {
         for reason in [
             // Peer asked us for a client cert / we didn't send one /
             // peer couldn't fetch its cert: peer-protocol, not trust.
+            "SSLV3_ALERT_BAD_CERTIFICATE",
+            "TLSV1_ALERT_BAD_CERTIFICATE_HASH_VALUE",
+            "TLSV1_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE",
             "TLSV1_ALERT_CERTIFICATE_REQUIRED",
             "TLSV1_ALERT_CERTIFICATE_UNOBTAINABLE",
             "SSLV3_ALERT_NO_CERTIFICATE",
+            "TLSV1_ALERT_UNKNOWN_CERTIFICATE",
             // Format / type: not a trust decision.
             "SSLV3_ALERT_UNSUPPORTED_CERTIFICATE",
             "TLSV1_ALERT_UNSUPPORTED_CERTIFICATE",
@@ -1013,6 +1008,9 @@ mod tests {
             &["TLSV1_ALERT_PROTOCOL_VERSION"][..],
             &["WRONG_VERSION_NUMBER"][..],
             &["NO_SHARED_CIPHER"][..],
+            &["SSLV3_ALERT_BAD_CERTIFICATE"][..],
+            &["TLSV1_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE"][..],
+            &["TLSV1_ALERT_UNKNOWN_CERTIFICATE"][..],
             &["CERT_LENGTH_MISMATCH"][..],
             &["BAD_ECC_CERT"][..],
             &["CERTIFICATE_AND_PRIVATE_KEY_MISMATCH"][..],
