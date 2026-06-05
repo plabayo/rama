@@ -346,6 +346,12 @@ impl From<bool> for TransparentProxyFlowAction {
 /// `exclude = true` rules map to Apple's `excludedNetworkRules`
 /// (bypassed by the kernel, never reach the provider). They take
 /// precedence over included rules at the framework level.
+///
+/// Port 53 is not allowed in TP NE Rules, regardless if included or not.
+/// For more info and all limitations please read the docs:
+///
+/// - https://developer.apple.com/documentation/networkextension/netransparentproxynetworksettings/excludednetworkrules
+/// - https://developer.apple.com/documentation/networkextension/netransparentproxynetworksettings/includednetworkrules
 #[derive(Clone, Debug)]
 pub struct TransparentProxyNetworkRule {
     remote_network: Option<Host>,
