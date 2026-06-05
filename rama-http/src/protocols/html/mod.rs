@@ -70,6 +70,7 @@ mod either_impls;
 mod rama_impls;
 mod response;
 
+pub mod rewrite;
 pub mod selector;
 pub mod tokenizer;
 

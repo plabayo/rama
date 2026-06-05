@@ -5,8 +5,7 @@
 //! string slices supplied by the [`SelectorSubject`] implementation.
 
 use super::ast::{
-    AttributeOperator, AttributeSelector, CaseSensitivity, Combinator, ComplexSelector, Compound,
-    NthType, Selector, SelectorPart,
+    AttributeSelector, Combinator, ComplexSelector, Compound, NthType, Selector, SelectorPart,
 };
 
 /// A read-only view of an element, providing exactly what the selector
@@ -134,82 +133,7 @@ fn compound_matches<S: SelectorSubject>(compound: &Compound, subject: &S) -> boo
 }
 
 fn attribute_matches<S: SelectorSubject>(selector: &AttributeSelector, subject: &S) -> bool {
-    let Some(actual) = subject.attribute(&selector.name) else {
-        return false;
-    };
-    let expected = &*selector.value;
-    let ci = matches!(selector.case, CaseSensitivity::AsciiCaseInsensitive);
-    match selector.operator {
-        None => true,
-        Some(AttributeOperator::Equals) => str_eq(actual, expected, ci),
-        Some(AttributeOperator::Includes) => {
-            !expected.is_empty()
-                && !expected.contains(char::is_whitespace)
-                && actual
-                    .split_ascii_whitespace()
-                    .any(|token| str_eq(token, expected, ci))
-        }
-        Some(AttributeOperator::DashMatch) => {
-            str_eq(actual, expected, ci)
-                || (actual.len() > expected.len()
-                    && starts_with(actual, expected, ci)
-                    && actual.as_bytes().get(expected.len()) == Some(&b'-'))
-        }
-        Some(AttributeOperator::Prefix) => {
-            !expected.is_empty() && starts_with(actual, expected, ci)
-        }
-        Some(AttributeOperator::Suffix) => !expected.is_empty() && ends_with(actual, expected, ci),
-        Some(AttributeOperator::Substring) => {
-            !expected.is_empty() && contains(actual, expected, ci)
-        }
-    }
-}
-
-fn str_eq(a: &str, b: &str, case_insensitive: bool) -> bool {
-    if case_insensitive {
-        a.eq_ignore_ascii_case(b)
-    } else {
-        a == b
-    }
-}
-
-fn starts_with(haystack: &str, needle: &str, case_insensitive: bool) -> bool {
-    match haystack.as_bytes().get(..needle.len()) {
-        Some(head) => bytes_eq(head, needle.as_bytes(), case_insensitive),
-        None => false,
-    }
-}
-
-fn ends_with(haystack: &str, needle: &str, case_insensitive: bool) -> bool {
-    let Some(start) = haystack.len().checked_sub(needle.len()) else {
-        return false;
-    };
-    match haystack.as_bytes().get(start..) {
-        Some(tail) => bytes_eq(tail, needle.as_bytes(), case_insensitive),
-        None => false,
-    }
-}
-
-fn contains(haystack: &str, needle: &str, case_insensitive: bool) -> bool {
-    if case_insensitive {
-        let h = haystack.as_bytes();
-        let n = needle.as_bytes();
-        if n.len() > h.len() {
-            return false;
-        }
-        (0..=h.len() - n.len()).any(|i| match h.get(i..i + n.len()) {
-            Some(window) => bytes_eq(window, n, true),
-            None => false,
-        })
-    } else {
-        haystack.contains(needle)
-    }
-}
-
-fn bytes_eq(a: &[u8], b: &[u8], case_insensitive: bool) -> bool {
-    if case_insensitive {
-        a.eq_ignore_ascii_case(b)
-    } else {
-        a == b
-    }
+    subject
+        .attribute(&selector.name)
+        .is_some_and(|actual| selector.matches_value(actual.as_bytes()))
 }

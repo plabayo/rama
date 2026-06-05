@@ -32,7 +32,7 @@
 //! (`:last-child`, `:only-child`, `:last-of-type`, `:only-of-type`,
 //! `:nth-last-*`) are intentionally rejected with a [`SelectorError`].
 
-mod ast;
+pub(crate) mod ast;
 mod display;
 mod dom;
 mod matcher;

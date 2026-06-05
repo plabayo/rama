@@ -165,13 +165,92 @@ impl LocalName {
     /// ASCII-case-insensitive comparison against a raw element name,
     /// without allocating.
     pub(crate) fn matches(&self, raw: &str) -> bool {
+        self.matches_bytes(raw.as_bytes())
+    }
+
+    /// Byte-slice variant of [`Self::matches`].
+    pub(crate) fn matches_bytes(&self, raw: &[u8]) -> bool {
         if let Some(packed) = self.packed
-            && let Some(other) = pack_name(raw.as_bytes())
+            && let Some(other) = pack_name(raw)
         {
             return packed == other;
         }
-        raw.eq_ignore_ascii_case(&self.name)
+        raw.eq_ignore_ascii_case(self.name.as_bytes())
     }
+}
+
+impl AttributeSelector {
+    /// Whether `actual` (the element's attribute value) satisfies this
+    /// selector's operator. Presence-only selectors (`[name]`) match any
+    /// value; callers must have already confirmed the attribute exists.
+    pub(crate) fn matches_value(&self, actual: &[u8]) -> bool {
+        let expected = self.value.as_bytes();
+        let ci = matches!(self.case, CaseSensitivity::AsciiCaseInsensitive);
+        match self.operator {
+            None => true,
+            Some(AttributeOperator::Equals) => bytes_eq(actual, expected, ci),
+            Some(AttributeOperator::Includes) => {
+                !expected.is_empty()
+                    && !expected.iter().any(u8::is_ascii_whitespace)
+                    && actual
+                        .split(u8::is_ascii_whitespace)
+                        .any(|token| bytes_eq(token, expected, ci))
+            }
+            Some(AttributeOperator::DashMatch) => {
+                bytes_eq(actual, expected, ci)
+                    || (actual.len() > expected.len()
+                        && bytes_starts_with(actual, expected, ci)
+                        && actual.get(expected.len()) == Some(&b'-'))
+            }
+            Some(AttributeOperator::Prefix) => {
+                !expected.is_empty() && bytes_starts_with(actual, expected, ci)
+            }
+            Some(AttributeOperator::Suffix) => {
+                !expected.is_empty() && bytes_ends_with(actual, expected, ci)
+            }
+            Some(AttributeOperator::Substring) => {
+                !expected.is_empty() && bytes_contains(actual, expected, ci)
+            }
+        }
+    }
+}
+
+fn bytes_eq(a: &[u8], b: &[u8], case_insensitive: bool) -> bool {
+    if case_insensitive {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+fn bytes_starts_with(haystack: &[u8], needle: &[u8], case_insensitive: bool) -> bool {
+    haystack
+        .get(..needle.len())
+        .is_some_and(|head| bytes_eq(head, needle, case_insensitive))
+}
+
+fn bytes_ends_with(haystack: &[u8], needle: &[u8], case_insensitive: bool) -> bool {
+    haystack
+        .len()
+        .checked_sub(needle.len())
+        .and_then(|start| haystack.get(start..))
+        .is_some_and(|tail| bytes_eq(tail, needle, case_insensitive))
+}
+
+fn bytes_contains(haystack: &[u8], needle: &[u8], case_insensitive: bool) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    if !case_insensitive {
+        return haystack
+            .windows(needle.len())
+            .any(|window| window == needle);
+    }
+    (0..=haystack.len() - needle.len()).any(|i| {
+        haystack
+            .get(i..i + needle.len())
+            .is_some_and(|window| window.eq_ignore_ascii_case(needle))
+    })
 }
 
 /// Packs an element name into a `u64` when it is at most 8 ASCII bytes,
