@@ -1,23 +1,30 @@
-//! Streaming selector matching over the tokenizer's event stream.
+//! Selector-driven HTML rewriting.
 //!
-//! [`SelectorMatcher`] is fed start/end tags as they are tokenized and
-//! reports, at each start tag, which of its registered selectors match the
-//! element being opened — without building a DOM. It maintains an
-//! open-element stack and, per selector, two bitmasks:
+//! The public entry point is [`HtmlRewriter`] (and the [`rewrite_str`]
+//! one-shot). Internally, a streaming selector matcher is fed start/end tags
+//! as they are tokenized and reports, at each start tag, which registered
+//! selectors match the element being opened — without building a DOM. It
+//! maintains an open-element stack and, per selector, two bitmasks:
 //!
 //!   * `completed` — which compound-prefixes are matched ending at this
 //!     element (a child combinator reads its parent's `completed`);
 //!   * `desc_ready` — which prefixes are available to descendants (a
 //!     descendant combinator reads its ancestor's `desc_ready`).
 //!
-//! This is the foundation of the (upcoming) selector-driven rewriter.
+//! It underpins the selector-driven [`HtmlRewriter`].
 
 use super::selector::Selector;
 use super::selector::ast::{Combinator, ComplexSelector, Compound, NthType};
 use super::tokenizer::{LocalNameHash, StartTag};
 
+mod element;
+mod rewriter;
+
 #[cfg(test)]
 mod tests;
+
+pub use self::element::{Element, ElementContentHandler, HandlerResult};
+pub use self::rewriter::{ElementContentHandlers, HtmlRewriter, rewrite_str};
 
 /// Selectors with more compounds than this can't be represented in the
 /// `u64` match bitmask; they simply never match (absurd in practice).
@@ -122,8 +129,10 @@ impl Frame {
 }
 
 /// Matches a fixed set of selectors against a stream of start/end tags.
+///
+/// Internal to the rewriter; not part of the public API.
 #[derive(Debug)]
-pub struct SelectorMatcher {
+pub(crate) struct SelectorMatcher {
     /// All complex selectors, flattened from the registered [`Selector`]s.
     selectors: Vec<ComplexSelector>,
     /// `owner[c]` is the index of the registered selector complex `c` came
@@ -146,7 +155,7 @@ impl SelectorMatcher {
     /// Builds a matcher for `selectors`. A start tag matching any complex
     /// selector of registered selector `i` reports `i`.
     #[must_use]
-    pub fn new(selectors: &[Selector]) -> Self {
+    pub(crate) fn new(selectors: &[Selector]) -> Self {
         let mut complexes = Vec::new();
         let mut owner = Vec::new();
         for (index, selector) in selectors.iter().enumerate() {
@@ -170,7 +179,7 @@ impl SelectorMatcher {
 
     /// Processes a start tag, invoking `on_match` once for each registered
     /// selector index that matches the element being opened.
-    pub fn push_element(&mut self, tag: &StartTag<'_>, mut on_match: impl FnMut(usize)) {
+    pub(crate) fn push_element(&mut self, tag: &StartTag<'_>, mut on_match: impl FnMut(usize)) {
         let n = self.selectors.len();
         let name = tag.name_hash();
         let parent_index = self.stack.len() - 1;
@@ -209,7 +218,7 @@ impl SelectorMatcher {
     }
 
     /// Processes an end tag, popping the matching open element.
-    pub fn pop_element(&mut self, name: LocalNameHash) {
+    pub(crate) fn pop_element(&mut self, name: LocalNameHash) {
         if self.stack.len() > 1 && self.stack.last().is_some_and(|f| f.name == name) {
             self.stack.pop();
             let n = self.selectors.len();
