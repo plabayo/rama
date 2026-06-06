@@ -228,19 +228,28 @@ impl SelectorMatcher {
         opened
     }
 
-    /// Processes an end tag, popping the matching open element.
+    /// Processes an end tag, closing the matching open element.
     ///
-    /// Returns `true` if it closed an open scope (the top frame matched
-    /// `name`); `false` for a stray/mismatched end tag that pops nothing.
-    pub(crate) fn pop_element(&mut self, name: LocalNameHash) -> bool {
-        if self.stack.len() > 1 && self.stack.last().is_some_and(|f| f.name == name) {
-            self.stack.pop();
-            let n = self.selectors.len();
-            self.states.truncate(self.states.len() - n);
-            true
-        } else {
-            false
+    /// Mirrors HTML's "generate implied end tags": it closes the *topmost*
+    /// open element with this `name` **and every still-open descendant above
+    /// it** (so crossed/unclosed tags like `<a><b></a>` close `b` too).
+    /// Returns the number of frames closed — `0` for a stray end tag that
+    /// matches nothing. The rewriter relies on this count to keep its
+    /// deferred-action stack and suppression depth in lockstep with the
+    /// open-element stack (otherwise a never-popped suppressing frame would
+    /// swallow the rest of the document).
+    pub(crate) fn pop_element(&mut self, name: LocalNameHash) -> usize {
+        // Index 0 is the root sentinel and is never closed.
+        let Some(pos) = self.stack.iter().rposition(|f| f.name == name) else {
+            return 0;
+        };
+        if pos == 0 {
+            return 0;
         }
+        let popped = self.stack.len() - pos;
+        self.stack.truncate(pos);
+        self.states.truncate(pos * self.selectors.len());
+        popped
     }
 }
 

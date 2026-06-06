@@ -85,20 +85,35 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
             self.output.extend_from_slice(tag.raw());
             return;
         }
-        if !self.matcher.pop_element(tag.name_hash()) {
+        let popped = self.matcher.pop_element(tag.name_hash());
+        if popped == 0 {
             // Stray end tag: emit verbatim unless inside suppressed content.
             if self.suppress_depth == 0 {
                 self.output.extend_from_slice(tag.raw());
             }
             return;
         }
-        let Some(actions) = self.pending.pop() else {
-            return;
-        };
-        if actions.suppress_content {
-            self.suppress_depth = self.suppress_depth.saturating_sub(1);
+        // The end tag closes `popped` frames: the named element plus any
+        // still-open descendants it implicitly closes (malformed input).
+        // Clear the suppression each contributed; the named element is the
+        // outermost (last popped) and owns this end tag's deferred actions
+        // (the implicitly-closed descendants had no end tag in the source, so
+        // their deferred edits are dropped).
+        let mut named = None;
+        for i in 0..popped {
+            let Some(actions) = self.pending.pop() else {
+                break;
+            };
+            if actions.suppress_content {
+                self.suppress_depth = self.suppress_depth.saturating_sub(1);
+            }
+            if i + 1 == popped {
+                named = Some(actions);
+            }
         }
-        if self.suppress_depth == 0 {
+        if self.suppress_depth == 0
+            && let Some(actions) = named
+        {
             self.output.extend_from_slice(actions.append.as_bytes());
             if !actions.suppress_end_tag {
                 self.output.extend_from_slice(tag.raw());
@@ -572,5 +587,81 @@ mod tests {
         rewriter.end().expect("end succeeds");
         let out = String::from_utf8(rewriter.take_output()).expect("utf8");
         assert_eq!(out, "ab");
+    }
+
+    // --- robustness on malformed / crossed nesting --------------------------
+
+    #[test]
+    fn remove_survives_crossed_nesting() {
+        // `</d>` implicitly closes the still-open `<e>`; suppression must clear
+        // so the trailing text is not swallowed.
+        let out = rewrite(
+            "<d><e></d>VISIBLE",
+            ElementContentHandlers::new().on(sel("d"), |el| {
+                el.remove();
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "VISIBLE");
+    }
+
+    #[test]
+    fn remove_with_unclosed_child_keeps_the_rest() {
+        // Only the `<a>…</a>` span is removed; the misnested remainder passes
+        // through byte-for-byte (no runaway suppression).
+        let out = rewrite(
+            "keep<a>1<b>2</a>3</b>4",
+            ElementContentHandlers::new().on(sel("a"), |el| {
+                el.remove();
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "keep3</b>4");
+    }
+
+    #[test]
+    fn set_inner_content_survives_crossed_nesting() {
+        let out = rewrite(
+            "<a>1<b>2</a>3",
+            ElementContentHandlers::new().on(sel("a"), |el| {
+                el.set_inner_text("X");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<a>X</a>3");
+    }
+
+    #[test]
+    fn nested_match_inside_removed_ancestor_is_swallowed() {
+        // The inner `<a>`'s handler still runs, but its end-anchored output is
+        // suppressed along with the rest of the removed subtree.
+        let out = rewrite(
+            "<div><a>x</a></div>z",
+            ElementContentHandlers::new()
+                .on(sel("div"), |el| {
+                    el.remove();
+                    Ok(())
+                })
+                .on(sel("a"), |el| {
+                    el.after_text("!");
+                    el.append_text("?");
+                    Ok(())
+                }),
+        );
+        assert_eq!(out, "z");
+    }
+
+    #[test]
+    fn replace_on_self_closing_element() {
+        // A self-closing (non-void) element has no end tag: the replacement is
+        // emitted inline and suppression is never engaged.
+        let out = rewrite(
+            "<x/>tail",
+            ElementContentHandlers::new().on(sel("x"), |el| {
+                el.replace_text("R");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "Rtail");
     }
 }
