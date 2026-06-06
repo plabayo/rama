@@ -415,7 +415,7 @@ mod tests {
         .expect_err("handler error should abort the rewrite");
     }
 
-    /// A visitor struct *is* the shared state — no `Rc<RefCell>`.
+    /// A handler struct carrying its own accumulated state.
     #[derive(Default)]
     struct LinkCounter {
         count: usize,

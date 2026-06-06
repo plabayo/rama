@@ -13,10 +13,9 @@ pub type HandlerResult = Result<(), BoxError>;
 
 /// Handles matched elements during a rewrite.
 ///
-/// Implement this on your own type — *that type is your shared state*: a
-/// handler mutates `&mut self` directly, with no `Rc<RefCell>` /
-/// `Arc<Mutex>` ceremony. `selector` is the index (in registration order)
-/// of the selector that matched `element`.
+/// Implement this on your own type — that type holds any state the handler
+/// accumulates, mutated through `&mut self`. `selector` is the index (in
+/// registration order) of the selector that matched `element`.
 ///
 /// For one-off rewrites, the closure-based
 /// [`ElementContentHandlers`](super::ElementContentHandlers) builder
@@ -291,11 +290,8 @@ impl<'t> Element<'t> {
 
     /// Emits the element's start-side output into `out` (only when `visible`
     /// — i.e. not swallowed by an enclosing removed/replaced ancestor) and
-    /// returns the [`EndActions`] to apply at the matching end tag.
-    ///
-    /// Consumes `self`: after handlers have run, the element's edits are
-    /// frozen, so its owned buffers move into the output / end-actions
-    /// without copying.
+    /// returns the [`EndActions`] to apply at the matching end tag. Consumes
+    /// `self` so the owned edit buffers move out without copying.
     pub(crate) fn serialize(self, out: &mut Vec<u8>, visible: bool) -> EndActions {
         let Self {
             tag,

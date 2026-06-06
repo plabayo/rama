@@ -15,10 +15,7 @@
 //! lol-html, those bail out with a [`ParsingAmbiguityError`] in strict mode
 //! rather than risk mis-tokenizing (an XSS-gadget hazard).
 //!
-//! Adapted from lol-html's `tree_builder_simulator` (BSD-3-Clause); since
-//! this tokenizer has the full start tag in hand when it consults the
-//! tracker, lol-html's deferred `RequestLexeme` callbacks collapse into
-//! direct attribute inspection here.
+//! Adapted from lol-html's `tree_builder_simulator` (BSD-3-Clause).
 
 use std::fmt;
 

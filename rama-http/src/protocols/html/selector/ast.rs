@@ -1,9 +1,9 @@
 //! Abstract syntax tree for the supported CSS selector subset.
 //!
-//! The subset mirrors what a streaming matcher can evaluate (the same
-//! constraint lol-html's selector engine works under), but the parser is
-//! hand-rolled from scratch so rama pulls in no extra dependencies — no
-//! `cssparser`, no Servo `selectors`. See `parser.rs` for the grammar.
+//! The subset is limited to what a streaming matcher can evaluate (no
+//! sibling lookahead, no full-document state). The parser is hand-rolled so
+//! rama pulls in no extra dependencies — no `cssparser`, no Servo
+//! `selectors`. See `parser.rs` for the grammar.
 
 /// A parsed CSS selector string.
 ///
@@ -97,7 +97,8 @@ pub(crate) enum CaseSensitivity {
     AsciiCaseInsensitive,
 }
 
-/// A structural `:nth-*` selector reduced to its `An+B` form.
+/// A structural `:nth-*` selector as a step `a` and offset `b`: it matches
+/// sibling positions `a*n + b` for integers `n >= 0`.
 ///
 /// `:first-child` is stored as `Child` with `a = 0, b = 1`, and
 /// `:first-of-type` as `OfType` with `a = 0, b = 1`.
@@ -117,7 +118,8 @@ pub(crate) enum NthType {
 }
 
 impl Nth {
-    /// Returns whether a 1-based sibling `index` satisfies this `An+B`.
+    /// Returns whether a 1-based sibling `index` matches step `a`/offset `b`
+    /// (i.e. `index == a*n + b` for some `n >= 0`).
     pub(crate) fn matches_index(self, index: usize) -> bool {
         // Work in `i64` (selectors are `i32`), converting/subtracting with
         // checked ops so a pathologically large `index` or `b` can never
