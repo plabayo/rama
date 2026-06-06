@@ -631,17 +631,8 @@ fn skip_space(input: &[u8], from: usize) -> usize {
 }
 
 /// HTML whitespace (space, tab, LF, FF, CR) as a `[bool; 256]` table so the
-/// hot-path check is a single branchless byte load (mirrors the byte-set
-/// tables in `rama-net`).
-const HTML_SPACE: [bool; 256] = {
-    let mut table = [false; 256];
-    table[b' ' as usize] = true;
-    table[b'\t' as usize] = true;
-    table[b'\n' as usize] = true;
-    table[0x0c] = true;
-    table[b'\r' as usize] = true;
-    table
-};
+/// hot-path check is a single branchless byte load.
+const HTML_SPACE: [bool; 256] = rama_utils::byte_set::set_each([false; 256], b" \t\n\x0c\r");
 
 #[inline]
 const fn is_html_space(b: u8) -> bool {

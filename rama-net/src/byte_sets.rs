@@ -12,41 +12,7 @@
 //! module taking ownership of another's grammar. Module visibility is
 //! `pub(crate)`; nothing here is part of rama-net's public API.
 
-// --- Table-building primitives ---------------------------------------------
-
-/// Mark every byte in `[lo, hi_exclusive)` as `true`. const-evaluable.
-pub(crate) const fn set_range(mut t: [bool; 256], lo: u8, hi_exclusive: u8) -> [bool; 256] {
-    let mut i = lo;
-    while i < hi_exclusive {
-        t[i as usize] = true;
-        i += 1;
-    }
-    t
-}
-
-/// Mark every byte present in `bytes` as `true`. const-evaluable.
-pub(crate) const fn set_each(mut t: [bool; 256], bytes: &[u8]) -> [bool; 256] {
-    let mut j = 0;
-    while j < bytes.len() {
-        t[bytes[j] as usize] = true;
-        j += 1;
-    }
-    t
-}
-
-/// Convenience: ASCII alphanumerics (`0-9 A-Z a-z`) — the unreserved
-/// alphabet that shows up in nearly every URI byte set.
-pub(crate) const fn set_ascii_alphanum(t: [bool; 256]) -> [bool; 256] {
-    let t = set_range(t, b'0', b'9' + 1);
-    let t = set_range(t, b'A', b'Z' + 1);
-    set_range(t, b'a', b'z' + 1)
-}
-
-/// ASCII alpha range A-Z and a-z (no digits). Used by the scheme-first table.
-const fn set_ascii_alpha(t: [bool; 256]) -> [bool; 256] {
-    let t = set_range(t, b'A', b'Z' + 1);
-    set_range(t, b'a', b'z' + 1)
-}
+use rama_utils::byte_set::{set_ascii_alpha, set_ascii_alphanum, set_each, set_range};
 
 // --- Concrete byte sets ----------------------------------------------------
 
