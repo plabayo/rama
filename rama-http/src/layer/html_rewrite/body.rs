@@ -96,9 +96,16 @@ where
             match ready!(this.inner.as_mut().poll_frame(cx)) {
                 Some(Ok(frame)) => match frame.into_data() {
                     Ok(mut data) => {
-                        let chunk = data.copy_to_bytes(data.remaining());
-                        if let Err(err) = rewriter.write(&chunk) {
-                            return Poll::Ready(Some(Err(err)));
+                        // Feed the rewriter straight from the buffer's chunks:
+                        // the tokenizer copies what it needs into its own
+                        // buffer, so there is no intermediate `Bytes` copy.
+                        while data.has_remaining() {
+                            let chunk = data.chunk();
+                            let len = chunk.len();
+                            if let Err(err) = rewriter.write(chunk) {
+                                return Poll::Ready(Some(Err(err)));
+                            }
+                            data.advance(len);
                         }
                         let out = rewriter.take_output();
                         if !out.is_empty() {

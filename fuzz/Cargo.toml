@@ -71,6 +71,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "html_rewrite"
+path = "fuzz_targets/html_rewrite.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["ua", "http", "net", "html"] }
