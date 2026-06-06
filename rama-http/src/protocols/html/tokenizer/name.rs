@@ -61,7 +61,7 @@ impl LocalNameHash {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use ahash::HashMap;
 
     use super::LocalNameHash;
 
@@ -82,7 +82,7 @@ mod tests {
     /// the rewriter's open-element matching compare names by hash alone.
     #[test]
     fn names_are_collision_free() {
-        let mut seen: HashMap<u64, Vec<u8>> = HashMap::new();
+        let mut seen: HashMap<u64, Vec<u8>> = HashMap::default();
         let mut check = |name: &[u8]| {
             let hash = LocalNameHash::of(name);
             if let Some(prev) = seen.insert(hash.0, name.to_vec())
