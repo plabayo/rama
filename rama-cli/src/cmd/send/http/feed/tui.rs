@@ -12,7 +12,10 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
     futures::{FutureExt as _, StreamExt as _},
-    http::protocols::rss::{Feed, FeedItem, FeedStream},
+    http::protocols::{
+        html::tokenizer::{EndTag, StartTag, Text, TokenSink, Tokenizer},
+        rss::{Feed, FeedItem, FeedStream},
+    },
     telemetry::tracing,
 };
 
@@ -699,67 +702,16 @@ struct HtmlRenderer {
 
 impl HtmlRenderer {
     fn run(&mut self, input: &str) {
-        let mut rest = input;
-        while !rest.is_empty() {
-            let Some(lt) = rest.find('<') else {
-                self.text(rest);
-                break;
-            };
-            if lt > 0 {
-                self.text(&rest[..lt]);
-            }
-            rest = &rest[lt..];
-
-            if let Some(after) = rest.strip_prefix("<!--") {
-                rest = after.find("-->").map_or("", |i| &after[i + 3..]);
-                continue;
-            }
-            if rest.starts_with("<!") || rest.starts_with("<?") {
-                rest = rest.find('>').map_or("", |i| &rest[i + 1..]);
-                continue;
-            }
-
-            // Find the tag's closing '>', respecting quoted attribute values
-            // so a '>' inside an attribute doesn't end the tag early.
-            let mut quote: Option<char> = None;
-            let mut end = None;
-            for (i, ch) in rest.char_indices().skip(1) {
-                match ch {
-                    c @ ('"' | '\'') if quote == Some(c) => quote = None,
-                    c @ ('"' | '\'') if quote.is_none() => quote = Some(c),
-                    '>' if quote.is_none() => {
-                        end = Some(i);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let Some(end) = end else { break };
-            self.tag(&rest[1..end]);
-            rest = &rest[end + 1..];
+        if Tokenizer::new()
+            .with_strict(false)
+            .tokenize(input.as_bytes(), self)
+            .is_err()
+        {
+            self.text(input);
         }
     }
 
-    fn tag(&mut self, raw: &str) {
-        let raw = raw.trim();
-        let closing = raw.starts_with('/');
-        let body = raw.strip_prefix('/').unwrap_or(raw);
-        let name: String = body
-            .chars()
-            .take_while(char::is_ascii_alphanumeric)
-            .flat_map(char::to_lowercase)
-            .collect();
-        if name.is_empty() {
-            return;
-        }
-        if closing {
-            self.close_tag(&name);
-        } else {
-            self.open_tag(&name, &body[name.len()..]);
-        }
-    }
-
-    fn open_tag(&mut self, name: &str, attrs: &str) {
+    fn open_tag(&mut self, name: &str, tag: &StartTag<'_>) {
         match name {
             "script" | "style" => self.skip_text += 1,
             "br" => self.flush_line(),
@@ -798,7 +750,7 @@ impl HtmlRenderer {
             }
             "li" => self.start_list_item(),
             "a" => {
-                self.href_stack.push(extract_attr(attrs, "href"));
+                self.href_stack.push(extract_attr(tag, b"href"));
                 self.push_style(
                     self.style
                         .fg(Color::Blue)
@@ -959,33 +911,54 @@ impl HtmlRenderer {
     }
 }
 
+impl TokenSink for HtmlRenderer {
+    fn start_tag(&mut self, tag: &StartTag<'_>) {
+        let name = tag_name(tag.name());
+        if name.is_empty() {
+            return;
+        }
+        self.open_tag(&name, tag);
+        if tag.is_self_closing() {
+            self.close_tag(&name);
+        }
+    }
+
+    fn end_tag(&mut self, tag: &EndTag<'_>) {
+        let name = tag_name(tag.name());
+        if !name.is_empty() {
+            self.close_tag(&name);
+        }
+    }
+
+    fn text(&mut self, text: &Text<'_>) {
+        match std::str::from_utf8(text.as_bytes()) {
+            Ok(raw) => Self::text(self, raw),
+            Err(_err) => {
+                let raw = String::from_utf8_lossy(text.as_bytes());
+                Self::text(self, &raw);
+            }
+        }
+    }
+}
+
 fn line_is_empty(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
-/// Extract a (decoded) attribute value from a tag body, e.g. `href` from
-/// `a href="https://example.com"`. Tolerant of single/double/unquoted values.
-fn extract_attr(body: &str, name: &str) -> Option<String> {
-    let lower = body.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(rel) = lower[from..].find(name) {
-        let at = from + rel;
-        let preceded_ok = at == 0 || body.as_bytes()[at - 1].is_ascii_whitespace();
-        let after = body[at + name.len()..].trim_start();
-        if preceded_ok && let Some(value) = after.strip_prefix('=') {
-            let value = value.trim_start();
-            let raw = if let Some(rest) = value.strip_prefix('"') {
-                rest.split('"').next().unwrap_or("")
-            } else if let Some(rest) = value.strip_prefix('\'') {
-                rest.split('\'').next().unwrap_or("")
-            } else {
-                value.split_whitespace().next().unwrap_or("")
-            };
-            return Some(decode_entities(raw));
-        }
-        from = at + name.len();
+fn tag_name(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).to_ascii_lowercase()
+}
+
+/// Extract a decoded attribute value from a tokenized start tag.
+fn extract_attr(tag: &StartTag<'_>, name: &[u8]) -> Option<String> {
+    let raw = tag
+        .attributes()
+        .find(|attr| attr.name().eq_ignore_ascii_case(name))?
+        .value();
+    match std::str::from_utf8(raw) {
+        Ok(value) => Some(decode_entities(value)),
+        Err(_err) => Some(decode_entities(&String::from_utf8_lossy(raw))),
     }
-    None
 }
 
 /// Decode the HTML entities that show up in feeds (named subset + numeric
@@ -1298,6 +1271,25 @@ mod tests {
             text.contains("line1\nline2 — end"),
             "br/entity not handled: {text:?}"
         );
+    }
+
+    #[test]
+    fn html_to_lines_tokenizes_quoted_gt_and_decodes_href() {
+        let lines =
+            html_to_lines(r#"<p>See <a href="https://x.test/?q=a&gt;b">link</a> after</p>"#);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("See link (https://x.test/?q=a>b) after"),
+            "quoted gt or href entity mishandled: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_lines_handles_partial_html_without_panicking() {
+        let lines = html_to_lines("<p>before <strong>bold<a href=\"https://x.test?q=1&gt;2\"");
+        let text = lines_text(&lines);
+        assert!(text.contains("before bold"), "text missing: {text:?}");
+        assert!(!text.contains("<strong>"), "raw tag leaked: {text:?}");
     }
 
     #[test]
