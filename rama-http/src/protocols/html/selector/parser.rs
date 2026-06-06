@@ -67,7 +67,7 @@ impl<'i> Parser<'i> {
     /// Skips CSS whitespace, returning whether any was consumed.
     fn skip_ws(&mut self) -> bool {
         let mut any = false;
-        while matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r' | '\u{0c}')) {
+        while self.peek().is_some_and(is_css_whitespace) {
             self.pos += 1;
             any = true;
         }
@@ -407,7 +407,7 @@ impl<'i> Parser<'i> {
             }
             _ => false,
         };
-        if has_sign && matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r' | '\u{0c}')) {
+        if has_sign && self.peek().is_some_and(is_css_whitespace) {
             return Err(SelectorError::InvalidNth);
         }
 
@@ -585,7 +585,7 @@ impl<'i> Parser<'i> {
                 None => break,
             }
         }
-        if matches!(self.peek(), Some(' ' | '\t' | '\n' | '\r' | '\u{0c}')) {
+        if self.peek().is_some_and(is_css_whitespace) {
             self.bump();
         }
         if value == 0 || (0xD800..=0xDFFF).contains(&value) || value > 0x0010_FFFF {
@@ -625,6 +625,11 @@ fn clamp_i32(value: i64) -> Result<i32, SelectorError> {
 /// parsing always round-trips.
 fn preprocess(c: char) -> char {
     if c == '\0' { '\u{FFFD}' } else { c }
+}
+
+/// CSS whitespace (CSS Syntax §"Whitespace"): space, tab, LF, FF, CR.
+fn is_css_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{0c}')
 }
 
 fn is_ident_start(c: char) -> bool {
