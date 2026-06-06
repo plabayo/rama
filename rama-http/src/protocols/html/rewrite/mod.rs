@@ -320,6 +320,11 @@ impl SelectorMatcher {
     /// open-element stack (otherwise a never-popped suppressing frame would
     /// swallow the rest of the document).
     pub(crate) fn pop_element(&mut self, name: LocalNameHash) -> usize {
+        // Frames hold only the name hash (not owned bytes, which would alloc
+        // per frame off the transient input buffer), so this match is by hash:
+        // two distinct names colliding (≈1/2^64 for 64-bit FNV) would mis-close
+        // an element. Not UB — at worst a mis-rewrite on adversarial input.
+        //
         // Index 0 is the root sentinel and is never closed.
         let Some(pos) = self.stack.iter().rposition(|f| f.name == name) else {
             return 0;

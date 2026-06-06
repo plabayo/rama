@@ -42,6 +42,9 @@ impl LocalNameHash {
         let mut hash = FNV_OFFSET;
         let mut i = 0;
         while i < name.len() {
+            // The static must already be lowercase: `of` lowercases, this does
+            // not, so an uppercase byte here would hash to a different value.
+            debug_assert!(!name[i].is_ascii_uppercase());
             hash ^= name[i] as u64;
             hash = hash.wrapping_mul(FNV_PRIME);
             i += 1;
@@ -53,5 +56,62 @@ impl LocalNameHash {
     #[must_use]
     pub const fn is_none(self) -> bool {
         self.0 == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::LocalNameHash;
+
+    #[test]
+    fn case_insensitive_and_const_agreement() {
+        assert_eq!(LocalNameHash::of(b"DIV"), LocalNameHash::of(b"div"));
+        assert_eq!(LocalNameHash::of(b"ScRiPt"), LocalNameHash::of(b"script"));
+        assert_eq!(
+            LocalNameHash::of(b"script"),
+            LocalNameHash::from_static(b"script")
+        );
+        assert!(LocalNameHash::of(b"").is_none());
+        assert!(!LocalNameHash::of(b"div").is_none());
+    }
+
+    /// Hashing every distinct (lowercased) name across the full 1-3 ASCII-
+    /// letter space plus longer real tags must be collision-free: dispatch and
+    /// the rewriter's open-element matching compare names by hash alone.
+    #[test]
+    fn names_are_collision_free() {
+        let mut seen: HashMap<u64, Vec<u8>> = HashMap::new();
+        let mut check = |name: &[u8]| {
+            let hash = LocalNameHash::of(name);
+            if let Some(prev) = seen.insert(hash.0, name.to_vec())
+                && !prev.eq_ignore_ascii_case(name)
+            {
+                panic!("collision: {prev:?} vs {name:?}");
+            }
+        };
+
+        for a in b'a'..=b'z' {
+            check(&[a]);
+            for b in b'a'..=b'z' {
+                check(&[a, b]);
+                for c in b'a'..=b'z' {
+                    check(&[a, b, c]);
+                }
+            }
+        }
+        for tag in [
+            b"blockquote".as_slice(),
+            b"figcaption",
+            b"foreignobject",
+            b"plaintext",
+            b"textarea",
+            b"template",
+            b"noscript",
+            b"optgroup",
+        ] {
+            check(tag);
+        }
     }
 }
