@@ -1991,6 +1991,7 @@ dependencies = [
  "iri-string",
  "jiff",
  "matchit",
+ "memchr",
  "mime_guess",
  "multer",
  "parking_lot",
