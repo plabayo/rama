@@ -81,6 +81,8 @@ pub use self::core::{
 #[doc(inline)]
 pub use self::response::HtmlBuf;
 
+pub(crate) use self::core::escape_attr_value_into;
+
 // Re-exported so the proc-macros emitted by `rama-http-macros` can refer
 // to them via a single root path (`rama_http::protocols::html::Either{,3..9}`),
 // without depending on the user knowing where `rama-core` lives.

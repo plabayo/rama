@@ -102,16 +102,41 @@ pub trait IntoHtml {
 /// HTML4 and some older agents do not recognize it.
 #[inline]
 pub fn escape_into(output: &mut String, input: &str) {
-    for ch in input.chars() {
-        match ch {
-            '&' => output.push_str("&amp;"),
-            '<' => output.push_str("&lt;"),
-            '>' => output.push_str("&gt;"),
-            '"' => output.push_str("&quot;"),
-            '\'' => output.push_str("&#x27;"),
-            _ => output.push(ch),
-        }
+    let bytes = input.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let replacement = match b {
+            b'&' => "&amp;",
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'"' => "&quot;",
+            b'\'' => "&#x27;",
+            _ => continue,
+        };
+        // Every escapable is ASCII, so `i` is a char boundary.
+        output.push_str(&input[start..i]);
+        output.push_str(replacement);
+        start = i + 1;
     }
+    output.push_str(&input[start..]);
+}
+
+/// HTML-escape `value` into a byte buffer for a double-quoted attribute
+/// context, where only `&` and `"` need escaping. Bulk-copies the runs
+/// between escapables.
+pub(crate) fn escape_attr_value_into(output: &mut Vec<u8>, value: &[u8]) {
+    let mut start = 0;
+    for (i, &b) in value.iter().enumerate() {
+        let replacement: &[u8] = match b {
+            b'&' => b"&amp;",
+            b'"' => b"&quot;",
+            _ => continue,
+        };
+        output.extend_from_slice(&value[start..i]);
+        output.extend_from_slice(replacement);
+        start = i + 1;
+    }
+    output.extend_from_slice(&value[start..]);
 }
 
 /// HTML-escape `input`, returning a [`Cow::Borrowed`] of the original

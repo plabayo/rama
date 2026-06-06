@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use rama_core::error::BoxError;
 
 use super::super::tokenizer::StartTag;
-use super::super::{IntoHtml, escape_into};
+use super::super::{IntoHtml, escape_attr_value_into, escape_into};
 
 /// The result of an element content handler. An error aborts the rewrite.
 pub type HandlerResult = Result<(), BoxError>;
@@ -416,7 +416,7 @@ fn emit_start_tag(out: &mut Vec<u8>, tag: &StartTag<'_>, edited: Option<&[Edited
                 out.extend_from_slice(&attr.name);
                 if let Some(value) = &attr.value {
                     out.extend_from_slice(b"=\"");
-                    push_attr_escaped(out, value);
+                    escape_attr_value_into(out, value);
                     out.push(b'"');
                 }
             }
@@ -425,17 +425,6 @@ fn emit_start_tag(out: &mut Vec<u8>, tag: &StartTag<'_>, edited: Option<&[Edited
             } else {
                 out.push(b'>');
             }
-        }
-    }
-}
-
-/// Escapes a double-quoted HTML attribute value (`&` and `"`).
-fn push_attr_escaped(out: &mut Vec<u8>, value: &[u8]) {
-    for &byte in value {
-        match byte {
-            b'&' => out.extend_from_slice(b"&amp;"),
-            b'"' => out.extend_from_slice(b"&quot;"),
-            _ => out.push(byte),
         }
     }
 }
