@@ -168,74 +168,88 @@ impl<'t> Element<'t> {
     /// Accepts any [`IntoHtml`] value — e.g. content built with rama's
     /// `html!` / element macros — which is written pre-escaped.
     pub fn before(&mut self, content: impl IntoHtml) {
+        reserve_html(&mut self.before, &content);
         content.escape_and_write(&mut self.before);
     }
 
     /// Inserts escaped text immediately before the element's start tag.
     pub fn before_text(&mut self, text: impl AsRef<str>) {
-        escape_into(&mut self.before, text.as_ref());
+        let text = text.as_ref();
+        self.before.reserve(text.len());
+        escape_into(&mut self.before, text);
     }
 
     /// Inserts HTML content as the element's first children (immediately
     /// after the start tag). Accepts any [`IntoHtml`] value.
     pub fn prepend(&mut self, content: impl IntoHtml) {
+        reserve_html(&mut self.prepend, &content);
         content.escape_and_write(&mut self.prepend);
     }
 
     /// Inserts escaped text as the element's first children.
     pub fn prepend_text(&mut self, text: impl AsRef<str>) {
-        escape_into(&mut self.prepend, text.as_ref());
+        let text = text.as_ref();
+        self.prepend.reserve(text.len());
+        escape_into(&mut self.prepend, text);
     }
 
     /// Inserts HTML content as the element's last children (immediately
     /// before the end tag). Accepts any [`IntoHtml`] value.
     pub fn append(&mut self, content: impl IntoHtml) {
+        reserve_html(&mut self.append, &content);
         content.escape_and_write(&mut self.append);
     }
 
     /// Inserts escaped text as the element's last children.
     pub fn append_text(&mut self, text: impl AsRef<str>) {
-        escape_into(&mut self.append, text.as_ref());
+        let text = text.as_ref();
+        self.append.reserve(text.len());
+        escape_into(&mut self.append, text);
     }
 
     /// Inserts HTML content immediately after the element's end tag. Accepts
     /// any [`IntoHtml`] value.
     pub fn after(&mut self, content: impl IntoHtml) {
+        reserve_html(&mut self.after, &content);
         content.escape_and_write(&mut self.after);
     }
 
     /// Inserts escaped text immediately after the element's end tag.
     pub fn after_text(&mut self, text: impl AsRef<str>) {
-        escape_into(&mut self.after, text.as_ref());
+        let text = text.as_ref();
+        self.after.reserve(text.len());
+        escape_into(&mut self.after, text);
     }
 
     /// Replaces the element's children with the given [`IntoHtml`] content,
     /// keeping the start and end tags (and any attribute edits).
     pub fn set_inner_content(&mut self, content: impl IntoHtml) {
-        let mut inner = String::new();
+        let mut inner = String::with_capacity(html_capacity(&content));
         content.escape_and_write(&mut inner);
         self.mode = ElementMode::Inner(inner);
     }
 
     /// Replaces the element's children with escaped text.
     pub fn set_inner_text(&mut self, text: impl AsRef<str>) {
-        let mut inner = String::new();
-        escape_into(&mut inner, text.as_ref());
+        let text = text.as_ref();
+        let mut inner = String::with_capacity(text.len());
+        escape_into(&mut inner, text);
         self.mode = ElementMode::Inner(inner);
     }
 
     /// Replaces the whole element (start tag through end tag) with the given
     /// [`IntoHtml`] content.
     pub fn replace(&mut self, content: impl IntoHtml) {
-        let mut replacement = String::new();
+        let mut replacement = String::with_capacity(html_capacity(&content));
         content.escape_and_write(&mut replacement);
         self.mode = ElementMode::Replace(replacement);
     }
 
     /// Replaces the whole element with escaped text.
     pub fn replace_text(&mut self, text: impl AsRef<str>) {
-        let mut replacement = String::new();
-        escape_into(&mut replacement, text.as_ref());
+        let text = text.as_ref();
+        let mut replacement = String::with_capacity(text.len());
+        escape_into(&mut replacement, text);
         self.mode = ElementMode::Replace(replacement);
     }
 
@@ -424,4 +438,13 @@ fn push_attr_escaped(out: &mut Vec<u8>, value: &[u8]) {
             _ => out.push(byte),
         }
     }
+}
+
+fn reserve_html(buf: &mut String, content: &impl IntoHtml) {
+    buf.reserve(html_capacity(content));
+}
+
+fn html_capacity(content: &impl IntoHtml) -> usize {
+    let hint = content.size_hint();
+    hint + (hint / 10)
 }

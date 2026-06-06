@@ -9,7 +9,9 @@ use rama_utils::macros::define_inner_service_accessors;
 
 use super::HtmlRewriteBody;
 use crate::headers::{ContentType, HeaderMapExt};
-use crate::layer::remove_header::remove_payload_metadata_headers;
+use crate::layer::remove_header::{
+    remove_cache_validation_response_headers, remove_payload_metadata_headers,
+};
 use crate::protocols::html::rewrite::ElementContentHandler;
 use crate::protocols::html::selector::Selector;
 use crate::{HeaderMap, Request, Response, StreamingBody, header::CONTENT_ENCODING};
@@ -75,14 +77,16 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let res = self.inner.serve(req).await?;
-        let rewrite = should_rewrite(res.headers());
+        let rewrite = !self.selectors.is_empty() && should_rewrite(res.headers());
         let (mut parts, body) = res.into_parts();
         let body = if rewrite {
             // Rewriting changes the body length and invalidates range support,
             // so drop the now-stale payload metadata (Content-Length,
-            // Transfer-Encoding, Accept-Ranges, …); the response becomes
+            // Transfer-Encoding, Accept-Ranges, …) and representation
+            // validators (ETag, Last-Modified, …); the response becomes
             // chunked / unknown-length.
             remove_payload_metadata_headers(&mut parts.headers);
+            remove_cache_validation_response_headers(&mut parts.headers);
             HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
         } else {
             HtmlRewriteBody::passthrough(body)
@@ -124,6 +128,18 @@ impl<H> HtmlRewriteLayer<H> {
             selectors: selectors.into_iter().collect(),
             handler,
         }
+    }
+
+    /// Wraps a body directly using this layer's selector set and handler.
+    ///
+    /// This is useful for services that need request-specific gating before
+    /// deciding whether a single response body should be rewritten, while
+    /// still sharing the same layer configuration.
+    pub fn rewrite_body<B>(&self, body: B) -> HtmlRewriteBody<B, H>
+    where
+        H: ElementContentHandler + Clone,
+    {
+        HtmlRewriteBody::new(body, &self.selectors, self.handler.clone())
     }
 }
 

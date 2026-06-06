@@ -51,6 +51,54 @@ const VOID_SOURCE: LocalNameHash = LocalNameHash::from_static(b"source");
 const VOID_TRACK: LocalNameHash = LocalNameHash::from_static(b"track");
 const VOID_WBR: LocalNameHash = LocalNameHash::from_static(b"wbr");
 
+// Optional-end-tag / implied-close elements. These cover the common HTML
+// tree-builder cases that affect streaming selector ancestry.
+const ADDRESS: LocalNameHash = LocalNameHash::from_static(b"address");
+const ARTICLE: LocalNameHash = LocalNameHash::from_static(b"article");
+const ASIDE: LocalNameHash = LocalNameHash::from_static(b"aside");
+const BLOCKQUOTE: LocalNameHash = LocalNameHash::from_static(b"blockquote");
+const DD: LocalNameHash = LocalNameHash::from_static(b"dd");
+const DETAILS: LocalNameHash = LocalNameHash::from_static(b"details");
+const DIV: LocalNameHash = LocalNameHash::from_static(b"div");
+const DL: LocalNameHash = LocalNameHash::from_static(b"dl");
+const DT: LocalNameHash = LocalNameHash::from_static(b"dt");
+const FIELDSET: LocalNameHash = LocalNameHash::from_static(b"fieldset");
+const FIGCAPTION: LocalNameHash = LocalNameHash::from_static(b"figcaption");
+const FIGURE: LocalNameHash = LocalNameHash::from_static(b"figure");
+const FOOTER: LocalNameHash = LocalNameHash::from_static(b"footer");
+const FORM: LocalNameHash = LocalNameHash::from_static(b"form");
+const H1: LocalNameHash = LocalNameHash::from_static(b"h1");
+const H2: LocalNameHash = LocalNameHash::from_static(b"h2");
+const H3: LocalNameHash = LocalNameHash::from_static(b"h3");
+const H4: LocalNameHash = LocalNameHash::from_static(b"h4");
+const H5: LocalNameHash = LocalNameHash::from_static(b"h5");
+const H6: LocalNameHash = LocalNameHash::from_static(b"h6");
+const HEADER: LocalNameHash = LocalNameHash::from_static(b"header");
+const HGROUP: LocalNameHash = LocalNameHash::from_static(b"hgroup");
+const LI: LocalNameHash = LocalNameHash::from_static(b"li");
+const MAIN: LocalNameHash = LocalNameHash::from_static(b"main");
+const MENU: LocalNameHash = LocalNameHash::from_static(b"menu");
+const NAV: LocalNameHash = LocalNameHash::from_static(b"nav");
+const OL: LocalNameHash = LocalNameHash::from_static(b"ol");
+const OPTGROUP: LocalNameHash = LocalNameHash::from_static(b"optgroup");
+const OPTION: LocalNameHash = LocalNameHash::from_static(b"option");
+const P: LocalNameHash = LocalNameHash::from_static(b"p");
+const PRE: LocalNameHash = LocalNameHash::from_static(b"pre");
+const RB: LocalNameHash = LocalNameHash::from_static(b"rb");
+const RP: LocalNameHash = LocalNameHash::from_static(b"rp");
+const RT: LocalNameHash = LocalNameHash::from_static(b"rt");
+const RTC: LocalNameHash = LocalNameHash::from_static(b"rtc");
+const SEARCH: LocalNameHash = LocalNameHash::from_static(b"search");
+const SECTION: LocalNameHash = LocalNameHash::from_static(b"section");
+const TABLE: LocalNameHash = LocalNameHash::from_static(b"table");
+const TBODY: LocalNameHash = LocalNameHash::from_static(b"tbody");
+const TD: LocalNameHash = LocalNameHash::from_static(b"td");
+const TFOOT: LocalNameHash = LocalNameHash::from_static(b"tfoot");
+const TH: LocalNameHash = LocalNameHash::from_static(b"th");
+const THEAD: LocalNameHash = LocalNameHash::from_static(b"thead");
+const TR: LocalNameHash = LocalNameHash::from_static(b"tr");
+const UL: LocalNameHash = LocalNameHash::from_static(b"ul");
+
 /// Whether `name` is an HTML void element. A `match` over the precomputed
 /// name hashes lets the compiler build a decision tree (a handful of integer
 /// compares), rather than a runtime slice scan.
@@ -228,6 +276,39 @@ impl SelectorMatcher {
         opened
     }
 
+    /// Applies start-tag implied end tags before a new element is matched.
+    ///
+    /// This mirrors the common optional-end-tag cases (`<li><li>`,
+    /// `<p><p>`, table cells/rows, options, ruby annotations). It keeps
+    /// selector ancestry and deferred rewriter actions aligned with the HTML
+    /// tree-builder shape for in-the-wild markup that legally omits end tags.
+    pub(crate) fn pop_implied_for_start(&mut self, name: LocalNameHash) -> usize {
+        let mut popped = 0;
+        match name {
+            LI => popped += self.pop_nearest(&[LI]),
+            DD | DT => popped += self.pop_nearest(&[DD, DT]),
+            OPTION => popped += self.pop_nearest(&[OPTION]),
+            OPTGROUP => {
+                popped += self.pop_nearest(&[OPTION]);
+                popped += self.pop_nearest(&[OPTGROUP]);
+            }
+            RB | RT | RTC | RP => popped += self.pop_nearest(&[RB, RT, RTC, RP]),
+            TR => {
+                popped += self.pop_nearest(&[TD, TH]);
+                popped += self.pop_nearest(&[TR]);
+            }
+            TD | TH => popped += self.pop_nearest(&[TD, TH]),
+            THEAD | TBODY | TFOOT => {
+                popped += self.pop_nearest(&[TD, TH]);
+                popped += self.pop_nearest(&[TR]);
+                popped += self.pop_nearest(&[THEAD, TBODY, TFOOT]);
+            }
+            _ if closes_p(name) => popped += self.pop_nearest(&[P]),
+            _ => {}
+        }
+        popped
+    }
+
     /// Processes an end tag, closing the matching open element.
     ///
     /// Mirrors HTML's "generate implied end tags": it closes the *topmost*
@@ -251,6 +332,70 @@ impl SelectorMatcher {
         self.states.truncate(pos * self.selectors.len());
         popped
     }
+
+    /// Closes every still-open element at EOF.
+    pub(crate) fn finish(&mut self) -> usize {
+        let popped = self.stack.len().saturating_sub(1);
+        self.stack.truncate(1);
+        self.states.truncate(self.selectors.len());
+        popped
+    }
+
+    fn pop_nearest(&mut self, names: &[LocalNameHash]) -> usize {
+        let Some(pos) = self
+            .stack
+            .iter()
+            .rposition(|frame| names.contains(&frame.name))
+        else {
+            return 0;
+        };
+        if pos == 0 {
+            return 0;
+        }
+        let popped = self.stack.len() - pos;
+        self.stack.truncate(pos);
+        self.states.truncate(pos * self.selectors.len());
+        popped
+    }
+}
+
+fn closes_p(name: LocalNameHash) -> bool {
+    matches!(
+        name,
+        ADDRESS
+            | ARTICLE
+            | ASIDE
+            | BLOCKQUOTE
+            | DD
+            | DETAILS
+            | DIV
+            | DL
+            | DT
+            | FIELDSET
+            | FIGCAPTION
+            | FIGURE
+            | FOOTER
+            | FORM
+            | H1
+            | H2
+            | H3
+            | H4
+            | H5
+            | H6
+            | HEADER
+            | HGROUP
+            | VOID_HR
+            | MAIN
+            | MENU
+            | NAV
+            | OL
+            | P
+            | PRE
+            | SEARCH
+            | SECTION
+            | TABLE
+            | UL
+    )
 }
 
 fn complex_uses_nth_of_type(complex: &ComplexSelector) -> bool {

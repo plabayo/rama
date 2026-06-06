@@ -15,6 +15,7 @@ impl TokenSink for Recorder {
     fn start_tag(&mut self, tag: &StartTag<'_>) {
         let Self { vm, hits } = self;
         let name = String::from_utf8_lossy(tag.name()).into_owned();
+        vm.pop_implied_for_start(tag.name_hash());
         vm.push_element(tag, |index| hits.push((index, name.clone())));
     }
 
@@ -86,6 +87,10 @@ fn child_combinator_multiple_children() {
         run(&["ul > li"], b"<ul><li></li><li></li></ul>"),
         [hit(0, "li"), hit(0, "li")]
     );
+    assert_eq!(
+        run(&["ul > li"], b"<ul><li>one<li>two</ul>"),
+        [hit(0, "li"), hit(0, "li")]
+    );
 }
 
 #[test]
@@ -133,6 +138,10 @@ fn nth_child_and_of_type() {
             b"<div><p></p><span></span><p id=second></p></div>"
         ),
         [hit(0, "p")]
+    );
+    assert_eq!(
+        run(&["li:nth-child(2)"], b"<ul><li>one<li id=second>two</ul>"),
+        [hit(0, "li")]
     );
 }
 

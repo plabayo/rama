@@ -10,12 +10,10 @@
 //! Unlike a DOM parser it builds no tree and decodes no character
 //! references — text and attribute values are exposed as raw bytes.
 //!
-//! ## Scope (current)
-//!
-//! Single-pass over a complete input, with correct text-mode handling for
-//! `<script>` / `<style>` / `<textarea>` / `<title>` / `<plaintext>` / ….
-//! Foreign content (SVG/MathML CDATA + namespaces) and chunked streaming
-//! land in later slices. The identity property holds for all input.
+//! It is resumable (`write` + `end`) and handles HTML text modes
+//! (`<script>` / `<style>` / `<textarea>` / `<title>` / `<plaintext>` / …)
+//! plus the SVG/MathML foreign-content context needed to distinguish real
+//! CDATA from bogus comments. The identity property holds for all input.
 
 mod context;
 mod machine;

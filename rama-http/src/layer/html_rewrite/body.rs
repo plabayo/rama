@@ -9,6 +9,7 @@ use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::futures::ready;
 
+use crate::HeaderMap;
 use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter};
 use crate::protocols::html::selector::Selector;
@@ -26,6 +27,7 @@ pin_project! {
         inner: B,
         // `None` => passthrough; `Some` => actively rewriting.
         rewriter: Option<HtmlRewriter<H>>,
+        pending_trailers: Option<HeaderMap>,
         // Set once the inner body has ended and the rewriter is flushed.
         done: bool,
     }
@@ -42,6 +44,7 @@ where
         Self {
             inner,
             rewriter: Some(HtmlRewriter::new(selectors, handler)),
+            pending_trailers: None,
             done: false,
         }
     }
@@ -57,6 +60,7 @@ impl<B, H> HtmlRewriteBody<B, H> {
         Self {
             inner,
             rewriter: None,
+            pending_trailers: None,
             done: false,
         }
     }
@@ -75,6 +79,11 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
+
+        if let Some(trailers) = this.pending_trailers.take() {
+            *this.done = true;
+            return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
+        }
 
         if *this.done {
             return Poll::Ready(None);
@@ -114,10 +123,20 @@ where
                         // The rewriter buffered an incomplete construct (e.g. a
                         // partial tag); keep polling for more input.
                     }
-                    // A non-data frame (trailers) — forward it verbatim.
+                    // A trailers frame terminates the body. Flush the
+                    // rewriter first so data never appears after trailers.
                     Err(frame) => {
                         if let Ok(trailers) = frame.into_trailers() {
-                            return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
+                            if let Err(err) = rewriter.end() {
+                                return Poll::Ready(Some(Err(err)));
+                            }
+                            let out = rewriter.take_output();
+                            if out.is_empty() {
+                                *this.done = true;
+                                return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
+                            }
+                            *this.pending_trailers = Some(trailers);
+                            return Poll::Ready(Some(Ok(Frame::data(Bytes::from(out)))));
                         }
                     }
                 },

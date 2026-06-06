@@ -43,7 +43,11 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
             error,
         } = self;
 
-        // Visible iff no enclosing element is suppressing its content.
+        let implied = matcher.pop_implied_for_start(tag.name_hash());
+        close_pending(output, pending, suppress_depth, implied, None);
+
+        // Visible iff no enclosing element is suppressing its content after
+        // any optional-end-tag frames closed by this start tag.
         let visible = *suppress_depth == 0;
         matched.clear();
         let opened = matcher.push_element(tag, |index| matched.push(index));
@@ -94,32 +98,16 @@ impl<H: ElementContentHandler> TokenSink for RewriteSink<H> {
             return;
         }
         // The end tag closes `popped` frames: the named element plus any
-        // still-open descendants it implicitly closes (malformed input).
-        // Clear the suppression each contributed; the named element is the
-        // outermost (last popped) and owns this end tag's deferred actions
-        // (the implicitly-closed descendants had no end tag in the source, so
-        // their deferred edits are dropped).
-        let mut named = None;
-        for i in 0..popped {
-            let Some(actions) = self.pending.pop() else {
-                break;
-            };
-            if actions.suppress_content {
-                self.suppress_depth = self.suppress_depth.saturating_sub(1);
-            }
-            if i + 1 == popped {
-                named = Some(actions);
-            }
-        }
-        if self.suppress_depth == 0
-            && let Some(actions) = named
-        {
-            self.output.extend_from_slice(actions.append.as_bytes());
-            if !actions.suppress_end_tag {
-                self.output.extend_from_slice(tag.raw());
-            }
-            self.output.extend_from_slice(actions.after.as_bytes());
-        }
+        // still-open descendants it implicitly closes. Every closed frame gets
+        // its deferred end actions at this point; only the named frame owns
+        // the source end tag bytes.
+        close_pending(
+            &mut self.output,
+            &mut self.pending,
+            &mut self.suppress_depth,
+            popped,
+            Some(tag.raw()),
+        );
     }
 
     fn text(&mut self, text: &Text<'_>) {
@@ -190,6 +178,7 @@ impl<H: ElementContentHandler> HtmlRewriter<H> {
     /// See [`write`](Self::write).
     pub fn end(&mut self) -> Result<(), BoxError> {
         self.tokenizer.end(&mut self.sink)?;
+        self.sink.finish();
         self.sink.take_error()
     }
 
@@ -221,6 +210,44 @@ impl<H> RewriteSink<H> {
         match self.error.take() {
             Some(err) => Err(err),
             None => Ok(()),
+        }
+    }
+
+    fn finish(&mut self) {
+        let popped = self.matcher.finish();
+        close_pending(
+            &mut self.output,
+            &mut self.pending,
+            &mut self.suppress_depth,
+            popped,
+            None,
+        );
+    }
+}
+
+fn close_pending(
+    output: &mut Vec<u8>,
+    pending: &mut Vec<EndActions>,
+    suppress_depth: &mut usize,
+    popped: usize,
+    named_end_tag: Option<&[u8]>,
+) {
+    for i in 0..popped {
+        let Some(actions) = pending.pop() else {
+            break;
+        };
+        if actions.suppress_content {
+            *suppress_depth = (*suppress_depth).saturating_sub(1);
+        }
+        if *suppress_depth == 0 {
+            output.extend_from_slice(actions.append.as_bytes());
+            if i + 1 == popped
+                && let Some(raw) = named_end_tag
+                && !actions.suppress_end_tag
+            {
+                output.extend_from_slice(raw);
+            }
+            output.extend_from_slice(actions.after.as_bytes());
         }
     }
 }
@@ -663,5 +690,63 @@ mod tests {
             }),
         );
         assert_eq!(out, "Rtail");
+    }
+
+    #[test]
+    fn append_applies_to_optional_li_end_tags() {
+        let out = rewrite(
+            "<ul><li>one<li>two</ul>",
+            ElementContentHandlers::new().on(sel("li"), |el| {
+                el.append_text("!");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<ul><li>one!<li>two!</ul>");
+    }
+
+    #[test]
+    fn start_implied_p_close_restores_suppression() {
+        #[derive(Default)]
+        struct RemoveFirst {
+            seen: usize,
+        }
+
+        impl ElementContentHandler for RemoveFirst {
+            fn handle_element(
+                &mut self,
+                _selector: usize,
+                element: &mut Element<'_>,
+            ) -> HandlerResult {
+                if self.seen == 0 {
+                    element.remove();
+                } else {
+                    element.append_text("!");
+                }
+                self.seen += 1;
+                Ok(())
+            }
+        }
+
+        let selectors = [sel("p")];
+        let mut rewriter = HtmlRewriter::new(&selectors, RemoveFirst::default());
+        rewriter
+            .write(b"<p>drop<p>keep</p>")
+            .expect("write succeeds");
+        rewriter.end().expect("end succeeds");
+        let out = String::from_utf8(rewriter.take_output()).expect("utf8");
+        assert_eq!(out, "<p>keep!</p>");
+    }
+
+    #[test]
+    fn eof_flushes_end_anchored_actions() {
+        let out = rewrite(
+            "<div>tail",
+            ElementContentHandlers::new().on(sel("div"), |el| {
+                el.append_text("!");
+                el.after_text("A");
+                Ok(())
+            }),
+        );
+        assert_eq!(out, "<div>tail!A");
     }
 }
