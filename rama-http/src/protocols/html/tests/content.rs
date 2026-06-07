@@ -68,6 +68,18 @@ fn cow_str_is_escaped() {
 }
 
 #[test]
+fn boxed_str_is_escaped() {
+    let boxed: Box<str> = "a<b & c".into();
+    assert_eq!(p!(boxed).into_string(), "<p>a&lt;b &amp; c</p>");
+}
+
+#[test]
+fn pre_escaped_boxed_str_passes_through() {
+    let boxed: Box<str> = "<u>u</u>".into();
+    assert_eq!(p!(PreEscaped(boxed)).into_string(), "<p><u>u</u></p>");
+}
+
+#[test]
 fn integer_content() {
     assert_eq!(span!(42_i32).into_string(), "<span>42</span>");
     assert_eq!(span!(0_u8).into_string(), "<span>0</span>");

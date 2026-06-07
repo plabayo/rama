@@ -318,6 +318,21 @@ impl IntoHtml for PreEscaped<Cow<'static, str>> {
     }
 }
 
+impl IntoHtml for PreEscaped<Box<str>> {
+    #[inline]
+    fn into_html(self) -> impl IntoHtml {
+        self
+    }
+    #[inline]
+    fn escape_and_write(self, buf: &mut String) {
+        buf.push_str(&self.0);
+    }
+    #[inline]
+    fn size_hint(&self) -> usize {
+        self.0.len()
+    }
+}
+
 // ---- scalar / std impls ----------------------------------------------------
 
 impl IntoHtml for &str {
@@ -373,6 +388,21 @@ impl IntoHtml for &String {
     #[inline]
     fn escape_and_write(self, buf: &mut String) {
         escape_into(buf, self)
+    }
+    #[inline]
+    fn size_hint(&self) -> usize {
+        self.len()
+    }
+}
+
+impl IntoHtml for Box<str> {
+    #[inline]
+    fn into_html(self) -> impl IntoHtml {
+        self
+    }
+    #[inline]
+    fn escape_and_write(self, buf: &mut String) {
+        escape_into(buf, &self)
     }
     #[inline]
     fn size_hint(&self) -> usize {
