@@ -18,7 +18,7 @@
 use libfuzzer_sys::arbitrary::{self, Arbitrary};
 use libfuzzer_sys::fuzz_target;
 use rama::http::protocols::html::rewrite::{
-    Element, ElementContentHandlers, HtmlRewriter, rewrite_str,
+    AttributeName, Element, ElementContentHandlers, HtmlRewriter, rewrite_str,
 };
 use rama::http::protocols::html::selector::Selector;
 
@@ -49,7 +49,7 @@ const SELECTORS: &[&str] = &[
 /// Applies one mutation, chosen by `op`, covering every `Element` edit.
 fn apply_op(el: &mut Element<'_>, op: u8) {
     match op % 9 {
-        0 => el.set_attribute("data-x", "1"),
+        0 => el.set_attribute(AttributeName::from_static("data-x"), "1"),
         1 => el.remove(),
         2 => el.replace("R"),
         3 => el.before("B"),

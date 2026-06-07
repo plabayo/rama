@@ -2,14 +2,131 @@
 //! [`ElementContentHandler`] trait.
 
 use std::borrow::Cow;
+use std::fmt;
+use std::str::FromStr;
 
 use rama_core::error::BoxError;
+use rama_utils::byte_set::{set_each, set_range};
 
 use super::super::tokenizer::StartTag;
 use super::super::{IntoHtml, escape_attr_value_into};
 
 /// The result of an element content handler. An error aborts the rewrite.
 pub type HandlerResult = Result<(), BoxError>;
+
+/// Bytes that may not appear in an HTML attribute name: C0 controls, `DEL`,
+/// space, and the delimiters that would let a crafted name break out of the
+/// tag (`"` `'` `>` `/` `=` `<`).
+const FORBIDDEN_NAME_BYTE: [bool; 256] = set_each(
+    set_each(set_range([false; 256], 0, 0x20), &[0x7f]),
+    b" \"'<>/=",
+);
+
+/// A validated HTML attribute name.
+///
+/// Constructing one is the only way to name an attribute in
+/// [`Element::set_attribute`], so a name can never inject markup. Build it
+/// from a literal with [`from_static`](Self::from_static), or validate
+/// untrusted input with [`TryFrom`]/[`FromStr`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeName(Cow<'static, str>);
+
+/// Why a string is not a valid [`AttributeName`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InvalidAttributeName {
+    /// The name was empty.
+    Empty,
+    /// The name contained a byte that is forbidden in an attribute name.
+    ForbiddenByte(u8),
+}
+
+impl fmt::Display for InvalidAttributeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("empty attribute name"),
+            Self::ForbiddenByte(b) => write!(f, "forbidden byte {b:#04x} in attribute name"),
+        }
+    }
+}
+
+impl std::error::Error for InvalidAttributeName {}
+
+impl AttributeName {
+    /// Validates a literal attribute name at construction.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is empty or contains a byte forbidden in an attribute
+    /// name. Since the input is `'static`, a bad name is a programming error
+    /// caught on first use (and at compile time when used in a `const`).
+    #[must_use]
+    pub const fn from_static(name: &'static str) -> Self {
+        assert!(
+            is_valid_name(name.as_bytes()),
+            "invalid HTML attribute name"
+        );
+        Self(Cow::Borrowed(name))
+    }
+
+    /// The validated name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn into_name_bytes(self) -> Cow<'static, [u8]> {
+        match self.0 {
+            Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+            Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+        }
+    }
+}
+
+impl TryFrom<&str> for AttributeName {
+    type Error = InvalidAttributeName;
+
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        validate_name(name.as_bytes())?;
+        Ok(Self(Cow::Owned(name.to_owned())))
+    }
+}
+
+impl FromStr for AttributeName {
+    type Err = InvalidAttributeName;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s)
+    }
+}
+
+const fn is_valid_name(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < bytes.len() {
+        if FORBIDDEN_NAME_BYTE[bytes[i] as usize] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn validate_name(bytes: &[u8]) -> Result<(), InvalidAttributeName> {
+    if bytes.is_empty() {
+        return Err(InvalidAttributeName::Empty);
+    }
+    match bytes
+        .iter()
+        .copied()
+        .find(|&b| FORBIDDEN_NAME_BYTE[b as usize])
+    {
+        Some(b) => Err(InvalidAttributeName::ForbiddenByte(b)),
+        None => Ok(()),
+    }
+}
 
 /// Handles matched elements during a rewrite.
 ///
@@ -132,21 +249,22 @@ impl<'t> Element<'t> {
         self.attribute(name).is_some()
     }
 
-    /// Sets (or adds) an attribute with the given value.
-    pub fn set_attribute(&mut self, name: &str, value: &str) {
+    /// Sets (or adds) an attribute. The [`AttributeName`] is pre-validated, so
+    /// it cannot inject markup; the value is escaped on render.
+    pub fn set_attribute(&mut self, name: AttributeName, value: &str) {
         self.ensure_attributes();
         let Some(attributes) = self.attributes.as_mut() else {
             return;
         };
-        let name = name.as_bytes();
+        let name = name.into_name_bytes();
         if let Some(existing) = attributes
             .iter_mut()
-            .find(|a| a.name.eq_ignore_ascii_case(name))
+            .find(|a| a.name.eq_ignore_ascii_case(&name))
         {
             existing.value = Some(Cow::Owned(value.as_bytes().to_vec()));
         } else {
             attributes.push(EditedAttribute {
-                name: Cow::Owned(name.to_vec()),
+                name,
                 value: Some(Cow::Owned(value.as_bytes().to_vec())),
             });
         }
@@ -389,4 +507,50 @@ fn reserve_html(buf: &mut String, content: &impl IntoHtml) {
 fn html_capacity(content: &impl IntoHtml) -> usize {
     let hint = content.size_hint();
     hint + (hint / 10)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AttributeName, InvalidAttributeName};
+
+    #[test]
+    fn valid_names() {
+        for name in ["class", "data-x", "aria-label", "x", "ns:attr"] {
+            assert_eq!(AttributeName::from_static(name).as_str(), name);
+            assert_eq!(AttributeName::try_from(name).unwrap().as_str(), name);
+            assert_eq!(name.parse::<AttributeName>().unwrap().as_str(), name);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_names() {
+        assert_eq!(
+            AttributeName::try_from(""),
+            Err(InvalidAttributeName::Empty)
+        );
+        // Every byte that could break out of the start tag is rejected.
+        for (input, byte) in [
+            ("a b", b' '),
+            ("a\tb", b'\t'),
+            ("a=b", b'='),
+            ("a>b", b'>'),
+            ("a/b", b'/'),
+            ("a<b", b'<'),
+            ("a\"b", b'"'),
+            ("a'b", b'\''),
+            ("a\x7fb", 0x7f),
+        ] {
+            assert_eq!(
+                AttributeName::try_from(input),
+                Err(InvalidAttributeName::ForbiddenByte(byte)),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic = "invalid HTML attribute name"]
+    fn from_static_panics_on_injection() {
+        let _name = AttributeName::from_static("x onload=alert(1)");
+    }
 }

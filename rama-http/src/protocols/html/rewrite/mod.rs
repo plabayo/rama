@@ -23,7 +23,9 @@ mod rewriter;
 #[cfg(test)]
 mod tests;
 
-pub use self::element::{Element, ElementContentHandler, HandlerResult};
+pub use self::element::{
+    AttributeName, Element, ElementContentHandler, HandlerResult, InvalidAttributeName,
+};
 pub use self::rewriter::{ElementContentHandlers, HtmlRewriter, rewrite_str};
 
 /// Selectors with more compounds than this can't be represented in the

@@ -318,7 +318,9 @@ pub fn rewrite_str(html: &str, handlers: ElementContentHandlers<'_>) -> Result<S
 mod tests {
     use super::{ElementContentHandlers, HtmlRewriter, rewrite_str};
     use crate::protocols::html::PreEscaped;
-    use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult};
+    use crate::protocols::html::rewrite::{
+        AttributeName, Element, ElementContentHandler, HandlerResult,
+    };
     use crate::protocols::html::selector::Selector;
 
     fn sel(s: &str) -> Selector {
@@ -341,9 +343,9 @@ mod tests {
         let out = rewrite(
             r#"<a href="/old" data-x="1">link</a>"#,
             ElementContentHandlers::new().on(sel("a"), |el| {
-                el.set_attribute("href", "/new");
+                el.set_attribute(AttributeName::from_static("href"), "/new");
                 el.remove_attribute("data-x");
-                el.set_attribute("rel", "nofollow");
+                el.set_attribute(AttributeName::from_static("rel"), "nofollow");
                 Ok(())
             }),
         );
@@ -355,7 +357,7 @@ mod tests {
         let out = rewrite(
             "<a>x</a>",
             ElementContentHandlers::new().on(sel("a"), |el| {
-                el.set_attribute("title", r#"a "b" & c"#);
+                el.set_attribute(AttributeName::from_static("title"), r#"a "b" & c"#);
                 Ok(())
             }),
         );
@@ -396,7 +398,7 @@ mod tests {
         let out = rewrite(
             "<div><span>a</span><span>b</span></div>",
             ElementContentHandlers::new().on(sel("div > span"), |el| {
-                el.set_attribute("data-hit", "1");
+                el.set_attribute(AttributeName::from_static("data-hit"), "1");
                 Ok(())
             }),
         );
@@ -424,7 +426,10 @@ mod tests {
     impl ElementContentHandler for LinkCounter {
         fn handle_element(&mut self, _selector: usize, element: &mut Element<'_>) -> HandlerResult {
             self.count += 1;
-            element.set_attribute("data-n", &self.count.to_string());
+            element.set_attribute(
+                AttributeName::from_static("data-n"),
+                &self.count.to_string(),
+            );
             Ok(())
         }
     }
@@ -483,7 +488,7 @@ mod tests {
         let out = rewrite(
             r#"<div class="a">old</div>"#,
             ElementContentHandlers::new().on(sel("div"), |el| {
-                el.set_attribute("data-x", "1");
+                el.set_attribute(AttributeName::from_static("data-x"), "1");
                 el.set_inner_content("new");
                 Ok(())
             }),
@@ -567,7 +572,7 @@ mod tests {
                     Ok(())
                 })
                 .on(sel("a"), |el| {
-                    el.set_attribute("data-hit", "1");
+                    el.set_attribute(AttributeName::from_static("data-hit"), "1");
                     Ok(())
                 }),
         );
