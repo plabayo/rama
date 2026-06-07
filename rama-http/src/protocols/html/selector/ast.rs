@@ -42,8 +42,11 @@ pub(crate) enum Combinator {
 
 /// A compound selector: an optional type/universal selector plus zero or
 /// more subclass selectors, all of which must match the same element.
+///
+/// Build one with the infallible [`Compound::tag`] / [`Compound::class`] /
+/// … constructors (see the [builder](super) methods).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct Compound {
+pub struct Compound {
     /// Element type. `None` matches any element.
     pub(crate) name: Option<LocalName>,
     /// Whether a universal `*` was explicitly written. Only affects

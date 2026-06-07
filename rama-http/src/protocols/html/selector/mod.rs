@@ -33,6 +33,7 @@
 //! `:nth-last-*`) are intentionally rejected with a [`SelectorError`].
 
 pub(crate) mod ast;
+mod builder;
 mod display;
 mod dom;
 mod matcher;
@@ -41,7 +42,7 @@ mod parser;
 #[cfg(test)]
 mod tests;
 
-pub use self::ast::Selector;
+pub use self::ast::{Compound, Selector};
 pub use self::dom::{Dom, Element, NodeId};
 pub use self::matcher::SelectorSubject;
 

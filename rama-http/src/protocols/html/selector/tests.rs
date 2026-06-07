@@ -8,7 +8,7 @@
 //! here as a regression case.
 
 use super::ast::NthType;
-use super::{Dom, NodeId, Selector, SelectorError};
+use super::{Compound, Dom, NodeId, Selector, SelectorError};
 
 fn sel(s: &str) -> Selector {
     s.parse()
@@ -370,6 +370,96 @@ fn matching_negation() {
     assert!(sel(":not(:not(a))").matches(&dom.element(a)));
     assert!(!sel(":not(:not(a))").matches(&dom.element(b)));
     assert!(!sel(":not(:not(:not(a)))").matches(&dom.element(a)));
+}
+
+// --- builder ------------------------------------------------------------
+
+#[test]
+fn builder_equals_parse_and_round_trips() {
+    let cases: [(Selector, &str); 13] = [
+        (Selector::tag("DIV"), "div"),
+        (Selector::class("menu"), ".menu"),
+        (Selector::id("main"), "#main"),
+        (Selector::any(), "*"),
+        (Selector::tag("div").child(Compound::tag("a")), "div > a"),
+        (
+            Selector::tag("div").descendant(Compound::class("x")),
+            "div .x",
+        ),
+        (Selector::tag("a").or(Selector::tag("b")), "a, b"),
+        (
+            Selector::of(Compound::tag("a").with_class("x").with_id("y")),
+            "a.x#y",
+        ),
+        (
+            Selector::of(
+                Compound::tag("input")
+                    .with_attr("required")
+                    .with_attr_eq("type", "text"),
+            ),
+            r#"input[required][type="text"]"#,
+        ),
+        (
+            Selector::of(Compound::tag("a").with_attr_prefix("href", "/")),
+            r#"a[href^="/"]"#,
+        ),
+        (
+            Selector::of(Compound::tag("a").with_attr_eq_ignore_case("rel", "x")),
+            r#"a[rel="x" i]"#,
+        ),
+        (
+            Selector::of(Compound::tag("li").with_nth_child(2, 1)),
+            "li:nth-child(2n+1)",
+        ),
+        (
+            Selector::of(Compound::tag("a").without(Compound::class("x"))),
+            "a:not(.x)",
+        ),
+    ];
+    for (built, parsed) in cases {
+        assert_eq!(built, sel(parsed), "built vs `{parsed}`");
+        // The builder output serializes and reparses to the same selector.
+        assert_eq!(sel(&built.to_string()), built, "round-trip `{parsed}`");
+    }
+}
+
+#[test]
+fn builder_matching() {
+    let (dom, _root, a, b) = fixture();
+
+    assert!(Selector::tag("a").matches(&dom.element(a)));
+    assert!(Selector::class("x").matches(&dom.element(a)));
+    assert!(Selector::id("i").matches(&dom.element(b)));
+    assert!(
+        Selector::tag("a")
+            .descendant(Compound::tag("b"))
+            .matches(&dom.element(b))
+    );
+    assert!(
+        Selector::tag("root")
+            .child(Compound::tag("a"))
+            .matches(&dom.element(a))
+    );
+    assert!(
+        Selector::of(Compound::tag("a").without(Compound::class("y"))).matches(&dom.element(a))
+    );
+    assert!(
+        !Selector::of(Compound::tag("a").without(Compound::class("x"))).matches(&dom.element(a))
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic = "must be a non-empty literal"]
+fn builder_rejects_whitespace_in_debug() {
+    let _sel = Compound::tag("a b");
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic = "must be a non-empty literal"]
+fn builder_rejects_empty_in_debug() {
+    let _sel = Selector::class("");
 }
 
 #[test]

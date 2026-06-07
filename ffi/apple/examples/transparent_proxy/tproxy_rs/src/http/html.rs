@@ -16,6 +16,7 @@ use rama::{
         protocols::html::{
             IntoHtml, div,
             rewrite::{Element, ElementContentHandler, HandlerResult},
+            selector::Selector,
         },
     },
     matcher::service::{ServiceMatch, ServiceMatcher},
@@ -302,15 +303,8 @@ impl IntoHtml for ProxyBadge {
 }
 
 fn badge_rewrite_layer(label: &str) -> HtmlRewriteLayer<BadgeHandler> {
-    let selectors = match "body".parse() {
-        Ok(selector) => vec![selector],
-        Err(err) => {
-            tracing::debug!("failed to parse HTML badge selector: {err}");
-            Vec::new()
-        }
-    };
     HtmlRewriteLayer::new(
-        selectors,
+        [Selector::tag("body")],
         BadgeHandler {
             label: label.to_owned(),
         },
