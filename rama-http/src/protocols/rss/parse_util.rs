@@ -6,6 +6,7 @@
 //! return owned data. The streaming readers call them per element.
 
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 
 use super::atom::{AtomCategory, AtomLink, AtomText};
 use super::feed_ext::names::attr;
@@ -23,6 +24,22 @@ pub(super) fn attr_value(e: &Attrs<'_>, name: &str) -> Option<String> {
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == needle)
         .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+}
+
+pub(super) fn parse_uri(s: &str) -> Option<Uri> {
+    Uri::parse(s.trim()).ok()
+}
+
+pub(super) fn parse_uri_reference(s: &str) -> Option<Uri> {
+    Uri::parse_reference(s.trim()).ok()
+}
+
+pub(super) fn attr_uri(e: &Attrs<'_>, name: &str) -> Option<Uri> {
+    attr_value(e, name).and_then(|v| parse_uri(&v))
+}
+
+pub(super) fn attr_uri_reference(e: &Attrs<'_>, name: &str) -> Option<Uri> {
+    attr_value(e, name).and_then(|v| parse_uri_reference(&v))
 }
 
 /// Parse an RSS 2.0 date — RFC 822 first (the spec) with RFC 3339 as a
@@ -45,31 +62,31 @@ pub(super) fn parse_rfc3339_lax(s: &str) -> Option<Timestamp> {
 /// [`AtomText`] variant.
 pub(super) fn make_atom_text(type_attr: &str, value: String) -> AtomText {
     match type_attr {
-        "html" | "text/html" => AtomText::html(value),
+        "html" | "text/html" => AtomText::html_raw(value),
         "xhtml" => AtomText::xhtml(value),
         _ => AtomText::text(value),
     }
 }
 
-pub(super) fn enclosure_from_attrs(e: &Attrs<'_>) -> Rss2Enclosure {
-    Rss2Enclosure {
-        url: attr_value(e, attr::URL).unwrap_or_default(),
+pub(super) fn enclosure_from_attrs(e: &Attrs<'_>) -> Option<Rss2Enclosure> {
+    Some(Rss2Enclosure {
+        url: attr_uri(e, attr::URL)?,
         length: attr_value(e, attr::LENGTH)
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or_default(),
         type_: attr_value(e, attr::TYPE).unwrap_or_default(),
-    }
+    })
 }
 
-pub(super) fn atom_link_from_attrs(e: &Attrs<'_>) -> AtomLink {
-    AtomLink {
-        href: attr_value(e, attr::HREF).unwrap_or_default(),
+pub(super) fn atom_link_from_attrs(e: &Attrs<'_>) -> Option<AtomLink> {
+    Some(AtomLink {
+        href: attr_uri_reference(e, attr::HREF)?,
         rel: attr_value(e, attr::REL),
         type_: attr_value(e, attr::TYPE),
         hreflang: attr_value(e, attr::HREFLANG),
         title: attr_value(e, attr::TITLE),
         length: attr_value(e, attr::LENGTH).and_then(|v| v.parse().ok()),
-    }
+    })
 }
 
 pub(super) fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {

@@ -20,6 +20,7 @@ use std::path::PathBuf;
 
 use rama_core::futures::StreamExt as _;
 use rama_http::protocols::rss::{Feed, FeedItem, FeedStream};
+use rama_net::uri::Uri;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -52,8 +53,8 @@ async fn feed_accessors_agree_on_shared_properties() {
 
     // Both fixtures point at "https://example.com/" as the home page — RSS
     // via <link>, Atom via <link rel="alternate">.
-    assert_eq!(rss.link(), Some("https://example.com/"));
-    assert_eq!(atom.link(), Some("https://example.com/"));
+    assert_eq!(rss.link(), Some(&Uri::from_static("https://example.com/")));
+    assert_eq!(atom.link(), Some(&Uri::from_static("https://example.com/")));
 }
 
 /// Feed-level: spec-divergent fields are reported as the docs promise.
@@ -82,15 +83,21 @@ async fn feed_accessors_document_per_spec_divergence() {
     assert_eq!(rss.self_link(), None);
     assert_eq!(
         atom.self_link(),
-        Some("https://example.com/feed.atom"),
+        Some(&Uri::from_static("https://example.com/feed.atom")),
         "Atom rel=self should be picked up"
     );
 
     // icon / logo: only Atom carries them.
     assert_eq!(rss.icon_url(), None);
-    assert_eq!(atom.icon_url(), Some("https://example.com/icon.png"));
+    assert_eq!(
+        atom.icon_url(),
+        Some(&Uri::from_static("https://example.com/icon.png"))
+    );
     assert_eq!(rss.image_url(), None);
-    assert_eq!(atom.image_url(), Some("https://example.com/logo.png"));
+    assert_eq!(
+        atom.image_url(),
+        Some(&Uri::from_static("https://example.com/logo.png"))
+    );
 }
 
 /// Item-level: shared properties should agree across the two parallel
@@ -116,7 +123,7 @@ async fn feed_item_accessors_via_feedstream_agree_across_formats() {
         assert_eq!(item.title(), Some("Hello, world"), "{fname}");
         assert_eq!(
             item.link(),
-            Some("https://example.com/posts/hello"),
+            Some(&Uri::from_static("https://example.com/posts/hello")),
             "{fname}",
         );
         assert!(item.id().is_some(), "{fname}: both fixtures carry an id");

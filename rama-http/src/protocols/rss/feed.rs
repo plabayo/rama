@@ -15,6 +15,7 @@
 //! when you already know the format.
 
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 
 use crate::headers::ContentType;
 use crate::service::web::response::{Headers, IntoResponse};
@@ -69,20 +70,23 @@ impl FeedItem {
 
     /// RSS `<guid>` (optional) | Atom `<id>` (required).
     #[must_use]
-    pub fn id(&self) -> Option<&str> {
+    pub fn id(&self) -> Option<ItemIdView<'_>> {
         match self {
-            Self::Rss2(i) => i.guid.as_ref().map(|g| g.value.as_str()),
-            Self::Atom(e) => Some(&e.id),
+            Self::Rss2(i) => i
+                .guid
+                .as_ref()
+                .map(|g| ItemIdView::Rss2Guid(g.value.as_str())),
+            Self::Atom(e) => Some(ItemIdView::AtomId(&e.id)),
         }
     }
 
     /// RSS `<link>` | Atom `<link rel="alternate">` (or first link without
     /// `rel`, since Atom defaults `rel` to `"alternate"`).
     #[must_use]
-    pub fn link(&self) -> Option<&str> {
+    pub fn link(&self) -> Option<&Uri> {
         match self {
-            Self::Rss2(i) => i.link.as_deref(),
-            Self::Atom(e) => pick_alternate(&e.links).map(|l| l.href.as_str()),
+            Self::Rss2(i) => i.link.as_ref(),
+            Self::Atom(e) => pick_alternate(&e.links).map(|l| &l.href),
         }
     }
 
@@ -209,7 +213,7 @@ impl FeedItem {
 /// `length` and `mime` are required by RSS but optional in Atom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnclosureView<'a> {
-    pub url: &'a str,
+    pub url: &'a Uri,
     pub length: Option<u64>,
     pub mime: Option<&'a str>,
 }
@@ -232,6 +236,14 @@ impl<'a> From<&'a AtomLink> for EnclosureView<'a> {
             mime: l.type_.as_deref(),
         }
     }
+}
+
+/// Normalised view over an item identifier. RSS GUID values are opaque
+/// strings, while Atom IDs are URI values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemIdView<'a> {
+    Rss2Guid(&'a str),
+    AtomId(&'a Uri),
 }
 
 // ---------------------------------------------------------------------------
@@ -349,26 +361,26 @@ impl Feed {
     /// `<link rel="alternate">` (or first link without `rel`, since Atom
     /// defaults `rel` to `"alternate"`).
     #[must_use]
-    pub fn link(&self) -> Option<&str> {
+    pub fn link(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(f) => Some(&f.link),
-            Self::Atom(f) => pick_alternate(&f.links).map(|l| l.href.as_str()),
+            Self::Atom(f) => pick_alternate(&f.links).map(|l| &l.href),
         }
     }
 
     /// Canonical URL of the feed document itself. RSS
     /// `<atom:link rel="self">` | Atom `<link rel="self">`.
     #[must_use]
-    pub fn self_link(&self) -> Option<&str> {
+    pub fn self_link(&self) -> Option<&Uri> {
         match self {
-            Self::Rss2(f) => pick_rel(&f.atom_links, "self").map(|l| l.href.as_str()),
-            Self::Atom(f) => pick_rel(&f.links, "self").map(|l| l.href.as_str()),
+            Self::Rss2(f) => pick_rel(&f.atom_links, "self").map(|l| &l.href),
+            Self::Atom(f) => pick_rel(&f.links, "self").map(|l| &l.href),
         }
     }
 
     /// Atom `<id>` (required). RSS has no equivalent — always `None` for RSS.
     #[must_use]
-    pub fn id(&self) -> Option<&str> {
+    pub fn id(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(_) => None,
             Self::Atom(f) => Some(&f.id),
@@ -407,19 +419,19 @@ impl Feed {
 
     /// RSS `<image><url>` | Atom `<logo>`.
     #[must_use]
-    pub fn image_url(&self) -> Option<&str> {
+    pub fn image_url(&self) -> Option<&Uri> {
         match self {
-            Self::Rss2(f) => f.image.as_ref().map(|i| i.url.as_str()),
-            Self::Atom(f) => f.logo.as_deref(),
+            Self::Rss2(f) => f.image.as_ref().map(|i| &i.url),
+            Self::Atom(f) => f.logo.as_ref(),
         }
     }
 
     /// Atom `<icon>` | RSS has no equivalent.
     #[must_use]
-    pub fn icon_url(&self) -> Option<&str> {
+    pub fn icon_url(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(_) => None,
-            Self::Atom(f) => f.icon.as_deref(),
+            Self::Atom(f) => f.icon.as_ref(),
         }
     }
 
@@ -520,12 +532,13 @@ impl IntoResponse for Feed {
 mod tests {
     use super::*;
     use crate::{StatusCode, header};
+    use rama_net::uri::Uri;
 
     #[test]
     fn rss2_into_response_sets_content_type() {
         let feed = Rss2Feed::builder()
             .title("T")
-            .link("https://example.com")
+            .link(Uri::from_static("https://example.com"))
             .description("D")
             .build();
         let resp = feed.into_response();
@@ -539,7 +552,7 @@ mod tests {
         use crate::protocols::rss::atom::{AtomFeed, AtomText};
         use jiff::Timestamp;
         let feed = AtomFeed::builder()
-            .id("urn:x:1")
+            .id(Uri::from_static("urn:x:1"))
             .title(AtomText::text("T"))
             .updated(Timestamp::UNIX_EPOCH)
             .build();
@@ -552,7 +565,7 @@ mod tests {
     fn feed_umbrella_round_trips() {
         let rss = Rss2Feed::builder()
             .title("Blog")
-            .link("https://blog.example.com")
+            .link(Uri::from_static("https://blog.example.com"))
             .description("A blog")
             .build();
         let feed: Feed = rss.into();

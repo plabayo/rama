@@ -9,7 +9,6 @@ use flate2::bufread::{DeflateDecoder, GzDecoder};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
-use rama_http_types::BodyExtractExt;
 use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
 use std::io::Read;
@@ -591,6 +590,8 @@ async fn empty_directory_without_index() {
 #[cfg(feature = "html")]
 #[tokio::test]
 async fn serve_directory_as_file_tree() {
+    use rama_http_types::BodyExtractExt as _;
+
     let svc =
         ServeDir::new("../test-files").with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
 

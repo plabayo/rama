@@ -14,6 +14,7 @@ use rama_core::futures::StreamExt as _;
 use rama_core::futures::async_stream::stream_fn;
 use rama_core::futures::stream::BoxStream;
 use rama_core::telemetry::tracing;
+use rama_net::uri::Uri;
 use tokio::io::AsyncBufRead;
 
 use super::names::elem;
@@ -26,14 +27,15 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
-    atom_category_from_attrs, atom_link_from_attrs, attr_value, make_atom_text, parse_rfc3339_lax,
+    atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value, make_atom_text,
+    parse_rfc3339_lax, parse_uri, parse_uri_reference,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
 /// carries except its `entries`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomHeader {
-    pub id: String,
+    pub id: Uri,
     pub title: AtomText,
     pub updated: Timestamp,
     pub authors: Vec<AtomPerson>,
@@ -41,8 +43,8 @@ pub struct AtomHeader {
     pub categories: Vec<AtomCategory>,
     pub contributors: Vec<AtomPerson>,
     pub generator: Option<AtomGenerator>,
-    pub icon: Option<String>,
-    pub logo: Option<String>,
+    pub icon: Option<Uri>,
+    pub logo: Option<Uri>,
     pub rights: Option<AtomText>,
     pub subtitle: Option<AtomText>,
     pub extensions: FeedExtensions,
@@ -51,7 +53,7 @@ pub struct AtomHeader {
 impl Default for AtomHeader {
     fn default() -> Self {
         Self {
-            id: String::new(),
+            id: Uri::from_static("urn:rama:missing"),
             title: AtomText::text(""),
             updated: Timestamp::UNIX_EPOCH,
             authors: Vec::new(),
@@ -246,6 +248,7 @@ struct AtomReader<R: AsyncBufRead + Unpin + Send> {
     text_buf: String,
     depth: i32,
     saw_root: bool,
+    feed_id_set: bool,
     feed_updated_parsed: bool,
 
     // Feed-level header accumulator.
@@ -297,12 +300,17 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             text_buf: String::new(),
             depth: 0,
             saw_root: false,
+            feed_id_set: false,
             feed_updated_parsed: false,
             header: AtomHeader::default(),
             feed_acc: FeedExtAcc::default(),
             pending_generator: None,
             in_entry: false,
-            current_entry: AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH),
+            current_entry: AtomEntry::new(
+                Uri::from_static("urn:rama:missing"),
+                AtomText::text(""),
+                Timestamp::UNIX_EPOCH,
+            ),
             current_entry_id_set: false,
             current_entry_title_set: false,
             current_entry_updated_parsed: false,
@@ -359,8 +367,10 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         let mut header = std::mem::take(&mut self.header);
         header.extensions = std::mem::take(&mut self.feed_acc).finish();
         if self.strict {
-            if header.id.is_empty() {
-                return Err(FeedParseError::new("Atom feed missing required <id>"));
+            if !self.feed_id_set {
+                return Err(FeedParseError::new(
+                    "Atom feed missing required or valid URI <id>",
+                ));
             }
             if header.title.value.is_empty() {
                 return Err(FeedParseError::new("Atom feed missing required <title>"));
@@ -475,8 +485,11 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                             );
                         }
                         self.in_entry = true;
-                        self.current_entry =
-                            AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH);
+                        self.current_entry = AtomEntry::new(
+                            Uri::from_static("urn:rama:missing"),
+                            AtomText::text(""),
+                            Timestamp::UNIX_EPOCH,
+                        );
                         self.current_entry_id_set = false;
                         self.current_entry_title_set = false;
                         self.current_entry_updated_parsed = false;
@@ -522,11 +535,12 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         Ok(Action::Continue)
                     }
                     elem::LINK if self.source_depth == 0 => {
-                        let link = atom_link_from_attrs(&e);
-                        if self.in_entry {
-                            self.current_entry.links.push(link);
-                        } else {
-                            self.header.links.push(link);
+                        if let Some(link) = atom_link_from_attrs(&e) {
+                            if self.in_entry {
+                                self.current_entry.links.push(link);
+                            } else {
+                                self.header.links.push(link);
+                            }
                         }
                         Ok(Action::Continue)
                     }
@@ -567,7 +581,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     elem::GENERATOR if self.source_depth == 0 => {
                         self.pending_generator = Some(AtomGenerator {
                             value: String::new(),
-                            uri: attr_value(&e, attr::URI),
+                            uri: attr_uri_reference(&e, attr::URI),
                             version: attr_value(&e, attr::VERSION),
                         });
                         Ok(Action::Continue)
@@ -605,11 +619,12 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 }
                 match local {
                     elem::LINK if self.source_depth == 0 => {
-                        let link = atom_link_from_attrs(&e);
-                        if self.in_entry {
-                            self.current_entry.links.push(link);
-                        } else {
-                            self.header.links.push(link);
+                        if let Some(link) = atom_link_from_attrs(&e) {
+                            if self.in_entry {
+                                self.current_entry.links.push(link);
+                            } else {
+                                self.header.links.push(link);
+                            }
                         }
                     }
                     elem::CATEGORY if self.source_depth == 0 => {
@@ -625,7 +640,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                         // A self-closing <content type="html"/> with no src
                         // is degenerate but valid; we drop it (no body, no
                         // link — nothing useful to store).
-                        if let Some(src) = attr_value(&e, attr::SRC) {
+                        if let Some(src) = attr_uri_reference(&e, attr::SRC) {
                             let type_ = attr_value(&e, attr::TYPE).unwrap_or_else(|| "text".into());
                             self.current_entry.content = Some(AtomContent::out_of_line(src, type_));
                         }
@@ -817,7 +832,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             // Only the outermost source's children mutate current_source.
             if self.source_depth == 1 {
                 match local {
-                    elem::ID => self.current_source.id = Some(text),
+                    elem::ID => self.current_source.id = parse_uri(&text),
                     elem::TITLE => {
                         self.current_source.title =
                             Some(make_atom_text(&self.current_source_title_type, text));
@@ -838,8 +853,14 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             }
             match local {
                 elem::ID => {
-                    self.current_entry.id = text;
-                    self.current_entry_id_set = true;
+                    if let Some(id) = parse_uri(&text) {
+                        self.current_entry.id = id;
+                        self.current_entry_id_set = true;
+                    } else if self.strict {
+                        return Err(FeedParseError::new(format!(
+                            "Atom entry <id> could not be parsed as URI: {text:?}"
+                        )));
+                    }
                 }
                 elem::TITLE => {
                     self.current_entry.title = make_atom_text(&self.current_title_type, text);
@@ -888,7 +909,11 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                     self.current_entry.extensions = std::mem::take(&mut self.entry_acc).finish();
                     let entry = std::mem::replace(
                         &mut self.current_entry,
-                        AtomEntry::new("", AtomText::text(""), Timestamp::UNIX_EPOCH),
+                        AtomEntry::new(
+                            Uri::from_static("urn:rama:missing"),
+                            AtomText::text(""),
+                            Timestamp::UNIX_EPOCH,
+                        ),
                     );
                     self.in_entry = false;
                     return Ok(Action::EntryFinished(Box::new(entry)));
@@ -905,7 +930,16 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             return Ok(Action::Continue);
         }
         match local {
-            elem::ID => self.header.id = text,
+            elem::ID => {
+                if let Some(id) = parse_uri(&text) {
+                    self.header.id = id;
+                    self.feed_id_set = true;
+                } else if self.strict {
+                    return Err(FeedParseError::new(format!(
+                        "Atom feed <id> could not be parsed as URI: {text:?}"
+                    )));
+                }
+            }
             elem::TITLE => self.header.title = make_atom_text(&self.current_title_type, text),
             elem::UPDATED => {
                 if let Some(ts) = parse_rfc3339_lax(&text) {
@@ -923,8 +957,8 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             elem::RIGHTS => {
                 self.header.rights = Some(make_atom_text(&self.current_rights_type, text));
             }
-            elem::LOGO => self.header.logo = Some(text),
-            elem::ICON => self.header.icon = Some(text),
+            elem::LOGO => self.header.logo = parse_uri_reference(&text),
+            elem::ICON => self.header.icon = parse_uri_reference(&text),
             elem::GENERATOR => {
                 if let Some(mut g) = self.pending_generator.take() {
                     g.value = text;
@@ -946,7 +980,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
         match local {
             elem::NAME => person.name = text,
             elem::EMAIL => person.email = Some(text),
-            elem::URI => person.uri = Some(text),
+            elem::URI => person.uri = parse_uri_reference(&text),
             elem::AUTHOR | elem::CONTRIBUTOR => {
                 let finalised = std::mem::replace(person, AtomPerson::new(""));
                 match kind {

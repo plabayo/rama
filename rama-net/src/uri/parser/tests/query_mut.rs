@@ -31,6 +31,16 @@ fn push_key_bare() {
 }
 
 #[test]
+fn push_pair_integer_and_bool() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.query_mut()
+        .push_pair("page", 3_u32)
+        .push_pair("offset", -1_i32)
+        .push_pair("active", true);
+    assert_eq!(uri.to_string(), "/p?page=3&offset=-1&active=true");
+}
+
+#[test]
 fn push_pair_auto_encodes_structural_bytes() {
     let mut uri: Uri = parse_graceful("/p").unwrap();
     uri.query_mut()

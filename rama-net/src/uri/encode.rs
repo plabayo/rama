@@ -139,10 +139,10 @@ fn encode<T: IntoUriComponent, F: Fn(&[u8]) -> bool>(
     needs_encoding: F,
     encode_set: &'static AsciiSet,
 ) -> BytesMut {
-    if needs_encoding(input.as_uri_component_bytes()) {
+    if needs_encoding(&input.as_uri_component_bytes()) {
         let bytes = input.as_uri_component_bytes();
         let mut out = BytesMut::with_capacity(bytes.len());
-        for chunk in percent_encode(bytes, encode_set) {
+        for chunk in percent_encode(&bytes, encode_set) {
             out.extend_from_slice(chunk.as_bytes());
         }
         out

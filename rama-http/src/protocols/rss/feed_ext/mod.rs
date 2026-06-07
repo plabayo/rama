@@ -29,9 +29,9 @@ pub use dublin_core::{DublinCore, DublinCoreFeed};
 pub use itunes::{ITunes, ITunesFeed};
 pub use media::{MediaContent, MediaRss, MediaThumbnail};
 pub use podcast::{
-    Podcast, PodcastChapters, PodcastEpisode, PodcastFeed, PodcastFunding, PodcastLocation,
-    PodcastPerson, PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastTrailer,
-    PodcastTranscript,
+    Podcast, PodcastAlternateEnclosure, PodcastChapters, PodcastEpisode, PodcastFeed,
+    PodcastFunding, PodcastIntegrity, PodcastLocation, PodcastPerson, PodcastRemoteItem,
+    PodcastSeason, PodcastSoundbite, PodcastSource, PodcastTrailer, PodcastTranscript,
 };
 pub use podlove::{PodloveChapter, PodloveChapters};
 

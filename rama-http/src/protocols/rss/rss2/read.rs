@@ -15,6 +15,7 @@ use rama_core::futures::StreamExt as _;
 use rama_core::futures::async_stream::stream_fn;
 use rama_core::futures::stream::BoxStream;
 use rama_core::telemetry::tracing;
+use rama_net::uri::Uri;
 use tokio::io::AsyncBufRead;
 
 use super::names::elem;
@@ -25,15 +26,17 @@ use crate::protocols::rss::error::{CollectError, FeedParseError, Rss2CollectErro
 use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
-use crate::protocols::rss::parse_util::{attr_value, enclosure_from_attrs, parse_rss2_date};
+use crate::protocols::rss::parse_util::{
+    attr_uri, attr_value, enclosure_from_attrs, parse_rss2_date, parse_uri,
+};
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
 /// carries *except* its `items`. Re-combine with item events via
 /// [`Rss2Channel::into_feed_with_items`].
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Rss2Channel {
     pub title: String,
-    pub link: String,
+    pub link: Uri,
     pub description: String,
     pub language: Option<String>,
     pub copyright: Option<String>,
@@ -48,6 +51,29 @@ pub struct Rss2Channel {
     pub image: Option<Rss2Image>,
     pub atom_links: Vec<AtomLink>,
     pub extensions: FeedExtensions,
+}
+
+impl Default for Rss2Channel {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            link: Uri::from_static("/"),
+            description: String::new(),
+            language: None,
+            copyright: None,
+            managing_editor: None,
+            web_master: None,
+            pub_date: None,
+            last_build_date: None,
+            categories: Vec::new(),
+            generator: None,
+            docs: None,
+            ttl: None,
+            image: None,
+            atom_links: Vec::new(),
+            extensions: FeedExtensions::default(),
+        }
+    }
 }
 
 impl Rss2Channel {
@@ -256,6 +282,7 @@ struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
     text_buf: String,
     depth: i32,
     saw_root: bool,
+    channel_link_set: bool,
 
     // Channel accumulator (drained on `read_channel` return).
     channel: Rss2Channel,
@@ -263,9 +290,9 @@ struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
 
     // `<image>` sub-state — collected into `channel.image` on `</image>`.
     in_image_block: bool,
-    image_url: String,
+    image_url: Option<Uri>,
     image_title: String,
-    image_link: String,
+    image_link: Option<Uri>,
     image_width: Option<u32>,
     image_height: Option<u32>,
     image_description: Option<String>,
@@ -277,7 +304,7 @@ struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
 
     // Pending attributes carried from a Start until the matching End/text.
     pending_category_domain: Option<String>,
-    pending_source_url: Option<String>,
+    pending_source_url: Option<Uri>,
 }
 
 impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
@@ -291,12 +318,13 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             text_buf: String::new(),
             depth: 0,
             saw_root: false,
+            channel_link_set: false,
             channel: Rss2Channel::default(),
             feed_acc: FeedExtAcc::default(),
             in_image_block: false,
-            image_url: String::new(),
+            image_url: None,
             image_title: String::new(),
-            image_link: String::new(),
+            image_link: None,
             image_width: None,
             image_height: None,
             image_description: None,
@@ -358,7 +386,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                     "RSS 2.0 channel missing required <title>",
                 ));
             }
-            if channel.link.is_empty() {
+            if !self.channel_link_set {
                 return Err(FeedParseError::new(
                     "RSS 2.0 channel missing required <link>",
                 ));
@@ -399,10 +427,13 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 } else {
                     self.feed_acc.on_start(ns, local, &e)
                 };
-                if !consumed && !self.in_item && ns == Ns::Atom && local == atom_elem::LINK {
-                    self.channel
-                        .atom_links
-                        .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
+                if !consumed
+                    && !self.in_item
+                    && ns == Ns::Atom
+                    && local == atom_elem::LINK
+                    && let Some(link) = crate::protocols::rss::parse_util::atom_link_from_attrs(&e)
+                {
+                    self.channel.atom_links.push(link);
                     return Ok(Action::Continue);
                 }
                 if consumed || ns != Ns::None {
@@ -451,7 +482,9 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         Ok(Action::Continue)
                     }
                     elem::ENCLOSURE if self.in_item => {
-                        self.current_item.enclosures.push(enclosure_from_attrs(&e));
+                        if let Some(enclosure) = enclosure_from_attrs(&e) {
+                            self.current_item.enclosures.push(enclosure);
+                        }
                         Ok(Action::Continue)
                     }
                     elem::GUID if self.in_item => {
@@ -465,7 +498,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                         Ok(Action::Continue)
                     }
                     elem::SOURCE if self.in_item => {
-                        self.pending_source_url = attr_value(&e, attr::URL);
+                        self.pending_source_url = attr_uri(&e, attr::URL);
                         Ok(Action::Continue)
                     }
                     elem::CATEGORY => {
@@ -488,14 +521,20 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 if consumed {
                     return Ok(Action::Continue);
                 }
-                if !self.in_item && ns == Ns::Atom && local == atom_elem::LINK {
-                    self.channel
-                        .atom_links
-                        .push(crate::protocols::rss::parse_util::atom_link_from_attrs(&e));
+                if !self.in_item
+                    && ns == Ns::Atom
+                    && local == atom_elem::LINK
+                    && let Some(link) = crate::protocols::rss::parse_util::atom_link_from_attrs(&e)
+                {
+                    self.channel.atom_links.push(link);
                     return Ok(Action::Continue);
                 }
-                if ns == Ns::None && self.in_item && local == elem::ENCLOSURE {
-                    self.current_item.enclosures.push(enclosure_from_attrs(&e));
+                if ns == Ns::None
+                    && self.in_item
+                    && local == elem::ENCLOSURE
+                    && let Some(enclosure) = enclosure_from_attrs(&e)
+                {
+                    self.current_item.enclosures.push(enclosure);
                 }
                 Ok(Action::Continue)
             }
@@ -571,7 +610,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             }
             match local {
                 elem::TITLE => self.current_item.title = Some(text),
-                elem::LINK => self.current_item.link = Some(text),
+                elem::LINK => self.current_item.link = parse_uri(&text),
                 elem::DESCRIPTION => self.current_item.description = Some(text),
                 elem::AUTHOR => self.current_item.author = Some(text),
                 elem::COMMENTS => self.current_item.comments = Some(text),
@@ -586,10 +625,9 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                     domain: self.pending_category_domain.take(),
                 }),
                 elem::SOURCE => {
-                    self.current_item.source = Some(Rss2Source {
-                        title: text,
-                        url: self.pending_source_url.take().unwrap_or_default(),
-                    });
+                    if let Some(url) = self.pending_source_url.take() {
+                        self.current_item.source = Some(Rss2Source { title: text, url });
+                    }
                 }
                 elem::ITEM => {
                     self.current_item.extensions = std::mem::take(&mut self.item_acc).finish();
@@ -612,22 +650,25 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             }
         } else if self.in_image_block {
             match local {
-                elem::URL => self.image_url = text,
+                elem::URL => self.image_url = parse_uri(&text),
                 elem::TITLE => self.image_title = text,
-                elem::LINK => self.image_link = text,
+                elem::LINK => self.image_link = parse_uri(&text),
                 elem::WIDTH => self.image_width = text.parse().ok(),
                 elem::HEIGHT => self.image_height = text.parse().ok(),
                 elem::DESCRIPTION => self.image_description = Some(text),
                 elem::IMAGE => {
                     self.in_image_block = false;
-                    self.channel.image = Some(Rss2Image {
-                        url: std::mem::take(&mut self.image_url),
-                        title: std::mem::take(&mut self.image_title),
-                        link: std::mem::take(&mut self.image_link),
-                        width: self.image_width.take(),
-                        height: self.image_height.take(),
-                        description: self.image_description.take(),
-                    });
+                    if let (Some(url), Some(link)) = (self.image_url.take(), self.image_link.take())
+                    {
+                        self.channel.image = Some(Rss2Image {
+                            url,
+                            title: std::mem::take(&mut self.image_title),
+                            link,
+                            width: self.image_width.take(),
+                            height: self.image_height.take(),
+                            description: self.image_description.take(),
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -640,7 +681,16 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
             }
             match local {
                 elem::TITLE => self.channel.title = text,
-                elem::LINK => self.channel.link = text,
+                elem::LINK => {
+                    if let Some(link) = parse_uri(&text) {
+                        self.channel.link = link;
+                        self.channel_link_set = true;
+                    } else if self.strict {
+                        return Err(FeedParseError::new(format!(
+                            "RSS 2.0 channel <link> could not be parsed as URI: {text:?}"
+                        )));
+                    }
+                }
                 elem::DESCRIPTION => self.channel.description = text,
                 elem::LANGUAGE => self.channel.language = Some(text),
                 elem::COPYRIGHT => self.channel.copyright = Some(text),
