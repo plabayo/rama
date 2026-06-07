@@ -51,12 +51,12 @@ fn apply_op(el: &mut Element<'_>, op: u8) {
     match op % 9 {
         0 => el.set_attribute("data-x", "1"),
         1 => el.remove(),
-        2 => el.replace_text("R"),
-        3 => el.before_text("B"),
-        4 => el.after_text("A"),
-        5 => el.append_text("P"),
-        6 => el.prepend_text("Q"),
-        7 => el.set_inner_text("I"),
+        2 => el.replace("R"),
+        3 => el.before("B"),
+        4 => el.after("A"),
+        5 => el.append("P"),
+        6 => el.prepend("Q"),
+        7 => el.set_inner_content("I"),
         _ => el.remove_and_keep_content(),
     }
 }

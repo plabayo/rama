@@ -18,7 +18,7 @@ struct AppendToBody(&'static str);
 
 impl ElementContentHandler for AppendToBody {
     fn handle_element(&mut self, _selector: usize, element: &mut Element<'_>) -> HandlerResult {
-        element.append_text(self.0);
+        element.append(self.0);
         Ok(())
     }
 }

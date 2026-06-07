@@ -367,8 +367,8 @@ mod tests {
         let out = rewrite(
             "<body>content</body>",
             ElementContentHandlers::new().on(sel("body"), |el| {
-                el.before_text("X");
-                el.prepend_text("Y<&");
+                el.before("X");
+                el.prepend("Y<&");
                 Ok(())
             }),
         );
@@ -447,7 +447,7 @@ mod tests {
         let out = rewrite(
             "<div>x</div>",
             ElementContentHandlers::new().on(sel("div"), |el| {
-                el.append_text("!");
+                el.append("!");
                 Ok(())
             }),
         );
@@ -459,7 +459,7 @@ mod tests {
         let out = rewrite(
             "<div>x</div>",
             ElementContentHandlers::new().on(sel("div"), |el| {
-                el.after_text("Y");
+                el.after("Y");
                 Ok(())
             }),
         );
@@ -471,7 +471,7 @@ mod tests {
         let out = rewrite(
             "<div>old<b>stuff</b></div>",
             ElementContentHandlers::new().on(sel("div"), |el| {
-                el.set_inner_text("new");
+                el.set_inner_content("new");
                 Ok(())
             }),
         );
@@ -484,7 +484,7 @@ mod tests {
             r#"<div class="a">old</div>"#,
             ElementContentHandlers::new().on(sel("div"), |el| {
                 el.set_attribute("data-x", "1");
-                el.set_inner_text("new");
+                el.set_inner_content("new");
                 Ok(())
             }),
         );
@@ -496,7 +496,7 @@ mod tests {
         let out = rewrite(
             "a<p>hi</p>b",
             ElementContentHandlers::new().on(sel("p"), |el| {
-                el.replace_text("X");
+                el.replace("X");
                 Ok(())
             }),
         );
@@ -508,8 +508,8 @@ mod tests {
         let out = rewrite(
             "<p>hi</p>",
             ElementContentHandlers::new().on(sel("p"), |el| {
-                el.replace_text("R");
-                el.after_text("A");
+                el.replace("R");
+                el.after("A");
                 Ok(())
             }),
         );
@@ -533,9 +533,9 @@ mod tests {
         let out = rewrite(
             "x<p>hi</p>y",
             ElementContentHandlers::new().on(sel("p"), |el| {
-                el.before_text("B");
+                el.before("B");
                 el.remove();
-                el.after_text("A");
+                el.after("A");
                 Ok(())
             }),
         );
@@ -579,7 +579,7 @@ mod tests {
         let out = rewrite(
             "<img src=x>tail",
             ElementContentHandlers::new().on(sel("img"), |el| {
-                el.after_text("Y");
+                el.after("Y");
                 Ok(())
             }),
         );
@@ -651,7 +651,7 @@ mod tests {
         let out = rewrite(
             "<a>1<b>2</a>3",
             ElementContentHandlers::new().on(sel("a"), |el| {
-                el.set_inner_text("X");
+                el.set_inner_content("X");
                 Ok(())
             }),
         );
@@ -670,8 +670,8 @@ mod tests {
                     Ok(())
                 })
                 .on(sel("a"), |el| {
-                    el.after_text("!");
-                    el.append_text("?");
+                    el.after("!");
+                    el.append("?");
                     Ok(())
                 }),
         );
@@ -685,7 +685,7 @@ mod tests {
         let out = rewrite(
             "<x/>tail",
             ElementContentHandlers::new().on(sel("x"), |el| {
-                el.replace_text("R");
+                el.replace("R");
                 Ok(())
             }),
         );
@@ -697,7 +697,7 @@ mod tests {
         let out = rewrite(
             "<ul><li>one<li>two</ul>",
             ElementContentHandlers::new().on(sel("li"), |el| {
-                el.append_text("!");
+                el.append("!");
                 Ok(())
             }),
         );
@@ -720,7 +720,7 @@ mod tests {
                 if self.seen == 0 {
                     element.remove();
                 } else {
-                    element.append_text("!");
+                    element.append("!");
                 }
                 self.seen += 1;
                 Ok(())
@@ -742,8 +742,8 @@ mod tests {
         let out = rewrite(
             "<div>tail",
             ElementContentHandlers::new().on(sel("div"), |el| {
-                el.append_text("!");
-                el.after_text("A");
+                el.append("!");
+                el.after("A");
                 Ok(())
             }),
         );
