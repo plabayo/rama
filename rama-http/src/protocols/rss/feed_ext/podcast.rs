@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 
 /// A `podcast:transcript` element.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,6 +12,43 @@ pub struct PodcastTranscript {
     pub type_: String,
     pub language: Option<String>,
     pub rel: Option<String>,
+}
+
+/// A `podcast:alternateEnclosure` element.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PodcastAlternateEnclosure {
+    pub type_: String,
+    pub length: Option<u64>,
+    pub bitrate: Option<f64>,
+    pub height: Option<u64>,
+    pub lang: Option<String>,
+    /// Podcasting 2.0 limits this to 32 characters; the lenient parser and
+    /// writer preserve caller input rather than enforcing it.
+    pub title: Option<String>,
+    /// Podcasting 2.0 limits this to 32 characters; the lenient parser and
+    /// writer preserve caller input rather than enforcing it.
+    pub rel: Option<String>,
+    pub codecs: Option<String>,
+    /// Whether this alternate is the default rendition. The writer emits the
+    /// attribute only when true; callers are responsible for keeping at most
+    /// one default alternate per item.
+    pub default: bool,
+    pub sources: Vec<PodcastSource>,
+    pub integrity: Option<PodcastIntegrity>,
+}
+
+/// A `podcast:source` child of `podcast:alternateEnclosure`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PodcastSource {
+    pub uri: Uri,
+    pub content_type: Option<String>,
+}
+
+/// A `podcast:integrity` child of `podcast:alternateEnclosure`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PodcastIntegrity {
+    pub type_: String,
+    pub value: String,
 }
 
 /// A `podcast:chapters` reference.
@@ -93,6 +131,7 @@ pub struct PodcastRemoteItem {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Podcast {
     pub transcripts: Vec<PodcastTranscript>,
+    pub alternate_enclosures: Vec<PodcastAlternateEnclosure>,
     pub chapters: Option<PodcastChapters>,
     pub soundbites: Vec<PodcastSoundbite>,
     pub persons: Vec<PodcastPerson>,

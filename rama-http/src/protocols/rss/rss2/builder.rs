@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
 use super::types::{Missing, Present, Rss2Category, Rss2Feed, Rss2Image, Rss2Item};
@@ -14,7 +15,7 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 /// all three are `Present`.
 pub struct Rss2FeedBuilder<T, L, D> {
     pub(super) title: String,
-    pub(super) link: String,
+    pub(super) link: Option<Uri>,
     pub(super) description: String,
     pub(super) language: Option<String>,
     pub(super) copyright: Option<String>,
@@ -37,7 +38,7 @@ impl Rss2FeedBuilder<Missing, Missing, Missing> {
     pub(super) fn new() -> Self {
         Self {
             title: String::new(),
-            link: String::new(),
+            link: None,
             description: String::new(),
             language: None,
             copyright: None,
@@ -86,10 +87,10 @@ impl<L, D> Rss2FeedBuilder<Missing, L, D> {
 
 impl<T, D> Rss2FeedBuilder<T, Missing, D> {
     #[must_use]
-    pub fn link(self, link: impl Into<String>) -> Rss2FeedBuilder<T, Present, D> {
+    pub fn link(self, link: Uri) -> Rss2FeedBuilder<T, Present, D> {
         Rss2FeedBuilder {
             title: self.title,
-            link: link.into(),
+            link: Some(link),
             description: self.description,
             language: self.language,
             copyright: self.copyright,
@@ -256,7 +257,11 @@ impl Rss2FeedBuilder<Present, Present, Present> {
     pub fn build(self) -> Rss2Feed {
         Rss2Feed {
             title: self.title,
-            link: self.link,
+            #[expect(
+                clippy::expect_used,
+                reason = "type-state guarantees `link` is Present once build() is callable"
+            )]
+            link: self.link.expect("link is Present"),
             description: self.description,
             language: self.language,
             copyright: self.copyright,

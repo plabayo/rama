@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
 use super::types::{
@@ -15,7 +16,7 @@ use crate::protocols::rss::rss2::{Missing, Present};
 /// provided. [`build`](AtomFeedBuilder::build) is only available once all
 /// three are `Present`.
 pub struct AtomFeedBuilder<I, T, U> {
-    pub(super) id: String,
+    pub(super) id: Option<Uri>,
     pub(super) title: AtomText,
     pub(super) updated: Option<Timestamp>,
     pub(super) authors: Vec<AtomPerson>,
@@ -23,8 +24,8 @@ pub struct AtomFeedBuilder<I, T, U> {
     pub(super) categories: Vec<AtomCategory>,
     pub(super) contributors: Vec<AtomPerson>,
     pub(super) generator: Option<AtomGenerator>,
-    pub(super) icon: Option<String>,
-    pub(super) logo: Option<String>,
+    pub(super) icon: Option<Uri>,
+    pub(super) logo: Option<Uri>,
     pub(super) rights: Option<AtomText>,
     pub(super) subtitle: Option<AtomText>,
     pub(super) entries: Vec<AtomEntry>,
@@ -35,7 +36,7 @@ pub struct AtomFeedBuilder<I, T, U> {
 impl AtomFeedBuilder<Missing, Missing, Missing> {
     pub(super) fn new() -> Self {
         Self {
-            id: String::new(),
+            id: None,
             title: AtomText::text(""),
             updated: None,
             authors: Vec::new(),
@@ -56,9 +57,9 @@ impl AtomFeedBuilder<Missing, Missing, Missing> {
 
 impl<T, U> AtomFeedBuilder<Missing, T, U> {
     #[must_use]
-    pub fn id(self, id: impl Into<String>) -> AtomFeedBuilder<Present, T, U> {
+    pub fn id(self, id: Uri) -> AtomFeedBuilder<Present, T, U> {
         AtomFeedBuilder {
-            id: id.into(),
+            id: Some(id),
             title: self.title,
             updated: self.updated,
             authors: self.authors,
@@ -164,15 +165,15 @@ impl<I, T, U> AtomFeedBuilder<I, T, U> {
     }
 
     generate_set_and_with! {
-        pub fn icon(mut self, icon: impl Into<String>) -> Self {
-            self.icon = Some(icon.into());
+        pub fn icon(mut self, icon: Uri) -> Self {
+            self.icon = Some(icon);
             self
         }
     }
 
     generate_set_and_with! {
-        pub fn logo(mut self, logo: impl Into<String>) -> Self {
-            self.logo = Some(logo.into());
+        pub fn logo(mut self, logo: Uri) -> Self {
+            self.logo = Some(logo);
             self
         }
     }
@@ -218,7 +219,11 @@ impl AtomFeedBuilder<Present, Present, Present> {
     #[must_use]
     pub fn build(self) -> AtomFeed {
         AtomFeed {
-            id: self.id,
+            #[expect(
+                clippy::expect_used,
+                reason = "type-state guarantees `id` is Present once build() is callable"
+            )]
+            id: self.id.expect("id is Present"),
             title: self.title,
             #[expect(
                 clippy::expect_used,

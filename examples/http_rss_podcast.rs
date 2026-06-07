@@ -53,7 +53,7 @@ use rama::{
             response::{Headers, IntoResponse},
         },
     },
-    net::address::SocketAddress,
+    net::{address::SocketAddress, uri::Uri},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -70,7 +70,7 @@ use rama::{
 async fn podcast_feed() -> impl IntoResponse {
     Rss2Feed::builder()
         .title("Netstack.FM")
-        .link("https://netstack.fm")
+        .link(Uri::from_static("https://netstack.fm"))
         .description("The podcast about Rust networking and systems programming.")
         .with_language("en")
         .with_generator("rama/http_rss_podcast example")
@@ -101,7 +101,7 @@ async fn podcast_stream() -> impl IntoResponse {
     // both ways, so the construct ↔ drain path round-trips through one model.
     let channel = Rss2Channel {
         title: "Netstack.FM (streaming)".into(),
-        link: "https://netstack.fm".into(),
+        link: Uri::from_static("https://netstack.fm"),
         description: "Streamed podcast feed.".into(),
         language: Some("en".into()),
         generator: Some("rama Rss2StreamWriter".into()),
@@ -162,10 +162,10 @@ fn make_episode_item(ep: &Episode) -> Rss2Item {
         .with_title(ep.title)
         .with_description(ep.description)
         .with_guid(Rss2Guid::permalink(ep.url))
-        .with_link(ep.url)
+        .with_link(Uri::from_static(ep.url))
         .with_pub_date(ep.pub_date)
         .with_enclosure(Rss2Enclosure::new(
-            ep.audio_url,
+            Uri::from_static(ep.audio_url),
             ep.audio_bytes,
             ep.audio_type,
         ))

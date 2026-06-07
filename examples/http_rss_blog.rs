@@ -30,6 +30,7 @@ use jiff::Timestamp;
 use rama::{
     Layer,
     http::{
+        html::{IntoHtml, p},
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
         protocols::rss::{
             AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText, Rss2Feed, Rss2Guid,
@@ -39,7 +40,7 @@ use rama::{
         server::HttpServer,
         service::web::{Router, response::IntoResponse},
     },
-    net::address::SocketAddress,
+    net::{address::SocketAddress, uri::Uri},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -56,20 +57,20 @@ use rama::{
 async fn rss2_feed() -> impl IntoResponse {
     Rss2Feed::builder()
         .title("The Rama Blog")
-        .link("https://ramaproxy.org/blog")
+        .link(Uri::from_static("https://ramaproxy.org/blog"))
         .description("News and articles from the Rama project")
         .with_language("en")
         .with_generator("rama/http_rss_blog example")
         .with_items(BLOG_POSTS.iter().map(|p| {
             Rss2Item::new()
                 .with_title(p.title)
-                .with_link(p.url)
+                .with_link(Uri::from_static(p.url))
                 .with_description(p.summary)
                 .with_author("team@ramaproxy.org")
                 .with_guid(Rss2Guid::permalink(p.url))
                 .with_extensions(ItemExtensions {
                     content: Some(Box::new(Content {
-                        encoded: Some(format!("<p>{}</p>", p.body)),
+                        encoded: Some(p!(p.body).into_string()),
                     })),
                     ..Default::default()
                 })
@@ -80,19 +81,23 @@ async fn rss2_feed() -> impl IntoResponse {
 async fn atom_feed() -> impl IntoResponse {
     let ts = Timestamp::now();
     AtomFeed::builder()
-        .id("https://ramaproxy.org/feed.atom")
+        .id(Uri::from_static("https://ramaproxy.org/feed.atom"))
         .title("The Rama Blog")
         .updated(ts)
         .with_author(AtomPerson::new("Rama Team").with_email("team@ramaproxy.org"))
-        .with_link(AtomLink::alternate("https://ramaproxy.org/blog"))
-        .with_link(AtomLink::self_link("https://ramaproxy.org/feed.atom"))
+        .with_link(AtomLink::alternate(Uri::from_static(
+            "https://ramaproxy.org/blog",
+        )))
+        .with_link(AtomLink::self_link(Uri::from_static(
+            "https://ramaproxy.org/feed.atom",
+        )))
         .with_subtitle(AtomText::text("News and articles from the Rama project"))
         .with_entries(BLOG_POSTS.iter().map(|p| {
-            AtomEntry::new(p.url, p.title, ts)
+            AtomEntry::new(Uri::from_static(p.url), p.title, ts)
                 .with_author(AtomPerson::new("Rama Team"))
-                .with_link(AtomLink::alternate(p.url))
+                .with_link(AtomLink::alternate(Uri::from_static(p.url)))
                 .with_summary(AtomText::text(p.summary))
-                .with_content(AtomContent::html(format!("<p>{}</p>", p.body)))
+                .with_content(AtomContent::html(p!(p.body)))
         }))
         .build()
 }

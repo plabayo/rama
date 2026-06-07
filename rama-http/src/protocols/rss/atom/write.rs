@@ -36,7 +36,7 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
 
     w.write_event(Event::Start(feed_tag))?;
 
-    write_text_elem(w, elem::ID, &header.id)?;
+    write_text_elem(w, elem::ID, &header.id.to_string())?;
     write_atom_text(w, elem::TITLE, &header.title)?;
     write_text_elem(w, elem::UPDATED, &header.updated.to_string())?;
 
@@ -55,6 +55,7 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
     if let Some(generator) = &header.generator {
         let mut tag = BytesStart::new(elem::GENERATOR);
         if let Some(uri) = &generator.uri {
+            let uri = uri.to_string();
             tag.push_attribute((attr::URI, uri.as_str()));
         }
         if let Some(ver) = &generator.version {
@@ -64,8 +65,12 @@ pub(in crate::protocols::rss) fn write_atom_feed_open<W: std::io::Write>(
         w.write_event(Event::Text(BytesText::new(&generator.value)))?;
         w.write_event(Event::End(BytesEnd::new(elem::GENERATOR)))?;
     }
-    write_opt_text_elem(w, elem::ICON, header.icon.as_deref())?;
-    write_opt_text_elem(w, elem::LOGO, header.logo.as_deref())?;
+    if let Some(icon) = &header.icon {
+        write_text_elem(w, elem::ICON, &icon.to_string())?;
+    }
+    if let Some(logo) = &header.logo {
+        write_text_elem(w, elem::LOGO, &logo.to_string())?;
+    }
     if let Some(rights) = &header.rights {
         write_atom_text(w, elem::RIGHTS, rights)?;
     }
@@ -100,7 +105,7 @@ pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
 ) -> Result<(), XmlWriteError> {
     w.write_event(Event::Start(BytesStart::new(elem::ENTRY)))?;
 
-    write_text_elem(w, elem::ID, &entry.id)?;
+    write_text_elem(w, elem::ID, &entry.id.to_string())?;
     write_atom_text(w, elem::TITLE, &entry.title)?;
     write_text_elem(w, elem::UPDATED, &entry.updated.to_string())?;
 
@@ -130,7 +135,9 @@ pub(in crate::protocols::rss) fn write_atom_entry<W: std::io::Write>(
     }
     if let Some(source) = &entry.source {
         w.write_event(Event::Start(BytesStart::new(elem::SOURCE)))?;
-        write_opt_text_elem(w, elem::ID, source.id.as_deref())?;
+        if let Some(id) = &source.id {
+            write_text_elem(w, elem::ID, &id.to_string())?;
+        }
         if let Some(title) = &source.title {
             write_atom_text(w, elem::TITLE, title)?;
         }
@@ -180,6 +187,7 @@ fn write_atom_content<W: std::io::Write>(
         // we fall back to the inline kind ("text"/"html"/"xhtml") if the
         // caller didn't set one, so misuse can never produce a malformed
         // `type=` attribute.
+        let src = src.to_string();
         tag.push_attribute((attr::SRC, src.as_str()));
         let mime = content
             .out_of_line_type
@@ -280,7 +288,9 @@ fn write_atom_person<W: std::io::Write>(
     w.write_event(Event::Start(BytesStart::new(tag_name)))?;
     write_text_elem(w, elem::NAME, &person.name)?;
     write_opt_text_elem(w, elem::EMAIL, person.email.as_deref())?;
-    write_opt_text_elem(w, elem::URI, person.uri.as_deref())?;
+    if let Some(uri) = &person.uri {
+        write_text_elem(w, elem::URI, &uri.to_string())?;
+    }
     w.write_event(Event::End(BytesEnd::new(tag_name)))?;
     Ok(())
 }
@@ -290,7 +300,8 @@ fn write_atom_link<W: std::io::Write>(
     link: &AtomLink,
 ) -> Result<(), XmlWriteError> {
     let mut tag = BytesStart::new(elem::LINK);
-    tag.push_attribute((attr::HREF, link.href.as_str()));
+    let href = link.href.to_string();
+    tag.push_attribute((attr::HREF, href.as_str()));
     if let Some(rel) = &link.rel {
         tag.push_attribute((attr::REL, rel.as_str()));
     }
@@ -329,36 +340,39 @@ fn write_atom_category<W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
+    use rama_net::uri::Uri;
 
-    use crate::protocols::rss::atom::types::{
-        AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText,
-    };
+    use crate::protocols::rss::atom::types::{AtomContent, AtomEntry, AtomFeed, AtomText};
 
     #[test]
     fn builder_enforces_all_required_fields() {
         let ts = Timestamp::now();
         let feed = AtomFeed::builder()
             .updated(ts)
-            .id("urn:uuid:test")
+            .id(Uri::from_static("urn:uuid:test"))
             .title("Test Feed")
             .build();
-        assert_eq!(feed.id, "urn:uuid:test");
+        assert_eq!(feed.id.to_string(), "urn:uuid:test");
         assert_eq!(feed.title, AtomText::text("Test Feed"));
         assert_eq!(feed.updated, ts);
     }
 
     #[tokio::test]
+    #[cfg(feature = "html")]
     async fn feed_serializes_to_valid_xml() {
+        use crate::html::p;
+        use crate::protocols::rss::atom::types::{AtomLink, AtomPerson};
+
         let ts = Timestamp::now();
         let feed = AtomFeed::builder()
-            .id("https://example.com/feed")
+            .id(Uri::from_static("https://example.com/feed"))
             .title("My Blog")
             .updated(ts)
             .with_author(AtomPerson::new("Author"))
-            .with_link(AtomLink::alternate("https://example.com"))
+            .with_link(AtomLink::alternate(Uri::from_static("https://example.com")))
             .with_entry(
-                AtomEntry::new("https://example.com/1", "Post 1", ts)
-                    .with_content(AtomContent::html("<p>Hello</p>")),
+                AtomEntry::new(Uri::from_static("https://example.com/1"), "Post 1", ts)
+                    .with_content(AtomContent::html(p!("Hello"))),
             )
             .build();
 
@@ -373,8 +387,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "html")]
     fn atom_text_preserves_type() {
-        let text = AtomText::html("<b>bold</b>");
+        use crate::html::b;
+
+        let text = AtomText::html(b!("bold"));
         assert_eq!(text.kind.type_attr(), "html");
         assert_eq!(text.value, "<b>bold</b>");
     }
@@ -383,28 +400,32 @@ mod tests {
     async fn xhtml_malformed_content_errors() {
         let ts = Timestamp::UNIX_EPOCH;
         let bad = AtomFeed::builder()
-            .id("urn:f")
+            .id(Uri::from_static("urn:f"))
             .title("T")
             .updated(ts)
-            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
-                value: AtomText::xhtml("<p>broken"),
-                src: None,
-                out_of_line_type: None,
-            }))
+            .with_entry(
+                AtomEntry::new(Uri::from_static("urn:1"), "E", ts).with_content(AtomContent {
+                    value: AtomText::xhtml("<p>broken"),
+                    src: None,
+                    out_of_line_type: None,
+                }),
+            )
             .build();
         bad.to_xml()
             .await
             .expect_err("malformed xhtml should fail to serialize");
 
         let ok = AtomFeed::builder()
-            .id("urn:f")
+            .id(Uri::from_static("urn:f"))
             .title("T")
             .updated(ts)
-            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
-                value: AtomText::xhtml("<p>ok</p>"),
-                src: None,
-                out_of_line_type: None,
-            }))
+            .with_entry(
+                AtomEntry::new(Uri::from_static("urn:1"), "E", ts).with_content(AtomContent {
+                    value: AtomText::xhtml("<p>ok</p>"),
+                    src: None,
+                    out_of_line_type: None,
+                }),
+            )
             .build();
         ok.to_xml().await.expect("valid xhtml should serialize");
     }
@@ -413,14 +434,16 @@ mod tests {
     async fn xhtml_content_wrapped_in_namespaced_div() {
         let ts = Timestamp::UNIX_EPOCH;
         let feed = AtomFeed::builder()
-            .id("urn:f")
+            .id(Uri::from_static("urn:f"))
             .title("T")
             .updated(ts)
-            .with_entry(AtomEntry::new("urn:1", "E", ts).with_content(AtomContent {
-                value: AtomText::xhtml("<p>hi</p>"),
-                src: None,
-                out_of_line_type: None,
-            }))
+            .with_entry(
+                AtomEntry::new(Uri::from_static("urn:1"), "E", ts).with_content(AtomContent {
+                    value: AtomText::xhtml("<p>hi</p>"),
+                    src: None,
+                    out_of_line_type: None,
+                }),
+            )
             .build();
         let xml_bytes = feed.to_xml().await.expect("serialize");
         let xml = String::from_utf8(xml_bytes).expect("utf-8");

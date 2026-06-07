@@ -208,7 +208,7 @@ impl FeedHeader {
             subtitle: stream
                 .description()
                 .and_then(plain_nonempty)
-                .or_else(|| stream.link().and_then(nonempty)),
+                .or_else(|| stream.link().and_then(|uri| nonempty(&uri.to_string()))),
             format: match stream {
                 FeedStream::Atom(_) => FeedFormat::Atom,
                 FeedStream::Rss2(_) => FeedFormat::Rss,
@@ -222,7 +222,7 @@ impl FeedHeader {
             subtitle: feed
                 .description()
                 .and_then(plain_nonempty)
-                .or_else(|| feed.link().and_then(nonempty)),
+                .or_else(|| feed.link().and_then(|uri| nonempty(&uri.to_string()))),
             format: if feed.is_rss2() {
                 FeedFormat::Rss
             } else {
@@ -387,7 +387,7 @@ impl AppState {
 
     fn open_selected_link(&self) -> Action {
         match self.selected().and_then(FeedItem::link) {
-            Some(url) => Action::Open(url.to_owned()),
+            Some(url) => Action::Open(url.to_string()),
             None => Action::None,
         }
     }
@@ -395,7 +395,7 @@ impl AppState {
     fn open_selected_enclosure(&self) -> Action {
         match self
             .selected()
-            .and_then(|item| item.enclosures().next().map(|e| e.url.to_owned()))
+            .and_then(|item| item.enclosures().next().map(|e| e.url.to_string()))
         {
             Some(url) => Action::Open(url),
             None => self.open_selected_link(),
@@ -536,7 +536,7 @@ impl AppState {
             lines.push(meta("topics", &topics.join(", ")));
         }
         if let Some(link) = item.link() {
-            lines.push(meta("link", link));
+            lines.push(meta("link", &link.to_string()));
         }
         for enc in item.enclosures() {
             let mime = enc.mime.unwrap_or("?");

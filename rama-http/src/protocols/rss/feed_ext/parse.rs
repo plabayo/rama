@@ -18,9 +18,10 @@ use super::names::{attr, content, dc, itunes, media, podcast, psc};
 use super::podlove::{PodloveChapter, parse_start as parse_psc_start};
 use super::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
-    PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
-    PodcastSoundbite, PodcastTrailer, PodcastTranscript, PodloveChapters,
+    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastAlternateEnclosure, PodcastChapters,
+    PodcastEpisode, PodcastFeed, PodcastFunding, PodcastIntegrity, PodcastLocation, PodcastPerson,
+    PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastSource, PodcastTrailer,
+    PodcastTranscript, PodloveChapters,
 };
 use crate::protocols::rss::parse_util::{Attrs, attr_value, parse_rss2_date};
 
@@ -182,6 +183,39 @@ fn podcast_transcript_from_attrs(e: &Attrs<'_>) -> PodcastTranscript {
     }
 }
 
+fn podcast_alternate_enclosure_from_attrs(e: &Attrs<'_>) -> PodcastAlternateEnclosure {
+    PodcastAlternateEnclosure {
+        type_: attr_value(e, attr::TYPE).unwrap_or_default(),
+        length: attr_value(e, attr::LENGTH).and_then(|v| v.parse().ok()),
+        bitrate: attr_value(e, attr::BITRATE)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0),
+        height: attr_value(e, attr::HEIGHT).and_then(|v| v.parse().ok()),
+        lang: attr_value(e, attr::LANG),
+        title: attr_value(e, attr::TITLE),
+        rel: attr_value(e, attr::REL),
+        codecs: attr_value(e, attr::CODECS),
+        default: attr_value(e, attr::DEFAULT).is_some_and(|v| is_truthy(&v)),
+        sources: Vec::new(),
+        integrity: None,
+    }
+}
+
+fn podcast_source_from_attrs(e: &Attrs<'_>) -> Option<PodcastSource> {
+    let uri = attr_value(e, attr::URI)?.parse().ok()?;
+    Some(PodcastSource {
+        uri,
+        content_type: attr_value(e, attr::CONTENT_TYPE),
+    })
+}
+
+fn podcast_integrity_from_attrs(e: &Attrs<'_>) -> PodcastIntegrity {
+    PodcastIntegrity {
+        type_: attr_value(e, attr::TYPE).unwrap_or_default(),
+        value: attr_value(e, attr::VALUE).unwrap_or_default(),
+    }
+}
+
 fn podcast_remote_item_from_attrs(e: &Attrs<'_>) -> PodcastRemoteItem {
     PodcastRemoteItem {
         feed_guid: attr_value(e, attr::FEED_GUID).unwrap_or_default(),
@@ -246,6 +280,7 @@ pub(in crate::protocols::rss) struct ItemExtAcc {
     pending_soundbite: Option<PodcastSoundbite>,
     pending_season: Option<PodcastSeason>,
     pending_episode: Option<PodcastEpisode>,
+    pending_alternate_enclosure: Option<PodcastAlternateEnclosure>,
     /// Open `<psc:chapters>` block accumulating its `<psc:chapter>` children.
     /// Finalised into `podlove` on the matching End event.
     pending_psc: Option<PodloveChapters>,
@@ -278,6 +313,23 @@ impl ItemExtAcc {
             }
             (Ns::Podcast, podcast::SOUNDBITE) => {
                 self.pending_soundbite = Some(podcast_soundbite_from_attrs(e));
+            }
+            (Ns::Podcast, podcast::ALTERNATE_ENCLOSURE) => {
+                self.pending_alternate_enclosure = Some(podcast_alternate_enclosure_from_attrs(e));
+            }
+            (Ns::Podcast, podcast::SOURCE) => {
+                let Some(alt) = self.pending_alternate_enclosure.as_mut() else {
+                    return false;
+                };
+                if let Some(source) = podcast_source_from_attrs(e) {
+                    alt.sources.push(source);
+                }
+            }
+            (Ns::Podcast, podcast::INTEGRITY) => {
+                let Some(alt) = self.pending_alternate_enclosure.as_mut() else {
+                    return false;
+                };
+                alt.integrity = Some(podcast_integrity_from_attrs(e));
             }
             (Ns::Podcast, podcast::SEASON) => {
                 self.pending_season = Some(PodcastSeason {
@@ -331,6 +383,26 @@ impl ItemExtAcc {
                     .transcripts
                     .push(podcast_transcript_from_attrs(e));
                 self.has_podcast = true;
+            }
+            (Ns::Podcast, podcast::ALTERNATE_ENCLOSURE) => {
+                self.podcast
+                    .alternate_enclosures
+                    .push(podcast_alternate_enclosure_from_attrs(e));
+                self.has_podcast = true;
+            }
+            (Ns::Podcast, podcast::SOURCE) => {
+                let Some(alt) = self.pending_alternate_enclosure.as_mut() else {
+                    return false;
+                };
+                if let Some(source) = podcast_source_from_attrs(e) {
+                    alt.sources.push(source);
+                }
+            }
+            (Ns::Podcast, podcast::INTEGRITY) => {
+                let Some(alt) = self.pending_alternate_enclosure.as_mut() else {
+                    return false;
+                };
+                alt.integrity = Some(podcast_integrity_from_attrs(e));
             }
             (Ns::Podcast, podcast::CHAPTERS) => {
                 self.podcast.chapters = Some(PodcastChapters {
@@ -504,6 +576,16 @@ impl ItemExtAcc {
                     self.podcast.episode = Some(ep);
                     self.has_podcast = true;
                 }
+                return None;
+            }
+            (Ns::Podcast, podcast::ALTERNATE_ENCLOSURE) => {
+                if let Some(alt) = self.pending_alternate_enclosure.take() {
+                    self.podcast.alternate_enclosures.push(alt);
+                    self.has_podcast = true;
+                }
+                return None;
+            }
+            (Ns::Podcast, podcast::SOURCE | podcast::INTEGRITY) => {
                 return None;
             }
             // Dublin Core (any field)

@@ -44,6 +44,16 @@ fn push_segment_chained() {
     assert_eq!(uri.to_string(), "/api/v2/users");
 }
 
+#[test]
+fn push_segment_integer_and_bool() {
+    let mut uri: Uri = parse_graceful("https://example.com/users").unwrap();
+    uri.path_mut()
+        .push_segment(42_u32)
+        .push_segment(-7_i64)
+        .push_segment(true);
+    assert_eq!(uri.to_string(), "https://example.com/users/42/-7/true");
+}
+
 // ----------------------------------------------------------------------
 // push_segment — auto-encoding (RFC 3986 pchar enforcement)
 // ----------------------------------------------------------------------
