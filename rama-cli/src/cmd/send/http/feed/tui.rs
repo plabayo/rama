@@ -205,10 +205,11 @@ impl FeedHeader {
     fn from_stream(stream: &FeedStream) -> Self {
         Self {
             title: nonempty(stream.title()).unwrap_or_else(|| "(untitled feed)".to_owned()),
-            subtitle: stream
-                .description()
-                .and_then(plain_nonempty)
-                .or_else(|| stream.link().and_then(|uri| nonempty(&uri.to_string()))),
+            subtitle: stream.description().and_then(plain_nonempty).or_else(|| {
+                stream
+                    .link()
+                    .and_then(|uri| nonempty(uri.as_str().as_ref()))
+            }),
             format: match stream {
                 FeedStream::Atom(_) => FeedFormat::Atom,
                 FeedStream::Rss2(_) => FeedFormat::Rss,
@@ -222,7 +223,7 @@ impl FeedHeader {
             subtitle: feed
                 .description()
                 .and_then(plain_nonempty)
-                .or_else(|| feed.link().and_then(|uri| nonempty(&uri.to_string()))),
+                .or_else(|| feed.link().and_then(|uri| nonempty(uri.as_str().as_ref()))),
             format: if feed.is_rss2() {
                 FeedFormat::Rss
             } else {

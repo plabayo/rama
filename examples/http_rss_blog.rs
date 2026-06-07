@@ -30,8 +30,8 @@ use jiff::Timestamp;
 use rama::{
     Layer,
     http::{
-        html::{IntoHtml, p},
         layer::{error_handling::ErrorHandlerLayer, trace::TraceLayer},
+        protocols::html::{IntoHtml, p},
         protocols::rss::{
             AtomContent, AtomEntry, AtomFeed, AtomLink, AtomPerson, AtomText, Rss2Feed, Rss2Guid,
             Rss2Item,

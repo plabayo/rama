@@ -58,7 +58,7 @@
 //! [`Authority`](crate::address::Authority); host is
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 
@@ -286,6 +286,28 @@ impl Uri {
     /// [`parse_authority_form`](Self::parse_authority_form).
     pub fn parse_authority_form_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
+    }
+
+    /// View this [`Uri`] as a str.
+    ///
+    /// This method may allocate, and can also contain
+    /// sensitive credentials. Do not use it for hot paths or logging purposes.
+    /// Nor is it intended for encoding purposes.
+    ///
+    /// It is mostly used for where you need a string representation,
+    /// but wish to borrow if possible and only allocate to a string if
+    /// you must, as a possibly cheaper alternative compared to `to_string`.
+    pub fn as_str(&self) -> Cow<'_, str> {
+        match &self.inner {
+            UriInner::Asterisk => Cow::Borrowed("*"),
+            UriInner::Lazy(lazy_uri_ref) => {
+                // Safety: parser invariant — the source buffer is valid UTF-8
+                // (graceful mode) or ASCII (strict mode).
+                let s = unsafe { std::str::from_utf8_unchecked(&lazy_uri_ref.bytes) };
+                Cow::Borrowed(s)
+            }
+            UriInner::Owned(_) => Cow::Owned(self.to_string()),
+        }
     }
 
     /// Returns `true` if this is the OPTIONS-`*` request-target.
