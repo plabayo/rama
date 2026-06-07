@@ -60,6 +60,10 @@ impl Selector {
     /// Panics if `selector` is not a valid, [supported](self) selector. Use
     /// [`parse`](str::parse) for input that can fail at runtime.
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "static-str invariant: a bad literal selector is a programming error"
+    )]
     pub fn from_static(selector: &'static str) -> Self {
         selector
             .parse()

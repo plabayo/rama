@@ -13,7 +13,10 @@ use rama::{
     error::{BoxError, ErrorContext as _},
     futures::{FutureExt as _, StreamExt as _},
     http::protocols::{
-        html::tokenizer::{EndTag, StartTag, Text, TokenSink, Tokenizer},
+        html::{
+            decode_entities,
+            tokenizer::{EndTag, StartTag, Text, TokenSink, Tokenizer},
+        },
         rss::{Feed, FeedItem, FeedStream},
     },
     telemetry::tracing,
@@ -951,75 +954,7 @@ fn extract_attr(tag: &StartTag<'_>, name: &[u8]) -> Option<String> {
         .attributes()
         .find(|attr| attr.name().eq_ignore_ascii_case(name))?
         .value();
-    match std::str::from_utf8(raw) {
-        Ok(value) => Some(decode_entities(value)),
-        Err(_err) => Some(decode_entities(&String::from_utf8_lossy(raw))),
-    }
-}
-
-/// Decode the HTML entities that show up in feeds (named subset + numeric
-/// `&#nn;` / `&#xhh;`). Unrecognized entities are left as-is.
-fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_owned();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let after = &rest[amp..];
-        if let Some(rel) = after[1..].find(';')
-            && rel < 32
-            && let Some(ch) = decode_one_entity(&after[1..rel + 1])
-        {
-            out.push(ch);
-            rest = &after[rel + 2..];
-        } else {
-            out.push('&');
-            rest = &after[1..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn decode_one_entity(entity: &str) -> Option<char> {
-    if let Some(num) = entity.strip_prefix('#') {
-        let code = match num.strip_prefix(['x', 'X']) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-            None => num.parse::<u32>().ok()?,
-        };
-        return char::from_u32(code);
-    }
-    Some(match entity {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => ' ',
-        "hellip" => '…',
-        "mdash" => '—',
-        "ndash" => '–',
-        "lsquo" => '\u{2018}',
-        "rsquo" => '\u{2019}',
-        "ldquo" => '\u{201C}',
-        "rdquo" => '\u{201D}',
-        "laquo" => '«',
-        "raquo" => '»',
-        "copy" => '©',
-        "reg" => '®',
-        "trade" => '™',
-        "deg" => '°',
-        "middot" | "bull" => '•',
-        "euro" => '€',
-        "pound" => '£',
-        "cent" => '¢',
-        "sect" => '§',
-        "times" => '×',
-        "divide" => '÷',
-        _ => return None,
-    })
+    Some(decode_entities(&String::from_utf8_lossy(raw)).into_owned())
 }
 
 fn open_url(url: &str) {

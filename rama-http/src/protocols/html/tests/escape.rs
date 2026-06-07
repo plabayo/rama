@@ -3,7 +3,25 @@
 
 use std::borrow::Cow;
 
-use crate::protocols::html::{IntoHtml, end, escape, escape_into, marker, start};
+use crate::protocols::html::{IntoHtml, decode_entities, end, escape, escape_into, marker, start};
+
+#[test]
+fn decode_entities_named_and_numeric() {
+    assert_eq!(
+        decode_entities("tom &amp; jerry &mdash; &#169; &#xA9;"),
+        "tom & jerry — © ©"
+    );
+}
+
+#[test]
+fn decode_entities_borrows_and_leaves_unknown() {
+    assert!(matches!(decode_entities("no entities"), Cow::Borrowed(_)));
+    // Unknown names and out-of-range numerics stay verbatim.
+    assert_eq!(
+        decode_entities("a &bogus; b &#xffffffff; c"),
+        "a &bogus; b &#xffffffff; c"
+    );
+}
 
 #[test]
 fn escape_returns_owned_when_needed() {

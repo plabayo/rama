@@ -156,6 +156,88 @@ pub fn escape(input: &str) -> Cow<'_, str> {
     Cow::Owned(output)
 }
 
+/// The longest entity name (without `&`/`;`) we attempt to decode; bounds the
+/// look-ahead for a terminating `;` so stray `&`s stay cheap.
+const MAX_ENTITY_LEN: usize = 32;
+
+/// Decode HTML character references in `input` — all numeric references
+/// (`&#169;`, `&#xA9;`) plus the common named ones (`&amp;`, `&mdash;`, …).
+///
+/// Returns [`Cow::Borrowed`] when there is nothing to decode. Unknown or
+/// malformed references are left verbatim. This is the companion to
+/// [`escape`]/[`escape_into`] for consumers of the raw, undecoded text the
+/// [`tokenizer`](super::tokenizer) emits.
+#[must_use]
+pub fn decode_entities(input: &str) -> Cow<'_, str> {
+    let Some(first) = input.find('&') else {
+        return Cow::Borrowed(input);
+    };
+    let mut out = String::with_capacity(input.len());
+    out.push_str(&input[..first]);
+    let mut rest = &input[first..];
+    loop {
+        // `rest` starts at an `&`.
+        let after = &rest[1..];
+        if let Some(semi) = after.find(';').filter(|&i| i <= MAX_ENTITY_LEN)
+            && let Some(ch) = decode_entity(&after[..semi])
+        {
+            out.push(ch);
+            rest = &after[semi + 1..];
+        } else {
+            out.push('&');
+            rest = after;
+        }
+        let Some(next) = rest.find('&') else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..next]);
+        rest = &rest[next..];
+    }
+    Cow::Owned(out)
+}
+
+/// Decode a single entity body (the bytes between `&` and `;`). `None` for an
+/// unknown name or out-of-range numeric reference (left verbatim by the caller).
+fn decode_entity(body: &str) -> Option<char> {
+    if let Some(num) = body.strip_prefix('#') {
+        let code = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => num.parse::<u32>().ok()?,
+        };
+        return char::from_u32(code);
+    }
+    Some(match body {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "nbsp" => '\u{a0}',
+        "hellip" => '…',
+        "mdash" => '—',
+        "ndash" => '–',
+        "lsquo" => '\u{2018}',
+        "rsquo" => '\u{2019}',
+        "ldquo" => '\u{201C}',
+        "rdquo" => '\u{201D}',
+        "laquo" => '«',
+        "raquo" => '»',
+        "copy" => '©',
+        "reg" => '®',
+        "trade" => '™',
+        "deg" => '°',
+        "middot" | "bull" => '•',
+        "euro" => '€',
+        "pound" => '£',
+        "cent" => '¢',
+        "sect" => '§',
+        "times" => '×',
+        "divide" => '÷',
+        _ => return None,
+    })
+}
+
 /// Emit a `<?marker name="…">` processing instruction for use as a
 /// placeholder in a [Chrome declarative partial updates] shell. The name is
 /// HTML-escaped via [`escape_into`] on render.

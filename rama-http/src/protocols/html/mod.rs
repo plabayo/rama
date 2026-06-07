@@ -76,7 +76,8 @@ pub mod tokenizer;
 
 #[doc(inline)]
 pub use self::core::{
-    End, IntoHtml, Marker, PreEscaped, Start, end, escape, escape_into, marker, start,
+    End, IntoHtml, Marker, PreEscaped, Start, decode_entities, end, escape, escape_into, marker,
+    start,
 };
 #[doc(inline)]
 pub use self::response::HtmlBuf;
