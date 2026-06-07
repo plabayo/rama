@@ -1,6 +1,9 @@
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
+#[cfg(feature = "html")]
+use crate::html::IntoHtml;
 use crate::protocols::rss::feed_ext::{
     Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast, PodloveChapters,
 };
@@ -49,9 +52,24 @@ impl AtomText {
     }
 
     #[must_use]
-    pub fn html(s: impl Into<String>) -> Self {
+    #[cfg(feature = "html")]
+    pub fn html(e: impl IntoHtml) -> Self {
         Self {
-            value: s.into(),
+            value: e.into_string(),
+            kind: AtomTextKind::Html,
+        }
+    }
+
+    /// Build an `html` text construct from an already-rendered raw string.
+    ///
+    /// Unlike [`AtomText::html`] this performs no escaping and does not
+    /// require [`IntoHtml`] — it is used by the parser, which already holds
+    /// the serialized HTML from the wire and must work without the `html`
+    /// feature.
+    #[must_use]
+    pub(crate) fn html_raw(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
             kind: AtomTextKind::Html,
         }
     }
@@ -89,7 +107,7 @@ impl From<String> for AtomText {
 pub struct AtomPerson {
     pub name: String,
     pub email: Option<String>,
-    pub uri: Option<String>,
+    pub uri: Option<Uri>,
 }
 
 impl AtomPerson {
@@ -110,8 +128,8 @@ impl AtomPerson {
     }
 
     generate_set_and_with! {
-        pub fn uri(mut self, uri: impl Into<String>) -> Self {
-            self.uri = Some(uri.into());
+        pub fn uri(mut self, uri: Uri) -> Self {
+            self.uri = Some(uri);
             self
         }
     }
@@ -120,7 +138,7 @@ impl AtomPerson {
 /// An Atom link element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomLink {
-    pub href: String,
+    pub href: Uri,
     pub rel: Option<String>,
     pub type_: Option<String>,
     pub hreflang: Option<String>,
@@ -130,9 +148,9 @@ pub struct AtomLink {
 
 impl AtomLink {
     #[must_use]
-    pub fn new(href: impl Into<String>) -> Self {
+    pub fn new(href: Uri) -> Self {
         Self {
-            href: href.into(),
+            href,
             rel: None,
             type_: None,
             hreflang: None,
@@ -142,9 +160,9 @@ impl AtomLink {
     }
 
     #[must_use]
-    pub fn alternate(href: impl Into<String>) -> Self {
+    pub fn alternate(href: Uri) -> Self {
         Self {
-            href: href.into(),
+            href,
             rel: Some("alternate".into()),
             type_: Some("text/html".into()),
             hreflang: None,
@@ -162,9 +180,9 @@ impl AtomLink {
     /// the constructor here hardcodes the Atom MIME and would be wrong on
     /// the wire.
     #[must_use]
-    pub fn self_link(href: impl Into<String>) -> Self {
+    pub fn self_link(href: Uri) -> Self {
         Self {
-            href: href.into(),
+            href,
             rel: Some("self".into()),
             type_: Some("application/atom+xml".into()),
             hreflang: None,
@@ -174,9 +192,9 @@ impl AtomLink {
     }
 
     #[must_use]
-    pub fn enclosure(href: impl Into<String>, length: u64, type_: impl Into<String>) -> Self {
+    pub fn enclosure(href: Uri, length: u64, type_: impl Into<String>) -> Self {
         Self {
-            href: href.into(),
+            href,
             rel: Some("enclosure".into()),
             type_: Some(type_.into()),
             hreflang: None,
@@ -209,7 +227,7 @@ impl AtomCategory {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomGenerator {
     pub value: String,
-    pub uri: Option<String>,
+    pub uri: Option<Uri>,
     pub version: Option<String>,
 }
 
@@ -244,7 +262,7 @@ impl AtomGenerator {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomContent {
     pub value: AtomText,
-    pub src: Option<String>,
+    pub src: Option<Uri>,
     pub out_of_line_type: Option<String>,
 }
 
@@ -259,19 +277,20 @@ impl AtomContent {
     }
 
     #[must_use]
-    pub fn html(s: impl Into<String>) -> Self {
+    #[cfg(feature = "html")]
+    pub fn html(e: impl IntoHtml) -> Self {
         Self {
-            value: AtomText::html(s),
+            value: AtomText::html(e),
             src: None,
             out_of_line_type: None,
         }
     }
 
     #[must_use]
-    pub fn out_of_line(src: impl Into<String>, mime: impl Into<String>) -> Self {
+    pub fn out_of_line(src: Uri, mime: impl Into<String>) -> Self {
         Self {
             value: AtomText::text(""),
-            src: Some(src.into()),
+            src: Some(src),
             out_of_line_type: Some(mime.into()),
         }
     }
@@ -280,7 +299,7 @@ impl AtomContent {
 /// An Atom source element (entry's original feed metadata).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomSource {
-    pub id: Option<String>,
+    pub id: Option<Uri>,
     pub title: Option<AtomText>,
     pub updated: Option<Timestamp>,
 }
@@ -288,7 +307,7 @@ pub struct AtomSource {
 /// An Atom feed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomFeed {
-    pub id: String,
+    pub id: Uri,
     pub title: AtomText,
     pub updated: Timestamp,
     pub authors: Vec<AtomPerson>,
@@ -296,8 +315,8 @@ pub struct AtomFeed {
     pub categories: Vec<AtomCategory>,
     pub contributors: Vec<AtomPerson>,
     pub generator: Option<AtomGenerator>,
-    pub icon: Option<String>,
-    pub logo: Option<String>,
+    pub icon: Option<Uri>,
+    pub logo: Option<Uri>,
     pub rights: Option<AtomText>,
     pub subtitle: Option<AtomText>,
     pub entries: Vec<AtomEntry>,
@@ -342,7 +361,7 @@ impl AtomFeed {
 /// An Atom entry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AtomEntry {
-    pub id: String,
+    pub id: Uri,
     pub title: AtomText,
     pub updated: Timestamp,
     pub authors: Vec<AtomPerson>,
@@ -359,9 +378,9 @@ pub struct AtomEntry {
 
 impl AtomEntry {
     #[must_use]
-    pub fn new(id: impl Into<String>, title: impl Into<AtomText>, updated: Timestamp) -> Self {
+    pub fn new(id: Uri, title: impl Into<AtomText>, updated: Timestamp) -> Self {
         Self {
-            id: id.into(),
+            id,
             title: title.into(),
             updated,
             authors: Vec::new(),

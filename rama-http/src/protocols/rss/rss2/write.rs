@@ -43,7 +43,7 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     w.write_event(Event::Start(BytesStart::new(elem::CHANNEL)))?;
 
     write_text_elem(w, elem::TITLE, &channel.title)?;
-    write_text_elem(w, elem::LINK, &channel.link)?;
+    write_text_elem(w, elem::LINK, &channel.link.to_string())?;
     write_text_elem(w, elem::DESCRIPTION, &channel.description)?;
     write_opt_text_elem(w, elem::LANGUAGE, channel.language.as_deref())?;
     write_opt_text_elem(w, elem::COPYRIGHT, channel.copyright.as_deref())?;
@@ -76,9 +76,9 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
 
     if let Some(img) = &channel.image {
         w.write_event(Event::Start(BytesStart::new(elem::IMAGE)))?;
-        write_text_elem(w, elem::URL, &img.url)?;
+        write_text_elem(w, elem::URL, &img.url.to_string())?;
         write_text_elem(w, elem::TITLE, &img.title)?;
-        write_text_elem(w, elem::LINK, &img.link)?;
+        write_text_elem(w, elem::LINK, &img.link.to_string())?;
         if let Some(width) = img.width {
             write_text_elem(w, elem::WIDTH, &width.to_string())?;
         }
@@ -91,7 +91,8 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
 
     for atom_link in &channel.atom_links {
         let mut tag = BytesStart::new(elem::ATOM_LINK);
-        tag.push_attribute((attr::HREF, atom_link.href.as_str()));
+        let href = atom_link.href.to_string();
+        tag.push_attribute((attr::HREF, href.as_str()));
         if let Some(rel) = &atom_link.rel {
             tag.push_attribute((attr::REL, rel.as_str()));
         }
@@ -140,7 +141,9 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
     w.write_event(Event::Start(BytesStart::new(elem::ITEM)))?;
 
     write_opt_text_elem(w, elem::TITLE, item.title.as_deref())?;
-    write_opt_text_elem(w, elem::LINK, item.link.as_deref())?;
+    if let Some(link) = &item.link {
+        write_text_elem(w, elem::LINK, &link.to_string())?;
+    }
     write_opt_text_elem(w, elem::DESCRIPTION, item.description.as_deref())?;
     write_opt_text_elem(w, elem::AUTHOR, item.author.as_deref())?;
 
@@ -158,7 +161,8 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
 
     for enc in &item.enclosures {
         let mut tag = BytesStart::new(elem::ENCLOSURE);
-        tag.push_attribute((attr::URL, enc.url.as_str()));
+        let url = enc.url.to_string();
+        tag.push_attribute((attr::URL, url.as_str()));
         tag.push_attribute((attr::LENGTH, enc.length.to_string().as_str()));
         tag.push_attribute((attr::TYPE, enc.type_.as_str()));
         w.write_event(Event::Empty(tag))?;
@@ -181,7 +185,8 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
 
     if let Some(src) = &item.source {
         let mut tag = BytesStart::new(elem::SOURCE);
-        tag.push_attribute((attr::URL, src.url.as_str()));
+        let url = src.url.to_string();
+        tag.push_attribute((attr::URL, url.as_str()));
         w.write_event(Event::Start(tag))?;
         w.write_event(Event::Text(BytesText::new(&src.title)))?;
         w.write_event(Event::End(BytesEnd::new(elem::SOURCE)))?;
@@ -236,18 +241,96 @@ pub(in crate::protocols::rss) fn format_rss2_date(ts: &Timestamp) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocols::rss::feed_ext::{FeedExtensions, ITunes, ITunesFeed, ItemExtensions};
+    use crate::protocols::rss::Feed;
+    use crate::protocols::rss::feed_ext::{
+        FeedExtensions, ITunes, ITunesFeed, ItemExtensions, Podcast, PodcastAlternateEnclosure,
+        PodcastIntegrity, PodcastSource,
+    };
     use crate::protocols::rss::rss2::types::{Rss2Feed, Rss2Guid, Rss2Item};
+    use rama_net::uri::Uri;
+
+    fn feed_with_alternate_enclosures() -> Rss2Feed {
+        Rss2Feed::builder()
+            .title("Podcast")
+            .link(Uri::from_static("https://example.com"))
+            .description("A podcast")
+            .with_item(
+                Rss2Item::new()
+                    .with_title("Episode 1")
+                    .with_extensions(ItemExtensions {
+                        podcast: Some(Box::new(Podcast {
+                            alternate_enclosures: vec![
+                                PodcastAlternateEnclosure {
+                                    type_: "audio/mp4".into(),
+                                    length: Some(2_490_970),
+                                    bitrate: Some(681_483.55),
+                                    height: Some(720),
+                                    lang: Some("en".into()),
+                                    title: Some("Standard".into()),
+                                    rel: Some("main".into()),
+                                    codecs: Some("mp4a.40.2".into()),
+                                    default: true,
+                                    sources: vec![
+                                        PodcastSource {
+                                            uri: Uri::from_static(
+                                                "https://example.com/ep1/audio.m4a",
+                                            ),
+                                            content_type: Some("audio/mp4".into()),
+                                        },
+                                        PodcastSource {
+                                            uri: Uri::from_static("ipfs://QmExample/audio.m4a"),
+                                            content_type: None,
+                                        },
+                                    ],
+                                    integrity: Some(PodcastIntegrity {
+                                        type_: "sri".into(),
+                                        value: "sha384-abc".into(),
+                                    }),
+                                },
+                                PodcastAlternateEnclosure {
+                                    type_: "audio/opus".into(),
+                                    length: Some(1_020_000),
+                                    bitrate: Some(32_000.5),
+                                    height: None,
+                                    lang: None,
+                                    title: Some("Low".into()),
+                                    rel: None,
+                                    codecs: None,
+                                    default: false,
+                                    sources: vec![PodcastSource {
+                                        uri: Uri::from_static("https://example.com/ep1/audio.opus"),
+                                        content_type: None,
+                                    }],
+                                    integrity: None,
+                                },
+                            ],
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    }),
+            )
+            .build()
+    }
+
+    async fn parse_rss2(xml: String) -> Rss2Feed {
+        match Feed::from_body(crate::Body::from(xml))
+            .await
+            .expect("parse feed")
+        {
+            Feed::Rss2(feed) => feed,
+            Feed::Atom(_) => panic!("expected RSS 2.0 feed"),
+        }
+    }
 
     #[test]
     fn builder_enforces_all_required_fields() {
         let feed = Rss2Feed::builder()
             .description("A test blog")
             .title("My Blog")
-            .link("https://example.com")
+            .link(Uri::from_static("https://example.com"))
             .build();
         assert_eq!(feed.title, "My Blog");
-        assert_eq!(feed.link, "https://example.com");
+        assert_eq!(feed.link.to_string(), "https://example.com");
         assert_eq!(feed.description, "A test blog");
     }
 
@@ -255,12 +338,12 @@ mod tests {
     async fn feed_serializes_to_valid_xml() {
         let feed = Rss2Feed::builder()
             .title("Test Feed")
-            .link("https://example.com")
+            .link(Uri::from_static("https://example.com"))
             .description("A test feed")
             .with_item(
                 Rss2Item::new()
                     .with_title("Post 1")
-                    .with_link("https://example.com/1")
+                    .with_link(Uri::from_static("https://example.com/1"))
                     .with_guid(Rss2Guid::permalink("https://example.com/1")),
             )
             .build();
@@ -296,7 +379,7 @@ mod tests {
         let feed =
             Rss2Feed::builder()
                 .title("Podcast")
-                .link("https://example.com")
+                .link(Uri::from_static("https://example.com"))
                 .description("A podcast")
                 .with_feed_extensions(FeedExtensions {
                     itunes: Some(Box::new(ITunesFeed {
@@ -325,5 +408,139 @@ mod tests {
         assert!(xml.contains("xmlns:itunes="));
         assert!(xml.contains("itunes:author"));
         assert!(xml.contains("itunes:duration"));
+    }
+
+    #[tokio::test]
+    async fn podcast_alternate_enclosures_serialize_with_sources_and_integrity() {
+        let xml_bytes = feed_with_alternate_enclosures()
+            .to_xml()
+            .await
+            .expect("serialize");
+        let xml = String::from_utf8(xml_bytes).expect("utf-8");
+
+        assert!(
+            xml.contains(
+                r#"<podcast:alternateEnclosure type="audio/mp4" length="2490970" bitrate="681483.55" height="720" lang="en" title="Standard" rel="main" codecs="mp4a.40.2" default="true">"#
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                r#"<podcast:source uri="https://example.com/ep1/audio.m4a" contentType="audio/mp4"/>"#
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<podcast:source uri="ipfs://QmExample/audio.m4a"/>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<podcast:integrity type="sri" value="sha384-abc"/>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(
+                r#"<podcast:alternateEnclosure type="audio/opus" length="1020000" bitrate="32000.5" title="Low">"#
+            ),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<podcast:source uri="https://example.com/ep1/audio.opus"/>"#),
+            "{xml}"
+        );
+        assert!(!xml.contains(r#"default="false""#), "{xml}");
+        assert!(!xml.contains(r#"language="en""#), "{xml}");
+        assert!(
+            !xml.contains(r#"url="https://example.com/ep1/audio.m4a""#),
+            "{xml}"
+        );
+    }
+
+    #[tokio::test]
+    async fn podcast_alternate_enclosures_round_trip() {
+        let feed = feed_with_alternate_enclosures();
+        let xml =
+            String::from_utf8(feed.clone().to_xml().await.expect("serialize")).expect("utf-8");
+        let parsed = parse_rss2(xml).await;
+
+        assert_eq!(parsed, feed);
+    }
+
+    #[tokio::test]
+    async fn podcast_alternate_enclosures_parse_spec_shape_and_missing_optionals() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Podcast</title>
+    <link>https://example.com</link>
+    <description>A podcast</description>
+    <item>
+      <title>Episode 1</title>
+      <podcast:alternateEnclosure type="audio/mp4">
+        <podcast:source uri="https://example.com/ep1/audio.m4a" />
+      </podcast:alternateEnclosure>
+      <podcast:alternateEnclosure type="audio/ogg" length="not-an-int" bitrate="not-a-float" height="-1" default="false">
+        <podcast:source uri="ipfs://QmExample/audio.ogg" contentType="audio/ogg"></podcast:source>
+      </podcast:alternateEnclosure>
+    </item>
+  </channel>
+</rss>"#;
+        let parsed = parse_rss2(xml.into()).await;
+        let podcast = parsed.items[0].podcast().expect("podcast extension");
+
+        assert_eq!(podcast.alternate_enclosures.len(), 2);
+        let first = &podcast.alternate_enclosures[0];
+        assert_eq!(first.type_, "audio/mp4");
+        assert_eq!(first.length, None);
+        assert_eq!(first.bitrate, None);
+        assert_eq!(first.height, None);
+        assert_eq!(first.lang, None);
+        assert!(!first.default);
+        assert_eq!(first.sources.len(), 1);
+        assert_eq!(
+            first.sources[0].uri.to_string(),
+            "https://example.com/ep1/audio.m4a"
+        );
+        assert_eq!(first.sources[0].content_type, None);
+
+        let second = &podcast.alternate_enclosures[1];
+        assert_eq!(second.type_, "audio/ogg");
+        assert_eq!(second.length, None);
+        assert_eq!(second.bitrate, None);
+        assert_eq!(second.height, None);
+        assert!(!second.default);
+        assert_eq!(second.sources.len(), 1);
+        assert_eq!(
+            second.sources[0].uri.to_string(),
+            "ipfs://QmExample/audio.ogg"
+        );
+        assert_eq!(second.sources[0].content_type.as_deref(), Some("audio/ogg"));
+    }
+
+    #[tokio::test]
+    async fn empty_podcast_alternate_enclosures_do_not_change_serialization() {
+        let base = Rss2Feed::builder()
+            .title("Podcast")
+            .link(Uri::from_static("https://example.com"))
+            .description("A podcast")
+            .with_item(Rss2Item::new().with_title("Episode 1"))
+            .build();
+        let with_empty_podcast =
+            Rss2Feed::builder()
+                .title("Podcast")
+                .link(Uri::from_static("https://example.com"))
+                .description("A podcast")
+                .with_item(Rss2Item::new().with_title("Episode 1").with_extensions(
+                    ItemExtensions {
+                        podcast: Some(Box::new(Podcast::default())),
+                        ..Default::default()
+                    },
+                ))
+                .build();
+
+        let base_xml = base.to_xml().await.expect("serialize");
+        let with_empty_podcast_xml = with_empty_podcast.to_xml().await.expect("serialize");
+
+        assert_eq!(with_empty_podcast_xml, base_xml);
     }
 }

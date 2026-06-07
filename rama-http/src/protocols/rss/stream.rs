@@ -30,6 +30,7 @@ use rama_core::bytes::{BufMut as _, Bytes, BytesMut};
 use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::stream::{self, BoxStream, StreamExt as _};
+use rama_net::uri::Uri;
 
 use super::atom::{
     AtomEntry, AtomFeed, AtomFeedStream, AtomHeader, write_atom_entry, write_atom_feed_close,
@@ -615,25 +616,25 @@ impl FeedStream {
 
     /// See [`Feed::link`].
     #[must_use]
-    pub fn link(&self) -> Option<&str> {
+    pub fn link(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(s) => Some(&s.channel().link),
-            Self::Atom(s) => pick_alternate(&s.header().links).map(|l| l.href.as_str()),
+            Self::Atom(s) => pick_alternate(&s.header().links).map(|l| &l.href),
         }
     }
 
     /// See [`Feed::self_link`].
     #[must_use]
-    pub fn self_link(&self) -> Option<&str> {
+    pub fn self_link(&self) -> Option<&Uri> {
         match self {
-            Self::Rss2(s) => pick_rel(&s.channel().atom_links, "self").map(|l| l.href.as_str()),
-            Self::Atom(s) => pick_rel(&s.header().links, "self").map(|l| l.href.as_str()),
+            Self::Rss2(s) => pick_rel(&s.channel().atom_links, "self").map(|l| &l.href),
+            Self::Atom(s) => pick_rel(&s.header().links, "self").map(|l| &l.href),
         }
     }
 
     /// See [`Feed::id`].
     #[must_use]
-    pub fn id(&self) -> Option<&str> {
+    pub fn id(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(_) => None,
             Self::Atom(s) => Some(&s.header().id),
@@ -669,19 +670,19 @@ impl FeedStream {
 
     /// See [`Feed::image_url`].
     #[must_use]
-    pub fn image_url(&self) -> Option<&str> {
+    pub fn image_url(&self) -> Option<&Uri> {
         match self {
-            Self::Rss2(s) => s.channel().image.as_ref().map(|i| i.url.as_str()),
-            Self::Atom(s) => s.header().logo.as_deref(),
+            Self::Rss2(s) => s.channel().image.as_ref().map(|i| &i.url),
+            Self::Atom(s) => s.header().logo.as_ref(),
         }
     }
 
     /// See [`Feed::icon_url`].
     #[must_use]
-    pub fn icon_url(&self) -> Option<&str> {
+    pub fn icon_url(&self) -> Option<&Uri> {
         match self {
             Self::Rss2(_) => None,
-            Self::Atom(s) => s.header().icon.as_deref(),
+            Self::Atom(s) => s.header().icon.as_ref(),
         }
     }
 
@@ -774,9 +775,7 @@ type BodyDataStream = BoxStream<'static, std::io::Result<rama_core::bytes::Bytes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocols::rss::AtomContent;
     use crate::protocols::rss::feed_ext::{ITunes, ItemExtensions};
-    use jiff::Timestamp;
 
     async fn drain<S>(mut s: S) -> String
     where
@@ -793,7 +792,7 @@ mod tests {
     async fn rss2_stream_declares_extension_namespaces() {
         let channel = Rss2Channel {
             title: "T".into(),
-            link: "https://e.com".into(),
+            link: Uri::from_static("https://e.com"),
             description: "D".into(),
             ..Default::default()
         };
@@ -820,13 +819,18 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "html")]
     async fn atom_stream_keeps_content_and_declares_namespaces() {
+        use crate::html::p;
+        use crate::protocols::rss::AtomContent;
+        use jiff::Timestamp;
+
         let header = AtomHeader {
-            id: "urn:x".into(),
+            id: Uri::from_static("urn:x"),
             ..Default::default()
         };
-        let entry = AtomEntry::new("urn:1", "E1", Timestamp::UNIX_EPOCH)
-            .with_content(AtomContent::html("<p>hi</p>"));
+        let entry = AtomEntry::new(Uri::from_static("urn:1"), "E1", Timestamp::UNIX_EPOCH)
+            .with_content(AtomContent::html(p!("hi")));
         let entries =
             rama_core::futures::stream::iter(vec![Ok::<_, std::convert::Infallible>(entry)]);
         let xml = drain(AtomStreamWriter::new(header, entries)).await;
@@ -861,7 +865,11 @@ mod tests {
                 pulled.fetch_add(1, Ordering::SeqCst);
                 let item = Rss2Item::new()
                     .with_title(format!("Episode {n}"))
-                    .with_link(format!("https://example.com/{n}"));
+                    .with_link({
+                        let mut uri = Uri::from_static("https://example.com");
+                        uri.path_mut().push_segment(n);
+                        uri
+                    });
                 Some((Ok::<_, std::convert::Infallible>(item), n + 1))
             }
         })
@@ -869,7 +877,7 @@ mod tests {
 
         let channel = Rss2Channel {
             title: "Podcast".into(),
-            link: "https://example.com".into(),
+            link: Uri::from_static("https://example.com"),
             description: "Streamed".into(),
             ..Default::default()
         };
@@ -886,7 +894,7 @@ mod tests {
 
         let feed = Rss2Feed::builder()
             .title("Round")
-            .link("https://example.com")
+            .link(Uri::from_static("https://example.com"))
             .description("desc")
             .with_item(Rss2Item::new().with_title("Item A"))
             .with_item(Rss2Item::new().with_title("Item B"))

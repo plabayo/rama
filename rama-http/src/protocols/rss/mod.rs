@@ -83,7 +83,7 @@ pub use atom::{
 // Re-exports: Feed umbrella, parsing, streaming
 // ---------------------------------------------------------------------------
 
-pub use feed::{EnclosureView, Feed, FeedItem};
+pub use feed::{EnclosureView, Feed, FeedItem, ItemIdView};
 pub use stream::{AtomStreamWriter, FeedStream, FeedStreamWriter, Rss2StreamWriter};
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,8 @@ pub use stream::{AtomStreamWriter, FeedStream, FeedStreamWriter, Rss2StreamWrite
 
 pub use feed_ext::{
     Content, DublinCore, DublinCoreFeed, FeedExtensions, ITunes, ITunesFeed, ItemExtensions,
-    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastChapters, PodcastEpisode, PodcastFeed,
-    PodcastFunding, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodcastSeason,
-    PodcastSoundbite, PodcastTrailer, PodcastTranscript, PodloveChapter, PodloveChapters,
+    MediaContent, MediaRss, MediaThumbnail, Podcast, PodcastAlternateEnclosure, PodcastChapters,
+    PodcastEpisode, PodcastFeed, PodcastFunding, PodcastIntegrity, PodcastLocation, PodcastPerson,
+    PodcastRemoteItem, PodcastSeason, PodcastSoundbite, PodcastSource, PodcastTrailer,
+    PodcastTranscript, PodloveChapter, PodloveChapters,
 };

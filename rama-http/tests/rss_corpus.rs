@@ -17,6 +17,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rama_http::protocols::rss::{AtomFeedStream, Feed, FeedStream, Rss2FeedStream};
+use rama_net::uri::Uri;
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -286,7 +287,10 @@ async fn atom_source_does_not_leak_into_entry() {
     };
     let entry = &feed.entries[0];
 
-    assert_eq!(entry.id, "https://aggregator.example.com/republished/1");
+    assert_eq!(
+        entry.id,
+        Uri::from_static("https://aggregator.example.com/republished/1")
+    );
     assert_eq!(entry.title.value, "Republished Post");
     assert_eq!(entry.authors.len(), 1);
     assert_eq!(entry.authors[0].name, "EntryAuthor");
@@ -294,13 +298,16 @@ async fn atom_source_does_not_leak_into_entry() {
     assert_eq!(entry.links.len(), 1);
     assert_eq!(
         entry.links[0].href,
-        "https://aggregator.example.com/republished/1"
+        Uri::from_static("https://aggregator.example.com/republished/1")
     );
     // No source category leaked.
     assert!(entry.categories.is_empty());
     // Source itself was parsed.
     let src = entry.source.as_ref().expect("source parsed");
-    assert_eq!(src.id.as_deref(), Some("https://origin.example.com/feed"));
+    assert_eq!(
+        src.id,
+        Some(Uri::from_static("https://origin.example.com/feed"))
+    );
 }
 
 /// Atom `<contributor>` must land in `contributors`, not `authors`.
@@ -360,8 +367,8 @@ async fn atom_person_disallowed_children_do_not_leak() {
     );
     assert_eq!(feed.authors[0].name, "Feed Author");
     assert_eq!(
-        feed.authors[0].uri.as_deref(),
-        Some("https://example.com/feed-author")
+        feed.authors[0].uri,
+        Some(Uri::from_static("https://example.com/feed-author"))
     );
     assert_eq!(feed.contributors[0].name, "Feed Contributor");
 
@@ -369,7 +376,10 @@ async fn atom_person_disallowed_children_do_not_leak() {
     // outside any person subtree) survive.
     let entry = &feed.entries[0];
     assert_eq!(entry.links.len(), 1, "exactly the entry's own <link>");
-    assert_eq!(entry.links[0].href, "https://example.com/entry/1");
+    assert_eq!(
+        entry.links[0].href,
+        Uri::from_static("https://example.com/entry/1")
+    );
     assert_eq!(entry.categories.len(), 1);
     assert_eq!(entry.categories[0].term, "legit-entry-category");
     let content = entry.content.as_ref().expect("entry has its own content");
@@ -438,11 +448,17 @@ async fn atom_nested_source_does_not_corrupt_entry() {
         panic!("expected Atom");
     };
     let entry = &feed.entries[0];
-    assert_eq!(entry.id, "https://aggregator.example.com/republished/1");
+    assert_eq!(
+        entry.id,
+        Uri::from_static("https://aggregator.example.com/republished/1")
+    );
     assert_eq!(entry.links.len(), 1, "exactly the entry's own <link>");
 
     let src = entry.source.as_ref().expect("source parsed");
-    assert_eq!(src.id.as_deref(), Some("https://outer.example.com/feed"));
+    assert_eq!(
+        src.id,
+        Some(Uri::from_static("https://outer.example.com/feed"))
+    );
     // The outer source's title must NOT be overwritten by the inner.
     let title = src.title.as_ref().expect("outer source has a title");
     assert_eq!(title.value, "Outer source");
@@ -509,14 +525,19 @@ async fn ampersand_attrs_decode_to_raw_text() {
     let Feed::Rss2(feed) = parse_bytes(bytes).await else {
         panic!("expected RSS");
     };
-    assert_eq!(feed.link, "https://example.com/?a=1&b=2");
+    assert_eq!(feed.link, Uri::from_static("https://example.com/?a=1&b=2"));
     let item = &feed.items[0];
     assert_eq!(
-        item.link.as_deref(),
-        Some("https://example.com/post?utm_source=a&utm_medium=b")
+        item.link.as_ref(),
+        Some(&Uri::from_static(
+            "https://example.com/post?utm_source=a&utm_medium=b"
+        ))
     );
     let enc = &item.enclosures[0];
-    assert_eq!(enc.url, "https://cdn.example.com/x?token=a&b=2&c=\"3\"");
+    assert_eq!(
+        enc.url,
+        Uri::from_static("https://cdn.example.com/x?token=a&b=2&c=\"3\"")
+    );
     assert_eq!(
         item.categories[0].domain.as_deref(),
         Some("https://example.com/?tag=a&b=2"),
@@ -941,7 +962,10 @@ async fn typed_stream_header_visible_before_items_and_drain_works() {
     let s = AtomFeedStream::new(reader).await.unwrap();
     assert_eq!(s.header().title.value, "Example Blog");
     let (header, mut entries) = s.drain();
-    assert_eq!(header.id, "urn:uuid:6e95a2c8-9d5e-4f9f-9b6f-21f7d5b1f9aa");
+    assert_eq!(
+        header.id,
+        Uri::from_static("urn:uuid:6e95a2c8-9d5e-4f9f-9b6f-21f7d5b1f9aa")
+    );
     let first = entries.next().await.unwrap().unwrap();
     assert_eq!(first.title.value, "Hello, world");
 }
@@ -1046,16 +1070,18 @@ async fn rss2_stream_writer_from_async_item_source() {
 
     let channel = Rss2Channel {
         title: "From DB".into(),
-        link: "https://example.com".into(),
+        link: Uri::from_static("https://example.com"),
         description: "stream".into(),
         ..Default::default()
     };
 
     let items = rama_core::futures::stream::iter((0..5).map(|n| {
         Ok::<_, std::convert::Infallible>(
-            Rss2Item::new()
-                .with_title(format!("Item {n}"))
-                .with_link(format!("https://example.com/{n}")),
+            Rss2Item::new().with_title(format!("Item {n}")).with_link({
+                let mut uri = Uri::from_static("https://example.com");
+                uri.path_mut().push_segment(n.to_string());
+                uri
+            }),
         )
     }));
 

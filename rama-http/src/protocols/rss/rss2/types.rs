@@ -1,4 +1,5 @@
 use jiff::Timestamp;
+use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
 use crate::protocols::rss::atom::AtomLink;
@@ -16,7 +17,7 @@ pub struct Present;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rss2Feed {
     pub title: String,
-    pub link: String,
+    pub link: Uri,
     pub description: String,
     pub language: Option<String>,
     pub copyright: Option<String>,
@@ -77,7 +78,7 @@ impl Rss2Feed {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Rss2Item {
     pub title: Option<String>,
-    pub link: Option<String>,
+    pub link: Option<Uri>,
     pub description: Option<String>,
     pub author: Option<String>,
     pub categories: Vec<Rss2Category>,
@@ -106,8 +107,8 @@ impl Rss2Item {
     }
 
     generate_set_and_with! {
-        pub fn link(mut self, link: impl Into<String>) -> Self {
-            self.link = Some(link.into());
+        pub fn link(mut self, link: Uri) -> Self {
+            self.link = Some(link);
             self
         }
     }
@@ -229,9 +230,9 @@ impl Rss2Category {
 /// RSS 2.0 image element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rss2Image {
-    pub url: String,
+    pub url: Uri,
     pub title: String,
-    pub link: String,
+    pub link: Uri,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub description: Option<String>,
@@ -239,11 +240,11 @@ pub struct Rss2Image {
 
 impl Rss2Image {
     #[must_use]
-    pub fn new(url: impl Into<String>, title: impl Into<String>, link: impl Into<String>) -> Self {
+    pub fn new(url: Uri, title: impl Into<String>, link: Uri) -> Self {
         Self {
-            url: url.into(),
+            url,
             title: title.into(),
-            link: link.into(),
+            link,
             width: None,
             height: None,
             description: None,
@@ -254,16 +255,16 @@ impl Rss2Image {
 /// RSS 2.0 enclosure element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rss2Enclosure {
-    pub url: String,
+    pub url: Uri,
     pub length: u64,
     pub type_: String,
 }
 
 impl Rss2Enclosure {
     #[must_use]
-    pub fn new(url: impl Into<String>, length: u64, type_: impl Into<String>) -> Self {
+    pub fn new(url: Uri, length: u64, type_: impl Into<String>) -> Self {
         Self {
-            url: url.into(),
+            url,
             length,
             type_: type_.into(),
         }
@@ -299,5 +300,5 @@ impl Rss2Guid {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rss2Source {
     pub title: String,
-    pub url: String,
+    pub url: Uri,
 }

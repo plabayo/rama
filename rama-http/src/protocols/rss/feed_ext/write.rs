@@ -11,8 +11,8 @@ use quick_xml::{
 use super::names::{attr, dc, itunes, media, podcast, psc};
 use super::podlove::format_start as format_psc_start;
 use super::{
-    DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastFeed,
-    PodcastLocation, PodcastPerson, PodcastRemoteItem, PodloveChapters,
+    DublinCore, DublinCoreFeed, ITunes, ITunesFeed, MediaRss, Podcast, PodcastAlternateEnclosure,
+    PodcastFeed, PodcastLocation, PodcastPerson, PodcastRemoteItem, PodloveChapters,
 };
 use crate::protocols::rss::rss2::format_rss2_date;
 use crate::protocols::rss::ser::{XmlWriteError, write_opt_text_elem, write_text_elem};
@@ -171,6 +171,9 @@ pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
         }
         w.write_event(Event::Empty(tag))?;
     }
+    for alt in &pc.alternate_enclosures {
+        write_podcast_alternate_enclosure(w, alt)?;
+    }
     if let Some(ch) = &pc.chapters {
         let mut tag = BytesStart::new(podcast::CHAPTERS_TAG);
         tag.push_attribute((attr::URL, ch.url.as_str()));
@@ -227,6 +230,59 @@ pub(in crate::protocols::rss) fn write_podcast_item<W: std::io::Write>(
     for ri in &pc.remote_items {
         write_podcast_remote_item(w, ri)?;
     }
+    Ok(())
+}
+
+fn write_podcast_alternate_enclosure<W: std::io::Write>(
+    w: &mut Writer<W>,
+    alt: &PodcastAlternateEnclosure,
+) -> Result<(), XmlWriteError> {
+    let mut tag = BytesStart::new(podcast::ALTERNATE_ENCLOSURE_TAG);
+    tag.push_attribute((attr::TYPE, alt.type_.as_str()));
+    if let Some(length) = alt.length {
+        tag.push_attribute((attr::LENGTH, length.to_string().as_str()));
+    }
+    if let Some(bitrate) = alt.bitrate.filter(|v| v.is_finite() && *v >= 0.0) {
+        tag.push_attribute((attr::BITRATE, bitrate.to_string().as_str()));
+    }
+    if let Some(height) = alt.height {
+        tag.push_attribute((attr::HEIGHT, height.to_string().as_str()));
+    }
+    if let Some(lang) = &alt.lang {
+        tag.push_attribute((attr::LANG, lang.as_str()));
+    }
+    if let Some(title) = &alt.title {
+        tag.push_attribute((attr::TITLE, title.as_str()));
+    }
+    if let Some(rel) = &alt.rel {
+        tag.push_attribute((attr::REL, rel.as_str()));
+    }
+    if let Some(codecs) = &alt.codecs {
+        tag.push_attribute((attr::CODECS, codecs.as_str()));
+    }
+    if alt.default {
+        tag.push_attribute((attr::DEFAULT, "true"));
+    }
+    w.write_event(Event::Start(tag))?;
+
+    for source in &alt.sources {
+        let mut tag = BytesStart::new(podcast::SOURCE_TAG);
+        let uri = source.uri.to_string();
+        tag.push_attribute((attr::URI, uri.as_str()));
+        if let Some(content_type) = &source.content_type {
+            tag.push_attribute((attr::CONTENT_TYPE, content_type.as_str()));
+        }
+        w.write_event(Event::Empty(tag))?;
+    }
+
+    if let Some(integrity) = &alt.integrity {
+        let mut tag = BytesStart::new(podcast::INTEGRITY_TAG);
+        tag.push_attribute((attr::TYPE, integrity.type_.as_str()));
+        tag.push_attribute((attr::VALUE, integrity.value.as_str()));
+        w.write_event(Event::Empty(tag))?;
+    }
+
+    w.write_event(Event::End(BytesEnd::new(podcast::ALTERNATE_ENCLOSURE_TAG)))?;
     Ok(())
 }
 

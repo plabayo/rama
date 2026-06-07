@@ -48,7 +48,7 @@ impl<'a> PathMut<'a> {
         if !self.owned.path.ends_with(b"/") {
             self.owned.path.extend_from_slice(b"/");
         }
-        encode::extend_encoded_segment(&mut self.owned.path, bytes);
+        encode::extend_encoded_segment(&mut self.owned.path, &bytes);
         self
     }
 
