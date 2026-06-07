@@ -21,6 +21,17 @@ fn err(s: &str) -> SelectorError {
         .unwrap_or_else(|| panic!("`{s}` should fail to parse"))
 }
 
+#[test]
+fn from_static_parses_valid() {
+    assert_eq!(Selector::from_static("div.menu > a"), sel("div.menu > a"));
+}
+
+#[test]
+#[should_panic = "invalid HTML selector"]
+fn from_static_panics_on_invalid() {
+    let _sel = Selector::from_static("div >");
+}
+
 // --- parse errors -------------------------------------------------------
 
 #[test]

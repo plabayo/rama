@@ -47,6 +47,26 @@ pub use self::matcher::SelectorSubject;
 
 use std::fmt;
 
+impl Selector {
+    /// Parses a selector from a `'static` string, panicking on an invalid or
+    /// unsupported selector.
+    ///
+    /// For a known, literal selector this avoids the [`parse`](str::parse)
+    /// error dance: a typo becomes an immediate, deterministic panic on first
+    /// use rather than a `Result` the caller has to thread through.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `selector` is not a valid, [supported](self) selector. Use
+    /// [`parse`](str::parse) for input that can fail at runtime.
+    #[must_use]
+    pub fn from_static(selector: &'static str) -> Self {
+        selector
+            .parse()
+            .unwrap_or_else(|err| panic!("invalid HTML selector {selector:?}: {err}"))
+    }
+}
+
 /// Error returned when parsing a CSS selector string fails, or when it
 /// uses a construct outside the streaming-safe [supported subset](self).
 #[derive(Debug, Clone, PartialEq, Eq)]
