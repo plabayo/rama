@@ -6,7 +6,19 @@
 //! spans of all tokens partition the input contiguously, which is what makes
 //! verbatim re-serialization (the identity property) possible.
 
+use std::borrow::Cow;
+
+use super::super::decode_entities;
 use super::name::LocalNameHash;
+
+/// UTF-8-lossy decode `bytes` and resolve HTML entities, borrowing the input
+/// when both are no-ops.
+fn decode_lossy(bytes: &[u8]) -> Cow<'_, str> {
+    match String::from_utf8_lossy(bytes) {
+        Cow::Borrowed(s) => decode_entities(s),
+        Cow::Owned(s) => Cow::Owned(decode_entities(&s).into_owned()),
+    }
+}
 
 /// Half-open `[start, end)` byte span into the input buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +144,14 @@ impl<'i> Attribute<'i> {
         self.value
     }
 
+    /// The attribute value as display text: UTF-8-lossy decoded with HTML
+    /// entities resolved. Borrows [`value`](Self::value) when it is already
+    /// valid UTF-8 with nothing to decode.
+    #[must_use]
+    pub fn value_decoded(&self) -> Cow<'i, str> {
+        decode_lossy(self.value)
+    }
+
     /// Whether the attribute had an explicit `=value`.
     #[must_use]
     pub fn has_value(&self) -> bool {
@@ -180,6 +200,14 @@ impl<'i> Text<'i> {
     #[must_use]
     pub fn as_bytes(&self) -> &'i [u8] {
         self.raw.slice(self.input)
+    }
+
+    /// The text as display text: UTF-8-lossy decoded with HTML entities
+    /// resolved. Borrows [`as_bytes`](Self::as_bytes) when it is already valid
+    /// UTF-8 with nothing to decode.
+    #[must_use]
+    pub fn decoded(&self) -> Cow<'i, str> {
+        decode_lossy(self.raw.slice(self.input))
     }
 
     /// The full source bytes of the text (same as [`Text::as_bytes`]).

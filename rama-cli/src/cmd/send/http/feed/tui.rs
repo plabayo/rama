@@ -706,7 +706,7 @@ struct HtmlRenderer {
 impl HtmlRenderer {
     fn run(&mut self, input: &str) {
         if Tokenizer::new().tokenize(input.as_bytes(), self).is_err() {
-            self.text(input);
+            self.text(&decode_entities(input));
         }
     }
 
@@ -837,14 +837,15 @@ impl HtmlRenderer {
         self.line_has_content = false;
     }
 
-    fn text(&mut self, raw: &str) {
+    /// Appends already-decoded text (UTF-8, entities resolved) to the current
+    /// line, collapsing whitespace outside `<pre>`.
+    fn text(&mut self, text: &str) {
         if self.skip_text > 0 {
             return;
         }
-        let decoded = decode_entities(raw);
 
         if self.in_pre > 0 {
-            for (i, piece) in decoded.split('\n').enumerate() {
+            for (i, piece) in text.split('\n').enumerate() {
                 if i > 0 {
                     self.flush_line();
                 }
@@ -860,7 +861,7 @@ impl HtmlRenderer {
         // whitespace at the start of a line.
         let mut buf = String::new();
         let mut prev_ws = !self.line_has_content;
-        for ch in decoded.chars() {
+        for ch in text.chars() {
             if ch.is_whitespace() {
                 if !prev_ws {
                     buf.push(' ');
@@ -930,13 +931,7 @@ impl TokenSink for HtmlRenderer {
     }
 
     fn text(&mut self, text: &Text<'_>) {
-        match std::str::from_utf8(text.as_bytes()) {
-            Ok(raw) => Self::text(self, raw),
-            Err(_err) => {
-                let raw = String::from_utf8_lossy(text.as_bytes());
-                Self::text(self, &raw);
-            }
-        }
+        Self::text(self, &text.decoded());
     }
 }
 
@@ -950,11 +945,9 @@ fn tag_name(raw: &[u8]) -> String {
 
 /// Extract a decoded attribute value from a tokenized start tag.
 fn extract_attr(tag: &StartTag<'_>, name: &[u8]) -> Option<String> {
-    let raw = tag
-        .attributes()
-        .find(|attr| attr.name().eq_ignore_ascii_case(name))?
-        .value();
-    Some(decode_entities(&String::from_utf8_lossy(raw)).into_owned())
+    tag.attributes()
+        .find(|attr| attr.name().eq_ignore_ascii_case(name))
+        .map(|attr| attr.value_decoded().into_owned())
 }
 
 fn open_url(url: &str) {
