@@ -19,6 +19,7 @@ mod context;
 mod machine;
 mod name;
 mod sink;
+mod tag;
 mod token;
 
 #[cfg(test)]
@@ -28,4 +29,5 @@ pub use self::context::ParsingAmbiguityError;
 pub use self::machine::{Tokenizer, tokenize};
 pub use self::name::LocalNameHash;
 pub use self::sink::TokenSink;
+pub use self::tag::HtmlTag;
 pub use self::token::{Attribute, Attributes, Cdata, Comment, Doctype, EndTag, StartTag, Text};

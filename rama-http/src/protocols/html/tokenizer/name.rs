@@ -57,6 +57,12 @@ impl LocalNameHash {
     pub const fn is_none(self) -> bool {
         self.0 == 0
     }
+
+    /// The raw hash value, for matching against known-tag constants (a `u64`
+    /// `match` lowers to a switch / binary search, unlike a struct compare).
+    pub(crate) const fn as_u64(self) -> u64 {
+        self.0
+    }
 }
 
 #[cfg(test)]

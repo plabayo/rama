@@ -15,7 +15,7 @@ use rama::{
     http::protocols::{
         html::{
             decode_entities,
-            tokenizer::{EndTag, StartTag, Text, TokenSink, Tokenizer},
+            tokenizer::{EndTag, HtmlTag, StartTag, Text, TokenSink, Tokenizer},
         },
         rss::{Feed, FeedItem, FeedStream},
     },
@@ -711,46 +711,62 @@ impl HtmlRenderer {
         }
     }
 
-    fn open_tag(&mut self, name: &str, tag: &StartTag<'_>) {
-        match name {
-            "script" | "style" => self.skip_text += 1,
-            "br" => self.flush_line(),
-            "hr" => self.rule(),
-            "p" | "div" | "section" | "article" | "header" | "footer" | "figure" | "figcaption"
-            | "main" | "aside" | "table" | "tr" => self.ensure_blank(),
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+    fn open_tag(&mut self, tag: HtmlTag<'_>, start: &StartTag<'_>) {
+        match tag {
+            HtmlTag::Script | HtmlTag::Style => self.skip_text += 1,
+            HtmlTag::Br => self.flush_line(),
+            HtmlTag::Hr => self.rule(),
+            HtmlTag::P
+            | HtmlTag::Div
+            | HtmlTag::Section
+            | HtmlTag::Article
+            | HtmlTag::Header
+            | HtmlTag::Footer
+            | HtmlTag::Figure
+            | HtmlTag::Figcaption
+            | HtmlTag::Main
+            | HtmlTag::Aside
+            | HtmlTag::Table
+            | HtmlTag::Tr => self.ensure_blank(),
+            HtmlTag::H1 | HtmlTag::H2 | HtmlTag::H3 | HtmlTag::H4 | HtmlTag::H5 | HtmlTag::H6 => {
                 self.ensure_blank();
                 self.push_style(self.style.add_modifier(Modifier::BOLD));
             }
-            "b" | "strong" => self.push_style(self.style.add_modifier(Modifier::BOLD)),
-            "i" | "em" | "cite" | "dfn" => {
+            HtmlTag::B | HtmlTag::Strong => {
+                self.push_style(self.style.add_modifier(Modifier::BOLD));
+            }
+            HtmlTag::I | HtmlTag::Em | HtmlTag::Cite | HtmlTag::Dfn => {
                 self.push_style(self.style.add_modifier(Modifier::ITALIC));
             }
-            "u" | "ins" => self.push_style(self.style.add_modifier(Modifier::UNDERLINED)),
-            "s" | "strike" | "del" => {
+            HtmlTag::U | HtmlTag::Ins => {
+                self.push_style(self.style.add_modifier(Modifier::UNDERLINED));
+            }
+            HtmlTag::S | HtmlTag::Strike | HtmlTag::Del => {
                 self.push_style(self.style.add_modifier(Modifier::CROSSED_OUT));
             }
-            "code" | "tt" | "kbd" | "samp" | "var" => self.push_style(self.style.fg(Color::Cyan)),
-            "pre" => {
+            HtmlTag::Code | HtmlTag::Tt | HtmlTag::Kbd | HtmlTag::Samp | HtmlTag::Var => {
+                self.push_style(self.style.fg(Color::Cyan));
+            }
+            HtmlTag::Pre => {
                 self.ensure_blank();
                 self.in_pre += 1;
                 self.push_style(self.style.fg(Color::Cyan));
             }
-            "blockquote" => {
+            HtmlTag::Blockquote => {
                 self.ensure_blank();
                 self.push_style(self.style.fg(Color::Gray).add_modifier(Modifier::ITALIC));
             }
-            "ul" => {
+            HtmlTag::Ul => {
                 self.ensure_blank();
                 self.list_stack.push(ListMarker::Bullet);
             }
-            "ol" => {
+            HtmlTag::Ol => {
                 self.ensure_blank();
                 self.list_stack.push(ListMarker::Number(1));
             }
-            "li" => self.start_list_item(),
-            "a" => {
-                self.href_stack.push(extract_attr(tag, b"href"));
+            HtmlTag::Li => self.start_list_item(),
+            HtmlTag::A => {
+                self.href_stack.push(extract_attr(start, b"href"));
                 self.push_style(
                     self.style
                         .fg(Color::Blue)
@@ -761,28 +777,60 @@ impl HtmlRenderer {
         }
     }
 
-    fn close_tag(&mut self, name: &str) {
-        match name {
-            "script" | "style" => self.skip_text = self.skip_text.saturating_sub(1),
-            "p" | "div" | "section" | "article" | "header" | "footer" | "figure" | "figcaption"
-            | "main" | "aside" | "table" | "tr" => self.ensure_blank(),
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" => {
+    fn close_tag(&mut self, tag: HtmlTag<'_>) {
+        match tag {
+            HtmlTag::Script | HtmlTag::Style => {
+                self.skip_text = self.skip_text.saturating_sub(1);
+            }
+            HtmlTag::P
+            | HtmlTag::Div
+            | HtmlTag::Section
+            | HtmlTag::Article
+            | HtmlTag::Header
+            | HtmlTag::Footer
+            | HtmlTag::Figure
+            | HtmlTag::Figcaption
+            | HtmlTag::Main
+            | HtmlTag::Aside
+            | HtmlTag::Table
+            | HtmlTag::Tr => self.ensure_blank(),
+            HtmlTag::H1
+            | HtmlTag::H2
+            | HtmlTag::H3
+            | HtmlTag::H4
+            | HtmlTag::H5
+            | HtmlTag::H6
+            | HtmlTag::Blockquote => {
                 self.pop_style();
                 self.ensure_blank();
             }
-            "b" | "strong" | "i" | "em" | "cite" | "dfn" | "u" | "ins" | "s" | "strike" | "del"
-            | "code" | "tt" | "kbd" | "samp" | "var" => self.pop_style(),
-            "pre" => {
+            HtmlTag::B
+            | HtmlTag::Strong
+            | HtmlTag::I
+            | HtmlTag::Em
+            | HtmlTag::Cite
+            | HtmlTag::Dfn
+            | HtmlTag::U
+            | HtmlTag::Ins
+            | HtmlTag::S
+            | HtmlTag::Strike
+            | HtmlTag::Del
+            | HtmlTag::Code
+            | HtmlTag::Tt
+            | HtmlTag::Kbd
+            | HtmlTag::Samp
+            | HtmlTag::Var => self.pop_style(),
+            HtmlTag::Pre => {
                 self.in_pre = self.in_pre.saturating_sub(1);
                 self.pop_style();
                 self.ensure_blank();
             }
-            "ul" | "ol" => {
+            HtmlTag::Ul | HtmlTag::Ol => {
                 self.list_stack.pop();
                 self.ensure_blank();
             }
-            "li" => self.flush_line(),
-            "a" => {
+            HtmlTag::Li => self.flush_line(),
+            HtmlTag::A => {
                 let href = self.href_stack.pop().flatten();
                 self.pop_style();
                 if let Some(href) = href.filter(|h| !h.is_empty()) {
@@ -914,21 +962,15 @@ impl HtmlRenderer {
 
 impl TokenSink for HtmlRenderer {
     fn start_tag(&mut self, tag: &StartTag<'_>) {
-        let name = tag_name(tag.name());
-        if name.is_empty() {
-            return;
-        }
-        self.open_tag(&name, tag);
+        let kind = tag.tag();
+        self.open_tag(kind, tag);
         if tag.is_self_closing() {
-            self.close_tag(&name);
+            self.close_tag(kind);
         }
     }
 
     fn end_tag(&mut self, tag: &EndTag<'_>) {
-        let name = tag_name(tag.name());
-        if !name.is_empty() {
-            self.close_tag(&name);
-        }
+        self.close_tag(tag.tag());
     }
 
     fn text(&mut self, text: &Text<'_>) {
@@ -938,10 +980,6 @@ impl TokenSink for HtmlRenderer {
 
 fn line_is_empty(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
-}
-
-fn tag_name(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw).to_ascii_lowercase()
 }
 
 /// Extract a decoded attribute value from a tokenized start tag.

@@ -37,12 +37,14 @@ struct Sink {
 impl TokenSink for Sink {
     fn start_tag(&mut self, tag: &StartTag<'_>) {
         self.out.extend_from_slice(tag.raw());
-        self.log
-            .push(Ev::Start(tag.name().to_vec(), tag.is_self_closing()));
+        self.log.push(Ev::Start(
+            tag.tag().as_bytes().to_vec(),
+            tag.is_self_closing(),
+        ));
     }
     fn end_tag(&mut self, tag: &EndTag<'_>) {
         self.out.extend_from_slice(tag.raw());
-        self.log.push(Ev::End(tag.name().to_vec()));
+        self.log.push(Ev::End(tag.tag().as_bytes().to_vec()));
     }
     fn text(&mut self, text: &Text<'_>) {
         self.out.extend_from_slice(text.raw());

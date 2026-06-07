@@ -8,7 +8,7 @@ use std::str::FromStr;
 use rama_core::error::BoxError;
 use rama_utils::byte_set::{set_each, set_range};
 
-use super::super::tokenizer::StartTag;
+use super::super::tokenizer::{HtmlTag, StartTag};
 use super::super::{IntoHtml, escape_attr_value_into};
 
 /// The result of an element content handler. An error aborts the rewrite.
@@ -219,10 +219,11 @@ impl<'t> Element<'t> {
         }
     }
 
-    /// The element's tag name bytes (original case).
+    /// The element's [`HtmlTag`] — a known element variant, or
+    /// [`HtmlTag::Other`] (the original-case name) for a custom tag.
     #[must_use]
-    pub fn name(&self) -> &[u8] {
-        self.tag.name()
+    pub fn tag(&self) -> HtmlTag<'_> {
+        self.tag.tag()
     }
 
     /// The value of the attribute with the given (ASCII case-insensitive)

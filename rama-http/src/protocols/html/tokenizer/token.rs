@@ -10,6 +10,7 @@ use std::borrow::Cow;
 
 use super::super::decode_entities;
 use super::name::LocalNameHash;
+use super::tag::HtmlTag;
 
 /// UTF-8-lossy decode `bytes` and resolve HTML entities, borrowing the input
 /// when both are no-ops.
@@ -61,9 +62,15 @@ pub struct StartTag<'i> {
 }
 
 impl<'i> StartTag<'i> {
-    /// The tag name bytes (original case).
+    /// The element's [`HtmlTag`] — a known element variant, or
+    /// [`HtmlTag::Other`] (borrowing the original-case name) for a custom tag.
     #[must_use]
-    pub fn name(&self) -> &'i [u8] {
+    pub fn tag(&self) -> HtmlTag<'i> {
+        HtmlTag::classify(self.name_hash, self.name())
+    }
+
+    /// The tag name bytes (original case).
+    pub(crate) fn name(&self) -> &'i [u8] {
         self.name.slice(self.input)
     }
 
@@ -169,9 +176,15 @@ pub struct EndTag<'i> {
 }
 
 impl<'i> EndTag<'i> {
-    /// The tag name bytes (original case).
+    /// The element's [`HtmlTag`] — a known element variant, or
+    /// [`HtmlTag::Other`] (borrowing the original-case name) for a custom tag.
     #[must_use]
-    pub fn name(&self) -> &'i [u8] {
+    pub fn tag(&self) -> HtmlTag<'i> {
+        HtmlTag::classify(self.name_hash, self.name())
+    }
+
+    /// The tag name bytes (original case).
+    pub(crate) fn name(&self) -> &'i [u8] {
         self.name.slice(self.input)
     }
 
