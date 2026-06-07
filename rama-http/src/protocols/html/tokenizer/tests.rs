@@ -587,17 +587,19 @@ fn foreign_content_identity() {
 #[test]
 fn ambiguous_context_bails_in_strict_mode() {
     // `<style>` inside `<select>` is non-conforming and ambiguous to a
-    // streaming parser: strict mode aborts, lenient mode tokenizes anyway.
+    // streaming parser: strict mode aborts, lenient (the default) tokenizes.
     let input = b"<select><style>x</style></select>";
 
     let mut strict = Collect::default();
-    assert!(tokenize(input, &mut strict).is_err());
+    assert!(
+        Tokenizer::new()
+            .with_strict(true)
+            .tokenize(input, &mut strict)
+            .is_err()
+    );
 
     let mut lenient = Collect::default();
-    Tokenizer::new()
-        .with_strict(false)
-        .tokenize(input, &mut lenient)
-        .expect("lenient never bails");
+    tokenize(input, &mut lenient).expect("lenient never bails");
     assert!(!lenient.events.is_empty());
 
     // `<script>` is allowed in `<select>`, so it never bails.

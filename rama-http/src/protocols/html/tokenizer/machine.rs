@@ -60,34 +60,38 @@ impl Default for Tokenizer {
         Self {
             buffer: Vec::new(),
             attributes: Vec::new(),
-            context: ContextTracker::new(true),
-            strict: true,
+            context: ContextTracker::new(false),
+            strict: false,
         }
     }
 }
 
-/// Tokenizes `input` in one pass, dispatching events to `sink`.
+/// Tokenizes `input` in one pass with the default (non-strict) tokenizer,
+/// dispatching events to `sink`.
 ///
 /// # Errors
 ///
-/// Returns [`ParsingAmbiguityError`] if a text-mode element appears in a
-/// context whose parsing is genuinely ambiguous for a streaming parser
-/// (strict mode).
+/// The default tokenizer is non-strict, so this does not abort on ambiguous
+/// contexts; build a strict [`Tokenizer`] (via
+/// [`with_strict`](Tokenizer::with_strict)) to get a [`ParsingAmbiguityError`].
 pub fn tokenize<S: TokenSink>(input: &[u8], sink: &mut S) -> Result<(), ParsingAmbiguityError> {
     Tokenizer::new().tokenize(input, sink)
 }
 
 impl Tokenizer {
-    /// Creates a new tokenizer (strict mode: ambiguous text-mode contexts
-    /// abort with an error rather than risk mis-tokenizing).
+    /// Creates a new tokenizer.
+    ///
+    /// Non-strict by default (rama's convention): ambiguous text-mode contexts
+    /// are tokenized best-effort. Enable [`with_strict`](Self::with_strict) to
+    /// abort on such ambiguity instead.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Sets strict mode. When disabled, ambiguous contexts are tokenized
-        /// best-effort instead of erroring.
+        /// Sets strict mode. When enabled, ambiguous text-mode contexts abort
+        /// with a [`ParsingAmbiguityError`] instead of tokenizing best-effort.
         pub fn strict(mut self, strict: bool) -> Self {
             self.strict = strict;
             self.context = ContextTracker::new(strict);

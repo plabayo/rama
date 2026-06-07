@@ -702,11 +702,7 @@ struct HtmlRenderer {
 
 impl HtmlRenderer {
     fn run(&mut self, input: &str) {
-        if Tokenizer::new()
-            .with_strict(false)
-            .tokenize(input.as_bytes(), self)
-            .is_err()
-        {
+        if Tokenizer::new().tokenize(input.as_bytes(), self).is_err() {
             self.text(input);
         }
     }
