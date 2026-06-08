@@ -25,6 +25,8 @@ use std::{marker::PhantomData, time::Duration};
 use crate::tls::boring::client as boring_client;
 
 #[cfg(feature = "rustls")]
+use crate::net::tls::client::TlsClientConfig;
+#[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 
 #[cfg(feature = "socks5")]
@@ -220,13 +222,13 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     /// to the proxy itself
     pub fn with_tls_proxy_support_using_rustls_config(
         self,
-        config: rustls_client::TlsConnectorData,
+        config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<
         rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
         ProxyTunnelStage,
     > {
         let connector =
-            rustls_client::TlsConnector::tunnel(self.connector, None).with_connector_data(config);
+            rustls_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
 
         EasyHttpConnectorBuilder {
             connector,
@@ -428,11 +430,10 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     /// wanted, use [`Self::with_custom_tls_connector`] instead.
     pub fn with_tls_support_using_rustls(
         self,
-        config: Option<rustls_client::TlsConnectorData>,
+        config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
     {
-        let connector =
-            rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpConnectorBuilder {
@@ -453,12 +454,11 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     /// requests if the egress server does not handle multiple http versions.
     pub fn with_tls_support_using_rustls_and_default_http_version(
         self,
-        config: Option<rustls_client::TlsConnectorData>,
+        config: TlsClientConfig,
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<rustls_client::TlsConnector<T>>, TlsStage>
     {
-        let connector =
-            rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = rustls_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             RequestVersionAdapter::new(connector).with_default_version(default_http_version);
 

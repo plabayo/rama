@@ -45,7 +45,14 @@ use rama::{
         },
     },
     layer::TraceErrLayer,
-    net::{address::SocketAddress, proxy::IoForwardService},
+    net::{
+        address::SocketAddress,
+        proxy::IoForwardService,
+        tls::{
+            DataEncoding,
+            client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
+        },
+    },
     rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -54,7 +61,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
-        client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
+        client::{TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
             ALL_VERSIONS, RootCertStore,
             server::{ServerConfig, WebPkiClientVerifier},
@@ -88,15 +95,18 @@ async fn main() {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
         let client_cert = client_cert_chain[0].clone();
 
-        let tls_client_data =
-            TlsConnectorDataBuilder::new_with_client_auth(client_cert_chain, client_priv_key)
-                .expect("connector with client auth")
-                .with_no_cert_verifier()
-                .with_alpn_protocols_http_auto()
-                .with_server_name(SERVER_AUTHORITY.ip_addr.into())
-                .try_with_env_key_logger()
-                .expect("connector with env keylogger")
-                .build();
+        let tls_client_data = TlsClientConfig::default_http()
+            .with_client_auth(ClientAuth::Single(ClientAuthData {
+                cert_chain: DataEncoding::DerStack(
+                    client_cert_chain
+                        .iter()
+                        .map(|cert| cert.as_ref().to_vec())
+                        .collect(),
+                ),
+                private_key: DataEncoding::Der(client_priv_key.secret_der().to_vec()),
+            }))
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_server_name(SERVER_AUTHORITY.ip_addr.into());
 
         // More complex use cases like this aren't directly supported by rama, but that is no problem, we can work with rustls
         // native configs, so that means if rustls can do it: so can we, and so can you.
@@ -170,7 +180,7 @@ async fn main() {
             TraceErrLayer::new(),
             IoToProxyBridgeIoLayer::new(exec.clone(), SERVER_AUTHORITY).with_connector(
                 TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.ip_addr.into()))
-                    .with_connector_data(tls_client_data)
+                    .with_base_config(tls_client_data)
                     .into_layer(TcpConnector::new(exec.clone())),
             ),
         )

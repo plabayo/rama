@@ -26,6 +26,15 @@
 #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
 pub mod jose;
 
+pub mod pki_types {
+    //! Pki types used by rama. Currently this is a re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
+    //!
+    //! [`rustls_pki_types`]: https://docs.rs/rustls-pki-types
+
+    #[doc(inline)]
+    pub use rustls_pki_types::*;
+}
+
 pub mod dep {
     //! Dependencies for rama crypto modules.
     //!
@@ -51,15 +60,6 @@ pub mod dep {
 
         #[doc(inline)]
         pub use rcgen::*;
-    }
-
-    pub mod pki_types {
-        //! Re-export of the [`rustls-pki-types`][rustls_pki_types] crate.
-        //!
-        //! [`rustls_pki_types`]: https://docs.rs/rustls-pki-types
-
-        #[doc(inline)]
-        pub use rustls_pki_types::*;
     }
 
     pub mod x509_parser {

@@ -61,6 +61,7 @@
 use rama::{
     Layer,
     conversion::RamaFrom,
+    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext},
     graceful::Shutdown,
     http::service::web::response::IntoResponse,
@@ -76,7 +77,6 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
-        dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
         dep::rustls::{
             ALL_VERSIONS, ServerConfig, crypto::aws_lc_rs, server::ResolvesServerCert,
             sign::CertifiedKey,

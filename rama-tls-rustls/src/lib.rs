@@ -67,15 +67,6 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod pki_types {
-        //! Re-export of the [`pki-types`] crate.
-        //!
-        //! [`pki-types`]: https://docs.rs/rustls-pki-types
-
-        #[doc(inline)]
-        pub use rustls_pki_types::*;
-    }
-
     pub mod native_certs {
         //! Re-export of the [`rustls-native-certs`] crate.
         //!
@@ -85,26 +76,6 @@ pub mod dep {
         //! [`rustls-native-certs`]: https://docs.rs/rustls-native-certs
         #[doc(inline)]
         pub use rustls_native_certs::*;
-    }
-
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
-    #[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
-    pub mod rcgen {
-        //! Re-export of the [`rcgen`] crate.
-        //!
-        //! [`rcgen`]: https://docs.rs/rcgen
-
-        #[doc(inline)]
-        pub use rcgen::*;
-    }
-
-    pub mod x509_parser {
-        //! Re-export of the [`x509-parser`] crate.
-        //!
-        //! [`x509-parser`]: https://docs.rs/x509-parser
-
-        #[doc(inline)]
-        pub use x509_parser::*;
     }
 
     pub mod rustls {

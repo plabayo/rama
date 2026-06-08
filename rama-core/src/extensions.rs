@@ -95,6 +95,26 @@ impl Extensions {
         self.parent.as_deref()
     }
 
+    /// Return a view of this [`Extensions`] chain layered on top of `base`.
+    ///
+    /// The toplevel extensions are still the same and are editable.
+    /// Lookups resolve through this chain first falling back to `base`
+    /// only when nothing matches. `base` is all the way at the bottom.
+    ///
+    /// Use this when you have an Extensions (chain) to which you want to apply
+    /// defaults, e.g. `request_extensions().with_base(&base_extension_config)`
+    #[must_use]
+    pub fn with_base(&self, base: &Self) -> Self {
+        let parent = match &self.parent {
+            Some(parent) => parent.with_base(base),
+            None => base.clone(),
+        };
+        Self {
+            extensions: Arc::clone(&self.extensions),
+            parent: Some(Box::new(parent)),
+        }
+    }
+
     /// Insert a type `T` into this [`Extensions`] store.
     ///
     /// This method returns a reference to the just inserted value.
@@ -1474,6 +1494,35 @@ mod tests {
         let (id, sock) = child.get_many_ref::<(RequestId, ConnSocketInfo)>();
         assert_eq!(id, Some(&RequestId(1)));
         assert_eq!(sock, Some(&ConnSocketInfo("x")));
+    }
+
+    #[test]
+    fn with_base_and_chain() {
+        let base = Extensions::new();
+        base.insert(RequestId(1));
+        base.insert(ConnSocketInfo("base"));
+
+        let req = Extensions::new();
+        req.insert(RequestId(2));
+        req.insert(TraceNote("mid".to_owned()));
+        let req_retry = req.fork();
+        req_retry.insert(RequestId(3));
+
+        let combined = req_retry.with_base(&base);
+
+        assert_eq!(combined.get_ref::<RequestId>(), Some(&RequestId(3)));
+        assert_eq!(
+            combined.get_ref::<TraceNote>(),
+            Some(&TraceNote("mid".to_owned())),
+        );
+
+        assert_eq!(
+            combined.get_ref::<ConnSocketInfo>(),
+            Some(&ConnSocketInfo("base")),
+        );
+
+        assert_eq!(base.get_ref::<RequestId>(), Some(&RequestId(1)));
+        assert!(req_retry.get_ref::<ConnSocketInfo>().is_none());
     }
 
     #[test]

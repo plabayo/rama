@@ -400,6 +400,21 @@ macro_rules! __generate_set_and_with {
             }
         }
     };
+    // Similar to the ones above but modified so we can use these in trait definities (eg for Ext traits)
+    // TODO extend this as we need more in traits
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis fn $fn_name:ident($self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self;
+    ) => {
+        $crate::macros::paste! {
+            $(#[$outer_doc])*
+            #[must_use]
+            $vis fn [<with_ $fn_name>]($self_token, $($param_name: $param_ty),+) -> Self;
+
+            $(#[$outer_doc])*
+            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> &mut Self;
+        }
+    };
 }
 
 pub use crate::__generate_set_and_with as generate_set_and_with;

@@ -47,13 +47,13 @@ dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
+rama-crypto = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["tls", "http"] }
 rama-utils = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
-rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }

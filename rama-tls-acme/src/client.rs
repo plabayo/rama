@@ -18,11 +18,11 @@ use rama_core::{
 };
 use rama_crypto::{
     dep::{
-        pki_types::PrivatePkcs8KeyDer,
         rcgen::{self, Certificate},
         x509_parser::pem::Pem,
     },
     jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
+    pki_types::PrivatePkcs8KeyDer,
 };
 use rama_http::{
     BodyExtractExt, Request, Response,

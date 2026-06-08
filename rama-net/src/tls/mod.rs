@@ -102,6 +102,7 @@ impl KeyLogIntent {
     }
 }
 
+// TODO move this to rama crypto and use native types
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Implementation agnostic encoding of common data such
 /// as certificates and keys.

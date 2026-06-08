@@ -1,271 +1,132 @@
-use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
+use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
-use rama_core::error::BoxError;
-use rama_core::extensions::Extension;
+use rama_core::conversion::RamaTryInto;
+use rama_core::error::{BoxError, ErrorContext};
+use rama_crypto::pki_types::pem::PemObject;
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
+use rama_net::tls::DataEncoding;
+use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
 use rama_net::tls::keylog::open_intent_sink;
-use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
-use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
-use crate::dep::pki_types::PrivatePkcs8KeyDer;
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-use ::rama_core::error::ErrorContext;
+use rama_crypto::pki_types::PrivatePkcs8KeyDer;
 
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
-/// Internal data used as configuration/input for the [`super::TlsConnector`].
-///
-/// Created by converting a [`rustls::ClientConfig`] into it directly,
-/// or by using [`TlsConnectorDataBuilder`] to build this in a more ergonomic way.
-pub struct TlsConnectorData {
+#[derive(Debug, Clone)]
+/// The resolved native rustls config consumed by [`super::TlsConnector`].
+pub(crate) struct TlsConnectorData {
     pub client_config: Arc<ClientConfig>,
     pub server_name: Option<Host>,
     pub store_server_certificate_chain: bool,
 }
 
-impl From<ClientConfig> for TlsConnectorData {
-    #[inline]
-    fn from(value: ClientConfig) -> Self {
-        Arc::new(value).into()
-    }
-}
+impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
+    type Error = BoxError;
 
-impl From<Arc<ClientConfig>> for TlsConnectorData {
-    fn from(value: Arc<ClientConfig>) -> Self {
-        Self {
-            client_config: value,
-            server_name: None,
-            store_server_certificate_chain: false,
+    fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
+        // anything else (incl. GREASE) is dropped. Empty = all supported versions.
+        let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
+            .versions
+            .map(|v| {
+                v.0.iter()
+                    .filter_map(|pv| (*pv).rama_try_into().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let builder = if versions.is_empty() {
+            ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+        } else {
+            ClientConfig::builder_with_protocol_versions(&versions)
+        };
+
+        let builder = builder.with_root_certificates(client_root_certs());
+        let mut client_config = match value.client_auth.map(|auth| &auth.0) {
+            Some(client_auth) => {
+                let (cert_chain, private_key) = rustls_client_auth(client_auth)?;
+                builder.with_client_auth_cert(cert_chain, private_key)?
+            }
+            None => builder.with_no_client_auth(),
+        };
+
+        if let Some(verify) = value.verify
+            && verify.0 == ServerVerifyMode::Disable
+        {
+            client_config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
         }
-    }
-}
 
-impl TlsConnectorData {
-    /// Create a default [`TlsConnectorData`] without configuring ALPN.
-    pub fn try_new() -> Result<Self, BoxError> {
-        Ok(TlsConnectorDataBuilder::new()
-            .try_with_env_key_logger()?
-            .build())
-    }
+        if let Some(verifier) = value.verifier {
+            client_config
+                .dangerous()
+                .set_certificate_verifier(verifier.0.clone());
+        }
 
-    /// Create a default [`TlsConnectorData`] that is focussed
-    /// on providing auto http connections, meaning supporting
-    /// the http connections which `rama` supports out of the box.
-    pub fn try_new_http_auto() -> Result<Self, BoxError> {
-        Ok(Self::try_new()?.with_alpn_protocols_http_auto())
-    }
-
-    /// Create a default [`TlsConnectorData`] that is focussed
-    /// on providing http/1.1 connections.
-    pub fn try_new_http_1() -> Result<Self, BoxError> {
-        Ok(Self::try_new()?.with_alpn_protocols_http_1())
-    }
-
-    /// Create a default [`TlsConnectorData`] that is focussed
-    /// on providing h2 connections.
-    pub fn try_new_http_2() -> Result<Self, BoxError> {
-        Ok(Self::try_new()?.with_alpn_protocols_http_2())
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set [`ApplicationProtocol`]s supported in alpn extension
-        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-            let protos: Vec<Vec<u8>> = protos
+        if let Some(alpn) = value.alpn {
+            client_config.alpn_protocols = alpn
+                .0
                 .iter()
                 .map(|proto| proto.as_bytes().to_vec())
                 .collect();
-
-            if self.client_config.alpn_protocols != protos {
-                let mut client_config = (*self.client_config).clone();
-                client_config.alpn_protocols = protos;
-                self.client_config = Arc::new(client_config);
-            }
-
-            self
         }
-    }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to most commonly used http protocols:
-        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
-        pub fn alpn_protocols_http_auto(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-            self
+        if let Some(keylog) = value.keylog
+            && let Some(sink) = open_intent_sink(&keylog.0)?
+        {
+            client_config.key_log = Arc::new(RamaKeyLog::new(sink));
         }
-    }
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
-        pub fn alpn_protocols_http_1(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
-            self
+        if let Some(modify) = value.modify {
+            client_config = modify.apply(client_config)?;
         }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
-        pub fn alpn_protocols_http_2(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
-            self
-        }
-    }
-}
-
-/// [`TlsConnectorDataBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
-///
-/// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
-pub struct TlsConnectorDataBuilder {
-    client_config: rustls::ClientConfig,
-    server_name: Option<Host>,
-    store_server_certificate_chain: bool,
-}
-
-impl Default for TlsConnectorDataBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl From<ClientConfig> for TlsConnectorDataBuilder {
-    fn from(value: ClientConfig) -> Self {
-        Self {
-            client_config: value,
-            ..Default::default()
-        }
-    }
-}
-
-impl TlsConnectorDataBuilder {
-    /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
-    /// certificate store, and no client auth
-    #[must_use]
-    pub fn new() -> Self {
-        crate::ensure_default_crypto_provider();
-        let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-            .with_root_certificates(client_root_certs())
-            .with_no_client_auth();
-        Self {
-            client_config: config,
-            server_name: None,
-            store_server_certificate_chain: false,
-        }
-    }
-
-    /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
-    /// certificate store, and with client auth
-    pub fn new_with_client_auth(
-        client_cert_chain: Vec<CertificateDer<'static>>,
-        client_priv_key: PrivateKeyDer<'static>,
-    ) -> Result<Self, BoxError> {
-        crate::ensure_default_crypto_provider();
-        let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-            .with_root_certificates(client_root_certs())
-            .with_client_auth_cert(client_cert_chain, client_priv_key)
-            .map_err(Into::<BoxError>::into)?;
 
         Ok(Self {
-            client_config: config,
-            server_name: None,
-            store_server_certificate_chain: false,
+            client_config: Arc::new(client_config),
+            server_name: value.server_name.map(|sni| sni.0.clone()),
+            store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
         })
     }
+}
 
-    rama_utils::macros::generate_set_and_with! {
-        /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
-        /// and set it in the current config
-        pub fn env_key_logger(mut self) -> Result<Self, BoxError> {
-            if let Some(sink) = open_intent_sink(&KeyLogIntent::Environment)? {
-                self.client_config.key_log = Arc::new(RamaKeyLog::new(sink));
-            };
-            Ok(self)
-        }
-    }
+/// Resolve a common [`ClientAuth`] into the native rustls cert chain + private
+/// key consumed by [`rustls::ConfigBuilder::with_client_auth_cert`].
+///
+/// `SelfSigned` generates a throwaway client identity.
+fn rustls_client_auth(
+    client_auth: &ClientAuth,
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
+    let data = match client_auth {
+        ClientAuth::SelfSigned => return self_signed_client_auth(),
+        ClientAuth::Single(data) => data,
+    };
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set [`ApplicationProtocol`]s supported in alpn extension
-        pub fn alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
-            self.client_config.alpn_protocols = protos
-                .iter()
-                .map(|proto| proto.as_bytes().to_vec())
-                .collect();
-            self
-        }
-    }
+    let cert_chain = match &data.cert_chain {
+        DataEncoding::Der(raw) => vec![CertificateDer::from(raw.clone())],
+        DataEncoding::DerStack(list) => list.iter().cloned().map(CertificateDer::from).collect(),
+        DataEncoding::Pem(raw) => CertificateDer::pem_slice_iter(raw.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .context("parse PEM certificate chain")?,
+    };
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to most commonly used http protocols:
-        /// [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
-        pub fn alpn_protocols_http_auto(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-            self
+    let private_key = match &data.private_key {
+        DataEncoding::Der(raw) => PrivateKeyDer::try_from(raw.clone())?,
+        DataEncoding::DerStack(list) => PrivateKeyDer::try_from(
+            list.first()
+                .context("rustls client auth: empty DER stack for private key")?
+                .clone(),
+        )?,
+        DataEncoding::Pem(raw) => {
+            PrivateKeyDer::from_pem_slice(raw.as_bytes()).context("parse PEM private key")?
         }
-    }
+    };
 
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_11`].
-        pub fn alpn_protocols_http_1(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_11]);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set alpn protocols to only advertise [`ApplicationProtocol::HTTP_2`].
-        pub fn alpn_protocols_http_2(mut self) -> Self {
-            self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2]);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set certificate verifier that will be used to verify certs
-        pub fn cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
-            self.client_config
-                .dangerous()
-                .set_certificate_verifier(verifier);
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set certificate verifier to a custom one that will allow all certificates, resulting
-        /// in certificates not being verified.
-        pub fn no_cert_verifier(mut self) -> Self {
-            self.set_cert_verifier(Arc::new(NoServerCertVerifier::default()));
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set server name for SNI ext
-        pub fn server_name(mut self, server_name: Option<Host>) -> Self {
-            self.server_name = server_name;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set if server certificate should be stored in ctx
-        pub fn store_server_certificate_chain(mut self, value: bool) -> Self {
-            self.store_server_certificate_chain = value;
-            self
-        }
-    }
-
-    /// Build [`TlsConnectorData`] from the current config
-    #[must_use]
-    pub fn build(self) -> TlsConnectorData {
-        TlsConnectorData {
-            client_config: Arc::new(self.client_config),
-            server_name: self.server_name,
-            store_server_certificate_chain: self.store_server_certificate_chain,
-        }
-    }
+    Ok((cert_chain, private_key))
 }
 
 pub fn client_root_certs() -> Arc<RootCertStore> {
@@ -283,12 +144,9 @@ pub fn client_root_certs() -> Arc<RootCertStore> {
 #[cfg_attr(docsrs, doc(cfg(not(any(feature = "aws-lc", feature = "ring")))))]
 pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    use rama_core::error::{ErrorExt, extra::OpaqueError};
-
-    Err(OpaqueError::from_static_str(
+    Err(BoxError::from(
         "enable aws-lc or ring feature to use fn self_signed_client_auth",
-    )
-    .into_box_error())
+    ))
 }
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -314,4 +172,135 @@ pub fn self_signed_client_auth()
         vec![client_cert_der],
         PrivatePkcs8KeyDer::from(client_key_der.secret_pkcs8_der().to_owned()).into(),
     ))
+}
+
+// build() needs an installed CryptoProvider so feature gate these tests
+#[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
+mod tests {
+    use super::*;
+    use rama_core::extensions::Extensions;
+    use rama_net::tls::client::{TlsAlpn, TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain};
+
+    #[test]
+    fn build_from_pieces_sets_alpn_and_flags() {
+        crate::ensure_default_crypto_provider();
+        let ext = Extensions::new();
+        ext.insert(TlsAlpn::http_auto());
+        ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        ext.insert(TlsStoreServerCertChain(true));
+
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
+
+        assert_eq!(
+            data.client_config.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        );
+        assert!(data.store_server_certificate_chain);
+    }
+
+    #[test]
+    fn build_empty_uses_defaults() {
+        crate::ensure_default_crypto_provider();
+        let ext = Extensions::new();
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
+
+        assert!(data.client_config.alpn_protocols.is_empty());
+        assert!(!data.store_server_certificate_chain);
+        assert!(data.server_name.is_none());
+        assert!(!data.client_config.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn build_applies_client_auth_from_der() {
+        use rama_net::tls::client::ClientAuthData;
+
+        crate::ensure_default_crypto_provider();
+
+        let (cert_chain, private_key) = self_signed_client_auth().unwrap();
+        let ext = Extensions::new();
+        ext.insert(TlsClientAuth(ClientAuth::Single(ClientAuthData {
+            cert_chain: DataEncoding::DerStack(
+                cert_chain.iter().map(|c| c.as_ref().to_vec()).collect(),
+            ),
+            private_key: DataEncoding::Der(private_key.secret_der().to_vec()),
+        })));
+
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
+
+        assert!(data.client_config.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn build_applies_client_auth_from_pem() {
+        use rama_net::tls::client::ClientAuthData;
+        use rama_utils::str::NonEmptyStr;
+
+        crate::ensure_default_crypto_provider();
+
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let cert = rcgen::CertificateParams::new(vec![])
+            .unwrap()
+            .self_signed(&key_pair)
+            .unwrap();
+
+        let ext = Extensions::new();
+        ext.insert(TlsClientAuth(ClientAuth::Single(ClientAuthData {
+            cert_chain: DataEncoding::Pem(NonEmptyStr::try_from(cert.pem()).unwrap()),
+            private_key: DataEncoding::Pem(
+                NonEmptyStr::try_from(key_pair.serialize_pem()).unwrap(),
+            ),
+        })));
+
+        let data =
+            TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(&ext)).unwrap();
+
+        assert!(data.client_config.client_auth_cert_resolver.has_certs());
+    }
+
+    #[test]
+    fn modify_rustls_config_runs_last_and_overrides_common_pieces() {
+        use crate::client::RustlsClientConfigExt;
+        use rama_net::tls::client::TlsClientConfig;
+
+        crate::ensure_default_crypto_provider();
+
+        let cfg = TlsClientConfig::new()
+            .with_alpn_http_auto()
+            .with_modify_rustls_config(|mut config| {
+                config.alpn_protocols = vec![b"my-proto".to_vec()];
+                Ok(config)
+            });
+
+        let ext = Extensions::new();
+        cfg.write_to(&ext);
+
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
+
+        assert_eq!(
+            data.client_config.alpn_protocols,
+            vec![b"my-proto".to_vec()]
+        );
+    }
+
+    #[test]
+    fn modify_rustls_config_error_propagates() {
+        use crate::client::RustlsClientConfigExt;
+        use rama_net::tls::client::TlsClientConfig;
+
+        crate::ensure_default_crypto_provider();
+
+        let cfg = TlsClientConfig::new().with_modify_rustls_config(|_| Err(BoxError::from("boom")));
+
+        let ext = Extensions::new();
+        cfg.write_to(&ext);
+
+        let config = RustlsTlsConnectorConfig::from_extensions(&ext);
+        let err = TlsConnectorData::try_from(config).unwrap_err();
+
+        assert!(err.to_string().contains("boom"));
+    }
 }

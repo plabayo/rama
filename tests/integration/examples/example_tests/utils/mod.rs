@@ -46,14 +46,6 @@ use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_cli
 
 #[cfg(all(
     feature = "http-full",
-    feature = "rustls",
-    feature = "aws-lc",
-    not(feature = "boring")
-))]
-use rama::tls::rustls::client as rustls_client;
-
-#[cfg(all(
-    feature = "http-full",
     any(all(feature = "rustls", feature = "aws-lc"), feature = "boring")
 ))]
 use rama::rt::Executor;
@@ -167,27 +159,21 @@ impl ExampleRunner {
 
             #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
             let inner_client = {
-                let tls_config = rustls_client::TlsConnectorDataBuilder::new()
-                    .with_no_cert_verifier()
-                    .with_alpn_protocols_http_auto()
-                    .with_env_key_logger()
-                    .expect("connector with env keylogger")
-                    .with_store_server_certificate_chain(true)
-                    .build();
+                let tls_config = TlsClientConfig::default_http()
+                    .with_server_verify(rama::net::tls::client::ServerVerifyMode::Disable)
+                    .with_store_server_cert_chain(true);
 
-                let proxy_tls_config = rustls_client::TlsConnectorDataBuilder::new()
-                    .with_no_cert_verifier()
-                    .with_env_key_logger()
-                    .expect("connector with env keylogger")
-                    .build();
+                let proxy_tls_config = TlsClientConfig::new()
+                    .with_server_verify(rama::net::tls::client::ServerVerifyMode::Disable)
+                    .with_keylog(rama::net::tls::KeyLogIntent::Environment);
 
-                EasyHttpWebClient::builder()
+                EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
                     .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                     .with_proxy_support()
-                    .with_tls_support_using_rustls(Some(tls_config))
+                    .with_tls_support_using_rustls(tls_config)
                     .with_default_http_connector(Executor::default())
-                    .build()
+                    .build_client()
             };
 
             let client = (
