@@ -15,7 +15,8 @@ use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter};
 use crate::protocols::html::selector::Selector;
 
 /// Completion hook, handed the finalized handler once the rewrite ends.
-type OnEnd<H> = Box<dyn FnOnce(H) + Send>;
+/// `Send + Sync` so the body keeps satisfying [`Body::new`](crate::Body::new).
+type OnEnd<H> = Box<dyn FnOnce(H) + Send + Sync>;
 
 pin_project! {
     /// A response body that feeds the inner body's bytes through an
@@ -83,7 +84,7 @@ impl<B, H> HtmlRewriteBody<B, H> {
     #[must_use]
     pub fn on_end<F>(mut self, on_end: F) -> Self
     where
-        F: FnOnce(H) + Send + 'static,
+        F: FnOnce(H) + Send + Sync + 'static,
     {
         self.on_end = Some(Box::new(on_end));
         self
