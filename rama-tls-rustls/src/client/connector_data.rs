@@ -1,11 +1,12 @@
 use crate::client::config::RustlsTlsConnectorConfig;
-use crate::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext};
+use rama_crypto::dep::pki_types::pem::PemObject;
+use rama_crypto::dep::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
 use rama_net::tls::DataEncoding;
 use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
@@ -13,7 +14,7 @@ use rama_net::tls::keylog::open_intent_sink;
 use std::sync::{Arc, OnceLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
-use crate::dep::pki_types::PrivatePkcs8KeyDer;
+use rama_crypto::dep::pki_types::PrivatePkcs8KeyDer;
 
 #[derive(Debug, Clone)]
 /// The resolved native rustls config consumed by [`super::TlsConnector`].
@@ -108,7 +109,9 @@ fn rustls_client_auth(
     let cert_chain = match &data.cert_chain {
         DataEncoding::Der(raw) => vec![CertificateDer::from(raw.clone())],
         DataEncoding::DerStack(list) => list.iter().cloned().map(CertificateDer::from).collect(),
-        DataEncoding::Pem(raw) => rama_crypto::cert::pem_to_cert_chain(raw.as_bytes())?,
+        DataEncoding::Pem(raw) => CertificateDer::pem_slice_iter(raw.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .context("parse PEM certificate chain")?,
     };
 
     let private_key = match &data.private_key {
@@ -118,7 +121,9 @@ fn rustls_client_auth(
                 .context("rustls client auth: empty DER stack for private key")?
                 .clone(),
         )?,
-        DataEncoding::Pem(raw) => rama_crypto::cert::pem_to_private_key(raw.as_bytes())?,
+        DataEncoding::Pem(raw) => {
+            PrivateKeyDer::from_pem_slice(raw.as_bytes()).context("parse PEM private key")?
+        }
     };
 
     Ok((cert_chain, private_key))

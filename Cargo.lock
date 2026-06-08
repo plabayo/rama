@@ -3985,7 +3985,6 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-native-certs",
- "rustls-pki-types",
  "tokio",
  "tokio-rustls",
  "webpki-roots",

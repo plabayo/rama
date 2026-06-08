@@ -57,6 +57,7 @@
 
 use rama::{
     Layer,
+    crypto::dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
@@ -69,10 +70,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::{
-        dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-        server::{DynamicConfigProvider, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-    },
+    tls::rustls::server::{DynamicConfigProvider, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio

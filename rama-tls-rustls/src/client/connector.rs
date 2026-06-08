@@ -377,7 +377,7 @@ impl<S, K> TlsConnector<S, K> {
             .or_else(|| maybe_server_host.cloned())
             .context("server name missing")?;
 
-        let server_name = rustls_pki_types::ServerName::rama_try_from(
+        let server_name = rama_crypto::dep::pki_types::ServerName::rama_try_from(
             connector_data
                 .server_name
                 .or_else(|| maybe_server_host.cloned())

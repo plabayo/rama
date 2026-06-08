@@ -54,7 +54,6 @@ rama-utils = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
-rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
