@@ -12,25 +12,23 @@ use super::{ClientAuth, ServerVerifyMode};
 /// and exposes typed setters for the settings both TLS backends support.
 /// Backend crates add setters for their backend-specific pieces via extension
 /// traits (`RustlsClientConfigExt`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TlsClientConfig(Extensions);
-
-impl Default for TlsClientConfig {
-    /// Create a default TlsClientConfig that enables:
-    /// - ALPN: H2, http1.1
-    /// - Keylogger: [`KeyLogIntent::Environment`]
-    fn default() -> Self {
-        Self::new()
-            .with_alpn_http_auto()
-            .with_keylog(KeyLogIntent::Environment)
-    }
-}
 
 impl TlsClientConfig {
     /// Create an empty config.
     #[must_use]
     pub fn new() -> Self {
         Self(Extensions::new())
+    }
+
+    /// Create a default TlsClientConfig that enables:
+    /// - ALPN: H2, http1.1
+    /// - Keylogger: [`KeyLogIntent::Environment`]
+    pub fn default_http() -> Self {
+        Self::new()
+            .with_alpn_http_auto()
+            .with_keylog(KeyLogIntent::Environment)
     }
 
     /// Transfer this config's pieces onto `extensions` (appending, so they

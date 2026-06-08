@@ -110,7 +110,7 @@ where
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     pub fn default_with_executor(exec: Executor) -> Self {
-        let tls_config = crate::net::tls::client::TlsClientConfig::default();
+        let tls_config = crate::net::tls::client::TlsClientConfig::default_http();
 
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()

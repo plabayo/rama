@@ -95,7 +95,7 @@ async fn main() {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
         let client_cert = client_cert_chain[0].clone();
 
-        let tls_client_data = TlsClientConfig::default()
+        let tls_client_data = TlsClientConfig::default_http()
             .with_client_auth(ClientAuth::Single(ClientAuthData {
                 cert_chain: DataEncoding::DerStack(
                     client_cert_chain

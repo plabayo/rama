@@ -203,7 +203,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let tls_config = TlsClientConfig::default().with_server_verify(ServerVerifyMode::Disable);
+    let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
     let state = req.extensions().get_ref::<State>().unwrap();
     let executor = state.exec.clone();

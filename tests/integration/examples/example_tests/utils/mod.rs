@@ -159,7 +159,7 @@ impl ExampleRunner {
 
             #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
             let inner_client = {
-                let tls_config = TlsClientConfig::default()
+                let tls_config = TlsClientConfig::default_http()
                     .with_server_verify(rama::net::tls::client::ServerVerifyMode::Disable)
                     .with_store_server_cert_chain(true);
 
