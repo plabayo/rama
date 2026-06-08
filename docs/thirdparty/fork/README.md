@@ -88,7 +88,7 @@ not be kept in sync with upstream — they are now part of `rama`.
 - <https://github.com/JonahLund/vy/tree/1280174f54774c24fa478475af17fd7f5814c91a>
   - Forked into [`rama-http-macros`](https://github.com/plabayo/rama/tree/main/rama-http-macros)
     (the proc-macros) and into private modules under
-    [`rama-http/src/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/html)
+    [`rama-http/src/protocols/html`](https://github.com/plabayo/rama/tree/main/rama-http/src/protocols/html)
     (the `IntoHtml` trait, escaping, scalar / numeric / tuple impls).
   - Reasons for forking:
     - Better integration with the rest of the rama ecosystem — in
