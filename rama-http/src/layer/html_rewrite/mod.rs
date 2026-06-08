@@ -22,6 +22,9 @@
 //! ceremony, since the rewriter is owned and only touched through `&mut self`
 //! while the body is polled.
 //!
+//! When the handler *accumulates* state, recover it once the body finishes
+//! via [`HtmlRewriteBody::on_end`].
+//!
 //! ## Encoding
 //!
 //! The rewriter sees raw bytes, so a compressed (`Content-Encoding`) body is

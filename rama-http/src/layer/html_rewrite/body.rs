@@ -14,6 +14,9 @@ use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter};
 use crate::protocols::html::selector::Selector;
 
+/// Completion hook, handed the finalized handler once the rewrite ends.
+type OnEnd<H> = Box<dyn FnOnce(H) + Send>;
+
 pin_project! {
     /// A response body that feeds the inner body's bytes through an
     /// [`HtmlRewriter`], emitting rewritten chunks as they become available.
@@ -21,12 +24,15 @@ pin_project! {
     /// Build it directly with [`new`](Self::new) (rewriting) or
     /// [`passthrough`](Self::passthrough) (forward unchanged), or let
     /// [`HtmlRewriteLayer`](super::HtmlRewriteLayer) construct one per
-    /// response.
+    /// response. Attach [`on_end`](Self::on_end) to recover the handler (and
+    /// any state it accumulated) once the rewrite finishes.
     pub struct HtmlRewriteBody<B, H> {
         #[pin]
         inner: B,
         // `None` => passthrough; `Some` => actively rewriting.
         rewriter: Option<HtmlRewriter<H>>,
+        // Fired once after `end()` on clean termination; `None` => no hook.
+        on_end: Option<OnEnd<H>>,
         pending_trailers: Option<HeaderMap>,
         // Set once the inner body has ended and the rewriter is flushed.
         done: bool,
@@ -44,6 +50,7 @@ where
         Self {
             inner,
             rewriter: Some(HtmlRewriter::new(selectors, handler)),
+            on_end: None,
             pending_trailers: None,
             done: false,
         }
@@ -60,9 +67,36 @@ impl<B, H> HtmlRewriteBody<B, H> {
         Self {
             inner,
             rewriter: None,
+            on_end: None,
             pending_trailers: None,
             done: false,
         }
+    }
+
+    /// Installs a completion hook, handed the finalized handler by value
+    /// after the rewrite ends — for reading state it accumulated.
+    ///
+    /// Fires once after [`HtmlRewriter::end`] on clean termination (inner EOF
+    /// or trailers); not on the error path, nor in
+    /// [`passthrough`](Self::passthrough) mode (no handler). A later call
+    /// replaces an earlier hook.
+    #[must_use]
+    pub fn on_end<F>(mut self, on_end: F) -> Self
+    where
+        F: FnOnce(H) + Send + 'static,
+    {
+        self.on_end = Some(Box::new(on_end));
+        self
+    }
+}
+
+/// Hands the spent rewriter's handler to the hook, if one is installed.
+fn fire_on_end<H: ElementContentHandler>(
+    rewriter: &mut Option<HtmlRewriter<H>>,
+    on_end: &mut Option<OnEnd<H>>,
+) {
+    if let (Some(rewriter), Some(on_end)) = (rewriter.take(), on_end.take()) {
+        on_end(rewriter.into_handler());
     }
 }
 
@@ -131,6 +165,7 @@ where
                                 return Poll::Ready(Some(Err(err)));
                             }
                             let out = rewriter.take_output();
+                            fire_on_end(this.rewriter, this.on_end);
                             if out.is_empty() {
                                 *this.done = true;
                                 return Poll::Ready(Some(Ok(Frame::trailers(trailers))));
@@ -147,6 +182,7 @@ where
                         return Poll::Ready(Some(Err(err)));
                     }
                     let out = rewriter.take_output();
+                    fire_on_end(this.rewriter, this.on_end);
                     return if out.is_empty() {
                         Poll::Ready(None)
                     } else {

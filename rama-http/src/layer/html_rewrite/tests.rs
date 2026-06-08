@@ -2,6 +2,7 @@ use super::{HtmlRewriteBody, HtmlRewriteLayer};
 use crate::protocols::html::rewrite::{Element, ElementContentHandler, HandlerResult};
 use crate::protocols::html::selector::Selector;
 use crate::{Body, Request, Response, StreamingBody, body::Frame, body::util::BodyExt, header};
+use parking_lot::Mutex;
 use rama_core::bytes::Bytes;
 use rama_core::futures::stream;
 use rama_core::service::service_fn;
@@ -9,6 +10,8 @@ use rama_core::{Layer, Service};
 use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
 /// A plain struct handler (`Clone + Send`): appends text as `<body>`'s last
@@ -232,4 +235,133 @@ fn body_flushes_rewriter_tail_before_trailers() {
         "abc123"
     );
     assert!(poll_body(&mut body).is_none());
+}
+
+// ---- `on_end` completion hook ------------------------------------------
+
+/// Handler that both mutates (strips `href`) and *accumulates* (records the
+/// stripped values) — the shape that motivates recovering the handler at EOF.
+#[derive(Default)]
+struct LinkStripper {
+    stripped: Vec<String>,
+}
+
+impl ElementContentHandler for LinkStripper {
+    fn handle_element(&mut self, _selector: usize, element: &mut Element<'_>) -> HandlerResult {
+        if let Some(href) = element.attribute("href") {
+            self.stripped
+                .push(String::from_utf8_lossy(href).into_owned());
+        }
+        element.remove_attribute("href");
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn on_end_recovers_handler_state_at_clean_eof() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let recovered: Arc<Mutex<Option<LinkStripper>>> = Arc::new(Mutex::new(None));
+
+    let (calls_cb, sink) = (calls.clone(), recovered.clone());
+    let body = HtmlRewriteBody::new(
+        Body::from(r#"<a href="/a">x</a><a href="/b">y</a>"#),
+        &[sel("a")],
+        LinkStripper::default(),
+    )
+    .on_end(move |handler: LinkStripper| {
+        calls_cb.fetch_add(1, Ordering::SeqCst);
+        *sink.lock() = Some(handler);
+    });
+
+    let out = body.collect().await.expect("collect").to_bytes();
+    // Mutation still applied: `href` attributes are gone.
+    assert_eq!(&out[..], b"<a>x</a><a>y</a>");
+    // Hook fired exactly once at the inner-`None` terminal, handing back the
+    // handler with its accumulated state.
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let handler = recovered.lock().take().expect("on_end fired");
+    assert_eq!(handler.stripped, vec!["/a".to_owned(), "/b".to_owned()]);
+}
+
+#[tokio::test]
+async fn on_end_recovers_handler_state_on_trailers_terminated_body() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let recovered: Arc<Mutex<Option<LinkStripper>>> = Arc::new(Mutex::new(None));
+
+    let mut trailers = crate::HeaderMap::new();
+    trailers.insert("x-done", "1".parse().expect("header"));
+    let inner = TestBody::new(vec![
+        Frame::data(Bytes::from_static(
+            br#"<a href="/a">x</a><a href="/b">y</a>"#,
+        )),
+        Frame::trailers(trailers),
+    ]);
+
+    let (calls_cb, sink) = (calls.clone(), recovered.clone());
+    let mut body = HtmlRewriteBody::new(inner, &[sel("a")], LinkStripper::default()).on_end(
+        move |handler: LinkStripper| {
+            calls_cb.fetch_add(1, Ordering::SeqCst);
+            *sink.lock() = Some(handler);
+        },
+    );
+
+    // Drain to completion; the trailers frame must still be delivered.
+    let mut saw_trailers = false;
+    while let Some(frame) = poll_body(&mut body) {
+        if frame.expect("frame ok").into_trailers().is_ok() {
+            saw_trailers = true;
+        }
+    }
+    assert!(saw_trailers, "trailers frame delivered");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let handler = recovered.lock().take().expect("on_end fired");
+    assert_eq!(handler.stripped, vec!["/a".to_owned(), "/b".to_owned()]);
+}
+
+#[tokio::test]
+async fn on_end_does_not_fire_on_error_path() {
+    #[derive(Clone)]
+    struct Boom;
+    impl ElementContentHandler for Boom {
+        fn handle_element(&mut self, _selector: usize, _el: &mut Element<'_>) -> HandlerResult {
+            Err("boom".into())
+        }
+    }
+
+    let fired = Arc::new(AtomicUsize::new(0));
+    let flag = fired.clone();
+    let body = HtmlRewriteBody::new(Body::from("<body>x</body>"), &[sel("body")], Boom).on_end(
+        move |_handler: Boom| {
+            flag.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+
+    body.collect()
+        .await
+        .expect_err("handler error should surface as a body error");
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        0,
+        "on_end must not fire when the rewrite aborts with an error",
+    );
+}
+
+#[tokio::test]
+async fn on_end_does_not_fire_in_passthrough() {
+    let fired = Arc::new(AtomicUsize::new(0));
+    let flag = fired.clone();
+    let body: HtmlRewriteBody<Body, AppendToBody> = HtmlRewriteBody::passthrough(Body::from(
+        "<body>hello</body>",
+    ))
+    .on_end(move |_handler: AppendToBody| {
+        flag.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let out = body.collect().await.expect("collect").to_bytes();
+    assert_eq!(&out[..], b"<body>hello</body>");
+    assert_eq!(
+        fired.load(Ordering::SeqCst),
+        0,
+        "on_end must not fire in passthrough mode (no handler)",
+    );
 }
