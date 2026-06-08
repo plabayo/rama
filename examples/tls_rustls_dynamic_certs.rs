@@ -61,7 +61,7 @@
 use rama::{
     Layer,
     conversion::RamaFrom,
-    crypto::dep::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
+    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, ErrorContext},
     graceful::Shutdown,
     http::service::web::response::IntoResponse,

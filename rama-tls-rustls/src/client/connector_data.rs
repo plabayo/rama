@@ -5,8 +5,8 @@ use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_crypto::dep::pki_types::pem::PemObject;
-use rama_crypto::dep::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_crypto::pki_types::pem::PemObject;
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
 use rama_net::tls::DataEncoding;
 use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
@@ -14,7 +14,7 @@ use rama_net::tls::keylog::open_intent_sink;
 use std::sync::{Arc, OnceLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
-use rama_crypto::dep::pki_types::PrivatePkcs8KeyDer;
+use rama_crypto::pki_types::PrivatePkcs8KeyDer;
 
 #[derive(Debug, Clone)]
 /// The resolved native rustls config consumed by [`super::TlsConnector`].

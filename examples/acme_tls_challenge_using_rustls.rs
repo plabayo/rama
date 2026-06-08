@@ -53,13 +53,11 @@
 use rama::{
     Layer, Service,
     crypto::{
-        dep::{
-            pki_types::{CertificateDer, PrivateKeyDer},
-            rcgen::{
-                self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
-            },
+        dep::rcgen::{
+            self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
         },
         jose::EcdsaKey,
+        pki_types::{CertificateDer, PrivateKeyDer},
     },
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
