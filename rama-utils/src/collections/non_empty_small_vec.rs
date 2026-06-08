@@ -128,8 +128,10 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
         Self::singleton(e)
     }
 
-    /// Converts from `&NonEmptySmallVec<N, T>` to `NonEmptySmallVec<N, &T>`.
-    pub fn as_ref(&self) -> NonEmptySmallVec<N, &T> {
+    /// Converts from `&NonEmptySmallVec<N, T>` to `NonEmptySmallVec<N, &T>`,
+    /// allocating a new tail of borrows. Named `to_` (not `as_`) because it is
+    /// not a free view.
+    pub fn to_ref(&self) -> NonEmptySmallVec<N, &T> {
         NonEmptySmallVec {
             head: &self.head,
             tail: self.tail.iter().collect(),
