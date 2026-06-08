@@ -72,7 +72,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::tls::{
         DataEncoding,
-        client::ServerVerifyMode,
+        client::{ServerVerifyMode, TlsClientConfig},
         server::{ServerAuth, ServerAuthData, ServerConfig},
     },
     rt::Executor,
@@ -92,10 +92,7 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        boring::{
-            client::TlsConnectorDataBuilder,
-            server::{TlsAcceptorData, TlsAcceptorLayer},
-        },
+        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     },
 };
 
@@ -118,10 +115,7 @@ async fn main() {
         )
         .init();
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
     let graceful = graceful::Shutdown::default();
 
@@ -129,7 +123,7 @@ async fn main() {
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::graceful(graceful.guard()))
         .build_client()
         .boxed();

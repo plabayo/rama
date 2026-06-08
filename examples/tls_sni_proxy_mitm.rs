@@ -110,7 +110,7 @@ use rama::{
         proxy::IoForwardService,
         tls::{
             ApplicationProtocol,
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{
                 ServerAuth, ServerCertIssuerData, ServerConfig, SniPrefixedIo, SniRequest,
                 SniRouter,
@@ -124,7 +124,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{client::TlsConnectorDataBuilder, server::TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
 };
 
 use std::{sync::Arc, time::Duration};
@@ -181,10 +181,9 @@ async fn main() -> Result<(), BoxError> {
         // based on a combination of static knowledge and dynamic input. You most likely
         // also wouldn't want to disable server verification... This is however a good
         // enough for a testable example
-        .with_tls_support_using_boringssl(Some(Arc::new(
-            TlsConnectorDataBuilder::new_http_auto()
-                .with_server_verify_mode(ServerVerifyMode::Disable),
-        )))
+        .with_tls_support_using_boringssl(
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
         .with_default_http_connector(exec)
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .try_with_connection_pool(HttpPooledConnectorConfig::default())

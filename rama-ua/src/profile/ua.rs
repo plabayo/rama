@@ -33,12 +33,12 @@ pub struct UserAgentProfile {
     pub platform: Option<PlatformKind>,
 
     /// The profile information regarding the http implementation of the [`crate::UserAgent`].
-    pub http: super::HttpProfile,
+    pub http: Arc<super::HttpProfile>,
 
     #[cfg(feature = "tls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
     /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
-    pub tls: super::TlsProfile,
+    pub tls: Arc<super::TlsProfile>,
 
     /// Runtime (meta) info about the [`crate::UserAgent`].
     pub runtime: Option<Arc<UserAgentRuntimeProfile>>,

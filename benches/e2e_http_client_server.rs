@@ -9,7 +9,7 @@
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
-use std::{convert::Infallible, slice, sync::mpsc, time::Duration};
+use std::{convert::Infallible, sync::mpsc, time::Duration};
 
 use rama::{
     Layer, Service,
@@ -420,15 +420,14 @@ fn get_inner_client(
                 .build_client()
         }
         Tls::Boring => {
-            let tls_config = boring::client::TlsConnectorDataBuilder::new()
-                .try_with_rama_alpn_protos(slice::from_ref(&proto))
-                .unwrap()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .with_store_server_certificate_chain(true)
-                .into_shared_builder();
+            let tls_config = TlsClientConfig::new()
+                .with_keylog(rama::net::tls::KeyLogIntent::Environment)
+                .with_alpn(vec![proto])
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_store_server_cert_chain(true);
             b.without_tls_proxy_support()
                 .with_proxy_support()
-                .with_tls_support_using_boringssl(Some(tls_config))
+                .with_tls_support_using_boringssl(tls_config)
                 .with_default_http_connector(Executor::default())
                 .build_client()
         }

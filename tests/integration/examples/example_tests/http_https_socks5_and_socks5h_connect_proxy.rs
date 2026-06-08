@@ -16,7 +16,7 @@ use rama::{
         address::{ProxyAddress, SocketAddress},
         tls::{
             ApplicationProtocol,
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::{Basic, ProxyCredential},
@@ -24,10 +24,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::{
-        client::TlsConnectorDataBuilder,
-        server::{TlsAcceptorData, TlsAcceptorService},
-    },
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorService},
     utils::str::non_empty_str,
 };
 
@@ -98,16 +95,15 @@ async fn test_http_client_over_socks5_proxy_connect(
         proxy_socket_addr,
     );
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_store_server_certificate_chain(true)
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http()
+        .with_store_server_cert_chain(true)
+        .with_server_verify(ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .build_client();
 

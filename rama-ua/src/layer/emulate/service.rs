@@ -198,7 +198,7 @@ where
                 user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
-            req.extensions().insert(profile.http.clone());
+            req.extensions().insert_arc(profile.http.clone());
 
             if let Some(header) = self
                 .input_header_order
@@ -236,7 +236,7 @@ where
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                req.extensions().insert(profile.tls.clone());
+                req.extensions().insert_arc(profile.tls.clone());
                 tracing::trace!(
                     user_agent.kind = %profile.ua_kind,
                     user_agent.version = ?profile.ua_version,
@@ -380,7 +380,7 @@ where
     type Output = S::Output;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        match req.extensions().get_ref().cloned() {
+        match req.extensions().get_arc() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -1436,8 +1436,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1446,8 +1446,8 @@ mod tests {
                         ws: None,
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate"))]
@@ -1461,13 +1461,18 @@ mod tests {
                         ws: None,
                     },
                     settings: Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: rama_net::tls::client::ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 
@@ -1509,8 +1514,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate"))]
@@ -1524,8 +1529,8 @@ mod tests {
                         ws: None,
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1534,13 +1539,18 @@ mod tests {
                         ws: None,
                     },
                     settings: Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: rama_net::tls::client::ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 
@@ -1574,8 +1584,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate"))]
@@ -1599,8 +1609,8 @@ mod tests {
                         ws: None,
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1609,13 +1619,18 @@ mod tests {
                         ws: None,
                     },
                     settings: Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: rama_net::tls::client::ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 
@@ -1649,8 +1664,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate"))]
@@ -1674,8 +1689,8 @@ mod tests {
                         ws: None,
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1684,13 +1699,18 @@ mod tests {
                         ws: None,
                     },
                     settings: Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: rama_net::tls::client::ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 
@@ -1728,8 +1748,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate"))]
@@ -1763,8 +1783,8 @@ mod tests {
                         )),
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_static("navigate2"))]
@@ -1798,13 +1818,18 @@ mod tests {
                         )),
                     },
                     settings: Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: rama_net::tls::client::ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 

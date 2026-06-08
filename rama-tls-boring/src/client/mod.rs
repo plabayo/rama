@@ -15,9 +15,19 @@ pub use connector::{
     TlsConnectorLayer, tls_connect,
 };
 
+mod config;
+#[doc(inline)]
+pub use config::{
+    BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,
+    BoringDelegatedCredentials, BoringEncryptedClientHello, BoringExtensionOrder, BoringGrease,
+    BoringMaxVersion, BoringMinVersion, BoringOcspStapling, BoringRecordSizeLimit,
+    BoringServerVerifyCertStore, BoringSignatureSchemes, BoringSignedCertTimestamps,
+    BoringSupportedGroups, BoringTlsConnectorConfig,
+};
+
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::{ConnectorConfigClientAuth, TlsConnectorData, TlsConnectorDataBuilder};
+pub use connector_data::{ConnectorConfigClientAuth, TlsConnectorData};
 
 #[cfg(feature = "ua")]
 mod emulate_ua;

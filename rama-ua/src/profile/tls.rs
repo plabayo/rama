@@ -1,29 +1,22 @@
-use std::sync::Arc;
-
 use rama_core::extensions::Extension;
 use rama_net::fingerprint::{PeetComputeError, PeetPrint};
 use rama_net::tls::ApplicationProtocol;
 use rama_net::{
     fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
-    tls::{
-        ProtocolVersion,
-        client::{ClientConfig, ClientHello, ServerVerifyMode},
-    },
+    tls::{ProtocolVersion, client::ClientHello},
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Clone, Extension, Serialize, Deserialize)]
 #[extension(tags(ua, tls))]
 /// Profile of the user-agent's TLS (client) configuration.
 ///
-/// It is used to emulate the TLS configuration of the user-agent.
-///
-/// See [`ClientConfig`] for more information.
-///
-/// [`ClientConfig`]: rama_net::tls::client::ClientConfig
+/// It is used to emulate the TLS configuration of the user-agent: the captured
+/// [`ClientHello`] is the fingerprint to reproduce.
 pub struct TlsProfile {
-    /// The TLS client configuration.
-    pub client_config: Arc<ClientConfig>,
+    /// The captured ClientHello (the TLS fingerprint to emulate).
+    pub client_hello: ClientHello,
+
     /// Optional WebSocket-specific client config overwrites.
     pub ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
 }
@@ -46,7 +39,7 @@ impl TlsProfile {
         &self,
         negotiated_tls_version: Option<ProtocolVersion>,
     ) -> Result<Ja3, Ja3ComputeError> {
-        Ja3::compute_from_client_hello(self.client_config.as_ref(), negotiated_tls_version)
+        Ja3::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
     }
 
     /// Compute the [`Ja4`] (hash) on this [`TlsProfile`].
@@ -61,7 +54,7 @@ impl TlsProfile {
         &self,
         negotiated_tls_version: Option<ProtocolVersion>,
     ) -> Result<Ja4, Ja4ComputeError> {
-        Ja4::compute_from_client_hello(self.client_config.as_ref(), negotiated_tls_version)
+        Ja4::compute_from_client_hello(&self.client_hello, negotiated_tls_version)
     }
 
     /// Compute the [`PeetPrint`] (hash) on this [`TlsProfile`].
@@ -72,48 +65,6 @@ impl TlsProfile {
     ///
     /// As specified by <https://github.com/pagpeter/TrackMe?tab=readme-ov-file#custom-fingerpint-peetprint>
     pub fn compute_peet(&self) -> Result<PeetPrint, PeetComputeError> {
-        PeetPrint::compute_from_client_hello(self.client_config.as_ref())
+        PeetPrint::compute_from_client_hello(&self.client_hello)
     }
-}
-
-impl<'de> Deserialize<'de> for TlsProfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let input = TlsProfileSerde::deserialize(deserializer)?;
-        let mut cfg = ClientConfig::from(input.client_hello);
-        if input.insecure {
-            cfg.server_verify_mode = Some(ServerVerifyMode::Disable);
-        }
-        Ok(Self {
-            client_config: Arc::new(cfg),
-            ws_client_config_overwrites: input.ws_client_config_overwrites,
-        })
-    }
-}
-
-impl Serialize for TlsProfile {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let insecure = matches!(
-            self.client_config.server_verify_mode,
-            Some(ServerVerifyMode::Disable)
-        );
-        TlsProfileSerde {
-            client_hello: self.client_config.as_ref().clone().into(),
-            ws_client_config_overwrites: self.ws_client_config_overwrites.clone(),
-            insecure,
-        }
-        .serialize(serializer)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct TlsProfileSerde {
-    client_hello: ClientHello,
-    ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
-    insecure: bool,
 }

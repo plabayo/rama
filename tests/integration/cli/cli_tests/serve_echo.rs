@@ -16,14 +16,11 @@ use rama::{
 use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 
 #[cfg(feature = "boring")]
-use ::{
-    rama::{
-        net::client::{ConnectorService, EstablishedClientConnection},
-        net::tls::client::ServerVerifyMode,
-        tcp::client::{Request as TcpRequest, service::TcpConnector},
-        tls::boring::client::{TlsConnector, TlsConnectorDataBuilder},
-    },
-    std::sync::Arc,
+use rama::{
+    net::client::{ConnectorService, EstablishedClientConnection},
+    net::tls::client::{ServerVerifyMode, TlsClientConfig},
+    tcp::client::{Request as TcpRequest, service::TcpConnector},
+    tls::boring::client::TlsConnector,
 };
 
 use super::utils;
@@ -224,9 +221,7 @@ async fn test_tls_tcp_echo() {
     let mut stream = None;
     for i in 0..5 {
         let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
-            .with_connector_data(Arc::new(
-                TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
-            ));
+            .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
             .connect(TcpRequest::new(HostWithPort::local_ipv4(63111)))
             .await
@@ -324,10 +319,11 @@ async fn test_https_echo() {
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(Arc::new(
-            TlsConnectorDataBuilder::new_http_1()
-                .with_server_verify_mode(ServerVerifyMode::Disable),
-        )))
+        .with_tls_support_using_boringssl(
+            TlsClientConfig::new()
+                .with_alpn_http_1()
+                .with_server_verify(ServerVerifyMode::Disable),
+        )
         .with_default_http_connector(Executor::default())
         .build_client();
 

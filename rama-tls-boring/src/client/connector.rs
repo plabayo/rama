@@ -10,14 +10,16 @@ use rama_net::address::Domain;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::client::NegotiatedTlsParameters;
+use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::transport::TryRefIntoTransportContext;
 use rama_utils::macros::generate_set_and_with;
 use std::fmt;
-use std::sync::Arc;
 
-use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder};
+use super::{AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData};
+
 use crate::{TlsStream, types::TlsTunnel};
+#[cfg(feature = "http")]
+use rama_net::tls::client::TlsAlpn;
 
 #[cfg(feature = "http")]
 use rama_http_types::{Version, conn::TargetHttpVersion};
@@ -27,27 +29,23 @@ use rama_http_types::{Version, conn::TargetHttpVersion};
 /// See [`TlsConnector`] for more information.
 #[derive(Debug, Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
-    connector_data: Option<Arc<TlsConnectorDataBuilder>>,
+    base: Option<TlsClientConfig>,
     kind: K,
 }
 
 impl<K> TlsConnectorLayer<K> {
     generate_set_and_with!(
-        /// Set base [`TlsConnectorDataBuilder`] that will be used for this connector
+        /// Set the base [`TlsClientConfig`] for this connector.
         ///
-        /// This builder will be chained with the [`TlsConnectorDataBuilder`] found in
-        /// the context in this order: BaseBuilder -> CtxBuilder
+        /// Per-connection pieces inserted in the request's extensions are layered
+        /// on top of this base, so these are basically the defaults if the request
+        /// doesn't specify them.
         ///
-        /// NOTE: for a smooth interaction with HTTP you most likely do want to
-        /// create tls connector data to at the very least define the ALPN's correctly.
-        ///
-        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
-        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
-        pub fn connector_data(
-            mut self,
-            connector_data: Option<Arc<TlsConnectorDataBuilder>>,
-        ) -> Self {
-            self.connector_data = connector_data;
+        /// NOTE: for a smooth interaction with HTTP you most likely want to at
+        /// least define the ALPN protocols (e.g. [`TlsClientConfig::with_alpn_http_auto`]);
+        /// the connector then sets the request http version from the negotiated ALPN.
+        pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
+            self.base = base;
             self
         }
     );
@@ -60,7 +58,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     #[must_use]
     pub fn auto() -> Self {
         Self {
-            connector_data: None,
+            base: None,
             kind: ConnectorKindAuto,
         }
     }
@@ -72,7 +70,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
     #[must_use]
     pub fn secure() -> Self {
         Self {
-            connector_data: None,
+            base: None,
             kind: ConnectorKindSecure,
         }
     }
@@ -84,7 +82,7 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     #[must_use]
     pub fn tunnel(sni: Option<Domain>) -> Self {
         Self {
-            connector_data: None,
+            base: None,
             kind: ConnectorKindTunnel { sni },
         }
     }
@@ -96,7 +94,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
     fn layer(&self, inner: S) -> Self::Service {
         TlsConnector {
             inner,
-            connector_data: self.connector_data.clone(),
+            base_config: self.base.clone(),
             kind: self.kind.clone(),
         }
     }
@@ -104,7 +102,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
     fn into_layer(self, inner: S) -> Self::Service {
         TlsConnector {
             inner,
-            connector_data: self.connector_data,
+            base_config: self.base,
             kind: self.kind,
         }
     }
@@ -126,7 +124,7 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 #[derive(Debug, Clone)]
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
-    connector_data: Option<Arc<TlsConnectorDataBuilder>>,
+    base_config: Option<TlsClientConfig>,
     kind: K,
 }
 
@@ -135,27 +133,19 @@ impl<S, K> TlsConnector<S, K> {
     const fn new(inner: S, kind: K) -> Self {
         Self {
             inner,
-            connector_data: None,
+            base_config: None,
             kind,
         }
     }
 
     generate_set_and_with!(
-        /// Set base [`TlsConnectorDataBuilder`] that will be used for this connector
+        /// Set the base [`TlsClientConfig`] for this connector.
         ///
-        /// This builder will be chained with the [`TlsConnectorDataBuilder`] found in
-        /// the context in this order: BaseBuilder -> CtxBuilder
-        ///
-        /// NOTE: for a smooth interaction with HTTP you most likely do want to
-        /// create tls connector data to at the very least define the ALPN's correctly.
-        ///
-        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
-        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
-        pub fn connector_data(
-            mut self,
-            connector_data: Option<Arc<TlsConnectorDataBuilder>>,
-        ) -> Self {
-            self.connector_data = connector_data;
+        /// Per-connection pieces inserted in the request's extensions are layered
+        /// on top of this base, so these are basically the defaults if the request
+        /// doesn't specify them.
+        pub fn base_config(mut self, base: Option<TlsClientConfig>) -> Self {
+            self.base_config = base;
             self
         }
     );
@@ -228,11 +218,7 @@ where
         // IP-shaped hosts (including pct-encoded IP literals inside
         // `Uninterpreted`). Otherwise bridge `Uninterpreted` to Domain.
         let sni_domain = sni_domain_for(&transport_ctx.authority.host);
-        let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), sni_domain.as_deref())?;
-
-        // We dont have to insert, but it's nice to have...
-        input.extensions().insert(connector_data_builder);
+        let connector_data = self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
 
@@ -281,11 +267,7 @@ where
         );
 
         let sni_domain = sni_domain_for(&transport_ctx.authority.host);
-        let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), sni_domain.as_deref())?;
-
-        // We dont have to insert, but it's nice to have...
-        input.extensions().insert(connector_data_builder);
+        let connector_data = self.connector_data(input.extensions(), sni_domain.as_deref())?;
 
         let (conn, negotiated_params) = handshake(connector_data, conn).await?;
         let conn = TlsStream::new(conn);
@@ -333,11 +315,7 @@ where
             });
         };
 
-        let (connector_data, connector_data_builder) =
-            self.connector_data(input.extensions(), maybe_sni_overwrite)?;
-
-        // We dont have to insert, but it's nice to have...
-        input.extensions().insert(connector_data_builder);
+        let connector_data = self.connector_data(input.extensions(), maybe_sni_overwrite)?;
 
         let (stream, negotiated_params) = handshake(connector_data, conn).await?;
         let conn = AutoTlsStream::secure(stream);
@@ -403,43 +381,51 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         extensions: &Extensions,
         maybe_sni_overwrite: Option<&Domain>,
-    ) -> Result<(TlsConnectorData, TlsConnectorDataBuilder), BoxError> {
+    ) -> Result<TlsConnectorData, BoxError> {
+        // Create new extensions only for this function that also apply the base_config
+        let extensions = if let Some(base) = &self.base_config {
+            &extensions.with_base(base.as_extensions())
+        } else {
+            extensions
+        };
+
+        // When HTTP pins a concrete target version, force the TLS ALPN to match
+        // it before the handshake
         #[cfg(feature = "http")]
-        let target_version = extensions
-            .get_ref::<TargetHttpVersion>()
-            .map(|version| ApplicationProtocol::try_from(version.0))
-            .transpose()?;
+        resolve_http_alpn(extensions)?;
 
-        let mut builder =
-            if let Some(builder) = extensions.get_ref::<TlsConnectorDataBuilder>().cloned() {
-                tracing::trace!(
-                    "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
-                );
-                builder
-            } else {
-                tracing::trace!(
-                    "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
-                );
-                TlsConnectorDataBuilder::default()
-            };
-        let has_custom_sni = builder.server_name().is_some();
+        let mut data =
+            TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(&extensions))?;
 
-        if let Some(base_builder) = self.connector_data.clone() {
-            tracing::trace!("prepend connector data (base) config to TlsConnectorDataBuilder");
-            builder.prepend_base_config(base_builder);
+        // Fall back to the connector/transport SNI if none was configured.
+        if data.server_name.is_none()
+            && let Some(sni_overwrite) = maybe_sni_overwrite.cloned()
+        {
+            data.server_name = Some(sni_overwrite);
         }
 
-        if !has_custom_sni && let Some(sni_overwrite) = maybe_sni_overwrite.cloned() {
-            builder.set_server_name(sni_overwrite);
-        }
-
-        #[cfg(feature = "http")]
-        if let Some(target_version) = target_version {
-            builder.try_set_rama_alpn_protos(&[target_version])?;
-        }
-
-        builder.build().map(|cfg| (cfg, builder))
+        Ok(data)
     }
+}
+
+/// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
+/// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
+/// request requires an HTTP/1.1 upgrade.
+#[cfg(feature = "http")]
+fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
+    let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
+        return Ok(());
+    };
+
+    let target_alpn = ApplicationProtocol::try_from(target_version.0)?;
+    tracing::trace!(
+        ?target_version,
+        ?target_alpn,
+        "override TLS ALPN to match TargetHttpVersion",
+    );
+
+    ext.insert(TlsAlpn(vec![target_alpn]));
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -491,9 +477,9 @@ where
         server_name,
     } = match connector_data {
         Some(connector_data) => connector_data,
-        None => TlsConnectorDataBuilder::new()
-            .build()
-            .map_err(TlsConnectError::Builder)?,
+        None => {
+            TlsConnectorData::try_from(&TlsClientConfig::new()).map_err(TlsConnectError::Builder)?
+        }
     };
 
     let sni = server_name.as_ref().map(|sni| sni.as_str());

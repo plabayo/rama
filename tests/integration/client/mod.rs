@@ -5,6 +5,7 @@ use rama::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
     },
+    net::tls::client::TlsClientConfig,
     net::{
         test_utils::client::MockConnectorService,
         tls::{
@@ -14,8 +15,9 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tls::boring::{client::TlsConnectorDataBuilder, server::TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
 };
+use rama_net::tls::client::ServerVerifyMode;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -46,15 +48,13 @@ async fn h2_with_connection_pooling() {
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
     let direct_connection = MockConnectorService::new(move || server.clone());
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(rama_net::tls::client::ServerVerifyMode::Disable)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
@@ -96,15 +96,14 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
     let direct_connection = MockConnectorService::new(move || server.clone());
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(rama_net::tls::client::ServerVerifyMode::Disable)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http()
+        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()
@@ -163,15 +162,14 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         TlsAcceptorLayer::new(tls_service_data).into_layer(http_server)
     });
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(rama_net::tls::client::ServerVerifyMode::Disable)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http()
+        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .try_with_default_connection_pool()
         .unwrap()

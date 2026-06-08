@@ -265,6 +265,8 @@ mod tests {
 
     use ahash::{HashSet, HashSetExt as _};
     use rama_http::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
+    #[cfg(feature = "tls")]
+    use rama_net::tls::client::ClientHello;
 
     use super::*;
 
@@ -480,8 +482,8 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: crate::profile::HttpProfile {
-                h1: Arc::new(crate::profile::Http1Profile {
+            http: Arc::new(crate::profile::HttpProfile {
+                h1: crate::profile::Http1Profile {
                     headers: crate::profile::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
@@ -495,8 +497,8 @@ mod tests {
                         ws: None,
                     },
                     settings: crate::profile::Http1Settings::default(),
-                }),
-                h2: Arc::new(crate::profile::Http2Profile {
+                },
+                h2: crate::profile::Http2Profile {
                     headers: crate::profile::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
@@ -510,13 +512,18 @@ mod tests {
                         ws: None,
                     },
                     settings: crate::profile::Http2Settings::default(),
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: crate::profile::TlsProfile {
-                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            tls: Arc::new(crate::profile::TlsProfile {
+                client_hello: ClientHello::new(
+                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         }
     }

@@ -62,9 +62,10 @@ impl CertIssuerHttpClient {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
+            net::tls::client::TlsClientConfig,
             net::user::Bearer,
             tls::boring::{
-                client::TlsConnectorDataBuilder,
+                client::BoringClientConfigExt as _,
                 core::x509::{X509, store::X509StoreBuilder},
             },
         };
@@ -72,7 +73,7 @@ impl CertIssuerHttpClient {
 
         let uri_raw = std::env::var("RAMA_TLS_REMOTE").context("RAMA_TLS_REMOTE is undefined")?;
 
-        let mut tls_config = TlsConnectorDataBuilder::new_http_auto();
+        let mut tls_config = TlsClientConfig::new().with_alpn_http_auto();
 
         if let Ok(remote_ca_raw) = std::env::var("RAMA_TLS_REMOTE_CA") {
             let mut store_builder = X509StoreBuilder::new().context("build x509 store builder")?;
@@ -94,7 +95,7 @@ impl CertIssuerHttpClient {
             .with_default_transport_connector()
             .without_tls_proxy_support()
             .without_proxy_support()
-            .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
+            .with_tls_support_using_boringssl(tls_config)
             .with_default_http_connector(exec)
             .build_client();
 

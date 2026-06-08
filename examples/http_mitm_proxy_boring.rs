@@ -98,7 +98,7 @@ use rama::{
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::credentials::basic,
@@ -112,7 +112,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::{
-        client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
+        client::{BoringClientConfigExt, EmulateTlsProfileLayer},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
     ua::{
@@ -260,18 +260,13 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = req
+    let tls_config = req
         .extensions()
         .get_ref::<SecureTransport>()
         .and_then(|st| st.client_hello())
-        .cloned()
-    {
-        // TODO once we fully support building this from client hello directly remove this unwrap
-        TlsConnectorDataBuilder::try_from(hello).unwrap()
-    } else {
-        TlsConnectorDataBuilder::new_http_auto()
-    };
-    let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
+        .map(TlsClientConfig::new_from_client_hello)
+        .unwrap_or_else(TlsClientConfig::default_http)
+        .with_server_verify(ServerVerifyMode::Disable);
 
     let state = req.extensions().get_ref::<State>().unwrap();
     let executor = state.exec.clone();
@@ -283,10 +278,7 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
-        .with_tls_support_using_boringssl_and_default_http_version(
-            Some(Arc::new(base_tls_config)),
-            Version::HTTP_11,
-        )
+        .with_tls_support_using_boringssl_and_default_http_version(tls_config, Version::HTTP_11)
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector(executor.clone())
         .build_client()

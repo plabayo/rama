@@ -38,7 +38,7 @@ use rama::{
         address::{ProxyAddress, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection},
         tls::{
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::{ProxyCredential, credentials::basic},
@@ -52,7 +52,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::{
-        client::{TlsConnector, TlsConnectorDataBuilder},
+        client::TlsConnector,
         server::{TlsAcceptorData, TlsAcceptorService},
     },
 };
@@ -79,13 +79,10 @@ async fn main() {
         "local servers up and running",
     );
 
-    let tls_conn_data = TlsConnectorDataBuilder::new()
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
     let client = HttpConnectorLayer::default().into_layer(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new(Executor::default()))
-            .with_connector_data(tls_conn_data),
+        TlsConnector::secure(TcpConnector::new(Executor::default())).with_base_config(tls_config),
     ));
 
     let uri = format!("http://{http_socket_addr}/ping");
