@@ -2,6 +2,7 @@
 //!
 
 use std::borrow::Cow;
+use std::fmt;
 
 use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
@@ -103,7 +104,7 @@ impl KeyLogIntent {
 }
 
 // TODO move this to rama crypto and use native types
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Implementation agnostic encoding of common data such
 /// as certificates and keys.
 pub enum DataEncoding {
@@ -113,4 +114,45 @@ pub enum DataEncoding {
     DerStack(Vec<Vec<u8>>),
     /// Privacy Enhanced Mail (PEM) (plain text)
     Pem(NonEmptyStr),
+}
+
+impl fmt::Debug for DataEncoding {
+    /// Renders the variant and payload size only — never the bytes. This
+    /// type also carries **private keys** (e.g. behind `ServerAuthData` /
+    /// `ClientAuthData`), so emitting the contents would leak key material
+    /// into logs; the raw DER/PEM bytes are noise in a debug line anyway.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Der(der) => write!(f, "Der({} bytes)", der.len()),
+            Self::DerStack(stack) => write!(f, "DerStack({} entries)", stack.len()),
+            Self::Pem(pem) => write!(f, "Pem({} bytes)", pem.len()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_encoding_debug_does_not_leak_contents() {
+        // The payload of every variant can be private key material, so its
+        // bytes must never reach the Debug output — in text or byte form.
+        let secret = "TOP_SECRET_KEY_MATERIAL";
+        let byte_repr = format!("{:?}", secret.as_bytes());
+
+        let encodings = [
+            DataEncoding::Der(secret.as_bytes().to_vec()),
+            DataEncoding::DerStack(vec![secret.as_bytes().to_vec()]),
+            DataEncoding::Pem(
+                NonEmptyStr::try_from(format!("-----BEGIN PRIVATE KEY-----\n{secret}\n")).unwrap(),
+            ),
+        ];
+
+        for enc in encodings {
+            let out = format!("{enc:?}");
+            assert!(!out.contains(secret), "leaked key as text: {out}");
+            assert!(!out.contains(&byte_repr), "leaked key as bytes: {out}");
+        }
+    }
 }

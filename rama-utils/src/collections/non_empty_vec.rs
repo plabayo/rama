@@ -170,8 +170,9 @@ impl<T> NonEmptyVec<T> {
         Self::singleton(e)
     }
 
-    /// Converts from `&NonEmptyVec<T>` to `NonEmptyVec<&T>`.
-    pub fn as_ref(&self) -> NonEmptyVec<&T> {
+    /// Converts from `&NonEmptyVec<T>` to `NonEmptyVec<&T>`, allocating a new
+    /// tail of borrows. Named `to_` (not `as_`) because it is not a free view.
+    pub fn to_ref(&self) -> NonEmptyVec<&T> {
         NonEmptyVec {
             head: &self.head,
             tail: self.tail.iter().collect(),

@@ -57,7 +57,7 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 /// Config used to create the default http connection pool
 pub struct HttpPooledConnectorConfig {
     /// Set the max amount of connections that this connection pool will contain

@@ -18,6 +18,7 @@ use rama_core::telemetry::tracing;
 
 use std::cmp;
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::Cursor;
 use std::str::Utf8Error;
 
@@ -43,6 +44,44 @@ pub enum NeedMore {
     IntegerUnderflow,
     StringUnderflow,
 }
+
+impl fmt::Display for DecoderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRepresentation => f.write_str("invalid representation"),
+            Self::InvalidIntegerPrefix => f.write_str("invalid integer prefix"),
+            Self::InvalidTableIndex => f.write_str("invalid table index"),
+            Self::InvalidHuffmanCode => f.write_str("invalid huffman code"),
+            Self::InvalidUtf8 => f.write_str("invalid utf-8"),
+            Self::InvalidStatusCode => f.write_str("invalid status code"),
+            Self::InvalidPseudoheader => f.write_str("invalid pseudo-header"),
+            Self::InvalidMaxDynamicSize => f.write_str("invalid max dynamic table size"),
+            Self::IntegerOverflow => f.write_str("integer overflow"),
+            Self::NeedMore(need_more) => write!(f, "need more input: {need_more}"),
+        }
+    }
+}
+
+impl std::error::Error for DecoderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NeedMore(need_more) => Some(need_more),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for NeedMore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnexpectedEndOfStream => f.write_str("unexpected end of stream"),
+            Self::IntegerUnderflow => f.write_str("integer underflow"),
+            Self::StringUnderflow => f.write_str("string underflow"),
+        }
+    }
+}
+
+impl std::error::Error for NeedMore {}
 
 /// Decodes headers using HPACK
 #[derive(Debug)]

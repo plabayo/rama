@@ -320,6 +320,7 @@ impl Signer for EcdsaKey {
     }
 }
 
+#[derive(Debug)]
 pub struct RsaKey {
     rng: SystemRandom,
     alg: JWA,
