@@ -53,6 +53,10 @@ pub mod upgrade;
 pub mod validate_request;
 pub mod version_adapter;
 
+#[cfg(feature = "html")]
+#[cfg_attr(docsrs, doc(cfg(feature = "html")))]
+pub mod html_rewrite;
+
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry;

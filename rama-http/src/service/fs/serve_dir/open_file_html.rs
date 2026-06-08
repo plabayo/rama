@@ -5,7 +5,7 @@
 //!
 //! Every untrusted value (file names, breadcrumb labels, the current
 //! path) is routed through the `html!` macro family, which auto-escapes
-//! via [`crate::html::IntoHtml::escape_and_write`]. Per-row `href`
+//! via [`crate::protocols::html::IntoHtml::escape_and_write`]. Per-row `href`
 //! values are constructed via [`rama_net::uri::Uri::path_mut`] so unsafe
 //! bytes inside filenames are percent-encoded by the URI builder rather
 //! than spliced into the attribute raw.
@@ -168,7 +168,7 @@ impl DirEntry {
 
 /// Generate HTML page for directory listing with file details and navigation.
 fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
-    use crate::html::{
+    use crate::protocols::html::{
         IntoHtml as _, a, body, div, h1, head, hr, html, meta, table, tbody, td, th, thead, title,
         tr,
     };

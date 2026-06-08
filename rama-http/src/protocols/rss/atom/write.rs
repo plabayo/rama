@@ -360,7 +360,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "html")]
     async fn feed_serializes_to_valid_xml() {
-        use crate::html::p;
+        use crate::protocols::html::p;
         use crate::protocols::rss::atom::types::{AtomLink, AtomPerson};
 
         let ts = Timestamp::now();
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     #[cfg(feature = "html")]
     fn atom_text_preserves_type() {
-        use crate::html::b;
+        use crate::protocols::html::b;
 
         let text = AtomText::html(b!("bold"));
         assert_eq!(text.kind.type_attr(), "html");

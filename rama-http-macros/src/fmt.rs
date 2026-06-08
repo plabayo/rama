@@ -6,7 +6,7 @@ use crate::ast::{Attr, AttrValue, Element, Node};
 
 /// Minimal copy of vy's escape-into helper used at compile time on string
 /// literals. Kept private; the runtime equivalent lives in
-/// `rama_http::html::escape`.
+/// `rama_http::protocols::html::escape`.
 fn escape_into(buf: &mut String, input: &str) {
     for ch in input.chars() {
         match ch {
@@ -112,14 +112,14 @@ impl<'s> Serializer<'s> {
                     ::core::option::Option::map(
                         #value,
                         |val| (
-                            #root::html::PreEscaped(#sep_name_eq),
+                            #root::protocols::html::PreEscaped(#sep_name_eq),
                             val,
-                            #root::html::PreEscaped('"'),
+                            #root::protocols::html::PreEscaped('"'),
                         )
                     )
                 }),
                 AttrValue::Bool(value) => self.write_expr(parse_quote! {
-                    <bool>::then_some(#value, #root::html::PreEscaped(#sep_name))
+                    <bool>::then_some(#value, #root::protocols::html::PreEscaped(#sep_name))
                 }),
             }
         } else {
@@ -211,7 +211,7 @@ fn wrap_branch(root: &TokenStream, either: &Ident, count: u8, tokens: impl ToTok
     let variant = format_ident!("{}", variant_letter);
 
     parse_quote!({
-        #root::html::#either::#variant(#tokens)
+        #root::protocols::html::#either::#variant(#tokens)
     })
 }
 

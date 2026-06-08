@@ -53,8 +53,8 @@ from `unpkg.com/template-for-polyfill`).
 
 [polyfill]: https://github.com/GoogleChromeLabs/template-for-polyfill
 [demo]: https://github.com/GoogleChromeLabs/web-perf-demos/blob/main/patching-demos/server.js
-[`start`]: https://ramaproxy.org/docs/rama/http/html/fn.start.html
-[`end`]: https://ramaproxy.org/docs/rama/http/html/fn.end.html
+[`start`]: https://ramaproxy.org/docs/rama/http/protocols/html/fn.start.html
+[`end`]: https://ramaproxy.org/docs/rama/http/protocols/html/fn.end.html
 [exp]: https://github.com/WICG/declarative-partial-updates
 
 ## Rama Support
@@ -62,7 +62,7 @@ from `unpkg.com/template-for-polyfill`).
 > 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.PartialUpdates.html>
 
 Enable the `http` feature and the `html` feature (or even better `http-full` to cover it all),
-then use `PartialUpdates` together with the `marker()` helper from `rama::http::html`.
+then use `PartialUpdates` together with the `marker()` helper from `rama::http::protocols::html`.
 
 ### Example
 

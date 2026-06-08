@@ -821,7 +821,7 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "html")]
     async fn atom_stream_keeps_content_and_declares_namespaces() {
-        use crate::html::p;
+        use crate::protocols::html::p;
         use crate::protocols::rss::AtomContent;
         use jiff::Timestamp;
 

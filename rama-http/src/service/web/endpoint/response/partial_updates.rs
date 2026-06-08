@@ -22,14 +22,14 @@ use rama_core::futures::stream::{self, StreamExt};
 use rama_http_headers::ContentType;
 use rama_http_types::{Body, Response};
 
-use crate::html::{IntoHtml, template};
+use crate::protocols::html::{IntoHtml, template};
 
 use super::{Headers, IntoResponse};
 
 /// A streaming HTML response that fills `<?marker name="…">` placeholders
 /// out-of-order as fragment futures complete.
 ///
-/// Pair the shell with [`crate::html::marker`] to emit the processing
+/// Pair the shell with [`crate::protocols::html::marker`] to emit the processing
 /// instructions; this response wraps each fragment's rendered HTML in a
 /// `<template for="name">…</template>` block as it resolves.
 #[must_use]
@@ -66,7 +66,7 @@ impl<H: IntoHtml> PartialUpdates<H> {
     /// scalar strings are HTML-escaped, [`PreEscaped`] passes through verbatim,
     /// and macro-built nodes compose normally.
     ///
-    /// [`PreEscaped`]: crate::html::PreEscaped
+    /// [`PreEscaped`]: crate::protocols::html::PreEscaped
     pub fn fragment<F, T>(mut self, name: &'static str, fut: F) -> Self
     where
         F: Future<Output = T> + Send + 'static,
@@ -134,7 +134,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::html::{html, marker, p};
+    use crate::protocols::html::{html, marker, p};
     use std::time::Duration;
     use tokio::time::{Instant, sleep};
 

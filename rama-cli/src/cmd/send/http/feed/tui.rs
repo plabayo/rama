@@ -12,7 +12,13 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
     futures::{FutureExt as _, StreamExt as _},
-    http::protocols::rss::{Feed, FeedItem, FeedStream},
+    http::protocols::{
+        html::{
+            decode_entities,
+            tokenizer::{EndTag, HtmlTag, StartTag, Text, TokenSink, Tokenizer},
+        },
+        rss::{Feed, FeedItem, FeedStream},
+    },
     telemetry::tracing,
 };
 
@@ -199,10 +205,11 @@ impl FeedHeader {
     fn from_stream(stream: &FeedStream) -> Self {
         Self {
             title: nonempty(stream.title()).unwrap_or_else(|| "(untitled feed)".to_owned()),
-            subtitle: stream
-                .description()
-                .and_then(plain_nonempty)
-                .or_else(|| stream.link().and_then(|uri| nonempty(&uri.to_string()))),
+            subtitle: stream.description().and_then(plain_nonempty).or_else(|| {
+                stream
+                    .link()
+                    .and_then(|uri| nonempty(uri.as_str().as_ref()))
+            }),
             format: match stream {
                 FeedStream::Atom(_) => FeedFormat::Atom,
                 FeedStream::Rss2(_) => FeedFormat::Rss,
@@ -216,7 +223,7 @@ impl FeedHeader {
             subtitle: feed
                 .description()
                 .and_then(plain_nonempty)
-                .or_else(|| feed.link().and_then(|uri| nonempty(&uri.to_string()))),
+                .or_else(|| feed.link().and_then(|uri| nonempty(uri.as_str().as_ref()))),
             format: if feed.is_rss2() {
                 FeedFormat::Rss
             } else {
@@ -699,106 +706,67 @@ struct HtmlRenderer {
 
 impl HtmlRenderer {
     fn run(&mut self, input: &str) {
-        let mut rest = input;
-        while !rest.is_empty() {
-            let Some(lt) = rest.find('<') else {
-                self.text(rest);
-                break;
-            };
-            if lt > 0 {
-                self.text(&rest[..lt]);
-            }
-            rest = &rest[lt..];
-
-            if let Some(after) = rest.strip_prefix("<!--") {
-                rest = after.find("-->").map_or("", |i| &after[i + 3..]);
-                continue;
-            }
-            if rest.starts_with("<!") || rest.starts_with("<?") {
-                rest = rest.find('>').map_or("", |i| &rest[i + 1..]);
-                continue;
-            }
-
-            // Find the tag's closing '>', respecting quoted attribute values
-            // so a '>' inside an attribute doesn't end the tag early.
-            let mut quote: Option<char> = None;
-            let mut end = None;
-            for (i, ch) in rest.char_indices().skip(1) {
-                match ch {
-                    c @ ('"' | '\'') if quote == Some(c) => quote = None,
-                    c @ ('"' | '\'') if quote.is_none() => quote = Some(c),
-                    '>' if quote.is_none() => {
-                        end = Some(i);
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            let Some(end) = end else { break };
-            self.tag(&rest[1..end]);
-            rest = &rest[end + 1..];
+        if Tokenizer::new().tokenize(input.as_bytes(), self).is_err() {
+            self.text(&decode_entities(input));
         }
     }
 
-    fn tag(&mut self, raw: &str) {
-        let raw = raw.trim();
-        let closing = raw.starts_with('/');
-        let body = raw.strip_prefix('/').unwrap_or(raw);
-        let name: String = body
-            .chars()
-            .take_while(char::is_ascii_alphanumeric)
-            .flat_map(char::to_lowercase)
-            .collect();
-        if name.is_empty() {
-            return;
-        }
-        if closing {
-            self.close_tag(&name);
-        } else {
-            self.open_tag(&name, &body[name.len()..]);
-        }
-    }
-
-    fn open_tag(&mut self, name: &str, attrs: &str) {
-        match name {
-            "script" | "style" => self.skip_text += 1,
-            "br" => self.flush_line(),
-            "hr" => self.rule(),
-            "p" | "div" | "section" | "article" | "header" | "footer" | "figure" | "figcaption"
-            | "main" | "aside" | "table" | "tr" => self.ensure_blank(),
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+    fn open_tag(&mut self, tag: HtmlTag<'_>, start: &StartTag<'_>) {
+        match tag {
+            HtmlTag::Script | HtmlTag::Style => self.skip_text += 1,
+            HtmlTag::Br => self.flush_line(),
+            HtmlTag::Hr => self.rule(),
+            HtmlTag::P
+            | HtmlTag::Div
+            | HtmlTag::Section
+            | HtmlTag::Article
+            | HtmlTag::Header
+            | HtmlTag::Footer
+            | HtmlTag::Figure
+            | HtmlTag::Figcaption
+            | HtmlTag::Main
+            | HtmlTag::Aside
+            | HtmlTag::Table
+            | HtmlTag::Tr => self.ensure_blank(),
+            HtmlTag::H1 | HtmlTag::H2 | HtmlTag::H3 | HtmlTag::H4 | HtmlTag::H5 | HtmlTag::H6 => {
                 self.ensure_blank();
                 self.push_style(self.style.add_modifier(Modifier::BOLD));
             }
-            "b" | "strong" => self.push_style(self.style.add_modifier(Modifier::BOLD)),
-            "i" | "em" | "cite" | "dfn" => {
+            HtmlTag::B | HtmlTag::Strong => {
+                self.push_style(self.style.add_modifier(Modifier::BOLD));
+            }
+            HtmlTag::I | HtmlTag::Em | HtmlTag::Cite | HtmlTag::Dfn => {
                 self.push_style(self.style.add_modifier(Modifier::ITALIC));
             }
-            "u" | "ins" => self.push_style(self.style.add_modifier(Modifier::UNDERLINED)),
-            "s" | "strike" | "del" => {
+            HtmlTag::U | HtmlTag::Ins => {
+                self.push_style(self.style.add_modifier(Modifier::UNDERLINED));
+            }
+            HtmlTag::S | HtmlTag::Strike | HtmlTag::Del => {
                 self.push_style(self.style.add_modifier(Modifier::CROSSED_OUT));
             }
-            "code" | "tt" | "kbd" | "samp" | "var" => self.push_style(self.style.fg(Color::Cyan)),
-            "pre" => {
+            HtmlTag::Code | HtmlTag::Tt | HtmlTag::Kbd | HtmlTag::Samp | HtmlTag::Var => {
+                self.push_style(self.style.fg(Color::Cyan));
+            }
+            HtmlTag::Pre => {
                 self.ensure_blank();
                 self.in_pre += 1;
                 self.push_style(self.style.fg(Color::Cyan));
             }
-            "blockquote" => {
+            HtmlTag::Blockquote => {
                 self.ensure_blank();
                 self.push_style(self.style.fg(Color::Gray).add_modifier(Modifier::ITALIC));
             }
-            "ul" => {
+            HtmlTag::Ul => {
                 self.ensure_blank();
                 self.list_stack.push(ListMarker::Bullet);
             }
-            "ol" => {
+            HtmlTag::Ol => {
                 self.ensure_blank();
                 self.list_stack.push(ListMarker::Number(1));
             }
-            "li" => self.start_list_item(),
-            "a" => {
-                self.href_stack.push(extract_attr(attrs, "href"));
+            HtmlTag::Li => self.start_list_item(),
+            HtmlTag::A => {
+                self.href_stack.push(extract_attr(start, b"href"));
                 self.push_style(
                     self.style
                         .fg(Color::Blue)
@@ -809,28 +777,60 @@ impl HtmlRenderer {
         }
     }
 
-    fn close_tag(&mut self, name: &str) {
-        match name {
-            "script" | "style" => self.skip_text = self.skip_text.saturating_sub(1),
-            "p" | "div" | "section" | "article" | "header" | "footer" | "figure" | "figcaption"
-            | "main" | "aside" | "table" | "tr" => self.ensure_blank(),
-            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" => {
+    fn close_tag(&mut self, tag: HtmlTag<'_>) {
+        match tag {
+            HtmlTag::Script | HtmlTag::Style => {
+                self.skip_text = self.skip_text.saturating_sub(1);
+            }
+            HtmlTag::P
+            | HtmlTag::Div
+            | HtmlTag::Section
+            | HtmlTag::Article
+            | HtmlTag::Header
+            | HtmlTag::Footer
+            | HtmlTag::Figure
+            | HtmlTag::Figcaption
+            | HtmlTag::Main
+            | HtmlTag::Aside
+            | HtmlTag::Table
+            | HtmlTag::Tr => self.ensure_blank(),
+            HtmlTag::H1
+            | HtmlTag::H2
+            | HtmlTag::H3
+            | HtmlTag::H4
+            | HtmlTag::H5
+            | HtmlTag::H6
+            | HtmlTag::Blockquote => {
                 self.pop_style();
                 self.ensure_blank();
             }
-            "b" | "strong" | "i" | "em" | "cite" | "dfn" | "u" | "ins" | "s" | "strike" | "del"
-            | "code" | "tt" | "kbd" | "samp" | "var" => self.pop_style(),
-            "pre" => {
+            HtmlTag::B
+            | HtmlTag::Strong
+            | HtmlTag::I
+            | HtmlTag::Em
+            | HtmlTag::Cite
+            | HtmlTag::Dfn
+            | HtmlTag::U
+            | HtmlTag::Ins
+            | HtmlTag::S
+            | HtmlTag::Strike
+            | HtmlTag::Del
+            | HtmlTag::Code
+            | HtmlTag::Tt
+            | HtmlTag::Kbd
+            | HtmlTag::Samp
+            | HtmlTag::Var => self.pop_style(),
+            HtmlTag::Pre => {
                 self.in_pre = self.in_pre.saturating_sub(1);
                 self.pop_style();
                 self.ensure_blank();
             }
-            "ul" | "ol" => {
+            HtmlTag::Ul | HtmlTag::Ol => {
                 self.list_stack.pop();
                 self.ensure_blank();
             }
-            "li" => self.flush_line(),
-            "a" => {
+            HtmlTag::Li => self.flush_line(),
+            HtmlTag::A => {
                 let href = self.href_stack.pop().flatten();
                 self.pop_style();
                 if let Some(href) = href.filter(|h| !h.is_empty()) {
@@ -886,14 +886,15 @@ impl HtmlRenderer {
         self.line_has_content = false;
     }
 
-    fn text(&mut self, raw: &str) {
+    /// Appends already-decoded text (UTF-8, entities resolved) to the current
+    /// line, collapsing whitespace outside `<pre>`.
+    fn text(&mut self, text: &str) {
         if self.skip_text > 0 {
             return;
         }
-        let decoded = decode_entities(raw);
 
         if self.in_pre > 0 {
-            for (i, piece) in decoded.split('\n').enumerate() {
+            for (i, piece) in text.split('\n').enumerate() {
                 if i > 0 {
                     self.flush_line();
                 }
@@ -909,7 +910,7 @@ impl HtmlRenderer {
         // whitespace at the start of a line.
         let mut buf = String::new();
         let mut prev_ws = !self.line_has_content;
-        for ch in decoded.chars() {
+        for ch in text.chars() {
             if ch.is_whitespace() {
                 if !prev_ws {
                     buf.push(' ');
@@ -959,98 +960,33 @@ impl HtmlRenderer {
     }
 }
 
+impl TokenSink for HtmlRenderer {
+    fn start_tag(&mut self, tag: &StartTag<'_>) {
+        let kind = tag.tag();
+        self.open_tag(kind, tag);
+        if tag.is_self_closing() {
+            self.close_tag(kind);
+        }
+    }
+
+    fn end_tag(&mut self, tag: &EndTag<'_>) {
+        self.close_tag(tag.tag());
+    }
+
+    fn text(&mut self, text: &Text<'_>) {
+        Self::text(self, &text.decoded());
+    }
+}
+
 fn line_is_empty(line: &Line<'_>) -> bool {
     line.spans.iter().all(|span| span.content.trim().is_empty())
 }
 
-/// Extract a (decoded) attribute value from a tag body, e.g. `href` from
-/// `a href="https://example.com"`. Tolerant of single/double/unquoted values.
-fn extract_attr(body: &str, name: &str) -> Option<String> {
-    let lower = body.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(rel) = lower[from..].find(name) {
-        let at = from + rel;
-        let preceded_ok = at == 0 || body.as_bytes()[at - 1].is_ascii_whitespace();
-        let after = body[at + name.len()..].trim_start();
-        if preceded_ok && let Some(value) = after.strip_prefix('=') {
-            let value = value.trim_start();
-            let raw = if let Some(rest) = value.strip_prefix('"') {
-                rest.split('"').next().unwrap_or("")
-            } else if let Some(rest) = value.strip_prefix('\'') {
-                rest.split('\'').next().unwrap_or("")
-            } else {
-                value.split_whitespace().next().unwrap_or("")
-            };
-            return Some(decode_entities(raw));
-        }
-        from = at + name.len();
-    }
-    None
-}
-
-/// Decode the HTML entities that show up in feeds (named subset + numeric
-/// `&#nn;` / `&#xhh;`). Unrecognized entities are left as-is.
-fn decode_entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_owned();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let after = &rest[amp..];
-        if let Some(rel) = after[1..].find(';')
-            && rel < 32
-            && let Some(ch) = decode_one_entity(&after[1..rel + 1])
-        {
-            out.push(ch);
-            rest = &after[rel + 2..];
-        } else {
-            out.push('&');
-            rest = &after[1..];
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-fn decode_one_entity(entity: &str) -> Option<char> {
-    if let Some(num) = entity.strip_prefix('#') {
-        let code = match num.strip_prefix(['x', 'X']) {
-            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-            None => num.parse::<u32>().ok()?,
-        };
-        return char::from_u32(code);
-    }
-    Some(match entity {
-        "amp" => '&',
-        "lt" => '<',
-        "gt" => '>',
-        "quot" => '"',
-        "apos" => '\'',
-        "nbsp" => ' ',
-        "hellip" => '…',
-        "mdash" => '—',
-        "ndash" => '–',
-        "lsquo" => '\u{2018}',
-        "rsquo" => '\u{2019}',
-        "ldquo" => '\u{201C}',
-        "rdquo" => '\u{201D}',
-        "laquo" => '«',
-        "raquo" => '»',
-        "copy" => '©',
-        "reg" => '®',
-        "trade" => '™',
-        "deg" => '°',
-        "middot" | "bull" => '•',
-        "euro" => '€',
-        "pound" => '£',
-        "cent" => '¢',
-        "sect" => '§',
-        "times" => '×',
-        "divide" => '÷',
-        _ => return None,
-    })
+/// Extract a decoded attribute value from a tokenized start tag.
+fn extract_attr(tag: &StartTag<'_>, name: &[u8]) -> Option<String> {
+    tag.attributes()
+        .find(|attr| attr.name().eq_ignore_ascii_case(name))
+        .map(|attr| attr.value_decoded().into_owned())
 }
 
 fn open_url(url: &str) {
@@ -1298,6 +1234,25 @@ mod tests {
             text.contains("line1\nline2 — end"),
             "br/entity not handled: {text:?}"
         );
+    }
+
+    #[test]
+    fn html_to_lines_tokenizes_quoted_gt_and_decodes_href() {
+        let lines =
+            html_to_lines(r#"<p>See <a href="https://x.test/?q=a&gt;b">link</a> after</p>"#);
+        let text = lines_text(&lines);
+        assert!(
+            text.contains("See link (https://x.test/?q=a>b) after"),
+            "quoted gt or href entity mishandled: {text:?}"
+        );
+    }
+
+    #[test]
+    fn html_to_lines_handles_partial_html_without_panicking() {
+        let lines = html_to_lines("<p>before <strong>bold<a href=\"https://x.test?q=1&gt;2\"");
+        let text = lines_text(&lines);
+        assert!(text.contains("before bold"), "text missing: {text:?}");
+        assert!(!text.contains("<strong>"), "raw tag leaked: {text:?}");
     }
 
     #[test]

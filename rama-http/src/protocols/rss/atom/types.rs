@@ -2,12 +2,13 @@ use jiff::Timestamp;
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 
-#[cfg(feature = "html")]
-use crate::html::IntoHtml;
 use crate::protocols::rss::feed_ext::{
     Content, DublinCore, ITunes, ItemExtensions, MediaRss, Podcast, PodloveChapters,
 };
 use crate::protocols::rss::rss2::Missing;
+
+#[cfg(feature = "html")]
+use crate::protocols::html::IntoHtml;
 
 /// Atom text construct: a string body plus a [`AtomTextKind`] that says how
 /// to interpret/serialize it. Equivalent of the spec's "Text Construct"

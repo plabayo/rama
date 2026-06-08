@@ -38,7 +38,7 @@ compression = [
     "dep:flate2",
 ]
 multipart = ["dep:multer", "dep:mime_guess"]
-html = ["dep:rama-http-macros"]
+html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
 tls = ["rama-net/tls"]
 
@@ -58,6 +58,7 @@ httpdate = { workspace = true }
 iri-string = { workspace = true }
 jiff = { workspace = true }
 matchit = { workspace = true }
+memchr = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
 multer = { workspace = true, optional = true }
 parking_lot = { workspace = true }
@@ -86,6 +87,7 @@ itertools = { workspace = true }
 parking_lot = { workspace = true }
 quickcheck = { workspace = true }
 quickcheck_macros = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

@@ -3,42 +3,50 @@ use rama::{
     bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef as _,
-    futures::async_stream::stream_fn,
     http::{
         Body, Method, Request, Response, StreamingBody,
         header::CONTENT_ENCODING,
         headers::{ContentType, HeaderMapExt},
-        layer::remove_header::{
-            remove_cache_validation_response_headers, remove_payload_metadata_headers,
+        layer::{
+            html_rewrite::HtmlRewriteLayer,
+            remove_header::{
+                remove_cache_validation_response_headers, remove_payload_metadata_headers,
+            },
         },
-        mime,
+        protocols::html::{
+            IntoHtml, div,
+            rewrite::{Element, ElementContentHandler, HandlerResult},
+            selector::Selector,
+        },
     },
     matcher::service::{ServiceMatch, ServiceMatcher},
     net::{address::Domain, http::RequestContext, proxy::ProxyTarget},
     telemetry::tracing,
-    utils::{
-        octets::kib,
-        str::{contains_ignore_ascii_case, submatch_ignore_ascii_case},
-    },
 };
 use std::{borrow::Cow, convert::Infallible};
 
 use crate::policy::DomainExclusionList;
 
-const BADGE_MARKER: &[u8] = b"id=\"rama-proxy-badge\"";
-const BODY_OPEN: &[u8] = b"<body";
-/// Hard cap on how many bytes we'll buffer once we've seen `<body`
-/// while waiting for the closing `>` of the opening tag. A real opening
-/// tag (`<body class="…" data-…>`) is tens of bytes; 4 KiB is comfortably
-/// above the worst real-world value and below any size that matters for
-/// streaming latency.
-const MAX_OPEN_TAG_SCAN: usize = kib(4);
+const BADGE_ID: &str = "rama-proxy-badge";
+const BADGE_STYLE: &str = concat!(
+    "position:fixed;",
+    "top:16px;",
+    "right:16px;",
+    "z-index:2147483647;",
+    "padding:10px 14px;",
+    "background:rgba(17,17,17,0.92);",
+    "color:#fff;",
+    "font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;",
+    "border-radius:999px;",
+    "box-shadow:0 4px 18px rgba(0,0,0,0.25);",
+    "pointer-events:none",
+);
 
 #[derive(Debug, Clone)]
 pub struct HtmlBadgeLayer {
     enabled: bool,
-    badge_html: Vec<u8>,
     excluded_domains: DomainExclusionList,
+    rewrite: HtmlRewriteLayer<BadgeHandler>,
 }
 
 impl HtmlBadgeLayer {
@@ -47,24 +55,30 @@ impl HtmlBadgeLayer {
     pub fn new() -> Self {
         Self {
             enabled: true,
-            badge_html: badge_html("proxied by rama"),
             excluded_domains: DomainExclusionList::default(),
+            rewrite: badge_rewrite_layer("proxied by rama"),
         }
     }
 
-    pub fn with_badge_label(mut self, badge_label: impl AsRef<str>) -> Self {
-        self.badge_html = badge_html(badge_label.as_ref());
-        self
+    rama::utils::macros::generate_set_and_with! {
+        pub fn badge_label(mut self, badge_label: impl AsRef<str>) -> Self {
+            self.rewrite = badge_rewrite_layer(badge_label.as_ref());
+            self
+        }
     }
 
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
+    rama::utils::macros::generate_set_and_with! {
+        pub fn enabled(mut self, enabled: bool) -> Self {
+            self.enabled = enabled;
+            self
+        }
     }
 
-    pub fn with_excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
-        self.excluded_domains = excluded_domains;
-        self
+    rama::utils::macros::generate_set_and_with! {
+        pub fn excluded_domains(mut self, excluded_domains: DomainExclusionList) -> Self {
+            self.excluded_domains = excluded_domains;
+            self
+        }
     }
 
     pub fn decompression_matcher(&self) -> HtmlBadgeDecompressionMatcher {
@@ -81,30 +95,30 @@ impl<S> Layer<S> for HtmlBadgeLayer {
     fn layer(&self, inner: S) -> Self::Service {
         let Self {
             enabled,
-            badge_html,
             excluded_domains,
+            rewrite,
         } = self;
 
         HtmlBadgeService {
             inner,
             enabled: *enabled,
-            badge_html: badge_html.clone(),
             excluded_domains: excluded_domains.clone(),
+            rewrite: rewrite.clone(),
         }
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         let Self {
             enabled,
-            badge_html,
             excluded_domains,
+            rewrite,
         } = self;
 
         HtmlBadgeService {
             inner,
             enabled,
-            badge_html,
             excluded_domains,
+            rewrite,
         }
     }
 }
@@ -113,27 +127,22 @@ impl<S> Layer<S> for HtmlBadgeLayer {
 pub struct HtmlBadgeService<S> {
     inner: S,
     enabled: bool,
-    badge_html: Vec<u8>,
     excluded_domains: DomainExclusionList,
+    rewrite: HtmlRewriteLayer<BadgeHandler>,
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HtmlBadgeService<S>
 where
     S: Service<Request<ReqBody>, Output = Response<ResBody>, Error = BoxError>,
     ReqBody: Send + 'static,
-    ResBody: rama::http::StreamingBody<Data = Bytes, Error: Into<BoxError> + Send>
-        + Send
-        + Sync
-        + 'static,
+    ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError> + Send> + Send + Sync + 'static,
 {
     type Output = Response<Body>;
     type Error = BoxError;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req_method = req.method().clone();
-        let req_domain = RequestContext::try_from(&req)
-            .ok()
-            .and_then(|rc| rc.authority.host.try_into_domain().ok());
+        let req_domain = try_get_domain_for_req(&req).map(Cow::into_owned);
         let req_uri = req.uri().clone();
 
         let response = self.inner.serve(req).await?;
@@ -178,47 +187,10 @@ where
         // and injects.
         remove_payload_metadata_headers(&mut parts.headers);
         remove_cache_validation_response_headers(&mut parts.headers);
-        let new_body = Body::from_stream(badge_inject_stream(body, self.badge_html.clone()));
+        let new_body = self.rewrite.rewrite_body(body);
+        let new_body = Body::new(new_body);
         Ok(Response::from_parts(parts, new_body))
     }
-}
-
-/// Wrap `body` in a streaming injector that emits the badge bytes right
-/// after the `<body…>` opening tag and passes the rest through
-/// unchanged. Buffered state is bounded — at most
-/// `MAX_OPEN_TAG_SCAN` bytes while waiting for the tag's closing `>`,
-/// otherwise just a small carry-over to catch `<body` / BADGE_MARKER
-/// straddling a chunk boundary.
-fn badge_inject_stream<B>(
-    body: B,
-    badge: Vec<u8>,
-) -> impl rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + 'static
-where
-    B: StreamingBody<Data = Bytes, Error: Into<BoxError> + Send> + Send + 'static,
-{
-    stream_fn(async move |mut yielder| {
-        let mut state = BadgeScanState::new();
-        let mut body = std::pin::pin!(body);
-        loop {
-            let frame = match std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
-                Some(Ok(f)) => f,
-                Some(Err(e)) => {
-                    yielder.yield_item(Err(e.into())).await;
-                    return;
-                }
-                None => break,
-            };
-            let Ok(data) = frame.into_data() else {
-                continue;
-            };
-            for chunk in state.process(data, &badge) {
-                yielder.yield_item(Ok(chunk)).await;
-            }
-        }
-        if let Some(tail) = state.flush() {
-            yielder.yield_item(Ok(tail)).await;
-        }
-    })
 }
 
 fn should_rewrite<B>(response: &Response<B>) -> bool {
@@ -242,9 +214,7 @@ fn is_html_rewrite_candidate<B>(response: &Response<B>) -> bool {
     let Some(content_type) = response.headers().typed_get::<ContentType>() else {
         return false;
     };
-    let mime = content_type.into_mime();
-    (mime.type_() == mime::TEXT && mime.subtype() == mime::HTML)
-        || (mime.type_() == mime::APPLICATION && mime.subtype().as_str() == "xhtml+xml")
+    content_type.into_mime().essence_str() == "text/html"
 }
 
 #[derive(Debug, Clone)]
@@ -304,133 +274,41 @@ where
     }
 }
 
-/// Streaming scanner that emits the badge right after the `<body…>`
-/// opening tag of an HTML stream and passes everything else through.
-///
-/// Bounded memory: the only state held is a short carry-over while
-/// scanning (at most `max(BODY_OPEN.len(), BADGE_MARKER.len()) - 1`
-/// bytes) plus, once `<body` is found, the partial opening tag up to
-/// `MAX_OPEN_TAG_SCAN`. Past either of those exits the scanner enters
-/// `PassThrough` and forwards every subsequent chunk unchanged.
-///
-/// Trade-offs vs. the previous buffer-everything implementation:
-/// * No `</body>` / end-of-doc fallback injection — those need the
-///   full body. A response with no `<body>` opening tag now gets no
-///   badge. Acceptable for the proxy-badge use case; the demo target
-///   is full HTML pages.
-/// * On EOF mid-scan the held-back carry / partial open-tag is flushed
-///   as-is, so we never truncate output.
-#[derive(Debug)]
-enum BadgeScanState {
-    /// Scanning input for `<body` or for an already-present
-    /// `BADGE_MARKER`. `carry` holds a few bytes at the boundary of
-    /// the previous chunk that might be the start of a match.
-    Scanning { carry: Vec<u8> },
-    /// Found `<body`; buffering until the opening tag's closing `>`.
-    InOpenTag { buf: Vec<u8> },
-    /// Injection done — or aborted because BADGE_MARKER was already
-    /// in the body, or the open tag exceeded `MAX_OPEN_TAG_SCAN`.
-    /// Subsequent chunks are emitted unchanged.
-    PassThrough,
+#[derive(Debug, Clone)]
+struct BadgeHandler {
+    label: String,
 }
 
-impl BadgeScanState {
-    fn new() -> Self {
-        Self::Scanning { carry: Vec::new() }
-    }
-
-    fn process(&mut self, chunk: Bytes, badge: &[u8]) -> Vec<Bytes> {
-        let mut out = Vec::new();
-        let mut input = chunk;
-        loop {
-            match self {
-                Self::PassThrough => {
-                    if !input.is_empty() {
-                        out.push(input);
-                    }
-                    return out;
-                }
-                Self::Scanning { carry } => {
-                    if input.is_empty() && carry.is_empty() {
-                        return out;
-                    }
-                    let combined: Vec<u8> = if carry.is_empty() {
-                        input.to_vec()
-                    } else {
-                        let mut v = std::mem::take(carry);
-                        v.extend_from_slice(&input);
-                        v
-                    };
-
-                    // Pre-existing badge → bail; forward and stop scanning.
-                    if submatch_ignore_ascii_case(&combined, BADGE_MARKER) {
-                        out.push(Bytes::from(combined));
-                        *self = Self::PassThrough;
-                        return out;
-                    }
-
-                    // Found `<body` → flush prefix, switch to InOpenTag.
-                    if let Some(idx) = contains_ignore_ascii_case(&combined, BODY_OPEN) {
-                        if idx > 0 {
-                            out.push(Bytes::copy_from_slice(&combined[..idx]));
-                        }
-                        let buf = combined[idx..].to_vec();
-                        *self = Self::InOpenTag { buf };
-                        input = Bytes::new();
-                        continue;
-                    }
-
-                    // No match yet — keep a tail large enough to catch a
-                    // pattern straddling the next chunk boundary.
-                    let max_tail = BADGE_MARKER.len().max(BODY_OPEN.len()) - 1;
-                    if combined.len() <= max_tail {
-                        *carry = combined;
-                    } else {
-                        let split = combined.len() - max_tail;
-                        out.push(Bytes::copy_from_slice(&combined[..split]));
-                        *carry = combined[split..].to_vec();
-                    }
-                    return out;
-                }
-                Self::InOpenTag { buf } => {
-                    if !input.is_empty() {
-                        buf.extend_from_slice(&input);
-                    }
-                    if let Some(close) = buf.iter().position(|&b| b == b'>') {
-                        let insert_at = close + 1;
-                        let mut output = Vec::with_capacity(buf.len() + badge.len());
-                        output.extend_from_slice(&buf[..insert_at]);
-                        output.extend_from_slice(badge);
-                        output.extend_from_slice(&buf[insert_at..]);
-                        out.push(Bytes::from(output));
-                        *self = Self::PassThrough;
-                        return out;
-                    }
-                    if buf.len() > MAX_OPEN_TAG_SCAN {
-                        // Malformed / hostile: give up and flush.
-                        out.push(Bytes::from(std::mem::take(buf)));
-                        *self = Self::PassThrough;
-                    }
-                    return out;
-                }
-            }
-        }
-    }
-
-    fn flush(&mut self) -> Option<Bytes> {
-        match std::mem::replace(self, Self::PassThrough) {
-            Self::Scanning { carry } if !carry.is_empty() => Some(Bytes::from(carry)),
-            Self::InOpenTag { buf } if !buf.is_empty() => Some(Bytes::from(buf)),
-            _ => None,
-        }
+impl ElementContentHandler for BadgeHandler {
+    fn handle_element(&mut self, _selector: usize, element: &mut Element<'_>) -> HandlerResult {
+        element.prepend(ProxyBadge {
+            label: self.label.clone(),
+        });
+        Ok(())
     }
 }
 
-fn badge_html(label: &str) -> Vec<u8> {
-    format!(
-        r#"<div id="rama-proxy-badge" style="position:fixed;top:16px;right:16px;z-index:2147483647;padding:10px 14px;background:rgba(17,17,17,0.92);color:#fff;font:700 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;border-radius:999px;box-shadow:0 4px 18px rgba(0,0,0,0.25);pointer-events:none">{label}</div>"#,
+struct ProxyBadge {
+    label: String,
+}
+
+impl IntoHtml for ProxyBadge {
+    fn into_html(self) -> impl IntoHtml {
+        div!(id = BADGE_ID, style = BADGE_STYLE, self.label)
+    }
+
+    fn size_hint(&self) -> usize {
+        BADGE_STYLE.len() + BADGE_ID.len() + self.label.len() + 32
+    }
+}
+
+fn badge_rewrite_layer(label: &str) -> HtmlRewriteLayer<BadgeHandler> {
+    HtmlRewriteLayer::new(
+        [Selector::tag("body")],
+        BadgeHandler {
+            label: label.to_owned(),
+        },
     )
-    .into_bytes()
 }
 
 fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> {
@@ -466,21 +344,33 @@ mod tests {
     };
     use std::{convert::Infallible, time::Duration};
 
+    fn badge_html(label: &str) -> Vec<u8> {
+        ProxyBadge {
+            label: label.to_owned(),
+        }
+        .into_string()
+        .into_bytes()
+    }
+
     fn default_badge_html() -> Vec<u8> {
         badge_html("proxied by rama")
     }
 
-    /// Single-chunk happy path: badge lands right after the opening
-    /// `<body class="…">` tag, suffix is preserved.
-    #[test]
-    fn scanner_injects_after_body_open_tag_single_chunk() {
+    #[tokio::test]
+    async fn html_badge_layer_injects_after_body_open_tag_single_chunk() {
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                let mut response =
+                    Response::new(Body::from("<html><body class=\"demo\">Hello</body></html>"));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }));
+
+        let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
+        let joined = response.into_body().collect().await.unwrap().to_bytes();
         let badge = default_badge_html();
-        let mut state = BadgeScanState::new();
-        let out = state.process(
-            Bytes::from_static(b"<html><body class=\"demo\">Hello</body></html>"),
-            &badge,
-        );
-        let joined: Vec<u8> = out.into_iter().flatten().collect();
         let expected_prefix = b"<html><body class=\"demo\">";
         assert!(joined.starts_with(expected_prefix));
         let after_tag = &joined[expected_prefix.len()..];
@@ -488,37 +378,26 @@ mod tests {
         assert!(joined.ends_with(b"Hello</body></html>"));
     }
 
-    /// Pre-existing badge → scanner bails into PassThrough; body
-    /// emerges byte-identical.
-    #[test]
-    fn scanner_is_idempotent_when_badge_already_present() {
-        let badge = default_badge_html();
-        let html = format!(
-            "<html><body>{}hello</body></html>",
-            String::from_utf8_lossy(&badge),
-        );
-        let mut state = BadgeScanState::new();
-        let out = state.process(Bytes::from(html.clone().into_bytes()), &badge);
-        let joined: Vec<u8> = out.into_iter().flatten().collect();
-        assert_eq!(joined, html.as_bytes());
-    }
+    #[tokio::test]
+    async fn html_badge_layer_handles_body_open_tag_across_chunk_boundary() {
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                let upstream = stream_fn(async |mut y| {
+                    y.yield_item(Ok::<_, Infallible>(Bytes::from_static(b"<html><bo")))
+                        .await;
+                    y.yield_item(Ok(Bytes::from_static(b"dy>rest</body></html>")))
+                        .await;
+                });
+                let mut response = Response::new(Body::from_stream(upstream));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }));
 
-    /// `<body` straddles a chunk boundary: scanner must still find it
-    /// via the carry-over and inject correctly.
-    #[test]
-    fn scanner_handles_body_open_tag_across_chunk_boundary() {
+        let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
+        let joined = response.into_body().collect().await.unwrap().to_bytes();
         let badge = default_badge_html();
-        let mut state = BadgeScanState::new();
-        // Split mid-tag: `<bo` ends chunk 1, `dy>rest</body>` starts chunk 2.
-        let mut joined = Vec::new();
-        for chunk in [&b"<html><bo"[..], &b"dy>rest</body></html>"[..]] {
-            for emitted in state.process(Bytes::copy_from_slice(chunk), &badge) {
-                joined.extend_from_slice(&emitted);
-            }
-        }
-        if let Some(tail) = state.flush() {
-            joined.extend_from_slice(&tail);
-        }
         let expected_prefix = b"<html><body>";
         assert!(joined.starts_with(expected_prefix));
         let after_tag = &joined[expected_prefix.len()..];
@@ -526,47 +405,71 @@ mod tests {
         assert!(joined.ends_with(b"rest</body></html>"));
     }
 
-    /// Opening tag with `>` arriving in a later chunk: scanner buffers
-    /// `<body…` until the `>` shows up, then injects + passes through.
-    #[test]
-    fn scanner_handles_open_tag_closing_bracket_in_later_chunk() {
+    #[tokio::test]
+    async fn html_badge_layer_handles_open_tag_closing_bracket_in_later_chunk() {
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                let upstream = stream_fn(async |mut y| {
+                    y.yield_item(Ok::<_, Infallible>(Bytes::from_static(
+                        b"<html><body class=\"foo",
+                    )))
+                    .await;
+                    y.yield_item(Ok(Bytes::from_static(b"\" data-x=\"y")))
+                        .await;
+                    y.yield_item(Ok(Bytes::from_static(b"\">tail</body>")))
+                        .await;
+                });
+                let mut response = Response::new(Body::from_stream(upstream));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }));
+
+        let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
+        let joined = response.into_body().collect().await.unwrap().to_bytes();
         let badge = default_badge_html();
-        let mut state = BadgeScanState::new();
-        let chunks: [&[u8]; 3] = [
-            b"<html><body class=\"foo",
-            b"\" data-x=\"y",
-            b"\">tail</body>",
-        ];
-        let mut joined = Vec::new();
-        for chunk in chunks {
-            for emitted in state.process(Bytes::copy_from_slice(chunk), &badge) {
-                joined.extend_from_slice(&emitted);
-            }
-        }
-        if let Some(tail) = state.flush() {
-            joined.extend_from_slice(&tail);
-        }
         let expected_prefix = b"<html><body class=\"foo\" data-x=\"y\">";
         assert!(joined.starts_with(expected_prefix));
         assert!(joined[expected_prefix.len()..].starts_with(badge.as_slice()));
         assert!(joined.ends_with(b"tail</body>"));
     }
 
-    /// HTML with no `<body>` at all: scanner forwards everything
-    /// unchanged (no fallback append).
-    #[test]
-    fn scanner_passes_through_html_without_body_tag() {
-        let badge = default_badge_html();
-        let mut state = BadgeScanState::new();
-        let input = b"<div>just a fragment</div>";
-        let mut joined = Vec::new();
-        for emitted in state.process(Bytes::from_static(input), &badge) {
-            joined.extend_from_slice(&emitted);
-        }
-        if let Some(tail) = state.flush() {
-            joined.extend_from_slice(&tail);
-        }
-        assert_eq!(joined.as_slice(), input);
+    #[tokio::test]
+    async fn html_badge_layer_passes_through_html_without_body_tag() {
+        let svc =
+            HtmlBadgeLayer::new().into_layer(service_fn(move |_req: Request<Body>| async move {
+                let mut response = Response::new(Body::from("<div>just a fragment</div>"));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }));
+
+        let response: Response<Body> = svc.serve(Request::new(Body::empty())).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), b"<div>just a fragment</div>");
+    }
+
+    #[tokio::test]
+    async fn html_badge_layer_skips_excluded_domains() {
+        let svc = HtmlBadgeLayer::new()
+            .with_excluded_domains(DomainExclusionList::new(["example.com"]))
+            .into_layer(service_fn(move |_req: Request<Body>| async move {
+                let mut response = Response::new(Body::from("<html><body>Hello</body></html>"));
+                response
+                    .headers_mut()
+                    .typed_insert(ContentType::html_utf8());
+                Ok::<_, BoxError>(response)
+            }));
+
+        let request = Request::builder()
+            .uri("https://example.com/")
+            .body(Body::empty())
+            .unwrap();
+        let response: Response<Body> = svc.serve(request).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), b"<html><body>Hello</body></html>");
     }
 
     #[tokio::test]
@@ -735,12 +638,15 @@ mod tests {
         );
         // Drain the rest and verify the badge made it in.
         let mut joined = Vec::new();
-        if let Ok(data) = first_frame.into_data() {
-            joined.extend_from_slice(&data);
+        if first_frame.is_data() {
+            let data: Bytes = first_frame.into_data().expect("data");
+            joined.extend_from_slice(data.as_ref());
         }
         while let Some(frame) = body.frame().await {
-            if let Ok(data) = frame.expect("frame ok").into_data() {
-                joined.extend_from_slice(&data);
+            let frame = frame.expect("frame ok");
+            if frame.is_data() {
+                let data: Bytes = frame.into_data().expect("data");
+                joined.extend_from_slice(data.as_ref());
             }
         }
         let badge_html = default_badge_html();

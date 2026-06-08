@@ -486,8 +486,8 @@ pub mod mode {
     pub struct Transport;
 }
 
-fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoResponse {
-    use crate::http::html::*;
+fn render_html_page(ip: IpAddr) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
+    use crate::http::protocols::html::*;
     html!(
         lang = "en",
         head!(
@@ -541,7 +541,7 @@ fn render_html_page(ip: IpAddr) -> impl crate::http::html::IntoHtml + IntoRespon
 #[cfg(test)]
 mod render_html_page_tests {
     use super::*;
-    use crate::http::html::IntoHtml as _;
+    use crate::http::protocols::html::IntoHtml as _;
     use std::net::Ipv4Addr;
 
     /// The IP value flows through `html!`'s escape pipeline, so even if a

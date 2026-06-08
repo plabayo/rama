@@ -3701,6 +3701,7 @@ dependencies = [
  "itertools 0.14.0",
  "jiff",
  "matchit",
+ "memchr",
  "mime_guess",
  "multer",
  "parking_lot",
