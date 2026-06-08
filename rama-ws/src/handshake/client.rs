@@ -343,7 +343,7 @@ pub fn validate_http_server_response<Body>(
                             ) {
                                 (None, None | Some(_)) => None,
                                 (Some(srv), maybe_offered) => {
-                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| srv > offered).unwrap_or_default() {
+                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| offered != 0 && srv > offered).unwrap_or_default() {
                                         tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
@@ -1081,5 +1081,87 @@ mod private {
     impl<S, Body> HttpClientWebSocketExtSealed<Body> for S where
         S: Service<Request, Output = Response<Body>, Error: Into<BoxError>>
     {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http::HeaderMap;
+
+    fn offered_pmd(raw: &str) -> Option<SecWebSocketExtensions> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::SEC_WEBSOCKET_EXTENSIONS,
+            raw.parse().expect("valid sec-websocket-extensions header"),
+        );
+        headers.typed_get::<SecWebSocketExtensions>()
+    }
+
+    fn h2_response_with_pmd(raw: &str) -> Response<()> {
+        let mut response = Response::new(());
+        *response.version_mut() = Version::HTTP_2;
+        *response.status_mut() = StatusCode::OK;
+        response.headers_mut().insert(
+            header::SEC_WEBSOCKET_EXTENSIONS,
+            raw.parse().expect("valid sec-websocket-extensions header"),
+        );
+        response
+    }
+
+    /// Validate an (h2) server handshake response carrying `server_raw` against
+    /// a client that offered `offered_raw`, returning the negotiated
+    /// `client_max_window_bits`.
+    fn validate_pmd(
+        server_raw: &str,
+        offered_raw: &str,
+    ) -> Result<Option<u8>, ResponseValidateError> {
+        let response = h2_response_with_pmd(server_raw);
+        let accepted =
+            validate_http_server_response(&response, None, None, offered_pmd(offered_raw))?;
+        match accepted.extension {
+            Some(Extension::PerMessageDeflate(cfg)) => Ok(cfg.client_max_window_bits),
+            other => panic!("expected per-message-deflate extension, got {other:?}"),
+        }
+    }
+
+    // Regression: a valueless `client_max_window_bits` offer is parsed as the
+    // sentinel `Some(0)` ("server may pick any value <= 15"). A server response
+    // of `client_max_window_bits=15` must be accepted, not rejected as an
+    // extension mismatch. Previously the `srv > offered` check evaluated
+    // `15 > 0` and falsely failed the handshake (intermittent WS-over-h2 502s).
+    #[test]
+    fn valueless_client_max_window_bits_accepts_server_choice() {
+        assert_eq!(
+            Some(15),
+            validate_pmd(
+                "permessage-deflate; client_max_window_bits=15",
+                "permessage-deflate; client_max_window_bits",
+            )
+            .expect("valueless offer should accept the server's window bits"),
+        );
+    }
+
+    #[test]
+    fn explicit_client_max_window_bits_rejects_larger_server_choice() {
+        assert!(matches!(
+            validate_pmd(
+                "permessage-deflate; client_max_window_bits=15",
+                "permessage-deflate; client_max_window_bits=10",
+            ),
+            Err(ResponseValidateError::ExtensionMismatch(_)),
+        ));
+    }
+
+    #[test]
+    fn explicit_client_max_window_bits_accepts_smaller_server_choice() {
+        assert_eq!(
+            Some(10),
+            validate_pmd(
+                "permessage-deflate; client_max_window_bits=10",
+                "permessage-deflate; client_max_window_bits=12",
+            )
+            .expect("server choosing a smaller window should validate"),
+        );
     }
 }
