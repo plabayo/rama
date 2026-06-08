@@ -74,6 +74,104 @@ fn with_path_consumes_and_returns() {
 }
 
 // ----------------------------------------------------------------------
+// Path segment push/pop conveniences (delegate to PathMut)
+// ----------------------------------------------------------------------
+
+#[test]
+fn with_additional_path_segment_appends() {
+    // Empty path gets a leading slash; existing paths get a separator.
+    let uri = parse_graceful("https://example.com").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segment("v1").to_string(),
+        "https://example.com/v1",
+    );
+
+    let uri = parse_graceful("https://example.com/foo").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segment("bar").to_string(),
+        "https://example.com/foo/bar",
+    );
+
+    // Trailing slash is not doubled.
+    let uri = parse_graceful("https://example.com/foo/").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segment("bar").to_string(),
+        "https://example.com/foo/bar",
+    );
+}
+
+#[test]
+fn set_additional_path_segment_chains_in_place() {
+    let mut uri = parse_graceful("https://example.com").unwrap();
+    uri.set_additional_path_segment("v1")
+        .set_additional_path_segment("users");
+    assert_eq!(uri.to_string(), "https://example.com/v1/users");
+}
+
+#[test]
+fn additional_path_segment_encodes_like_push_segment() {
+    // Encoding policy comes from PathMut::push_segment — `/` and
+    // non-ASCII are percent-encoded so a segment stays one segment.
+    let uri = parse_graceful("/p").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segment("a/b").to_string(),
+        "/p/a%2Fb",
+    );
+    let uri = parse_graceful("/p").unwrap();
+    assert_eq!(
+        uri.with_additional_path_segment("caf\u{e9}").to_string(),
+        "/p/caf%C3%A9",
+    );
+}
+
+#[test]
+fn additional_path_segment_on_asterisk_drops_asterisk() {
+    let mut uri = parse_graceful("*").unwrap();
+    assert!(uri.is_asterisk());
+    uri.set_additional_path_segment("x");
+    assert!(!uri.is_asterisk());
+    assert_eq!(uri.to_string(), "/x");
+}
+
+#[test]
+fn path_without_last_segment_pops_one_wire_segment() {
+    // Plain segment → parent-like.
+    let uri = parse_graceful("https://example.com/foo/bar").unwrap();
+    assert_eq!(
+        uri.with_path_without_last_segment().to_string(),
+        "https://example.com/foo",
+    );
+
+    // Trailing slash is its own empty segment — popped, slash dropped.
+    let uri = parse_graceful("https://example.com/foo/bar/").unwrap();
+    assert_eq!(
+        uri.with_path_without_last_segment().to_string(),
+        "https://example.com/foo/bar",
+    );
+
+    // Last remaining segment → empty path.
+    let uri = parse_graceful("/foo").unwrap();
+    assert_eq!(uri.with_path_without_last_segment().to_string(), "");
+}
+
+#[test]
+fn set_path_without_last_segment_in_place_and_round_trips_push() {
+    let mut uri = parse_graceful("https://example.com/v1").unwrap();
+    uri.set_additional_path_segment("users")
+        .set_path_without_last_segment();
+    assert_eq!(uri.to_string(), "https://example.com/v1");
+}
+
+#[test]
+fn path_without_last_segment_on_empty_is_noop() {
+    let uri = parse_graceful("https://example.com").unwrap();
+    assert_eq!(
+        uri.with_path_without_last_segment().to_string(),
+        "https://example.com",
+    );
+}
+
+// ----------------------------------------------------------------------
 // Query
 // ----------------------------------------------------------------------
 

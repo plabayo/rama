@@ -1077,11 +1077,9 @@ async fn rss2_stream_writer_from_async_item_source() {
 
     let items = rama_core::futures::stream::iter((0..5).map(|n| {
         Ok::<_, std::convert::Infallible>(
-            Rss2Item::new().with_title(format!("Item {n}")).with_link({
-                let mut uri = Uri::from_static("https://example.com");
-                uri.path_mut().push_segment(n.to_string());
-                uri
-            }),
+            Rss2Item::new()
+                .with_title(format!("Item {n}"))
+                .with_link(Uri::from_static("https://example.com").with_additional_path_segment(n)),
         )
     }));
 

@@ -609,6 +609,39 @@ impl Uri {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Append an additional `/`-delimited path segment, inserting a
+        /// `/` separator first if the current path doesn't already end
+        /// with one. Shortcut for [`path_mut().push_segment(..)`](PathMut::push_segment) —
+        /// see that method for the full encoding policy (bytes outside
+        /// the RFC 3986 path-segment set are percent-encoded; pass
+        /// decoded values, not pre-encoded ones).
+        ///
+        /// Empty path + `"x"` → `/x`; `/foo` + `"bar"` → `/foo/bar`;
+        /// `/foo/` + `"bar"` → `/foo/bar` (no double slash).
+        pub fn additional_path_segment(mut self, segment: impl IntoUriComponent) -> Self {
+            self.path_mut().push_segment(segment);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Remove the final `/`-delimited path segment. Shortcut for
+        /// [`path_mut().pop_segment()`](PathMut::pop_segment) when you
+        /// want the shortened [`Uri`] back and don't need the removed
+        /// bytes (use the guard directly if you do).
+        ///
+        /// This pops one wire segment — **not** a `Path::parent`-style
+        /// "go up a directory". A trailing `/` is its own empty segment,
+        /// so `/foo/bar/` → `/foo/bar` (the trailing slash is dropped),
+        /// `/foo/bar` → `/foo`, and `/foo` → empty. An empty or opaque
+        /// (no `/`) path collapses to empty.
+        pub fn path_without_last_segment(mut self) -> Self {
+            self.path_mut().pop_segment();
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Set, clear, or assign the query. Bytes taken as-is — no
         /// re-encoding. Pair with [`set_query_from_bytes`](Self::set_query_from_bytes)
         /// when you have raw bytes that need pct-encoding.

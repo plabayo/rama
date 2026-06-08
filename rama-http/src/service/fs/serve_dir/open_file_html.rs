@@ -198,9 +198,10 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
             }
             .to_string();
 
-            let mut link = base_link.clone();
-            link.path_mut().push_segment(entry.name.as_str());
-            let href = link.to_string();
+            let href = base_link
+                .clone()
+                .with_additional_path_segment(entry.name.as_str())
+                .to_string();
 
             tr!(
                 td!(emoji, " ", a!(href = href, entry.name)),

@@ -865,11 +865,9 @@ mod tests {
                 pulled.fetch_add(1, Ordering::SeqCst);
                 let item = Rss2Item::new()
                     .with_title(format!("Episode {n}"))
-                    .with_link({
-                        let mut uri = Uri::from_static("https://example.com");
-                        uri.path_mut().push_segment(n);
-                        uri
-                    });
+                    .with_link(
+                        Uri::from_static("https://example.com").with_additional_path_segment(n),
+                    );
                 Some((Ok::<_, std::convert::Infallible>(item), n + 1))
             }
         })
