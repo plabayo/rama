@@ -173,6 +173,28 @@ impl Domain {
             .unwrap_or_default()
     }
 
+    /// Returns `true` if this is an RFC 6761 §6.3 loopback name —
+    /// `localhost` itself or any `*.localhost` subdomain
+    /// (case-insensitive, FQDN-dot insensitive). Does **not** consider
+    /// IP addresses; for a host that may be a name *or* an IP, use
+    /// [`Host::is_loopback`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(Domain::from_static("localhost").is_loopback());
+    /// assert!(Domain::from_static("api.localhost").is_loopback());
+    ///
+    /// assert!(!Domain::from_static("localhost.example.com").is_loopback());
+    /// assert!(!Domain::from_static("example.com").is_loopback());
+    /// ```
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        is_loopback_name(self.as_str())
+    }
+
     /// Returns the parent of this wildcard domain, or `None` if `self` is not
     /// a wildcard.
     ///
@@ -344,6 +366,22 @@ impl Domain {
     }
 }
 
+/// RFC 6761 §6.3 loopback-name test: `true` when the right-most label of
+/// `name` is `localhost` (ASCII case-insensitive). Shared by
+/// [`Domain::is_loopback`] / [`DomainRef::is_loopback`] and the `Host`
+/// loopback check, which bridges its `Uninterpreted` variant through this
+/// same rule. Matches `localhost`, `foo.localhost`, and their FQDN
+/// (`localhost.`) / leading-dot forms; rejects names that merely contain
+/// `localhost` as a non-TLD label (`localhost.example.com`) or as a
+/// substring (`mylocalhost`).
+pub(crate) fn is_loopback_name(name: &str) -> bool {
+    let name = name.strip_prefix('.').unwrap_or(name);
+    let name = name.strip_suffix('.').unwrap_or(name);
+    name.rsplit('.')
+        .next()
+        .is_some_and(|tld| tld.eq_ignore_ascii_case("localhost"))
+}
+
 /// Borrowed view into a domain-name byte slice.
 ///
 /// The slice is contractually a validated [`Domain`] in presentation form
@@ -380,6 +418,13 @@ impl<'a> DomainRef<'a> {
         // Safety: `DomainRef` is only ever constructed from a validated
         // Domain buffer.
         unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
+    /// Returns `true` if this is an RFC 6761 §6.3 loopback name. See
+    /// [`Domain::is_loopback`] for the full contract.
+    #[must_use]
+    pub fn is_loopback(self) -> bool {
+        is_loopback_name(self.as_str())
     }
 
     /// Returns an owned [`Domain`] by copying the underlying bytes.
@@ -1158,6 +1203,35 @@ mod tests {
         assert_eq!(Domain::tld_localhost(), "localhost");
         assert_eq!(Domain::tld_private(), "internal");
         assert_eq!(Domain::example(), "example.com");
+    }
+
+    #[test]
+    fn test_is_loopback() {
+        for s in [
+            "localhost",
+            "LOCALHOST",
+            "LocalHost",
+            "foo.localhost",
+            "a.b.localhost",
+            "localhost.",
+            ".localhost",
+        ] {
+            let d = Domain::try_from(s.to_owned()).unwrap();
+            assert!(d.is_loopback(), "{s} should be a loopback name");
+            // `DomainRef` agrees with `Domain`.
+            assert!(d.view().is_loopback(), "{s} (ref) should be loopback");
+        }
+        for s in [
+            "example.com",
+            "localhost.example.com",
+            "mylocalhost",
+            "localhostx",
+            "localhost.com",
+        ] {
+            let d = Domain::try_from(s.to_owned()).unwrap();
+            assert!(!d.is_loopback(), "{s} should not be a loopback name");
+            assert!(!d.view().is_loopback(), "{s} (ref) should not be loopback");
+        }
     }
 
     #[test]

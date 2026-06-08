@@ -157,6 +157,13 @@ impl Host {
     pub fn as_unicode(&self) -> std::borrow::Cow<'_, str> {
         HostRef::from(self).as_unicode()
     }
+
+    /// Returns `true` if this host designates the local machine via
+    /// loopback. See [`HostRef::is_loopback`] for the full contract.
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        HostRef::from(self).is_loopback()
+    }
 }
 
 impl Host {
@@ -246,6 +253,42 @@ impl<'a> HostRef<'a> {
             Self::Address(ip) => ip.to_string().into(),
             Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
             Self::Uninterpreted(host) => host.as_unicode(),
+        }
+    }
+
+    /// Returns `true` if this host designates the local machine via
+    /// loopback — either a loopback IP address (`127.0.0.0/8` or `::1`,
+    /// per [`IpAddr::is_loopback`]) or the RFC 6761 §6.3 `localhost`
+    /// name (`localhost` itself or any `*.localhost` subdomain,
+    /// case-insensitively).
+    ///
+    /// The [`Uninterpreted`](Self::Uninterpreted) variant is bridged
+    /// through its pct-decoded form: bytes that decode to a loopback IP
+    /// or the `localhost` name also return `true`. Bracketed IPvFuture
+    /// literals have no typed counterpart and are never loopback.
+    ///
+    /// This is **not** browser-style normalization: alternate IPv4
+    /// spellings that parse as a [`Name`](Self::Name) (`0177.0.0.1`,
+    /// `2130706433`, …) report as non-loopback — see the [`Host`] type
+    /// docs (SSRF awareness). IPv4-mapped IPv6 (`::ffff:127.0.0.1`)
+    /// follows std and is likewise not loopback.
+    #[must_use]
+    pub fn is_loopback(self) -> bool {
+        match self {
+            Self::Address(ip) => ip.is_loopback(),
+            Self::Name(domain) => domain.is_loopback(),
+            // Bridge pct-encoded / alternate bytes through their decoded
+            // form, decoded once: a loopback IP literal, else the
+            // `localhost` name. `as_unicode` borrows when there's no `%`,
+            // so the common path doesn't allocate. Bracketed IPvFuture
+            // parses as neither and is not loopback.
+            Self::Uninterpreted(host) => {
+                let decoded = host.as_unicode();
+                decoded
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or_else(|_| super::domain::is_loopback_name(&decoded))
+            }
         }
     }
 
@@ -1028,6 +1071,68 @@ mod tests {
             assert!(Host::try_from(str).is_err(), "parsing {str}");
             assert!(Host::try_from(str.to_owned()).is_err(), "parsing {str}");
         }
+    }
+
+    #[test]
+    fn is_loopback_for_ip_addresses() {
+        for s in ["127.0.0.1", "127.0.0.2", "127.1.2.3", "::1", "[::1]"] {
+            assert!(
+                s.parse::<Host>().unwrap().is_loopback(),
+                "{s} should be loopback",
+            );
+        }
+        for s in ["0.0.0.0", "8.8.8.8", "::", "192.168.0.1"] {
+            assert!(
+                !s.parse::<Host>().unwrap().is_loopback(),
+                "{s} should not be loopback",
+            );
+        }
+        // IPv4-mapped IPv6 loopback follows std semantics: not loopback.
+        let mapped = Host::Address(IpAddr::V6("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!mapped.is_loopback());
+    }
+
+    #[test]
+    fn is_loopback_for_localhost_names() {
+        for s in [
+            "localhost",
+            "LOCALHOST",
+            "LocalHost",
+            "foo.localhost",
+            "a.b.localhost",
+            "localhost.",
+            ".localhost",
+        ] {
+            assert!(
+                s.parse::<Host>().unwrap().is_loopback(),
+                "{s} should be a loopback name",
+            );
+        }
+        for s in [
+            "example.com",
+            "localhost.example.com",
+            "mylocalhost",
+            "localhostx",
+            "localhost.com",
+        ] {
+            assert!(
+                !s.parse::<Host>().unwrap().is_loopback(),
+                "{s} should not be a loopback name",
+            );
+        }
+    }
+
+    #[test]
+    fn is_loopback_bridges_uninterpreted_variant() {
+        // pct-encoded `localhost` reg-name bridges to the localhost name.
+        assert!(reg_host(b"%6C%6F%63%61%6C%68%6F%73%74").is_loopback());
+        // reg-name bytes that are a loopback dotted-quad bridge to the IP.
+        assert!(reg_host(b"127.0.0.1").is_loopback());
+        // non-loopback reg-name, non-loopback IP, and bracketed IPvFuture
+        // (no typed counterpart) are all reported as not loopback.
+        assert!(!reg_host(b"example.com").is_loopback());
+        assert!(!reg_host(b"8.8.8.8").is_loopback());
+        assert!(!bracketed_host(b"v1.fe80::a").is_loopback());
     }
 
     #[test]
