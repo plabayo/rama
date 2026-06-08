@@ -108,6 +108,131 @@ html_tags! {
     Xmp => "xmp",
 }
 
+impl HtmlTag<'_> {
+    /// Returns `true` if this is an HTML5 [void element]: one that never has
+    /// content or an end tag — `area`, `base`, `br`, `col`, `embed`, `hr`,
+    /// `img`, `input`, `link`, `meta`, `source`, `track`, `wbr`.
+    ///
+    /// Note `param` is **not** void in the current spec (it is obsolete).
+    ///
+    /// [void element]: https://html.spec.whatwg.org/multipage/syntax.html#void-elements
+    #[must_use]
+    pub fn is_void(&self) -> bool {
+        matches!(
+            self,
+            Self::Area
+                | Self::Base
+                | Self::Br
+                | Self::Col
+                | Self::Embed
+                | Self::Hr
+                | Self::Img
+                | Self::Input
+                | Self::Link
+                | Self::Meta
+                | Self::Source
+                | Self::Track
+                | Self::Wbr
+        )
+    }
+
+    /// Returns `true` if this is a [raw text element] — `script` or `style`.
+    /// Their content is tokenized verbatim: no markup, no character
+    /// references, only the matching end tag closes them.
+    ///
+    /// This is the spec category, not rama's broader tokenizer raw-text set
+    /// (which also covers legacy `xmp` / `iframe` / `noembed` / `noframes` /
+    /// `noscript`).
+    ///
+    /// [raw text element]: https://html.spec.whatwg.org/multipage/syntax.html#raw-text-elements
+    #[must_use]
+    pub fn is_raw_text(&self) -> bool {
+        matches!(self, Self::Script | Self::Style)
+    }
+
+    /// Returns `true` if this is an [escapable raw text element] — `textarea`
+    /// or `title`. Like a raw text element, but character references are
+    /// recognized in its content.
+    ///
+    /// [escapable raw text element]: https://html.spec.whatwg.org/multipage/syntax.html#escapable-raw-text-elements
+    #[must_use]
+    pub fn is_escapable_raw_text(&self) -> bool {
+        matches!(self, Self::Textarea | Self::Title)
+    }
+
+    /// Returns `true` if this is [phrasing content] — the spec category for
+    /// the text-level ("inline") elements: the runs of text in a document
+    /// and the elements that mark them up (`a`, `span`, `em`, `strong`,
+    /// `img`, `br`, `input`, `script`, …).
+    ///
+    /// Membership is the current WHATWG list of elements that are
+    /// *inherently* phrasing content. Elements that qualify only in a
+    /// specific context (`area` within a `map`, `link` / `meta` carrying an
+    /// `itemprop`) are excluded — this is a name-only predicate. Obsolete
+    /// presentational tags (`big`, `font`, `tt`, `strike`, `nobr`) are
+    /// excluded too; they are not in the modern content model.
+    ///
+    /// [phrasing content]: https://html.spec.whatwg.org/multipage/dom.html#phrasing-content-2
+    #[must_use]
+    pub fn is_phrasing_content(&self) -> bool {
+        matches!(
+            self,
+            Self::A
+                | Self::Abbr
+                | Self::Audio
+                | Self::B
+                | Self::Bdi
+                | Self::Bdo
+                | Self::Br
+                | Self::Button
+                | Self::Canvas
+                | Self::Cite
+                | Self::Code
+                | Self::Data
+                | Self::Datalist
+                | Self::Del
+                | Self::Dfn
+                | Self::Em
+                | Self::Embed
+                | Self::I
+                | Self::Iframe
+                | Self::Img
+                | Self::Input
+                | Self::Ins
+                | Self::Kbd
+                | Self::Label
+                | Self::Map
+                | Self::Mark
+                | Self::Math
+                | Self::Meter
+                | Self::Noscript
+                | Self::Object
+                | Self::Output
+                | Self::Picture
+                | Self::Progress
+                | Self::Q
+                | Self::Ruby
+                | Self::S
+                | Self::Samp
+                | Self::Script
+                | Self::Select
+                | Self::Small
+                | Self::Span
+                | Self::Strong
+                | Self::Sub
+                | Self::Sup
+                | Self::Svg
+                | Self::Template
+                | Self::Textarea
+                | Self::Time
+                | Self::U
+                | Self::Var
+                | Self::Video
+                | Self::Wbr
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HtmlTag, LocalNameHash};
@@ -161,5 +286,127 @@ mod tests {
         let tag = HtmlTag::classify(LocalNameHash::of(name), name);
         assert_eq!(tag, HtmlTag::Other(name));
         assert_eq!(tag.as_bytes(), name);
+    }
+
+    #[test]
+    fn is_void_matches_the_spec_set() {
+        for tag in [
+            HtmlTag::Area,
+            HtmlTag::Base,
+            HtmlTag::Br,
+            HtmlTag::Col,
+            HtmlTag::Embed,
+            HtmlTag::Hr,
+            HtmlTag::Img,
+            HtmlTag::Input,
+            HtmlTag::Link,
+            HtmlTag::Meta,
+            HtmlTag::Source,
+            HtmlTag::Track,
+            HtmlTag::Wbr,
+        ] {
+            assert!(tag.is_void(), "{tag:?} should be void");
+        }
+        for tag in [
+            HtmlTag::Div,
+            HtmlTag::P,
+            HtmlTag::Span,
+            HtmlTag::Script,
+            // Obsolete — not a void element in the current spec.
+            HtmlTag::Param,
+            HtmlTag::Other(b"my-card"),
+        ] {
+            assert!(!tag.is_void(), "{tag:?} should not be void");
+        }
+    }
+
+    #[test]
+    fn raw_text_is_script_and_style_only() {
+        assert!(HtmlTag::Script.is_raw_text());
+        assert!(HtmlTag::Style.is_raw_text());
+        // Legacy tokenizer raw-text elements are *not* spec raw text elements.
+        for tag in [
+            HtmlTag::Xmp,
+            HtmlTag::Iframe,
+            HtmlTag::Noembed,
+            HtmlTag::Noframes,
+            HtmlTag::Noscript,
+            HtmlTag::Textarea,
+            HtmlTag::Title,
+            HtmlTag::Div,
+            HtmlTag::Other(b"my-card"),
+        ] {
+            assert!(!tag.is_raw_text(), "{tag:?} should not be raw text");
+        }
+    }
+
+    #[test]
+    fn escapable_raw_text_is_textarea_and_title_only() {
+        assert!(HtmlTag::Textarea.is_escapable_raw_text());
+        assert!(HtmlTag::Title.is_escapable_raw_text());
+        for tag in [
+            HtmlTag::Script,
+            HtmlTag::Style,
+            HtmlTag::Div,
+            HtmlTag::Other(b"my-card"),
+        ] {
+            assert!(
+                !tag.is_escapable_raw_text(),
+                "{tag:?} should not be escapable raw text"
+            );
+        }
+    }
+
+    #[test]
+    fn phrasing_content_covers_inline_elements() {
+        // Representative text-level / replaced-inline / embedded elements.
+        for tag in [
+            HtmlTag::A,
+            HtmlTag::Span,
+            HtmlTag::Em,
+            HtmlTag::Strong,
+            HtmlTag::Img,
+            HtmlTag::Br,
+            HtmlTag::Wbr,
+            HtmlTag::Input,
+            HtmlTag::Label,
+            HtmlTag::Script,
+            HtmlTag::Textarea,
+            HtmlTag::Svg,
+            HtmlTag::Math,
+            HtmlTag::Video,
+        ] {
+            assert!(tag.is_phrasing_content(), "{tag:?} should be phrasing");
+        }
+    }
+
+    #[test]
+    fn phrasing_content_excludes_flow_only_and_edge_cases() {
+        for tag in [
+            // Flow / block elements.
+            HtmlTag::Div,
+            HtmlTag::P,
+            HtmlTag::Section,
+            HtmlTag::Article,
+            HtmlTag::Ul,
+            HtmlTag::Li,
+            HtmlTag::Table,
+            HtmlTag::H1,
+            HtmlTag::Blockquote,
+            HtmlTag::Body,
+            // Conditionally-phrasing — excluded from this name-only predicate.
+            HtmlTag::Area,
+            HtmlTag::Link,
+            HtmlTag::Meta,
+            // Obsolete presentational — not in the modern content model.
+            HtmlTag::Big,
+            HtmlTag::Font,
+            HtmlTag::Tt,
+            HtmlTag::Strike,
+            HtmlTag::Nobr,
+            HtmlTag::Other(b"my-card"),
+        ] {
+            assert!(!tag.is_phrasing_content(), "{tag:?} should not be phrasing");
+        }
     }
 }
