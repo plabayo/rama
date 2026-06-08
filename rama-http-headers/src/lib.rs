@@ -56,7 +56,8 @@ pub use self::resp_builder_ext::HttpResponseBuilderExt;
 pub mod encoding;
 pub mod forwarded;
 
-mod client_hints;
+pub mod client_hints;
 pub use client_hints::{
-    ClientHint, all_client_hint_header_name_strings, all_client_hint_header_names, all_client_hints,
+    ClientHint, Downlink, Ect, Rtt, SaveData, all_client_hint_header_name_strings,
+    all_client_hint_header_names, all_client_hints,
 };

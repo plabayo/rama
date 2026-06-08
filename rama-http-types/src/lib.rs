@@ -122,6 +122,14 @@ pub mod header {
         "access-control-request-private-network",
     ];
 
+    // client hint headers with typed value parsers in rama-http-headers
+    static_header![
+        "sec-ch-save-data",
+        "sec-ch-ect",
+        "sec-ch-rtt",
+        "sec-ch-downlink",
+    ];
+
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
         const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),

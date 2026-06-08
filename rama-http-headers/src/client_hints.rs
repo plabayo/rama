@@ -1,3 +1,10 @@
+use std::time::Duration;
+
+use rama_http_types::{HeaderName, HeaderValue};
+
+use crate::util::{self, IterExt};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
+
 macro_rules! client_hint {
     (
         #[doc = $ch_doc:literal]
@@ -216,6 +223,328 @@ client_hint! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Typed value parsers for a subset of the client hints above.
+//
+// Each parses a single header value with a strict spec, following the same
+// typed-header shape rama uses for `Cache-Control`, `Age`, etc. The canonical
+// header name matches the preferred (`Sec-CH-` prefixed) form of the matching
+// [`ClientHint`] variant, sourced from `rama_http_types::header`.
+// ---------------------------------------------------------------------------
+
+/// `Save-Data` client hint: the user agent's preference for reduced data usage.
+///
+/// Defined by the [Save Data API](https://wicg.github.io/savedata/). The header
+/// is sent with the value `on` when the user has opted in to data savings; the
+/// canonical "off" state is the *absence* of the header, though an explicit
+/// `off` is also accepted on decode (both matched ASCII case-insensitively).
+///
+/// Corresponds to [`ClientHint::SaveData`]; encoded as `Sec-CH-Save-Data`.
+///
+/// # Example
+///
+/// ```
+/// use rama_http_headers::SaveData;
+///
+/// let save_data = SaveData::on();
+/// assert!(save_data.is_on());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SaveData(bool);
+
+impl SaveData {
+    /// The [`ClientHint`] this typed value parser corresponds to.
+    pub const HINT: ClientHint = ClientHint::SaveData;
+
+    /// Create a [`SaveData`] hint from a boolean preference.
+    #[must_use]
+    pub const fn new(enabled: bool) -> Self {
+        Self(enabled)
+    }
+
+    /// Create a [`SaveData`] hint requesting reduced data usage (`on`).
+    #[must_use]
+    pub const fn on() -> Self {
+        Self(true)
+    }
+
+    /// Create a [`SaveData`] hint with data savings disabled (`off`).
+    #[must_use]
+    pub const fn off() -> Self {
+        Self(false)
+    }
+
+    /// Returns `true` if reduced data usage is requested.
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        self.0
+    }
+}
+
+impl From<bool> for SaveData {
+    fn from(enabled: bool) -> Self {
+        Self(enabled)
+    }
+}
+
+impl From<SaveData> for bool {
+    fn from(value: SaveData) -> Self {
+        value.0
+    }
+}
+
+impl TypedHeader for SaveData {
+    fn name() -> &'static HeaderName {
+        &rama_http_types::header::SEC_CH_SAVE_DATA
+    }
+}
+
+impl HeaderDecode for SaveData {
+    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
+        let value = values
+            .just_one()
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(Error::invalid)?;
+        if value.eq_ignore_ascii_case("on") {
+            Ok(Self(true))
+        } else if value.eq_ignore_ascii_case("off") {
+            Ok(Self(false))
+        } else {
+            Err(Error::invalid())
+        }
+    }
+}
+
+impl HeaderEncode for SaveData {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        let value = if self.0 {
+            HeaderValue::from_static("on")
+        } else {
+            HeaderValue::from_static("off")
+        };
+        values.extend(std::iter::once(value));
+    }
+}
+
+/// `Sec-CH-ECT` (Effective Connection Type) client hint.
+///
+/// Describes the measured network performance as one of an enumerated set of
+/// connection profiles, each covering a range of [`Rtt`] and [`Downlink`]
+/// values. See the
+/// [Network Information API](https://wicg.github.io/netinfo/#dom-effectiveconnectiontype).
+///
+/// Corresponds to [`ClientHint::Ect`]; encoded as `Sec-CH-ECT`.
+///
+/// # Example
+///
+/// ```
+/// use rama_http_headers::Ect;
+///
+/// assert_eq!(Ect::Type4g.as_str(), "4g");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Ect {
+    /// `slow-2g`
+    Slow2g,
+    /// `2g`
+    Type2g,
+    /// `3g`
+    Type3g,
+    /// `4g`
+    Type4g,
+}
+
+impl Ect {
+    /// The [`ClientHint`] this typed value parser corresponds to.
+    pub const HINT: ClientHint = ClientHint::Ect;
+
+    /// Returns the canonical wire representation of this connection type.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Slow2g => "slow-2g",
+            Self::Type2g => "2g",
+            Self::Type3g => "3g",
+            Self::Type4g => "4g",
+        }
+    }
+}
+
+impl std::fmt::Display for Ect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TypedHeader for Ect {
+    fn name() -> &'static HeaderName {
+        &rama_http_types::header::SEC_CH_ECT
+    }
+}
+
+impl HeaderDecode for Ect {
+    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
+        let value = values
+            .just_one()
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(Error::invalid)?;
+        rama_utils::macros::match_ignore_ascii_case_str! {
+            match (value) {
+                "slow-2g" => Ok(Self::Slow2g),
+                "2g" => Ok(Self::Type2g),
+                "3g" => Ok(Self::Type3g),
+                "4g" => Ok(Self::Type4g),
+                _ => Err(Error::invalid()),
+            }
+        }
+    }
+}
+
+impl HeaderEncode for Ect {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(std::iter::once(HeaderValue::from_static(self.as_str())));
+    }
+}
+
+/// `Sec-CH-RTT` client hint: the approximate round-trip time on the application
+/// layer, modelled as a [`Duration`].
+///
+/// Unlike transport-layer RTT this includes server processing time. The value
+/// is rounded to the nearest 25 ms to limit fingerprinting. See the
+/// [Network Information API](https://wicg.github.io/netinfo/#dom-networkinformation-rtt).
+///
+/// Corresponds to [`ClientHint::Rtt`]; encoded as `Sec-CH-RTT`.
+///
+/// # Example
+///
+/// ```
+/// use std::time::Duration;
+/// use rama_http_headers::Rtt;
+///
+/// let rtt = Rtt::from_millis(100);
+/// assert_eq!(Duration::from(rtt), Duration::from_millis(100));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rtt(u64);
+
+impl Rtt {
+    /// The [`ClientHint`] this typed value parser corresponds to.
+    pub const HINT: ClientHint = ClientHint::Rtt;
+
+    /// Create an [`Rtt`] hint from a round-trip time in milliseconds.
+    #[must_use]
+    pub const fn from_millis(millis: u64) -> Self {
+        Self(millis)
+    }
+
+    /// Returns the round-trip time in milliseconds.
+    #[must_use]
+    pub const fn as_millis(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the round-trip time as a [`Duration`].
+    #[must_use]
+    pub const fn as_duration(self) -> Duration {
+        Duration::from_millis(self.0)
+    }
+}
+
+impl From<Rtt> for Duration {
+    fn from(rtt: Rtt) -> Self {
+        rtt.as_duration()
+    }
+}
+
+impl TypedHeader for Rtt {
+    fn name() -> &'static HeaderName {
+        &rama_http_types::header::SEC_CH_RTT
+    }
+}
+
+impl HeaderDecode for Rtt {
+    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
+        values
+            .just_one()
+            .and_then(|value| value.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Self)
+            .ok_or_else(Error::invalid)
+    }
+}
+
+impl HeaderEncode for Rtt {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(std::iter::once(self.0.into()));
+    }
+}
+
+/// `Sec-CH-Downlink` client hint: the approximate downstream speed of the
+/// user's connection, in megabits per second (Mbps).
+///
+/// The value is rounded to the nearest 25 kbps to limit fingerprinting. See the
+/// [Network Information API](https://wicg.github.io/netinfo/#dom-networkinformation-downlink).
+///
+/// Corresponds to [`ClientHint::Downlink`]; encoded as `Sec-CH-Downlink`.
+///
+/// # Example
+///
+/// ```
+/// use rama_http_headers::Downlink;
+///
+/// let downlink = Downlink::new(1.6);
+/// assert_eq!(downlink.as_mbps(), 1.6);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Downlink(f64);
+
+impl Downlink {
+    /// The [`ClientHint`] this typed value parser corresponds to.
+    pub const HINT: ClientHint = ClientHint::Downlink;
+
+    /// Create a [`Downlink`] hint from a speed in megabits per second.
+    #[must_use]
+    pub const fn new(mbps: f64) -> Self {
+        Self(mbps)
+    }
+
+    /// Returns the downstream speed in megabits per second.
+    #[must_use]
+    pub const fn as_mbps(self) -> f64 {
+        self.0
+    }
+}
+
+impl From<Downlink> for f64 {
+    fn from(downlink: Downlink) -> Self {
+        downlink.0
+    }
+}
+
+impl TypedHeader for Downlink {
+    fn name() -> &'static HeaderName {
+        &rama_http_types::header::SEC_CH_DOWNLINK
+    }
+}
+
+impl HeaderDecode for Downlink {
+    fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
+        values
+            .just_one()
+            .and_then(|value| value.to_str().ok())
+            .and_then(|s| s.parse::<f64>().ok())
+            .filter(|mbps| mbps.is_finite() && *mbps >= 0.0)
+            .map(Self)
+            .ok_or_else(Error::invalid)
+    }
+}
+
+impl HeaderEncode for Downlink {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        values.extend(std::iter::once(util::fmt(self.0)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +635,112 @@ mod tests {
         for (name, string) in names.iter().zip(strings.iter()) {
             assert_eq!(name.as_str(), *string);
         }
+    }
+
+    fn decode<T: HeaderDecode>(values: &[&str]) -> Option<T> {
+        use crate::HeaderMapExt;
+        let mut map = rama_http_types::HeaderMap::new();
+        for value in values {
+            map.append(T::name(), value.parse().unwrap());
+        }
+        map.typed_get()
+    }
+
+    fn encode<T: HeaderEncode>(header: T) -> String {
+        use crate::HeaderMapExt;
+        let mut map = rama_http_types::HeaderMap::new();
+        map.typed_insert(header);
+        map.get(T::name())
+            .expect("header set")
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn test_save_data_decode() {
+        assert_eq!(decode::<SaveData>(&["on"]), Some(SaveData::on()));
+        assert_eq!(decode::<SaveData>(&["ON"]), Some(SaveData::on()));
+        assert_eq!(decode::<SaveData>(&["off"]), Some(SaveData::off()));
+        assert!(decode::<SaveData>(&["1"]).is_none());
+        assert!(decode::<SaveData>(&[""]).is_none());
+        assert!(decode::<SaveData>(&["on", "off"]).is_none());
+    }
+
+    #[test]
+    fn test_save_data_round_trip() {
+        assert_eq!(encode(SaveData::on()), "on");
+        assert_eq!(encode(SaveData::off()), "off");
+        assert_eq!(
+            decode::<SaveData>(&[encode(SaveData::on()).as_str()]),
+            Some(SaveData::on())
+        );
+    }
+
+    #[test]
+    fn test_ect_decode() {
+        assert_eq!(decode::<Ect>(&["slow-2g"]), Some(Ect::Slow2g));
+        assert_eq!(decode::<Ect>(&["2g"]), Some(Ect::Type2g));
+        assert_eq!(decode::<Ect>(&["3g"]), Some(Ect::Type3g));
+        assert_eq!(decode::<Ect>(&["4g"]), Some(Ect::Type4g));
+        assert_eq!(decode::<Ect>(&["SLOW-2G"]), Some(Ect::Slow2g));
+        assert!(decode::<Ect>(&["5g"]).is_none());
+        assert!(decode::<Ect>(&[""]).is_none());
+    }
+
+    #[test]
+    fn test_ect_round_trip() {
+        for ect in [Ect::Slow2g, Ect::Type2g, Ect::Type3g, Ect::Type4g] {
+            assert_eq!(decode::<Ect>(&[encode(ect).as_str()]), Some(ect));
+        }
+    }
+
+    #[test]
+    fn test_rtt_decode() {
+        assert_eq!(
+            decode::<Rtt>(&["100"]).map(Duration::from),
+            Some(Duration::from_millis(100)),
+        );
+        assert_eq!(decode::<Rtt>(&["0"]), Some(Rtt::from_millis(0)));
+        assert!(decode::<Rtt>(&["-25"]).is_none());
+        assert!(decode::<Rtt>(&["1.5"]).is_none());
+        assert!(decode::<Rtt>(&["fast"]).is_none());
+    }
+
+    #[test]
+    fn test_rtt_round_trip() {
+        assert_eq!(encode(Rtt::from_millis(125)), "125");
+        assert_eq!(decode::<Rtt>(&["125"]), Some(Rtt::from_millis(125)));
+    }
+
+    #[test]
+    fn test_downlink_decode() {
+        assert_eq!(decode::<Downlink>(&["1.5"]), Some(Downlink::new(1.5)));
+        assert_eq!(decode::<Downlink>(&["100"]), Some(Downlink::new(100.0)));
+        assert_eq!(decode::<Downlink>(&["0"]), Some(Downlink::new(0.0)));
+        assert!(decode::<Downlink>(&["-1"]).is_none());
+        assert!(decode::<Downlink>(&["inf"]).is_none());
+        assert!(decode::<Downlink>(&["fast"]).is_none());
+    }
+
+    #[test]
+    fn test_downlink_round_trip() {
+        assert_eq!(encode(Downlink::new(1.5)), "1.5");
+        assert_eq!(encode(Downlink::new(100.0)), "100");
+        assert_eq!(decode::<Downlink>(&["1.5"]), Some(Downlink::new(1.5)));
+    }
+
+    #[test]
+    fn test_typed_value_parsers_match_their_client_hint() {
+        assert_eq!(SaveData::HINT, ClientHint::SaveData);
+        assert_eq!(Ect::HINT, ClientHint::Ect);
+        assert_eq!(Rtt::HINT, ClientHint::Rtt);
+        assert_eq!(Downlink::HINT, ClientHint::Downlink);
+
+        // the typed header name must agree with the hint's preferred name
+        assert_eq!(SaveData::name().as_str(), SaveData::HINT.as_str());
+        assert_eq!(Ect::name().as_str(), Ect::HINT.as_str());
+        assert_eq!(Rtt::name().as_str(), Rtt::HINT.as_str());
+        assert_eq!(Downlink::name().as_str(), Downlink::HINT.as_str());
     }
 }
