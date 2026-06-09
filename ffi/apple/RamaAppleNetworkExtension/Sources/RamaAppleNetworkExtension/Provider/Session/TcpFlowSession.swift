@@ -175,6 +175,15 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     func installConnectTimeout(connectTimeoutMs: UInt32, remoteHost: String) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.egressReady else { return }
+            // Recovery race: the `.ready` that cancels this timer (via
+            // `handleEgressReady`) is delivered through `stateUpdateHandler`,
+            // which hops onto `flowQueue` — so a connection that reached
+            // `.ready` just before this deadline may not have flipped
+            // `egressReady` yet when we fire. Re-check the LIVE
+            // `connection.state` (the source of truth NW updates directly,
+            // independent of our handler dispatch order) and bail if it's up,
+            // so we never time out a connection that just connected.
+            guard self.ctx.connection?.state != .ready else { return }
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
@@ -360,7 +369,16 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 "egress NWConnection waiting after flow opened: \(String(describing: error))"
             )
             let work = DispatchWorkItem { [weak self] in
-                self?.applyPostReadyTeardown(error: error)
+                guard let self else { return }
+                // Recovery race (same as the connect timeout): the `.ready`
+                // that would cancel this tolerance timer is delivered via
+                // `stateUpdateHandler`, which hops onto `flowQueue`, so it can
+                // land BEHIND this now-due timer. Re-check the LIVE
+                // `connection.state` and skip the teardown if the path came
+                // back, so a recovered established flow isn't reset by a
+                // stale tolerance timer.
+                guard self.ctx.connection?.state != .ready else { return }
+                self.applyPostReadyTeardown(error: error)
             }
             waitingWork = work
             flowQueue.asyncAfter(

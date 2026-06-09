@@ -131,6 +131,17 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         handler?(viable)
     }
 
+    /// Set the reported `state` WITHOUT firing `stateUpdateHandler`. Models
+    /// the reorder window the timer guards must tolerate: NWConnection has
+    /// transitioned (its `state` property reflects the new value) while the
+    /// handler delivery is still queued behind other `flowQueue` work, so a
+    /// destructive timer may fire before our `.ready` handler runs.
+    func setStateSilently(_ newState: NWConnection.State) {
+        lock.lock()
+        _state = newState
+        lock.unlock()
+    }
+
     /// Force the connection to the given state and fire the
     /// `stateUpdateHandler` synchronously on the caller's thread.
     /// Production code always sees state changes via the handler, so

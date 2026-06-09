@@ -79,6 +79,35 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
     }
 
+    // MARK: - state-timer recovery race
+
+    /// A post-ready `.waiting` tolerance timer must NOT tear down a flow
+    /// whose path recovered to `.ready` before the timer fired — even when
+    /// the `.ready` handler (which would cancel the timer) is re-ordered
+    /// behind it. Models the reorder with `setStateSilently(.ready)` (NW set
+    /// the state; handler delivery pending, so the timer is NOT cancelled).
+    /// The timer must re-check the live `connection.state` and bail. Without
+    /// that guard this resets a healthy recovered connection.
+    func testPostReadyWaitingTimerSparesRecoveredConnection() {
+        let fx = Fixture()
+        let prev = defaultEgressWaitingToleranceMs
+        defaultEgressWaitingToleranceMs = 30
+        defer { defaultEgressWaitingToleranceMs = prev }
+
+        fx.session.egressReady = true                  // post-ready
+        fx.session.handleEgressWaiting(.posix(.ENETDOWN))  // arms the tolerance timer
+        fx.conn.setStateSilently(.ready)               // path recovered; .ready handler delayed
+
+        let exp = expectation(description: "tolerance timer window elapsed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(150)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(
+            fx.session.ctx.teardown?.isDone ?? true,
+            "recovered (.ready) connection must not be torn down by the stale tolerance timer")
+        XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
+    }
+
     // MARK: - requestEngineSession
 
     /// Without an attached engine, the call returns nil — the caller
