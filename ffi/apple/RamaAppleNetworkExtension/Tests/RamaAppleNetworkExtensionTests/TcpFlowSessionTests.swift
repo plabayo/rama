@@ -108,6 +108,31 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
     }
 
+    /// Pre-ready sibling of the tolerance-timer test: a `.waiting` budget
+    /// armed while pre-ready must NOT fail-fast a connection that reached
+    /// `.ready` before it expired (the `.ready` handler that would cancel it
+    /// is re-ordered behind the due timer). Gated via `hasReachedReady`.
+    func testPreReadyWaitingBudgetSparesConnectionThatReachedReady() {
+        let fx = Fixture()
+        let prev = defaultEgressPreReadyWaitingBudgetMs
+        defaultEgressPreReadyWaitingBudgetMs = 30
+        defer { defaultEgressPreReadyWaitingBudgetMs = prev }
+
+        // egressReady stays false → handleEgressWaiting takes the pre-ready
+        // branch and arms the budget timer.
+        fx.session.handleEgressWaiting(.posix(.ENETDOWN))
+        fx.conn.setStateSilently(.ready)  // NW reached .ready; handler delivery pending
+
+        let exp = expectation(description: "pre-ready budget window elapsed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(150)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(
+            fx.session.ctx.teardown?.isDone ?? true,
+            "a connection that reached .ready must not be failed-fast by the stale pre-ready budget")
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+    }
+
     // MARK: - requestEngineSession
 
     /// Without an attached engine, the call returns nil — the caller

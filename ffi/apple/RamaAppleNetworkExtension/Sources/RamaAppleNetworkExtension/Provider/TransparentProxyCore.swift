@@ -188,7 +188,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
             runFlowTeardown(ctx) { [weak self] in
-                guard ctx.egressReady else {
+                // `hasReachedReady`, not `egressReady`: a flow that reached
+                // `.ready` just as we woke may not have flipped `egressReady`
+                // yet (its `.ready` handler is queued behind this reconcile).
+                // Treating it as still-connecting would `applySystemWake` →
+                // pre-open cleanup → reset a recovered flow. See `hasReachedReady`.
+                guard ctx.hasReachedReady else {
                     ctx.teardown?.applySystemWake()
                     return
                 }
@@ -387,17 +392,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                 "watchdog: force-tearing down \(kicks.preReadyStuck.count) stale pre-ready flow(s)"
             )
             for ctx in kicks.preReadyStuck {
-                // Re-check `egressReady` ON `flowQueue`. The decision to
-                // kick was made on `stateQueue` from a `nonisolated`
-                // read of `ctx.egressReady`; between that and us getting
-                // here the flow may have raced into `.ready` (the
-                // legitimate happy path catching up just in time). The
-                // teardown's `applyConnectTimeout` has no internal
-                // ready-check — it'd cancel a healthy NWConnection and
-                // pop the registry. Mirror what `handleSystemWake`
-                // already does for the same race.
+                // Re-check ON `flowQueue` via `hasReachedReady`. The decision
+                // to kick was made on `stateQueue` from a `nonisolated` read
+                // of `ctx.egressReady`; between that and here the flow may
+                // have raced into `.ready` (happy path catching up). Gate on
+                // `hasReachedReady` (not `egressReady`) so a `.ready` whose
+                // handler is still queued — leaving `egressReady` stale —
+                // doesn't get its healthy NWConnection cancelled. See
+                // `hasReachedReady`.
                 runFlowTeardown(ctx) {
-                    guard !ctx.egressReady else { return }
+                    guard !ctx.hasReachedReady else { return }
                     ctx.teardown?.applyConnectTimeout()
                 }
             }

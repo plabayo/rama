@@ -174,16 +174,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     func installConnectTimeout(connectTimeoutMs: UInt32, remoteHost: String) {
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.egressReady else { return }
-            // Recovery race: the `.ready` that cancels this timer (via
-            // `handleEgressReady`) is delivered through `stateUpdateHandler`,
-            // which hops onto `flowQueue` — so a connection that reached
-            // `.ready` just before this deadline may not have flipped
-            // `egressReady` yet when we fire. Re-check the LIVE
-            // `connection.state` (the source of truth NW updates directly,
-            // independent of our handler dispatch order) and bail if it's up,
-            // so we never time out a connection that just connected.
-            guard self.ctx.connection?.state != .ready else { return }
+            // Gate on `hasReachedReady`, not `egressReady`: a connection that
+            // reached `.ready` just before this deadline may not have flipped
+            // `egressReady` yet (the `.ready` handler hops onto `flowQueue`
+            // and can land behind this due timer). `hasReachedReady` also
+            // consults the live `connection.state`, so we never time out a
+            // connection that just connected. See `TcpFlowContext.hasReachedReady`.
+            guard let self, !self.ctx.hasReachedReady else { return }
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
@@ -395,7 +392,11 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             "egress NWConnection waiting before ready (path down): \(String(describing: error))"
         )
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.egressReady else { return }
+            // `hasReachedReady`, not `egressReady` — same reorder race as the
+            // connect timeout: a `.ready` that arrived just before this budget
+            // expired may not have flipped `egressReady` yet. Don't fail-fast
+            // a connection that actually came up. See `hasReachedReady`.
+            guard let self, !self.ctx.hasReachedReady else { return }
             self.core?.logDebug(
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "
                     + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"

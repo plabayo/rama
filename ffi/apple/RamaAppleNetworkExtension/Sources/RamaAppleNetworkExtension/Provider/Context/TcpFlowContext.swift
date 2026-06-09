@@ -55,6 +55,24 @@ final class TcpFlowContext: @unchecked Sendable {
     /// off-queue by the stop-the-world wake reconcile (same relaxation
     /// the sleep teardown already relies on).
     var egressReady = false
+    /// True once the egress has reached `.ready` by EITHER our processed
+    /// `egressReady` flag OR the live `connection.state` (NW's source of
+    /// truth, updated directly).
+    ///
+    /// **Every pre-ready destructive reaper MUST gate on this, not on
+    /// `egressReady` alone** — connect timeout, pre-ready `.waiting`
+    /// budget, wake pre-ready reset, and the maintenance watchdog
+    /// pre-ready kick. Reason: the `.ready` that flips `egressReady`
+    /// arrives via `stateUpdateHandler`, which hops onto `flowQueue`, so a
+    /// connection that just reached `.ready` may not have flipped
+    /// `egressReady` yet when a due timer fires; reaping it on the stale
+    /// flag kills a flow that already recovered. `connection.state` is the
+    /// reorder-proof signal. (Post-ready `.waiting` recovery checks
+    /// `connection.state == .ready` directly — `egressReady` is already
+    /// true there, so this helper wouldn't distinguish recovery.)
+    var hasReachedReady: Bool {
+        egressReady || connection?.state == .ready
+    }
     /// Latest viability reported by the egress `NWConnection`'s
     /// `viabilityUpdateHandler`. `false` means Network.framework decided
     /// the path can't carry traffic (torn down across a network change /
