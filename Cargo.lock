@@ -3546,15 +3546,20 @@ dependencies = [
 name = "rama-crypto"
 version = "0.3.0-rc1"
 dependencies = [
+ "ahash",
  "aws-lc-rs",
  "base64",
+ "openssl-probe",
  "rama-core",
  "rama-utils",
  "rcgen",
  "rustls-pki-types",
+ "schannel",
+ "security-framework",
  "serde",
  "serde_json",
  "tokio-test",
+ "webpki-root-certs",
  "x509-parser",
 ]
 
@@ -4011,11 +4016,11 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
+ "rama-crypto",
  "rama-http-types",
  "rama-net",
  "rama-ua",
  "rama-utils",
- "schannel",
  "tokio",
  "tracing-test",
  "zstd",
@@ -4035,7 +4040,6 @@ dependencies = [
  "rama-utils",
  "rcgen",
  "rustls",
- "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
@@ -4455,18 +4459,6 @@ dependencies = [
  "rustls-webpki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-native-certs"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
-dependencies = [
- "openssl-probe",
- "rustls-pki-types",
- "schannel",
- "security-framework",
 ]
 
 [[package]]
@@ -5884,6 +5876,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31141ce3fc3e300ae89b78c0dd67f9708061d1d2eda54b8209346fd6be9a92c"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

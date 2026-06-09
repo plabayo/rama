@@ -129,12 +129,25 @@ fn rustls_client_auth(
     Ok((cert_chain, private_key))
 }
 
+/// The default client root certificate store used to verify servers.
+///
+/// By default this is built from the platform's native trust store (the system
+/// root certificates), loaded once and shared process-wide via
+/// [`rama_crypto::native_certs::shared_native_trust_anchors`]. On systems where
+/// no native roots are found, that loader warns and falls back to the bundled
+/// webpki (Mozilla CCADB) roots.
 pub fn client_root_certs() -> Arc<RootCertStore> {
     static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
     ROOT_CERTS
         .get_or_init(|| {
             let mut root_storage = RootCertStore::empty();
-            root_storage.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
+            let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
+            rama_core::telemetry::tracing::trace!(
+                added,
+                ignored,
+                "rama-tls-rustls: initialised client root cert store from shared native trust anchors"
+            );
             Arc::new(root_storage)
         })
         .clone()
