@@ -79,58 +79,34 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
     }
 
-    // MARK: - state-timer recovery race
+    // MARK: - state-timer recovery (FIFO via direct dispatch)
 
-    /// A post-ready `.waiting` tolerance timer must NOT tear down a flow
-    /// whose path recovered to `.ready` before the timer fired — even when
-    /// the `.ready` handler (which would cancel the timer) is re-ordered
-    /// behind it. Models the reorder with `setStateSilently(.ready)` (NW set
-    /// the state; handler delivery pending, so the timer is NOT cancelled).
-    /// The timer must re-check the live `connection.state` and bail. Without
-    /// that guard this resets a healthy recovered connection.
-    func testPostReadyWaitingTimerSparesRecoveredConnection() {
+    /// With the `stateUpdateHandler` hop removed and the mock delivering
+    /// state async on the start queue (as NWConnection does), a `.ready`
+    /// recovery runs in FIFO order with a timer armed on `flowQueue` and
+    /// CANCELS it before it can fire — so a post-ready `.waiting` tolerance
+    /// timer never reaps a flow whose path came back. This is the structural
+    /// replacement for the per-timer state guards (no guard needed: the
+    /// handler cancels the timer in order).
+    func testPostReadyWaitingTimerCancelledByReadyRecovery() {
         let fx = Fixture()
-        let prev = defaultEgressWaitingToleranceMs
-        defaultEgressWaitingToleranceMs = 30
-        defer { defaultEgressWaitingToleranceMs = prev }
+        // Start the connection so the mock delivers state async on flowQueue.
+        fx.session.installEgressStateHandler(connection: fx.conn)
+        fx.conn.start(queue: fx.session.flowQueue)
 
-        fx.session.egressReady = true                  // post-ready
-        fx.session.handleEgressWaiting(.posix(.ENETDOWN))  // arms the tolerance timer
-        fx.conn.setStateSilently(.ready)               // path recovered; .ready handler delayed
+        fx.session.egressReady = true                      // post-ready
+        fx.session.handleEgressWaiting(.posix(.ENETDOWN))  // arms tolerance timer (default ~5s)
+        fx.conn.transition(to: .ready)                     // recovery; delivered FIFO on flowQueue
 
-        let exp = expectation(description: "tolerance timer window elapsed")
-        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(150)) { exp.fulfill() }
+        // After the (immediate) .ready handler runs, the timer is cancelled.
+        let exp = expectation(description: "ready handler processed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
         XCTAssertFalse(
             fx.session.ctx.teardown?.isDone ?? true,
-            "recovered (.ready) connection must not be torn down by the stale tolerance timer")
+            "the .ready handler must cancel the tolerance timer before it fires")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
-    }
-
-    /// Pre-ready sibling of the tolerance-timer test: a `.waiting` budget
-    /// armed while pre-ready must NOT fail-fast a connection that reached
-    /// `.ready` before it expired (the `.ready` handler that would cancel it
-    /// is re-ordered behind the due timer). Gated via `hasReachedReady`.
-    func testPreReadyWaitingBudgetSparesConnectionThatReachedReady() {
-        let fx = Fixture()
-        let prev = defaultEgressPreReadyWaitingBudgetMs
-        defaultEgressPreReadyWaitingBudgetMs = 30
-        defer { defaultEgressPreReadyWaitingBudgetMs = prev }
-
-        // egressReady stays false → handleEgressWaiting takes the pre-ready
-        // branch and arms the budget timer.
-        fx.session.handleEgressWaiting(.posix(.ENETDOWN))
-        fx.conn.setStateSilently(.ready)  // NW reached .ready; handler delivery pending
-
-        let exp = expectation(description: "pre-ready budget window elapsed")
-        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(150)) { exp.fulfill() }
-        wait(for: [exp], timeout: 2.0)
-
-        XCTAssertFalse(
-            fx.session.ctx.teardown?.isDone ?? true,
-            "a connection that reached .ready must not be failed-fast by the stale pre-ready budget")
-        XCTAssertEqual(fx.conn.cancelCount, 0)
     }
 
     // MARK: - requestEngineSession

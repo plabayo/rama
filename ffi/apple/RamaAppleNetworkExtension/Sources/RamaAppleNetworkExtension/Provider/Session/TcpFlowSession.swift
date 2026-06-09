@@ -174,13 +174,11 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     func installConnectTimeout(connectTimeoutMs: UInt32, remoteHost: String) {
         let work = DispatchWorkItem { [weak self] in
-            // Gate on `hasReachedReady`, not `egressReady`: a connection that
-            // reached `.ready` just before this deadline may not have flipped
-            // `egressReady` yet (the `.ready` handler hops onto `flowQueue`
-            // and can land behind this due timer). `hasReachedReady` also
-            // consults the live `connection.state`, so we never time out a
-            // connection that just connected. See `TcpFlowContext.hasReachedReady`.
-            guard let self, !self.ctx.hasReachedReady else { return }
+            // `egressReady` is a reliable signal now that `stateUpdateHandler`
+            // runs in FIFO order (no re-dispatch hop): a `.ready` arriving
+            // before this deadline flips `egressReady` and cancels this timer
+            // before it can fire.
+            guard let self, !self.egressReady else { return }
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
@@ -237,10 +235,15 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // ctx.connection → connection) is broken by
         // `cancelAndDetach()` on teardown, which sets the handler
         // to nil.
+        // No re-dispatch hop: NWConnection delivers this on the queue passed
+        // to `start(queue:)` — which is `flowQueue` — so we're already
+        // serialised here. Running `handleEgressState` directly (instead of
+        // posting a fresh `flowQueue.async` item) keeps the state transition
+        // in FIFO order with any timer armed on `flowQueue`, so a `.ready`
+        // that arrives just before a connect/waiting deadline cancels that
+        // timer BEFORE it fires — no reordering, no recovered-flow reset.
         connection.stateUpdateHandler = { state in
-            self.flowQueue.async {
-                self.handleEgressState(state)
-            }
+            self.handleEgressState(state)
         }
         // Cache path viability so the post-wake reconcile can read a plain
         // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
@@ -365,17 +368,12 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             core?.logDebug(
                 "egress NWConnection waiting after flow opened: \(String(describing: error))"
             )
+            // `.ready` recovery is delivered via `stateUpdateHandler` in FIFO
+            // order (no re-dispatch hop), so a path that comes back cancels
+            // this timer (`handleEgressReady` → `waitingWork?.cancel()`)
+            // before it fires — no stale-timer reset of a recovered flow.
             let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                // Recovery race (same as the connect timeout): the `.ready`
-                // that would cancel this tolerance timer is delivered via
-                // `stateUpdateHandler`, which hops onto `flowQueue`, so it can
-                // land BEHIND this now-due timer. Re-check the LIVE
-                // `connection.state` and skip the teardown if the path came
-                // back, so a recovered established flow isn't reset by a
-                // stale tolerance timer.
-                guard self.ctx.connection?.state != .ready else { return }
-                self.applyPostReadyTeardown(error: error)
+                self?.applyPostReadyTeardown(error: error)
             }
             waitingWork = work
             flowQueue.asyncAfter(
@@ -392,11 +390,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             "egress NWConnection waiting before ready (path down): \(String(describing: error))"
         )
         let work = DispatchWorkItem { [weak self] in
-            // `hasReachedReady`, not `egressReady` — same reorder race as the
-            // connect timeout: a `.ready` that arrived just before this budget
-            // expired may not have flipped `egressReady` yet. Don't fail-fast
-            // a connection that actually came up. See `hasReachedReady`.
-            guard let self, !self.ctx.hasReachedReady else { return }
+            // FIFO `stateUpdateHandler` makes `egressReady` reliable: a
+            // `.ready` arriving before this budget expires flips it and
+            // cancels this timer first.
+            guard let self, !self.egressReady else { return }
             self.core?.logDebug(
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "
                     + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"

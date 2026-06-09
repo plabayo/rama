@@ -131,34 +131,34 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         handler?(viable)
     }
 
-    /// Set the reported `state` WITHOUT firing `stateUpdateHandler`. Models
-    /// the reorder window the timer guards must tolerate: NWConnection has
-    /// transitioned (its `state` property reflects the new value) while the
-    /// handler delivery is still queued behind other `flowQueue` work, so a
-    /// destructive timer may fire before our `.ready` handler runs.
-    func setStateSilently(_ newState: NWConnection.State) {
-        lock.lock()
-        _state = newState
-        lock.unlock()
-    }
-
-    /// Force the connection to the given state and fire the
-    /// `stateUpdateHandler` synchronously on the caller's thread.
-    /// Production code always sees state changes via the handler, so
-    /// tests should call this rather than mutating `_state` directly.
+    /// Force the connection to the given state and deliver it through
+    /// `stateUpdateHandler` the way a real `NWConnection` does: **async on
+    /// the queue passed to `start(queue:)`**. This faithfulness matters —
+    /// a synchronous mock ran the per-flow state machine on the test
+    /// thread, which hid handler-vs-timer reordering bugs (the whole class
+    /// of bug this work chased). Delivering async on the start queue means
+    /// `handleEgressState` runs on `flowQueue` in FIFO order with any timer
+    /// armed there, exactly as in production.
     ///
-    /// On `.cancelled` the handler is fired and then released —
-    /// mirrors `NWConnection`'s real behavior of dropping the handler
-    /// once the connection has reached its terminal state, which is
-    /// what lets the connection (and everything its handler
-    /// captured) deallocate. Without this a test that asserts ARC
-    /// cleanup races against the mock pinning the handler graph.
+    /// Falls back to synchronous delivery when the connection was never
+    /// `start()`ed (lower-level tests that wire a handler without a queue);
+    /// those are single-threaded so the distinction is moot.
+    ///
+    /// On `.cancelled` the handler is released after the delivery is
+    /// scheduled (the posted block retains it until it runs) — mirrors
+    /// `NWConnection` dropping the handler at the terminal state so the
+    /// captured graph can deallocate.
     func transition(to newState: NWConnection.State) {
         lock.lock()
         _state = newState
         let handler = _stateUpdateHandler
+        let deliveryQueue = _startInvocations.last
         lock.unlock()
-        handler?(newState)
+        if let deliveryQueue {
+            deliveryQueue.async { handler?(newState) }
+        } else {
+            handler?(newState)
+        }
         if case .cancelled = newState {
             lock.lock()
             _stateUpdateHandler = nil

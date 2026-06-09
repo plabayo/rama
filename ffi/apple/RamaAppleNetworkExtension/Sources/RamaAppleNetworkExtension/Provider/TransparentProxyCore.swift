@@ -188,12 +188,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
             runFlowTeardown(ctx) { [weak self] in
-                // `hasReachedReady`, not `egressReady`: a flow that reached
-                // `.ready` just as we woke may not have flipped `egressReady`
-                // yet (its `.ready` handler is queued behind this reconcile).
-                // Treating it as still-connecting would `applySystemWake` →
-                // pre-open cleanup → reset a recovered flow. See `hasReachedReady`.
-                guard ctx.hasReachedReady else {
+                guard ctx.egressReady else {
                     ctx.teardown?.applySystemWake()
                     return
                 }
@@ -392,16 +387,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                 "watchdog: force-tearing down \(kicks.preReadyStuck.count) stale pre-ready flow(s)"
             )
             for ctx in kicks.preReadyStuck {
-                // Re-check ON `flowQueue` via `hasReachedReady`. The decision
-                // to kick was made on `stateQueue` from a `nonisolated` read
-                // of `ctx.egressReady`; between that and here the flow may
-                // have raced into `.ready` (happy path catching up). Gate on
-                // `hasReachedReady` (not `egressReady`) so a `.ready` whose
-                // handler is still queued — leaving `egressReady` stale —
-                // doesn't get its healthy NWConnection cancelled. See
-                // `hasReachedReady`.
+                // Re-check `egressReady` ON `flowQueue`. The decision to kick
+                // was made on `stateQueue` from a `nonisolated` read; between
+                // that and here the flow may have raced into `.ready` (happy
+                // path catching up). Now that `stateUpdateHandler` runs FIFO,
+                // a flow that reached `.ready` has flipped `egressReady`, so
+                // this re-check spares it. `applyConnectTimeout` has no
+                // internal ready-check, so this gate is what protects it.
                 runFlowTeardown(ctx) {
-                    guard !ctx.hasReachedReady else { return }
+                    guard !ctx.egressReady else { return }
                     ctx.teardown?.applyConnectTimeout()
                 }
             }
