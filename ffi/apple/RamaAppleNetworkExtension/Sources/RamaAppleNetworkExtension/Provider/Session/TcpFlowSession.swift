@@ -241,10 +241,17 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // which leaks ~32B per read. Strong `self` for the same
         // lifetime-anchor reason as `stateUpdateHandler`; the cycle is
         // broken by `cancelAndDetach()` clearing both handlers.
+        //
+        // Assign DIRECTLY — do NOT re-dispatch via `flowQueue.async`.
+        // NWConnection delivers this on the queue passed to `start(queue:)`,
+        // which IS `flowQueue`, so we're already serialised here. A second
+        // hop would re-order this write to AFTER work already queued ahead
+        // of it: e.g. a recovery `viable=true` arriving just before a due
+        // `checkWakeDeadPath` would land BEHIND the check, so the check
+        // reads a stale `false` and resets a flow whose path just came back.
+        // Direct assignment lands the value in FIFO order with the callback.
         connection.viabilityUpdateHandler = { viable in
-            self.flowQueue.async {
-                self.ctx.lastPathViable = viable
-            }
+            self.ctx.lastPathViable = viable
         }
     }
 

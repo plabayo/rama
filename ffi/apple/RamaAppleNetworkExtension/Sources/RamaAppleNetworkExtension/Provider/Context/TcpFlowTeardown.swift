@@ -139,6 +139,39 @@ final class TcpFlowTeardown: @unchecked Sendable {
         core?.removeTcpFlow(flowId)
     }
 
+    /// The promoted direct forwarder reached its natural terminal (both
+    /// directions finished). Distinct from `applyDrainedClose`: in
+    /// `.promoted` mode the egress NWConnection's FIN/linger is owned by the
+    /// egress write pump (it holds its OWN ref and force-cancels via its
+    /// linger watchdog), so we MUST NOT cancel the connection or the write
+    /// pump here — that would abort the FIN. What we DO:
+    ///   - mark `done`, so a post-terminal `checkWakeDeadPath` / maintenance
+    ///     watchdog (which can still observe this ctx during the window
+    ///     before the async `removeTcpFlow` lands) no-ops instead of running
+    ///     a second, connection-cancelling full teardown;
+    ///   - detach the connection's handlers (break the connection→session
+    ///     retain cycle now rather than waiting for the linger watchdog; the
+    ///     write pump drives FIN via its own ref and uses neither handler);
+    ///   - remove the registry entry, close the kernel flow clean.
+    /// We deliberately do NOT nil `ctx.directForwarder` here: the forwarder
+    /// has no strong back-ref to the ctx (its callbacks capture `[weak ctx]`),
+    /// so it drops naturally when the ctx leaves the registry — and niling it
+    /// in this callback would race observers that read its terminal phase.
+    /// Idempotent via `done`. Replaces the prior inline cleanup in
+    /// `beginPromoteCutover`'s `onTerminal`, which skipped `done` and so left
+    /// a stale-live window.
+    func applyPromotedTerminal() {
+        guard !done else { return }
+        done = true
+        flow.closeReadWithError(nil)
+        flow.closeWriteWithError(nil)
+        // Detach handlers WITHOUT cancelling — see doc above.
+        ctx?.connection?.stateUpdateHandler = nil
+        ctx?.connection?.viabilityUpdateHandler = nil
+        ctx?.connection = nil
+        core?.removeTcpFlow(flowId)
+    }
+
     // MARK: - Post-open full teardown
 
     /// Egress NWConnection went to `.failed` after `.ready`, or

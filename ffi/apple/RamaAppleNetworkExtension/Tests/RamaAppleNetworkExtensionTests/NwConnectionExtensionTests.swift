@@ -23,20 +23,24 @@ import XCTest
 /// contract: handler observably nil, cancel observably called, in
 /// that order.
 final class NwConnectionExtensionTests: XCTestCase {
-    /// `cancelAndDetach` MUST null out `stateUpdateHandler` AND invoke
-    /// `cancel()` exactly once. Order matters: dropping the handler
-    /// must precede the cancel call so the framework's final
-    /// `.cancelled` notification has no recipient (and can't perpetuate
-    /// the retain chain).
-    func testCancelAndDetachNullsHandlerAndCancelsOnce() {
+    /// `cancelAndDetach` MUST null out BOTH `stateUpdateHandler` and
+    /// `viabilityUpdateHandler` AND invoke `cancel()` exactly once. Order
+    /// matters: dropping the handlers must precede the cancel call so the
+    /// framework's final `.cancelled` notification has no recipient (and
+    /// can't perpetuate the retain chain). Both handlers capture the same
+    /// per-flow graph, so leaving EITHER attached re-leaks it.
+    func testCancelAndDetachNullsHandlersAndCancelsOnce() {
         let conn = MockNwConnection()
-        conn.stateUpdateHandler = { _ in XCTFail("handler must not fire after detach") }
-        XCTAssertNotNil(conn.stateUpdateHandler, "precondition: handler attached")
+        conn.stateUpdateHandler = { _ in XCTFail("state handler must not fire after detach") }
+        conn.viabilityUpdateHandler = { _ in XCTFail("viability handler must not fire after detach") }
+        XCTAssertNotNil(conn.stateUpdateHandler, "precondition: state handler attached")
+        XCTAssertNotNil(conn.viabilityUpdateHandler, "precondition: viability handler attached")
         XCTAssertEqual(conn.cancelCount, 0, "precondition: not yet cancelled")
 
         conn.cancelAndDetach()
 
-        XCTAssertNil(conn.stateUpdateHandler, "handler must be nil after detach")
+        XCTAssertNil(conn.stateUpdateHandler, "state handler must be nil after detach")
+        XCTAssertNil(conn.viabilityUpdateHandler, "viability handler must be nil after detach")
         XCTAssertEqual(conn.cancelCount, 1, "cancel must be invoked exactly once")
     }
 

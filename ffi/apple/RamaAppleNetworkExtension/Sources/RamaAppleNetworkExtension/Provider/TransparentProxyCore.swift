@@ -224,6 +224,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// `lastPathViable` is `true` again and it is left alone.
     private func checkWakeDeadPath(_ ctx: TcpFlowContext) {
         guard ctx.egressReady, ctx.connection != nil else { return }
+        // Don't act on a flow whose teardown already ran/started — it may
+        // still be observable here during the window before its async
+        // `removeTcpFlow` lands (e.g. a promoted flow that hit
+        // `applyPromotedTerminal`). `applyWakeDeadPath` would no-op on a
+        // `done` teardown anyway, but bailing here also avoids the
+        // misleading "resetting established flow" log line.
+        guard ctx.teardown?.isDone != true else { return }
         guard !ctx.lastPathViable else { return }
         logLifecycle(
             "wake: egress path not viable after settle; resetting established flow")
@@ -714,15 +721,14 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // the teardown's sticky `done`.
                 ctx?.teardown?.applyDrainBackstop()
             },
-            onTerminal: { [weak self, weak flow] in
-                // Both direct directions done. Close the
-                // kernel flow read+write sides + drop the
-                // per-flow registry entry. The egress
-                // NWConnection's lifecycle is owned by
-                // egressWritePump (drain → FIN → linger).
-                flow?.closeReadWithError(nil)
-                flow?.closeWriteWithError(nil)
-                self?.removeTcpFlow(flowId)
+            onTerminal: { [weak ctx] in
+                // Both direct directions done. Route through the shared
+                // teardown so the close marks `done` (a racing post-terminal
+                // wake-recheck / watchdog then no-ops instead of a second,
+                // connection-cancelling teardown) and detaches handlers —
+                // WITHOUT cancelling the egress NWConnection, whose FIN/linger
+                // the egress write pump owns. See `applyPromotedTerminal`.
+                ctx?.teardown?.applyPromotedTerminal()
             }
         )
         ctx.directForwarder = forwarder

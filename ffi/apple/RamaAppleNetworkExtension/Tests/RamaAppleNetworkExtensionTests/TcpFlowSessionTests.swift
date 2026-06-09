@@ -55,6 +55,30 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertNotNil(fx.session.ctx.clientWritePump)
     }
 
+    // MARK: - viability handler wiring
+
+    /// The wired `viabilityUpdateHandler` MUST update `ctx.lastPathViable`
+    /// SYNCHRONOUSLY when invoked (NWConnection delivers it on `flowQueue`),
+    /// not via a deferred `flowQueue.async` hop. The double-hop variant
+    /// would leave `lastPathViable` stale until a later queue turn, which is
+    /// what let a recovered path be read as dead by an already-queued
+    /// `checkWakeDeadPath` and reset a healthy flow. Driving the real handler
+    /// (installed by `installEgressStateHandler`) catches that regression:
+    /// with the hop, this assert sees the stale value and fails.
+    func testViabilityHandlerUpdatesContextSynchronously() {
+        let fx = Fixture()
+        fx.session.installEgressStateHandler(connection: fx.conn)
+        fx.session.ctx.lastPathViable = true
+
+        fx.conn.simulateViability(false)
+        XCTAssertFalse(
+            fx.session.ctx.lastPathViable,
+            "viability handler must update ctx synchronously (no deferred hop)")
+
+        fx.conn.simulateViability(true)
+        XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
+    }
+
     // MARK: - requestEngineSession
 
     /// Without an attached engine, the call returns nil — the caller

@@ -205,4 +205,54 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertFalse(f.teardown.isDone, "healthy flow must survive the scheduled re-check")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
+
+    /// Ordering guard for the viability fix: a path recovery that lands on
+    /// `flowQueue` BEFORE the wake check runs must spare the flow. Models the
+    /// fixed handler (direct assign): with a block holding the queue, enqueue
+    /// the recovery (`lastPathViable = true`) and then the check, in that
+    /// order; FIFO must let the recovery win so the check sees viable.
+    /// (The double-hop bug landed the recovery write AFTER the check.)
+    func testRecoveryQueuedBeforeWakeCheckSparesFlow() {
+        let core = TransparentProxyCore()
+        let queue = DispatchQueue(label: "rama.test.flow.wake.order")
+        let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
+
+        let hold = DispatchSemaphore(value: 0)
+        queue.async { hold.wait() }                       // freeze the queue
+        queue.async { f.ctx.lastPathViable = true }       // recovery lands first
+        queue.async { core.testCheckWakeDeadPath(f.ctx) } // then the wake check
+        hold.signal()                                     // release; FIFO order
+
+        let drained = expectation(description: "queue drained")
+        queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 2.0)
+
+        XCTAssertFalse(
+            f.teardown.isDone, "recovery queued before the check must spare the flow")
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// After a promoted flow's natural terminal (`applyPromotedTerminal`),
+    /// a racing post-terminal wake check must NOT run a second teardown — in
+    /// particular it must not cancel the egress connection, whose FIN/linger
+    /// the write pump owns. `applyPromotedTerminal` marks `done` (and clears
+    /// the connection), so the check no-ops.
+    func testWakeCheckNoOpsAfterPromotedTerminal() {
+        let core = TransparentProxyCore()
+        // viable:false so the check WOULD reset it if the guards didn't hold.
+        let f = makeEstablishedFlow(on: core, viable: false)
+
+        f.teardown.applyPromotedTerminal()
+        XCTAssertTrue(f.teardown.isDone, "promoted terminal marks teardown done")
+        XCTAssertEqual(f.conn.cancelCount, 0, "promoted terminal must NOT cancel the connection")
+        let closesAfterTerminal = f.flow.closeReadCallCount
+
+        core.testCheckWakeDeadPath(f.ctx)  // racing post-terminal wake check
+
+        XCTAssertEqual(
+            f.conn.cancelCount, 0, "wake check must not cancel the connection post-terminal")
+        XCTAssertEqual(
+            f.flow.closeReadCallCount, closesAfterTerminal,
+            "wake check must not re-close the kernel flow post-terminal")
+    }
 }
