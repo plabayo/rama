@@ -182,7 +182,11 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         }
         if case .cancelled = newState {
             lock.lock()
+            // Drop BOTH handlers at the terminal state, like NWConnection —
+            // otherwise a test relying on post-cancel viability would falsely
+            // pass (and the captured graph wouldn't release).
             _stateUpdateHandler = nil
+            _viabilityUpdateHandler = nil
             _pendingSendCompletions.removeAll()
             _pendingReceiveCompletions.removeAll()
             lock.unlock()
