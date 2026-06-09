@@ -31,13 +31,8 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _state: NWConnection.State = .preparing
-    // Defaults to `.satisfied`: a freshly-built mock models a healthy
-    // path, so tests that don't care about path viability (the vast
-    // majority) keep their established flows alive through a wake. Tests
-    // exercising the post-wake dead-path reset flip this to `.unsatisfied`
-    // via `setCurrentPathStatus(_:)` before driving the reconcile.
-    private var _currentPathStatus: NWPath.Status? = .satisfied
     private var _stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)?
+    private var _viabilityUpdateHandler: (@Sendable (Bool) -> Void)?
     private var _sentChunks: [SentChunk] = []
     private var _pendingSendCompletions: [SendCompletion] = []
     private var _pendingReceiveCompletions: [ReceiveCompletion] = []
@@ -52,12 +47,6 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         return _state
     }
 
-    var currentPathStatus: NWPath.Status? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _currentPathStatus
-    }
-
     var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
         get {
             lock.lock()
@@ -67,6 +56,19 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         set {
             lock.lock()
             _stateUpdateHandler = newValue
+            lock.unlock()
+        }
+    }
+
+    var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _viabilityUpdateHandler
+        }
+        set {
+            lock.lock()
+            _viabilityUpdateHandler = newValue
             lock.unlock()
         }
     }
@@ -118,14 +120,15 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
 
     // MARK: - Test driving
 
-    /// Set the path status the post-wake reconcile will observe.
-    /// `.unsatisfied` models a connection stranded on a path the system
-    /// tore down across a network-changing sleep (the wedge case);
-    /// `.satisfied` (the default) models one whose path survived.
-    func setCurrentPathStatus(_ status: NWPath.Status?) {
+    /// Fire the `viabilityUpdateHandler` synchronously on the caller's
+    /// thread, mirroring Network.framework reporting a path
+    /// becoming/ceasing to be usable. `false` models a connection stranded
+    /// on a path the system tore down across a network-changing sleep.
+    func simulateViability(_ viable: Bool) {
         lock.lock()
-        _currentPathStatus = status
+        let handler = _viabilityUpdateHandler
         lock.unlock()
+        handler?(viable)
     }
 
     /// Force the connection to the given state and fire the

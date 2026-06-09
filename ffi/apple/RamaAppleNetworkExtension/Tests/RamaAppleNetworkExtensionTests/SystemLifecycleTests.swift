@@ -76,22 +76,22 @@ final class SystemLifecycleTests: XCTestCase {
 
     // MARK: - core post-wake dead-path reset (checkWakeDeadPath)
 
-    /// Build a registered, established (`egressReady`) TCP flow whose
-    /// egress connection reports `pathStatus`, and return the pieces a
-    /// test needs to assert on. Engine-less: inserted straight into the
-    /// registry like the sleep tests above.
+    /// Build a registered, established (`egressReady`) TCP flow with the
+    /// given cached path viability, and return the pieces a test needs to
+    /// assert on. Engine-less: inserted straight into the registry like
+    /// the sleep tests above.
     private func makeEstablishedFlow(
         on core: TransparentProxyCore,
-        pathStatus: NWPath.Status?,
+        viable: Bool,
         flowQueue: DispatchQueue? = nil
     ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
     {
         let f = MockTcpFlow()
         let c = MockNwConnection()
-        c.setCurrentPathStatus(pathStatus)
         let ctx = TcpFlowContext()
         ctx.connection = c
         ctx.egressReady = true
+        ctx.lastPathViable = viable
         ctx.flowQueue = flowQueue
         let td = TcpFlowTeardown(
             ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
@@ -100,14 +100,14 @@ final class SystemLifecycleTests: XCTestCase {
         return (f, c, ctx, td)
     }
 
-    /// An established flow whose egress path is no longer `.satisfied`
-    /// after the wake settle is force-reset: teardown fires, the egress
-    /// connection is cancelled, and the registry entry is dropped — the
+    /// An established flow whose egress path is no longer viable after the
+    /// wake settle is force-reset: teardown fires, the egress connection is
+    /// cancelled, and the registry entry is dropped — the
     /// silent-`.ready`-over-dead-path wedge the 60s watchdog used to be
     /// the only backstop for.
-    func testWakeDeadPathResetsEstablishedFlowOnUnsatisfiedPath() {
+    func testWakeDeadPathResetsEstablishedFlowWhenNotViable() {
         let core = TransparentProxyCore()
-        let f = makeEstablishedFlow(on: core, pathStatus: .unsatisfied)
+        let f = makeEstablishedFlow(on: core, viable: false)
         XCTAssertEqual(core.tcpFlowCount, 1)
 
         core.testCheckWakeDeadPath(f.ctx)
@@ -117,12 +117,11 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
     }
 
-    /// An established flow whose path survived the sleep (`.satisfied`,
-    /// e.g. a no-op Power-Nap wake) is left untouched — no teardown, no
-    /// cancel, registry intact.
-    func testWakeDeadPathKeepsEstablishedFlowOnSatisfiedPath() {
+    /// An established flow whose path stayed viable (e.g. a no-op Power-Nap
+    /// wake) is left untouched — no teardown, no cancel, registry intact.
+    func testWakeDeadPathKeepsEstablishedFlowWhenViable() {
         let core = TransparentProxyCore()
-        let f = makeEstablishedFlow(on: core, pathStatus: .satisfied)
+        let f = makeEstablishedFlow(on: core, viable: true)
 
         core.testCheckWakeDeadPath(f.ctx)
 
@@ -137,13 +136,29 @@ final class SystemLifecycleTests: XCTestCase {
     /// path — guarding against a double-teardown if the two ever overlap.
     func testWakeDeadPathIgnoresPreReadyFlow() {
         let core = TransparentProxyCore()
-        let f = makeEstablishedFlow(on: core, pathStatus: .unsatisfied)
+        let f = makeEstablishedFlow(on: core, viable: false)
         f.ctx.egressReady = false
 
         core.testCheckWakeDeadPath(f.ctx)
 
         XCTAssertFalse(f.teardown.isDone)
         XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// The wired `viabilityUpdateHandler` caches into `ctx.lastPathViable`:
+    /// firing it `false` then `true` (path recovered) leaves the flow
+    /// viable, so the re-check keeps it.
+    func testViabilityHandlerCachesIntoContext() {
+        let ctx = TcpFlowContext()
+        let c = MockNwConnection()
+        ctx.connection = c
+        // Mirror the wiring `TcpFlowSession.installEgressStateHandler` does.
+        c.viabilityUpdateHandler = { viable in ctx.lastPathViable = viable }
+
+        c.simulateViability(false)
+        XCTAssertFalse(ctx.lastPathViable)
+        c.simulateViability(true)
+        XCTAssertTrue(ctx.lastPathViable)
     }
 
     /// End-to-end through `handleSystemWake`: with a short settle override
@@ -156,7 +171,7 @@ final class SystemLifecycleTests: XCTestCase {
         defer { defaultPostWakePathRecheckMs = prevDelay }
 
         let queue = DispatchQueue(label: "rama.test.flow.wake")
-        let f = makeEstablishedFlow(on: core, pathStatus: .unsatisfied, flowQueue: queue)
+        let f = makeEstablishedFlow(on: core, viable: false, flowQueue: queue)
 
         core.handleSystemWake()
 
@@ -170,8 +185,8 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount, 0)
     }
 
-    /// Same end-to-end path, healthy connection: a `.satisfied` flow with
-    /// a real `flowQueue` survives the scheduled re-check.
+    /// Same end-to-end path, healthy connection: a viable flow with a real
+    /// `flowQueue` survives the scheduled re-check.
     func testHandleSystemWakeKeepsHealthyFlowViaTimer() {
         let core = TransparentProxyCore()
         let prevDelay = defaultPostWakePathRecheckMs
@@ -179,7 +194,7 @@ final class SystemLifecycleTests: XCTestCase {
         defer { defaultPostWakePathRecheckMs = prevDelay }
 
         let queue = DispatchQueue(label: "rama.test.flow.wake.ok")
-        let f = makeEstablishedFlow(on: core, pathStatus: .satisfied, flowQueue: queue)
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
 
         core.handleSystemWake()
 

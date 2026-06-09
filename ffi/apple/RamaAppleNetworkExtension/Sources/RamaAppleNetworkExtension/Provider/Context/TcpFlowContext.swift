@@ -55,6 +55,16 @@ final class TcpFlowContext: @unchecked Sendable {
     /// off-queue by the stop-the-world wake reconcile (same relaxation
     /// the sleep teardown already relies on).
     var egressReady = false
+    /// Latest viability reported by the egress `NWConnection`'s
+    /// `viabilityUpdateHandler`. `false` means Network.framework decided
+    /// the path can't carry traffic (torn down across a network change /
+    /// sleep). The post-wake reconcile reads this (instead of allocating a
+    /// fresh `currentPath` snapshot per read) to decide whether an
+    /// established flow stranded on a dead path should be reset. Defaults
+    /// `true` so a flow we have no signal about is never reset. Mutated on
+    /// `flowQueue`; read off-queue by `checkWakeDeadPath` (same relaxation
+    /// as `egressReady`).
+    var lastPathViable = true
     /// A terminal close signal (server EOF / egress close, `viaRust`
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the

@@ -21,21 +21,22 @@ import Network
 protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
 
-    /// Status of the connection's current network path, or `nil` when it
-    /// has none yet. Mirrors `NWConnection.currentPath?.status`. The
-    /// post-wake reconcile (`TransparentProxyCore.handleSystemWake`) reads
-    /// this after a short settle to tell a connection whose path survived
-    /// a no-op (Power-Nap) sleep (`.satisfied`) from one stranded on a path
-    /// the system tore down across a network-changing sleep — the latter
-    /// can sit in `.ready` over a dead path without ever firing
-    /// `.waiting`/`.failed`, which is the wedge this signal lets us reap.
-    var currentPathStatus: NWPath.Status? { get }
-
     // Matches `NWConnection`'s real `@Sendable` declaration so the
     // conformance is Swift-6 clean. Assigned closures capture the
     // per-flow session (an `@unchecked Sendable` class), so `@Sendable`
     // holds without further propagation.
     var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? { get set }
+
+    /// Fires `false` when Network.framework decides the connection can no
+    /// longer send/receive (its path was torn down — e.g. a network change
+    /// across a sleep) and `true` when it recovers. We cache the latest
+    /// value into `TcpFlowContext.lastPathViable` and read THAT on the
+    /// post-wake reconcile, instead of polling `NWConnection.currentPath`
+    /// — the latter allocates a fresh path snapshot per read (enumerates
+    /// gateways) and leaks ~32B each call inside Network.framework, which
+    /// is unacceptable on the per-flow wake path. Same `@Sendable` shape as
+    /// `stateUpdateHandler`.
+    var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? { get set }
 
     func start(queue: DispatchQueue)
     func cancel()
@@ -59,13 +60,9 @@ protocol NwConnectionLike: AnyObject {
     )
 }
 
-extension NWConnection: NwConnectionLike {
-    /// `NWConnection.currentPath?.status`. A `.ready` connection whose
-    /// underlying path the system tore down (network change across a
-    /// sleep) reports a non-`.satisfied` status here even while its
-    /// `state` lags at `.ready`.
-    var currentPathStatus: NWPath.Status? { currentPath?.status }
-}
+// `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
+// with matching signatures, so the conformance is trivial.
+extension NWConnection: NwConnectionLike {}
 
 extension NwConnectionLike {
     /// Cancel the connection AND release its `stateUpdateHandler` in
@@ -95,6 +92,11 @@ extension NwConnectionLike {
     /// pre-fix) stays at zero.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
+        // Drop the viability handler too — it strongly captures the same
+        // per-flow session graph as `stateUpdateHandler`, so leaving it
+        // attached would re-introduce the retain cycle this method exists
+        // to break.
+        self.viabilityUpdateHandler = nil
         self.cancel()
     }
 }

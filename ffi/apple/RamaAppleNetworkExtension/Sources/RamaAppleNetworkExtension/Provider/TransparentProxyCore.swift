@@ -173,18 +173,18 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///     `.ready` — neither `.waiting` nor `.failed` fires, so the
     ///     per-flow `handleEgressState` reaper never runs and the flow
     ///     wedges (peer unreachable → graceful drain never completes) until
-    ///     the 60s maintenance watchdog. Re-check `currentPath` after a
-    ///     short settle (`defaultPostWakePathRecheckMs`) and reset the ones
-    ///     whose path didn't come back, so a stale long-lived connection
-    ///     (e.g. Chrome reusing an HTTP/2 connection to a Google host) is
-    ///     reset promptly instead of hanging. A no-op (Power-Nap) sleep
-    ///     leaves the path `.satisfied`, so those flows are kept.
+    ///     the 60s maintenance watchdog. Re-check viability after a short
+    ///     settle (`defaultPostWakePathRecheckMs`) and reset the ones whose
+    ///     path didn't come back, so a stale long-lived connection (e.g.
+    ///     Chrome reusing an HTTP/2 connection to a Google host) is reset
+    ///     promptly instead of hanging. A no-op (Power-Nap) sleep leaves the
+    ///     path viable, so those flows are kept.
     func handleSystemWake() {
         engine?.notifySystemWake()
         // Reconcile on each flow's own queue: the `egressReady` /
-        // `connection` / `currentPathStatus` reads and the teardown all run
-        // there, so they stay single-threaded with that flow's kernel /
-        // NWConnection callbacks instead of racing them.
+        // `lastPathViable` reads and the teardown all run there, so they
+        // stay single-threaded with that flow's kernel / NWConnection
+        // callbacks instead of racing them.
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
             runFlowTeardown(ctx) { [weak self] in
@@ -193,7 +193,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     return
                 }
                 // Established: defer the verdict to a settle-delayed
-                // `currentPath` re-check (see `checkWakeDeadPath`). Needs a
+                // viability re-check (see `checkWakeDeadPath`). Needs a
                 // `flowQueue` to schedule on; production contexts always
                 // have one (engine-less test contexts that don't are left
                 // to the per-flow `.failed`/watchdog paths, as before).
@@ -213,19 +213,20 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     /// Post-wake settle re-check for one established flow. MUST run on the
-    /// flow's own `flowQueue` so the `egressReady` / `connection` /
-    /// `currentPathStatus` reads stay single-threaded with the flow's other
-    /// callbacks. Resets the flow as a wake-dead-path failure iff its egress
-    /// path is no longer `.satisfied`. Idempotent: if the flow already tore
-    /// down in the settle window (its NWConnection reported `.failed` /
-    /// `.waiting`, or it closed gracefully) the teardown's sticky `done`
-    /// flag makes this a no-op; if it recovered, the path is `.satisfied`
-    /// and it is left alone.
+    /// flow's own `flowQueue` so the `egressReady` / `lastPathViable` reads
+    /// stay single-threaded with the flow's other callbacks. Resets the
+    /// flow as a wake-dead-path failure iff its egress path is no longer
+    /// viable (the `viabilityUpdateHandler` last reported `false` and it
+    /// didn't recover during the settle window). Idempotent: if the flow
+    /// already tore down in the settle window (its NWConnection reported
+    /// `.failed` / `.waiting`, or it closed gracefully) the teardown's
+    /// sticky `done` flag makes this a no-op; if the path recovered,
+    /// `lastPathViable` is `true` again and it is left alone.
     private func checkWakeDeadPath(_ ctx: TcpFlowContext) {
-        guard ctx.egressReady, let conn = ctx.connection else { return }
-        guard conn.currentPathStatus != .satisfied else { return }
-        logDebug(
-            "wake: egress path not satisfied after settle; resetting established flow")
+        guard ctx.egressReady, ctx.connection != nil else { return }
+        guard !ctx.lastPathViable else { return }
+        logLifecycle(
+            "wake: egress path not viable after settle; resetting established flow")
         ctx.teardown?.applyWakeDeadPath()
     }
 

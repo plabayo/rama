@@ -236,6 +236,16 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 self.handleEgressState(state)
             }
         }
+        // Cache path viability so the post-wake reconcile can read a plain
+        // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
+        // which leaks ~32B per read. Strong `self` for the same
+        // lifetime-anchor reason as `stateUpdateHandler`; the cycle is
+        // broken by `cancelAndDetach()` clearing both handlers.
+        connection.viabilityUpdateHandler = { viable in
+            self.flowQueue.async {
+                self.ctx.lastPathViable = viable
+            }
+        }
     }
 
     // MARK: - Phase: egress state transitions

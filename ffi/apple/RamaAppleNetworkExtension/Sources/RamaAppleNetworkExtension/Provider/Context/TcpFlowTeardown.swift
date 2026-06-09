@@ -215,18 +215,18 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
-    /// The post-wake reconcile found this established flow's egress
-    /// `currentPath` no longer `.satisfied` after the settle window: the
-    /// system tore the path down across a network-changing sleep, but the
-    /// `NWConnection` stayed `.ready` over the dead path, so neither
-    /// `.waiting` nor `.failed` fired and the per-flow `handleEgressState`
-    /// reaper never ran. Without this the flow would wedge until the 60s
-    /// maintenance watchdog. Full teardown so the client (e.g. Chrome
-    /// reusing a stale HTTP/2 connection to a Google host) gets a prompt
-    /// reset and reconnects instead of hanging. Idempotent via `done`, so
-    /// a connection that DID report `.failed`/`.waiting` (or closed
-    /// gracefully) in the settle window wins and this no-ops. Distinct
-    /// `domain` for trace attribution.
+    /// The post-wake reconcile found this established flow's egress path no
+    /// longer viable after the settle window (`viabilityUpdateHandler` last
+    /// reported `false`): the system tore the path down across a
+    /// network-changing sleep, but the `NWConnection` stayed `.ready` over
+    /// the dead path, so neither `.waiting` nor `.failed` fired and the
+    /// per-flow `handleEgressState` reaper never ran. Without this the flow
+    /// would wedge until the 60s maintenance watchdog. Full teardown so the
+    /// client (e.g. Chrome reusing a stale HTTP/2 connection to a Google
+    /// host) gets a prompt reset and reconnects instead of hanging.
+    /// Idempotent via `done`, so a connection that DID report
+    /// `.failed`/`.waiting` (or closed gracefully) in the settle window
+    /// wins and this no-ops. Distinct `domain` for trace attribution.
     func applyWakeDeadPath() {
         let err = NSError(
             domain: "rama.tproxy.wake-dead-path", code: -1,
