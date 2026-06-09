@@ -167,10 +167,15 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0)
 
-        // Both watchdogs are armed at ~200 ms. Wait long enough that
-        // both have fired (1 second is well past both deadlines plus
-        // any CI jitter).
-        Thread.sleep(forTimeInterval: 1.0)
+        // Both watchdogs are armed at ~200 ms. POLL for a backstop to fire
+        // rather than fixed-sleeping a fixed 1 s and asserting: under heavy
+        // parallel-test load a 200 ms timer can slip past a fixed wait, which
+        // spuriously fails the assert below. Poll up to 2 s and succeed the
+        // moment a cancel lands (typically ~200 ms).
+        let backstopDeadline = Date().addingTimeInterval(2.0)
+        while mock.cancelCount == 0 && Date() < backstopDeadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
         waitForQueueDrain(queue)
 
         XCTAssertGreaterThanOrEqual(
