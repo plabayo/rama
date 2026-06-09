@@ -20,6 +20,17 @@ import Network
 /// extension below.
 protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
+
+    /// Status of the connection's current network path, or `nil` when it
+    /// has none yet. Mirrors `NWConnection.currentPath?.status`. The
+    /// post-wake reconcile (`TransparentProxyCore.handleSystemWake`) reads
+    /// this after a short settle to tell a connection whose path survived
+    /// a no-op (Power-Nap) sleep (`.satisfied`) from one stranded on a path
+    /// the system tore down across a network-changing sleep — the latter
+    /// can sit in `.ready` over a dead path without ever firing
+    /// `.waiting`/`.failed`, which is the wedge this signal lets us reap.
+    var currentPathStatus: NWPath.Status? { get }
+
     // Matches `NWConnection`'s real `@Sendable` declaration so the
     // conformance is Swift-6 clean. Assigned closures capture the
     // per-flow session (an `@unchecked Sendable` class), so `@Sendable`
@@ -48,7 +59,13 @@ protocol NwConnectionLike: AnyObject {
     )
 }
 
-extension NWConnection: NwConnectionLike {}
+extension NWConnection: NwConnectionLike {
+    /// `NWConnection.currentPath?.status`. A `.ready` connection whose
+    /// underlying path the system tore down (network change across a
+    /// sleep) reports a non-`.satisfied` status here even while its
+    /// `state` lags at `.ready`.
+    var currentPathStatus: NWPath.Status? { currentPath?.status }
+}
 
 extension NwConnectionLike {
     /// Cancel the connection AND release its `stateUpdateHandler` in

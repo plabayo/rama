@@ -313,6 +313,21 @@ let defaultEgressEofGraceMs: UInt32 = 2_000
 /// code paths read; tests override before invoking the lifecycle.
 nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 
+/// Settle delay after `wake()` before the post-wake reconcile re-checks
+/// an established egress flow's `currentPath`. Network.framework needs a
+/// brief moment after resume to re-evaluate paths and surface a torn-down
+/// one as not-`.satisfied`; checking at the wake instant would race that
+/// and risk reaping a flow whose path is about to come back. Long enough
+/// for that re-evaluation, far shorter than the 60s maintenance watchdog
+/// that would otherwise be the only backstop for a flow wedged `.ready`
+/// over a dead path (the silent-death case `.waiting`/`.failed` never
+/// catches). A no-op (Power-Nap) sleep leaves the path `.satisfied`
+/// throughout, so those flows are never touched.
+///
+/// `var` for tests that need a short settle to keep runtime bounded —
+/// same pattern as `defaultEgressWaitingToleranceMs`.
+nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
+
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
 /// transition). Fail fast instead of hanging the full connect timeout;

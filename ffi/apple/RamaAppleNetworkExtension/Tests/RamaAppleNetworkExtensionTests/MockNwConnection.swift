@@ -31,6 +31,12 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _state: NWConnection.State = .preparing
+    // Defaults to `.satisfied`: a freshly-built mock models a healthy
+    // path, so tests that don't care about path viability (the vast
+    // majority) keep their established flows alive through a wake. Tests
+    // exercising the post-wake dead-path reset flip this to `.unsatisfied`
+    // via `setCurrentPathStatus(_:)` before driving the reconcile.
+    private var _currentPathStatus: NWPath.Status? = .satisfied
     private var _stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)?
     private var _sentChunks: [SentChunk] = []
     private var _pendingSendCompletions: [SendCompletion] = []
@@ -44,6 +50,12 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _state
+    }
+
+    var currentPathStatus: NWPath.Status? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _currentPathStatus
     }
 
     var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
@@ -105,6 +117,16 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     }
 
     // MARK: - Test driving
+
+    /// Set the path status the post-wake reconcile will observe.
+    /// `.unsatisfied` models a connection stranded on a path the system
+    /// tore down across a network-changing sleep (the wedge case);
+    /// `.satisfied` (the default) models one whose path survived.
+    func setCurrentPathStatus(_ status: NWPath.Status?) {
+        lock.lock()
+        _currentPathStatus = status
+        lock.unlock()
+    }
 
     /// Force the connection to the given state and fire the
     /// `stateUpdateHandler` synchronously on the caller's thread.

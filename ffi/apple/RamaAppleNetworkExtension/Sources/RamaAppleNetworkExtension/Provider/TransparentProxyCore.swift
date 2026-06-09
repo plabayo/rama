@@ -164,32 +164,69 @@ final class TransparentProxyCore: @unchecked Sendable {
         completion()
     }
 
-    /// On wake, restart telemetry and reconcile any TCP flow whose
-    /// egress never reached `.ready` — a still-connecting flow won't
-    /// recover (its NECP path is gone) and would otherwise burn its
-    /// connect timer. Established flows are left to the post-ready path
-    /// so we don't kill ones the OS kept across a no-op sleep.
+    /// On wake, restart telemetry and reconcile every TCP flow:
+    ///
+    ///   * Still-connecting (`!egressReady`): its NECP path is gone and it
+    ///     won't recover — reap now so it doesn't burn its connect timer.
+    ///   * Established (`egressReady`): the egress `NWConnection` can
+    ///     silently lose its path across a network-changing sleep yet stay
+    ///     `.ready` — neither `.waiting` nor `.failed` fires, so the
+    ///     per-flow `handleEgressState` reaper never runs and the flow
+    ///     wedges (peer unreachable → graceful drain never completes) until
+    ///     the 60s maintenance watchdog. Re-check `currentPath` after a
+    ///     short settle (`defaultPostWakePathRecheckMs`) and reset the ones
+    ///     whose path didn't come back, so a stale long-lived connection
+    ///     (e.g. Chrome reusing an HTTP/2 connection to a Google host) is
+    ///     reset promptly instead of hanging. A no-op (Power-Nap) sleep
+    ///     leaves the path `.satisfied`, so those flows are kept.
     func handleSystemWake() {
         engine?.notifySystemWake()
-        // Reconcile on each flow's own queue: both the `egressReady`
-        // read and the teardown run there, so they stay single-threaded
-        // with that flow's kernel / NWConnection callbacks instead of
-        // racing them (and reading `egressReady`, written on the flow
-        // queue, off-queue). A still-connecting flow won't recover (its
-        // NECP path is gone); established flows are left to the
-        // post-ready path so we don't kill ones the OS kept across a
-        // no-op sleep.
+        // Reconcile on each flow's own queue: the `egressReady` /
+        // `connection` / `currentPathStatus` reads and the teardown all run
+        // there, so they stay single-threaded with that flow's kernel /
+        // NWConnection callbacks instead of racing them.
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
-            runFlowTeardown(ctx) {
-                guard !ctx.egressReady else { return }
-                ctx.teardown?.applySystemWake()
+            runFlowTeardown(ctx) { [weak self] in
+                guard ctx.egressReady else {
+                    ctx.teardown?.applySystemWake()
+                    return
+                }
+                // Established: defer the verdict to a settle-delayed
+                // `currentPath` re-check (see `checkWakeDeadPath`). Needs a
+                // `flowQueue` to schedule on; production contexts always
+                // have one (engine-less test contexts that don't are left
+                // to the per-flow `.failed`/watchdog paths, as before).
+                guard let self, let queue = ctx.flowQueue else { return }
+                queue.asyncAfter(
+                    deadline: .now() + .milliseconds(Int(defaultPostWakePathRecheckMs))
+                ) { [weak self, weak ctx] in
+                    guard let self, let ctx else { return }
+                    self.checkWakeDeadPath(ctx)
+                }
             }
         }
         logLifecycle("system wake")
         if self.engine != nil {
             startFlowCountReporting()
         }
+    }
+
+    /// Post-wake settle re-check for one established flow. MUST run on the
+    /// flow's own `flowQueue` so the `egressReady` / `connection` /
+    /// `currentPathStatus` reads stay single-threaded with the flow's other
+    /// callbacks. Resets the flow as a wake-dead-path failure iff its egress
+    /// path is no longer `.satisfied`. Idempotent: if the flow already tore
+    /// down in the settle window (its NWConnection reported `.failed` /
+    /// `.waiting`, or it closed gracefully) the teardown's sticky `done`
+    /// flag makes this a no-op; if it recovered, the path is `.satisfied`
+    /// and it is left alone.
+    private func checkWakeDeadPath(_ ctx: TcpFlowContext) {
+        guard ctx.egressReady, let conn = ctx.connection else { return }
+        guard conn.currentPathStatus != .satisfied else { return }
+        logDebug(
+            "wake: egress path not satisfied after settle; resetting established flow")
+        ctx.teardown?.applyWakeDeadPath()
     }
 
     private func engineDetachedError() -> NSError {
@@ -390,6 +427,13 @@ final class TransparentProxyCore: @unchecked Sendable {
             // Outside `stateQueue.sync` on purpose — see
             // [`fireWatchdogKicks`] for the deadlock rationale.
             fireWatchdogKicks(toKick)
+        }
+
+        /// Test hook: run the post-wake established-flow path re-check
+        /// synchronously, skipping the `defaultPostWakePathRecheckMs`
+        /// settle timer. Mirrors `testRunPeriodicMaintenance`.
+        func testCheckWakeDeadPath(_ ctx: TcpFlowContext) {
+            checkWakeDeadPath(ctx)
         }
 
         /// Test hook: inspect the watchdog's "stuck since last tick" set.
