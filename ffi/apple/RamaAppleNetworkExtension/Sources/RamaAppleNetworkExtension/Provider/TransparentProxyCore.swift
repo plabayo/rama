@@ -291,16 +291,13 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard let self else { return }
             let toKick = self.collectMaintenanceKicksLocked()
             guard !toKick.isEmpty else { return }
-            // Hop off `stateQueue` before firing teardowns. Today
-            // every production ctx has its own `flowQueue` so the
-            // teardown body runs there (no recursive sync). But if a
-            // future code path ever inserts a ctx without one,
-            // `runFlowTeardown` runs the body inline → the body's
-            // `core?.removeTcpFlow(flowId)` `stateQueue.sync`s back
-            // → deadlock. Hopping off here costs one async per tick
-            // (per-flow watchdog) and makes the production path
-            // robust to that regression. The test hook does the
-            // same; this brings prod into line.
+            // Hop off `stateQueue` before firing teardowns. `removeTcpFlow`
+            // is now `.async` so an inline teardown body (engine-less ctx
+            // without a `flowQueue`) no longer sync-re-enters `stateQueue`
+            // → the old deadlock is gone. Kept as belt-and-suspenders so we
+            // never run a teardown body while holding `stateQueue`'s context
+            // (keeps the maintenance tick short and the queue free for other
+            // mutations). Costs one async per tick.
             DispatchQueue.global(qos: .utility).async {
                 self.fireWatchdogKicks(toKick)
             }
@@ -371,14 +368,11 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// One maintenance tick, off-`stateQueue` half: actually fire the
     /// teardowns identified by [`collectMaintenanceKicksLocked`].
     ///
-    /// Hopped off `stateQueue` deliberately. In production every ctx
-    /// has its own `flowQueue` so `runFlowTeardown` dispatches there
-    /// — but engine-less / test ctxs without a `flowQueue` run the
-    /// teardown body inline, and that body calls
-    /// `core?.removeTcpFlow(flowId)` which `stateQueue.sync`s back.
-    /// Holding `stateQueue` across the body would deadlock there. The
-    /// hop costs nothing in production and makes the watchdog robust
-    /// to engine-less call paths.
+    /// Hopped off `stateQueue` deliberately. `removeTcpFlow` is `.async`
+    /// now, so an inline teardown body (engine-less / test ctx without a
+    /// `flowQueue`) no longer sync-re-enters `stateQueue` — kept as
+    /// belt-and-suspenders so a teardown body never runs while holding the
+    /// maintenance tick's `stateQueue` context. Costs nothing in production.
     private func fireWatchdogKicks(_ kicks: MaintenanceKicks) {
         guard !kicks.isEmpty else { return }
         if !kicks.preReadyStuck.isEmpty {
@@ -480,7 +474,20 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
+        // `.async`, not `.sync`: this is called from per-flow teardown
+        // running on the flow's own `flowQueue`. A synchronous hop here
+        // blocks that flowQueue thread on the shared serial `stateQueue`;
+        // under high concurrent churn many flowQueue threads block at once,
+        // exhausting the GCD pool and starving OTHER flows' timers (the 5s
+        // drain backstop) and data-path work — which is what pushed wedged
+        // flows out to the 60s watchdog (60–130s stuck). Fire-and-forget is
+        // safe: removal is the terminal step (the teardown's `done` flag is
+        // already set), it returns nothing, and the mutation still
+        // serializes on `stateQueue`, so the watchdog/reconcile see
+        // consistent state. The map's strong ref also keeps the ctx alive
+        // until the async lands, which only HELPS the ObjectIdentifier-reuse
+        // guard below.
+        stateQueue.async {
             self.tcpContexts.removeValue(forKey: flowId)
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
@@ -494,7 +501,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync { self.udpSessions.removeValue(forKey: flowId) }
+        // `.async` for the same reason as `removeTcpFlow` — never block a
+        // per-flow teardown on the shared serial queue.
+        stateQueue.async { self.udpSessions.removeValue(forKey: flowId) }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
