@@ -232,6 +232,60 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
+    /// Build a registered PRE-ready flow (`egressReady == false`) whose
+    /// connection silently reached `.ready` — models the reorder window
+    /// where NW set `connection.state = .ready` but the `.ready` handler
+    /// (which flips `egressReady`) is still queued behind the reconcile.
+    private func makePreReadyFlowThatSilentlyReachedReady(
+        on core: TransparentProxyCore
+    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
+    {
+        let f = MockTcpFlow()
+        let c = MockNwConnection()
+        c.setStateSilently(.ready)
+        let ctx = TcpFlowContext()
+        ctx.connection = c
+        ctx.egressReady = false  // our flag lags behind NW's .ready
+        let td = TcpFlowTeardown(
+            ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
+        ctx.teardown = td
+        core.testInsertTcpContext(ObjectIdentifier(f), ctx)
+        return (f, c, ctx, td)
+    }
+
+    /// FIFO does NOT cover this site (it's a read, not a timer-cancel):
+    /// `handleSystemWake` must consult live `connection.state` (via
+    /// `hasReachedReady`) so it doesn't pre-open-cleanup a flow that reached
+    /// `.ready` while `egressReady` is still stale.
+    func testWakePreReadyResetSparesConnectionThatReachedReady() {
+        let core = TransparentProxyCore()
+        let f = makePreReadyFlowThatSilentlyReachedReady(on: core)
+
+        core.handleSystemWake()
+
+        XCTAssertFalse(
+            f.teardown.isDone,
+            "a flow that reached .ready must not be pre-ready-reset on wake")
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// Same FIFO gap at the maintenance watchdog pre-ready kick: it must
+    /// consult live `connection.state` (via `hasReachedReady`), not the
+    /// stale `egressReady`, before connect-timeout-ing the flow.
+    func testWatchdogPreReadyKickSparesConnectionThatReachedReady() {
+        let core = TransparentProxyCore()
+        let f = makePreReadyFlowThatSilentlyReachedReady(on: core)
+
+        // First tick records pre-ready-stuck; second would fire the kick.
+        core.testRunPeriodicMaintenance()
+        core.testRunPeriodicMaintenance()
+
+        XCTAssertFalse(
+            f.teardown.isDone,
+            "watchdog must not connect-timeout a flow that already reached .ready")
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
     /// After a promoted flow's natural terminal (`applyPromotedTerminal`),
     /// a racing post-terminal wake check must NOT run a second teardown — in
     /// particular it must not cancel the egress connection, whose FIN/linger

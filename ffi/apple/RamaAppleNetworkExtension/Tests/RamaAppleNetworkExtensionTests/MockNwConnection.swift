@@ -127,8 +127,29 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
     func simulateViability(_ viable: Bool) {
         lock.lock()
         let handler = _viabilityUpdateHandler
+        let deliveryQueue = _startInvocations.last
         lock.unlock()
-        handler?(viable)
+        // Faithful to NWConnection (same as `transition`): viability updates
+        // arrive async on the `start(queue:)` queue. Sync fallback when never
+        // started (lower-level unit tests).
+        if let deliveryQueue {
+            deliveryQueue.async { handler?(viable) }
+        } else {
+            handler?(viable)
+        }
+    }
+
+    /// Set the reported `state` WITHOUT firing `stateUpdateHandler`. Models
+    /// the reorder window the wake / watchdog pre-ready reapers must
+    /// tolerate: NW set `connection.state = .ready`, but the `.ready`
+    /// handler that flips `egressReady` is still queued behind the reconcile
+    /// block — so `egressReady` reads stale `false` while the connection is
+    /// live. (FIFO orders the handler, not this read; the reaper consults
+    /// `connection.state` via `hasReachedReady` to close the window.)
+    func setStateSilently(_ newState: NWConnection.State) {
+        lock.lock()
+        _state = newState
+        lock.unlock()
     }
 
     /// Force the connection to the given state and deliver it through
