@@ -95,7 +95,7 @@ async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
 aws-lc-rs = { version = "1.17", features = ["bindgen"] }
-aws-lc-sys = { version = "0.39", features = ["bindgen"] }
+aws-lc-sys = { version = "0.41", features = ["bindgen"] }
 base64 = "0.22"
 bb8 = "0.9"
 bb8-postgres = "0.9"
@@ -145,15 +145,15 @@ loom = "0.7"
 matchit = "0.9"
 md5 = "0.8"
 memchr = "2.8"
-mimalloc = { version = "=0.1.48", default-features = false }
+mimalloc = { version = "0.1.52", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"
 nom = "8.0.0"
-opentelemetry = { version = "0.31", default-features = false, features = ["trace", "internal-logs"] }
-opentelemetry-semantic-conventions = { version = "0.31", features = ["semconv_experimental"] }
-opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
+opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
 parking_lot = "0.12"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
@@ -165,7 +165,7 @@ prost-build = "0.14.4"
 prost-types = "0.14.4"
 protoc-bin-vendored = "3.2.0"
 psl = "2"
-quick-xml = "0.37"
+quick-xml = "0.40"
 quickcheck = "1.1"
 quickcheck_macros = "1.2"
 quote = "1.0"
@@ -217,8 +217,8 @@ serde = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_html_form = "0.4"
 serde_json = "1.0"
 serde_test = "1"
-sha1 = "0.10"
-sha2 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
 slab = "0.4"
 smallvec = { version = "1.15", default-features = false }
 smol_str = { version = "0.3", default-features = false }
@@ -240,7 +240,7 @@ tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
 tracing-appender = "0.2"
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
 tracing-tree = "0.4"
@@ -942,4 +942,3 @@ required-features = ["http-full", "boring"]
 [[example]]
 name = "ws_over_h2"
 required-features = ["http-full", "boring"]
-
