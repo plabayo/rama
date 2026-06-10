@@ -89,7 +89,7 @@ fn gen_ca_basics() {
     let data = sample_data("ca.rama.test");
     let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("generate CA");
 
-    assert_eq!(ca_key.id(), Id::RSA);
+    assert_eq!(ca_key.id(), Id::EC); // default key kind is EC P-256
     assert!(ca_cert.verify(&ca_key).expect("verify self-signed ca cert"));
     assert_eq!(
         ca_cert.subject_name().to_der().expect("ca subject der"),
@@ -113,7 +113,7 @@ fn gen_leaf_signed_by_ca_and_has_common_name_san() {
     let (leaf_cert, leaf_key) =
         self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
 
-    assert_eq!(leaf_key.id(), Id::RSA);
+    assert_eq!(leaf_key.id(), Id::EC); // default key kind is EC P-256
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
     assert_eq!(
         leaf_cert.issuer_name().to_der().expect("leaf issuer der"),
@@ -172,7 +172,9 @@ fn mirror_preserves_subject_validity_and_issuer() {
             .expect("mirrored issuer der"),
         ca_cert.subject_name().to_der().expect("ca subject der")
     );
-    assert_eq!(mirrored_key.id(), Id::RSA);
+    // source was gen'd with the default key kind (EC P-256), so the mirror
+    // matches it.
+    assert_eq!(mirrored_key.id(), Id::EC);
 }
 
 #[test]
