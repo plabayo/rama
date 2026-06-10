@@ -6,7 +6,7 @@
 //! by IP address instead of domain name.
 
 use crate::HeaderValue;
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_core::username::{ComposeError, Composer, UsernameLabelWriter};
@@ -74,7 +74,7 @@ impl DnsResolveMode {
 }
 
 impl std::str::FromStr for DnsResolveMode {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     #[inline(always)]
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -83,14 +83,14 @@ impl std::str::FromStr for DnsResolveMode {
 }
 
 impl TryFrom<&str> for DnsResolveMode {
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match_ignore_ascii_case_str! {
             match (value) {
                 "eager" => Ok(Self::eager()),
                 "lazy" => Ok(Self::lazy()),
-                _ => Err(OpaqueError::from_static_str("Invalid DNS resolve mode: unknown str")),
+                _ => Err(BoxError::from_static_str("Invalid DNS resolve mode: unknown str")),
             }
         }
     }

@@ -191,8 +191,10 @@ mod unix_impl {
 use unix_impl::run;
 
 #[cfg(not(target_family = "unix"))]
-async fn run() -> Result<(), rama::error::extra::OpaqueError> {
-    Err(rama::error::extra::OpaqueError::from_static_str(
+async fn run() -> Result<(), rama::error::BoxError> {
+    use rama::error::BoxErrorExt;
+
+    Err(rama::error::BoxError::from_static_str(
         "fastcgi_php_migration: this example uses Unix sockets and requires a \
          Unix-family target (Linux, macOS, BSD).",
     ))

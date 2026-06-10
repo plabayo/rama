@@ -1,8 +1,8 @@
 use crate::Protocol;
 use crate::address::HostWithPort;
+use rama_core::error::BoxErrorExt as _;
 
 use super::{Domain, DomainAddress, Host, OptPort, SocketAddress, parse_utils};
-use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
@@ -481,10 +481,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     let s = maybe_borrowed.as_ref();
 
     if s.is_empty() {
-        return Err(
-            OpaqueError::from_static_str("empty string is invalid host (with opt port)")
-                .into_box_error(),
-        );
+        return Err(BoxError::from_static_str(
+            "empty string is invalid host (with opt port)",
+        ));
     }
 
     let host;
@@ -496,7 +495,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
     if s.starts_with('[') && s.ends_with(']') {
         let inside = &s[1..s.len() - 1];
         if inside.is_empty() {
-            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
         }
         // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
         // verbatim, matching the URI authority parser's shape.
@@ -513,10 +512,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             });
         }
         if parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
-            )
-            .into_box_error());
+            ));
         }
         let addr = inside
             .parse::<Ipv6Addr>()
@@ -540,10 +538,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<HostWithO
             // parser rejects the same shape — keep the eager paths
             // symmetric.
             if first_part.is_empty() {
-                return Err(
-                    OpaqueError::from_static_str("empty host before ':port' is invalid")
-                        .into_box_error(),
-                );
+                return Err(BoxError::from_static_str(
+                    "empty host before ':port' is invalid",
+                ));
             }
             let port_str = &s[last_colon + 1..];
             port = if port_str.is_empty() {

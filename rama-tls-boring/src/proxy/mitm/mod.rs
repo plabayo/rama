@@ -4,10 +4,11 @@ use rama_boring::{
     x509::X509,
 };
 use rama_boring_tokio::SslErrorStack;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
-    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsRef as _},
     io::{BridgeIo, Io},
     telemetry::tracing,
@@ -527,7 +528,7 @@ where
                         } else {
                             TlsMitmRelayError::handshake(
                                 TlsMitmRelayErrorDirection::Egress,
-                                OpaqueError::from_static_str(
+                                BoxError::from_static_str(
                                     "tls mitm relay: egress tls accept failed",
                                 )
                                 .context_debug_field("code", maybe_ssl_code)
@@ -590,7 +591,7 @@ where
                 let source_cert = egress_ssl_ref
                     .peer_certificate()
                     .ok_or_else(|| {
-                        OpaqueError::from_static_str(
+                        BoxError::from_static_str(
                             "tls mitm relay: egress tls stream has no peer cert",
                         )
                     })
@@ -677,7 +678,7 @@ where
                     let protocol_version = protocol_version
                         .rama_try_into()
                         .map_err(|v| {
-                            OpaqueError::from_static_str(
+                            BoxError::from_static_str(
                                 "boring ssl connector: cast min proto version",
                             )
                             .context_field("protocol_version", v)
@@ -783,7 +784,7 @@ where
                 } else {
                     TlsMitmRelayError::handshake(
                         TlsMitmRelayErrorDirection::Ingress,
-                        OpaqueError::from_static_str("tls mitm relay: ingress tls accept failed")
+                        BoxError::from_static_str("tls mitm relay: ingress tls accept failed")
                             .context_debug_field("code", maybe_ssl_code),
                         maybe_ssl_code,
                     )

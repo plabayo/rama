@@ -58,7 +58,7 @@
 use rama::{
     Layer,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
@@ -128,13 +128,12 @@ impl DynamicConfigProvider for DynamicConfig {
             Some(name) => match name {
                 "example" => load_example_certificate().await,
                 "second.example" => load_second_example_certificate().await,
-                name => Err(OpaqueError::from_static_str("server name not recognised")
+                name => Err(BoxError::from_static_str("server name not recognised")
                     .context_str_field("name", name)),
             },
-            _ => Err(
-                OpaqueError::from_static_str("server name required for this server to work")
-                    .into_box_error(),
-            ),
+            _ => Err(BoxError::from_static_str(
+                "server name required for this server to work",
+            )),
         }?;
 
         let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)

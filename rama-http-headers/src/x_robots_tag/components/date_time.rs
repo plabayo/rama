@@ -4,7 +4,8 @@ use jiff::{
     fmt::{StdFmtWrite, rfc2822, temporal::DateTimePrinter},
     tz::{Offset, TimeZone},
 };
-use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
@@ -119,7 +120,7 @@ impl AsRef<Timestamp> for DirectiveDateTime {
 }
 
 impl FromStr for DirectiveDateTime {
-    type Err = OpaqueError;
+    type Err = BoxError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(dt) = datetime_from_rfc3339(s) {
@@ -141,7 +142,7 @@ impl FromStr for DirectiveDateTime {
             });
         }
         tracing::debug!("failed to parse datetime value: {s}");
-        Err(OpaqueError::from_static_str("invalid datetime value"))
+        Err(BoxError::from_static_str("invalid datetime value"))
     }
 }
 
@@ -201,7 +202,7 @@ fn parse_rfc3339_timestamp(s: &str) -> Result<Timestamp, BoxError> {
 
 fn parse_iso8601_date_only(s: &str) -> Result<Timestamp, BoxError> {
     if s.contains('T') || s.contains(' ') {
-        return Err(OpaqueError::from_static_str("invalid ISO 8601 date").into_box_error());
+        return Err(BoxError::from_static_str("invalid ISO 8601 date"));
     }
     let date = s
         .parse::<civil::Date>()
@@ -234,13 +235,11 @@ fn validate_rfc3339_offset(s: &str) -> Result<(), BoxError> {
             if hour < 24 && minute < 60 {
                 Ok(())
             } else {
-                Err(OpaqueError::from_static_str("invalid RFC 3339 offset").into_box_error())
+                Err(BoxError::from_static_str("invalid RFC 3339 offset"))
             }
         }
-        _ if s.contains('T') => {
-            Err(OpaqueError::from_static_str("invalid RFC 3339 offset").into_box_error())
-        }
-        _ => Err(OpaqueError::from_static_str("invalid RFC 3339 datetime").into_box_error()),
+        _ if s.contains('T') => Err(BoxError::from_static_str("invalid RFC 3339 offset")),
+        _ => Err(BoxError::from_static_str("invalid RFC 3339 datetime")),
     }
 }
 
@@ -262,12 +261,10 @@ fn parse_offset(offset: &str) -> Result<Offset, BoxError> {
         Some(b'+') => 1,
         Some(b'-') => -1,
         Some(_) => {
-            return Err(
-                OpaqueError::from_static_str("invalid timezone offset sign").into_box_error()
-            );
+            return Err(BoxError::from_static_str("invalid timezone offset sign"));
         }
         None => {
-            return Err(OpaqueError::from_static_str("missing timezone offset").into_box_error());
+            return Err(BoxError::from_static_str("missing timezone offset"));
         }
     };
 
@@ -285,9 +282,7 @@ fn parse_offset(offset: &str) -> Result<Offset, BoxError> {
             let hours = i32::from((h1 - b'0') * 10 + (h2 - b'0'));
             let minutes = i32::from((m1 - b'0') * 10 + (m2 - b'0'));
             if hours >= 24 || minutes >= 60 {
-                return Err(
-                    OpaqueError::from_static_str("invalid timezone offset").into_box_error()
-                );
+                return Err(BoxError::from_static_str("invalid timezone offset"));
             }
 
             let seconds = sign * (hours * 60 * 60 + minutes * 60);
@@ -295,7 +290,7 @@ fn parse_offset(offset: &str) -> Result<Offset, BoxError> {
                 .context("timezone offset outside supported range")
                 .context_str_field("offset", offset)
         }
-        _ => Err(OpaqueError::from_static_str("invalid timezone offset digits").into_box_error()),
+        _ => Err(BoxError::from_static_str("invalid timezone offset digits")),
     }
 }
 

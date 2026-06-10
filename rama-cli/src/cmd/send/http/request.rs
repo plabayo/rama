@@ -1,6 +1,6 @@
 use rama::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext as _},
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{
@@ -23,7 +23,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
 
     let input = build_data_input(cfg).await?;
     if input.is_some() && is_ws {
-        return Err(OpaqueError::from_static_str("input not allowed in WS mode").into_box_error());
+        return Err(BoxError::from_static_str("input not allowed in WS mode"));
     }
 
     let uri: Uri = expand_url(&cfg.uri)
@@ -44,7 +44,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
         (false, false, false, true, false) => Some(Version::HTTP_2),
         (false, false, false, false, true) => Some(Version::HTTP_3),
         (false, false, false, false, false) => None,
-        _ => Err(OpaqueError::from_static_str(
+        _ => Err(BoxError::from_static_str(
             "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
         ))?,
     } {
@@ -80,7 +80,7 @@ pub(super) async fn build(cfg: &SendCommand, is_ws: bool) -> Result<Request, Box
     }
 
     match (cfg.ipv4, cfg.ipv6) {
-        (true, true) => Err(OpaqueError::from_static_str(
+        (true, true) => Err(BoxError::from_static_str(
             "--ipv4, --ipv6 are mutually exclusive",
         ))?,
         (true, false) => {
@@ -153,10 +153,9 @@ enum DataInput {
 async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxError> {
     if let Some(specs) = cfg.form_data.as_deref().filter(|v| !v.is_empty()) {
         if cfg.data.is_some() || cfg.json || cfg.binary {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "--form-data is mutually exclusive with --data, --json, --binary",
-            )
-            .into_box_error());
+            ));
         }
         let mut form = multipart::Form::new();
         for spec in specs {
@@ -178,7 +177,7 @@ async fn build_data_input(cfg: &SendCommand) -> Result<Option<DataInput>, BoxErr
         (true, false) => (ContentType::octet_stream(), None),
         (false, true) => (ContentType::json(), Some(NATIVE_NEWLINE)),
         (false, false) => (ContentType::form_url_encoded(), Some("&")),
-        _ => Err(OpaqueError::from_static_str(
+        _ => Err(BoxError::from_static_str(
             "--binary, --json are mutually exclusive",
         ))?,
     };

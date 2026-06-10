@@ -1,10 +1,11 @@
 //! Error and Result module.
 
+use rama_core::error::BoxErrorExt as _;
 use std::error::Error as StdError;
 use std::fmt;
 
 use crate::h2;
-use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorExt as _};
 use rama_http_types as http;
 
 /// Result type often returned from methods that can have hyper `Error`s.
@@ -269,7 +270,7 @@ impl Error {
         mut self,
         msg: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     ) -> Self {
-        self.inner.cause = Some(OpaqueError::from_static_str("http error cause").context(msg));
+        self.inner.cause = Some(BoxError::from_static_str("http error cause").context(msg));
         self
     }
 

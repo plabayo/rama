@@ -1,6 +1,6 @@
 use rama_boring_tokio::{HandshakeError, SslStream};
 use rama_core::conversion::RamaTryInto;
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
@@ -382,7 +382,7 @@ fn set_target_http_version(
         if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "target http version not compatible with negotiated tls alpn version",
             )
             .context_debug_field("target_version", *target_version)
@@ -559,7 +559,7 @@ where
                             .context_debug_field("sni", server_name)
                             .context_debug_field("code", maybe_ssl_code)
                     } else {
-                        OpaqueError::from_static_str(
+                        BoxError::from_static_str(
                             "boring ssl connector (connect): without error info",
                         )
                         .context_debug_field("sni", server_name)
@@ -576,7 +576,7 @@ where
                 .protocol_version()
                 .rama_try_into()
                 .map_err(|v| {
-                    OpaqueError::from_static_str("boring ssl connector: cast min proto version")
+                    BoxError::from_static_str("boring ssl connector: cast min proto version")
                         .context_field("protocol_version", v)
                 })?;
             let application_layer_protocol = stream
@@ -602,10 +602,9 @@ where
             }
         }
         None => {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "boring ssl connector: failed to establish session...",
-            )
-            .into_box_error());
+            ));
         }
     };
 

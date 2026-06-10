@@ -1,7 +1,7 @@
 use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef};
+use rama_core::error::BoxErrorExt as _;
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
-use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
@@ -530,9 +530,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     let mut s = maybe_borrowed.as_ref();
 
     if s.is_empty() {
-        return Err(
-            OpaqueError::from_static_str("empty string is invalid authority").into_box_error(),
-        );
+        return Err(BoxError::from_static_str(
+            "empty string is invalid authority",
+        ));
     }
 
     // Split on the *last* `@`. See [`super::parse_utils::find_userinfo_split`]
@@ -550,10 +550,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
         // mirroring the URI parser's authority handler.
         let ui_bytes = &s.as_bytes()[..idx];
         if ui_bytes.iter().any(|&b| b < 0x20 || b == 0x7F) {
-            return Err(
-                OpaqueError::from_static_str("userinfo contains control character")
-                    .into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "userinfo contains control character",
+            ));
         }
         user_info = Some(UserInfo::from_bytes_unchecked(
             rama_core::bytes::Bytes::copy_from_slice(ui_bytes),
@@ -570,7 +569,7 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
     if s.starts_with('[') && s.ends_with(']') {
         let inside = &s[1..s.len() - 1];
         if inside.is_empty() {
-            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
         }
         // IPvFuture: `[v1.xxx]` — stored as `Uninterpreted(bracketed=true)`
         // verbatim, matching the URI authority parser's shape.
@@ -590,10 +589,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             });
         }
         if crate::address::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
-            )
-            .into_box_error());
+            ));
         }
         let addr = inside
             .parse::<Ipv6Addr>()
@@ -621,10 +619,9 @@ fn try_from_maybe_borrowed_str(maybe_borrowed: Cow<'_, str>) -> Result<Authority
             // parser rejects the same shape — keep the eager paths
             // symmetric.
             if first_part.is_empty() {
-                return Err(
-                    OpaqueError::from_static_str("empty host before ':port' is invalid")
-                        .into_box_error(),
-                );
+                return Err(BoxError::from_static_str(
+                    "empty host before ':port' is invalid",
+                ));
             }
             let port_bytes = &s.as_bytes()[last_colon + 1..];
             port = if port_bytes.is_empty() {

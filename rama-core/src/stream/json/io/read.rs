@@ -91,7 +91,8 @@ mod tests {
 
     use crate::futures::StreamExt;
     use crate::futures::stream;
-    use rama_error::extra::OpaqueError;
+    use rama_error::BoxErrorExt;
+
     use tokio_test::assert_pending;
     use tokio_test::task;
 
@@ -249,10 +250,10 @@ mod tests {
     #[test]
     fn fallible_stream_operates_correctly_with_interspersed_errors() {
         let data_vec = vec![
-            Err(OpaqueError::from_static_str("test message 1")),
+            Err(BoxError::from_static_str("test message 1")),
             Ok("invalid json\n{\"key\":11,\"val"),
             Ok("ue\":22}\n{\"key\":33,\"value\":44}\ninvalid json\n"),
-            Err(OpaqueError::from_static_str("test message 2")),
+            Err(BoxError::from_static_str("test message 2")),
             Ok("{\"key\":55,\"value\":66}\n"),
         ];
         let data_stream = stream::iter(data_vec);

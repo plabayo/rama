@@ -1,10 +1,11 @@
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use std::{
     io::{self, Read, Write},
     pin::Pin,
     task::{Context, Poll, ready},
 };
 
-use rama_core::{error::extra::OpaqueError, io::Io};
+use rama_core::io::Io;
 use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},
@@ -147,7 +148,7 @@ impl<S: Io + Unpin> AsyncWebSocket<S> {
         self.next().await.ok_or_else(|| {
             ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                OpaqueError::from_static_str(
+                BoxError::from_static_str(
                     "Connection closed: no messages to be received any longer",
                 ),
             ))

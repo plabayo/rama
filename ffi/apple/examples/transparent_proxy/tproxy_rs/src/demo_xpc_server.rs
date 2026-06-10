@@ -3,7 +3,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use rama::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext},
     net::apple::xpc::{
         PeerSecurityRequirement, XpcListener, XpcListenerConfig, XpcMessageRouter, XpcServer,
     },
@@ -162,10 +162,9 @@ pub(crate) fn spawn_xpc_server(
                  config; refusing to bind XPC listener (fail-closed). Set it from the container \
                  app's `Bundle.main.bundleIdentifier`.",
             );
-            OpaqueError::from_static_str(
+            BoxError::from_static_str(
                 "xpc demo server: missing container_signing_identifier (fail-closed)",
             )
-            .into_box_error()
         })?;
 
     tracing::info!(

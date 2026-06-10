@@ -8,7 +8,8 @@
 //! [`ClientOptions::max_stdout_bytes`][crate::client::ClientOptions::max_stdout_bytes]).
 
 use rama_core::bytes::{Bytes, BytesMut};
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::TryStreamExt;
 use rama_core::telemetry::tracing;
@@ -69,7 +70,7 @@ fn version_to_protocol(v: Version) -> Result<&'static str, BoxError> {
         Version::HTTP_11 => Ok("HTTP/1.1"),
         Version::HTTP_2 => Ok("HTTP/2"),
         Version::HTTP_3 => Ok("HTTP/3"),
-        other => Err(OpaqueError::from_static_str(
+        other => Err(BoxError::from_static_str(
             "fastcgi: unsupported HTTP version (cannot map to SERVER_PROTOCOL)",
         )
         .context_debug_field("version", other)),
@@ -357,10 +358,10 @@ fn parse_server_protocol(value: Option<&str>) -> Result<Version, BoxError> {
         Some("HTTP/1.1") => Ok(Version::HTTP_11),
         Some("HTTP/2" | "HTTP/2.0") => Ok(Version::HTTP_2),
         Some("HTTP/3" | "HTTP/3.0") => Ok(Version::HTTP_3),
-        Some(other) => Err(OpaqueError::from_static_str(
-            "fastcgi: unsupported SERVER_PROTOCOL value",
-        )
-        .context_str_field("value", other)),
+        Some(other) => Err(
+            BoxError::from_static_str("fastcgi: unsupported SERVER_PROTOCOL value")
+                .context_str_field("value", other),
+        ),
         None => {
             tracing::debug!("fastcgi: SERVER_PROTOCOL missing, defaulting to HTTP/1.1");
             Ok(Version::HTTP_11)

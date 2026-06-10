@@ -1,4 +1,5 @@
 use super::{HttpClientService, svc::SendRequest};
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError},
@@ -271,7 +272,7 @@ where
                 conn: svc,
             })
         }
-        version => Err(OpaqueError::from_static_str("unsupported Http version")
+        version => Err(BoxError::from_static_str("unsupported Http version")
             .context_debug_field("version", version)
             .into_opaque_error()),
     }

@@ -5,10 +5,11 @@ use crate::{
     types::SecureTransport,
 };
 use parking_lot::Mutex;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
     conversion::RamaTryInto,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::ExtensionsRef,
     io::Io,
     telemetry::tracing::{debug, trace},
@@ -100,10 +101,8 @@ where
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
             acceptor_builder
                 .set_min_proto_version(Some((*min_ver).rama_try_into().map_err(|v| {
-                    OpaqueError::from_static_str(
-                        "build boring ssl acceptor: cast min proto version",
-                    )
-                    .context_field("protocol_version", v)
+                    BoxError::from_static_str("build boring ssl acceptor: cast min proto version")
+                        .context_field("protocol_version", v)
                 })?))
                 .context("build boring ssl acceptor: set min proto version")?;
         }
@@ -111,10 +110,8 @@ where
         if let Some(max_ver) = tls_config.protocol_versions.iter().flatten().max() {
             acceptor_builder
                 .set_max_proto_version(Some((*max_ver).rama_try_into().map_err(|v| {
-                    OpaqueError::from_static_str(
-                        "build boring ssl acceptor: cast max proto version",
-                    )
-                    .context_field("protocol_version", v)
+                    BoxError::from_static_str("build boring ssl acceptor: cast max proto version")
+                        .context_field("protocol_version", v)
                 })?))
                 .context("build boring ssl acceptor: set max proto version")?;
         }
@@ -184,7 +181,7 @@ where
                         .context_debug_field("domain", server_domain)
                         .context_debug_field("code", maybe_ssl_code)
                 } else {
-                    OpaqueError::from_static_str("boring ssl acceptor (accept): without error info")
+                    BoxError::from_static_str("boring ssl acceptor (accept): without error info")
                         .context_debug_field("domain", server_domain)
                         .context_debug_field("code", maybe_ssl_code)
                 }
@@ -197,10 +194,8 @@ where
                         .protocol_version()
                         .rama_try_into()
                         .map_err(|v| {
-                            OpaqueError::from_static_str(
-                                "boring ssl acceptor: cast min proto version",
-                            )
-                            .context_field("protocol_version", v)
+                            BoxError::from_static_str("boring ssl acceptor: cast min proto version")
+                                .context_field("protocol_version", v)
                         })?;
                 let application_layer_protocol = stream
                     .ssl()
@@ -239,10 +234,9 @@ where
                 }
             }
             None => {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "boring ssl acceptor: failed to establish session",
-                )
-                .into_box_error());
+                ));
             }
         };
 

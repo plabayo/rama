@@ -1,5 +1,5 @@
 use super::DnsResolveMode;
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
     error::{BoxError, ErrorContext},
@@ -54,10 +54,9 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
 
     fn build(self, ext: &Extensions) -> Result<(), Self::Error> {
         if self.key_found {
-            return Err(
-                OpaqueError::from_static_str("unused dns resolve mode username key: dns")
-                    .into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "unused dns resolve mode username key: dns",
+            ));
         }
         ext.insert(self.mode);
         Ok(())

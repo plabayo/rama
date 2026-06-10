@@ -3,11 +3,7 @@ use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
-#[cfg(feature = "http")]
-use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext};
-#[cfg(feature = "http")]
-use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
@@ -16,15 +12,17 @@ use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
-#[cfg(feature = "http")]
-use rama_net::tls::client::TlsAlpn;
 use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::transport::TryRefIntoTransportContext;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::error::ErrorExt,
+    rama_core::{
+        error::{BoxErrorExt, ErrorExt},
+        extensions::Extensions,
+    },
     rama_http_types::{Version, conn::TargetHttpVersion},
+    rama_net::tls::client::TlsAlpn,
 };
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
@@ -468,7 +466,7 @@ fn set_target_http_version(
         if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
             && target_version.0 != neg_version
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "TargetHTTPVersion incompatible with tls ALPN negotiated version",
             )
             .context_debug_field("target_version", *target_version)

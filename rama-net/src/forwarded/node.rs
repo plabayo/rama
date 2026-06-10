@@ -1,6 +1,7 @@
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
-use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::str::smol_str::SmolStr;
 use std::{
     fmt,
@@ -340,8 +341,7 @@ impl TryFrom<&str> for NodeId {
 
         match name {
             NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Err(
-                OpaqueError::from_static_str("missing brackets for node IPv6 address with port")
-                    .into_box_error(),
+                BoxError::from_static_str("missing brackets for node IPv6 address with port"),
             ),
             _ => Ok(Self { name, port }),
         }

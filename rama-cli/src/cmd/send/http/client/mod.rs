@@ -1,6 +1,6 @@
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::Extension,
     http::{
         Request, Response, StreamingBody,
@@ -146,7 +146,7 @@ fn new_inner_client(
         (false, false, true, false) => Some(SslVersion::TLS1_2),
         (false, false, false, true) => Some(SslVersion::TLS1_3),
         (false, false, false, false) => None,
-        _ => Err(OpaqueError::from_static_str(
+        _ => Err(BoxError::from_static_str(
             "--tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3 are mutually exclusive",
         ))?,
     } {

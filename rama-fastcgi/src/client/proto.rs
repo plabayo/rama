@@ -1,12 +1,12 @@
 //! FastCGI wire protocol: sending requests and reading responses.
 
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use rama_core::bytes::{Bytes, BytesMut};
 
 use crate::body::FastCgiBody;
 use rama_core::error::ErrorExt;
-use rama_core::error::extra::OpaqueError;
 use rama_core::io::discard;
 
 use crate::proto::{
@@ -206,7 +206,7 @@ where
                         return Err(ClientError {
                             kind: ClientErrorKind::Protocol,
                             source: Some(
-                                OpaqueError::from_static_str(
+                                BoxError::from_static_str(
                                     "fastcgi client: stdout exceeded max_stdout_bytes",
                                 )
                                 .context_field("cap", options.max_stdout_bytes),

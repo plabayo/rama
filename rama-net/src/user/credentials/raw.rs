@@ -1,4 +1,5 @@
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_utils::bytes::ct::ct_eq_bytes;
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use std::{fmt, str::FromStr};
@@ -109,9 +110,8 @@ impl RawToken {
             .position(|b| !(*b == b'\t' || (b' '..=b'~').contains(b)))
         {
             return Err(
-                OpaqueError::from_static_str("RawToken contains forbidden byte")
-                    .context_field("byte_index", idx)
-                    .into_box_error(),
+                BoxError::from_static_str("RawToken contains forbidden byte")
+                    .context_field("byte_index", idx),
             );
         }
 

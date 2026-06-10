@@ -12,15 +12,13 @@ use rama_boring::{
         store::{X509Store, X509StoreBuilder},
     },
 };
+use rama_core::error::BoxErrorExt as _;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     bytes::Bytes,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
     extensions::Extension,
-};
-use rama_core::{
-    error::extra::OpaqueError,
-    telemetry::tracing::{debug, trace},
 };
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
@@ -646,10 +644,9 @@ impl TlsConnectorDataBuilder {
                 .set_private_key(auth.private_key.as_ref())
                 .context("build (boring) ssl connector: set private key")?;
             if auth.cert_chain.is_empty() {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "build (boring) ssl connector: cert chain is empty",
-                )
-                .into_box_error());
+                ));
             }
             trace!("boring connector: client mTls: set cert chain root");
             cfg_builder
@@ -772,10 +769,9 @@ fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
     trace!(added, failed, "boring connector: shared verify store built");
 
     if added == 0 {
-        return Err(OpaqueError::from_static_str(
+        return Err(BoxError::from_static_str(
             "no native trust anchors could be added to the boring x509 verify store",
-        )
-        .into_box_error());
+        ));
     }
 
     Ok(builder.build())
@@ -976,7 +972,7 @@ impl TlsConnectorDataBuilder {
                                 min_ver
                             );
                             min_ssl_version = Some((*min_ver).rama_try_into().map_err(|v| {
-                                OpaqueError::from_static_str(
+                                BoxError::from_static_str(
                                     "build boring ssl connector: cast min proto version",
                                 )
                                 .context_field("protocol_version", v)
@@ -1000,7 +996,7 @@ impl TlsConnectorDataBuilder {
                                 max_ver
                             );
                             max_ssl_version = Some((*max_ver).rama_try_into().map_err(|v| {
-                                OpaqueError::from_static_str(
+                                BoxError::from_static_str(
                                     "build boring ssl connector: cast max proto version",
                                 )
                                 .context_field("protocol_version", v)
@@ -1223,7 +1219,7 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
         if !has_supported_versions_extension {
             let max_ssl_version =
                 legacy_protocol_version.rama_try_into().map_err(|v| {
-                    OpaqueError::from_static_str(
+                    BoxError::from_static_str(
                         "build boring ssl connector: cast max proto version from legacy ClientHello version",
                     )
                     .context_field("protocol_version", v)

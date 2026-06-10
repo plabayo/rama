@@ -27,7 +27,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext as _},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
@@ -272,10 +272,9 @@ fn load_server_config(
             })))
         }
         (None, None) => Ok(try_new_server_config(None, exec)?),
-        _ => Err(OpaqueError::from_static_str(
+        _ => Err(BoxError::from_static_str(
             "Both certificate and key must be provided together, or neither",
-        )
-        .into_box_error()),
+        )),
     }
 }
 

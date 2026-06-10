@@ -3,7 +3,8 @@ use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
-use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -92,10 +93,7 @@ impl Host {
     pub fn try_as_domain(&self) -> Result<std::borrow::Cow<'_, Domain>, BoxError> {
         match self {
             Self::Name(d) => Ok(std::borrow::Cow::Borrowed(d)),
-            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
-                "Host::Address is not a Domain",
-            )
-            .into_box_error()),
+            Self::Address(_) => Err(BoxError::from_static_str("Host::Address is not a Domain")),
             Self::Uninterpreted(host) => Domain::try_from(host)
                 .map(std::borrow::Cow::Owned)
                 .map_err(Into::into),
@@ -106,10 +104,7 @@ impl Host {
     pub fn try_into_domain(self) -> Result<Domain, BoxError> {
         match self {
             Self::Name(d) => Ok(d),
-            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
-                "Host::Address is not a Domain",
-            )
-            .into_box_error()),
+            Self::Address(_) => Err(BoxError::from_static_str("Host::Address is not a Domain")),
             Self::Uninterpreted(ref host) => Domain::try_from(host).map_err(Into::into),
         }
     }
@@ -121,10 +116,7 @@ impl Host {
     pub fn try_as_ip(&self) -> Result<IpAddr, BoxError> {
         match self {
             Self::Address(ip) => Ok(*ip),
-            Self::Name(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
-                "Host::Name is not an IpAddr",
-            )
-            .into_box_error()),
+            Self::Name(_) => Err(BoxError::from_static_str("Host::Name is not an IpAddr")),
             Self::Uninterpreted(host) => IpAddr::try_from(host).map_err(Into::into),
         }
     }
@@ -313,10 +305,9 @@ impl<'a> HostRef<'a> {
     pub fn try_as_domain(self) -> Result<Domain, BoxError> {
         match self {
             Self::Name(d) => Ok(d.into_owned()),
-            Self::Address(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
+            Self::Address(_) => Err(BoxError::from_static_str(
                 "HostRef::Address is not a Domain",
-            )
-            .into_box_error()),
+            )),
             Self::Uninterpreted(host) => Domain::try_from(host).map_err(Into::into),
         }
     }
@@ -325,10 +316,7 @@ impl<'a> HostRef<'a> {
     pub fn try_as_ip(self) -> Result<IpAddr, BoxError> {
         match self {
             Self::Address(ip) => Ok(ip),
-            Self::Name(_) => Err(rama_core::error::extra::OpaqueError::from_static_str(
-                "HostRef::Name is not an IpAddr",
-            )
-            .into_box_error()),
+            Self::Name(_) => Err(BoxError::from_static_str("HostRef::Name is not an IpAddr")),
             Self::Uninterpreted(host) => IpAddr::try_from(host).map_err(Into::into),
         }
     }
@@ -815,14 +803,14 @@ impl TryFrom<&str> for Host {
 /// `Display`-round-trips through this entry point.
 fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
     if s.is_empty() {
-        return Err(OpaqueError::from_static_str("empty host string").into_box_error());
+        return Err(BoxError::from_static_str("empty host string"));
     }
     // Bracketed IP-literal fast path — without it, the colon-in-IPv6
     // body confuses bare parses and `[v1.X]` IPvFuture has no shot.
     if s.starts_with('[') && s.ends_with(']') {
         let inside = &s[1..s.len() - 1];
         if inside.is_empty() {
-            return Err(OpaqueError::from_static_str("empty bracketed IP-literal").into_box_error());
+            return Err(BoxError::from_static_str("empty bracketed IP-literal"));
         }
         // IPvFuture: surface as `Uninterpreted(bracketed=true)`.
         if matches!(inside.as_bytes().first(), Some(b'v' | b'V')) {
@@ -837,10 +825,9 @@ fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
             ));
         }
         if super::parse_utils::ipv6_bracket_has_zone(inside.as_bytes()) {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
-            )
-            .into_box_error());
+            ));
         }
         let addr = inside
             .parse::<std::net::Ipv6Addr>()
@@ -906,7 +893,7 @@ impl TryFrom<&[u8]> for Host {
         if let Ok(arr) = <&[u8; 16]>::try_from(name) {
             return Ok(Self::Address(IpAddr::from(*arr)));
         }
-        Err(OpaqueError::from_static_str("parse host from bytes failed").into_box_error())
+        Err(BoxError::from_static_str("parse host from bytes failed"))
     }
 }
 

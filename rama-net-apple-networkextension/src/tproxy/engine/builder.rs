@@ -1,8 +1,9 @@
+use rama_core::error::BoxErrorExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rama_core::{
-    error::{BoxError, ErrorContext, extra::OpaqueError},
+    error::{BoxError, ErrorContext},
     rt::Executor,
 };
 
@@ -291,19 +292,19 @@ where
         // a misconfigured capacity is more useful as a build-time error than
         // as a footgun. `None` continues to mean "use the default".
         if matches!(tcp_flow_buffer_size, Some(0)) {
-            return Err(
-                OpaqueError::from_static_str("tcp_flow_buffer_size must be > 0").into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "tcp_flow_buffer_size must be > 0",
+            ));
         }
         if matches!(tcp_channel_capacity, Some(0)) {
-            return Err(
-                OpaqueError::from_static_str("tcp_channel_capacity must be > 0").into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "tcp_channel_capacity must be > 0",
+            ));
         }
         if matches!(udp_channel_capacity, Some(0)) {
-            return Err(
-                OpaqueError::from_static_str("udp_channel_capacity must be > 0").into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "udp_channel_capacity must be > 0",
+            ));
         }
 
         let rt = runtime_factory

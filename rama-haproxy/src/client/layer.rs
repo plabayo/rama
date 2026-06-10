@@ -1,10 +1,11 @@
+use rama_core::error::BoxErrorExt as _;
 use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::protocol::{v1, v2};
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, extra::OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     io::Io,
 };
@@ -294,7 +295,7 @@ where
                     .map(|info| info.peer_addr())
             })
             .ok_or_else(|| {
-                OpaqueError::from_static_str("PROXY client (v1): missing src socket address")
+                BoxError::from_static_str("PROXY client (v1): missing src socket address")
             })?;
 
         let peer_addr = conn.peer_addr()?;
@@ -306,10 +307,9 @@ where
                 v1::Addresses::new_tcp6(src_ip, dst_ip, src.port, peer_addr.port)
             }
             (_, _) => {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "PROXY client (v1): IP version mismatch between src and dest",
-                )
-                .into_box_error());
+                ));
             }
         };
 
@@ -346,7 +346,7 @@ where
                         .map(|info| info.peer_addr())
                 })
                 .ok_or_else(|| {
-                    OpaqueError::from_static_str("PROXY client (v2): missing src socket address")
+                    BoxError::from_static_str("PROXY client (v2): missing src socket address")
                 })?
         };
 
@@ -363,10 +363,9 @@ where
                 v2::IPv6::new(src_ip, dst_ip, src.port, peer_addr.port),
             ),
             (_, _) => {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "PROXY client (v2): IP version mismatch between src and dest",
-                )
-                .into_box_error());
+                ));
             }
         };
 
@@ -375,11 +374,10 @@ where
             // — receivers parse the entire post-address area as TLVs, so the
             // payload would be mis-interpreted (or rejected) and the CRC
             // would be computed over a header the peer can't validate.
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "PROXY client (v2): `payload` and `crc32c` cannot be combined; \
                  use typed TLVs instead",
-            )
-            .into_box_error());
+            ));
         }
 
         // A CRC32C TLV value is never something a sender should compute by
@@ -393,11 +391,10 @@ where
             .iter()
             .any(|(kind, _)| *kind == v2::Type::CRC32C)
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "PROXY client (v2): manual `with_tlv(Type::CRC32C, ...)` is not supported; \
                  use `with_crc32c(true)` instead",
-            )
-            .into_box_error());
+            ));
         }
 
         let mut builder = builder;

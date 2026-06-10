@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use rama::{
-    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _},
     net::address::Domain,
 };
 use std::{fmt, net::IpAddr, str::FromStr};
@@ -62,7 +62,7 @@ impl FromStr for ResolveArg {
                 .map(|suffix| suffix.chars().all(|c| c.is_alphabetic() || c == '.'))
                 .unwrap_or_default()
             {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "invalid domain (suffix not found or invalid)",
                 )
                 .context_field("host", host));
@@ -81,10 +81,9 @@ impl FromStr for ResolveArg {
         }
 
         if arg.addresses.is_empty() {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "no addresses found while at least one is required",
-            )
-            .into_box_error());
+            ));
         }
 
         Ok(arg)
