@@ -171,6 +171,48 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
+    // MARK: - connect-timeout fire
+
+    /// The connect-timeout timer ACTUALLY FIRING (not just being cancelled):
+    /// armed short, never reaching `.ready`, it must run pre-open cleanup —
+    /// cancel the stale connect, clear the slot, mark teardown done. The
+    /// lifecycle test at the core level can't override the 30s fallback, so
+    /// this is the only place the fire path itself is exercised. The barrier
+    /// is a later `flowQueue` work item: serial FIFO guarantees the timer
+    /// (earlier deadline) has run by the time it resolves.
+    func testConnectTimeoutFiresAndTearsDownPreOpen() {
+        let fx = Fixture()
+        XCTAssertFalse(fx.session.egressReady)
+
+        fx.session.installConnectTimeout(connectTimeoutMs: 30, remoteHost: "example.com")
+
+        let exp = expectation(description: "connect timeout fired")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(fx.session.teardown.isDone, "connect timeout must tear the flow down")
+        XCTAssertEqual(fx.conn.cancelCount, 1, "stale connect connection must be cancelled")
+        XCTAssertNil(fx.session.ctx.connection, "connection slot cleared on connect timeout")
+        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+    }
+
+    /// A `.ready` arriving before the connect deadline flips `egressReady`,
+    /// so the timer — when it later fires — is a no-op (guarded on
+    /// `!egressReady`). Pins that the fire path can't reap a connected flow.
+    func testConnectTimeoutAfterReadyIsNoop() {
+        let fx = Fixture()
+        fx.session.egressReady = true
+
+        fx.session.installConnectTimeout(connectTimeoutMs: 30, remoteHost: "example.com")
+
+        let exp = expectation(description: "connect deadline elapsed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(fx.session.teardown.isDone, "connected flow must survive the connect deadline")
+        XCTAssertEqual(fx.conn.cancelCount, 0, "connected flow's connection must not be cancelled")
+    }
+
     // MARK: - handleEgressFailed (post-ready)
 
     /// `.failed` AFTER `.ready` runs full teardown (kernel flow closed).
