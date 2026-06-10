@@ -68,13 +68,12 @@ pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
     ANCHORS
         .get_or_init(|| {
             let paths = CertPaths::from_env();
-            let env_override = paths.has_overrides();
-            let result = load_native_certs_with_paths(paths);
+            let result = load_native_certs_with_paths(&paths);
             for err in &result.errors {
                 debug!("rama native-certs: error while loading native root certificate: {err}");
             }
 
-            if result.certs.is_empty() && !env_override {
+            if result.certs.is_empty() && !paths.has_overrides() {
                 warn!(
                     native_cert_errors = result.errors.len(),
                     "rama native-certs: no native system root certificates found; \
@@ -121,10 +120,10 @@ pub fn bundled_root_certs() -> &'static [CertificateDer<'static>] {
 /// parsing a ~300KB disk file, or querying the OS keychain. Prefer
 /// [`shared_native_trust_anchors`] which caches the result.
 pub fn load_native_certs() -> CertificateResult {
-    load_native_certs_with_paths(CertPaths::from_env())
+    load_native_certs_with_paths(&CertPaths::from_env())
 }
 
-fn load_native_certs_with_paths(paths: CertPaths) -> CertificateResult {
+fn load_native_certs_with_paths(paths: &CertPaths) -> CertificateResult {
     match paths.has_overrides() {
         true => paths.load(),
         _ => platform::load_native_certs(),
