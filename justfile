@@ -297,9 +297,7 @@ publish *ARGS:
 
 update-deps:
     @cargo install cargo-edit --locked
-    cargo upgrade && cargo update
-    cargo update mimalloc --precise 0.1.48
-    cargo update libmimalloc-sys --precise 0.1.44
+    cargo upgrade --incompatible && cargo update
     just ./ffi/apple/examples/transparent_proxy/update-deps
 
 oss-endpoint-healthcheck:

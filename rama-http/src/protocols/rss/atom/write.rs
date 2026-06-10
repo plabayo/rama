@@ -274,7 +274,14 @@ fn xhtml_well_formed(fragment: &str) -> bool {
                     return false;
                 }
             }
-            Ok(Event::Empty(_) | Event::Text(_) | Event::CData(_) | Event::Comment(_)) => {}
+            Ok(
+                Event::Empty(_)
+                | Event::Text(_)
+                | Event::CData(_)
+                | Event::Comment(_)
+                // entity references (`&amp;` etc.) are valid xhtml text content
+                | Event::GeneralRef(_),
+            ) => {}
             Ok(Event::Decl(_) | Event::DocType(_) | Event::PI(_)) | Err(_) => return false,
         }
     }

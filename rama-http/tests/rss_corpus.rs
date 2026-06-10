@@ -195,13 +195,50 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 && s.contains('T'))
     }
 
+    // quick-xml 0.40 splits a single text content into a `Text` run plus a
+    // standalone `GeneralRef` event per entity. To keep one logical token per
+    // text content (so a mid-word entity like `caf&#233;` doesn't split into
+    // `caf` + dropped ref while the round-tripped output emits a literal
+    // `café`), accumulate decoded text + resolved entities and flush a token at
+    // each element boundary. Both the input and output side use this harvester,
+    // so the accumulation stays symmetric.
+    fn append_general_ref(e: &quick_xml::events::BytesRef<'_>, acc: &mut String) {
+        if let Ok(Some(ch)) = e.resolve_char_ref() {
+            acc.push(ch);
+        } else if let Ok(name) = e.decode()
+            && let Some(replacement) = quick_xml::escape::resolve_predefined_entity(&name)
+        {
+            acc.push_str(replacement);
+        }
+        // Unknown (DTD-defined) entities have no definition here; drop them —
+        // symmetric on both sides.
+    }
+    fn flush_token(acc: &mut String, tokens: &mut Vec<String>) {
+        let t = acc.trim();
+        if !t.is_empty() && !looks_like_date(t) {
+            tokens.push(t.to_owned());
+        }
+        acc.clear();
+    }
+
     let mut nsr = NsReader::from_reader(xml);
-    nsr.config_mut().trim_text(true);
+    // Must match the production readers: `trim_text(false)`. quick-xml 0.40
+    // splits text around entities, so per-event trimming would strip whitespace
+    // interior to a value (e.g. `Hello &lt;b&gt;`). Worse here, it makes the
+    // harvest *inconsistent* between the two representations of the same content
+    // — escaped text (fragmented + trimmed) vs CDATA (verbatim) — which is
+    // exactly how an html body looks on input (escaped) vs after round-trip
+    // (CDATA). `flush_token` trims each accumulated token's ends, so leading /
+    // trailing field whitespace is still dropped; only interior survives.
+    nsr.config_mut().trim_text(false);
     let mut tokens = Vec::new();
     let mut buf = Vec::new();
     // Stack of "recognised" flags per open element — the text inside
     // inherits the recognition of its enclosing element.
     let mut stack: Vec<bool> = Vec::new();
+    // Accumulates the current text content (decoded text + resolved entities)
+    // until an element boundary flushes it as one token.
+    let mut text_acc = String::new();
 
     loop {
         buf.clear();
@@ -220,7 +257,7 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 if attr.key.as_ref().starts_with(b"xmlns") {
                     continue;
                 }
-                if let Ok(v) = attr.unescape_value() {
+                if let Ok(v) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
                     let v = v.trim();
                     if !v.is_empty() && !looks_like_date(v) {
                         tokens.push(v.to_owned());
@@ -230,25 +267,35 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
         }
         match ev {
             Event::Start(e) => {
+                flush_token(&mut text_acc, &mut tokens);
                 let recognised = is_recognised(&rr);
                 harvest_attrs(&e, recognised, &mut tokens);
                 stack.push(recognised);
             }
             Event::Empty(e) => {
+                flush_token(&mut text_acc, &mut tokens);
                 let recognised = is_recognised(&rr);
                 harvest_attrs(&e, recognised, &mut tokens);
             }
+            // Accumulate decoded text and resolved entities into one run;
+            // `decode()` replaces the removed `unescape()` and the entity
+            // expansion now arrives as the `GeneralRef` arm below.
             Event::Text(e) => {
                 if *stack.last().unwrap_or(&true)
-                    && let Ok(t) = e.unescape()
+                    && let Ok(t) = e.decode()
                 {
-                    let t = t.trim();
-                    if !t.is_empty() && !looks_like_date(t) {
-                        tokens.push(t.to_owned());
-                    }
+                    text_acc.push_str(&t);
+                }
+            }
+            Event::GeneralRef(e) => {
+                if *stack.last().unwrap_or(&true) {
+                    append_general_ref(&e, &mut text_acc);
                 }
             }
             Event::CData(e) => {
+                // CDATA is its own token (never entity-expanded); flush any
+                // pending text first so the two don't merge.
+                flush_token(&mut text_acc, &mut tokens);
                 if *stack.last().unwrap_or(&true)
                     && let Ok(s) = std::str::from_utf8(e.as_ref())
                 {
@@ -259,9 +306,13 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                 }
             }
             Event::End(_) => {
+                flush_token(&mut text_acc, &mut tokens);
                 stack.pop();
             }
-            Event::Eof => break,
+            Event::Eof => {
+                flush_token(&mut text_acc, &mut tokens);
+                break;
+            }
             _ => {}
         }
     }

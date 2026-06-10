@@ -55,6 +55,60 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertNotNil(fx.session.ctx.clientWritePump)
     }
 
+    // MARK: - viability handler wiring
+
+    /// The wired `viabilityUpdateHandler` MUST update `ctx.lastPathViable`
+    /// SYNCHRONOUSLY when invoked (NWConnection delivers it on `flowQueue`),
+    /// not via a deferred `flowQueue.async` hop. The double-hop variant
+    /// would leave `lastPathViable` stale until a later queue turn, which is
+    /// what let a recovered path be read as dead by an already-queued
+    /// `checkWakeDeadPath` and reset a healthy flow. Driving the real handler
+    /// (installed by `installEgressStateHandler`) catches that regression:
+    /// with the hop, this assert sees the stale value and fails.
+    func testViabilityHandlerUpdatesContextSynchronously() {
+        let fx = Fixture()
+        fx.session.installEgressStateHandler(connection: fx.conn)
+        fx.session.ctx.lastPathViable = true
+
+        fx.conn.simulateViability(false)
+        XCTAssertFalse(
+            fx.session.ctx.lastPathViable,
+            "viability handler must update ctx synchronously (no deferred hop)")
+
+        fx.conn.simulateViability(true)
+        XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
+    }
+
+    // MARK: - state-timer recovery (FIFO via direct dispatch)
+
+    /// With the `stateUpdateHandler` hop removed and the mock delivering
+    /// state async on the start queue (as NWConnection does), a `.ready`
+    /// recovery runs in FIFO order with a timer armed on `flowQueue` and
+    /// CANCELS it before it can fire — so a post-ready `.waiting` tolerance
+    /// timer never reaps a flow whose path came back. This is the structural
+    /// replacement for the per-timer state guards (no guard needed: the
+    /// handler cancels the timer in order).
+    func testPostReadyWaitingTimerCancelledByReadyRecovery() {
+        let fx = Fixture()
+        // Start the connection so the mock delivers state async on flowQueue.
+        fx.session.installEgressStateHandler(connection: fx.conn)
+        fx.conn.start(queue: fx.session.flowQueue)
+
+        fx.session.egressReady = true                      // post-ready
+        fx.session.handleEgressWaiting(.posix(.ENETDOWN))  // arms tolerance timer (default ~5s)
+        fx.conn.transition(to: .ready)                     // recovery; delivered FIFO on flowQueue
+
+        // After the (immediate) .ready handler runs, the timer is cancelled.
+        let exp = expectation(description: "ready handler processed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(
+            fx.session.ctx.teardown?.isDone ?? true,
+            "the .ready handler must cancel the tolerance timer before it fires")
+        XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
+    }
+
     // MARK: - requestEngineSession
 
     /// Without an attached engine, the call returns nil — the caller
@@ -115,6 +169,48 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.teardown.isDone, "teardown fired exactly once")
         XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-ready failure does NOT touch the kernel flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
+    }
+
+    // MARK: - connect-timeout fire
+
+    /// The connect-timeout timer ACTUALLY FIRING (not just being cancelled):
+    /// armed short, never reaching `.ready`, it must run pre-open cleanup —
+    /// cancel the stale connect, clear the slot, mark teardown done. The
+    /// lifecycle test at the core level can't override the 30s fallback, so
+    /// this is the only place the fire path itself is exercised. The barrier
+    /// is a later `flowQueue` work item: serial FIFO guarantees the timer
+    /// (earlier deadline) has run by the time it resolves.
+    func testConnectTimeoutFiresAndTearsDownPreOpen() {
+        let fx = Fixture()
+        XCTAssertFalse(fx.session.egressReady)
+
+        fx.session.installConnectTimeout(connectTimeoutMs: 30, remoteHost: "example.com")
+
+        let exp = expectation(description: "connect timeout fired")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(fx.session.teardown.isDone, "connect timeout must tear the flow down")
+        XCTAssertEqual(fx.conn.cancelCount, 1, "stale connect connection must be cancelled")
+        XCTAssertNil(fx.session.ctx.connection, "connection slot cleared on connect timeout")
+        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+    }
+
+    /// A `.ready` arriving before the connect deadline flips `egressReady`,
+    /// so the timer — when it later fires — is a no-op (guarded on
+    /// `!egressReady`). Pins that the fire path can't reap a connected flow.
+    func testConnectTimeoutAfterReadyIsNoop() {
+        let fx = Fixture()
+        fx.session.egressReady = true
+
+        fx.session.installConnectTimeout(connectTimeoutMs: 30, remoteHost: "example.com")
+
+        let exp = expectation(description: "connect deadline elapsed")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(fx.session.teardown.isDone, "connected flow must survive the connect deadline")
+        XCTAssertEqual(fx.conn.cancelCount, 0, "connected flow's connection must not be cancelled")
     }
 
     // MARK: - handleEgressFailed (post-ready)

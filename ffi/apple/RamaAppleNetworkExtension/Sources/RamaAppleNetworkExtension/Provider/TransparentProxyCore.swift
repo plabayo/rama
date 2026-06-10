@@ -164,32 +164,83 @@ final class TransparentProxyCore: @unchecked Sendable {
         completion()
     }
 
-    /// On wake, restart telemetry and reconcile any TCP flow whose
-    /// egress never reached `.ready` — a still-connecting flow won't
-    /// recover (its NECP path is gone) and would otherwise burn its
-    /// connect timer. Established flows are left to the post-ready path
-    /// so we don't kill ones the OS kept across a no-op sleep.
+    /// On wake, restart telemetry and reconcile every TCP flow:
+    ///
+    ///   * Still-connecting (`!egressReady`): its NECP path is gone and it
+    ///     won't recover — reap now so it doesn't burn its connect timer.
+    ///   * Established (`egressReady`): the egress `NWConnection` can
+    ///     silently lose its path across a network-changing sleep yet stay
+    ///     `.ready` — neither `.waiting` nor `.failed` fires, so the
+    ///     per-flow `handleEgressState` reaper never runs and the flow
+    ///     wedges (peer unreachable → graceful drain never completes) until
+    ///     the 60s maintenance watchdog. Re-check viability after a short
+    ///     settle (`defaultPostWakePathRecheckMs`) and reset the ones whose
+    ///     path didn't come back, so a stale long-lived connection (e.g.
+    ///     Chrome reusing an HTTP/2 connection to a Google host) is reset
+    ///     promptly instead of hanging. A no-op (Power-Nap) sleep leaves the
+    ///     path viable, so those flows are kept.
     func handleSystemWake() {
         engine?.notifySystemWake()
-        // Reconcile on each flow's own queue: both the `egressReady`
-        // read and the teardown run there, so they stay single-threaded
-        // with that flow's kernel / NWConnection callbacks instead of
-        // racing them (and reading `egressReady`, written on the flow
-        // queue, off-queue). A still-connecting flow won't recover (its
-        // NECP path is gone); established flows are left to the
-        // post-ready path so we don't kill ones the OS kept across a
-        // no-op sleep.
+        // Reconcile on each flow's own queue: the `egressReady` /
+        // `lastPathViable` reads and the teardown all run there, so they
+        // stay single-threaded with that flow's kernel / NWConnection
+        // callbacks instead of racing them.
         let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
         for ctx in all {
-            runFlowTeardown(ctx) {
-                guard !ctx.egressReady else { return }
-                ctx.teardown?.applySystemWake()
+            runFlowTeardown(ctx) { [weak self] in
+                // `hasReachedReady`, NOT `egressReady`: this reconcile block
+                // can be queued AHEAD of a `.ready` callback that's still
+                // pending on `flowQueue`, so `egressReady` may be stale here
+                // even though NW already reached `.ready`. FIFO doesn't help
+                // a read (only a timer-cancel) — consult live state so we
+                // don't pre-open-cleanup a flow that just connected.
+                guard ctx.hasReachedReady else {
+                    ctx.teardown?.applySystemWake()
+                    return
+                }
+                // Established: defer the verdict to a settle-delayed
+                // viability re-check (see `checkWakeDeadPath`). Needs a
+                // `flowQueue` to schedule on; production contexts always
+                // have one (engine-less test contexts that don't are left
+                // to the per-flow `.failed`/watchdog paths, as before).
+                guard let self, let queue = ctx.flowQueue else { return }
+                queue.asyncAfter(
+                    deadline: .now() + .milliseconds(Int(defaultPostWakePathRecheckMs))
+                ) { [weak self, weak ctx] in
+                    guard let self, let ctx else { return }
+                    self.checkWakeDeadPath(ctx)
+                }
             }
         }
         logLifecycle("system wake")
         if self.engine != nil {
             startFlowCountReporting()
         }
+    }
+
+    /// Post-wake settle re-check for one established flow. MUST run on the
+    /// flow's own `flowQueue` so the `egressReady` / `lastPathViable` reads
+    /// stay single-threaded with the flow's other callbacks. Resets the
+    /// flow as a wake-dead-path failure iff its egress path is no longer
+    /// viable (the `viabilityUpdateHandler` last reported `false` and it
+    /// didn't recover during the settle window). Idempotent: if the flow
+    /// already tore down in the settle window (its NWConnection reported
+    /// `.failed` / `.waiting`, or it closed gracefully) the teardown's
+    /// sticky `done` flag makes this a no-op; if the path recovered,
+    /// `lastPathViable` is `true` again and it is left alone.
+    private func checkWakeDeadPath(_ ctx: TcpFlowContext) {
+        guard ctx.egressReady, ctx.connection != nil else { return }
+        // Don't act on a flow whose teardown already ran/started — it may
+        // still be observable here during the window before its async
+        // `removeTcpFlow` lands (e.g. a promoted flow that hit
+        // `applyPromotedTerminal`). `applyWakeDeadPath` would no-op on a
+        // `done` teardown anyway, but bailing here also avoids the
+        // misleading "resetting established flow" log line.
+        guard ctx.teardown?.isDone != true else { return }
+        guard !ctx.lastPathViable else { return }
+        logLifecycle(
+            "wake: egress path not viable after settle; resetting established flow")
+        ctx.teardown?.applyWakeDeadPath()
     }
 
     private func engineDetachedError() -> NSError {
@@ -253,16 +304,13 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard let self else { return }
             let toKick = self.collectMaintenanceKicksLocked()
             guard !toKick.isEmpty else { return }
-            // Hop off `stateQueue` before firing teardowns. Today
-            // every production ctx has its own `flowQueue` so the
-            // teardown body runs there (no recursive sync). But if a
-            // future code path ever inserts a ctx without one,
-            // `runFlowTeardown` runs the body inline → the body's
-            // `core?.removeTcpFlow(flowId)` `stateQueue.sync`s back
-            // → deadlock. Hopping off here costs one async per tick
-            // (per-flow watchdog) and makes the production path
-            // robust to that regression. The test hook does the
-            // same; this brings prod into line.
+            // Hop off `stateQueue` before firing teardowns. `removeTcpFlow`
+            // is now `.async` so an inline teardown body (engine-less ctx
+            // without a `flowQueue`) no longer sync-re-enters `stateQueue`
+            // → the old deadlock is gone. Kept as belt-and-suspenders so we
+            // never run a teardown body while holding `stateQueue`'s context
+            // (keeps the maintenance tick short and the queue free for other
+            // mutations). Costs one async per tick.
             DispatchQueue.global(qos: .utility).async {
                 self.fireWatchdogKicks(toKick)
             }
@@ -333,14 +381,11 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// One maintenance tick, off-`stateQueue` half: actually fire the
     /// teardowns identified by [`collectMaintenanceKicksLocked`].
     ///
-    /// Hopped off `stateQueue` deliberately. In production every ctx
-    /// has its own `flowQueue` so `runFlowTeardown` dispatches there
-    /// — but engine-less / test ctxs without a `flowQueue` run the
-    /// teardown body inline, and that body calls
-    /// `core?.removeTcpFlow(flowId)` which `stateQueue.sync`s back.
-    /// Holding `stateQueue` across the body would deadlock there. The
-    /// hop costs nothing in production and makes the watchdog robust
-    /// to engine-less call paths.
+    /// Hopped off `stateQueue` deliberately. `removeTcpFlow` is `.async`
+    /// now, so an inline teardown body (engine-less / test ctx without a
+    /// `flowQueue`) no longer sync-re-enters `stateQueue` — kept as
+    /// belt-and-suspenders so a teardown body never runs while holding the
+    /// maintenance tick's `stateQueue` context. Costs nothing in production.
     private func fireWatchdogKicks(_ kicks: MaintenanceKicks) {
         guard !kicks.isEmpty else { return }
         if !kicks.preReadyStuck.isEmpty {
@@ -348,17 +393,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                 "watchdog: force-tearing down \(kicks.preReadyStuck.count) stale pre-ready flow(s)"
             )
             for ctx in kicks.preReadyStuck {
-                // Re-check `egressReady` ON `flowQueue`. The decision to
-                // kick was made on `stateQueue` from a `nonisolated`
-                // read of `ctx.egressReady`; between that and us getting
-                // here the flow may have raced into `.ready` (the
-                // legitimate happy path catching up just in time). The
-                // teardown's `applyConnectTimeout` has no internal
-                // ready-check — it'd cancel a healthy NWConnection and
-                // pop the registry. Mirror what `handleSystemWake`
-                // already does for the same race.
+                // Re-check via `hasReachedReady` ON `flowQueue`, NOT plain
+                // `egressReady`. This kick block can be queued AHEAD of a
+                // pending `.ready` callback, so `egressReady` may be stale
+                // `false` here even though NW reached `.ready` — FIFO orders
+                // the `.ready` handler, not this read. Consulting live state
+                // spares a connection that just came up. `applyConnectTimeout`
+                // has no internal ready-check, so this gate is its protection.
                 runFlowTeardown(ctx) {
-                    guard !ctx.egressReady else { return }
+                    guard !ctx.hasReachedReady else { return }
                     ctx.teardown?.applyConnectTimeout()
                 }
             }
@@ -390,6 +433,13 @@ final class TransparentProxyCore: @unchecked Sendable {
             // Outside `stateQueue.sync` on purpose — see
             // [`fireWatchdogKicks`] for the deadlock rationale.
             fireWatchdogKicks(toKick)
+        }
+
+        /// Test hook: run the post-wake established-flow path re-check
+        /// synchronously, skipping the `defaultPostWakePathRecheckMs`
+        /// settle timer. Mirrors `testRunPeriodicMaintenance`.
+        func testCheckWakeDeadPath(_ ctx: TcpFlowContext) {
+            checkWakeDeadPath(ctx)
         }
 
         /// Test hook: inspect the watchdog's "stuck since last tick" set.
@@ -435,7 +485,20 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync {
+        // `.async`, not `.sync`: this is called from per-flow teardown
+        // running on the flow's own `flowQueue`. A synchronous hop here
+        // blocks that flowQueue thread on the shared serial `stateQueue`;
+        // under high concurrent churn many flowQueue threads block at once,
+        // exhausting the GCD pool and starving OTHER flows' timers (the 5s
+        // drain backstop) and data-path work — which is what pushed wedged
+        // flows out to the 60s watchdog (60–130s stuck). Fire-and-forget is
+        // safe: removal is the terminal step (the teardown's `done` flag is
+        // already set), it returns nothing, and the mutation still
+        // serializes on `stateQueue`, so the watchdog/reconcile see
+        // consistent state. The map's strong ref also keeps the ctx alive
+        // until the async lands, which only HELPS the ObjectIdentifier-reuse
+        // guard below.
+        stateQueue.async {
             self.tcpContexts.removeValue(forKey: flowId)
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
@@ -449,7 +512,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
-        stateQueue.sync { self.udpSessions.removeValue(forKey: flowId) }
+        // `.async` for the same reason as `removeTcpFlow` — never block a
+        // per-flow teardown on the shared serial queue.
+        stateQueue.async { self.udpSessions.removeValue(forKey: flowId) }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
@@ -660,15 +725,14 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // the teardown's sticky `done`.
                 ctx?.teardown?.applyDrainBackstop()
             },
-            onTerminal: { [weak self, weak flow] in
-                // Both direct directions done. Close the
-                // kernel flow read+write sides + drop the
-                // per-flow registry entry. The egress
-                // NWConnection's lifecycle is owned by
-                // egressWritePump (drain → FIN → linger).
-                flow?.closeReadWithError(nil)
-                flow?.closeWriteWithError(nil)
-                self?.removeTcpFlow(flowId)
+            onTerminal: { [weak ctx] in
+                // Both direct directions done. Route through the shared
+                // teardown so the close marks `done` (a racing post-terminal
+                // wake-recheck / watchdog then no-ops instead of a second,
+                // connection-cancelling teardown) and detaches handlers —
+                // WITHOUT cancelling the egress NWConnection, whose FIN/linger
+                // the egress write pump owns. See `applyPromotedTerminal`.
+                ctx?.teardown?.applyPromotedTerminal()
             }
         )
         ctx.directForwarder = forwarder
