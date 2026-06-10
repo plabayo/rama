@@ -423,7 +423,19 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
         len: single.len(),
     };
     let status = unsafe { rama_transparent_proxy_tcp_session_on_client_bytes(session, bytes_view) };
-    assert_eq!(status, RamaTcpDeliverStatus::Accepted);
+    // This races the promote resolution running on the service task: the
+    // service awaits `into_passthrough()` as soon as it starts, so on the
+    // failed-promote acks it can `cancel()` (clearing `client_tx`) before this
+    // byte lands, which legitimately yields `Closed`. The OK ack keeps the
+    // session open, so `Accepted` is the norm. Either is valid here; the
+    // meaningful propagation assertions live in each test below.
+    assert!(
+        matches!(
+            status,
+            RamaTcpDeliverStatus::Accepted | RamaTcpDeliverStatus::Closed
+        ),
+        "unexpected client-byte status: {status:?}"
+    );
 
     // Wait for the service's into_passthrough to resolve.
     let result = result_rx
