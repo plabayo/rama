@@ -12,6 +12,7 @@
 //! parsed bucket is older than `now - retention` on each rotation.
 //! The actively-open file is never swept.
 
+use rama_core::error::BoxErrorExt as _;
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -24,7 +25,7 @@ use std::{
 };
 
 use jiff::{Timestamp, tz::TimeZone};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 
 use super::sink::KeyLogSink;
@@ -63,9 +64,7 @@ impl RotationPeriod {
             Self::Minutes(n) | Self::Hours(n) => n,
         };
         if n == 0 {
-            return Err(
-                OpaqueError::from_static_str("RotationPeriod must be non-zero").into_box_error(),
-            );
+            return Err(BoxError::from_static_str("RotationPeriod must be non-zero"));
         }
         Ok(self)
     }

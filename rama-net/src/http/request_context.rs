@@ -7,7 +7,7 @@ use crate::{
     address::{Domain, Host},
 };
 use rama_core::error::BoxError;
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
 use rama_http_types::request::Parts;
@@ -150,7 +150,7 @@ pub fn try_request_ctx_from_http_parts(
                 })
         })
         .ok_or_else(|| {
-            OpaqueError::from_static_str("RequestContext: no authourity found in http::Request")
+            BoxError::from_static_str("RequestContext: no authourity found in http::Request")
         })?;
 
     tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");

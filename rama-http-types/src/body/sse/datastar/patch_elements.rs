@@ -3,8 +3,8 @@ use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite,
     datastar::EventType, parser::is_lf,
 };
-use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 
@@ -238,10 +238,9 @@ impl EventDataLineReader for PatchElementsReader {
             })
             .unwrap_or_default()
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "PatchElementsReader: unexpected event type: expected: datastar-patch-elements",
-            )
-            .into_box_error());
+            ));
         }
 
         Ok(Some(PatchElements {

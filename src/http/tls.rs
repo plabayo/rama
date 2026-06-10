@@ -1,6 +1,6 @@
 //! tls features provided from the http layer.
 
-use crate::error::{BoxError, ErrorContext as _, ErrorExt as _};
+use crate::error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _};
 use crate::http::{
     BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
@@ -201,7 +201,7 @@ impl CertIssuerHttpClient {
         let status = response.status();
         if status != StatusCode::OK {
             return Err(
-                OpaqueError::from_static_str("unexpected dinocert order response")
+                BoxError::from_static_str("unexpected dinocert order response")
                     .context_field("status", status),
             );
         }
@@ -247,7 +247,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 if let Some(ref allow_list) = self.allow_list {
                     match allow_list.get(domain) {
                         None => {
-                            return Err(OpaqueError::from_static_str(
+                            return Err(BoxError::from_static_str(
                                 "sni found: unexpected unknown domain",
                             )
                             .with_context_field("domain", || domain.clone()));
@@ -264,7 +264,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                 }
             }
             None => {
-                return Err(OpaqueError::from_static_str("no SNI found").into_box_error());
+                return Err(BoxError::from_static_str("no SNI found"));
             }
         };
 

@@ -1,8 +1,8 @@
 use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType,
 };
-use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 
 /// [`PatchSignals`] patches signals into the signal store
@@ -171,10 +171,9 @@ impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
             })
             .unwrap_or_default()
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "PatchSignalsReader: unexpected event type: expected: datastar-patch-signals",
-            )
-            .into_box_error());
+            ));
         }
 
         let only_if_missing = std::mem::take(&mut self.only_if_missing);

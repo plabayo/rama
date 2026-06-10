@@ -170,7 +170,7 @@ use core::error::Error as StdError;
 pub type BoxError = self::std::Box<dyn StdError + Send + Sync + 'static>;
 
 mod ext;
-pub use ext::{ErrorContext, ErrorExt};
+pub use ext::{BoxErrorExt, ErrorContext, ErrorExt};
 
 pub mod extra {
     //! extra types for edge cases

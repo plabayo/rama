@@ -1,4 +1,5 @@
 use crate::proto::common::{ProtectedHeaderAcme, ProtectedHeaderCrypto, ProtectedHeaderKey};
+use rama_core::error::BoxErrorExt as _;
 
 use super::proto::{
     client::FinalizePayload,
@@ -180,7 +181,7 @@ impl AcmeClient {
                 .context("create account request")?;
 
             if mode == CreateAccountMode::Create && response.status() == 200 {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "Tried creating new account, but account already exists",
                 )
                 .into());
@@ -562,7 +563,7 @@ impl<'a> Order<'a> {
                 server::ChallengeStatus::Valid => return Ok(()),
                 server::ChallengeStatus::Invalid => {
                     return Err(
-                        OpaqueError::from_static_str("challenge is detected as invalid").into(),
+                        BoxError::from_static_str("challenge is detected as invalid").into(),
                     );
                 }
             }
@@ -679,7 +680,7 @@ impl<'a> Order<'a> {
                 return Ok::<_, ClientError>(&self.inner);
             }
             if self.inner.status == server::OrderStatus::Invalid {
-                return Err(OpaqueError::from_static_str("Order is invalid state").into());
+                return Err(BoxError::from_static_str("Order is invalid state").into());
             }
 
             sleep(retry_wait.unwrap_or(self.account.client.default_retry_duration)).await;
@@ -759,7 +760,7 @@ async fn bytes_into_error(response_parts: Parts, bytes: Bytes) -> ClientError {
         problem.into()
     } else {
         match bytes.try_into_string().await {
-            Ok(body_str) => OpaqueError::from_static_str("unexpected problem response")
+            Ok(body_str) => BoxError::from_static_str("unexpected problem response")
                 .context_field("status", response_parts.status)
                 .context_str_field("body", body_str),
             Err(err) => err

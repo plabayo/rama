@@ -12,8 +12,7 @@ use crate::{
     cli::ForwardKind,
     combinators::Either,
     combinators::Either7,
-    error::BoxError,
-    error::{ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
     http::{
         Request, Response, StatusCode,
@@ -343,10 +342,10 @@ impl<M> IpServiceBuilder<M> {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             Some(other) => {
-                return Err(OpaqueError::from_static_str(
-                    "invalid forward kind for Transport mode",
-                )
-                .with_context_debug_field("kind", || other.clone()));
+                return Err(
+                    BoxError::from_static_str("invalid forward kind for Transport mode")
+                        .with_context_debug_field("kind", || other.clone()),
+                );
             }
         };
 

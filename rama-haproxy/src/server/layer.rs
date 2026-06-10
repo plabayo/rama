@@ -1,8 +1,9 @@
 use crate::protocol::{HeaderResult, PartialResult, v1, v2};
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::{Extension, ExtensionsRef},
     io::{HeapReader, Io, PrefixedIo},
     telemetry::tracing,
@@ -495,10 +496,9 @@ impl<S> HaProxyService<S> {
         if self.strictness.reject_unknown_address_family
             && matches!(header.addresses, v1::Addresses::Unknown)
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "haproxy v1: UNKNOWN address family rejected by strictness configuration",
-            )
-            .into_box_error());
+            ));
         }
 
         match header.addresses {
@@ -524,17 +524,15 @@ impl<S> HaProxyService<S> {
         if self.strictness.reject_unknown_address_family
             && matches!(header.addresses, v2::Addresses::Unspecified)
         {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "haproxy v2: AF_UNSPEC rejected by strictness configuration",
-            )
-            .into_box_error());
+            ));
         }
 
         if self.strictness.reject_local_command && header.command == v2::Command::Local {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "haproxy v2: LOCAL command rejected by strictness configuration",
-            )
-            .into_box_error());
+            ));
         }
 
         // CRC32C verification — section 2.2.5 of the spec mandates that a
@@ -546,10 +544,9 @@ impl<S> HaProxyService<S> {
         // the two concerns orthogonal.
         let crc_status = header.verify_crc32c();
         if self.strictness.verify_crc32c_when_present && crc_status == v2::Crc32cStatus::Invalid {
-            return Err(
-                OpaqueError::from_static_str("haproxy v2: CRC32C TLV present but invalid")
-                    .into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "haproxy v2: CRC32C TLV present but invalid",
+            ));
         }
         if self.strictness.require_crc32c
             && !matches!(
@@ -557,10 +554,9 @@ impl<S> HaProxyService<S> {
                 v2::Crc32cStatus::Valid | v2::Crc32cStatus::Invalid
             )
         {
-            return Err(
-                OpaqueError::from_static_str("haproxy v2: required CRC32C TLV missing")
-                    .into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "haproxy v2: required CRC32C TLV missing",
+            ));
         }
 
         // Collect TLVs into an extension before consuming them.
@@ -582,10 +578,9 @@ impl<S> HaProxyService<S> {
         }
 
         if self.strictness.fail_on_malformed_tlv && tlv_malformed {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "haproxy v2: malformed TLV area rejected by strictness configuration",
-            )
-            .into_box_error());
+            ));
         }
 
         // Spec section 2.2: the receiver MUST ignore any address information

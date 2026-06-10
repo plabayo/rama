@@ -1,8 +1,8 @@
 use crate::Protocol;
+use rama_core::error::BoxErrorExt as _;
 
 use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
-use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
@@ -327,12 +327,9 @@ impl TryFrom<&str> for HostWithPort {
         let (host, port) = parse_utils::split_port_from_str(s)?;
         let host = Host::try_from(host).context("parse host from host-with-port")?;
         match host {
-            Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => {
-                Err(OpaqueError::from_static_str(
-                    "missing brackets for IPv6 address with port (in host-with-port)",
-                )
-                .into_box_error())
-            }
+            Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(BoxError::from_static_str(
+                "missing brackets for IPv6 address with port (in host-with-port)",
+            )),
             _ => Ok(Self { host, port }),
         }
     }

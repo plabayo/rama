@@ -9,9 +9,10 @@
 //! [`UserInfo::to_basic`] for HTTP Basic-Auth interop.
 
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxErrorExt as _;
 
 use crate::user::Basic;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext};
 
 /// Raw RFC 3986 userinfo bytes. Cheap to clone.
 ///
@@ -216,7 +217,7 @@ fn validate_userinfo_runtime(bytes: &[u8]) -> Result<(), BoxError> {
                 }
                 UserInfoFault::DisallowedByte => "userinfo contains disallowed character",
             };
-            Err(OpaqueError::from_static_str(msg).into_box_error())
+            Err(BoxError::from_static_str(msg))
         }
     }
 }

@@ -145,7 +145,7 @@ mod test {
     };
     use rama_core::{
         Layer,
-        error::extra::OpaqueError,
+        error::BoxErrorExt,
         extensions::{Extension, Extensions, ExtensionsRef},
         service::service_fn,
     };
@@ -203,7 +203,7 @@ mod test {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                    "error" => Err(OpaqueError::from_static_str("custom error")),
+                    "error" => Err(BoxError::from_static_str("custom error")),
                     _ => Ok(txt.into_response()),
                 }
             },

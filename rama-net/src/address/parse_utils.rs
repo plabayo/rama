@@ -1,4 +1,5 @@
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use std::net::{IpAddr, Ipv6Addr};
 
 pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
@@ -8,7 +9,7 @@ pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), BoxError> {
             Err(err) => Err(err.context("parse port as u16")),
         }
     } else {
-        Err(OpaqueError::from_static_str("missing port").into_box_error())
+        Err(BoxError::from_static_str("missing port"))
     }
 }
 
@@ -107,10 +108,9 @@ pub(crate) fn parse_bracketed_ipv6_with_port(
         // we haven't built. Reject with a clear message rather than
         // letting `Ipv6Addr::parse` fail opaquely on the `%`.
         if ipv6_bracket_has_zone(value.as_bytes()) {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "ipv6 zone identifiers (RFC 6874) are not supported",
-            )
-            .into_box_error());
+            ));
         }
         let addr = value
             .parse::<Ipv6Addr>()

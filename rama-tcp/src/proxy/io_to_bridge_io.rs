@@ -1,6 +1,7 @@
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _},
     extensions::ExtensionsRef,
     io::{BridgeIo, Io},
     rt::Executor,
@@ -192,9 +193,9 @@ where
                 if let Some(ProxyTarget(host_with_port)) = ingress.extensions().get_ref().cloned() {
                     host_with_port
                 } else {
-                    return Err(OpaqueError::from_static_str(
+                    return Err(BoxError::from_static_str(
                         "missing ProxyTarget in IoToProxyBridgeIo: proxy target assumed to exist in ingress extensions",
-                    ).into_box_error());
+                    ));
                 }
             }
         };

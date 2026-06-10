@@ -1,8 +1,9 @@
+use rama_core::error::BoxErrorExt as _;
 use std::borrow::Cow;
 
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
@@ -163,10 +164,9 @@ where
             return if self.optional {
                 Ok(self.inner.serve(req).await.into_box_error()?)
             } else {
-                Err(OpaqueError::from_static_str(
+                Err(BoxError::from_static_str(
                     "requirement not fulfilled: user agent profile could not be selected",
-                )
-                .into_box_error())
+                ))
             };
         };
 

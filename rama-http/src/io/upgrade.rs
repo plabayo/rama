@@ -32,6 +32,7 @@
 //! upgrade, you call `on()` with the `Request`, and then can spawn a task
 //! awaiting it.
 
+use rama_core::error::BoxErrorExt as _;
 use std::any::TypeId;
 use std::fmt;
 use std::io;
@@ -40,8 +41,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use parking_lot::Mutex;
-use rama_core::error::ErrorExt as _;
-use rama_core::error::extra::OpaqueError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 
@@ -117,15 +116,14 @@ pub fn handle_upgrade<T: ExtensionsRef>(
         Some(on_upgrade) => {
             trace!("upgrading this: {:?}", on_upgrade);
             if on_upgrade.has_handled_upgrade() {
-                Err(
-                    OpaqueError::from_static_str("upgraded has already been handled")
-                        .into_box_error(),
-                )
+                Err(BoxError::from_static_str(
+                    "upgraded has already been handled",
+                ))
             } else {
                 Ok(on_upgrade)
             }
         }
-        None => Err(OpaqueError::from_static_str("no pending update found").into_box_error()),
+        None => Err(BoxError::from_static_str("no pending update found")),
     };
 
     async move {
@@ -312,10 +310,9 @@ impl Future for OnUpgrade {
             .map(|res| match res {
                 Ok(Ok(upgraded)) => Ok(upgraded),
                 Ok(Err(err)) => Err(err),
-                Err(_oneshot_canceled) => Err(OpaqueError::from_static_str(
+                Err(_oneshot_canceled) => Err(BoxError::from_static_str(
                     "OnUpgrade: cancelled while expecting upgrade",
-                )
-                .into_box_error()),
+                )),
             })
     }
 }
@@ -339,10 +336,9 @@ impl Pending {
     /// upgrades are handled manually.
     pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        _ = self.tx.send(Err(OpaqueError::from_static_str(
+        _ = self.tx.send(Err(BoxError::from_static_str(
             "OnUpgrade: manual upgrade failed",
-        )
-        .into_box_error()));
+        )));
     }
 }
 

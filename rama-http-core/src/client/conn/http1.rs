@@ -1,12 +1,13 @@
 //! HTTP/1 client connections.
 
+use rama_core::error::BoxErrorExt as _;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
@@ -505,9 +506,9 @@ impl Builder {
         /// The minimum value allowed is 8192. This method errors if the passed `max` is less than the minimum.
         pub fn max_buf_size(mut self, max: usize) -> Result<Self, BoxError> {
             if max < proto::h1::MINIMUM_MAX_BUFFER_SIZE {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "the max_buf_size cannot be smaller than the minimum that h1 specifies."
-                ).into_box_error());
+                ));
             }
 
             self.h1_max_buf_size = Some(max);

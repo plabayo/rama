@@ -2,7 +2,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
     net::{
         Protocol,
@@ -83,10 +83,9 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
             }
             DataEncoding::DerStack(raw_data_slice) => {
                 if raw_data_slice.is_empty() {
-                    return Err(OpaqueError::from_static_str(
+                    return Err(BoxError::from_static_str(
                         "DER-encoded stack byte slice for TLS cert is empty",
-                    )
-                    .into_box_error());
+                    ));
                 } else {
                     vec![
                         X509::from_der(raw_data_slice[0].as_slice())
@@ -108,9 +107,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
             println!();
         }
     } else {
-        return Err(
-            OpaqueError::from_static_str("no peer cert information found").into_box_error(),
-        );
+        return Err(BoxError::from_static_str("no peer cert information found"));
     }
 
     Ok(())

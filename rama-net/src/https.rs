@@ -1,4 +1,5 @@
-use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorExt};
 use rama_http_types::Version;
 
 use crate::tls::ApplicationProtocol;
@@ -13,7 +14,7 @@ impl TryFrom<Version> for ApplicationProtocol {
             Version::HTTP_11 => Self::HTTP_11,
             Version::HTTP_2 => Self::HTTP_2,
             Version::HTTP_3 => Self::HTTP_3,
-            _ => Err(OpaqueError::from_static_str(
+            _ => Err(BoxError::from_static_str(
                 "received unexpected http version",
             ))?,
         };
@@ -39,7 +40,7 @@ impl TryFrom<&ApplicationProtocol> for Version {
             ApplicationProtocol::HTTP_11 => Self::HTTP_11,
             ApplicationProtocol::HTTP_2 => Self::HTTP_2,
             ApplicationProtocol::HTTP_3 => Self::HTTP_3,
-            alpn => Err(OpaqueError::from_static_str(
+            alpn => Err(BoxError::from_static_str(
                 "cannot convert given alpn {alpn} to http version",
             )
             .context_field("alpn", alpn.clone()))?,

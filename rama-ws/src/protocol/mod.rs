@@ -5,7 +5,7 @@
     reason = "vendored from upstream `tungstenite-rs`: arms gated on caller-validated WebSocket protocol state that the type system can't enforce"
 )]
 
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, trace};
@@ -690,7 +690,7 @@ impl WebSocketContext {
                 self.state = WebSocketState::Terminated;
                 return Err(ProtocolError::Io(io::Error::new(
                     io::ErrorKind::ConnectionAborted,
-                    OpaqueError::from_static_str("Connection closed normally by me-the-server"),
+                    BoxError::from_static_str("Connection closed normally by me-the-server"),
                 )));
             }
 
@@ -850,7 +850,7 @@ impl WebSocketContext {
             self.state = WebSocketState::Terminated;
             Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                OpaqueError::from_static_str("Connection closed normally by me-the-server (EOF)"),
+                BoxError::from_static_str("Connection closed normally by me-the-server (EOF)"),
             )))
         } else {
             Ok(should_flush)
@@ -895,7 +895,7 @@ impl WebSocketContext {
                 WebSocketState::ClosedByPeer | WebSocketState::CloseAcknowledged => {
                     Err(ProtocolError::Io(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
-                        OpaqueError::from_static_str("Connection closed normally by peer"),
+                        BoxError::from_static_str("Connection closed normally by peer"),
                     )))
                 }
                 WebSocketState::Active
@@ -1246,7 +1246,7 @@ impl WebSocketState {
         match self {
             Self::Terminated => Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::NotConnected,
-                OpaqueError::from_static_str("Trying to work with closed connection"),
+                BoxError::from_static_str("Trying to work with closed connection"),
             ))),
             Self::Active | Self::CloseAcknowledged | Self::ClosedByPeer | Self::ClosedByUs => {
                 Ok(())

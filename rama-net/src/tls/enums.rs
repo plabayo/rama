@@ -1,10 +1,8 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
-use rama_core::{
-    bytes::{BufMut, Bytes, BytesMut},
-    error::extra::OpaqueError,
-};
+use rama_core::bytes::{BufMut, Bytes, BytesMut};
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_utils::macros::enums::enum_builder;
 
 macro_rules! impl_u16_is_grease {
@@ -810,7 +808,7 @@ impl ApplicationProtocol {
         if b.len() > 255 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                OpaqueError::from_static_str("application protocol is too large"),
+                BoxError::from_static_str("application protocol is too large"),
             ));
         }
 

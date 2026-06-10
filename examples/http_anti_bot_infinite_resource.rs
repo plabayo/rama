@@ -36,7 +36,7 @@
 use rama::{
     Layer, Service,
     conversion::FromRef,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt},
     extensions::{Extensions, ExtensionsRef},
     http::{
         InfiniteReader,
@@ -230,10 +230,8 @@ where
             .ip_addr;
         let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
-            return Err(
-                OpaqueError::from_static_str("drop connection for blocked ip")
-                    .context_field("ip_addr", ip_addr),
-            );
+            return Err(BoxError::from_static_str("drop connection for blocked ip")
+                .context_field("ip_addr", ip_addr));
         }
         std::mem::drop(block_list);
         self.inner.serve(stream).await.into_box_error()

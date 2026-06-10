@@ -1,5 +1,6 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _};
 use rama_utils::macros::generate_set_and_with;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -63,7 +64,7 @@ impl Headers {
 
             let mut headers = match headers {
                 Value::Object(map) => map,
-                _ => Err(OpaqueError::from_static_str(
+                _ => Err(BoxError::from_static_str(
                     "Can only set multiple headers if input is key value object",
                 ))?,
             };
@@ -104,10 +105,9 @@ impl Headers {
     {
         match &self.0 {
             Some(headers) => Ok(T::deserialize(headers).context("deserialize headers into T")?),
-            None => Err(OpaqueError::from_static_str(
+            None => Err(BoxError::from_static_str(
                 "headers are None, deserialize not supported",
-            )
-            .into_box_error()),
+            )),
         }
     }
 }
@@ -212,10 +212,9 @@ impl JWSBuilder {
     /// This only available if there is no unprotected header set
     pub fn build_compact(mut self, signer: &impl Signer) -> Result<JWSCompact, BoxError> {
         if self.unprotected_headers.is_some() {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "Compact jws does not support unprotected headers",
-            )
-            .into_box_error());
+            ));
         }
 
         signer
@@ -583,10 +582,9 @@ impl JWSFlattened {
     /// Create a [`JWSCompact`] from this [`JWSFlattened`]
     pub fn as_compact(&self) -> Result<String, BoxError> {
         if self.signature.unprotected.is_some() {
-            return Err(OpaqueError::from_static_str(
+            return Err(BoxError::from_static_str(
                 "JWSCompact does not support unprotected headers",
-            )
-            .into_box_error());
+            ));
         };
 
         Ok(format!(
@@ -802,7 +800,7 @@ pub trait Verifier {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::error::extra::OpaqueError;
+
     use tokio_test::assert_err;
 
     use super::*;
@@ -841,29 +839,27 @@ mod tests {
     }
 
     impl Verifier for DummyKey {
-        type Error = OpaqueError;
+        type Error = BoxError;
         type Output = ();
 
         fn verify(
             &self,
             _payload: &[u8],
             to_verify_sigs: &[ToVerifySignature],
-        ) -> Result<(), OpaqueError> {
+        ) -> Result<(), BoxError> {
             let to_verify = &to_verify_sigs[0];
             let original = to_verify.signed_data.as_bytes();
 
             let signature = to_verify.decoded_signature.signature();
 
             if original.len() + 1 != signature.len() {
-                Err(OpaqueError::from_static_str(
+                Err(BoxError::from_static_str(
                     "signature should add single u8 to original slice",
                 ))
             } else if original[..] != signature[..original.len()] {
-                Err(OpaqueError::from_static_str(
-                    "original data should be equal",
-                ))
+                Err(BoxError::from_static_str("original data should be equal"))
             } else if signature[signature.len() - 1] != 33 {
-                Err(OpaqueError::from_static_str(
+                Err(BoxError::from_static_str(
                     "last element in signature should be 33",
                 ))
             } else {
@@ -1097,10 +1093,9 @@ mod tests {
                 if protected_header.data.as_str() == "very protected" {
                     Ok(())
                 } else {
-                    Err(
-                        OpaqueError::from_static_str("received unexpected second protected header")
-                            .into_box_error(),
-                    )
+                    Err(BoxError::from_static_str(
+                        "received unexpected second protected header",
+                    ))
                 }
             }
         }

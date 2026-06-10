@@ -1,5 +1,5 @@
 use rama::{
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     net::{Protocol, address::ProxyAddress, uri::Uri, user::Basic},
     utils::str::NonEmptyStr,
 };
@@ -15,7 +15,7 @@ mod layer;
 
 pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if cfg.uri.is_empty() {
-        return Err(OpaqueError::from_static_str("empty URI is not valid").into_box_error());
+        return Err(BoxError::from_static_str("empty URI is not valid"));
     }
 
     // Canonical URI parse — relies on rama's RFC 3986 parser instead
@@ -37,7 +37,7 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     if scheme.is_http() || is_ws {
         return http::run(cfg, is_ws).await;
     }
-    Err(OpaqueError::from_static_str("scheme is not supported")
+    Err(BoxError::from_static_str("scheme is not supported")
         .context_str_field("scheme", scheme.as_str()))
 }
 
