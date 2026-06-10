@@ -35,6 +35,10 @@ pub mod pki_types {
     pub use rustls_pki_types::*;
 }
 
+#[cfg(feature = "native-certs")]
+#[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
+pub mod native_certs;
+
 pub mod dep {
     //! Dependencies for rama crypto modules.
     //!

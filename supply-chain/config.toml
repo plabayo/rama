@@ -299,6 +299,10 @@ criteria = "safe-to-deploy"
 version = "1.19.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.openssl-probe]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+
 [[exemptions.opentelemetry]]
 version = "0.22.0"
 criteria = "safe-to-deploy"
@@ -413,10 +417,6 @@ criteria = "safe-to-run"
 
 [[exemptions.rustls]]
 version = "0.23.5"
-criteria = "safe-to-deploy"
-
-[[exemptions.rustls-native-certs]]
-version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-pki-types]]
@@ -601,6 +601,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-shared]]
 version = "0.2.92"
+criteria = "safe-to-deploy"
+
+[[exemptions.webpki-root-certs]]
+version = "1.0.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.winapi]]

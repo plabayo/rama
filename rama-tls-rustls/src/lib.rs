@@ -67,17 +67,6 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod native_certs {
-        //! Re-export of the [`rustls-native-certs`] crate.
-        //!
-        //! rustls-native-certs allows rustls to use the platform's native certificate
-        //! store when operating as a TLS client.
-        //!
-        //! [`rustls-native-certs`]: https://docs.rs/rustls-native-certs
-        #[doc(inline)]
-        pub use rustls_native_certs::*;
-    }
-
     pub mod rustls {
         //! Re-export of the [`rustls`] and  [`tokio-rustls`] crates.
         //!
