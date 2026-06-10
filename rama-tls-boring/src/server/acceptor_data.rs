@@ -450,6 +450,7 @@ fn issue_cert_for_ca(
             ),
             common_name: domain.cloned(),
             subject_alternative_names: None,
+            ..Default::default()
         },
         ca_cert,
         ca_key,

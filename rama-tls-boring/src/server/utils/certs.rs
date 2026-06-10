@@ -1,7 +1,6 @@
 use crate::core::{
     asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
     bn::{BigNum, MsbOption},
-    dsa::Dsa,
     ec::{EcGroup, EcKey},
     hash::MessageDigest,
     nid::Nid,
@@ -16,7 +15,10 @@ use crate::core::{
 use rama_boring::x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
-use rama_net::{address::Domain, tls::server::SelfSignedData};
+use rama_net::{
+    address::Domain,
+    tls::server::{SelfSignedData, SelfSignedKeyKind},
+};
 
 /// Build an `AuthorityKeyIdentifier` extension whose `keyIdentifier` is derived from
 /// the CA's public key per RFC 5280 §4.2.1.2 method (1): SHA-1 of the SubjectPublicKey
@@ -45,11 +47,14 @@ fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxError
 
 /// Message digest to use when signing a certificate with `key`.
 ///
-/// EdDSA (Ed25519 / Ed448) is a "pure" signature scheme: `X509_sign` must be
-/// invoked with a NULL digest because the algorithm signs the message directly
-/// instead of a prehash. Passing a real digest makes BoringSSL's
-/// `EVP_DigestSignInit` fail. Every other supported CA key type (RSA, RSA-PSS,
-/// EC, DSA) signs over a SHA-256 digest, matching prior behaviour.
+/// - EdDSA (Ed25519 / Ed448) is a "pure" signature scheme: `X509_sign` must be
+///   invoked with a NULL digest because the algorithm signs the message
+///   directly instead of a prehash. Passing a real digest makes BoringSSL's
+///   `EVP_DigestSignInit` fail.
+/// - ECDSA pairs the digest to the curve strength (P-384 → SHA-384,
+///   P-521 → SHA-512), per common practice / CA-Browser-Forum guidance; an
+///   unnamed (explicit-parameter) curve falls back to SHA-256.
+/// - Everything else (RSA, RSA-PSS, DSA) signs over SHA-256, as before.
 fn signing_digest_for(key: &PKeyRef<Private>) -> MessageDigest {
     match key.id() {
         Id::ED25519 | Id::ED448 => {
@@ -57,7 +62,42 @@ fn signing_digest_for(key: &PKeyRef<Private>) -> MessageDigest {
             // EdDSA keys; BoringSSL reads it as "no prehash".
             unsafe { MessageDigest::from_ptr(std::ptr::null()) }
         }
+        Id::EC => match key.ec_key().ok().and_then(|ec| ec.group().curve_name()) {
+            Some(Nid::SECP521R1) => MessageDigest::sha512(),
+            Some(Nid::SECP384R1) => MessageDigest::sha384(),
+            _ => MessageDigest::sha256(),
+        },
         _ => MessageDigest::sha256(),
+    }
+}
+
+/// Generate a fresh private key of the requested [`SelfSignedKeyKind`].
+fn generate_self_signed_key(kind: SelfSignedKeyKind) -> Result<PKey<Private>, BoxError> {
+    fn ec(curve: Nid) -> Result<PKey<Private>, BoxError> {
+        let group =
+            EcGroup::from_curve_name(curve).context("create EC group for self-signed key")?;
+        let ec_key = EcKey::generate(&group).context("generate EC key for self-signed key")?;
+        PKey::from_ec_key(ec_key).context("create private key from generated EC key")
+    }
+
+    match kind {
+        SelfSignedKeyKind::Rsa2048 => {
+            let rsa = Rsa::generate(2048).context("generate 2048-bit RSA key")?;
+            PKey::from_rsa(rsa).context("create private key from 2048-bit RSA key")
+        }
+        SelfSignedKeyKind::Rsa4096 => {
+            let rsa = Rsa::generate(4096).context("generate 4096-bit RSA key")?;
+            PKey::from_rsa(rsa).context("create private key from 4096-bit RSA key")
+        }
+        SelfSignedKeyKind::EcP256 => ec(Nid::X9_62_PRIME256V1),
+        SelfSignedKeyKind::EcP384 => ec(Nid::SECP384R1),
+        SelfSignedKeyKind::EcP521 => ec(Nid::SECP521R1),
+        SelfSignedKeyKind::Ed25519 => {
+            let mut seed = [0_u8; 32];
+            rand_bytes(&mut seed).context("generate Ed25519 private key bytes")?;
+            PKey::from_ed25519_private_key(&seed)
+                .context("create private key from Ed25519 key bytes")
+        }
     }
 }
 
@@ -123,8 +163,7 @@ pub fn self_signed_server_auth_gen_cert(
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
-    let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
+    let privkey = generate_self_signed_key(data.key_kind)?;
 
     let common_name = data
         .common_name
@@ -263,6 +302,10 @@ pub fn self_signed_server_auth_mirror_cert(
         .public_key()
         .context("x509 cert builder: read source public key")?;
     let privkey = match source_pubkey.id() {
+        // RSA-PSS leaves are mirrored as plain RSA (`rsaEncryption`) keys: the
+        // leaf still works for the TLS handshake, but its SPKI algorithm OID is
+        // not preserved, as rama-boring exposes no safe `id-RSASSA-PSS` key
+        // constructor. This is a fidelity-only gap, not a functional one.
         Id::RSA | Id::RSAPSS => {
             let bits = source_pubkey.bits().max(2048);
             let rsa =
@@ -274,23 +317,13 @@ pub fn self_signed_server_auth_mirror_cert(
             let source_ec_key = source_pubkey
                 .ec_key()
                 .context("x509 cert builder: read source EC key")?;
-            let source_curve = source_ec_key
-                .group()
-                .curve_name()
-                .context("x509 cert builder: source EC key has unnamed curve")?;
-            let group = EcGroup::from_curve_name(source_curve)
-                .context("x509 cert builder: create mirrored EC group")?;
-            let ec_key =
-                EcKey::generate(&group).context("x509 cert builder: generate mirrored EC key")?;
+            // Generate on the source key's own group rather than going through
+            // `curve_name()`, so explicit-parameter curves are mirrored too
+            // instead of hard-failing the whole interception.
+            let ec_key = EcKey::generate(source_ec_key.group())
+                .context("x509 cert builder: generate mirrored EC key")?;
             PKey::from_ec_key(ec_key)
                 .context("x509 cert builder: create private key from EC key")?
-        }
-        Id::DSA => {
-            let bits = source_pubkey.bits().max(2048);
-            let dsa =
-                Dsa::generate(bits).with_context(|| format!("generate {bits}-bit DSA key"))?;
-            PKey::from_dsa(dsa)
-                .with_context(|| format!("create private key from {bits}-bit DSA key"))?
         }
         Id::ED25519 => {
             let mut key = [0_u8; 32];
@@ -298,16 +331,15 @@ pub fn self_signed_server_auth_mirror_cert(
             PKey::from_ed25519_private_key(&key)
                 .context("create private key from Ed25519 key bytes")?
         }
-        Id::X25519 => {
-            let mut key = [0_u8; 32];
-            rand_bytes(&mut key).context("generate X25519 private key bytes")?;
-            PKey::from_x25519_private_key(&key)
-                .context("create private key from X25519 key bytes")?
-        }
+        // Everything else — DSA, X25519/X448, Ed448, or anything exotic — cannot
+        // serve as a TLS server-auth leaf key (key-agreement-only, disabled in
+        // modern TLS, or not constructible here). Mirroring such a key would
+        // yield a leaf the MITM server can never complete a handshake with, so
+        // fall back to a universally functional RSA-2048 key instead.
         other => {
             tracing::debug!(
                 key_type = ?other,
-                "source certificate key type not mirror-supported yet; falling back to RSA-2048"
+                "source cert key type cannot serve as a TLS leaf key; using RSA-2048 for the mirrored leaf"
             );
             let rsa = Rsa::generate(2048).context("generate fallback 2048 RSA key")?;
             PKey::from_rsa(rsa).context("create private key from fallback 2048 RSA key")?
@@ -420,8 +452,7 @@ pub fn self_signed_server_auth_mirror_cert(
 pub fn self_signed_server_auth_gen_ca(
     data: &SelfSignedData,
 ) -> Result<(X509, PKey<Private>), BoxError> {
-    let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
-    let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
+    let privkey = generate_self_signed_key(data.key_kind)?;
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name

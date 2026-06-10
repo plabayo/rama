@@ -134,6 +134,27 @@ pub struct SelfSignedData {
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
     pub subject_alternative_names: Option<Vec<String>>,
+    /// Key algorithm used for the generated key pair (defaults to RSA-4096).
+    #[serde(default)]
+    pub key_kind: SelfSignedKeyKind,
+}
+
+/// Key algorithm to use when generating a self-signed key pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum SelfSignedKeyKind {
+    /// 2048-bit RSA.
+    Rsa2048,
+    /// 4096-bit RSA (default).
+    #[default]
+    Rsa4096,
+    /// ECDSA over NIST P-256 (secp256r1).
+    EcP256,
+    /// ECDSA over NIST P-384 (secp384r1).
+    EcP384,
+    /// ECDSA over NIST P-521 (secp521r1).
+    EcP521,
+    /// Ed25519 (EdDSA).
+    Ed25519,
 }
 
 #[derive(Debug, Clone)]
