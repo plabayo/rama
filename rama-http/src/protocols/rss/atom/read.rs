@@ -292,7 +292,13 @@ struct AtomReader<R: AsyncBufRead + Unpin + Send> {
 impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
     fn new(reader: R, strict: bool) -> Self {
         let mut nsr = NsReader::from_reader(reader);
-        nsr.config_mut().trim_text(true);
+        // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
+        // every entity / character reference into separate `Text` and
+        // `GeneralRef` events, so per-event trimming strips whitespace that is
+        // *interior* to a field — e.g. `Hello &lt;b&gt;` (a `type="html"` body)
+        // would lose the space before `<b>`. We instead leave text verbatim and
+        // trim the fully reassembled field value once, in the `End` handler.
+        nsr.config_mut().trim_text(false);
         Self {
             nsr,
             buf: Vec::with_capacity(4096),
@@ -691,7 +697,15 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
                 drop(e);
                 let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
-                let text = std::mem::take(&mut self.text_buf);
+                // Trim the reassembled value once (the reader runs with
+                // `trim_text(false)`; see `AtomReader::new`). This drops a
+                // field's surrounding whitespace while preserving whitespace
+                // interior to it — including spaces adjacent to entities.
+                let mut text = std::mem::take(&mut self.text_buf);
+                let trimmed = text.trim();
+                if trimmed.len() != text.len() {
+                    text = trimmed.to_owned();
+                }
                 self.handle_end(ns, local, text)
             }
             Event::Eof => {
@@ -1038,16 +1052,12 @@ where
 {
     const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
 
-    // The outer reader runs with `trim_text(true)` so core-Atom text fields
-    // come back without surrounding whitespace. Inside an xhtml subtree
-    // every space matters — `<p>foo</p> <p>bar</p>` and
-    // `<p>Hello <em>world</em> there</p>` both lose meaning if the inter-
-    // element whitespace is trimmed. Disable trimming for the capture and
-    // restore it before returning (errors included).
-    nsr.config_mut().trim_text(false);
-    let result = capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await;
-    nsr.config_mut().trim_text(true);
-    result
+    // The outer reader already runs with `trim_text(false)` (see
+    // `AtomReader::new`), which is exactly what an xhtml subtree needs — inside
+    // it every space matters: `<p>foo</p> <p>bar</p>` and
+    // `<p>Hello <em>world</em> there</p>` both lose meaning if inter-element
+    // whitespace is trimmed. No toggle needed.
+    capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await
 }
 
 async fn capture_xhtml_subtree_inner<R>(

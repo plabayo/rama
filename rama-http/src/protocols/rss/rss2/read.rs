@@ -311,7 +311,12 @@ struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
 impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
     fn new(reader: R, strict: bool) -> Self {
         let mut nsr = NsReader::from_reader(reader);
-        nsr.config_mut().trim_text(true);
+        // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
+        // every entity / character reference into separate `Text` and
+        // `GeneralRef` events, so per-event trimming strips whitespace interior
+        // to a field (e.g. a `&amp;`-containing title would lose the spaces
+        // around the `&`). We trim the reassembled value once in `End` instead.
+        nsr.config_mut().trim_text(false);
         Self {
             nsr,
             buf: Vec::with_capacity(4096),
@@ -581,7 +586,14 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
                 drop(e);
                 let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
-                let text = std::mem::take(&mut self.text_buf);
+                // Trim the reassembled value once (the reader runs with
+                // `trim_text(false)`; see `Rss2Reader::new`) — drops a field's
+                // surrounding whitespace, preserves whitespace interior to it.
+                let mut text = std::mem::take(&mut self.text_buf);
+                let trimmed = text.trim();
+                if trimmed.len() != text.len() {
+                    text = trimmed.to_owned();
+                }
                 self.handle_end(ns, local, text)
             }
             Event::Eof => {

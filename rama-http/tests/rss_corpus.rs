@@ -222,7 +222,15 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
     }
 
     let mut nsr = NsReader::from_reader(xml);
-    nsr.config_mut().trim_text(true);
+    // Must match the production readers: `trim_text(false)`. quick-xml 0.40
+    // splits text around entities, so per-event trimming would strip whitespace
+    // interior to a value (e.g. `Hello &lt;b&gt;`). Worse here, it makes the
+    // harvest *inconsistent* between the two representations of the same content
+    // — escaped text (fragmented + trimmed) vs CDATA (verbatim) — which is
+    // exactly how an html body looks on input (escaped) vs after round-trip
+    // (CDATA). `flush_token` trims each accumulated token's ends, so leading /
+    // trailing field whitespace is still dropped; only interior survives.
+    nsr.config_mut().trim_text(false);
     let mut tokens = Vec::new();
     let mut buf = Vec::new();
     // Stack of "recognised" flags per open element — the text inside
