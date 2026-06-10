@@ -151,6 +151,7 @@ mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 multer = "3.1"
 nom = "8.0.0"
+openssl-probe = "0.2"
 opentelemetry = { version = "0.32", default-features = false, features = ["trace", "internal-logs"] }
 opentelemetry-semantic-conventions = { version = "0.32", features = ["semconv_experimental"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
@@ -209,10 +210,10 @@ rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "x509-parser"] }
 regex = { version = "1.12", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
-rustls-native-certs = "0.8"
 rustls-pki-types = "^1"
 rustversion = "1.0"
 schannel = "0.1"
+security-framework = "3"
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 serde_html_form = "0.4"
 serde_json = "1.0"
@@ -252,6 +253,7 @@ uuid = "1.23"
 venndb = "0.6"
 walkdir = "2.5"
 want = "0.3"
+webpki-root-certs = "1.0"
 webpki-roots = "1.0"
 wildcard = "0.3"
 windows-sys = "0.61"

@@ -714,16 +714,14 @@ impl TlsConnectorDataBuilder {
     }
 }
 
-/// Process-wide OS default trust store, parsed once and shared by every
-/// connector that needs server verification.
+/// Process-wide trust store, built once and shared by every connector that
+/// needs server verification.
 ///
-/// `SslConnector::builder` calls `set_default_verify_paths` internally,
-/// which parses the entire system CA bundle into a *fresh* store on every
-/// call; left as-is that keeps a full copy of the bundle resident for the
-/// lifetime of each in-flight connection. Swapping in this single shared
-/// store via `set_cert_store_ref` collapses that to one parsed copy. (The
-/// redundant parse inside `builder` still happens per call — eliminating it
-/// would require a no-default-verify builder in `rama-boring`.)
+/// The store is populated from the platform's native trust anchors (the system
+/// root certificates), loaded once via
+/// [`rama_crypto::native_certs::shared_native_trust_anchors`] and shared across
+/// both the `rustls` and `boring` backends. Every connector references this one
+/// store via `set_cert_store_ref` instead of re-parsing a bundle per build.
 fn shared_default_verify_store() -> Result<&'static X509Store, BoxError> {
     static STORE: std::sync::LazyLock<Result<X509Store, BoxError>> =
         std::sync::LazyLock::new(build_os_default_verify_store);
@@ -736,106 +734,46 @@ fn shared_default_verify_store() -> Result<&'static X509Store, BoxError> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Build a boring [`X509Store`] from the shared, process-wide native trust
+/// anchors (the system root certificates).
+///
+/// The anchors are loaded once in a tls-implementation agnostic way by
+/// [`rama_crypto::native_certs::shared_native_trust_anchors`] (which itself
+/// warns and falls back to the bundled webpki roots if the platform store is
+/// empty), so this is identical to the trust used by the `rustls` backend.
 fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
-    trace!("boring connector: loading OS default verify paths into shared store");
+    let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
+    trace!(
+        anchor_count = anchors.len(),
+        "boring connector: building shared verify store from native trust anchors"
+    );
+
     let mut builder =
-        X509StoreBuilder::new().context("create x509 store builder for default verify paths")?;
-    builder
-        .set_default_paths()
-        .context("load OS default verify paths into shared x509 store")?;
-    Ok(builder.build())
-}
+        X509StoreBuilder::new().context("create x509 store builder for native trust anchors")?;
 
-#[cfg(target_os = "windows")]
-fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
-    // on windows it seems to have no root CA by default when using boringssl
-    // this code path is there to set it anyway
-    trace!("boring connector: windows: load system certs");
-
-    let mut builder = X509StoreBuilder::new().context("build x509 store builder")?;
-
-    let mut total_cert_count = 0;
-    let mut total_added_cert_count = 0;
-
-    const PKIX_SERVER_AUTH: &str = "1.3.6.1.5.5.7.3.1";
-    const WINDOWS_STORE_NAMES: &[&str] = &["ROOT", "CA"];
-
-    type CertStoreOpenFn =
-        for<'a> fn(&'a str) -> Result<schannel::cert_store::CertStore, std::io::Error>;
-    const CERTIFICATE_OPENERS: &[(CertStoreOpenFn, &str)] = &[
-        (
-            schannel::cert_store::CertStore::open_current_user,
-            "open_current_user",
-        ),
-        (
-            schannel::cert_store::CertStore::open_local_machine,
-            "open_local_machine",
-        ),
-    ];
-
-    for (open_fn, open_fn_name) in CERTIFICATE_OPENERS {
-        for windows_store_name in WINDOWS_STORE_NAMES {
-            match open_fn(windows_store_name) {
-                Ok(cstore) => {
-                    let mut current_cert_count = 0;
-                    let mut current_invalid_cert_count = 0;
-                    let mut current_added_cert_count = 0;
-
-                    for cert in cstore.certs() {
-                        current_cert_count += 1;
-                        total_cert_count += 1;
-
-                        if !cert.is_time_valid().unwrap_or_default()
-                            || !cert
-                                .valid_uses()
-                                .map(|use_case| match use_case {
-                                    schannel::cert_context::ValidUses::All => true,
-                                    schannel::cert_context::ValidUses::Oids(strs) => {
-                                        strs.iter().any(|x| x == PKIX_SERVER_AUTH)
-                                    }
-                                })
-                                .unwrap_or_default()
-                        {
-                            current_invalid_cert_count += 1;
-                            continue;
-                        }
-
-                        // Convert the Windows cert to DER, then to BoringSSL X509
-                        match X509::from_der(cert.to_der()) {
-                            Ok(x509) => {
-                                if let Err(err) = builder.add_cert(x509) {
-                                    debug!("failed to add x509 cert to windows: {err}");
-                                } else {
-                                    current_added_cert_count += 1;
-                                    total_added_cert_count += 1;
-                                }
-                            }
-                            Err(err) => {
-                                debug!("failed to convert DER cert to x509: {err}");
-                            }
-                        }
-                    }
-                    trace!(
-                        "boring connector: windows: {open_fn_name}::{windows_store_name}: added {current_added_cert_count} certs of {current_cert_count} certs (invalid schannel certs: {current_invalid_cert_count})"
-                    );
-                }
+    let mut added = 0_usize;
+    let mut failed = 0_usize;
+    for der in anchors.iter() {
+        match X509::from_der(der.as_ref()) {
+            Ok(cert) => match builder.add_cert(cert) {
+                Ok(()) => added += 1,
                 Err(err) => {
-                    debug!(
-                        "failed to open {windows_store_name} cert store using schannel::cert_store::CertStore::{open_fn_name}; err = {err:?}",
-                    );
+                    failed += 1;
+                    debug!(%err, "boring connector: failed to add native trust anchor to store");
                 }
+            },
+            Err(err) => {
+                failed += 1;
+                debug!(%err, "boring connector: failed to parse native trust anchor as x509");
             }
         }
     }
 
-    trace!(
-        "boring connector: windows: final result: added {total_added_cert_count} certs of {total_cert_count} certs"
-    );
+    trace!(added, failed, "boring connector: shared verify store built");
 
-    if total_added_cert_count == 0 {
+    if added == 0 {
         return Err(OpaqueError::from_static_str(
-            "failed to add windows certs from system (user/machine x Root/CA)",
+            "no native trust anchors could be added to the boring x509 verify store",
         )
         .into_box_error());
     }

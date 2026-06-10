@@ -28,6 +28,13 @@ targets = [
 default = []
 aws-lc = ["dep:aws-lc-rs", "rcgen/aws_lc_rs", "x509-parser/verify-aws"]
 ring = ["rcgen/ring", "x509-parser/verify"]
+native-certs = [
+    "dep:webpki-root-certs",
+    "dep:security-framework",
+    "dep:schannel",
+    "dep:openssl-probe",
+    "dep:ahash",
+]
 
 [dependencies]
 aws-lc-rs = { workspace = true, optional = true }
@@ -38,7 +45,18 @@ rcgen = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+webpki-root-certs = { workspace = true, optional = true }
 x509-parser = { workspace = true }
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+openssl-probe = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ahash = { workspace = true, optional = true }
+security-framework = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+schannel = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
