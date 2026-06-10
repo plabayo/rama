@@ -29,7 +29,7 @@
 
 use std::error::Error as StdError;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::{env, fmt, fs, io};
 
 use rama_core::telemetry::tracing::{debug, warn};
@@ -64,31 +64,29 @@ use macos as platform;
 /// The result is cached for the lifetime of the process: the (potentially
 /// expensive) native read happens at most once.
 pub fn shared_native_trust_anchors() -> Arc<[CertificateDer<'static>]> {
-    static ANCHORS: OnceLock<Arc<[CertificateDer<'static>]>> = OnceLock::new();
-    ANCHORS
-        .get_or_init(|| {
-            let paths = CertPaths::from_env();
-            let result = load_native_certs_with_paths(&paths);
-            for err in &result.errors {
-                debug!("rama native-certs: error while loading native root certificate: {err}");
-            }
+    static ANCHORS: LazyLock<Arc<[CertificateDer<'static>]>> = LazyLock::new(|| {
+        let paths = CertPaths::from_env();
+        let result = load_native_certs_with_paths(&paths);
+        for err in &result.errors {
+            debug!(%err, "rama native-certs: error while loading native root certificate");
+        }
 
-            if result.certs.is_empty() && !paths.has_overrides() {
-                warn!(
-                    native_cert_errors = result.errors.len(),
-                    "rama native-certs: no native system root certificates found; \
-                     falling back to the bundled webpki (Mozilla CCADB) root certificates"
-                );
-                bundled_root_certs().to_vec().into()
-            } else {
-                debug!(
-                    native_cert_count = result.certs.len(),
-                    "rama native-certs: loaded native system root certificates"
-                );
-                result.certs.into()
-            }
-        })
-        .clone()
+        if result.certs.is_empty() && !paths.has_overrides() {
+            warn!(
+                native_cert_errors = result.errors.len(),
+                "rama native-certs: no native system root certificates found; \
+                 falling back to the bundled webpki (Mozilla CCADB) root certificates"
+            );
+            bundled_root_certs().to_vec().into()
+        } else {
+            debug!(
+                native_cert_count = result.certs.len(),
+                "rama native-certs: loaded native system root certificates"
+            );
+            result.certs.into()
+        }
+    });
+    ANCHORS.clone()
 }
 
 /// The bundled Mozilla (CCADB) root certificates, used as the fallback by

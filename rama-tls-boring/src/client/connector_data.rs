@@ -744,8 +744,8 @@ fn shared_default_verify_store() -> Result<&'static X509Store, BoxError> {
 fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
     let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
     trace!(
-        "boring connector: building shared verify store from {} native trust anchor(s)",
-        anchors.len()
+        anchor_count = anchors.len(),
+        "boring connector: building shared verify store from native trust anchors"
     );
 
     let mut builder =
@@ -759,17 +759,17 @@ fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
                 Ok(()) => added += 1,
                 Err(err) => {
                     failed += 1;
-                    debug!("boring connector: failed to add native trust anchor to store: {err}");
+                    debug!(%err, "boring connector: failed to add native trust anchor to store");
                 }
             },
             Err(err) => {
                 failed += 1;
-                debug!("boring connector: failed to parse native trust anchor as x509: {err}");
+                debug!(%err, "boring connector: failed to parse native trust anchor as x509");
             }
         }
     }
 
-    trace!("boring connector: shared verify store built: added {added} anchor(s), {failed} failed");
+    trace!(added, failed, "boring connector: shared verify store built");
 
     if added == 0 {
         return Err(OpaqueError::from_static_str(

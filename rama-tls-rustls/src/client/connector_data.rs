@@ -11,7 +11,7 @@ use rama_net::address::Host;
 use rama_net::tls::DataEncoding;
 use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
 use rama_net::tls::keylog::open_intent_sink;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 use rama_crypto::pki_types::PrivatePkcs8KeyDer;
@@ -137,20 +137,18 @@ fn rustls_client_auth(
 /// no native roots are found, that loader warns and falls back to the bundled
 /// webpki (Mozilla CCADB) roots.
 pub fn client_root_certs() -> Arc<RootCertStore> {
-    static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
-    ROOT_CERTS
-        .get_or_init(|| {
-            let mut root_storage = RootCertStore::empty();
-            let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
-            let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
-            rama_core::telemetry::tracing::trace!(
-                added,
-                ignored,
-                "rama-tls-rustls: initialised client root cert store from shared native trust anchors"
-            );
-            Arc::new(root_storage)
-        })
-        .clone()
+    static ROOT_CERTS: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
+        let mut root_storage = RootCertStore::empty();
+        let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
+        let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
+        rama_core::telemetry::tracing::trace!(
+            added,
+            ignored,
+            "rama-tls-rustls: initialised client root cert store from shared native trust anchors"
+        );
+        Arc::new(root_storage)
+    });
+    ROOT_CERTS.clone()
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
