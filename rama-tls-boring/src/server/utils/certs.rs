@@ -1,5 +1,5 @@
 use crate::core::{
-    asn1::{Asn1Object, Asn1Time},
+    asn1::{Asn1Object, Asn1ObjectRef, Asn1Time},
     bn::{BigNum, MsbOption},
     dsa::Dsa,
     ec::{EcGroup, EcKey},
@@ -41,6 +41,59 @@ fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxError
         Asn1Object::from_str("2.5.29.35").context("construct AuthorityKeyIdentifier OID object")?;
     X509Extension::from_der_payload(aki_oid.as_ref(), false, &payload)
         .context("build AuthorityKeyIdentifier extension from raw DER payload")
+}
+
+/// OID of the RFC 7633 TLS Feature extension (OCSP "must-staple").
+const OID_TLS_FEATURE: &str = "1.3.6.1.5.5.7.1.24";
+/// OID of the RFC 6962 embedded Signed Certificate Timestamp (SCT) list.
+const OID_SCT_LIST: &str = "1.3.6.1.4.1.11129.2.4.2";
+
+/// Canonical OID renderings of the extensions we strip by OID rather than by
+/// [`Nid`] (rama-boring exposes no stable constant for these). Resolving them
+/// once keeps the per-extension membership check cheap.
+fn mirror_strip_oid_texts() -> Vec<String> {
+    [OID_TLS_FEATURE, OID_SCT_LIST]
+        .into_iter()
+        .filter_map(|oid| Asn1Object::from_str(oid).ok().map(|obj| obj.to_string()))
+        .collect()
+}
+
+/// Returns `true` when a source-certificate extension must NOT be mirrored onto
+/// a leaf that we re-sign with our own MITM CA.
+///
+/// Two classes are stripped (see [`self_signed_server_auth_mirror_cert`]):
+///
+/// 1. Revocation / authority-info pointers bound to the *real* issuer — CRL
+///    Distribution Points, Authority Information Access (OCSP responder +
+///    caIssuers) and Freshest CRL (delta CRL). A leaf re-signed by our CA can
+///    never be covered by those responders, so a client that follows them
+///    (notably Windows schannel via `lsass.exe`) hits an issuer mismatch and
+///    aborts the handshake with `CRYPT_E_REVOCATION_OFFLINE`. Both are OPTIONAL
+///    and non-critical (RFC 5280 §4.2): with no pointer present, conformant
+///    clients simply skip the revocation check, which is the correct behaviour
+///    for a locally-trusted MITM CA.
+///
+/// 2. Assertions we cannot honour after re-signing — the RFC 7633 TLS Feature
+///    extension ("must-staple") would force the client to *require* a stapled
+///    OCSP response we never produce (handshake abort), and RFC 6962 embedded
+///    SCTs are signed over the original `TBSCertificate` and become invalid the
+///    instant we re-sign. These have no stable `Nid` constant, so they are
+///    matched by canonical OID text, which is robust whether or not BoringSSL
+///    knows the OID by name.
+fn should_strip_mirrored_extension(
+    ext_nid: Nid,
+    ext_obj: &Asn1ObjectRef,
+    strip_oid_texts: &[String],
+) -> bool {
+    if ext_nid == Nid::CRL_DISTRIBUTION_POINTS
+        || ext_nid == Nid::INFO_ACCESS
+        || ext_nid == Nid::FRESHEST_CRL
+    {
+        return true;
+    }
+
+    let ext_text = ext_obj.to_string();
+    strip_oid_texts.contains(&ext_text)
 }
 
 /// Generate a server cert for the [`SelfSignedData`] using the given CA Cert + Key.
@@ -279,12 +332,23 @@ pub fn self_signed_server_auth_mirror_cert(
     let source_had_ski = source_cert.subject_key_id().is_some();
     let source_had_aki = source_cert.authority_key_id().is_some();
 
+    let strip_oid_texts = mirror_strip_oid_texts();
+
     for source_ext in source_cert.extensions() {
         let ext_nid = source_ext.object().nid();
         if ext_nid == Nid::SUBJECT_KEY_IDENTIFIER || ext_nid == Nid::AUTHORITY_KEY_IDENTIFIER {
             tracing::trace!(
                 ?ext_nid,
                 "skip source key identifier extension (will regenerate if applicable)"
+            );
+            continue;
+        }
+
+        if should_strip_mirrored_extension(ext_nid, source_ext.object(), &strip_oid_texts) {
+            tracing::trace!(
+                ?ext_nid,
+                "skip source extension invalid for a re-signed MITM leaf \
+                 (issuer-bound revocation/authority pointer, or assertion we cannot honour)"
             );
             continue;
         }

@@ -501,6 +501,174 @@ fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
 }
 
+/// Append a raw extension (OID + DER payload) to a cert builder. The mirror
+/// logic keys off the extension OID, not the payload, so dummy payloads are
+/// sufficient to exercise the strip behaviour.
+fn append_raw_ext(
+    cert_builder: &mut crate::core::x509::X509Builder,
+    oid: &str,
+    critical: bool,
+    payload: &[u8],
+) -> Result<(), BoxError> {
+    let obj = Asn1Object::from_str(oid).context("strippable ext oid")?;
+    let ext = X509Extension::from_der_payload(obj.as_ref(), critical, payload)
+        .context("build strippable ext")?;
+    cert_builder
+        .append_extension(ext.as_ref())
+        .context("append strippable ext")?;
+    Ok(())
+}
+
+fn has_ext_oid(cert: &X509Ref, oid: &str) -> bool {
+    let want = Asn1Object::from_str(oid).expect("resolve oid").to_string();
+    cert.extensions()
+        .any(|ext| ext.object().to_string() == want)
+}
+
+/// Build a self-signed source cert carrying SAN + KeyUsage (which must survive
+/// mirroring) plus every extension class that must be stripped from a re-signed
+/// MITM leaf: CRL Distribution Points, Authority Information Access, Freshest
+/// CRL, RFC 7633 must-staple, and an RFC 6962 embedded SCT list.
+fn build_source_with_strippable_exts(common_name: &str) -> Result<X509, BoxError> {
+    let rsa = Rsa::generate(2048).context("source rsa")?;
+    let pkey = PKey::from_rsa(rsa).context("source pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("source name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("source cn")?;
+    let x509_name = x509_name.build();
+
+    let mut cert_builder = X509::builder().context("source builder")?;
+    cert_builder.set_version(2).context("source version")?;
+    let serial = {
+        let mut serial = BigNum::new().context("source serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("source serial rand")?;
+        serial.to_asn1_integer().context("source serial asn1")?
+    };
+    cert_builder
+        .set_serial_number(&serial)
+        .context("source serial")?;
+    cert_builder
+        .set_subject_name(&x509_name)
+        .context("source subject")?;
+    cert_builder
+        .set_issuer_name(&x509_name)
+        .context("source issuer")?;
+    cert_builder.set_pubkey(&pkey).context("source pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("source nb")?;
+    cert_builder
+        .set_not_before(&not_before)
+        .context("source set nb")?;
+    let not_after = Asn1Time::days_from_now(30).context("source na")?;
+    cert_builder
+        .set_not_after(&not_after)
+        .context("source set na")?;
+
+    // survivors
+    let san = SubjectAlternativeName::new()
+        .dns(common_name)
+        .build(&cert_builder.x509v3_context(None, None))
+        .context("source san")?;
+    cert_builder
+        .append_extension(san.as_ref())
+        .context("append source san")?;
+    cert_builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .digital_signature()
+                .key_encipherment()
+                .build()
+                .context("source ku")?
+                .as_ref(),
+        )
+        .context("append source ku")?;
+
+    // strippable: issuer-bound revocation / authority pointers
+    append_raw_ext(&mut cert_builder, "2.5.29.31", false, &[0x30, 0x00])?; // CRL DP
+    append_raw_ext(&mut cert_builder, "1.3.6.1.5.5.7.1.1", false, &[0x30, 0x00])?; // AIA
+    append_raw_ext(&mut cert_builder, "2.5.29.46", false, &[0x30, 0x00])?; // Freshest CRL
+    // strippable: assertions we cannot honour after re-signing
+    append_raw_ext(
+        &mut cert_builder,
+        "1.3.6.1.5.5.7.1.24",
+        true,
+        &[0x30, 0x03, 0x02, 0x01, 0x05],
+    )?; // must-staple
+    append_raw_ext(
+        &mut cert_builder,
+        "1.3.6.1.4.1.11129.2.4.2",
+        false,
+        &[0x04, 0x02, 0x00, 0x00],
+    )?; // SCT list
+
+    cert_builder
+        .sign(&pkey, MessageDigest::sha256())
+        .context("sign source")?;
+
+    Ok(cert_builder.build())
+}
+
+#[test]
+fn mirror_strips_issuer_bound_and_unsatisfiable_extensions() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    let source_cert =
+        build_source_with_strippable_exts("strip.rama.test").expect("build source cert");
+
+    // sanity: the source really does carry all of them
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::CRL_DISTRIBUTION_POINTS).is_empty());
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::INFO_ACCESS).is_empty());
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::FRESHEST_CRL).is_empty());
+    assert!(has_ext_oid(source_cert.as_ref(), "1.3.6.1.5.5.7.1.24"));
+    assert!(has_ext_oid(source_cert.as_ref(), "1.3.6.1.4.1.11129.2.4.2"));
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert");
+
+    // stripped
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::CRL_DISTRIBUTION_POINTS).is_empty(),
+        "CRL Distribution Points must be stripped"
+    );
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::INFO_ACCESS).is_empty(),
+        "Authority Information Access must be stripped"
+    );
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::FRESHEST_CRL).is_empty(),
+        "Freshest CRL must be stripped"
+    );
+    assert!(
+        !has_ext_oid(mirrored_cert.as_ref(), "1.3.6.1.5.5.7.1.24"),
+        "must-staple (TLS Feature) must be stripped"
+    );
+    assert!(
+        !has_ext_oid(mirrored_cert.as_ref(), "1.3.6.1.4.1.11129.2.4.2"),
+        "embedded SCT list must be stripped"
+    );
+
+    // survivors: identity-bearing extensions are still mirrored
+    assert!(
+        !ext_by_nid(mirrored_cert.as_ref(), Nid::KEY_USAGE).is_empty(),
+        "Key Usage must survive mirroring"
+    );
+    let san = mirrored_cert.subject_alt_names().expect("mirrored SAN");
+    assert!(
+        san.iter()
+            .any(|name| name.dnsname() == Some("strip.rama.test")),
+        "SAN must survive mirroring"
+    );
+
+    // and the leaf is still validly issued by our CA
+    assert_eq!(ca_cert.issued(&mirrored_cert), Ok(()));
+}
+
 #[test]
 fn mirror_uses_ec_key_for_ec_source() {
     let ca_data = sample_data("ca.rama.test");
