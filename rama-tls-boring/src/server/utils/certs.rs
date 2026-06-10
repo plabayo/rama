@@ -5,7 +5,7 @@ use crate::core::{
     ec::{EcGroup, EcKey},
     hash::MessageDigest,
     nid::Nid,
-    pkey::{Id, PKey, Private},
+    pkey::{Id, PKey, PKeyRef, Private},
     rand::rand_bytes,
     rsa::Rsa,
     x509::{
@@ -41,6 +41,24 @@ fn aki_from_ca_pubkey_keyid(ca_cert: &X509Ref) -> Result<X509Extension, BoxError
         Asn1Object::from_str("2.5.29.35").context("construct AuthorityKeyIdentifier OID object")?;
     X509Extension::from_der_payload(aki_oid.as_ref(), false, &payload)
         .context("build AuthorityKeyIdentifier extension from raw DER payload")
+}
+
+/// Message digest to use when signing a certificate with `key`.
+///
+/// EdDSA (Ed25519 / Ed448) is a "pure" signature scheme: `X509_sign` must be
+/// invoked with a NULL digest because the algorithm signs the message directly
+/// instead of a prehash. Passing a real digest makes BoringSSL's
+/// `EVP_DigestSignInit` fail. Every other supported CA key type (RSA, RSA-PSS,
+/// EC, DSA) signs over a SHA-256 digest, matching prior behaviour.
+fn signing_digest_for(key: &PKeyRef<Private>) -> MessageDigest {
+    match key.id() {
+        Id::ED25519 | Id::ED448 => {
+            // SAFETY: a null `EVP_MD` is precisely what `X509_sign` expects for
+            // EdDSA keys; BoringSSL reads it as "no prehash".
+            unsafe { MessageDigest::from_ptr(std::ptr::null()) }
+        }
+        _ => MessageDigest::sha256(),
+    }
 }
 
 /// OID of the RFC 7633 TLS Feature extension (OCSP "must-staple").
@@ -224,7 +242,7 @@ pub fn self_signed_server_auth_gen_cert(
     }
 
     cert_builder
-        .sign(ca_privkey, MessageDigest::sha256())
+        .sign(ca_privkey, signing_digest_for(ca_privkey))
         .context("x509 cert builder: sign cert")?;
 
     let cert = cert_builder.build();
@@ -390,7 +408,7 @@ pub fn self_signed_server_auth_mirror_cert(
     }
 
     cert_builder
-        .sign(ca_privkey, MessageDigest::sha256())
+        .sign(ca_privkey, signing_digest_for(ca_privkey))
         .context("x509 cert builder: sign mirrored cert")?;
 
     Ok((cert_builder.build(), privkey))
@@ -492,7 +510,7 @@ pub fn self_signed_server_auth_gen_ca(
         .context("x509 cert builder: add subject key id x509 extension")?;
 
     ca_cert_builder
-        .sign(&privkey, MessageDigest::sha256())
+        .sign(&privkey, signing_digest_for(&privkey))
         .context("x509 cert builder: sign cert")?;
 
     let cert = ca_cert_builder.build();

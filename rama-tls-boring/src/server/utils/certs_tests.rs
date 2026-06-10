@@ -686,3 +686,115 @@ fn mirror_uses_ec_key_for_ec_source() {
 
     assert_eq!(mirrored_key.id(), Id::EC);
 }
+
+/// Build a self-signed Ed25519 CA, signed via the NULL-digest EdDSA path.
+fn build_ed25519_ca(common_name: &str) -> Result<(X509, PKey<Private>), BoxError> {
+    let mut seed = [0_u8; 32];
+    crate::core::rand::rand_bytes(&mut seed).context("ed25519 ca key bytes")?;
+    let privkey = PKey::from_ed25519_private_key(&seed).context("ed25519 ca pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("ca name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("ca cn")?;
+    let x509_name = x509_name.build();
+
+    let mut b = X509::builder().context("ca builder")?;
+    b.set_version(2).context("ca version")?;
+    let serial = {
+        let mut serial = BigNum::new().context("ca serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("ca serial rand")?;
+        serial.to_asn1_integer().context("ca serial asn1")?
+    };
+    b.set_serial_number(&serial).context("ca serial")?;
+    b.set_subject_name(&x509_name).context("ca subject")?;
+    b.set_issuer_name(&x509_name).context("ca issuer")?;
+    b.set_pubkey(&privkey).context("ca pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("ca nb")?;
+    b.set_not_before(&not_before).context("ca set nb")?;
+    let not_after = Asn1Time::days_from_now(365).context("ca na")?;
+    b.set_not_after(&not_after).context("ca set na")?;
+    b.append_extension(
+        BasicConstraints::new()
+            .critical()
+            .ca()
+            .build()
+            .context("ca bc")?
+            .as_ref(),
+    )
+    .context("append ca bc")?;
+    b.append_extension(
+        KeyUsage::new()
+            .critical()
+            .key_cert_sign()
+            .crl_sign()
+            .build()
+            .context("ca ku")?
+            .as_ref(),
+    )
+    .context("append ca ku")?;
+    let ski = SubjectKeyIdentifier::new()
+        .build(&b.x509v3_context(None, None))
+        .context("ca ski")?;
+    b.append_extension(ski.as_ref()).context("append ca ski")?;
+
+    b.sign(&privkey, signing_digest_for(&privkey))
+        .context("sign ed25519 ca")?;
+
+    Ok((b.build(), privkey))
+}
+
+#[test]
+fn signing_digest_is_null_for_eddsa_and_sha256_otherwise() {
+    let mut seed = [0_u8; 32];
+    crate::core::rand::rand_bytes(&mut seed).expect("seed");
+    let ed = PKey::from_ed25519_private_key(&seed).expect("ed25519 key");
+    assert!(
+        signing_digest_for(&ed).as_ptr().is_null(),
+        "EdDSA must sign with a NULL digest"
+    );
+
+    let rsa = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("rsa pkey");
+    assert_eq!(
+        signing_digest_for(&rsa).as_ptr(),
+        MessageDigest::sha256().as_ptr(),
+        "non-EdDSA keys sign over SHA-256"
+    );
+}
+
+#[test]
+fn gen_and_mirror_with_ed25519_ca_produce_valid_signatures() {
+    let (ca_cert, ca_key) = build_ed25519_ca("ed25519-ca.rama.test").expect("ed25519 ca");
+    assert_eq!(ca_key.id(), Id::ED25519);
+    assert!(
+        ca_cert
+            .verify(&ca_key)
+            .expect("verify self-signed ed25519 ca"),
+        "self-signed Ed25519 CA signature must verify"
+    );
+
+    // gen_cert signs a fresh leaf with the Ed25519 CA
+    let leaf_data = sample_data("leaf.rama.test");
+    let (leaf, _) = self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key)
+        .expect("gen leaf with ed25519 ca");
+    assert_eq!(ca_cert.issued(&leaf), Ok(()));
+    assert!(
+        leaf.verify(&ca_key).expect("verify leaf sig"),
+        "leaf signed by Ed25519 CA must verify"
+    );
+
+    // the mirror path must likewise sign correctly with the Ed25519 CA
+    let source_pkey =
+        PKey::from_rsa(Rsa::generate(2048).expect("source rsa")).expect("source pkey");
+    let source =
+        build_self_signed_source_with_pkey(&source_pkey, "source.rama.test").expect("source cert");
+    let (mirrored, _) = self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key)
+        .expect("mirror with ed25519 ca");
+    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
+    assert!(
+        mirrored.verify(&ca_key).expect("verify mirrored sig"),
+        "mirrored leaf signed by Ed25519 CA must verify"
+    );
+}
