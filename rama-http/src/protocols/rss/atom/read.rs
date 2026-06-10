@@ -28,7 +28,7 @@ use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
     atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value, make_atom_text,
-    parse_rfc3339_lax, parse_uri, parse_uri_reference,
+    parse_rfc3339_lax, parse_uri, parse_uri_reference, push_general_ref, push_text,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
@@ -650,18 +650,14 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 Ok(Action::Continue)
             }
             Event::Text(e) => {
-                match e.unescape() {
-                    Ok(t) => self.text_buf.push_str(&t),
-                    Err(err) => {
-                        if self.strict {
-                            return Err(FeedParseError::new(format!(
-                                "invalid text content: {err}"
-                            )));
-                        }
-                        tracing::debug!("atom stream unescape error (lenient): {err}");
-                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                }
+                push_text(&mut self.text_buf, &e, self.strict)?;
+                Ok(Action::Continue)
+            }
+            // quick-xml 0.40 surfaces entity references as standalone events
+            // rather than expanding them inside `Text`; resolve and accumulate
+            // them so `&amp;` etc. survive into the captured text.
+            Event::GeneralRef(e) => {
+                push_general_ref(&mut self.text_buf, &e, self.strict)?;
                 Ok(Action::Continue)
             }
             Event::CData(e) => {
@@ -1135,7 +1131,7 @@ where
             Event::Text(e) => {
                 // Non-whitespace text outside the wrapper violates the spec.
                 if depth == 0 && !saw_wrapper && strict {
-                    let s = e.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                    let s = e.decode().map(|c| c.into_owned()).unwrap_or_default();
                     if !s.trim().is_empty() {
                         return Err(FeedParseError::new(
                             "Atom xhtml content must be wrapped in a single \
@@ -1152,6 +1148,11 @@ where
                 .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Comment(e) => writer
                 .write_event(Event::Comment(e))
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
+            // Entity references are valid xhtml text content; re-emit them
+            // verbatim (quick-xml 0.40 no longer keeps them inside `Text`).
+            Event::GeneralRef(e) => writer
+                .write_event(Event::GeneralRef(e))
                 .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Eof => {
                 return Err(FeedParseError::new("unexpected EOF in xhtml content"));

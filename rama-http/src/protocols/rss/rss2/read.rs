@@ -27,7 +27,8 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
-    attr_uri, attr_value, enclosure_from_attrs, parse_rss2_date, parse_uri,
+    attr_uri, attr_value, enclosure_from_attrs, parse_rss2_date, parse_uri, push_general_ref,
+    push_text,
 };
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
@@ -539,18 +540,14 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 Ok(Action::Continue)
             }
             Event::Text(e) => {
-                match e.unescape() {
-                    Ok(t) => self.text_buf.push_str(&t),
-                    Err(err) => {
-                        if self.strict {
-                            return Err(FeedParseError::new(format!(
-                                "invalid text content: {err}"
-                            )));
-                        }
-                        tracing::debug!("rss2 stream unescape error (lenient): {err}");
-                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                }
+                push_text(&mut self.text_buf, &e, self.strict)?;
+                Ok(Action::Continue)
+            }
+            // quick-xml 0.40 surfaces entity references as standalone events
+            // rather than expanding them inside `Text`; resolve and accumulate
+            // them so `&amp;` etc. survive into the captured text.
+            Event::GeneralRef(e) => {
+                push_general_ref(&mut self.text_buf, &e, self.strict)?;
                 Ok(Action::Continue)
             }
             Event::CData(e) => {
