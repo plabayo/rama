@@ -449,7 +449,7 @@ fn issue_cert_for_ca(
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
             common_name: domain.cloned(),
-            subject_alternative_names: None,
+            ..Default::default()
         },
         ca_cert,
         ca_key,
