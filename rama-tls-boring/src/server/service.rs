@@ -70,9 +70,14 @@ where
             .context("create boring ssl acceptor")?;
 
         acceptor_builder.set_grease_enabled(true);
-        acceptor_builder
-            .set_default_verify_paths()
-            .context("build boring ssl acceptor: set default verify paths")?;
+        // Deliberately NOT calling `set_default_verify_paths()`: this acceptor
+        // never enables client-certificate verification (`SSL_VERIFY_PEER` is
+        // never set; `add_client_ca` below only advertises CA names and is inert
+        // without it), so the OS trust store it would parse is never consulted.
+        // Loading it parsed the whole bundle per handshake and kept it resident
+        // for the connection's lifetime. If client-cert auth is wired up later,
+        // install an explicit client-CA store + verify mode instead of the OS
+        // bundle (which is the wrong trust anchor set for client auth anyway).
 
         let server_domain = stream
             .extensions()

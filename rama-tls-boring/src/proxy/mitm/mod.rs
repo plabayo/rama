@@ -636,10 +636,14 @@ where
                     .context("tls mitm relay: create boring ssl acceptor")
                     .map_err(TlsMitmRelayError::config)?;
             acceptor_builder.set_grease_enabled(self.grease_enabled);
-            acceptor_builder
-                .set_default_verify_paths()
-                .context("tls mitm relay: set default verify paths")
-                .map_err(TlsMitmRelayError::config)?;
+            // Deliberately NOT calling `set_default_verify_paths()`: this
+            // acceptor never enables client-certificate verification
+            // (`SSL_VERIFY_PEER`), so the OS trust store it would parse is never
+            // consulted. Loading it parsed the whole bundle into this
+            // per-handshake `SSL_CTX` and kept it resident for the entire
+            // connection lifetime — pure waste, and an effective leak when flows
+            // are retained. The egress connector installs only the store it
+            // needs (see `connector_data`).
             for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
                 if i == 0 {
                     acceptor_builder
