@@ -1,6 +1,6 @@
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 use rama_utils::str::smol_str::SmolStr;
 use std::{
     fmt,

@@ -10,7 +10,7 @@ use aws_lc_rs::{
     },
 };
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
 use crate::jose::{JWA, Signer, jwk_utils::create_subject_public_key_info};

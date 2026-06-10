@@ -6,7 +6,7 @@ use crate::{
     HeaderMap, HeaderValue, Method, Request, Response,
     header::{self},
 };
-use rama_core::error::{BoxError, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, extra::OpaqueError};
 use rama_core::{Layer, Service};
 use rama_http_headers::{
     AccessControlAllowHeaders, AccessControlAllowMethods, AccessControlExposeHeaders,

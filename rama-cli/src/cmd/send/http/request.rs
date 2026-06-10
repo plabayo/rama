@@ -1,6 +1,6 @@
 use rama::{
     bytes::Bytes,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     futures::{StreamExt, stream},
     http::{

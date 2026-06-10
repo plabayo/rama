@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::str::FromStr;
 
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 
 use crate::address::ip::{

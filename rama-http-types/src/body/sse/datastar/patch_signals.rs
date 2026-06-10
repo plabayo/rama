@@ -2,7 +2,7 @@ use crate::sse::{
     Event, EventBuildError, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType,
 };
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 
 /// [`PatchSignals`] patches signals into the signal store

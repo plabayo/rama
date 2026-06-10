@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::{
     Service,
-    error::{BoxError, ErrorExt, extra::OpaqueError},
+    error::{BoxError, extra::OpaqueError},
 };
 use rama_utils::str::arcstr::arcstr;
 use serde::{Serialize, de::DeserializeOwned};

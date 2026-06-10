@@ -2,7 +2,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::ExtensionsRef,
     net::{
         Protocol,

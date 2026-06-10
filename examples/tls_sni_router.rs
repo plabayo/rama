@@ -49,7 +49,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorExt, extra::OpaqueError},
+    error::{BoxError, extra::OpaqueError},
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     http::{

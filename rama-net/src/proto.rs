@@ -2,7 +2,7 @@ use std::cmp::min;
 use std::str::FromStr;
 
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_utils::str::smol_str::SmolStr;

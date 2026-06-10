@@ -1,6 +1,6 @@
 use crate::{HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     telemetry::tracing,
 };
 use rama_http_types::{HeaderName, HeaderValue, header};

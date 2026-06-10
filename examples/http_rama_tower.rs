@@ -25,7 +25,7 @@
 
 use rama::{
     Layer as _,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, extra::OpaqueError},
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,

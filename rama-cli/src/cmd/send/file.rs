@@ -2,7 +2,7 @@
 //! file at the URI's path and stream its bytes to stdout.
 
 use rama::{
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     net::uri::Uri,
 };
 use std::path::{Path, PathBuf};

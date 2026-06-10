@@ -1,5 +1,5 @@
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyStr;

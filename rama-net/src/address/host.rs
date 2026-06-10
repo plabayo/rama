@@ -3,7 +3,7 @@ use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
 };
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},

@@ -1,6 +1,6 @@
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, extra::OpaqueError},
     extensions::ExtensionsRef,
     io::{BridgeIo, Io},
     rt::Executor,

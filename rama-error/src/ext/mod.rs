@@ -713,8 +713,24 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         Box::new(self::backtrace::ErrorWithBacktrace::new(source))
     }
 }
+pub trait BoxErrorExt: private::SealedBoxErrorExt {
+    /// Create a [`BoxError`] from a static str.
+    ///
+    /// Use this instead of `"msg".context()` or
+    /// some other method that turns it into a BoxError...
+    /// Because the std rust library turns this into a `String` otherwise...
+    fn from_static_str(e: &'static str) -> Self;
+}
+
+impl BoxErrorExt for BoxError {
+    fn from_static_str(e: &'static str) -> Self {
+        OpaqueError::from_static_str(e).into_box_error()
+    }
+}
 
 mod private {
+    use crate::BoxError;
+
     // These sealed traits document intent rather than enforce hard closure:
     // because the blanket impls cover every type that satisfies the public
     // trait bounds, any downstream type that meets those bounds will satisfy
@@ -728,6 +744,9 @@ mod private {
     pub trait SealedErrorExt {}
 
     impl<Error: Into<crate::BoxError>> SealedErrorExt for Error {}
+
+    pub trait SealedBoxErrorExt {}
+    impl SealedBoxErrorExt for BoxError {}
 }
 
 #[cfg(test)]

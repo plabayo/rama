@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     rt::Executor,
 };
 

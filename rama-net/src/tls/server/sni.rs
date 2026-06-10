@@ -8,7 +8,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::{Extensions, ExtensionsRef},
     io::{HeapReader, PrefixedIo, StackReader},
     service::RejectService,

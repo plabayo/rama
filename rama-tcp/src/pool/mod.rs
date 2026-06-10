@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, extra::OpaqueError};
 use rand::Rng as _;
 
 use crate::{TcpStream, client::TcpStreamConnector};

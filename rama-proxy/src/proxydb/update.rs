@@ -1,6 +1,6 @@
 use super::ProxyDB;
 use arc_swap::ArcSwap;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// Create a new [`ProxyDB`] updater which allows you to have a (typically in-memory) [`ProxyDB`]

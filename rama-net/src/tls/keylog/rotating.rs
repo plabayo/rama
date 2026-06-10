@@ -24,7 +24,7 @@ use std::{
 };
 
 use jiff::{Timestamp, tz::TimeZone};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 use rama_core::telemetry::tracing;
 
 use super::sink::KeyLogSink;

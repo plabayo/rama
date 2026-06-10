@@ -4,7 +4,7 @@ use crate::sse::{
     datastar::EventType, parser::is_lf,
 };
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 

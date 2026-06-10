@@ -1,5 +1,5 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, extra::OpaqueError};
 use rama_utils::macros::generate_set_and_with;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

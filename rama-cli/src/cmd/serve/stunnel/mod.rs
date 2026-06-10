@@ -27,7 +27,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, extra::OpaqueError},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},

@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::Service;
-use rama_core::error::{ErrorExt as _, extra::OpaqueError};
+use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::{Request, Response};
 use tokio::io::AsyncRead;

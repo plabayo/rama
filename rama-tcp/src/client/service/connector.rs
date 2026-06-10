@@ -1,6 +1,6 @@
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::ExtensionsRef,
     rt::Executor,
     telemetry::tracing,

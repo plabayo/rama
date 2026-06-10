@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, extra::OpaqueError};
 use rama_utils::str::{smol_str::format_smolstr, starts_with_ignore_ascii_case};
 
 pub use crate::dep::hyperium::http::uri::*;

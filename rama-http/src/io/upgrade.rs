@@ -40,7 +40,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use parking_lot::Mutex;
-use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;

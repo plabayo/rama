@@ -4,7 +4,7 @@ use crate::protocol::{v1, v2};
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, extra::OpaqueError},
     extensions::ExtensionsRef,
     io::Io,
 };

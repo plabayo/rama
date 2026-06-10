@@ -11,7 +11,7 @@
 use rama_core::bytes::Bytes;
 
 use crate::user::Basic;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, ErrorContext, extra::OpaqueError};
 
 /// Raw RFC 3986 userinfo bytes. Cheap to clone.
 ///

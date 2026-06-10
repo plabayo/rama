@@ -1,5 +1,4 @@
 use super::DnsResolveMode;
-use rama_core::error::ErrorExt;
 use rama_core::error::extra::OpaqueError;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{

@@ -22,7 +22,7 @@
 
 use rama::{
     Layer,
-    error::{BoxError, ErrorExt, extra::OpaqueError},
+    error::{BoxError, extra::OpaqueError},
     http::{
         BodyExtractExt,
         client::EasyHttpWebClient,

@@ -9,7 +9,7 @@ use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
 use parking_lot::Mutex;
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorExt};
+use rama_core::error::{BoxError};
 use rama_core::{Layer, Service};
 use std::sync::{
     Arc,

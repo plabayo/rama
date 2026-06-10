@@ -2,7 +2,7 @@ use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, 
 
 use super::{Domain, DomainAddress, Host, SocketAddress};
 use rama_core::error::extra::OpaqueError;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt};
+use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr};

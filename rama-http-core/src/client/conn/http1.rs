@@ -6,7 +6,7 @@ use std::task::{Context, Poll, ready};
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
-use rama_core::error::{BoxError, ErrorExt, extra::OpaqueError};
+use rama_core::error::{BoxError, extra::OpaqueError};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
