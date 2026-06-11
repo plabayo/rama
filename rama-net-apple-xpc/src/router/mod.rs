@@ -1,10 +1,8 @@
+use rama_core::error::BoxErrorExt as _;
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt as _};
-use rama_core::{
-    Service,
-    error::{BoxError, ErrorExt, extra::OpaqueError},
-};
+use rama_core::{Service, error::BoxError};
 use rama_utils::str::arcstr::arcstr;
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -202,10 +200,9 @@ impl Service<XpcMessage> for XpcMessageRouter {
             return fallback.serve(input).await;
         }
 
-        Err(OpaqueError::from_static_str(
+        Err(BoxError::from_static_str(
             "XpcMessageRouter: no matching router found and no fallback defined",
-        )
-        .into_box_error())
+        ))
     }
 }
 

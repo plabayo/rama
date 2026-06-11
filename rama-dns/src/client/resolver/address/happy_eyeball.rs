@@ -1,3 +1,4 @@
+use rama_core::error::{BoxError, BoxErrorExt as _};
 use std::{
     net::IpAddr,
     pin::Pin,
@@ -88,11 +89,11 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
             return HappyEyeballIpStream::Once {
                 stream: rama_core::stream::once(match (ip, ip_mode) {
                     (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
-                        Err(OpaqueError::from_static_str("IPv4 address is not allowed")
+                        Err(BoxError::from_static_str("IPv4 address is not allowed")
                             .into_opaque_error())
                     }
                     (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
-                        Err(OpaqueError::from_static_str("IPv6 address is not allowed")
+                        Err(BoxError::from_static_str("IPv6 address is not allowed")
                             .into_opaque_error())
                     }
                     _ => Ok(ip),
@@ -101,7 +102,7 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         }
         let Ok(domain) = self.host.try_into_domain() else {
             return HappyEyeballIpStream::Once {
-                stream: rama_core::stream::once(Err(OpaqueError::from_static_str(
+                stream: rama_core::stream::once(Err(BoxError::from_static_str(
                     "host is not resolvable as a domain",
                 )
                 .into_opaque_error())),

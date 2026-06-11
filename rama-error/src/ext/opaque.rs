@@ -25,6 +25,15 @@ impl OpaqueError {
     pub fn from_static_str(e: &'static str) -> Self {
         Self(Box::new(StaticStrError(e)))
     }
+
+    #[inline(always)]
+    /// Unwrap into the inner [`BoxError`].
+    ///
+    /// [`OpaqueError`] is a transparent [`BoxError`] wrapper, so this is free.
+    /// This shadows the generic `into_box_error` added by `ErrorExt` trait.
+    pub fn into_box_error(self) -> BoxError {
+        self.0
+    }
 }
 
 impl fmt::Debug for OpaqueError {

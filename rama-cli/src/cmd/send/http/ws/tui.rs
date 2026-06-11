@@ -1,6 +1,6 @@
 use rama::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     futures::{FutureExt, StreamExt},
     graceful::ShutdownGuard,
     http::{
@@ -236,7 +236,7 @@ impl App {
                     self.history.push_server_message(text);
                 }
                 Ok(Message::Close(close)) => {
-                    return Err(OpaqueError::from_static_str("recv close msg")
+                    return Err(BoxError::from_static_str("recv close msg")
                         .context_debug_field("frame", close));
                 }
                 Ok(message) => {

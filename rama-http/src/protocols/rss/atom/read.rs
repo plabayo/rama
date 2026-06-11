@@ -28,7 +28,7 @@ use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
     atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value, make_atom_text,
-    parse_rfc3339_lax, parse_uri, parse_uri_reference,
+    parse_rfc3339_lax, parse_uri, parse_uri_reference, push_general_ref, push_text,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
@@ -292,7 +292,13 @@ struct AtomReader<R: AsyncBufRead + Unpin + Send> {
 impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
     fn new(reader: R, strict: bool) -> Self {
         let mut nsr = NsReader::from_reader(reader);
-        nsr.config_mut().trim_text(true);
+        // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
+        // every entity / character reference into separate `Text` and
+        // `GeneralRef` events, so per-event trimming strips whitespace that is
+        // *interior* to a field — e.g. `Hello &lt;b&gt;` (a `type="html"` body)
+        // would lose the space before `<b>`. We instead leave text verbatim and
+        // trim the fully reassembled field value once, in the `End` handler.
+        nsr.config_mut().trim_text(false);
         Self {
             nsr,
             buf: Vec::with_capacity(4096),
@@ -650,18 +656,14 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 Ok(Action::Continue)
             }
             Event::Text(e) => {
-                match e.unescape() {
-                    Ok(t) => self.text_buf.push_str(&t),
-                    Err(err) => {
-                        if self.strict {
-                            return Err(FeedParseError::new(format!(
-                                "invalid text content: {err}"
-                            )));
-                        }
-                        tracing::debug!("atom stream unescape error (lenient): {err}");
-                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                }
+                push_text(&mut self.text_buf, &e, self.strict)?;
+                Ok(Action::Continue)
+            }
+            // quick-xml 0.40 surfaces entity references as standalone events
+            // rather than expanding them inside `Text`; resolve and accumulate
+            // them so `&amp;` etc. survive into the captured text.
+            Event::GeneralRef(e) => {
+                push_general_ref(&mut self.text_buf, &e, self.strict)?;
                 Ok(Action::Continue)
             }
             Event::CData(e) => {
@@ -695,7 +697,15 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
                 drop(e);
                 let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
-                let text = std::mem::take(&mut self.text_buf);
+                // Trim the reassembled value once (the reader runs with
+                // `trim_text(false)`; see `AtomReader::new`). This drops a
+                // field's surrounding whitespace while preserving whitespace
+                // interior to it — including spaces adjacent to entities.
+                let mut text = std::mem::take(&mut self.text_buf);
+                let trimmed = text.trim();
+                if trimmed.len() != text.len() {
+                    text = trimmed.to_owned();
+                }
                 self.handle_end(ns, local, text)
             }
             Event::Eof => {
@@ -1042,16 +1052,12 @@ where
 {
     const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
 
-    // The outer reader runs with `trim_text(true)` so core-Atom text fields
-    // come back without surrounding whitespace. Inside an xhtml subtree
-    // every space matters — `<p>foo</p> <p>bar</p>` and
-    // `<p>Hello <em>world</em> there</p>` both lose meaning if the inter-
-    // element whitespace is trimmed. Disable trimming for the capture and
-    // restore it before returning (errors included).
-    nsr.config_mut().trim_text(false);
-    let result = capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await;
-    nsr.config_mut().trim_text(true);
-    result
+    // The outer reader already runs with `trim_text(false)` (see
+    // `AtomReader::new`), which is exactly what an xhtml subtree needs — inside
+    // it every space matters: `<p>foo</p> <p>bar</p>` and
+    // `<p>Hello <em>world</em> there</p>` both lose meaning if inter-element
+    // whitespace is trimmed. No toggle needed.
+    capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await
 }
 
 async fn capture_xhtml_subtree_inner<R>(
@@ -1135,7 +1141,7 @@ where
             Event::Text(e) => {
                 // Non-whitespace text outside the wrapper violates the spec.
                 if depth == 0 && !saw_wrapper && strict {
-                    let s = e.unescape().map(|c| c.into_owned()).unwrap_or_default();
+                    let s = e.decode().map(|c| c.into_owned()).unwrap_or_default();
                     if !s.trim().is_empty() {
                         return Err(FeedParseError::new(
                             "Atom xhtml content must be wrapped in a single \
@@ -1152,6 +1158,11 @@ where
                 .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Comment(e) => writer
                 .write_event(Event::Comment(e))
+                .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
+            // Entity references are valid xhtml text content; re-emit them
+            // verbatim (quick-xml 0.40 no longer keeps them inside `Text`).
+            Event::GeneralRef(e) => writer
+                .write_event(Event::GeneralRef(e))
                 .map_err(|err| FeedParseError::new(format!("xhtml write: {err}")))?,
             Event::Eof => {
                 return Err(FeedParseError::new("unexpected EOF in xhtml content"));

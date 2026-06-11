@@ -89,7 +89,7 @@ fn gen_ca_basics() {
     let data = sample_data("ca.rama.test");
     let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("generate CA");
 
-    assert_eq!(ca_key.id(), Id::RSA);
+    assert_eq!(ca_key.id(), Id::EC); // default key kind is EC P-256
     assert!(ca_cert.verify(&ca_key).expect("verify self-signed ca cert"));
     assert_eq!(
         ca_cert.subject_name().to_der().expect("ca subject der"),
@@ -113,7 +113,7 @@ fn gen_leaf_signed_by_ca_and_has_common_name_san() {
     let (leaf_cert, leaf_key) =
         self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("generate leaf");
 
-    assert_eq!(leaf_key.id(), Id::RSA);
+    assert_eq!(leaf_key.id(), Id::EC); // default key kind is EC P-256
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
     assert_eq!(
         leaf_cert.issuer_name().to_der().expect("leaf issuer der"),
@@ -172,7 +172,9 @@ fn mirror_preserves_subject_validity_and_issuer() {
             .expect("mirrored issuer der"),
         ca_cert.subject_name().to_der().expect("ca subject der")
     );
-    assert_eq!(mirrored_key.id(), Id::RSA);
+    // source was gen'd with the default key kind (EC P-256), so the mirror
+    // matches it.
+    assert_eq!(mirrored_key.id(), Id::EC);
 }
 
 #[test]
@@ -501,6 +503,174 @@ fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
     assert_eq!(ca_cert.issued(&leaf_cert), Ok(()));
 }
 
+/// Append a raw extension (OID + DER payload) to a cert builder. The mirror
+/// logic keys off the extension OID, not the payload, so dummy payloads are
+/// sufficient to exercise the strip behaviour.
+fn append_raw_ext(
+    cert_builder: &mut crate::core::x509::X509Builder,
+    oid: &str,
+    critical: bool,
+    payload: &[u8],
+) -> Result<(), BoxError> {
+    let obj = Asn1Object::from_str(oid).context("strippable ext oid")?;
+    let ext = X509Extension::from_der_payload(obj.as_ref(), critical, payload)
+        .context("build strippable ext")?;
+    cert_builder
+        .append_extension(ext.as_ref())
+        .context("append strippable ext")?;
+    Ok(())
+}
+
+fn has_ext_oid(cert: &X509Ref, oid: &str) -> bool {
+    let want = Asn1Object::from_str(oid).expect("resolve oid").to_string();
+    cert.extensions()
+        .any(|ext| ext.object().to_string() == want)
+}
+
+/// Build a self-signed source cert carrying SAN + KeyUsage (which must survive
+/// mirroring) plus every extension class that must be stripped from a re-signed
+/// MITM leaf: CRL Distribution Points, Authority Information Access, Freshest
+/// CRL, RFC 7633 must-staple, and an RFC 6962 embedded SCT list.
+fn build_source_with_strippable_exts(common_name: &str) -> Result<X509, BoxError> {
+    let rsa = Rsa::generate(2048).context("source rsa")?;
+    let pkey = PKey::from_rsa(rsa).context("source pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("source name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("source cn")?;
+    let x509_name = x509_name.build();
+
+    let mut cert_builder = X509::builder().context("source builder")?;
+    cert_builder.set_version(2).context("source version")?;
+    let serial = {
+        let mut serial = BigNum::new().context("source serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("source serial rand")?;
+        serial.to_asn1_integer().context("source serial asn1")?
+    };
+    cert_builder
+        .set_serial_number(&serial)
+        .context("source serial")?;
+    cert_builder
+        .set_subject_name(&x509_name)
+        .context("source subject")?;
+    cert_builder
+        .set_issuer_name(&x509_name)
+        .context("source issuer")?;
+    cert_builder.set_pubkey(&pkey).context("source pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("source nb")?;
+    cert_builder
+        .set_not_before(&not_before)
+        .context("source set nb")?;
+    let not_after = Asn1Time::days_from_now(30).context("source na")?;
+    cert_builder
+        .set_not_after(&not_after)
+        .context("source set na")?;
+
+    // survivors
+    let san = SubjectAlternativeName::new()
+        .dns(common_name)
+        .build(&cert_builder.x509v3_context(None, None))
+        .context("source san")?;
+    cert_builder
+        .append_extension(san.as_ref())
+        .context("append source san")?;
+    cert_builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .digital_signature()
+                .key_encipherment()
+                .build()
+                .context("source ku")?
+                .as_ref(),
+        )
+        .context("append source ku")?;
+
+    // strippable: issuer-bound revocation / authority pointers
+    append_raw_ext(&mut cert_builder, "2.5.29.31", false, &[0x30, 0x00])?; // CRL DP
+    append_raw_ext(&mut cert_builder, "1.3.6.1.5.5.7.1.1", false, &[0x30, 0x00])?; // AIA
+    append_raw_ext(&mut cert_builder, "2.5.29.46", false, &[0x30, 0x00])?; // Freshest CRL
+    // strippable: assertions we cannot honour after re-signing
+    append_raw_ext(
+        &mut cert_builder,
+        "1.3.6.1.5.5.7.1.24",
+        true,
+        &[0x30, 0x03, 0x02, 0x01, 0x05],
+    )?; // must-staple
+    append_raw_ext(
+        &mut cert_builder,
+        "1.3.6.1.4.1.11129.2.4.2",
+        false,
+        &[0x04, 0x02, 0x00, 0x00],
+    )?; // SCT list
+
+    cert_builder
+        .sign(&pkey, MessageDigest::sha256())
+        .context("sign source")?;
+
+    Ok(cert_builder.build())
+}
+
+#[test]
+fn mirror_strips_issuer_bound_and_unsatisfiable_extensions() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    let source_cert =
+        build_source_with_strippable_exts("strip.rama.test").expect("build source cert");
+
+    // sanity: the source really does carry all of them
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::CRL_DISTRIBUTION_POINTS).is_empty());
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::INFO_ACCESS).is_empty());
+    assert!(!ext_by_nid(source_cert.as_ref(), Nid::FRESHEST_CRL).is_empty());
+    assert!(has_ext_oid(source_cert.as_ref(), "1.3.6.1.5.5.7.1.24"));
+    assert!(has_ext_oid(source_cert.as_ref(), "1.3.6.1.4.1.11129.2.4.2"));
+
+    let (mirrored_cert, _) =
+        self_signed_server_auth_mirror_cert(source_cert.as_ref(), &ca_cert, &ca_key)
+            .expect("mirror cert");
+
+    // stripped
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::CRL_DISTRIBUTION_POINTS).is_empty(),
+        "CRL Distribution Points must be stripped"
+    );
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::INFO_ACCESS).is_empty(),
+        "Authority Information Access must be stripped"
+    );
+    assert!(
+        ext_by_nid(mirrored_cert.as_ref(), Nid::FRESHEST_CRL).is_empty(),
+        "Freshest CRL must be stripped"
+    );
+    assert!(
+        !has_ext_oid(mirrored_cert.as_ref(), "1.3.6.1.5.5.7.1.24"),
+        "must-staple (TLS Feature) must be stripped"
+    );
+    assert!(
+        !has_ext_oid(mirrored_cert.as_ref(), "1.3.6.1.4.1.11129.2.4.2"),
+        "embedded SCT list must be stripped"
+    );
+
+    // survivors: identity-bearing extensions are still mirrored
+    assert!(
+        !ext_by_nid(mirrored_cert.as_ref(), Nid::KEY_USAGE).is_empty(),
+        "Key Usage must survive mirroring"
+    );
+    let san = mirrored_cert.subject_alt_names().expect("mirrored SAN");
+    assert!(
+        san.iter()
+            .any(|name| name.dnsname() == Some("strip.rama.test")),
+        "SAN must survive mirroring"
+    );
+
+    // and the leaf is still validly issued by our CA
+    assert_eq!(ca_cert.issued(&mirrored_cert), Ok(()));
+}
+
 #[test]
 fn mirror_uses_ec_key_for_ec_source() {
     let ca_data = sample_data("ca.rama.test");
@@ -517,4 +687,256 @@ fn mirror_uses_ec_key_for_ec_source() {
             .expect("mirror cert");
 
     assert_eq!(mirrored_key.id(), Id::EC);
+}
+
+/// Build a self-signed Ed25519 CA, signed via the NULL-digest EdDSA path.
+fn build_ed25519_ca(common_name: &str) -> Result<(X509, PKey<Private>), BoxError> {
+    let mut seed = [0_u8; 32];
+    crate::core::rand::rand_bytes(&mut seed).context("ed25519 ca key bytes")?;
+    let privkey = PKey::from_ed25519_private_key(&seed).context("ed25519 ca pkey")?;
+
+    let mut x509_name = X509NameBuilder::new().context("ca name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("ca cn")?;
+    let x509_name = x509_name.build();
+
+    let mut b = X509::builder().context("ca builder")?;
+    b.set_version(2).context("ca version")?;
+    let serial = {
+        let mut serial = BigNum::new().context("ca serial bn")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("ca serial rand")?;
+        serial.to_asn1_integer().context("ca serial asn1")?
+    };
+    b.set_serial_number(&serial).context("ca serial")?;
+    b.set_subject_name(&x509_name).context("ca subject")?;
+    b.set_issuer_name(&x509_name).context("ca issuer")?;
+    b.set_pubkey(&privkey).context("ca pubkey")?;
+    let not_before = Asn1Time::days_from_now(0).context("ca nb")?;
+    b.set_not_before(&not_before).context("ca set nb")?;
+    let not_after = Asn1Time::days_from_now(365).context("ca na")?;
+    b.set_not_after(&not_after).context("ca set na")?;
+    b.append_extension(
+        BasicConstraints::new()
+            .critical()
+            .ca()
+            .build()
+            .context("ca bc")?
+            .as_ref(),
+    )
+    .context("append ca bc")?;
+    b.append_extension(
+        KeyUsage::new()
+            .critical()
+            .key_cert_sign()
+            .crl_sign()
+            .build()
+            .context("ca ku")?
+            .as_ref(),
+    )
+    .context("append ca ku")?;
+    let ski = SubjectKeyIdentifier::new()
+        .build(&b.x509v3_context(None, None))
+        .context("ca ski")?;
+    b.append_extension(ski.as_ref()).context("append ca ski")?;
+
+    b.sign(&privkey, signing_digest_for(&privkey))
+        .context("sign ed25519 ca")?;
+
+    Ok((b.build(), privkey))
+}
+
+#[test]
+fn signing_digest_is_null_for_eddsa_and_sha256_otherwise() {
+    let mut seed = [0_u8; 32];
+    crate::core::rand::rand_bytes(&mut seed).expect("seed");
+    let ed = PKey::from_ed25519_private_key(&seed).expect("ed25519 key");
+    assert!(
+        signing_digest_for(&ed).as_ptr().is_null(),
+        "EdDSA must sign with a NULL digest"
+    );
+
+    let rsa = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("rsa pkey");
+    assert_eq!(
+        signing_digest_for(&rsa).as_ptr(),
+        MessageDigest::sha256().as_ptr(),
+        "non-EdDSA keys sign over SHA-256"
+    );
+}
+
+#[test]
+fn gen_and_mirror_with_ed25519_ca_produce_valid_signatures() {
+    let (ca_cert, ca_key) = build_ed25519_ca("ed25519-ca.rama.test").expect("ed25519 ca");
+    assert_eq!(ca_key.id(), Id::ED25519);
+    assert!(
+        ca_cert
+            .verify(&ca_key)
+            .expect("verify self-signed ed25519 ca"),
+        "self-signed Ed25519 CA signature must verify"
+    );
+
+    // gen_cert signs a fresh leaf with the Ed25519 CA
+    let leaf_data = sample_data("leaf.rama.test");
+    let (leaf, _) = self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key)
+        .expect("gen leaf with ed25519 ca");
+    assert_eq!(ca_cert.issued(&leaf), Ok(()));
+    assert!(
+        leaf.verify(&ca_key).expect("verify leaf sig"),
+        "leaf signed by Ed25519 CA must verify"
+    );
+
+    // the mirror path must likewise sign correctly with the Ed25519 CA
+    let source_pkey =
+        PKey::from_rsa(Rsa::generate(2048).expect("source rsa")).expect("source pkey");
+    let source =
+        build_self_signed_source_with_pkey(&source_pkey, "source.rama.test").expect("source cert");
+    let (mirrored, _) = self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key)
+        .expect("mirror with ed25519 ca");
+    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
+    assert!(
+        mirrored.verify(&ca_key).expect("verify mirrored sig"),
+        "mirrored leaf signed by Ed25519 CA must verify"
+    );
+}
+
+#[test]
+fn signing_digest_pairs_to_ec_curve() {
+    let ec = |nid| {
+        let group = EcGroup::from_curve_name(nid).expect("ec group");
+        PKey::from_ec_key(EcKey::generate(&group).expect("ec key")).expect("ec pkey")
+    };
+
+    assert_eq!(
+        signing_digest_for(&ec(Nid::X9_62_PRIME256V1)).as_ptr(),
+        MessageDigest::sha256().as_ptr(),
+        "P-256 must sign over SHA-256"
+    );
+    assert_eq!(
+        signing_digest_for(&ec(Nid::SECP384R1)).as_ptr(),
+        MessageDigest::sha384().as_ptr(),
+        "P-384 must sign over SHA-384"
+    );
+    assert_eq!(
+        signing_digest_for(&ec(Nid::SECP521R1)).as_ptr(),
+        MessageDigest::sha512().as_ptr(),
+        "P-521 must sign over SHA-512"
+    );
+}
+
+#[test]
+fn gen_ca_honors_key_kind() {
+    for (kind, want) in [
+        (SelfSignedKeyKind::Rsa2048, Id::RSA),
+        (SelfSignedKeyKind::EcP256, Id::EC),
+        (SelfSignedKeyKind::EcP384, Id::EC),
+        (SelfSignedKeyKind::EcP521, Id::EC),
+        (SelfSignedKeyKind::Ed25519, Id::ED25519),
+    ] {
+        let data = SelfSignedData {
+            key_kind: kind,
+            ..sample_data("ca.rama.test")
+        };
+        let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("gen ca");
+        assert_eq!(ca_key.id(), want, "kind={kind:?}");
+        assert!(
+            ca_cert.verify(&ca_key).expect("verify self-signed ca"),
+            "self-signed CA of kind={kind:?} must verify"
+        );
+    }
+}
+
+#[test]
+fn gen_cert_with_ec_ca_and_ec_leaf_verifies() {
+    let ca_data = SelfSignedData {
+        key_kind: SelfSignedKeyKind::EcP384,
+        ..sample_data("ec-ca.rama.test")
+    };
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("ec ca");
+    assert_eq!(ca_key.id(), Id::EC);
+
+    let leaf_data = SelfSignedData {
+        key_kind: SelfSignedKeyKind::EcP256,
+        ..sample_data("leaf.rama.test")
+    };
+    let (leaf, leaf_key) =
+        self_signed_server_auth_gen_cert(&leaf_data, &ca_cert, &ca_key).expect("ec leaf");
+    assert_eq!(leaf_key.id(), Id::EC);
+    assert_eq!(ca_cert.issued(&leaf), Ok(()));
+    assert!(
+        leaf.verify(&ca_key).expect("verify leaf"),
+        "leaf signed by P-384 CA must verify"
+    );
+}
+
+/// Build a source cert whose *subject* public key is `subject_pub`, signed by a
+/// separate issuer. Needed for source keys (e.g. X25519) that cannot self-sign.
+fn build_source_cert_with_pubkey(
+    subject_pub: &PKey<Private>,
+    issuer_cert: &X509,
+    issuer_key: &PKey<Private>,
+    common_name: &str,
+) -> Result<X509, BoxError> {
+    let mut name = X509NameBuilder::new().context("name builder")?;
+    name.append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("cn")?;
+    let name = name.build();
+
+    let mut b = X509::builder().context("builder")?;
+    b.set_version(2).context("version")?;
+    let serial = {
+        let mut s = BigNum::new().context("serial bn")?;
+        s.rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("serial rand")?;
+        s.to_asn1_integer().context("serial asn1")?
+    };
+    b.set_serial_number(&serial).context("serial")?;
+    b.set_subject_name(&name).context("subject")?;
+    b.set_issuer_name(issuer_cert.subject_name())
+        .context("issuer")?;
+    b.set_pubkey(subject_pub).context("pubkey")?;
+    let nb = Asn1Time::days_from_now(0).context("nb")?;
+    b.set_not_before(&nb).context("set nb")?;
+    let na = Asn1Time::days_from_now(30).context("na")?;
+    b.set_not_after(&na).context("set na")?;
+    b.sign(issuer_key, signing_digest_for(issuer_key))
+        .context("sign source")?;
+    Ok(b.build())
+}
+
+#[test]
+fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
+    let (ca_cert, ca_key) =
+        self_signed_server_auth_gen_ca(&sample_data("ca.rama.test")).expect("ca");
+
+    // Source cert whose SUBJECT key is X25519 — a key-agreement-only key that
+    // cannot serve as a TLS leaf signing key. Signed by a separate RSA issuer.
+    let mut seed = [0_u8; 32];
+    crate::core::rand::rand_bytes(&mut seed).expect("seed");
+    let x25519 = PKey::from_x25519_private_key(&seed).expect("x25519 key");
+    let (issuer_cert, issuer_key) =
+        self_signed_server_auth_gen_ca(&sample_data("issuer.rama.test")).expect("issuer");
+    let source = build_source_cert_with_pubkey(
+        &x25519,
+        &issuer_cert,
+        &issuer_key,
+        "x25519-source.rama.test",
+    )
+    .expect("source cert");
+    assert_eq!(source.public_key().expect("source pubkey").id(), Id::X25519);
+
+    let (mirrored, mirrored_key) =
+        self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key).expect("mirror");
+
+    assert_eq!(
+        mirrored_key.id(),
+        Id::RSA,
+        "a non-signing source key must fall back to a functional RSA leaf key"
+    );
+    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
+    assert!(
+        mirrored.verify(&ca_key).expect("verify mirrored"),
+        "fallback mirrored leaf must verify against the CA"
+    );
 }

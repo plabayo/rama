@@ -1,4 +1,5 @@
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError};
+use rama_core::error::BoxErrorExt as _;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use std::{fmt, str::FromStr};
 
@@ -101,9 +102,8 @@ impl Bearer {
             .position(|b| *b <= 32 || *b >= 127 || *b == b',')
         {
             return Err(
-                OpaqueError::from_static_str("Bearer token contains forbidden byte")
-                    .context_field("byte_index", idx)
-                    .into_box_error(),
+                BoxError::from_static_str("Bearer token contains forbidden byte")
+                    .context_field("byte_index", idx),
             );
         }
 

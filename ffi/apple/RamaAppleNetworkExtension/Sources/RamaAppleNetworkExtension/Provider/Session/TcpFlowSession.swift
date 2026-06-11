@@ -174,6 +174,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     func installConnectTimeout(connectTimeoutMs: UInt32, remoteHost: String) {
         let work = DispatchWorkItem { [weak self] in
+            // `egressReady` is a reliable signal now that `stateUpdateHandler`
+            // runs in FIFO order (no re-dispatch hop): a `.ready` arriving
+            // before this deadline flips `egressReady` and cancels this timer
+            // before it can fire.
             guard let self, !self.egressReady else { return }
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
@@ -231,10 +235,32 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // ctx.connection → connection) is broken by
         // `cancelAndDetach()` on teardown, which sets the handler
         // to nil.
+        // No re-dispatch hop: NWConnection delivers this on the queue passed
+        // to `start(queue:)` — which is `flowQueue` — so we're already
+        // serialised here. Running `handleEgressState` directly (instead of
+        // posting a fresh `flowQueue.async` item) keeps the state transition
+        // in FIFO order with any timer armed on `flowQueue`, so a `.ready`
+        // that arrives just before a connect/waiting deadline cancels that
+        // timer BEFORE it fires — no reordering, no recovered-flow reset.
         connection.stateUpdateHandler = { state in
-            self.flowQueue.async {
-                self.handleEgressState(state)
-            }
+            self.handleEgressState(state)
+        }
+        // Cache path viability so the post-wake reconcile can read a plain
+        // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
+        // which leaks ~32B per read. Strong `self` for the same
+        // lifetime-anchor reason as `stateUpdateHandler`; the cycle is
+        // broken by `cancelAndDetach()` clearing both handlers.
+        //
+        // Assign DIRECTLY — do NOT re-dispatch via `flowQueue.async`.
+        // NWConnection delivers this on the queue passed to `start(queue:)`,
+        // which IS `flowQueue`, so we're already serialised here. A second
+        // hop would re-order this write to AFTER work already queued ahead
+        // of it: e.g. a recovery `viable=true` arriving just before a due
+        // `checkWakeDeadPath` would land BEHIND the check, so the check
+        // reads a stale `false` and resets a flow whose path just came back.
+        // Direct assignment lands the value in FIFO order with the callback.
+        connection.viabilityUpdateHandler = { viable in
+            self.ctx.lastPathViable = viable
         }
     }
 
@@ -342,6 +368,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             core?.logDebug(
                 "egress NWConnection waiting after flow opened: \(String(describing: error))"
             )
+            // `.ready` recovery is delivered via `stateUpdateHandler` in FIFO
+            // order (no re-dispatch hop), so a path that comes back cancels
+            // this timer (`handleEgressReady` → `waitingWork?.cancel()`)
+            // before it fires — no stale-timer reset of a recovered flow.
             let work = DispatchWorkItem { [weak self] in
                 self?.applyPostReadyTeardown(error: error)
             }
@@ -360,6 +390,9 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             "egress NWConnection waiting before ready (path down): \(String(describing: error))"
         )
         let work = DispatchWorkItem { [weak self] in
+            // FIFO `stateUpdateHandler` makes `egressReady` reliable: a
+            // `.ready` arriving before this budget expires flips it and
+            // cancels this timer first.
             guard let self, !self.egressReady else { return }
             self.core?.logDebug(
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "

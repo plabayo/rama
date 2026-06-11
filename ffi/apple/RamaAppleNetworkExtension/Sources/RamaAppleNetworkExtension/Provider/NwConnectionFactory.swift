@@ -20,11 +20,23 @@ import Network
 /// extension below.
 protocol NwConnectionLike: AnyObject {
     var state: NWConnection.State { get }
+
     // Matches `NWConnection`'s real `@Sendable` declaration so the
     // conformance is Swift-6 clean. Assigned closures capture the
     // per-flow session (an `@unchecked Sendable` class), so `@Sendable`
     // holds without further propagation.
     var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? { get set }
+
+    /// Fires `false` when Network.framework decides the connection can no
+    /// longer send/receive (its path was torn down — e.g. a network change
+    /// across a sleep) and `true` when it recovers. We cache the latest
+    /// value into `TcpFlowContext.lastPathViable` and read THAT on the
+    /// post-wake reconcile, instead of polling `NWConnection.currentPath`
+    /// — the latter allocates a fresh path snapshot per read (enumerates
+    /// gateways) and leaks ~32B each call inside Network.framework, which
+    /// is unacceptable on the per-flow wake path. Same `@Sendable` shape as
+    /// `stateUpdateHandler`.
+    var viabilityUpdateHandler: (@Sendable (Bool) -> Void)? { get set }
 
     func start(queue: DispatchQueue)
     func cancel()
@@ -48,6 +60,8 @@ protocol NwConnectionLike: AnyObject {
     )
 }
 
+// `NWConnection` already exposes `stateUpdateHandler` / `viabilityUpdateHandler`
+// with matching signatures, so the conformance is trivial.
 extension NWConnection: NwConnectionLike {}
 
 extension NwConnectionLike {
@@ -78,6 +92,11 @@ extension NwConnectionLike {
     /// pre-fix) stays at zero.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
+        // Drop the viability handler too — it strongly captures the same
+        // per-flow session graph as `stateUpdateHandler`, so leaving it
+        // attached would re-introduce the retain cycle this method exists
+        // to break.
+        self.viabilityUpdateHandler = nil
         self.cancel()
     }
 }

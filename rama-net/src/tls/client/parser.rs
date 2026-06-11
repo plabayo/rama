@@ -17,7 +17,7 @@ use nom::{
     multi::{length_data, many0},
     number::streaming::{be_u8, be_u16},
 };
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use std::str;
@@ -29,7 +29,7 @@ use std::str;
 pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
     match parse_client_hello_inner(i) {
         Err(err) => Err(
-            OpaqueError::from_static_str("parse client hello handshake message")
+            BoxError::from_static_str("parse client hello handshake message")
                 .context_debug_field("err", err.to_owned()),
         ),
         Ok((i, hello)) => {
@@ -51,7 +51,7 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, BoxError> {
 pub fn parse_client_hello_handshake(i: &[u8]) -> Result<ClientHello, BoxError> {
     match parse_client_hello_handshake_inner(i) {
         Err(err) => Err(
-            OpaqueError::from_static_str("parse client hello handshake message")
+            BoxError::from_static_str("parse client hello handshake message")
                 .context_debug_field("err", err.to_owned()),
         ),
         Ok((i, hello)) => {
@@ -91,7 +91,7 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain
     parse_client_hello_handshake_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
-            OpaqueError::from_static_str("parse client hello handshake message to find SNI")
+            BoxError::from_static_str("parse client hello handshake message to find SNI")
                 .context_debug_field("err", err.to_owned())
         })
 }
@@ -109,7 +109,7 @@ pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, 
     parse_client_hello_record_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
-            OpaqueError::from_static_str("parse client hello record message to find SNI")
+            BoxError::from_static_str("parse client hello record message to find SNI")
                 .context_debug_field("err", err.to_owned())
         })
 }

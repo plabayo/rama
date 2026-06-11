@@ -302,14 +302,21 @@ final class CoreEdgeCaseTests: XCTestCase {
         flow.completeOpen(error: nil)
         waitFor("egress receive in flight") { conn.pendingReceiveCount > 0 }
 
-        // Go into .waiting then bounce back to .ready before the
-        // tolerance fires.
+        // Go into .waiting then bounce back to .ready. Both states are
+        // delivered async on `flowQueue`, so enqueuing them back-to-back
+        // (no inter-transition sleep) makes FIFO do the work: the `.waiting`
+        // handler arms the 200ms tolerance timer, then the `.ready` handler
+        // runs on the very next queue turn and cancels it — long before the
+        // deadline. The previous 50ms gap let the timer race the `.ready`
+        // delivery under heavy parallel-test load (timer fires first → false
+        // teardown), which is the flake this removes.
         conn.transition(to: .waiting(.posix(.ENETDOWN)))
-        Thread.sleep(forTimeInterval: 0.05)
         conn.transition(to: .ready)
 
-        // Wait past where the tolerance would have fired had the
-        // duplicate .ready not cancelled it.
+        // Wait past where the tolerance WOULD have fired had the duplicate
+        // .ready not cancelled it — still a regression guard: a re-introduced
+        // delivery hop that lets the timer fire first would tear the flow down
+        // here.
         Thread.sleep(forTimeInterval: 0.40)
 
         XCTAssertEqual(

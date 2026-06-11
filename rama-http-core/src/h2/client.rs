@@ -140,9 +140,8 @@
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
-
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::{BoxError, BoxErrorExt};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::{self, Instrument, debug, warn};
 use rama_http::proto::HeaderByteLength;
@@ -1330,10 +1329,10 @@ impl Builder {
 
     rama_utils::macros::generate_set_and_with! {
         /// Sets the first stream ID to something other than 1.
-        pub fn initial_stream_id(mut self, stream_id: u32) -> Result<Self, OpaqueError> {
+        pub fn initial_stream_id(mut self, stream_id: u32) -> Result<Self, BoxError> {
             self.stream_id = stream_id.into();
             if !self.stream_id.is_client_initiated() {
-                return Err(OpaqueError::from_static_str("stream id must be odd"));
+                return Err(BoxError::from_static_str("stream id must be odd"));
             }
             Ok(self)
         }

@@ -6,9 +6,14 @@
 //! return owned data. The streaming readers call them per element.
 
 use jiff::Timestamp;
+use quick_xml::XmlVersion;
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::{BytesRef, BytesText};
+use rama_core::telemetry::tracing;
 use rama_net::uri::Uri;
 
 use super::atom::{AtomCategory, AtomLink, AtomText};
+use super::error::FeedParseError;
 use super::feed_ext::names::attr;
 use super::rss2::Rss2Enclosure;
 
@@ -23,7 +28,15 @@ pub(super) fn attr_value(e: &Attrs<'_>, name: &str) -> Option<String> {
     e.attributes()
         .filter_map(|a| a.ok())
         .find(|a| a.key.as_ref() == needle)
-        .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+        // quick-xml renamed `unescape_value` -> `normalized_value` (the latter
+        // also applies XML attribute-value whitespace normalization). `Implicit1_0`
+        // preserves the prior behaviour: UTF-8 decode + the five predefined
+        // entities, no DTD entity expansion.
+        .and_then(|a| {
+            a.normalized_value(XmlVersion::Implicit1_0)
+                .ok()
+                .map(|v| v.into_owned())
+        })
 }
 
 pub(super) fn parse_uri(s: &str) -> Option<Uri> {
@@ -95,6 +108,81 @@ pub(super) fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
         scheme: attr_value(e, attr::SCHEME),
         label: attr_value(e, attr::LABEL),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Text / entity accumulation — shared by the Atom and RSS 2.0 streaming
+// readers, which both accumulate element text into a `String` buffer.
+// ---------------------------------------------------------------------------
+
+/// Append the decoded content of an `Event::Text` to `buf`.
+///
+/// quick-xml 0.40 stopped expanding entities inside text: a run like
+/// `a &amp; b` now arrives as `Text("a ")`, `GeneralRef("amp")`, `Text(" b")`,
+/// so `decode()` (bytes → str, no entity resolution) yields the literal run and
+/// each entity is appended separately by [`push_general_ref`]. On a decode
+/// error this propagates in strict mode and appends a lossy rendering in
+/// lenient mode — the same split the old `BytesText::unescape` path had.
+pub(super) fn push_text(
+    buf: &mut String,
+    e: &BytesText<'_>,
+    strict: bool,
+) -> Result<(), FeedParseError> {
+    match e.decode() {
+        Ok(t) => buf.push_str(&t),
+        Err(err) => {
+            if strict {
+                return Err(FeedParseError::new(format!("invalid text content: {err}")));
+            }
+            tracing::debug!("rss feed text decode error (lenient): {err}");
+            buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+        }
+    }
+    Ok(())
+}
+
+/// Append a resolved general entity reference (`Event::GeneralRef`) to `buf`.
+///
+/// quick-xml 0.40 emits each `&name;` / `&#nnn;` as its own event and leaves
+/// resolution to the caller. Numeric character references and the five XML
+/// predefined entities (`lt`, `gt`, `amp`, `quot`, `apos`) are resolved here;
+/// feeds carry no DTD, so any other entity is undefined — it propagates as an
+/// error in strict mode and is re-emitted verbatim (`&name;`) in lenient mode,
+/// mirroring how the old `unescape` surfaced an unresolvable reference.
+pub(super) fn push_general_ref(
+    buf: &mut String,
+    e: &BytesRef<'_>,
+    strict: bool,
+) -> Result<(), FeedParseError> {
+    match e.resolve_char_ref() {
+        Ok(Some(ch)) => {
+            buf.push(ch);
+            return Ok(());
+        }
+        Ok(None) => {} // a named entity — resolve below
+        Err(err) => {
+            if strict {
+                return Err(FeedParseError::new(format!(
+                    "invalid character reference: {err}"
+                )));
+            }
+        }
+    }
+    let name = e.decode().unwrap_or_default();
+    if let Some(replacement) = resolve_predefined_entity(&name) {
+        buf.push_str(replacement);
+        return Ok(());
+    }
+    if strict {
+        return Err(FeedParseError::new(format!(
+            "unresolvable entity reference: &{name};"
+        )));
+    }
+    tracing::debug!("rss feed unknown entity (lenient): &{name};");
+    buf.push('&');
+    buf.push_str(&name);
+    buf.push(';');
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

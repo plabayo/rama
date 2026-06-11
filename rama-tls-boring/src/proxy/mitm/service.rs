@@ -68,7 +68,8 @@ where
         )
         .inspect_err(|err| {
             tracing::debug!(
-                "failed to build default TlsConnectorData: {err}; try anyway without data"
+                %err,
+                "failed to build default TlsConnectorData; try anyway without data"
             )
         })
         .ok();

@@ -157,3 +157,34 @@ pub enum Error {
     /// set it. Returned by `StreamId::try_from(u32)`.
     ReservedStreamIdBit,
 }
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadFrameSize => f.write_str("bad frame size"),
+            Self::TooMuchPadding => f.write_str("padding longer than the frame payload"),
+            Self::InvalidSettingValue => f.write_str("invalid setting value"),
+            Self::InvalidInitialWindowSize => f.write_str("invalid initial window size"),
+            Self::InvalidWindowUpdateValue => f.write_str("invalid window update value"),
+            Self::InvalidPayloadLength => f.write_str("invalid frame payload length"),
+            Self::InvalidPayloadAckSettings => f.write_str("unexpected payload on settings ack"),
+            Self::InvalidStreamId => f.write_str("invalid stream identifier"),
+            Self::MalformedMessage => f.write_str("malformed message"),
+            Self::InvalidDependencyId => f.write_str("invalid stream dependency identifier"),
+            Self::Hpack(err) => write!(f, "hpack decoding failed: {err}"),
+            Self::ShortBuffer { needed, got } => {
+                write!(f, "short buffer: needed {needed} bytes, got {got}")
+            }
+            Self::ReservedStreamIdBit => f.write_str("reserved bit set on stream identifier"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Hpack(err) => Some(err),
+            _ => None,
+        }
+    }
+}

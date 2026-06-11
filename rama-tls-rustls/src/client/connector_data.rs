@@ -11,7 +11,7 @@ use rama_net::address::Host;
 use rama_net::tls::DataEncoding;
 use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
 use rama_net::tls::keylog::open_intent_sink;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 use rama_crypto::pki_types::PrivatePkcs8KeyDer;
@@ -129,15 +129,26 @@ fn rustls_client_auth(
     Ok((cert_chain, private_key))
 }
 
+/// The default client root certificate store used to verify servers.
+///
+/// By default this is built from the platform's native trust store (the system
+/// root certificates), loaded once and shared process-wide via
+/// [`rama_crypto::native_certs::shared_native_trust_anchors`]. On systems where
+/// no native roots are found, that loader warns and falls back to the bundled
+/// webpki (Mozilla CCADB) roots.
 pub fn client_root_certs() -> Arc<RootCertStore> {
-    static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
-    ROOT_CERTS
-        .get_or_init(|| {
-            let mut root_storage = RootCertStore::empty();
-            root_storage.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            Arc::new(root_storage)
-        })
-        .clone()
+    static ROOT_CERTS: LazyLock<Arc<RootCertStore>> = LazyLock::new(|| {
+        let mut root_storage = RootCertStore::empty();
+        let anchors = rama_crypto::native_certs::shared_native_trust_anchors();
+        let (added, ignored) = root_storage.add_parsable_certificates(anchors.iter().cloned());
+        rama_core::telemetry::tracing::trace!(
+            added,
+            ignored,
+            "rama-tls-rustls: initialised client root cert store from shared native trust anchors"
+        );
+        Arc::new(root_storage)
+    });
+    ROOT_CERTS.clone()
 }
 
 #[cfg(not(any(feature = "aws-lc", feature = "ring")))]
@@ -178,7 +189,7 @@ pub fn self_signed_client_auth()
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod tests {
     use super::*;
-    use rama_core::extensions::Extensions;
+    use rama_core::{error::BoxErrorExt, extensions::Extensions};
     use rama_net::tls::client::{TlsAlpn, TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain};
 
     #[test]
@@ -293,7 +304,8 @@ mod tests {
 
         crate::ensure_default_crypto_provider();
 
-        let cfg = TlsClientConfig::new().with_modify_rustls_config(|_| Err(BoxError::from("boom")));
+        let cfg = TlsClientConfig::new()
+            .with_modify_rustls_config(|_| Err(BoxError::from_static_str("boom")));
 
         let ext = Extensions::new();
         cfg.write_to(&ext);

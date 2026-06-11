@@ -10,7 +10,7 @@ use std::{
 use arc_swap::ArcSwap;
 use moka::future::Cache;
 use rama_core::{
-    error::{BoxError, ErrorExt},
+    error::{BoxError, BoxErrorExt, ErrorExt},
     extensions::Extensions,
     futures::StreamExt as _,
     telemetry::tracing,
@@ -202,7 +202,7 @@ where
             }
         }
         NonEmptyVec::from_vec(ips).ok_or_else(|| {
-            BoxError::from("dns lb: resolver returned no addresses")
+            BoxError::from_static_str("dns lb: resolver returned no addresses")
                 .context_str_field("host", host.to_string())
         })
     }

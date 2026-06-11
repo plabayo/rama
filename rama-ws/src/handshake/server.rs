@@ -849,11 +849,11 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get_ref() {
-                use rama_core::error::{ErrorExt, extra::OpaqueError};
+                use rama_core::error::BoxErrorExt;
 
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
-                ).into_box_error());
+                ));
             }
             None
         };

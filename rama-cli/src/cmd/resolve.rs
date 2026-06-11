@@ -25,7 +25,7 @@ use rama::{
             HappyEyeballAddressResolverExt,
         },
     },
-    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _},
     extensions::Extensions,
     futures::StreamExt,
     net::{
@@ -65,10 +65,9 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
                 }
             }
             if addresses_found == 0 {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "failed to resolve domain into any A record",
-                )
-                .into_box_error());
+                ));
             }
         }
         Some(RecordType::AAAA) => {
@@ -85,10 +84,9 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
                 }
             }
             if addresses_found == 0 {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "failed to resolve domain into any AAAA record",
-                )
-                .into_box_error());
+                ));
             }
         }
         Some(RecordType::TXT) => {
@@ -108,15 +106,14 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
                 }
             }
             if records_found == 0 {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "failed to resolve domain into any TXT record",
-                )
-                .into_box_error());
+                ));
             }
         }
         Some(RecordType::Unknown(variant)) => {
             return Err(
-                OpaqueError::from_static_str("unknown record type").context_field("value", variant)
+                BoxError::from_static_str("unknown record type").context_field("value", variant)
             );
         }
         None => {
@@ -153,10 +150,9 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
                 }
             }
             if addresses_found == 0 {
-                return Err(OpaqueError::from_static_str(
+                return Err(BoxError::from_static_str(
                     "failed to resolve domain into any IP address",
-                )
-                .into_box_error());
+                ));
             }
         }
     }
@@ -223,9 +219,9 @@ fn build_dns_config_and_options(
 fn apply_options(
     cfg: &ResolveCommand,
     dns_options: &mut hickory::resolver::config::ResolverOpts,
-) -> Result<(), OpaqueError> {
+) -> Result<(), BoxError> {
     if cfg.ipv4_only && cfg.ipv6_only {
-        return Err(OpaqueError::from_static_str(
+        return Err(BoxError::from_static_str(
             "IPv4-only and IPv6-only transport cannot be requested at the same time",
         ));
     }
@@ -334,7 +330,7 @@ impl FromStr for NameServerArg {
             return Ok(Self { ip, port: None });
         }
 
-        Err(OpaqueError::from_static_str("invalid nameserver address")
+        Err(BoxError::from_static_str("invalid nameserver address")
             .context_field("value", s.to_owned()))
     }
 }
@@ -408,23 +404,23 @@ pub struct ResolveCommand {
 }
 
 impl ResolveCommand {
-    fn domain(&self) -> Result<Domain, OpaqueError> {
+    fn domain(&self) -> Result<Domain, BoxError> {
         match (&self.domain, &self.query_name) {
             (Some(domain), None) | (None, Some(domain)) => Ok(domain.clone()),
-            (Some(_), Some(_)) => Err(OpaqueError::from_static_str(
+            (Some(_), Some(_)) => Err(BoxError::from_static_str(
                 "domain cannot be provided both positionally and via --name",
             )),
-            (None, None) => Err(OpaqueError::from_static_str(
+            (None, None) => Err(BoxError::from_static_str(
                 "domain is required either positionally or via --name",
             )),
         }
     }
 
-    fn record_type(&self) -> Result<Option<RecordType>, OpaqueError> {
+    fn record_type(&self) -> Result<Option<RecordType>, BoxError> {
         match (&self.record_type, &self.query_type) {
             (Some(record_type), None) | (None, Some(record_type)) => Ok(Some(record_type.clone())),
             (None, None) => Ok(None),
-            (Some(_), Some(_)) => Err(OpaqueError::from_static_str(
+            (Some(_), Some(_)) => Err(BoxError::from_static_str(
                 "record type cannot be provided both positionally and via --type",
             )),
         }

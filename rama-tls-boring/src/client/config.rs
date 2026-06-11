@@ -313,7 +313,7 @@ impl std::fmt::Debug for BoringServerVerifyCertStore {
 
 impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
     fn rama_from(hello: &ClientHello) -> Self {
-        let mut config = TlsClientConfig::new();
+        let mut config = Self::new();
         let mut grease = false;
 
         let cipher_suites = hello.cipher_suites();

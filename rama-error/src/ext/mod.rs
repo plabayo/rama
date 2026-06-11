@@ -259,7 +259,7 @@ impl<T> ErrorContext for Option<T> {
     fn into_box_error(self) -> Self::Context {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())),
         }
     }
@@ -275,7 +275,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context(value)),
         }
@@ -287,7 +287,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_hex(value)),
         }
@@ -299,7 +299,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_debug(value)),
         }
@@ -311,7 +311,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_field(key, value)),
         }
@@ -323,7 +323,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_str_field(key, value)),
         }
@@ -335,7 +335,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_hex_field(key, value)),
         }
@@ -347,7 +347,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .context_debug_field(key, value)),
         }
@@ -360,7 +360,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context(cb)),
         }
@@ -373,7 +373,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_hex(cb)),
         }
@@ -386,7 +386,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_debug(cb)),
         }
@@ -399,7 +399,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_field(key, cb)),
         }
@@ -412,7 +412,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_str_field(key, cb)),
         }
@@ -425,7 +425,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_hex_field(key, cb)),
         }
@@ -438,7 +438,7 @@ impl<T> ErrorContext for Option<T> {
     {
         match self {
             Some(value) => Ok(value),
-            None => Err(OpaqueError::from_static_str("Option is None")
+            None => Err(BoxError::from_static_str("Option is None")
                 .context_debug_field("type", core::any::type_name::<Self>())
                 .with_context_debug_field(key, cb)),
         }
@@ -713,8 +713,24 @@ impl<Error: Into<BoxError>> ErrorExt for Error {
         Box::new(self::backtrace::ErrorWithBacktrace::new(source))
     }
 }
+pub trait BoxErrorExt: private::SealedBoxErrorExt {
+    /// Create a [`BoxError`] from a static str.
+    ///
+    /// Use this instead of `"msg".context()` or
+    /// some other method that turns it into a BoxError...
+    /// Because the std rust library turns this into a `String` otherwise...
+    fn from_static_str(e: &'static str) -> Self;
+}
+
+impl BoxErrorExt for BoxError {
+    fn from_static_str(e: &'static str) -> Self {
+        OpaqueError::from_static_str(e).into_box_error()
+    }
+}
 
 mod private {
+    use crate::BoxError;
+
     // These sealed traits document intent rather than enforce hard closure:
     // because the blanket impls cover every type that satisfies the public
     // trait bounds, any downstream type that meets those bounds will satisfy
@@ -728,6 +744,9 @@ mod private {
     pub trait SealedErrorExt {}
 
     impl<Error: Into<crate::BoxError>> SealedErrorExt for Error {}
+
+    pub trait SealedBoxErrorExt {}
+    impl SealedBoxErrorExt for BoxError {}
 }
 
 #[cfg(test)]

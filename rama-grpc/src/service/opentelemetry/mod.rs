@@ -452,11 +452,11 @@ where
         Ok(())
     }
 
-    fn shutdown_with_timeout(&mut self, _timeout: Duration) -> OTelSdkResult {
+    fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
         self.shutdown_signal(SignalKind::Traces)
     }
 
-    fn force_flush(&mut self) -> OTelSdkResult {
+    fn force_flush(&self) -> OTelSdkResult {
         self.force_flush_signal(SignalKind::Traces)
     }
 

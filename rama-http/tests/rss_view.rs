@@ -167,6 +167,99 @@ async fn feed_item_atom_keeps_summary_and_content_distinct() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Regression: whitespace adjacent to entities (quick-xml 0.40 migration).
+//
+// 0.40 splits a text run around every entity / character reference into
+// separate `Text` and `GeneralRef` events. The readers must reassemble the
+// value with interior whitespace intact and trim only the field's outer ends —
+// otherwise a space next to an entity is lost: a `type="html"` body drops the
+// space before a tag, and `Tom &amp; Jerry` collapses to `Tom&Jerry`. These
+// pin the behavior across formats, content types, and reference kinds.
+// ---------------------------------------------------------------------------
+
+async fn parse_str(xml: &str) -> Feed {
+    parse(xml.as_bytes().to_vec()).await
+}
+
+#[tokio::test]
+async fn atom_preserves_whitespace_around_entities() {
+    let Feed::Atom(feed) = parse_str(
+        r#"<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:test</id><title>t</title><updated>2025-01-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:e1</id>
+    <title type="text">Tom &amp; Jerry</title>
+    <updated>2025-01-01T00:00:00Z</updated>
+    <content type="html">&lt;p&gt;a &lt;b&gt;c&lt;/b&gt; d&lt;/p&gt;</content>
+  </entry>
+</feed>"#,
+    )
+    .await
+    else {
+        panic!("expected Atom");
+    };
+    let fi: FeedItem = feed.entries.into_iter().next().expect("entry").into();
+    assert_eq!(
+        fi.title(),
+        Some("Tom & Jerry"),
+        "spaces around `&amp;` must survive entity splitting",
+    );
+    assert_eq!(
+        fi.content(),
+        Some("<p>a <b>c</b> d</p>"),
+        "html body must keep whitespace interior to the value (incl. around tags)",
+    );
+}
+
+#[tokio::test]
+async fn atom_preserves_numeric_char_ref_midword() {
+    let Feed::Atom(feed) = parse_str(
+        r#"<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:test</id><title>t</title><updated>2025-01-01T00:00:00Z</updated>
+  <entry>
+    <id>urn:e1</id>
+    <title type="text">caf&#233; au lait</title>
+    <updated>2025-01-01T00:00:00Z</updated>
+  </entry>
+</feed>"#,
+    )
+    .await
+    else {
+        panic!("expected Atom");
+    };
+    let fi: FeedItem = feed.entries.into_iter().next().expect("entry").into();
+    assert_eq!(
+        fi.title(),
+        Some("café au lait"),
+        "a numeric char ref must not split the surrounding word",
+    );
+}
+
+#[tokio::test]
+async fn rss2_trims_outer_whitespace_but_keeps_interior_entity_spacing() {
+    let Feed::Rss2(feed) = parse_str(
+        r#"<rss version="2.0"><channel>
+  <title>t</title><link>https://e.com/</link><description>d</description>
+  <item>
+    <title>Tom &amp; Jerry</title>
+    <description>  before &amp; after  </description>
+  </item>
+</channel></rss>"#,
+    )
+    .await
+    else {
+        panic!("expected RSS2");
+    };
+    let fi: FeedItem = feed.items.into_iter().next().expect("item").into();
+    assert_eq!(fi.title(), Some("Tom & Jerry"));
+    assert_eq!(
+        fi.summary(),
+        Some("before & after"),
+        "outer whitespace trimmed; interior spacing around `&amp;` preserved",
+    );
+}
+
 /// `FeedItem::enclosures()` should normalise across RSS `<enclosure>` and
 /// Atom `<link rel="enclosure">`.
 #[tokio::test]

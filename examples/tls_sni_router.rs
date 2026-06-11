@@ -49,7 +49,7 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt},
     extensions::ExtensionsRef,
     graceful::{Shutdown, ShutdownGuard},
     http::{
@@ -158,9 +158,7 @@ where
                         server.address = %sni,
                         "block connection for unknown destination",
                     );
-                    return Err(
-                        OpaqueError::from_static_str("unknown destination").into_box_error()
-                    );
+                    return Err(BoxError::from_static_str("unknown destination"));
                 }
             }
         };

@@ -531,6 +531,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                 organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
                 common_name: Some(DOMAIN_TLS_ECHO_CERTS),
                 subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS.to_string()]),
+                ..Default::default()
             },
             &ca_issuer_cert,
             &ca_issuer_key,
@@ -594,6 +595,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                             organisation_name: Some(domain.to_string()),
                             common_name: Some(domain.clone()),
                             subject_alternative_names: Some(vec![domain.to_string()]),
+                            ..Default::default()
                         },
                         &ca_crt,
                         &ca_key,

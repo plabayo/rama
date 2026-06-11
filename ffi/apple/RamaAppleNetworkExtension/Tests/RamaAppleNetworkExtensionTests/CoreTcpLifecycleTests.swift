@@ -550,6 +550,97 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertNil(weakConn, "NWConnection retained beyond teardown — closure-capture leak")
     }
 
+    /// The wake-dead-path reset (`checkWakeDeadPath` → `applyWakeDeadPath`)
+    /// is a distinct full-teardown entry point; assert it leaves NO retained
+    /// flow graph (the happy-path/pump-cancel dealloc tests don't cover it,
+    /// so a retain introduced specifically on the wake-reset path would slip
+    /// through). Mirrors `testFlowDeallocatesAfterHappyPath` but tears the
+    /// flow down via a network-changing wake instead of a clean EOF.
+    func testFlowDeallocatesAfterWakeDeadPathReset() {
+        let savedLinger = defaultLingerCloseMs
+        defaultLingerCloseMs = 100
+        defer { defaultLingerCloseMs = savedLinger }
+        let savedRecheck = defaultPostWakePathRecheckMs
+        defaultPostWakePathRecheckMs = 20
+        defer { defaultPostWakePathRecheckMs = savedRecheck }
+
+        let engine = makeEngine()
+        let core = TransparentProxyCore()
+        core.attachEngine(engine)
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+
+        weak var weakFlow: MockTcpFlow?
+        weak var weakConn: MockNwConnection?
+
+        autoreleasepool {
+            let flow = MockTcpFlow()
+            weakFlow = flow
+            _ = core.handleTcpFlow(flow, meta: makeMeta())
+            let conn = capture.waitForLastConnection()
+            weakConn = conn
+            conn.transition(to: .ready)
+            self.waitFor("flow.open") { flow.openWasInvoked }
+            flow.completeOpen(error: nil)
+            self.waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+
+            // Path goes non-viable, then a wake reconcile resets the
+            // established flow (the Felix network-change-across-sleep shape).
+            conn.simulateViability(false)
+            core.handleSystemWake()
+            self.waitFor("wake-dead-path reset removed the flow") {
+                core.tcpFlowCount == 0
+            }
+            conn.simulateCancelled()
+        }
+
+        core.detachEngine(reason: 0)
+        capture.releaseAll()
+
+        let deadline = Date().addingTimeInterval(5.0)
+        while (weakFlow != nil || weakConn != nil) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTAssertNil(weakFlow, "flow retained after wake-dead-path reset — leak")
+        XCTAssertNil(weakConn, "NWConnection retained after wake-dead-path reset — leak")
+    }
+
+    /// Faithful async viability through the REAL wired handler: a flow whose
+    /// path drops then RECOVERS to viable before the post-wake settle recheck
+    /// must be spared. `simulateViability` delivers on the start queue exactly
+    /// as NWConnection does, so the recovery (`true`) lands FIFO ahead of the
+    /// settle-delayed `checkWakeDeadPath`, which then reads `lastPathViable ==
+    /// true` and keeps the flow. (Complements the sync-assignment unit test;
+    /// exercises the production async-delivery path end to end.)
+    func testWakeDeadPathSparesFlowThatRecoveredViability() {
+        let savedRecheck = defaultPostWakePathRecheckMs
+        defaultPostWakePathRecheckMs = 50
+        defer { defaultPostWakePathRecheckMs = savedRecheck }
+
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("pumps wired") { conn.pendingReceiveCount > 0 }
+
+        conn.simulateViability(false)   // path lost
+        fx.core.handleSystemWake()      // schedules the settle recheck
+        conn.simulateViability(true)    // recovery, FIFO ahead of the recheck
+
+        Thread.sleep(forTimeInterval: 0.20)  // past the 50ms settle
+        XCTAssertEqual(
+            fx.core.tcpFlowCount, 1, "recovered flow must survive the wake recheck")
+        XCTAssertEqual(
+            conn.cancelCount, 0, "recovered flow's connection must not be cancelled")
+
+        drainAndAwaitRemoval(fx.core, flow: flow, conn: conn)
+    }
+
     // MARK: - Multi-flow churn
 
     func testManyFlowsChurnReturnsRegistrationToZero() {

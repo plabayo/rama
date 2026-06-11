@@ -570,7 +570,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_timeout() {
         let reader = DelayIo::new(Instant::now() + Duration::from_millis(150));
         let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::from_millis(100)));
@@ -581,7 +581,7 @@ mod test {
         _ = reader.read(&mut [0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_ok() {
         let reader = DelayIo::new(Instant::now() + Duration::from_millis(100));
         let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::from_millis(500)));
@@ -589,7 +589,7 @@ mod test {
         _ = reader.read(&mut [0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn write_timeout() {
         let writer = DelayIo::new(Instant::now() + Duration::from_millis(150));
         let mut writer = pin!(TimeoutWriter::new(writer).with_timeout(Duration::from_millis(100)));
@@ -600,7 +600,7 @@ mod test {
         _ = writer.write(&[0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn write_ok() {
         let writer = DelayIo::new(Instant::now() + Duration::from_millis(100));
         let mut writer = pin!(TimeoutWriter::new(writer).with_timeout(Duration::from_millis(500)));
@@ -608,7 +608,7 @@ mod test {
         _ = writer.write(&[0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_timeout_disabled() {
         let reader = DelayIo::new(Instant::now() + Duration::from_millis(20));
         let mut reader = pin!(TimeoutReader::new(reader));
@@ -616,7 +616,7 @@ mod test {
         _ = reader.read(&mut [0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn write_timeout_disabled() {
         let writer = DelayIo::new(Instant::now() + Duration::from_millis(20));
         let mut writer = pin!(TimeoutWriter::new(writer));
@@ -624,7 +624,7 @@ mod test {
         _ = writer.write(&[0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_set_timeout_pinned_resets_pending_timer() {
         let reader = DelayIo::new(Instant::now() + Duration::from_millis(150));
         let mut reader = pin!(TimeoutReader::new(reader).with_timeout(Duration::from_millis(100)));
@@ -644,7 +644,7 @@ mod test {
         _ = reader.read(&mut [0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn write_set_timeout_pinned_resets_pending_timer() {
         let writer = DelayIo::new(Instant::now() + Duration::from_millis(150));
         let mut writer = pin!(TimeoutWriter::new(writer).with_timeout(Duration::from_millis(100)));
@@ -662,7 +662,7 @@ mod test {
         _ = writer.write(&[0]).await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn rw_test() {
         let (mut writer, reader) = duplex(16);
         tokio::spawn(async move {
@@ -684,7 +684,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn timeout_io_write_timeout() {
         let io = DelayIo::new(Instant::now() + Duration::from_millis(150));
         let mut io = pin!(TimeoutIo::new(io).with_write_timeout(Duration::from_millis(100)));

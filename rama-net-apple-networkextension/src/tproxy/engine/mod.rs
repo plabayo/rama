@@ -623,14 +623,25 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
-                // TODO(backpressure): lost-wakeup race. If the reader drains the
-                // channel empty between this `try_reserve` and the store, it
-                // clears `paused` before we set it, so the read-demand callback
-                // never re-fires and the flow stalls until the idle backstop.
-                // Pre-existing, rare at the default capacity; fix + a
-                // capacity-1 test deferred (mirror in `try_enqueue_egress`).
+                // Publish "parked", then RE-CHECK to close a lost-wakeup race:
+                // if the reader drained the channel empty between the
+                // `try_reserve` above and this store, its `paused.swap(false)`
+                // read `false` and skipped the read-demand wake, leaving us
+                // parked until the idle backstop (~15 min). Re-reserving here
+                // recovers it — the channel's own sync makes the freed slot
+                // visible. On success we send (waking the parked reader); if
+                // still full, the buffered items guarantee a future drain whose
+                // `swap(false)` observes our store and fires the demand.
                 self.signals.ingress_paused.store(true, Ordering::Release);
-                TcpDeliverStatus::Paused
+                match tx.try_reserve() {
+                    Ok(permit) => {
+                        self.signals.ingress_paused.store(false, Ordering::Release);
+                        permit.send(make());
+                        TcpDeliverStatus::Accepted
+                    }
+                    Err(TrySendError::Full(())) => TcpDeliverStatus::Paused,
+                    Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
+                }
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
         }
@@ -697,8 +708,18 @@ impl TransparentProxyTcpSession {
                 TcpDeliverStatus::Accepted
             }
             Err(TrySendError::Full(())) => {
+                // Re-check after the store to close the lost-wakeup race —
+                // see `try_enqueue_client` for the full rationale.
                 self.signals.egress_paused.store(true, Ordering::Release);
-                TcpDeliverStatus::Paused
+                match tx.try_reserve() {
+                    Ok(permit) => {
+                        self.signals.egress_paused.store(false, Ordering::Release);
+                        permit.send(make());
+                        TcpDeliverStatus::Accepted
+                    }
+                    Err(TrySendError::Full(())) => TcpDeliverStatus::Paused,
+                    Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
+                }
             }
             Err(TrySendError::Closed(())) => TcpDeliverStatus::Closed,
         }

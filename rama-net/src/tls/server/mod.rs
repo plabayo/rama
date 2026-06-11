@@ -3,8 +3,9 @@
 mod config;
 #[doc(inline)]
 pub use config::{
-    CacheKind, ClientVerifyMode, DynamicCertIssuer, DynamicIssuer, SelfSignedData, ServerAuth,
-    ServerAuthData, ServerCertIssuerData, ServerCertIssuerKind, ServerConfig,
+    CacheKind, ClientVerifyMode, DynamicCertIssuer, DynamicIssuer, SelfSignedData,
+    SelfSignedKeyKind, ServerAuth, ServerAuthData, ServerCertIssuerData, ServerCertIssuerKind,
+    ServerConfig,
 };
 
 mod peek;

@@ -1,3 +1,4 @@
+use rama_core::error::BoxErrorExt as _;
 use std::{
     fmt,
     io::{IoSlice, Read, Write},
@@ -8,7 +9,7 @@ use std::{
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
     io::{HeapReader, PrefixedIo, StackReader},
     service::RejectService,
@@ -111,10 +112,9 @@ where
                 read_size,
                 "unexpected read size for client hello handshake data"
             );
-            return Err(
-                OpaqueError::from_static_str("missing client hello tls handshake data")
-                    .into_box_error(),
-            );
+            return Err(BoxError::from_static_str(
+                "missing client hello tls handshake data",
+            ));
         }
         let sni = extract_sni_from_client_hello_handshake(&v)
             .context("parse client hello handshake bytes and extract SNI")?;

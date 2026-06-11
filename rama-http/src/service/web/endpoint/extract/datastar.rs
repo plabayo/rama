@@ -10,7 +10,7 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 /// [`ReadSignals`] is a request extractor that reads datastar signals from the request.
 #[derive(Debug)]
-pub struct ReadSignals<T: DeserializeOwned>(pub T);
+pub struct ReadSignals<T>(pub T);
 
 #[derive(Deserialize)]
 struct DatastarParam {

@@ -1,6 +1,6 @@
+use rama_core::error::BoxErrorExt as _;
 use std::{fmt, str::FromStr};
 
-use rama_core::error::extra::OpaqueError;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::str::NonEmptyStr;
@@ -178,12 +178,11 @@ fn validate_basic_field(field: &str, value: &str) -> Result<(), BoxError> {
         .iter()
         .position(|b| matches!(*b, b'\r' | b'\n' | 0))
     {
-        return Err(OpaqueError::from_static_str(
-            "basic credential contains forbidden control byte",
-        )
-        .context_str_field("field", field)
-        .context_field("byte_index", idx)
-        .into_box_error());
+        return Err(
+            BoxError::from_static_str("basic credential contains forbidden control byte")
+                .context_str_field("field", field)
+                .context_field("byte_index", idx),
+        );
     }
     Ok(())
 }
@@ -194,10 +193,9 @@ impl TryFrom<&str> for Basic {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         validate_basic_field("credential blob", value)?;
         match value.find(':') {
-            Some(0) => Err(
-                OpaqueError::from_static_str("missing username in basic credential")
-                    .into_box_error(),
-            ),
+            Some(0) => Err(BoxError::from_static_str(
+                "missing username in basic credential",
+            )),
             Some(n) => Ok(Self {
                 username: NonEmptyStr::try_from(&value[..n])
                     .context("create username for secure basic credentials")?,

@@ -1,5 +1,5 @@
 use super::parse_http_user_agent_header;
-use rama_core::error::extra::OpaqueError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
@@ -242,7 +242,7 @@ impl FromStr for UserAgentKind {
                 "chromium" => Ok(Self::Chromium),
                 "firefox" => Ok(Self::Firefox),
                 "safari" => Ok(Self::Safari),
-                _ => Err(OpaqueError::from_static_str("invalid user agent kind").context_str_field("str", s)),
+                _ => Err(BoxError::from_static_str("invalid user agent kind").context_str_field("str", s)),
             }
         }
     }
@@ -294,7 +294,7 @@ impl FromStr for DeviceKind {
             match (s) {
                 "desktop" => Ok(Self::Desktop),
                 "mobile" => Ok(Self::Mobile),
-                _ => Err(OpaqueError::from_static_str("invalid device").context_str_field("str", s)),
+                _ => Err(BoxError::from_static_str("invalid device").context_str_field("str", s)),
             }
         }
     }
@@ -372,7 +372,7 @@ impl FromStr for PlatformKind {
                 "linux" => Ok(Self::Linux),
                 "android" => Ok(Self::Android),
                 "ios" => Ok(Self::IOS),
-                _ => Err(OpaqueError::from_static_str("invalid platform").context_str_field("str", s)),
+                _ => Err(BoxError::from_static_str("invalid platform").context_str_field("str", s)),
             }
         }
     }
@@ -466,7 +466,7 @@ impl FromStr for HttpAgent {
                 "Firefox" => Ok(Self::Firefox),
                 "Safari" => Ok(Self::Safari),
                 "preserve" => Ok(Self::Preserve),
-                _ => Err(OpaqueError::from_static_str("invalid http agent").context_str_field("str", s)),
+                _ => Err(BoxError::from_static_str("invalid http agent").context_str_field("str", s)),
             }
         }
     }
@@ -537,7 +537,7 @@ impl FromStr for TlsAgent {
                 "boring" | "boringssl" => Ok(Self::Boringssl),
                 "nss" => Ok(Self::Nss),
                 "preserve" => Ok(Self::Preserve),
-                _ => Err(OpaqueError::from_static_str("invalid tls agent").context_str_field("str", s)),
+                _ => Err(BoxError::from_static_str("invalid tls agent").context_str_field("str", s)),
             }
         }
     }

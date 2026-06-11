@@ -2,7 +2,7 @@
 //! file at the URI's path and stream its bytes to stdout.
 
 use rama::{
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt, ErrorContext},
     net::uri::Uri,
 };
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ fn extract_path(uri: &Uri) -> Result<PathBuf, BoxError> {
     let raw = uri.path().context("file:// URI has no path")?.as_raw_str();
 
     if raw.is_empty() {
-        return Err(OpaqueError::from_static_str("file:// URI has an empty path").into_box_error());
+        return Err(BoxError::from_static_str("file:// URI has an empty path"));
     }
 
     // On Windows, `file:///C:/x` parses with path `/C:/x` — curl

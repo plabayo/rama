@@ -1,7 +1,8 @@
 use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt, extra::OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt},
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
@@ -236,9 +237,9 @@ where
                         } else if proxy.socks5h {
                             Some(Protocol::SOCKS5H)
                         } else {
-                            return Err(OpaqueError::from_static_str(
+                            return Err(BoxError::from_static_str(
                                 "selected udp proxy does not have a valid protocol available (db bug?!)",
-                            ).into_box_error());
+                            ));
                         }
                     }
                     TransportProtocol::Tcp => match proxy_address.address.port {
@@ -257,9 +258,9 @@ where
                             } else if proxy.https {
                                 Some(Protocol::HTTPS)
                             } else {
-                                return Err(OpaqueError::from_static_str(
+                                return Err(BoxError::from_static_str(
                                     "selected tcp proxy does not have a valid protocol available (db bug?!)",
-                                ).into_box_error());
+                                ));
                             }
                         }
                     },

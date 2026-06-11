@@ -55,6 +55,34 @@ final class TcpFlowContext: @unchecked Sendable {
     /// off-queue by the stop-the-world wake reconcile (same relaxation
     /// the sleep teardown already relies on).
     var egressReady = false
+    /// True once the egress has reached `.ready` by EITHER our processed
+    /// `egressReady` flag OR the live `connection.state` (NW's truth).
+    ///
+    /// Used by the two PRE-READY reapers that READ `egressReady` from a
+    /// block a `.ready` callback can be queued BEHIND — the
+    /// `handleSystemWake` pre-ready reset and the maintenance watchdog
+    /// pre-ready kick. FIFO state dispatch does NOT help them: it orders the
+    /// `.ready` *handler* vs other `flowQueue` work, but if that handler is
+    /// still queued behind the reconcile block, `egressReady` is stale
+    /// `false` when the block runs — so it would reap a flow that already
+    /// reached `.ready`. Consulting `connection.state` closes that window.
+    ///
+    /// The four TIMER sites (connect timeout, pre-ready / post-ready
+    /// waiting) do NOT need this: a `.ready` runs FIFO and *cancels* the
+    /// timer before it fires, so plain `egressReady` suffices there.
+    var hasReachedReady: Bool {
+        egressReady || connection?.state == .ready
+    }
+    /// Latest viability reported by the egress `NWConnection`'s
+    /// `viabilityUpdateHandler`. `false` means Network.framework decided
+    /// the path can't carry traffic (torn down across a network change /
+    /// sleep). The post-wake reconcile reads this (instead of allocating a
+    /// fresh `currentPath` snapshot per read) to decide whether an
+    /// established flow stranded on a dead path should be reset. Defaults
+    /// `true` so a flow we have no signal about is never reset. Mutated on
+    /// `flowQueue`; read off-queue by `checkWakeDeadPath` (same relaxation
+    /// as `egressReady`).
+    var lastPathViable = true
     /// A terminal close signal (server EOF / egress close, `viaRust`
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the

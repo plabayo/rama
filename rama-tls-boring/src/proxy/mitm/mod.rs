@@ -4,10 +4,11 @@ use rama_boring::{
     x509::X509,
 };
 use rama_boring_tokio::SslErrorStack;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer,
     conversion::RamaTryInto as _,
-    error::{BoxError, ErrorContext as _, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, ErrorContext as _, ErrorExt as _},
     extensions::{self, ExtensionsRef as _},
     io::{BridgeIo, Io},
     telemetry::tracing,
@@ -527,7 +528,7 @@ where
                         } else {
                             TlsMitmRelayError::handshake(
                                 TlsMitmRelayErrorDirection::Egress,
-                                OpaqueError::from_static_str(
+                                BoxError::from_static_str(
                                     "tls mitm relay: egress tls accept failed",
                                 )
                                 .context_debug_field("code", maybe_ssl_code)
@@ -590,7 +591,7 @@ where
                 let source_cert = egress_ssl_ref
                     .peer_certificate()
                     .ok_or_else(|| {
-                        OpaqueError::from_static_str(
+                        BoxError::from_static_str(
                             "tls mitm relay: egress tls stream has no peer cert",
                         )
                     })
@@ -635,10 +636,14 @@ where
                     .context("tls mitm relay: create boring ssl acceptor")
                     .map_err(TlsMitmRelayError::config)?;
             acceptor_builder.set_grease_enabled(self.grease_enabled);
-            acceptor_builder
-                .set_default_verify_paths()
-                .context("tls mitm relay: set default verify paths")
-                .map_err(TlsMitmRelayError::config)?;
+            // Deliberately NOT calling `set_default_verify_paths()`: this
+            // acceptor never enables client-certificate verification
+            // (`SSL_VERIFY_PEER`), so the OS trust store it would parse is never
+            // consulted. Loading it parsed the whole bundle into this
+            // per-handshake `SSL_CTX` and kept it resident for the entire
+            // connection lifetime — pure waste, and an effective leak when flows
+            // are retained. The egress connector installs only the store it
+            // needs (see `connector_data`).
             for (i, crt) in mirrored_leaf_cert_chain.into_iter().enumerate() {
                 if i == 0 {
                     acceptor_builder
@@ -677,7 +682,7 @@ where
                     let protocol_version = protocol_version
                         .rama_try_into()
                         .map_err(|v| {
-                            OpaqueError::from_static_str(
+                            BoxError::from_static_str(
                                 "boring ssl connector: cast min proto version",
                             )
                             .context_field("protocol_version", v)
@@ -783,7 +788,7 @@ where
                 } else {
                     TlsMitmRelayError::handshake(
                         TlsMitmRelayErrorDirection::Ingress,
-                        OpaqueError::from_static_str("tls mitm relay: ingress tls accept failed")
+                        BoxError::from_static_str("tls mitm relay: ingress tls accept failed")
                             .context_debug_field("code", maybe_ssl_code),
                         maybe_ssl_code,
                     )

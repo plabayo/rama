@@ -25,7 +25,7 @@
 
 use rama::{
     Layer as _,
-    error::{BoxError, ErrorContext as _, ErrorExt, extra::OpaqueError},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     http::{
         HeaderValue, Request,
         layer::trace::TraceLayer,
@@ -211,10 +211,9 @@ where
         // Now check the sleep
         match this.sleep.poll(cx) {
             std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(_) => std::task::Poll::Ready(Err(OpaqueError::from_static_str(
-                "Elapses",
-            )
-            .into_box_error())),
+            std::task::Poll::Ready(_) => {
+                std::task::Poll::Ready(Err(BoxError::from_static_str("Elapses")))
+            }
         }
     }
 }
