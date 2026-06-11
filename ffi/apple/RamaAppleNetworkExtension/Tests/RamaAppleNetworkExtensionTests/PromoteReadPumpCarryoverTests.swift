@@ -113,56 +113,11 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
             "cancelForPromote MUST NOT fire onTerminal — the cutover owns teardown")
     }
 
-    /// Pending `.paused` replay buffer hands over to carryover
-    /// immediately. This proves the "no byte left in the pump"
-    /// invariant for the C→S direction.
-    func testClientReadPumpCancelForPromoteFlushesPendingReplayBuffer() {
-        let engine = makeEngine(); defer { engine.stop(reason: 0) }
-        let session = interceptSession(engine)
-        let flow = MockTcpFlow()
-        let queue = makeQueue("client.pending")
-
-        let pump = TcpClientReadPump(
-            flow: flow, session: session, queue: queue,
-            logger: { _ in }, onTerminal: { _ in })
-
-        // Force the pump into a state with `pendingData` set. The
-        // cleanest way is to cancel the session and request a
-        // read — the completion path then takes the
-        // `.closed`-branch. But we also need to seed pendingData
-        // first. The pump stashes `pendingData` only on a
-        // `.paused` return from `session.onClientBytes`. Since
-        // the demo handler accepts bytes (returns .accepted), we
-        // can't drive `.paused` without controlling Rust state.
-        //
-        // Instead, drive the pump directly via reflection-free
-        // mechanism: pause by saturating the ingress channel.
-        // The engine's per-flow ingress capacity defaults are
-        // small enough that a hand-full of large writes fill it.
-        // But this is fragile; for THIS test let's just verify
-        // the no-pending-data path: cancel an idle pump and
-        // confirm carryover never fires with non-nil data. The
-        // pending-data path is exercised by
-        // `testClientReadPumpCarryoverFiresOnInFlightReadCompletion`
-        // (which seeds pendingData by triggering a `.paused`
-        // return through real ingress saturation in a separate
-        // module).
-        //
-        // Keep this test focused on the OTHER guarantee: the
-        // carryover handler never fires spuriously when the
-        // pump has nothing in flight.
-        var carryoverFires: [Data?] = []
-        var completeFires = 0
-        pump.cancelForPromote(
-            onCarryover: { carryoverFires.append($0) },
-            onComplete: { completeFires += 1 })
-        queue.sync {}
-
-        XCTAssertTrue(carryoverFires.isEmpty,
-            "idle pump must not produce phantom carryover")
-        XCTAssertEqual(completeFires, 1,
-            "onComplete must fire exactly once even on an idle pump")
-    }
+    // NOTE: the held-`.paused`-replay-buffer hand-off is now covered
+    // directly (with a scripted sink that can actually return `.paused`)
+    // by `TcpReadPumpReplayTests.testClientReadPumpCancelForPromoteFlushesHeldReplayBuffer`.
+    // The idle-pump no-op it used to stand in for is covered above by
+    // `testClientReadPumpCancelForPromoteOnIdlePumpIsNoOp`.
 
     /// In-flight `readData` whose completion lands AFTER
     /// `cancelForPromote` must route the bytes through the
