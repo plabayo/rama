@@ -161,14 +161,13 @@ final class TcpFlowSessionTests: XCTestCase {
 
     // MARK: - handleEgressReady
 
-    /// `.ready` arms BOTH egress pumps and flips egressReady.
-    func testHandleEgressReadyBuildsBothEgressPumpsWhenSessionPresent() {
+    /// `.ready` flips `egressReady` and then early-returns when there is no
+    /// `sessionHandle` (we can't build a real `RamaTcpSessionHandle` in a
+    /// unit test — the integration tests exercise the both-pumps-built happy
+    /// path with a real engine). This pins the session-nil early-return; the
+    /// name no longer over-claims pump construction it can't reach here.
+    func testHandleEgressReadyFlipsEgressReadyThenEarlyReturnsWhenSessionNil() {
         let fx = Fixture()
-        // The session decision lives on the Rust side, so for this
-        // unit test we can't construct a RamaTcpSessionHandle; the
-        // method early-returns when sessionHandle is nil. We pin
-        // that contract here and the integration tests exercise the
-        // happy path with a real engine.
         XCTAssertNil(fx.session.sessionHandle)
         fx.session.handleEgressReady(connection: fx.conn)
         XCTAssertTrue(fx.session.egressReady, "egressReady flips even when session is nil")

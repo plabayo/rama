@@ -59,18 +59,6 @@ final class TcpReadPumpReplayTests: XCTestCase {
         DispatchQueue(label: "rama.tproxy.test.replay", qos: .utility)
     }
 
-    /// Poll until `cond` holds (or fail at `timeout`). Waits for the actual
-    /// event rather than sleeping a fixed time then asserting — robust under
-    /// CI load.
-    private func waitUntil(
-        _ desc: String, timeout: TimeInterval = 2.0, _ cond: @escaping () -> Bool,
-        file: StaticString = #filePath, line: UInt = #line
-    ) {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !cond() && Date() < deadline { Thread.sleep(forTimeInterval: 0.002) }
-        XCTAssertTrue(cond(), desc, file: file, line: line)
-    }
-
     // MARK: - Client read pump (ingress) replay
 
     /// On a `.paused` from the session the pump holds the chunk and stops
@@ -85,13 +73,13 @@ final class TcpReadPumpReplayTests: XCTestCase {
             flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
 
         pump.requestRead()
-        waitUntil("pump issued first readData") { !flow.pendingReadCompletions.isEmpty }
+        pollUntil("pump issued first readData") { !flow.pendingReadCompletions.isEmpty }
 
         let chunk = Data([0x01, 0x02, 0x03, 0x04])
         flow.completeRead(data: chunk, error: nil)
 
         // Session returned .paused → pump holds the chunk and does NOT read again.
-        waitUntil("chunk delivered to sink") { sink.received.count == 1 }
+        pollUntil("chunk delivered to sink") { sink.received.count == 1 }
         queue.sync {}
         XCTAssertEqual(sink.received, [chunk])
         XCTAssertTrue(
@@ -100,11 +88,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
 
         // resume() replays the held chunk first, then reads afresh.
         pump.resume()
-        waitUntil("held chunk replayed on resume") { sink.received.count == 2 }
+        pollUntil("held chunk replayed on resume") { sink.received.count == 2 }
         XCTAssertEqual(
             sink.received, [chunk, chunk],
             "resume() must replay the exact held bytes before reading more")
-        waitUntil("fresh readData issued after successful replay") {
+        pollUntil("fresh readData issued after successful replay") {
             !flow.pendingReadCompletions.isEmpty
         }
     }
@@ -119,22 +107,22 @@ final class TcpReadPumpReplayTests: XCTestCase {
             flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
 
         pump.requestRead()
-        waitUntil("first readData") { !flow.pendingReadCompletions.isEmpty }
+        pollUntil("first readData") { !flow.pendingReadCompletions.isEmpty }
         let chunk = Data([0xAA, 0xBB])
         flow.completeRead(data: chunk, error: nil)
-        waitUntil("delivered once") { sink.received.count == 1 }
+        pollUntil("delivered once") { sink.received.count == 1 }
 
         pump.resume()  // replay → .paused again → re-hold
-        waitUntil("replayed once (still paused)") { sink.received.count == 2 }
+        pollUntil("replayed once (still paused)") { sink.received.count == 2 }
         queue.sync {}
         XCTAssertEqual(sink.received, [chunk, chunk])
         XCTAssertTrue(
             flow.pendingReadCompletions.isEmpty, "still paused → no fresh read")
 
         pump.resume()  // replay → .accepted → read afresh
-        waitUntil("replayed again, now accepted") { sink.received.count == 3 }
+        pollUntil("replayed again, now accepted") { sink.received.count == 3 }
         XCTAssertEqual(sink.received, [chunk, chunk, chunk], "same bytes, never dropped or doubled")
-        waitUntil("fresh read after accept") { !flow.pendingReadCompletions.isEmpty }
+        pollUntil("fresh read after accept") { !flow.pendingReadCompletions.isEmpty }
     }
 
     // MARK: - Egress read pump replay
@@ -149,21 +137,21 @@ final class TcpReadPumpReplayTests: XCTestCase {
             connection: conn, session: sink, queue: queue, eofGraceDeadline: .seconds(60))
 
         pump.start()
-        waitUntil("pump issued first receive") { conn.pendingReceiveCount == 1 }
+        pollUntil("pump issued first receive") { conn.pendingReceiveCount == 1 }
 
         let chunk = Data([0x09, 0x08, 0x07])
         _ = conn.completePendingReceive(data: chunk, isComplete: false, error: nil)
 
-        waitUntil("chunk delivered to sink") { sink.received.count == 1 }
+        pollUntil("chunk delivered to sink") { sink.received.count == 1 }
         queue.sync {}
         XCTAssertEqual(sink.received, [chunk])
         XCTAssertEqual(
             conn.pendingReceiveCount, 0, "a paused egress pump must NOT issue another receive")
 
         pump.resume()
-        waitUntil("held chunk replayed on resume") { sink.received.count == 2 }
+        pollUntil("held chunk replayed on resume") { sink.received.count == 2 }
         XCTAssertEqual(sink.received, [chunk, chunk], "replay the exact held bytes first")
-        waitUntil("fresh receive after replay") { conn.pendingReceiveCount == 1 }
+        pollUntil("fresh receive after replay") { conn.pendingReceiveCount == 1 }
     }
 
     // MARK: - cancelForPromote hands the held replay buffer to carryover
@@ -180,10 +168,10 @@ final class TcpReadPumpReplayTests: XCTestCase {
             flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
 
         pump.requestRead()
-        waitUntil("first readData") { !flow.pendingReadCompletions.isEmpty }
+        pollUntil("first readData") { !flow.pendingReadCompletions.isEmpty }
         let held = Data([0x11, 0x22, 0x33])
         flow.completeRead(data: held, error: nil)
-        waitUntil("chunk held as pendingData") { sink.received.count == 1 }
+        pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
         var carryover: [Data] = []
@@ -213,10 +201,10 @@ final class TcpReadPumpReplayTests: XCTestCase {
             connection: conn, session: sink, queue: queue, eofGraceDeadline: .seconds(60))
 
         pump.start()
-        waitUntil("first receive") { conn.pendingReceiveCount == 1 }
+        pollUntil("first receive") { conn.pendingReceiveCount == 1 }
         let held = Data([0x44, 0x55])
         _ = conn.completePendingReceive(data: held, isComplete: false, error: nil)
-        waitUntil("chunk held as pendingData") { sink.received.count == 1 }
+        pollUntil("chunk held as pendingData") { sink.received.count == 1 }
         queue.sync {}
 
         var carryover: [Data] = []
