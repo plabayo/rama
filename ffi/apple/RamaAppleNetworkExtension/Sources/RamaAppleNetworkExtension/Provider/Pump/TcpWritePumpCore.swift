@@ -238,16 +238,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
 
     private func finishCloseIfDrained() {
         guard lifecycle == .draining, !writing, pending.isEmpty else { return }
-        // Also require `pendingBytes == 0` under the lock. `enqueue`
-        // returns `.accepted` (bumping `pendingBytes`) on the FFI thread
-        // and only THEN appends to `pending` via `queue.async`. So a drain
-        // that races between those two steps would observe `pending.isEmpty`
-        // while an accepted chunk is still in flight — finishing the close
-        // here would send the FIN and the in-flight chunk gets dropped on
-        // arrival (its `queue.async` re-checks `isClosed()` and bails).
-        // Gating on the byte budget keeps the accepted chunk part of the
-        // drain. Folded into the same `withLock` that publishes `closed`
-        // so the two are one consistent snapshot.
+        // Also require `pendingBytes == 0`: `enqueue` bumps the count and
+        // returns `.accepted` on the FFI thread, then appends to `pending`
+        // via `queue.async`. Between those, `pending.isEmpty` is true while
+        // a chunk is in flight — closing here would FIN and drop it. Checked
+        // in the same lock that publishes `closed`, for one snapshot.
         let proceed: Bool = state.withLock { s in
             if s.closed || s.pendingBytes != 0 { return false }
             s.closed = true

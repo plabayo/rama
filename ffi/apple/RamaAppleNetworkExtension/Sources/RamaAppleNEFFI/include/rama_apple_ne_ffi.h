@@ -427,19 +427,11 @@ typedef struct {
     /// (`on_server_closed` → cancel) stalls because the originating
     /// app stopped reading from its NEAppProxyFlow.
     uint32_t egress_eof_grace_ms;
-    /// Whether the egress NWConnection should enable TCP keepalive
-    /// (NWProtocolTCP.Options.enableKeepalive). Carries no `has_` flag —
-    /// it is always meaningful and DEFAULTS TO true on the Rust side.
-    ///
-    /// Keepalive is the transport-layer self-heal for a silently-dead
-    /// egress: after a network-changing sleep / VPN reset / NAT rebind an
-    /// established connection can stay locally .ready over an upstream
-    /// path that is actually black-holed — NW emits neither .waiting nor
-    /// .failed and viability never reports false, so the per-flow reapers
-    /// never fire. Keepalive probes fail on a dead path → NWConnection
-    /// .failed → the existing post-ready reaper tears it down → the
-    /// client reconnects. Healthy peers answer the probes (no false
-    /// positives). Set false to opt out.
+    /// Enable TCP keepalive (NWProtocolTCP.Options.enableKeepalive). No
+    /// `has_` flag — always meaningful, defaults true. Self-heals a
+    /// silently-dead egress (sleep / VPN reset / NAT rebind leaving the
+    /// connection .ready over a black-holed path): failed probes surface
+    /// as .failed and the existing reaper handles it. Set false to opt out.
     bool tcp_keepalive_enabled;
     /// Whether `tcp_keepalive_idle_secs` carries a meaningful value;
     /// `false` ⇒ Swift uses its built-in default.

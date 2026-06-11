@@ -77,20 +77,14 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyPreOpenCleanup()
     }
 
-    /// Shared body for the pre-open shapes: nothing was queued, nothing
-    /// to drain, no pumps to cancel.
+    /// Shared body for the pre-open shapes: nothing queued, no pumps.
     ///
-    /// Closes the kernel flow with an error. We returned `true` from
-    /// `handleNewFlow` — claiming the flow — but never reached
-    /// `flow.open()`. Per Apple's `NEAppProxyFlow` contract a claimed
-    /// flow MUST be opened or closed; dropping it unopened strands the
-    /// originating app's `connect()` until the app's own (often 30–75 s)
-    /// timeout. Rejecting it here (the same mechanism the `blocked` path
-    /// uses for an unopened flow) makes the app's connect fail fast so it
-    /// can retry. This is especially load-bearing for `applySystemWake`:
-    /// a flow still connecting across a network-changing sleep is reaped
-    /// post-wake and the app reconnects over the live path instead of
-    /// freezing.
+    /// Closes the kernel flow with an error: we claimed it (`handleNewFlow`
+    /// returned `true`) but never `flow.open()`-ed it, and per Apple's
+    /// `NEAppProxyFlow` contract a claimed flow must be opened or closed —
+    /// dropping it strands the app's `connect()` until its own timeout.
+    /// Rejecting it (as the `blocked` path does) fails the connect fast so
+    /// the app can retry; matters most for the `applySystemWake` reap.
     private func applyPreOpenCleanup() {
         guard !done else { return }
         done = true

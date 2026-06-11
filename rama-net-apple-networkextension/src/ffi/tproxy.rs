@@ -468,10 +468,8 @@ pub struct TcpEgressConnectOptions {
     /// connection. See
     /// [`crate::tproxy::NwTcpConnectOptions::egress_eof_grace`].
     pub egress_eof_grace_ms: u32,
-    /// Whether the egress `NWConnection` should enable TCP keepalive
-    /// (`NWProtocolTCP.Options.enableKeepalive`). Unlike the optional
-    /// timing fields below, this carries no `has_` flag: it is always
-    /// meaningful and **defaults to `true`** on the Rust side. See
+    /// Enable TCP keepalive (`enableKeepalive`). No `has_` flag — always
+    /// meaningful, defaults `true`. See
     /// [`crate::tproxy::NwTcpConnectOptions::tcp_keepalive_enabled`].
     pub tcp_keepalive_enabled: bool,
     /// Whether `tcp_keepalive_idle_secs` carries a meaningful value;

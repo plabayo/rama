@@ -221,17 +221,11 @@ func isTransientWriteBackpressure(_ error: Error) -> Bool {
 let writeRetryInitialDelayMs: Int = 5
 let writeRetryMaxDelayMs: Int = 200
 
-/// Wall-clock cap on the transient-error retry loop. After this many
-/// milliseconds without a successful write the pump tears down,
-/// regardless of how short each individual retry was. Without a hard
-/// deadline, sustained kernel-buffer pressure on a flow whose calling
-/// app has effectively died keeps the retry loop spinning indefinitely:
-/// the retry `asyncAfter` is `[weak self]`, so a *deallocated* pump stops
-/// on its own — but while the per-flow ctx is still registered it holds
-/// the pump strongly, so a registered-but-app-dead flow would re-arm the
-/// retry forever, waiting on a non-transient error the dead app may never
-/// produce promptly. The deadline bounds that. 5 s is enough to ride out
-/// a real h2 stall while bounding the worst-case wedge.
+/// Wall-clock cap on the transient-error retry loop. The retry `asyncAfter`
+/// is `[weak self]`, so a deallocated pump stops itself — but a flow still
+/// held by its registered ctx would re-arm forever, waiting on a
+/// non-transient error a dead app may never send. This bounds that; 5 s
+/// rides out a real h2 stall.
 ///
 /// `var` for tests that need a short deadline to keep runtime bounded
 /// — same pattern as `defaultLingerCloseMs` / `defaultEgressWaitingToleranceMs`.
@@ -1221,10 +1215,8 @@ extension RamaTransparentProxyProvider {
 /// Enables TCP keepalive on the egress connection by default (opt-out
 /// via `tcp_keepalive_enabled`) — see `applyTcpKeepalive`.
 func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
-    // Configure the TCP options BEFORE wrapping them in NWParameters so
-    // keepalive is set on the same options object the connection uses —
-    // simpler and less fragile than fishing the options back out of the
-    // constructed parameters' protocol stack.
+    // Configure keepalive on the options before wrapping them, rather than
+    // extracting them back out of the constructed NWParameters.
     let tcpOptions = NWProtocolTCP.Options()
     applyTcpKeepalive(opts, to: tcpOptions)
     let params = NWParameters(tls: nil, tcp: tcpOptions)
@@ -1236,49 +1228,20 @@ func makeTcpNwParameters(_ opts: RamaTcpEgressConnectOptions?) -> NWParameters {
     return params
 }
 
-// ── Egress TCP keepalive defaults ─────────────────────────────────────────────
-//
-// Worst-case time to detect a black-holed path ≈ idle + interval * count
-// = 15 + 5 * 3 = 30 s. Fast enough that a wedged connection (Slack stuck
-// after morning wake over a reset VPN tunnel) recovers in well under the
-// 60 s maintenance watchdog's window, slow enough that a brief sub-second
-// Wi-Fi blip does not trip a false positive (a healthy peer answers the
-// first probe). The Rust egress options can override each knob per flow.
-
-/// Idle period (seconds) before the first keepalive probe is sent on an
-/// otherwise-quiet egress connection. Applied when the engine doesn't
-/// override via `tcp_keepalive_idle_secs`.
+// Keepalive defaults: detection ≈ idle + interval*count = 30 s — under the
+// 60 s watchdog, above a sub-second Wi-Fi blip. Overridable per flow.
 let defaultTcpKeepaliveIdleSec: Int = 15
-/// Interval (seconds) between keepalive probes after the first. Applied
-/// when the engine doesn't override via `tcp_keepalive_interval_secs`.
 let defaultTcpKeepaliveIntervalSec: Int = 5
-/// Number of unanswered probes before the connection is declared dead.
-/// Applied when the engine doesn't override via `tcp_keepalive_count`.
 let defaultTcpKeepaliveCount: Int = 3
 
 /// Apply TCP keepalive to the egress connection's `NWProtocolTCP.Options`.
-///
-/// **Keepalive is ON by default** — both when `opts == nil` (handler
-/// supplied no egress options) and when `opts.tcp_keepalive_enabled` is
-/// `true`. It is the transport-layer self-heal for a "silently dead"
-/// egress: after a network-changing sleep / VPN reset / NAT rebind an
-/// established `NWConnection` can sit at `.ready` over an upstream path
-/// that is actually black-holed. Network.framework emits neither
-/// `.waiting` nor `.failed` (the local interface — usually en0 — is still
-/// up) and `viabilityUpdateHandler` never reports `false`, so the per-flow
-/// reapers and the post-wake reconcile never fire and the flow wedges
-/// until the 60 s maintenance watchdog. With keepalive on, the unanswered
-/// probes fail the connection → `.failed` → the existing
-/// `handleEgressFailed` post-ready reaper tears it down → the originating
-/// app reconnects promptly. Healthy peers ACK the probes, so there are no
-/// false positives. The detection latency is tunable (see the default
-/// constants above and the Rust-side override knobs).
-///
-/// Opt out by setting `tcp_keepalive_enabled = false` in the handler's
-/// egress connect options.
+/// On by default (nil opts, or `tcp_keepalive_enabled`). Self-heals a
+/// silently-dead egress: after sleep / VPN reset / NAT rebind a connection
+/// can sit `.ready` over a black-holed path (NW fires neither `.waiting` nor
+/// `.failed`, viability stays true) and wedge until the 60 s watchdog;
+/// keepalive probes fail it → `.failed` → existing reaper → app reconnects.
+/// Opt out with `tcp_keepalive_enabled = false`.
 private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options) {
-    // `opts == nil` (no handler options) ⇒ default ON, matching the
-    // Rust-side `NwTcpConnectOptions` default.
     guard opts?.tcpKeepaliveEnabled ?? true else {
         tcp.enableKeepalive = false
         return

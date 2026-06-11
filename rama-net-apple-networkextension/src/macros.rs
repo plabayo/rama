@@ -722,10 +722,8 @@ macro_rules! __transparent_proxy_ffi_emit {
                     .egress_eof_grace
                     .map(|d| d.as_millis() as u32)
                     .unwrap_or(0),
-                // Keepalive: `enabled` is always meaningful (defaults true
-                // in `NwTcpConnectOptions`); the timing knobs use the
-                // `has_` / value pair so an unset knob lets Swift apply
-                // its own default.
+                // Keepalive: `enabled` always sent; unset timings (`has_`
+                // false) let Swift apply its own defaults.
                 tcp_keepalive_enabled: opts.tcp_keepalive_enabled,
                 has_tcp_keepalive_idle_secs: opts.tcp_keepalive_idle.is_some(),
                 tcp_keepalive_idle_secs: opts

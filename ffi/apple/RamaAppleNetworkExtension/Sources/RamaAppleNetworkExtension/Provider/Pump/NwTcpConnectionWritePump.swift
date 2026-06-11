@@ -105,26 +105,12 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
                 return
             }
             if self.core.isClosed() {
-                // Already cancelled / closed — `beginDraining`
-                // would no-op and the callback would never
-                // fire. Mirror `TcpClientWritePump`'s fast-path
-                // and fire `onDrained` synchronously instead.
-                //
-                // Leak guard (promoted teardown): because the core is
-                // already closed, NO FIN will be sent and the FIN→linger
-                // watchdog that normally owns cancelling this connection
-                // was never armed. In `.promoted` mode `applyPromotedTerminal`
-                // deliberately does NOT cancel the connection — it delegates
-                // that to this pump's linger watchdog. So without cancelling
-                // here, a flow whose egress write pump core was already
-                // closed (e.g. an external cancel raced the graceful drain)
-                // reaches terminal with the `NWConnection` never cancelled →
-                // it (and the whole per-flow graph anchored by its
-                // stateUpdateHandler) leaks inside Network.framework until
-                // process exit. Cancel now: there is no in-flight FIN to clip
-                // because the core is closed, and `cancelAndDetach` is
-                // idempotent (the terminal-error path already cancelled, and
-                // `viaRust` full teardown cancels the connection itself).
+                // Core already closed: no FIN, so the linger watchdog that
+                // normally cancels the connection was never armed. In
+                // promoted mode `applyPromotedTerminal` delegates the cancel
+                // to this pump, so cancel here or the connection (and the
+                // graph anchored by its stateUpdateHandler) leaks. Safe — no
+                // FIN to clip on a closed core — and idempotent.
                 self.connection.cancelAndDetach()
                 onDrained?()
                 return

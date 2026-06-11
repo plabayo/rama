@@ -219,22 +219,11 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
     }
 
-    /// Regression (promoted-teardown NWConnection leak): when
-    /// `closeWhenDrained` is called on a pump whose core is ALREADY
-    /// closed — e.g. an external `cancel()` raced the graceful drain, or
-    /// a terminal error closed the core first — `beginDraining` no-ops,
-    /// so NO FIN is sent and the FIN→linger watchdog (which normally owns
-    /// cancelling the connection) is never armed.
-    ///
-    /// `.promoted` teardown (`TcpFlowTeardown.applyPromotedTerminal`)
-    /// deliberately does NOT cancel the egress connection — it delegates
-    /// that to this pump's linger watchdog so an in-flight graceful FIN
-    /// isn't clipped. But on this already-closed fast path no watchdog
-    /// exists, so without cancelling here the `NWConnection` (and the
-    /// whole per-flow graph anchored by its `stateUpdateHandler`) leaked
-    /// inside Network.framework until process exit. The fast path must
-    /// force-cancel the connection while still firing the callback so the
-    /// forwarder's state machine can't wedge.
+    /// Regression (promoted-teardown leak): `closeWhenDrained` on an
+    /// already-closed core sends no FIN and arms no linger watchdog. Since
+    /// `applyPromotedTerminal` delegates the connection cancel to that
+    /// watchdog, the fast path must cancel itself or the connection (and
+    /// the graph it anchors) leaks. It must still fire the callback.
     func testCloseWhenDrainedOnAlreadyClosedCoreForceCancels() {
         let mock = MockNwConnection()
         mock.transition(to: .ready)

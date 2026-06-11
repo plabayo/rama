@@ -821,10 +821,8 @@ final class RamaTcpSessionHandle {
             linger_close_ms: 0,
             has_egress_eof_grace_ms: false,
             egress_eof_grace_ms: 0,
-            // Keepalive defaults: enabled, timings unset (Swift applies
-            // its own). This struct is only the scratch buffer the FFI
-            // call fills; the values here are overwritten when the
-            // handler supplied custom options (hasCustom == true).
+            // Scratch buffer; the FFI call overwrites these when the
+            // handler supplied custom options.
             tcp_keepalive_enabled: true,
             has_tcp_keepalive_idle_secs: false,
             tcp_keepalive_idle_secs: 0,
