@@ -2,12 +2,28 @@ import Foundation
 import Network
 import NetworkExtension
 
+/// Type-erased anchor `TransparentProxyCore` retains for each intercepted
+/// TCP flow. Mirror of `UdpFlowSessionAnchor`: lets the core own the
+/// generic `TcpFlowSession<F>` without knowing its flow type, reaching the
+/// per-flow `ctx` for the registry walks (detach / wake / watchdog).
+protocol TcpFlowSessionAnchor: AnyObject {
+    var ctx: TcpFlowContext { get }
+}
+
 /// Per-TCP-flow state machine.
 ///
 /// Replaces the body of `TransparentProxyCore.handleTcpFlow`.
 /// All mutable state is queue-confined to `flowQueue`; methods
 /// are individually testable via `@testable import`.
-final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
+///
+/// Ownership: `TransparentProxyCore` retains this session (via
+/// `TcpFlowSessionAnchor`) for the flow's lifetime; the session owns its
+/// `ctx`, pumps, and `RamaTcpSessionHandle`. The egress `NWConnection`'s
+/// handlers capture the session weakly, so registry membership — not a
+/// closure capture — is what keeps the flow alive. `removeTcpFlow` drops
+/// the entry and the session deallocates; `deinit` cancels the connection
+/// as a backstop so it can't outlive the session.
+final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sendable {
     weak var core: TransparentProxyCore?
     let flow: F
     let meta: RamaTransparentProxyFlowMetaBridge
@@ -44,6 +60,19 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         self.ctx.teardown = teardown
     }
 
+    deinit {
+        // Backstop: the registry is this session's sole owner, so we land
+        // here once `removeTcpFlow` drops it. If no teardown cancelled the
+        // egress connection first (`ctx.connection` still set), cancel it
+        // now so the `NWConnection` + its NECP entry can't outlive us.
+        // After a normal teardown `ctx.connection` is already nil, so this
+        // is a no-op — and `cancel()` is idempotent regardless. Promoted
+        // teardown intentionally hands the connection to the egress write
+        // pump's linger watchdog and nils `ctx.connection`, so this does
+        // not clip that FIN.
+        ctx.connection?.cancel()
+    }
+
     /// Entry point. Returns `true` if the flow was claimed
     /// (intercepted or blocked), `false` if the engine
     /// decided to pass through.
@@ -59,7 +88,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerTcpFlow(flowId, session: session, context: ctx)
+            core?.registerTcpFlow(flowId, anchor: self)
             return startEgressConnection(session: session)
         case .passthrough:
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
@@ -227,15 +256,11 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
-        // Strong self: the handler IS the lifetime anchor for the
-        // session. `handleTcpFlow` constructs the session and lets
-        // its local ref go out of scope; without this strong
-        // capture the session would deallocate and every later
-        // callback (promote, late-`.failed`, etc.) would no-op.
-        // The retain cycle (connection → handler → session →
-        // ctx.connection → connection) is broken by
-        // `cancelAndDetach()` on teardown, which sets the handler
-        // to nil.
+        // `[weak self]`: the registry owns the session (see the class doc),
+        // so the handler no longer needs to anchor it — and capturing
+        // strongly would re-create the connection → handler → session →
+        // ctx.connection → connection cycle this inversion removes.
+        //
         // No re-dispatch hop: NWConnection delivers this on the queue passed
         // to `start(queue:)` — which is `flowQueue` — so we're already
         // serialised here. Running `handleEgressState` directly (instead of
@@ -243,14 +268,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // in FIFO order with any timer armed on `flowQueue`, so a `.ready`
         // that arrives just before a connect/waiting deadline cancels that
         // timer BEFORE it fires — no reordering, no recovered-flow reset.
-        connection.stateUpdateHandler = { state in
-            self.handleEgressState(state)
+        connection.stateUpdateHandler = { [weak self] state in
+            self?.handleEgressState(state)
         }
         // Cache path viability so the post-wake reconcile can read a plain
         // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
-        // which leaks ~32B per read. Strong `self` for the same
-        // lifetime-anchor reason as `stateUpdateHandler`; the cycle is
-        // broken by `cancelAndDetach()` clearing both handlers.
+        // which leaks ~32B per read. `[weak self]` for the same reason as
+        // `stateUpdateHandler`.
         //
         // Assign DIRECTLY — do NOT re-dispatch via `flowQueue.async`.
         // NWConnection delivers this on the queue passed to `start(queue:)`,
@@ -260,8 +284,8 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // `checkWakeDeadPath` would land BEHIND the check, so the check
         // reads a stale `false` and resets a flow whose path just came back.
         // Direct assignment lands the value in FIFO order with the callback.
-        connection.viabilityUpdateHandler = { viable in
-            self.ctx.lastPathViable = viable
+        connection.viabilityUpdateHandler = { [weak self] viable in
+            self?.ctx.lastPathViable = viable
         }
     }
 

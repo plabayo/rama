@@ -52,19 +52,19 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private(set) var engine: RamaTransparentProxyEngineHandle?
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
-    /// Per-TCP-flow context registry. The session handle reaches
-    /// into the context via `ctx.session` so there is no separate
-    /// session map — one entry per active flow, removed exactly
-    /// when teardown calls `removeTcpFlow`.
-    private var tcpContexts: [ObjectIdentifier: TcpFlowContext] = [:]
-    /// Per-UDP-flow session registry. Unlike the TCP side, this
-    /// holds the per-flow `UdpFlowSession` (type-erased via
-    /// `UdpFlowSessionAnchor`) rather than the bare context. The
-    /// session owns the context as a `let` member, so registering
-    /// the session keeps the whole graph (`ctx`, writer, closures,
-    /// `RamaUdpSessionHandle`) alive while the flow is open and
-    /// drops it deterministically when `removeUdpFlow` runs — no
-    /// context→session back-reference, no retain cycle.
+    /// Per-TCP-flow session registry (mirror of `udpSessions`). The
+    /// registry OWNS the session (type-erased via `TcpFlowSessionAnchor`);
+    /// the session owns its `ctx` and everything under it. So registry
+    /// membership IS the flow's liveness — the egress `NWConnection`'s
+    /// handlers capture the session weakly, so they no longer anchor it
+    /// and there is no retain cycle to break by hand. Dropping the entry
+    /// via `removeTcpFlow` deallocates the session (and its `deinit`
+    /// cancels the connection as a backstop).
+    private var tcpSessions: [ObjectIdentifier: TcpFlowSessionAnchor] = [:]
+    /// Per-UDP-flow session registry. Same one-way ownership: the
+    /// registry holds the per-flow `UdpFlowSession` (type-erased via
+    /// `UdpFlowSessionAnchor`); the session owns its context, so dropping
+    /// the entry via `removeUdpFlow` deallocates the whole graph.
     private var udpSessions: [ObjectIdentifier: UdpFlowSessionAnchor] = [:]
 
     /// Factory used to construct egress `NWConnection`s for intercepted
@@ -116,14 +116,14 @@ final class TransparentProxyCore: @unchecked Sendable {
         // (and its kernel NECP entry) until process exit. Each teardown
         // cancels its connection + session and removes itself from the
         // registry; the removeAll below is then a no-op safety net.
-        let tcp: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        let tcp: [TcpFlowContext] = stateQueue.sync { self.tcpSessions.values.map { $0.ctx } }
         for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applyEngineDetached() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
         self.engine = nil
         stateQueue.sync {
-            self.tcpContexts.removeAll(keepingCapacity: false)
+            self.tcpSessions.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
         }
     }
@@ -185,7 +185,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // `lastPathViable` reads and the teardown all run there, so they
         // stay single-threaded with that flow's kernel / NWConnection
         // callbacks instead of racing them.
-        let all: [TcpFlowContext] = stateQueue.sync { Array(self.tcpContexts.values) }
+        let all: [TcpFlowContext] = stateQueue.sync { self.tcpSessions.values.map { $0.ctx } }
         for ctx in all {
             runFlowTeardown(ctx) { [weak self] in
                 // `hasReachedReady`, NOT `egressReady`: this reconcile block
@@ -341,7 +341,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // `stateQueue.sync` is unnecessary inside — the timer fires ON
         // `stateQueue`, so direct access to the maps is already
         // serialised correctly.
-        let tcp = self.tcpContexts.count
+        let tcp = self.tcpSessions.count
         let udp = self.udpSessions.count
         self.logDebug("tproxy live-flow counts tcp=\(tcp) udp=\(udp)")
 
@@ -360,7 +360,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         var nowStuckPreReady: Set<ObjectIdentifier> = []
         var nowStuckClosing: Set<ObjectIdentifier> = []
         var kicks = MaintenanceKicks()
-        for (id, ctx) in tcpContexts {
+        for (id, anchor) in tcpSessions {
+            let ctx = anchor.ctx
             if !ctx.egressReady {
                 nowStuckPreReady.insert(id)
                 if stuckPreReadyFlowIds.contains(id) {
@@ -467,12 +468,13 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     // MARK: - Registration maps
 
-    func registerTcpFlow(
-        _ flowId: ObjectIdentifier,
-        session: RamaTcpSessionHandle,
-        context: TcpFlowContext
-    ) {
-        stateQueue.sync { self.tcpContexts[flowId] = context }
+    /// Register the per-flow session as the owner-of-record for an
+    /// intercepted TCP flow. Mirror of `registerUdpFlow`: the anchor is
+    /// the only strong reference keeping the session alive while the flow
+    /// is open; dropping it via `removeTcpFlow` deallocates the session
+    /// and the `ctx`/pumps/`RamaTcpSessionHandle` graph it owns.
+    func registerTcpFlow(_ flowId: ObjectIdentifier, anchor: TcpFlowSessionAnchor) {
+        stateQueue.sync { self.tcpSessions[flowId] = anchor }
     }
 
     /// Register the per-flow session as the owner-of-record for an
@@ -499,7 +501,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // until the async lands, which only HELPS the ObjectIdentifier-reuse
         // guard below.
         stateQueue.async {
-            self.tcpContexts.removeValue(forKey: flowId)
+            self.tcpSessions.removeValue(forKey: flowId)
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
             // within one maintenance tick, the new ctx would inherit
@@ -520,7 +522,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Count of currently-registered TCP flows. Test-only signal for
     /// leak / churn assertions.
     var tcpFlowCount: Int {
-        stateQueue.sync { self.tcpContexts.count }
+        stateQueue.sync { self.tcpSessions.count }
     }
 
     /// Count of currently-registered UDP flows. Test-only signal.
@@ -545,15 +547,18 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// state (mode transition, forwarder presence). Same
         /// gating rationale as the UDP accessor above.
         func testInspectTcpContext(for flow: AnyObject) -> TcpFlowContext? {
-            stateQueue.sync { self.tcpContexts[ObjectIdentifier(flow)] }
+            stateQueue.sync { self.tcpSessions[ObjectIdentifier(flow)]?.ctx }
         }
 
         /// Insert a TCP context into the registry directly, without
         /// going through `registerTcpFlow` (which requires a real
-        /// `RamaTcpSessionHandle`). Lets tests drive engine-less
-        /// scenarios like `handleSystemSleep` walks.
+        /// `RamaTcpSessionHandle`). Wraps the bare ctx in a stub anchor so
+        /// the registry's invariant (one anchor per flow) holds. Lets tests
+        /// drive engine-less scenarios like the `detachEngine` / wake walks.
         func testInsertTcpContext(_ flowId: ObjectIdentifier, _ ctx: TcpFlowContext) {
-            stateQueue.sync { self.tcpContexts[flowId] = ctx }
+            stateQueue.sync {
+                self.tcpSessions[flowId] = _TestTcpFlowSessionAnchor(ctx: ctx)
+            }
         }
 
         /// Symmetric for UDP. Wraps the bare ctx in a stub
@@ -797,5 +802,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     final class _TestUdpFlowSessionAnchor: UdpFlowSessionAnchor {
         let ctx: UdpFlowContext
         init(ctx: UdpFlowContext) { self.ctx = ctx }
+    }
+
+    /// TCP counterpart of `_TestUdpFlowSessionAnchor`: wraps a bare
+    /// `TcpFlowContext` so `testInsertTcpContext` can populate the
+    /// session registry without a real `TcpFlowSession` / engine.
+    final class _TestTcpFlowSessionAnchor: TcpFlowSessionAnchor {
+        let ctx: TcpFlowContext
+        init(ctx: TcpFlowContext) { self.ctx = ctx }
     }
 #endif

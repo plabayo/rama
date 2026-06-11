@@ -204,7 +204,7 @@ final class StaleFlowWatchdogTests: XCTestCase {
     /// ctx is also removed from the registry by
     /// `applyPreOpenCleanup`, so subsequent ticks find nothing to
     /// kick. Verify both: no double cancel, and the ctx is gone from
-    /// `tcpContexts`.
+    /// `tcpSessions`.
     func testKickIsIdempotentAndRemovesFromRegistry() {
         let core = makeCore()
         let fx = TcpFx(core: core)

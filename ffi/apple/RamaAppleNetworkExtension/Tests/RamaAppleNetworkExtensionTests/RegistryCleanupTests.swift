@@ -5,7 +5,7 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 /// Pins the registry-cleanup invariants for
-/// `TransparentProxyCore.tcpContexts` / `udpContexts`.
+/// `TransparentProxyCore.tcpSessions` / `udpSessions`.
 ///
 /// These maps are the only persistent per-flow state on the core
 /// side. Every entry MUST be removed exactly when the flow ends —
