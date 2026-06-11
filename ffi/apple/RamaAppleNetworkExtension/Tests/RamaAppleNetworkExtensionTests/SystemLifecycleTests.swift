@@ -21,7 +21,7 @@ final class SystemLifecycleTests: XCTestCase {
     /// fires its completion promptly.
     func testHandleSystemSleepLeavesRegisteredTcpFlowsIntact() {
         let core = TransparentProxyCore()
-        var teardowns: [TcpFlowTeardown] = []
+        var ctxs: [TcpFlowContext] = []
         var flows: [MockTcpFlow] = []
         var conns: [MockNwConnection] = []
         // Build a few mock contexts and shove them straight into
@@ -32,15 +32,15 @@ final class SystemLifecycleTests: XCTestCase {
             let c = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = c
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-            ctx.teardown = td
+            ctx.flow = f
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(f)
             // Use the registry directly — registerTcpFlow needs a
             // RamaTcpSessionHandle which we can't construct here.
             core.testInsertTcpContext(ObjectIdentifier(f), ctx)
             flows.append(f)
             conns.append(c)
-            teardowns.append(td)
+            ctxs.append(ctx)
         }
         XCTAssertEqual(core.tcpFlowCount, 5)
 
@@ -51,8 +51,8 @@ final class SystemLifecycleTests: XCTestCase {
         // Nothing was torn down: the flows survive the suspend and
         // are reaped (if needed) only by the post-wake path.
         XCTAssertEqual(core.tcpFlowCount, 5, "sleep must not drop flows")
-        for (i, td) in teardowns.enumerated() {
-            XCTAssertFalse(td.isDone, "teardown[\(i)] must not fire on sleep")
+        for (i, ctx) in ctxs.enumerated() {
+            XCTAssertFalse(ctx.isDone, "teardown[\(i)] must not fire on sleep")
             XCTAssertEqual(conns[i].cancelCount, 0)
             XCTAssertEqual(flows[i].closeReadCallCount, 0)
         }
@@ -84,7 +84,7 @@ final class SystemLifecycleTests: XCTestCase {
         on core: TransparentProxyCore,
         viable: Bool,
         flowQueue: DispatchQueue? = nil
-    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
+    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext)
     {
         let f = MockTcpFlow()
         let c = MockNwConnection()
@@ -93,11 +93,11 @@ final class SystemLifecycleTests: XCTestCase {
         ctx.egressReady = true
         ctx.lastPathViable = viable
         ctx.flowQueue = flowQueue
-        let td = TcpFlowTeardown(
-            ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-        ctx.teardown = td
+        ctx.flow = f
+        ctx.core = core
+        ctx.flowId = ObjectIdentifier(f)
         core.testInsertTcpContext(ObjectIdentifier(f), ctx)
-        return (f, c, ctx, td)
+        return (f, c, ctx)
     }
 
     /// An established flow whose egress path is no longer viable after the
@@ -112,7 +112,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertTrue(f.teardown.isDone, "dead-path established flow must be torn down")
+        XCTAssertTrue(f.ctx.isDone, "dead-path established flow must be torn down")
         XCTAssertEqual(f.conn.cancelCount, 1, "egress connection cancelled")
         XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
     }
@@ -125,7 +125,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertFalse(f.teardown.isDone, "healthy flow must survive the wake re-check")
+        XCTAssertFalse(f.ctx.isDone, "healthy flow must survive the wake re-check")
         XCTAssertEqual(f.conn.cancelCount, 0)
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -141,7 +141,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertFalse(f.teardown.isDone)
+        XCTAssertFalse(f.ctx.isDone)
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -181,7 +181,7 @@ final class SystemLifecycleTests: XCTestCase {
         queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertTrue(f.teardown.isDone, "scheduled re-check must reset the dead-path flow")
+        XCTAssertTrue(f.ctx.isDone, "scheduled re-check must reset the dead-path flow")
         XCTAssertEqual(core.tcpFlowCount, 0)
     }
 
@@ -202,7 +202,7 @@ final class SystemLifecycleTests: XCTestCase {
         queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertFalse(f.teardown.isDone, "healthy flow must survive the scheduled re-check")
+        XCTAssertFalse(f.ctx.isDone, "healthy flow must survive the scheduled re-check")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -228,7 +228,7 @@ final class SystemLifecycleTests: XCTestCase {
         wait(for: [drained], timeout: 2.0)
 
         XCTAssertFalse(
-            f.teardown.isDone, "recovery queued before the check must spare the flow")
+            f.ctx.isDone, "recovery queued before the check must spare the flow")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -238,7 +238,7 @@ final class SystemLifecycleTests: XCTestCase {
     /// (which flips `egressReady`) is still queued behind the reconcile.
     private func makePreReadyFlowThatSilentlyReachedReady(
         on core: TransparentProxyCore
-    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
+    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext)
     {
         let f = MockTcpFlow()
         let c = MockNwConnection()
@@ -246,11 +246,11 @@ final class SystemLifecycleTests: XCTestCase {
         let ctx = TcpFlowContext()
         ctx.connection = c
         ctx.egressReady = false  // our flag lags behind NW's .ready
-        let td = TcpFlowTeardown(
-            ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-        ctx.teardown = td
+        ctx.flow = f
+        ctx.core = core
+        ctx.flowId = ObjectIdentifier(f)
         core.testInsertTcpContext(ObjectIdentifier(f), ctx)
-        return (f, c, ctx, td)
+        return (f, c, ctx)
     }
 
     /// FIFO does NOT cover this site (it's a read, not a timer-cancel):
@@ -264,7 +264,7 @@ final class SystemLifecycleTests: XCTestCase {
         core.handleSystemWake()
 
         XCTAssertFalse(
-            f.teardown.isDone,
+            f.ctx.isDone,
             "a flow that reached .ready must not be pre-ready-reset on wake")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -281,7 +281,7 @@ final class SystemLifecycleTests: XCTestCase {
         core.testRunPeriodicMaintenance()
 
         XCTAssertFalse(
-            f.teardown.isDone,
+            f.ctx.isDone,
             "watchdog must not connect-timeout a flow that already reached .ready")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -296,8 +296,8 @@ final class SystemLifecycleTests: XCTestCase {
         // viable:false so the check WOULD reset it if the guards didn't hold.
         let f = makeEstablishedFlow(on: core, viable: false)
 
-        f.teardown.applyPromotedTerminal()
-        XCTAssertTrue(f.teardown.isDone, "promoted terminal marks teardown done")
+        f.ctx.applyPromotedTerminal()
+        XCTAssertTrue(f.ctx.isDone, "promoted terminal marks teardown done")
         XCTAssertEqual(f.conn.cancelCount, 0, "promoted terminal must NOT cancel the connection")
         let closesAfterTerminal = f.flow.closeReadCallCount
 

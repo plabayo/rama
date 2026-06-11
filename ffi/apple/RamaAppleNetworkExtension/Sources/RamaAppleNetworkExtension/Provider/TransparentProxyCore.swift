@@ -117,7 +117,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // cancels its connection + session and removes itself from the
         // registry; the removeAll below is then a no-op safety net.
         let tcp: [TcpFlowContext] = stateQueue.sync { self.tcpSessions.values.map { $0.ctx } }
-        for ctx in tcp { runFlowTeardown(ctx) { ctx.teardown?.applyEngineDetached() } }
+        for ctx in tcp { runFlowTeardown(ctx) { ctx.applyEngineDetached() } }
         let udp: [UdpFlowSessionAnchor] = stateQueue.sync { Array(self.udpSessions.values) }
         for session in udp { session.ctx.terminate?(engineDetachedError()) }
         self.engine?.stop(reason: reason)
@@ -195,7 +195,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // a read (only a timer-cancel) — consult live state so we
                 // don't pre-open-cleanup a flow that just connected.
                 guard ctx.hasReachedReady else {
-                    ctx.teardown?.applySystemWake()
+                    ctx.applySystemWake()
                     return
                 }
                 // Established: defer the verdict to a settle-delayed
@@ -236,11 +236,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         // `applyPromotedTerminal`). `applyWakeDeadPath` would no-op on a
         // `done` teardown anyway, but bailing here also avoids the
         // misleading "resetting established flow" log line.
-        guard ctx.teardown?.isDone != true else { return }
+        guard ctx.isDone != true else { return }
         guard !ctx.lastPathViable else { return }
         logLifecycle(
             "wake: egress path not viable after settle; resetting established flow")
-        ctx.teardown?.applyWakeDeadPath()
+        ctx.applyWakeDeadPath()
     }
 
     private func engineDetachedError() -> NSError {
@@ -403,7 +403,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // has no internal ready-check, so this gate is its protection.
                 runFlowTeardown(ctx) {
                     guard !ctx.hasReachedReady else { return }
-                    ctx.teardown?.applyConnectTimeout()
+                    ctx.applyConnectTimeout()
                 }
             }
         }
@@ -418,7 +418,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // per-flow backstop timer) already completed between the
                 // `stateQueue` decision and here.
                 runFlowTeardown(ctx) {
-                    ctx.teardown?.applyDrainBackstop()
+                    ctx.applyDrainBackstop()
                 }
             }
         }
@@ -728,7 +728,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // connection→handler→session retain cycle), cancels the
                 // forwarder, and drops the registry entry. Idempotent via
                 // the teardown's sticky `done`.
-                ctx?.teardown?.applyDrainBackstop()
+                ctx?.applyDrainBackstop()
             },
             onTerminal: { [weak ctx] in
                 // Both direct directions done. Route through the shared
@@ -737,7 +737,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // connection-cancelling teardown) and detaches handlers —
                 // WITHOUT cancelling the egress NWConnection, whose FIN/linger
                 // the egress write pump owns. See `applyPromotedTerminal`.
-                ctx?.teardown?.applyPromotedTerminal()
+                ctx?.applyPromotedTerminal()
             }
         )
         ctx.directForwarder = forwarder

@@ -38,10 +38,12 @@ final class TcpFlowSessionTests: XCTestCase {
 
     // MARK: - Construction
 
-    /// init() wires teardown into ctx so racing closures can reach it.
+    /// init() wires the teardown inputs (flow/core/flowId) onto ctx so its
+    /// `applyX` methods can run.
     func testInitWiresTeardownIntoContext() {
         let fx = Fixture()
-        XCTAssertNotNil(fx.session.ctx.teardown)
+        XCTAssertNotNil(fx.session.ctx.flow, "ctx.flow wired for teardown")
+        XCTAssertNotNil(fx.session.ctx.flowId, "ctx.flowId wired for teardown")
         XCTAssertFalse(fx.session.egressReady)
     }
 
@@ -104,7 +106,7 @@ final class TcpFlowSessionTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
 
         XCTAssertFalse(
-            fx.session.ctx.teardown?.isDone ?? true,
+            fx.session.ctx.isDone,
             "the .ready handler must cancel the tolerance timer before it fires")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
     }
@@ -161,12 +163,12 @@ final class TcpFlowSessionTests: XCTestCase {
         let fx = Fixture()
         let timeout = DispatchWorkItem {}
         fx.session.timeoutWork = timeout
-        XCTAssertFalse(fx.session.teardown.isDone)
+        XCTAssertFalse(fx.session.ctx.isDone)
 
         fx.session.handleEgressFailed(nil)
 
         XCTAssertTrue(timeout.isCancelled, "connect timer must be invalidated")
-        XCTAssertTrue(fx.session.teardown.isDone, "teardown fired exactly once")
+        XCTAssertTrue(fx.session.ctx.isDone, "teardown fired exactly once")
         XCTAssertEqual(
             fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed (unopened) flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
@@ -191,7 +193,7 @@ final class TcpFlowSessionTests: XCTestCase {
         fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertTrue(fx.session.teardown.isDone, "connect timeout must tear the flow down")
+        XCTAssertTrue(fx.session.ctx.isDone, "connect timeout must tear the flow down")
         XCTAssertEqual(fx.conn.cancelCount, 1, "stale connect connection must be cancelled")
         XCTAssertNil(fx.session.ctx.connection, "connection slot cleared on connect timeout")
         XCTAssertEqual(
@@ -211,7 +213,7 @@ final class TcpFlowSessionTests: XCTestCase {
         fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertFalse(fx.session.teardown.isDone, "connected flow must survive the connect deadline")
+        XCTAssertFalse(fx.session.ctx.isDone, "connected flow must survive the connect deadline")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connected flow's connection must not be cancelled")
     }
 
@@ -225,7 +227,7 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready failure closes the flow")
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
     }
 
     // MARK: - handleEgressWaiting
@@ -289,7 +291,7 @@ final class TcpFlowSessionTests: XCTestCase {
         let fx = Fixture()
         XCTAssertFalse(fx.session.egressReady)
         fx.session.handleEgressCancelled()
-        XCTAssertTrue(fx.session.teardown.isDone, "external pre-ready cancel must tear down")
+        XCTAssertTrue(fx.session.ctx.isDone, "external pre-ready cancel must tear down")
         XCTAssertEqual(fx.conn.cancelCount, 1)
         XCTAssertEqual(
             fx.flow.closeReadCallCount, 1, "pre-open teardown rejects the claimed (unopened) flow")
@@ -302,7 +304,7 @@ final class TcpFlowSessionTests: XCTestCase {
         let fx = Fixture()
         fx.session.egressReady = true
         fx.session.handleEgressCancelled()
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready cancel closes the flow")
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)

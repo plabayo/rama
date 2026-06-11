@@ -30,7 +30,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     let flowId: ObjectIdentifier
     let flowQueue: DispatchQueue
     let ctx: TcpFlowContext
-    let teardown: TcpFlowTeardown
 
     // Egress lifecycle state — queue-confined.
     var egressReady = false
@@ -56,8 +55,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             qos: .utility)
         self.ctx = TcpFlowContext()
         self.ctx.flowQueue = self.flowQueue
-        self.teardown = TcpFlowTeardown(ctx: ctx, core: core, flow: flow, flowId: flowId)
-        self.ctx.teardown = teardown
+        // The context owns its own teardown (folded in from the former
+        // `TcpFlowTeardown`); give it what those methods need.
+        self.ctx.flow = flow
+        self.ctx.core = core
+        self.ctx.flowId = flowId
     }
 
     deinit {
@@ -110,7 +112,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             queue: flowQueue,
             logger: { [weak core] message in core?.logFlowMessage(message) },
             onTerminalError: { [weak ctx] error in
-                ctx?.teardown?.applyWriterTerminal(error)
+                ctx?.applyWriterTerminal(error)
             },
             onDrained: { [weak ctx] in
                 // Always wake the Rust ingress bridge first: during the
@@ -152,7 +154,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         return
                     }
                     self.ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
-                        self?.ctx.teardown?.applyDrainedClose(wasOpened: wasOpened)
+                        self?.ctx.applyDrainedClose(wasOpened: wasOpened)
                     }
                     self.armTerminalDrainBackstop()
                 }
@@ -166,8 +168,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
             core?.logDebug("handleTcpFlow: missing remote endpoint; rejecting flow")
             // Reject (close the claimed flow) rather than strand the app's
-            // connect — see `TcpFlowTeardown.applyPreOpenCleanup`.
-            ctx.teardown?.applyPreReadyFailure()
+            // connect — see `TcpFlowContext.applyPreOpenCleanup`.
+            ctx.applyPreReadyFailure()
             return true
         }
 
@@ -191,7 +193,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "handleTcpFlow: invalid remote port \(meta.remotePort); rejecting flow")
             // Reject the claimed flow (no connection built) — as above.
-            ctx.teardown?.applyPreReadyFailure()
+            ctx.applyPreReadyFailure()
             return true
         }
         ctx.connection = connection
@@ -212,7 +214,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
-            self.ctx.teardown?.applyConnectTimeout()
+            self.ctx.applyConnectTimeout()
         }
         timeoutWork = work
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: work)
@@ -243,12 +245,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// exists for) — see `TransparentProxyCore.collectMaintenanceKicksLocked`.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
-        guard terminalDrainBackstop == nil, ctx.teardown?.isDone != true else { return }
+        guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.ctx.teardown?.isDone == false else { return }
+            guard let self, self.ctx.isDone == false else { return }
             self.core?.logDebug(
                 "tcp flow drain backstop fired; forcing teardown (peer not draining)")
-            self.ctx.teardown?.applyDrainBackstop()
+            self.ctx.applyDrainBackstop()
         }
         terminalDrainBackstop = work
         flowQueue.asyncAfter(
@@ -374,7 +376,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "egress NWConnection failed before flow opened: \(String(describing: error))"
             )
-            ctx.teardown?.applyPreReadyFailure()
+            ctx.applyPreReadyFailure()
         } else {
             core?.logDebug(
                 "egress NWConnection failed after flow opened: \(String(describing: error))"
@@ -423,7 +425,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "
                     + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"
             )
-            self.ctx.teardown?.applyPreReadyWaitingTimeout()
+            self.ctx.applyPreReadyWaitingTimeout()
         }
         waitingWork = work
         flowQueue.asyncAfter(
@@ -442,16 +444,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // instead of leaking the session, registry entry, and
         // connection slot.
         if egressReady {
-            ctx.teardown?.applyPostReadyFailure(nil)
+            ctx.applyPostReadyFailure(nil)
         } else {
-            ctx.teardown?.applyPreReadyFailure()
+            ctx.applyPreReadyFailure()
         }
     }
 
     private func applyPostReadyTeardown(error: NWError?) {
         waitingWork?.cancel()
         waitingWork = nil
-        ctx.teardown?.applyPostReadyFailure(error)
+        ctx.applyPostReadyFailure(error)
     }
 
     // MARK: - Phase: egress pump construction
@@ -516,7 +518,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 guard let self else { return }
                 if let error {
                     self.core?.logDebug("flow.open error after egress ready: \(error)")
-                    self.ctx.teardown?.applyFlowOpenFailure(error)
+                    self.ctx.applyFlowOpenFailure(error)
                     return
                 }
                 // Teardown may have raced ahead while flow.open
@@ -555,7 +557,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 session?.onClientEof()
             },
             onHardError: { [weak self] err in
-                self?.ctx.teardown?.applyReadHardError(err)
+                self?.ctx.applyReadHardError(err)
             }
         )
         let flowReadPump = TcpClientReadPump(

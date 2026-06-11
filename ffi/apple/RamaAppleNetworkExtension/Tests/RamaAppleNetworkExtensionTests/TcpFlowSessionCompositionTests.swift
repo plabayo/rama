@@ -39,9 +39,9 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
     func testConnectTimeoutThenLateReadyIsIdempotent() {
         let fx = Fixture()
         // Simulate the timeout fire path directly.
-        fx.session.ctx.teardown?.applyConnectTimeout()
+        fx.session.ctx.applyConnectTimeout()
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
 
         // Now a stale .ready lands.
         fx.session.handleEgressReady(connection: fx.conn)
@@ -88,7 +88,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
 
         fx.session.handleEgressFailed(nil)
 
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready failure closed the flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
         XCTAssertTrue(tolerance?.isCancelled ?? false, "tolerance timer cancelled by failure")
@@ -127,7 +127,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
     /// the first effective; idempotency holds across variants.
     func testTwoTeardownVariantsAreIdempotent() {
         let fx = Fixture()
-        fx.session.ctx.teardown?.applyConnectTimeout()
+        fx.session.ctx.applyConnectTimeout()
         XCTAssertEqual(fx.conn.cancelCount, 1)
 
         // Pretending a post-ready failure raced in.

@@ -30,7 +30,7 @@ final class StaleFlowWatchdogTests: XCTestCase {
 
     /// Lightweight fixture: a core, a `MockTcpFlow`, a
     /// `MockNwConnection`, a `TcpFlowContext` wired to a real
-    /// `TcpFlowTeardown`. The teardown's `applyConnectTimeout` runs
+    /// `TcpFlowContext`. The `applyConnectTimeout` runs
     /// `applyPreOpenCleanup`, which (since the kernel flow was never
     /// opened yet) only cancels the egress NWConnection, nils the
     /// connection slot, and removes the ctx from the registry. So
@@ -43,7 +43,6 @@ final class StaleFlowWatchdogTests: XCTestCase {
         let flow: MockTcpFlow
         let conn: MockNwConnection
         let ctx: TcpFlowContext
-        let teardown: TcpFlowTeardown
         let flowId: ObjectIdentifier
 
         init(core: TransparentProxyCore) {
@@ -52,9 +51,9 @@ final class StaleFlowWatchdogTests: XCTestCase {
             self.ctx = TcpFlowContext()
             self.ctx.connection = conn
             self.flowId = ObjectIdentifier(flow)
-            self.teardown = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: flowId)
-            ctx.teardown = teardown
+            self.ctx.flow = flow
+            self.ctx.core = core
+            self.ctx.flowId = flowId
         }
 
         /// Mark the ctx as having reached `.ready`. The watchdog
@@ -63,7 +62,7 @@ final class StaleFlowWatchdogTests: XCTestCase {
 
         /// Did `applyConnectTimeout` (== `applyPreOpenCleanup`)
         /// already fire on this ctx?
-        var wasTornDown: Bool { teardown.isDone }
+        var wasTornDown: Bool { ctx.isDone }
     }
 
     private func makeCore() -> TransparentProxyCore { TransparentProxyCore() }

@@ -58,7 +58,6 @@ final class RegistryCleanupTests: XCTestCase {
             let flow: MockTcpFlow
             let conn: MockNwConnection
             let ctx: TcpFlowContext
-            let td: TcpFlowTeardown
         }
         var bags: [Bag] = []
         for _ in 0..<100 {
@@ -66,26 +65,26 @@ final class RegistryCleanupTests: XCTestCase {
             let conn = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = conn
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-            ctx.teardown = td
+            ctx.flow = flow
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(flow)
             core.testInsertTcpContext(ObjectIdentifier(flow), ctx)
-            bags.append(Bag(flow: flow, conn: conn, ctx: ctx, td: td))
+            bags.append(Bag(flow: flow, conn: conn, ctx: ctx))
         }
         XCTAssertEqual(core.tcpFlowCount, 100)
 
         var rng = SystemRandomNumberGenerator()
         for bag in bags {
             switch Int(rng.next() % 9) {
-            case 0: bag.td.applyPreReadyFailure()
-            case 1: bag.td.applyConnectTimeout()
-            case 2: bag.td.applyWriterTerminal(NSError(domain: "x", code: 1))
-            case 3: bag.td.applyDrainedClose(wasOpened: true)
-            case 4: bag.td.applyDrainedClose(wasOpened: false)
-            case 5: bag.td.applyPostReadyFailure(nil)
-            case 6: bag.td.applyFlowOpenFailure(NSError(domain: "x", code: 2))
-            case 7: bag.td.applyReadHardError(NSError(domain: "x", code: 3))
-            default: bag.td.applySystemWake()
+            case 0: bag.ctx.applyPreReadyFailure()
+            case 1: bag.ctx.applyConnectTimeout()
+            case 2: bag.ctx.applyWriterTerminal(NSError(domain: "x", code: 1))
+            case 3: bag.ctx.applyDrainedClose(wasOpened: true)
+            case 4: bag.ctx.applyDrainedClose(wasOpened: false)
+            case 5: bag.ctx.applyPostReadyFailure(nil)
+            case 6: bag.ctx.applyFlowOpenFailure(NSError(domain: "x", code: 2))
+            case 7: bag.ctx.applyReadHardError(NSError(domain: "x", code: 3))
+            default: bag.ctx.applySystemWake()
             }
         }
         XCTAssertEqual(
@@ -150,17 +149,17 @@ final class RegistryCleanupTests: XCTestCase {
     /// reaped post-wake by the per-flow `.failed` path.
     func testHandleSystemSleepLeavesRegistryIntact() {
         let core = TransparentProxyCore()
-        var keepAlive: [(MockTcpFlow, MockNwConnection, TcpFlowContext, TcpFlowTeardown)] = []
+        var keepAlive: [(MockTcpFlow, MockNwConnection, TcpFlowContext)] = []
         for _ in 0..<50 {
             let flow = MockTcpFlow()
             let conn = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = conn
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-            ctx.teardown = td
+            ctx.flow = flow
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(flow)
             core.testInsertTcpContext(ObjectIdentifier(flow), ctx)
-            keepAlive.append((flow, conn, ctx, td))
+            keepAlive.append((flow, conn, ctx))
         }
         XCTAssertEqual(core.tcpFlowCount, 50)
 
@@ -169,8 +168,8 @@ final class RegistryCleanupTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
 
         XCTAssertEqual(core.tcpFlowCount, 50, "sleep must not drop flows")
-        for (_, conn, _, td) in keepAlive {
-            XCTAssertFalse(td.isDone, "teardown must not fire on sleep")
+        for (_, conn, ctx) in keepAlive {
+            XCTAssertFalse(ctx.isDone, "teardown must not fire on sleep")
             XCTAssertEqual(conn.cancelCount, 0)
         }
     }
