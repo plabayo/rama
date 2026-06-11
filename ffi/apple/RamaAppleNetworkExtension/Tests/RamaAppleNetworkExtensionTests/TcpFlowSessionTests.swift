@@ -47,6 +47,37 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertFalse(fx.session.egressReady)
     }
 
+    /// The ownership-inversion backstop: the registry is the session's sole
+    /// owner, so dropping it must cancel the egress connection even if no
+    /// teardown ran first (otherwise the `NWConnection` + its NECP entry
+    /// outlive the session and leak). `deinit` hops the cancel onto
+    /// `flowQueue`, so we poll for it.
+    func testDeinitCancelsConnectionWhenDroppedWithoutTeardown() {
+        let conn = MockNwConnection()
+        let core = TransparentProxyCore()
+        let flow = MockTcpFlow()
+        let meta = RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: 1, remoteHost: "example.com", remotePort: 443,
+            localHost: nil, localPort: 0,
+            sourceAppSigningIdentifier: nil, sourceAppBundleIdentifier: nil,
+            sourceAppAuditToken: nil, sourceAppPid: 4242)
+
+        var session: TcpFlowSession<MockTcpFlow>? = TcpFlowSession(
+            core: core, flow: flow, meta: meta)
+        session!.ctx.connection = conn
+        XCTAssertEqual(conn.cancelCount, 0, "not cancelled while the session is alive")
+
+        session = nil  // sole strong ref dropped → deinit backstop fires
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while conn.cancelCount == 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        XCTAssertEqual(
+            conn.cancelCount, 1,
+            "deinit must cancel a connection that no teardown released")
+    }
+
     // MARK: - buildClientWritePump
 
     /// Builds the writer and attaches it to ctx.

@@ -837,6 +837,45 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.drain()
     }
 
+    /// S→C mirror of `testActiveC2SBufferedReplayUnderBackpressure`: the
+    /// client write pump (kernel-bound) rejects an over-cap chunk with
+    /// `.paused`, the forwarder holds it, and the pump's drain edge replays
+    /// it — none dropped. The audit flagged the entire S→C backpressure
+    /// path (`flushS2CBufferLocked` paused-latch + `onClientPumpDrained`
+    /// replay) as untested; only C→S was covered.
+    func testActiveS2CBufferedReplayUnderBackpressure() {
+        let h = Harness("backpressure.s2c.carryover", autoCompleter: false)
+        // Hold the client (S→C) writes in flight so `pendingBytes` stays high
+        // and the second chunk pauses.
+        h.flow.captureWriteCompletions = true
+        let big = Data(repeating: 0xAB, count: 300 * 1024)
+        let small = Data([0xCD, 0xEF])
+
+        // Pre-cutover: both chunks land in `s2cBuffer`.
+        h.forwarder.acceptEgressCarryover(big)
+        h.forwarder.acceptEgressCarryover(small)
+        // Transition: enqueue(big) → accepted (first-chunk rule);
+        // enqueue(small) → paused; loop exits with `small` held.
+        h.forwarder.markRustS2CDone()
+
+        waitFor("first chunk reached the kernel flow", timeout: 1.0) {
+            h.flow.writes.contains(big)
+        }
+        h.drain()
+        XCTAssertEqual(h.flow.pendingWriteCompletionCount, 1, "exactly the first chunk in flight")
+        XCTAssertFalse(
+            h.flow.writes.contains(small), "second chunk MUST be buffered, not dropped")
+
+        // Complete the in-flight write → drain edge → onClientPumpDrained →
+        // flushS2CBufferLocked replays `small`.
+        _ = h.flow.completeNextWrite()
+        waitFor("buffered chunk replayed after drain", timeout: 2.0) {
+            h.flow.writes.contains(small)
+        }
+        _ = h.flow.completeNextWrite()
+        h.drain()
+    }
+
     // MARK: - PROBE: egress write-pump terminal while C→S paused
 
     /// PROBE (audit): the egress write pump can hit a TERMINAL state
