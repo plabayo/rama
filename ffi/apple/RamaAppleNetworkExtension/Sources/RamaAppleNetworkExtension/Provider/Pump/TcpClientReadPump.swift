@@ -2,6 +2,16 @@ import Foundation
 import Network
 import NetworkExtension
 
+/// The client→Rust ingress sink the read pump delivers into. Abstracts
+/// `RamaTcpSessionHandle.onClientBytes` so unit tests can drive the pump's
+/// `.paused`/`.accepted`/`.closed` replay state machine with a scripted
+/// sink instead of a live Rust session (which always `.accepted`s in the
+/// demo handler). `@Sendable`-free: the pump confines calls to its queue.
+protocol TcpClientBytesSink: AnyObject {
+    func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge
+}
+extension RamaTcpSessionHandle: TcpClientBytesSink {}
+
 /// Cross-thread access pattern: `state`-protected fields are
 /// accessed under the lock from any thread; everything else is
 /// confined to `queue`. Apple's `flow.readData` completion handler
@@ -10,10 +20,10 @@ import NetworkExtension
 /// runtime confinement (lock + serial queue) statically.
 final class TcpClientReadPump: @unchecked Sendable {
     private let flow: any TcpFlowReadable
-    /// `weak` so the pump doesn't pin the session alive (the session map is
+    /// `weak` so the pump doesn't pin the session alive (the registry is
     /// the single strong owner). Equally important: stops the strong-ref
     /// cycle ctx → pump → session → callback closures → ctx.
-    private weak var session: RamaTcpSessionHandle?
+    private weak var session: (any TcpClientBytesSink)?
     private let logger: (FlowLogMessage) -> Void
     private let onTerminal: (Error?) -> Void
     private let queue: DispatchQueue
@@ -36,7 +46,7 @@ final class TcpClientReadPump: @unchecked Sendable {
 
     init(
         flow: any TcpFlowReadable,
-        session: RamaTcpSessionHandle,
+        session: any TcpClientBytesSink,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminal: @escaping (Error?) -> Void

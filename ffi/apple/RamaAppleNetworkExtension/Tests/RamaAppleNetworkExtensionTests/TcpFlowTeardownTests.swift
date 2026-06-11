@@ -4,16 +4,17 @@ import XCTest
 
 @testable import RamaAppleNetworkExtension
 
-/// Contract tests for `TcpFlowTeardown`.
+/// Contract tests for the per-flow teardown methods (the `applyX`
+/// family, now on `TcpFlowContext` — folded in from the former
+/// `TcpFlowTeardown`).
 ///
-/// The teardown class is the single source of truth for tearing
-/// down an intercepted TCP flow — seven distinct terminal-state
-/// transitions used to inline their own cleanup sequences, which
-/// drifted into the 1,177 `is already cancelled` + 1,520 `flow is
-/// closed for writes` log-quarantine pathology surfaced in the 5
-/// min stress audit. Consolidating them into one class with a
-/// sticky `done` flag makes idempotency a structural property
-/// instead of seven separate disciplines.
+/// These are the single source of truth for tearing down an
+/// intercepted TCP flow — seven distinct terminal-state transitions
+/// used to inline their own cleanup sequences, which drifted into the
+/// 1,177 `is already cancelled` + 1,520 `flow is closed for writes`
+/// log-quarantine pathology surfaced in the 5 min stress audit.
+/// Consolidating them behind a sticky `isDone` flag makes idempotency a
+/// structural property instead of seven separate disciplines.
 ///
 /// These tests pin:
 ///
@@ -33,16 +34,11 @@ final class TcpFlowTeardownTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Bag of mocks + the teardown under test. Holding the whole
-    /// graph (`ctx`, `core`) on the fixture keeps them alive for
-    /// the duration of the test — `TcpFlowTeardown` itself keeps
-    /// `ctx` and `core` only weakly (production has the registry
-    /// + dispatch tree as the strong-holder; in a unit test the
-    /// fixture plays that role). Without this discipline every
-    /// `ctx?.connection?...` line in the class becomes a silent
-    /// no-op against a deallocated context.
+    /// Bag of mocks + the context under test. Holding the whole graph
+    /// (`ctx`, `core`) on the fixture keeps it alive for the test — the
+    /// context's `core` ref is weak (production has the registry as the
+    /// strong holder; here the fixture plays that role).
     private final class Fixture {
-        let teardown: TcpFlowTeardown
         let flow: MockTcpFlow
         let conn: MockNwConnection
         let ctx: TcpFlowContext
@@ -57,9 +53,11 @@ final class TcpFlowTeardownTests: XCTestCase {
             // remove; our tests don't register the flow first,
             // so the call is a harmless no-op.
             self.core = TransparentProxyCore()
-            self.teardown = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-            self.ctx.teardown = self.teardown
+            // Wire what the teardown methods need (as `TcpFlowSession.init`
+            // does in production).
+            self.ctx.flow = flow
+            self.ctx.core = core
+            self.ctx.flowId = ObjectIdentifier(flow)
         }
     }
 
@@ -73,17 +71,17 @@ final class TcpFlowTeardownTests: XCTestCase {
         let fx = Fixture()
         let err = NSError(domain: "test", code: 1)
 
-        fx.teardown.applyWriterTerminal(err)
+        fx.ctx.applyWriterTerminal(err)
 
-        XCTAssertTrue(fx.teardown.isDone)
+        XCTAssertTrue(fx.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)
 
         // Second call — any variant.
-        fx.teardown.applyReadHardError(err)
-        fx.teardown.applyDrainedClose(wasOpened: true)
-        fx.teardown.applyPreReadyFailure()
+        fx.ctx.applyReadHardError(err)
+        fx.ctx.applyDrainedClose(wasOpened: true)
+        fx.ctx.applyPreReadyFailure()
 
         XCTAssertEqual(
             fx.flow.closeReadCallCount, 1,
@@ -96,31 +94,36 @@ final class TcpFlowTeardownTests: XCTestCase {
     // MARK: - Pre-open variants
 
     /// `applyPreReadyFailure` runs in the egress-connection-failed-
-    /// before-`.ready` path. The kernel flow has not been opened
-    /// (`flow.open` was never called), so calling
-    /// `closeReadWithError` would be premature. Verify the
-    /// pre-open variants leave the flow alone.
-    func testApplyPreReadyFailureLeavesFlowUntouched() {
+    /// before-`.ready` path. The kernel flow has not been opened, but we
+    /// DID claim it (`handleNewFlow` returned `true`), so per Apple's
+    /// `NEAppProxyFlow` contract it must be opened or closed — dropping it
+    /// unopened strands the app's `connect()`. Reject it by closing with
+    /// the `upstreamUnavailable` error (same mechanism as the `blocked`
+    /// path) so the app fails fast and can retry.
+    func testApplyPreReadyFailureRejectsUnopenedFlow() {
         let fx = Fixture()
 
-        fx.teardown.applyPreReadyFailure()
+        fx.ctx.applyPreReadyFailure()
 
-        XCTAssertTrue(fx.teardown.isDone)
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-ready failure must not touch the flow")
-        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertTrue(fx.ctx.isDone)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed flow")
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertNotNil(
+            fx.flow.lastCloseReadError,
+            "rejecting an unopened flow closes with a non-nil error so the app sees a failure")
         XCTAssertEqual(fx.conn.cancelCount, 1, "the egress connection still gets cancelled")
         XCTAssertNil(fx.ctx.connection, "ctx.connection is nilled for racing teardown paths")
     }
 
     /// Symmetric of `applyPreReadyFailure` — connect-timeout fires
     /// in the same pre-ready window, same cleanup shape.
-    func testApplyConnectTimeoutLeavesFlowUntouched() {
+    func testApplyConnectTimeoutRejectsUnopenedFlow() {
         let fx = Fixture()
 
-        fx.teardown.applyConnectTimeout()
+        fx.ctx.applyConnectTimeout()
 
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
-        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
@@ -132,7 +135,7 @@ final class TcpFlowTeardownTests: XCTestCase {
     func testApplyDrainedCloseWasOpenedTrueClosesWithNil() {
         let fx = Fixture()
 
-        fx.teardown.applyDrainedClose(wasOpened: true)
+        fx.ctx.applyDrainedClose(wasOpened: true)
 
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
@@ -149,7 +152,7 @@ final class TcpFlowTeardownTests: XCTestCase {
     func testApplyDrainedCloseWasOpenedFalseClosesWithUpstreamUnavailable() {
         let fx = Fixture()
 
-        fx.teardown.applyDrainedClose(wasOpened: false)
+        fx.ctx.applyDrainedClose(wasOpened: false)
 
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
@@ -169,7 +172,7 @@ final class TcpFlowTeardownTests: XCTestCase {
     func testApplyPostReadyFailureSynthesisesErrorIfNilProvided() {
         let fx = Fixture()
 
-        fx.teardown.applyPostReadyFailure(nil)
+        fx.ctx.applyPostReadyFailure(nil)
 
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
@@ -184,7 +187,7 @@ final class TcpFlowTeardownTests: XCTestCase {
         let fx = Fixture()
         let err = NSError(domain: "test.upstream", code: 42)
 
-        fx.teardown.applyPostReadyFailure(err)
+        fx.ctx.applyPostReadyFailure(err)
 
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         let observed = fx.flow.lastCloseReadError as NSError?
@@ -201,7 +204,7 @@ final class TcpFlowTeardownTests: XCTestCase {
         let fx = Fixture()
         let err = NSError(domain: "test", code: 1)
 
-        fx.teardown.applyReadHardError(err)
+        fx.ctx.applyReadHardError(err)
 
         XCTAssertEqual(fx.conn.cancelCount, 1, "the cancel ran")
         XCTAssertNil(fx.ctx.connection, "ctx.connection is nilled for racing teardown paths")
@@ -219,14 +222,14 @@ final class TcpFlowTeardownTests: XCTestCase {
     func testIdempotencyAcrossDifferentVariants() {
         let fx = Fixture()
 
-        fx.teardown.applyPreReadyFailure()
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
+        fx.ctx.applyPreReadyFailure()
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
 
-        fx.teardown.applyPostReadyFailure(NSError(domain: "late", code: 1))
+        fx.ctx.applyPostReadyFailure(NSError(domain: "late", code: 1))
 
         XCTAssertEqual(
-            fx.flow.closeReadCallCount, 0, "second variant must not run; flow stays untouched")
+            fx.flow.closeReadCallCount, 1, "second variant must not run; flow not closed again")
         XCTAssertEqual(fx.conn.cancelCount, 1, "connection cancel does not double-fire")
     }
 }

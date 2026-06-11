@@ -12,7 +12,7 @@ final class ChaosTests: XCTestCase {
 
     private struct TeardownVariant {
         let name: String
-        let apply: (TcpFlowTeardown) -> Void
+        let apply: (TcpFlowContext) -> Void
     }
 
     private let variants: [TeardownVariant] = [
@@ -48,7 +48,6 @@ final class ChaosTests: XCTestCase {
             let flow: MockTcpFlow
             let conn: MockNwConnection
             let ctx: TcpFlowContext
-            let teardown: TcpFlowTeardown
         }
         var bags: [Bag] = []
         for _ in 0..<200 {
@@ -56,26 +55,26 @@ final class ChaosTests: XCTestCase {
             let conn = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = conn
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-            ctx.teardown = td
+            ctx.flow = flow
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(flow)
             core.testInsertTcpContext(ObjectIdentifier(flow), ctx)
-            bags.append(Bag(flow: flow, conn: conn, ctx: ctx, teardown: td))
+            bags.append(Bag(flow: flow, conn: conn, ctx: ctx))
         }
 
         // First random variant on each bag.
         for bag in bags {
             let v = variants[Int(rng.next() % UInt64(variants.count))]
-            v.apply(bag.teardown)
+            v.apply(bag.ctx)
         }
         // Second random variant — must be a no-op.
         for bag in bags {
             let v = variants[Int(rng.next() % UInt64(variants.count))]
-            v.apply(bag.teardown)
+            v.apply(bag.ctx)
         }
 
         for (i, bag) in bags.enumerated() {
-            XCTAssertTrue(bag.teardown.isDone, "bag[\(i)] teardown didn't run")
+            XCTAssertTrue(bag.ctx.isDone, "bag[\(i)] teardown didn't run")
             XCTAssertEqual(
                 bag.conn.cancelCount, 1, "bag[\(i)] cancel must fire exactly once across two variants")
         }
@@ -90,7 +89,7 @@ final class ChaosTests: XCTestCase {
         struct Bag {
             let flow: MockTcpFlow
             let conn: MockNwConnection
-            let teardown: TcpFlowTeardown
+            let ctx: TcpFlowContext
         }
         var bags: [Bag] = []
         for _ in 0..<100 {
@@ -98,11 +97,11 @@ final class ChaosTests: XCTestCase {
             let conn = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = conn
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-            ctx.teardown = td
+            ctx.flow = flow
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(flow)
             core.testInsertTcpContext(ObjectIdentifier(flow), ctx)
-            bags.append(Bag(flow: flow, conn: conn, teardown: td))
+            bags.append(Bag(flow: flow, conn: conn, ctx: ctx))
         }
 
         let exp = expectation(description: "sleep completion")
@@ -111,7 +110,7 @@ final class ChaosTests: XCTestCase {
 
         XCTAssertEqual(core.tcpFlowCount, 100, "sleep must not drop flows")
         for (i, bag) in bags.enumerated() {
-            XCTAssertFalse(bag.teardown.isDone, "bag[\(i)] teardown must not fire")
+            XCTAssertFalse(bag.ctx.isDone, "bag[\(i)] teardown must not fire")
             XCTAssertEqual(bag.conn.cancelCount, 0, "bag[\(i)] must not be cancelled")
             XCTAssertEqual(bag.flow.closeReadCallCount, 0)
         }
@@ -128,15 +127,15 @@ final class ChaosTests: XCTestCase {
         let conn = MockNwConnection()
         let ctx = TcpFlowContext()
         ctx.connection = conn
-        let td = TcpFlowTeardown(
-            ctx: ctx, core: core, flow: flow, flowId: ObjectIdentifier(flow))
-        ctx.teardown = td
+        ctx.flow = flow
+        ctx.core = core
+        ctx.flowId = ObjectIdentifier(flow)
 
         let group = DispatchGroup()
         for _ in 0..<8 {
             group.enter()
             DispatchQueue.global().async {
-                td.applyReadHardError(NSError(domain: "chaos", code: 99))
+                ctx.applyReadHardError(NSError(domain: "chaos", code: 99))
                 group.leave()
             }
         }
@@ -146,7 +145,7 @@ final class ChaosTests: XCTestCase {
         // we're calling from raw threads (queue-confinement is
         // a documented expectation; we test what happens if a
         // future caller violates it).
-        XCTAssertTrue(td.isDone)
+        XCTAssertTrue(ctx.isDone)
         XCTAssertEqual(
             conn.cancelCount, 1,
             "even under raced multi-thread teardown the sticky flag should keep cancel-count at 1")

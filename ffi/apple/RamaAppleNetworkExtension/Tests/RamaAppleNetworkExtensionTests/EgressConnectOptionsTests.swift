@@ -22,7 +22,11 @@ final class EgressConnectOptionsTests: XCTestCase {
     private func makeOpts(
         hasConnect: Bool, connect: UInt32,
         hasLinger: Bool, linger: UInt32,
-        hasGrace: Bool, grace: UInt32
+        hasGrace: Bool, grace: UInt32,
+        keepaliveEnabled: Bool = true,
+        hasIdle: Bool = false, idle: UInt32 = 0,
+        hasInterval: Bool = false, interval: UInt32 = 0,
+        hasCount: Bool = false, count: UInt32 = 0
     ) -> RamaTcpEgressConnectOptions {
         RamaTcpEgressConnectOptions(
             parameters: RamaNwEgressParameters(
@@ -39,7 +43,14 @@ final class EgressConnectOptionsTests: XCTestCase {
             has_linger_close_ms: hasLinger,
             linger_close_ms: linger,
             has_egress_eof_grace_ms: hasGrace,
-            egress_eof_grace_ms: grace
+            egress_eof_grace_ms: grace,
+            tcp_keepalive_enabled: keepaliveEnabled,
+            has_tcp_keepalive_idle_secs: hasIdle,
+            tcp_keepalive_idle_secs: idle,
+            has_tcp_keepalive_interval_secs: hasInterval,
+            tcp_keepalive_interval_secs: interval,
+            has_tcp_keepalive_count: hasCount,
+            tcp_keepalive_count: count
         )
     }
 
@@ -88,5 +99,57 @@ final class EgressConnectOptionsTests: XCTestCase {
         XCTAssertNil(opts.connectTimeoutMs)
         XCTAssertEqual(opts.lingerCloseMs, 100)
         XCTAssertNil(opts.egressEofGraceMs)
+    }
+
+    // MARK: - Keepalive accessors
+
+    /// `tcp_keepalive_enabled` has no `has_*` companion — it's always
+    /// meaningful — so `tcpKeepaliveEnabled` reads it verbatim. Pin both
+    /// polarities so a regression that hard-codes one shows up here.
+    func testKeepaliveEnabledAccessorReadsFlagVerbatim() {
+        XCTAssertTrue(
+            makeOpts(
+                hasConnect: false, connect: 0, hasLinger: false, linger: 0,
+                hasGrace: false, grace: 0, keepaliveEnabled: true
+            ).tcpKeepaliveEnabled)
+        XCTAssertFalse(
+            makeOpts(
+                hasConnect: false, connect: 0, hasLinger: false, linger: 0,
+                hasGrace: false, grace: 0, keepaliveEnabled: false
+            ).tcpKeepaliveEnabled)
+    }
+
+    /// The three keepalive timing knobs are `has_*`-discriminated like
+    /// the connect/linger/grace fields. Distinct values surface a
+    /// crossed-wire regression as a wrong number.
+    func testKeepaliveTimingAccessorsReturnValueWhenHasFlagIsTrue() {
+        let opts = makeOpts(
+            hasConnect: false, connect: 0, hasLinger: false, linger: 0,
+            hasGrace: false, grace: 0,
+            keepaliveEnabled: true,
+            hasIdle: true, idle: 21,
+            hasInterval: true, interval: 7,
+            hasCount: true, count: 9
+        )
+        XCTAssertEqual(opts.tcpKeepaliveIdleSec, 21)
+        XCTAssertEqual(opts.tcpKeepaliveIntervalSec, 7)
+        XCTAssertEqual(opts.tcpKeepaliveCount, 9)
+    }
+
+    /// All timing flags clear → all three accessors return nil so the
+    /// caller falls back to the Swift defaults; the literal numeric
+    /// values must not leak through.
+    func testKeepaliveTimingAccessorsReturnNilWhenHasFlagIsFalse() {
+        let opts = makeOpts(
+            hasConnect: false, connect: 0, hasLinger: false, linger: 0,
+            hasGrace: false, grace: 0,
+            keepaliveEnabled: true,
+            hasIdle: false, idle: 11,
+            hasInterval: false, interval: 12,
+            hasCount: false, count: 13
+        )
+        XCTAssertNil(opts.tcpKeepaliveIdleSec)
+        XCTAssertNil(opts.tcpKeepaliveIntervalSec)
+        XCTAssertNil(opts.tcpKeepaliveCount)
     }
 }

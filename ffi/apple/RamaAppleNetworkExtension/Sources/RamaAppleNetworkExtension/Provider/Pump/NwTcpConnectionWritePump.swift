@@ -105,10 +105,13 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
                 return
             }
             if self.core.isClosed() {
-                // Already cancelled / closed — `beginDraining`
-                // would no-op and the callback would never
-                // fire. Mirror `TcpClientWritePump`'s fast-path
-                // and fire `onDrained` synchronously instead.
+                // Core already closed: no FIN, so the linger watchdog that
+                // normally cancels the connection was never armed. In
+                // promoted mode `applyPromotedTerminal` delegates the cancel
+                // to this pump, so cancel here or the connection (and the
+                // graph anchored by its stateUpdateHandler) leaks. Safe — no
+                // FIN to clip on a closed core — and idempotent.
+                self.connection.cancelAndDetach()
                 onDrained?()
                 return
             }

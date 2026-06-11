@@ -2,19 +2,34 @@ import Foundation
 import Network
 import NetworkExtension
 
+/// Type-erased anchor `TransparentProxyCore` retains for each intercepted
+/// TCP flow. Mirror of `UdpFlowSessionAnchor`: lets the core own the
+/// generic `TcpFlowSession<F>` without knowing its flow type, reaching the
+/// per-flow `ctx` for the registry walks (detach / wake / watchdog).
+protocol TcpFlowSessionAnchor: AnyObject {
+    var ctx: TcpFlowContext { get }
+}
+
 /// Per-TCP-flow state machine.
 ///
 /// Replaces the body of `TransparentProxyCore.handleTcpFlow`.
 /// All mutable state is queue-confined to `flowQueue`; methods
 /// are individually testable via `@testable import`.
-final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
+///
+/// Ownership: `TransparentProxyCore` retains this session (via
+/// `TcpFlowSessionAnchor`) for the flow's lifetime; the session owns its
+/// `ctx`, pumps, and `RamaTcpSessionHandle`. The egress `NWConnection`'s
+/// handlers capture the session weakly, so registry membership — not a
+/// closure capture — is what keeps the flow alive. `removeTcpFlow` drops
+/// the entry and the session deallocates; `deinit` cancels the connection
+/// as a backstop so it can't outlive the session.
+final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sendable {
     weak var core: TransparentProxyCore?
     let flow: F
     let meta: RamaTransparentProxyFlowMetaBridge
     let flowId: ObjectIdentifier
     let flowQueue: DispatchQueue
     let ctx: TcpFlowContext
-    let teardown: TcpFlowTeardown
 
     // Egress lifecycle state — queue-confined.
     var egressReady = false
@@ -40,8 +55,41 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             qos: .utility)
         self.ctx = TcpFlowContext()
         self.ctx.flowQueue = self.flowQueue
-        self.teardown = TcpFlowTeardown(ctx: ctx, core: core, flow: flow, flowId: flowId)
-        self.ctx.teardown = teardown
+        // The context owns its own teardown (folded in from the former
+        // `TcpFlowTeardown`); give it what those methods need.
+        self.ctx.flow = flow
+        self.ctx.core = core
+        self.ctx.flowId = flowId
+    }
+
+    deinit {
+        // Backstop: the registry is this session's sole owner, so we land
+        // here once it drops us. If no teardown cancelled the egress
+        // connection first, cancel it so the `NWConnection` + its NECP entry
+        // can't outlive us.
+        //
+        // Touch `ctx.connection` ON `flowQueue`, not on whatever thread
+        // released us. `removeTcpFlow` (the common path) is `stateQueue.async`
+        // AFTER the teardown already nilled `connection` on `flowQueue`, so a
+        // direct touch would be a safe no-op there — but `detachEngine` drops
+        // the registry ref via a synchronous `removeAll()` on `stateQueue`
+        // while that flow's `applyEngineDetached` is still queued on
+        // `flowQueue`, and touching `connection` here would race that write.
+        // Hopping keeps the access confined and FIFO-ordered after any queued
+        // teardown (which nils `connection`, making this a no-op).
+        // `cancelAndDetach` also drops the handlers so no stale `.cancelled`
+        // callback fires in the gap. Capture `ctx` (not `self`) so it outlives
+        // the deinit; engine-less test contexts with no `flowQueue` cancel
+        // inline (single-threaded, no race).
+        let ctx = self.ctx
+        if let queue = ctx.flowQueue {
+            queue.async {
+                ctx.connection?.cancelAndDetach()
+                ctx.connection = nil
+            }
+        } else {
+            ctx.connection?.cancelAndDetach()
+        }
     }
 
     /// Entry point. Returns `true` if the flow was claimed
@@ -59,7 +107,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerTcpFlow(flowId, session: session, context: ctx)
+            core?.registerTcpFlow(flowId, anchor: self)
             return startEgressConnection(session: session)
         case .passthrough:
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
@@ -81,7 +129,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             queue: flowQueue,
             logger: { [weak core] message in core?.logFlowMessage(message) },
             onTerminalError: { [weak ctx] error in
-                ctx?.teardown?.applyWriterTerminal(error)
+                ctx?.applyWriterTerminal(error)
             },
             onDrained: { [weak ctx] in
                 // Always wake the Rust ingress bridge first: during the
@@ -123,7 +171,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                         return
                     }
                     self.ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
-                        self?.ctx.teardown?.applyDrainedClose(wasOpened: wasOpened)
+                        self?.ctx.applyDrainedClose(wasOpened: wasOpened)
                     }
                     self.armTerminalDrainBackstop()
                 }
@@ -135,9 +183,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     func startEgressConnection(session: RamaTcpSessionHandle) -> Bool {
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
-            core?.logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
-            session.cancel()
-            core?.removeTcpFlow(flowId)
+            core?.logDebug("handleTcpFlow: missing remote endpoint; rejecting flow")
+            // Reject (close the claimed flow) rather than strand the app's
+            // connect — see `TcpFlowContext.applyPreOpenCleanup`.
+            ctx.applyPreReadyFailure()
             return true
         }
 
@@ -159,9 +208,9 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             let connection = factory(remoteHost, meta.remotePort, nwParams)
         else {
             core?.logDebug(
-                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session")
-            session.cancel()
-            core?.removeTcpFlow(flowId)
+                "handleTcpFlow: invalid remote port \(meta.remotePort); rejecting flow")
+            // Reject the claimed flow (no connection built) — as above.
+            ctx.applyPreReadyFailure()
             return true
         }
         ctx.connection = connection
@@ -182,7 +231,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             self.core?.logDebug(
                 "egress NWConnection timed out for tcp flow remote=\(remoteHost):\(self.meta.remotePort)"
             )
-            self.ctx.teardown?.applyConnectTimeout()
+            self.ctx.applyConnectTimeout()
         }
         timeoutWork = work
         flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(connectTimeoutMs)), execute: work)
@@ -213,12 +262,12 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     /// exists for) — see `TransparentProxyCore.collectMaintenanceKicksLocked`.
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
-        guard terminalDrainBackstop == nil, ctx.teardown?.isDone != true else { return }
+        guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.ctx.teardown?.isDone == false else { return }
+            guard let self, self.ctx.isDone == false else { return }
             self.core?.logDebug(
                 "tcp flow drain backstop fired; forcing teardown (peer not draining)")
-            self.ctx.teardown?.applyDrainBackstop()
+            self.ctx.applyDrainBackstop()
         }
         terminalDrainBackstop = work
         flowQueue.asyncAfter(
@@ -226,15 +275,11 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
-        // Strong self: the handler IS the lifetime anchor for the
-        // session. `handleTcpFlow` constructs the session and lets
-        // its local ref go out of scope; without this strong
-        // capture the session would deallocate and every later
-        // callback (promote, late-`.failed`, etc.) would no-op.
-        // The retain cycle (connection → handler → session →
-        // ctx.connection → connection) is broken by
-        // `cancelAndDetach()` on teardown, which sets the handler
-        // to nil.
+        // `[weak self]`: the registry owns the session (see the class doc),
+        // so the handler no longer needs to anchor it — and capturing
+        // strongly would re-create the connection → handler → session →
+        // ctx.connection → connection cycle this inversion removes.
+        //
         // No re-dispatch hop: NWConnection delivers this on the queue passed
         // to `start(queue:)` — which is `flowQueue` — so we're already
         // serialised here. Running `handleEgressState` directly (instead of
@@ -242,14 +287,13 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // in FIFO order with any timer armed on `flowQueue`, so a `.ready`
         // that arrives just before a connect/waiting deadline cancels that
         // timer BEFORE it fires — no reordering, no recovered-flow reset.
-        connection.stateUpdateHandler = { state in
-            self.handleEgressState(state)
+        connection.stateUpdateHandler = { [weak self] state in
+            self?.handleEgressState(state)
         }
         // Cache path viability so the post-wake reconcile can read a plain
         // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
-        // which leaks ~32B per read. Strong `self` for the same
-        // lifetime-anchor reason as `stateUpdateHandler`; the cycle is
-        // broken by `cancelAndDetach()` clearing both handlers.
+        // which leaks ~32B per read. `[weak self]` for the same reason as
+        // `stateUpdateHandler`.
         //
         // Assign DIRECTLY — do NOT re-dispatch via `flowQueue.async`.
         // NWConnection delivers this on the queue passed to `start(queue:)`,
@@ -259,8 +303,8 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // `checkWakeDeadPath` would land BEHIND the check, so the check
         // reads a stale `false` and resets a flow whose path just came back.
         // Direct assignment lands the value in FIFO order with the callback.
-        connection.viabilityUpdateHandler = { viable in
-            self.ctx.lastPathViable = viable
+        connection.viabilityUpdateHandler = { [weak self] viable in
+            self?.ctx.lastPathViable = viable
         }
     }
 
@@ -349,7 +393,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             core?.logDebug(
                 "egress NWConnection failed before flow opened: \(String(describing: error))"
             )
-            ctx.teardown?.applyPreReadyFailure()
+            ctx.applyPreReadyFailure()
         } else {
             core?.logDebug(
                 "egress NWConnection failed after flow opened: \(String(describing: error))"
@@ -398,7 +442,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 "egress NWConnection pre-ready waiting exceeded budget; failing fast "
                     + "remote=\(self.meta.remoteHost ?? "?"):\(self.meta.remotePort)"
             )
-            self.ctx.teardown?.applyPreReadyWaitingTimeout()
+            self.ctx.applyPreReadyWaitingTimeout()
         }
         waitingWork = work
         flowQueue.asyncAfter(
@@ -417,16 +461,16 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
         // instead of leaking the session, registry entry, and
         // connection slot.
         if egressReady {
-            ctx.teardown?.applyPostReadyFailure(nil)
+            ctx.applyPostReadyFailure(nil)
         } else {
-            ctx.teardown?.applyPreReadyFailure()
+            ctx.applyPreReadyFailure()
         }
     }
 
     private func applyPostReadyTeardown(error: NWError?) {
         waitingWork?.cancel()
         waitingWork = nil
-        ctx.teardown?.applyPostReadyFailure(error)
+        ctx.applyPostReadyFailure(error)
     }
 
     // MARK: - Phase: egress pump construction
@@ -491,7 +535,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 guard let self else { return }
                 if let error {
                     self.core?.logDebug("flow.open error after egress ready: \(error)")
-                    self.ctx.teardown?.applyFlowOpenFailure(error)
+                    self.ctx.applyFlowOpenFailure(error)
                     return
                 }
                 // Teardown may have raced ahead while flow.open
@@ -530,7 +574,7 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
                 session?.onClientEof()
             },
             onHardError: { [weak self] err in
-                self?.ctx.teardown?.applyReadHardError(err)
+                self?.ctx.applyReadHardError(err)
             }
         )
         let flowReadPump = TcpClientReadPump(
@@ -546,13 +590,12 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
     func armPromoteCallback() {
         guard let session = sessionHandle else { return }
         let flow = self.flow
-        // Weak self: the Rust session keeps this closure alive until
-        // session.cancel() runs, which doesn't happen on the
-        // cutover-happy-path (the forwarder's onTerminal just closes
-        // the flow + removeTcpFlow). Strong self here would pin the
-        // session past every other anchor, leaking flow + connection.
-        // The state handler's strong self is sufficient: if the
-        // connection is alive, session is alive, weak self resolves.
+        // Weak self: the Rust session holds this closure for its whole
+        // lifetime. A strong capture would make the Rust session's box pin
+        // the Swift session, defeating the registry-owns-the-session model
+        // (the session must die when `removeTcpFlow` drops it, not when Rust
+        // releases the box). Weak self resolves as long as the session is
+        // registered, which is exactly when a promote can still fire.
         session.registerPromoteCallback { [weak self] in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }

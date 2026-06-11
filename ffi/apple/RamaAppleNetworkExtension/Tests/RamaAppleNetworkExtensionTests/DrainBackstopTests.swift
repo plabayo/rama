@@ -72,12 +72,12 @@ final class DrainBackstopTests: XCTestCase {
             fx.session.ctx.terminalSignalled,
             "terminalSignalled must be set synchronously so the watchdog can observe it")
         XCTAssertFalse(
-            fx.session.teardown.isDone,
+            fx.session.ctx.isDone,
             "teardown must not fire before the backstop deadline")
 
         fx.drainFlowQueue(afterMs: 60)
 
-        XCTAssertTrue(fx.session.teardown.isDone, "backstop must force a full teardown")
+        XCTAssertTrue(fx.session.ctx.isDone, "backstop must force a full teardown")
         XCTAssertEqual(fx.conn.cancelCount, 1, "egress connection cancelled exactly once")
         XCTAssertNil(fx.session.ctx.connection, "connection slot nilled by applyFullTeardown")
     }
@@ -89,9 +89,9 @@ final class DrainBackstopTests: XCTestCase {
         fx.session.lingerCloseMs = 5
         // Graceful close wins first (client drained in time).
         fx.session.flowQueue.sync {
-            fx.session.ctx.teardown?.applyDrainedClose(wasOpened: true)
+            fx.session.ctx.applyDrainedClose(wasOpened: true)
         }
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
         let cancelsAfterGraceful = fx.conn.cancelCount
 
         fx.session.flowQueue.sync { fx.session.armTerminalDrainBackstop() }
@@ -108,7 +108,6 @@ final class DrainBackstopTests: XCTestCase {
         let flow = MockTcpFlow()
         let conn = MockNwConnection()
         let ctx = TcpFlowContext()
-        let teardown: TcpFlowTeardown
         let flowId: ObjectIdentifier
 
         init(core: TransparentProxyCore, ready: Bool, closing: Bool) {
@@ -116,12 +115,12 @@ final class DrainBackstopTests: XCTestCase {
             self.ctx.connection = conn
             self.ctx.egressReady = ready
             self.ctx.terminalSignalled = closing
-            self.teardown = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: flow, flowId: flowId)
-            self.ctx.teardown = teardown
+            self.ctx.flow = flow
+            self.ctx.core = core
+            self.ctx.flowId = flowId
         }
 
-        var wasTornDown: Bool { teardown.isDone }
+        var wasTornDown: Bool { ctx.isDone }
     }
 
     /// A post-`.ready` flow that signalled close but is still in the
@@ -175,7 +174,7 @@ final class DrainBackstopTests: XCTestCase {
         core.testRunPeriodicMaintenance()  // tick 1: record
         // Graceful close (or the per-flow backstop) wins; ctx leaves
         // the registry and the watchdog tracking set.
-        fx.ctx.teardown?.applyDrainedClose(wasOpened: true)
+        fx.ctx.applyDrainedClose(wasOpened: true)
         XCTAssertNil(core.testInspectTcpContext(for: fx.flow))
         XCTAssertFalse(core.testStuckClosingFlowIds.contains(fx.flowId))
         let cancels = fx.conn.cancelCount

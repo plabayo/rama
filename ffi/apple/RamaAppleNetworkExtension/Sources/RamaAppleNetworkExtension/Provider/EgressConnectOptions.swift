@@ -45,4 +45,25 @@ extension RamaTcpEgressConnectOptions {
     var egressEofGraceMs: UInt32? {
         has_egress_eof_grace_ms ? egress_eof_grace_ms : nil
     }
+
+    /// Whether to enable TCP keepalive. No `has_*` companion — Rust
+    /// always sends a meaningful value (default `true`).
+    var tcpKeepaliveEnabled: Bool {
+        tcp_keepalive_enabled
+    }
+
+    /// Keepalive idle period (s); `nil` ⇒ `defaultTcpKeepaliveIdleSec`.
+    var tcpKeepaliveIdleSec: Int? {
+        has_tcp_keepalive_idle_secs ? Int(tcp_keepalive_idle_secs) : nil
+    }
+
+    /// Keepalive probe interval (s); `nil` ⇒ `defaultTcpKeepaliveIntervalSec`.
+    var tcpKeepaliveIntervalSec: Int? {
+        has_tcp_keepalive_interval_secs ? Int(tcp_keepalive_interval_secs) : nil
+    }
+
+    /// Keepalive probe count; `nil` ⇒ `defaultTcpKeepaliveCount`.
+    var tcpKeepaliveCount: Int? {
+        has_tcp_keepalive_count ? Int(tcp_keepalive_count) : nil
+    }
 }

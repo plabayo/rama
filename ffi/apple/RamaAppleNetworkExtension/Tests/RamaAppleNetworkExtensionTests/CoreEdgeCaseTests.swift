@@ -332,13 +332,12 @@ final class CoreEdgeCaseTests: XCTestCase {
 
     // MARK: - Periodic flow-count reporting timer
 
-    /// The flow-count reporting timer is scheduled on attachEngine
-    /// and cancelled on detachEngine. Without explicit cancel-on-
-    /// detach, an attach/detach/attach sequence would leak a timer
-    /// per cycle. This test drives the sequence and confirms
-    /// detachEngine doesn't leak (the count test in
-    /// `CoreArcLeakSweepTests.testTcpHappyPath_NoLeaksAcrossEveryClass`
-    /// already passes; this is the unit-level version).
+    /// The flow-count reporting timer is scheduled on attachEngine and
+    /// cancelled on detachEngine. Without explicit cancel-on-detach, an
+    /// attach/detach/attach sequence would leak a timer per cycle. This
+    /// drives the sequence repeatedly; it catches a hard crash / double-cancel
+    /// regression (the idempotency-of-cleanup invariant) — there is no
+    /// directly-observable timer handle to assert on.
     func testAttachDetachCycleDoesNotLeakTimer() {
         let core = TransparentProxyCore()
         for _ in 0..<5 {

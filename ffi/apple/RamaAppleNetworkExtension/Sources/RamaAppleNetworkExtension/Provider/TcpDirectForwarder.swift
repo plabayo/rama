@@ -66,7 +66,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `drainStallDeadline` later: the peer stopped reading, so the
     /// `closeWhenDrained` completion never arrived and the forwarder
     /// would otherwise never reach `.finished`. Production routes this
-    /// to `ctx.teardown.applyDrainBackstop()` (a full teardown), the
+    /// to `ctx.applyDrainBackstop()` (a full teardown), the
     /// same reaper the `viaRust` backstop uses.
     private let onDrainStall: () -> Void
 

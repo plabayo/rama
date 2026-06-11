@@ -427,6 +427,31 @@ typedef struct {
     /// (`on_server_closed` → cancel) stalls because the originating
     /// app stopped reading from its NEAppProxyFlow.
     uint32_t egress_eof_grace_ms;
+    /// Enable TCP keepalive (NWProtocolTCP.Options.enableKeepalive). No
+    /// `has_` flag — always meaningful, defaults true. Self-heals a
+    /// silently-dead egress (sleep / VPN reset / NAT rebind leaving the
+    /// connection .ready over a black-holed path): failed probes surface
+    /// as .failed and the existing reaper handles it. Set false to opt out.
+    bool tcp_keepalive_enabled;
+    /// Whether `tcp_keepalive_idle_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_idle_secs;
+    /// Idle period (seconds) before the first keepalive probe
+    /// (NWProtocolTCP.Options.keepaliveIdle).
+    uint32_t tcp_keepalive_idle_secs;
+    /// Whether `tcp_keepalive_interval_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_interval_secs;
+    /// Interval (seconds) between keepalive probes after the first
+    /// (NWProtocolTCP.Options.keepaliveInterval).
+    uint32_t tcp_keepalive_interval_secs;
+    /// Whether `tcp_keepalive_count` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_count;
+    /// Number of unanswered probes before the connection is declared
+    /// dead (NWProtocolTCP.Options.keepaliveCount). Worst-case
+    /// time-to-detect a dead path ≈ idle + interval * count.
+    uint32_t tcp_keepalive_count;
 } RamaTcpEgressConnectOptions;
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's

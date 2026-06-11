@@ -65,37 +65,29 @@ protocol NwConnectionLike: AnyObject {
 extension NWConnection: NwConnectionLike {}
 
 extension NwConnectionLike {
-    /// Cancel the connection AND release its `stateUpdateHandler` in
-    /// one atomic-by-discipline step. The handler closure transitively
-    /// retains the per-flow context graph (kernel `NEAppProxyTCPFlow`,
-    /// `tearDownPostReady`, the per-flow `DispatchQueue`); leaving it
-    /// attached after `cancel()` pins that graph alive until Apple's
-    /// framework gets around to deallocating its `NWConnection`
-    /// internals — which observably does NOT happen for hundreds of
-    /// connections under sustained churn (heap audit: `__NWPath`,
-    /// `MutableParametersStorage`, `Endpoint.addressStorage` grow
-    /// unboundedly; kernel emits 4,390 `nw_path_necp_check_for_updates
-    /// Failed (22)` per 5 min of stress while polling NECP sessions
-    /// the kernel has already destroyed).
+    /// Cancel the connection AND release its `stateUpdateHandler` /
+    /// `viabilityUpdateHandler` in one step. Independently of object
+    /// lifetime, an attached handler keeps Apple's framework
+    /// `NWConnection` internals alive after `cancel()` — which observably
+    /// does NOT free for hundreds of connections under sustained churn
+    /// (heap audit: `__NWPath`, `MutableParametersStorage`,
+    /// `Endpoint.addressStorage` grow unboundedly; kernel emits 4,390
+    /// `nw_path_necp_check_for_updates Failed (22)` per 5 min of stress
+    /// while polling NECP sessions the kernel has already destroyed).
+    /// Detaching first releases that framework-internal graph promptly.
     ///
-    /// Dropping the handler before `cancel()` also suppresses Apple's
-    /// final `.cancelled` callback. None of the production teardown
-    /// paths depend on observing it — they already pivot to
-    /// `.cancelled` on the synchronous initiator side via
-    /// `ctx.connection = nil` and registry removal.
+    /// Dropping the handlers before `cancel()` also suppresses Apple's
+    /// final `.cancelled` callback. No production teardown path depends on
+    /// observing it — they pivot to terminal on the synchronous initiator
+    /// side via `ctx.connection = nil` and registry removal.
     ///
-    /// **Use everywhere a teardown path cancels an egress connection
-    /// in this crate**. Plain `cancel()` is for protocol conformance;
-    /// production code paths go through `TcpFlowTeardown` which
-    /// nils `ctx.connection` after each call for idempotency, so the
-    /// "already cancelled" log noise (1,177 events / 5 min of stress
-    /// pre-fix) stays at zero.
+    /// **Use everywhere a teardown path cancels an egress connection in
+    /// this crate**. Plain `cancel()` is for protocol conformance; the
+    /// per-flow teardown (`TcpFlowContext.applyX`) nils `ctx.connection`
+    /// after each call for idempotency, so the "already cancelled" log
+    /// noise (1,177 events / 5 min of stress pre-fix) stays at zero.
     func cancelAndDetach() {
         self.stateUpdateHandler = nil
-        // Drop the viability handler too — it strongly captures the same
-        // per-flow session graph as `stateUpdateHandler`, so leaving it
-        // attached would re-introduce the retain cycle this method exists
-        // to break.
         self.viabilityUpdateHandler = nil
         self.cancel()
     }

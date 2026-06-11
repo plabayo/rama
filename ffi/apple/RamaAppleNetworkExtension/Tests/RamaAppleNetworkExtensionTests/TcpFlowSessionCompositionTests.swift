@@ -39,19 +39,22 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
     func testConnectTimeoutThenLateReadyIsIdempotent() {
         let fx = Fixture()
         // Simulate the timeout fire path directly.
-        fx.session.ctx.teardown?.applyConnectTimeout()
+        fx.session.ctx.applyConnectTimeout()
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
 
         // Now a stale .ready lands.
         fx.session.handleEgressReady(connection: fx.conn)
 
         // `egressReady` flips locally (the session has no idea the
-        // teardown ran), but no extra cancel and the kernel flow
-        // stays untouched because the session lacks a sessionHandle.
+        // teardown ran), but the stale .ready adds no extra cancel and no
+        // extra flow close: the connect-timeout already rejected the
+        // claimed flow (closeReadCallCount == 1), and the late .ready is a
+        // no-op because the session lacks a sessionHandle.
         XCTAssertTrue(fx.session.egressReady)
         XCTAssertEqual(fx.conn.cancelCount, 1, "no double-cancel from stale .ready")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "connect timeout rejected the flow; stale .ready adds nothing")
     }
 
     /// `.ready` → `.waiting` → `.ready` recovery clears the
@@ -85,7 +88,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
 
         fx.session.handleEgressFailed(nil)
 
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready failure closed the flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
         XCTAssertTrue(tolerance?.isCancelled ?? false, "tolerance timer cancelled by failure")
@@ -93,7 +96,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
 
     /// Two `.failed` state callbacks in a row — only the first
     /// runs teardown; the second is a no-op via the sticky `done`
-    /// flag on `TcpFlowTeardown`.
+    /// flag on `TcpFlowContext`.
     func testTwoFailedCallbacksOnlyFirstRunsTeardown() {
         let fx = Fixture()
         fx.session.egressReady = true
@@ -124,7 +127,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
     /// the first effective; idempotency holds across variants.
     func testTwoTeardownVariantsAreIdempotent() {
         let fx = Fixture()
-        fx.session.ctx.teardown?.applyConnectTimeout()
+        fx.session.ctx.applyConnectTimeout()
         XCTAssertEqual(fx.conn.cancelCount, 1)
 
         // Pretending a post-ready failure raced in.
@@ -132,6 +135,8 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
         fx.session.handleEgressFailed(nil)
 
         XCTAssertEqual(fx.conn.cancelCount, 1, "second teardown variant is a no-op")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "first teardown was pre-open; flow stays untouched")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1,
+            "first teardown (pre-open) rejected the flow once; the second variant is a no-op")
     }
 }

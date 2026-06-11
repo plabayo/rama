@@ -2,7 +2,7 @@ use std::{
     future::Future,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -1098,7 +1098,44 @@ where
     let ingress_reason_cell = ingress_close_reason.clone();
     let egress_reason_cell = egress_close_reason.clone();
     let idle_guard = flow_guard.clone();
+
+    // Leak probe: a live gauge of per-flow bridge tasks. The task owns the
+    // bridge (and thus the egress `NwTcpStream` → NWConnection); if a task
+    // fails to terminate (e.g. a promoted/passthrough close edge), the
+    // NWConnection it holds leaks. `tcpFlowCount` (the Swift registry) can't
+    // surface this because the flow is removed from the registry on close
+    // while the task lingers. RAII so the decrement fires on EVERY exit path;
+    // debug-level so there is no production noise and the cost is one relaxed
+    // atomic per flow. Count `task started` vs `task ended` over a burst, or
+    // watch `live_tcp_flow_tasks` not return to baseline, to catch the leak.
+    static LIVE_TCP_FLOW_TASKS: AtomicUsize = AtomicUsize::new(0);
+    struct TcpFlowTaskGuard;
+    impl TcpFlowTaskGuard {
+        fn new() -> Self {
+            let n = LIVE_TCP_FLOW_TASKS.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                live_tcp_flow_tasks = n,
+                "tcp flow bridge task started",
+            );
+            Self
+        }
+    }
+    impl Drop for TcpFlowTaskGuard {
+        fn drop(&mut self) {
+            let n = LIVE_TCP_FLOW_TASKS
+                .fetch_sub(1, Ordering::Relaxed)
+                .saturating_sub(1);
+            tracing::debug!(
+                target: "rama_apple_ne::tproxy",
+                live_tcp_flow_tasks = n,
+                "tcp flow bridge task ended",
+            );
+        }
+    }
+
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
+        let _task_guard = TcpFlowTaskGuard::new();
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before `activate`. Emit a synthetic close so
             // every `record_flow_opened` has a matching close in the
