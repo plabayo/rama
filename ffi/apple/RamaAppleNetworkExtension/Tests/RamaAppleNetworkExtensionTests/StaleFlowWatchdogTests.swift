@@ -28,17 +28,13 @@ import XCTest
 /// production 60s interval.
 final class StaleFlowWatchdogTests: XCTestCase {
 
-    /// Lightweight fixture: a core, a `MockTcpFlow`, a
-    /// `MockNwConnection`, a `TcpFlowContext` wired to a real
-    /// `TcpFlowContext`. The `applyConnectTimeout` runs
-    /// `applyPreOpenCleanup`, which (since the kernel flow was never
-    /// opened yet) only cancels the egress NWConnection, nils the
-    /// connection slot, and removes the ctx from the registry. So
-    /// `conn.cancelCount == 1`, `ctx.connection == nil`, and
-    /// `teardown.isDone == true` are the load-bearing signals that
-    /// the watchdog fired on that ctx. The kernel flow's
-    /// `closeRead/WriteWithError` are intentionally NOT called by
-    /// pre-open teardown — there's no opened flow to close.
+    /// Lightweight fixture: a core, a `MockTcpFlow`, a `MockNwConnection`,
+    /// and a `TcpFlowContext` wired for teardown. The watchdog fires the
+    /// context's `applyConnectTimeout` → `applyPreOpenCleanup`, which rejects
+    /// the claimed (never-opened) flow, cancels the egress NWConnection, nils
+    /// the connection slot, and removes the ctx from the registry. So
+    /// `conn.cancelCount == 1`, `ctx.connection == nil`, and `ctx.isDone`
+    /// are the load-bearing signals that the watchdog fired on that ctx.
     private final class TcpFx {
         let flow: MockTcpFlow
         let conn: MockNwConnection

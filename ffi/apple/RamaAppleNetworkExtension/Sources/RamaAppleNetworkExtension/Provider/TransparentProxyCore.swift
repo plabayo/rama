@@ -724,10 +724,9 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // A finishing direction's drain wedged (peer stopped
                 // reading). Route through the shared full-teardown reaper
                 // — cancels the write pumps, closes the kernel flow,
-                // cancels + detaches the egress NWConnection (breaking the
-                // connection→handler→session retain cycle), cancels the
+                // cancels + detaches the egress NWConnection, cancels the
                 // forwarder, and drops the registry entry. Idempotent via
-                // the teardown's sticky `done`.
+                // the sticky `isDone`.
                 ctx?.applyDrainBackstop()
             },
             onTerminal: { [weak ctx] in

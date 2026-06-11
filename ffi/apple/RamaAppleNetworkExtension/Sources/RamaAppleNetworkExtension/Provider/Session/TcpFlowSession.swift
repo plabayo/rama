@@ -64,15 +64,32 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     deinit {
         // Backstop: the registry is this session's sole owner, so we land
-        // here once `removeTcpFlow` drops it. If no teardown cancelled the
-        // egress connection first (`ctx.connection` still set), cancel it
-        // now so the `NWConnection` + its NECP entry can't outlive us.
-        // After a normal teardown `ctx.connection` is already nil, so this
-        // is a no-op — and `cancel()` is idempotent regardless. Promoted
-        // teardown intentionally hands the connection to the egress write
-        // pump's linger watchdog and nils `ctx.connection`, so this does
-        // not clip that FIN.
-        ctx.connection?.cancel()
+        // here once it drops us. If no teardown cancelled the egress
+        // connection first, cancel it so the `NWConnection` + its NECP entry
+        // can't outlive us.
+        //
+        // Touch `ctx.connection` ON `flowQueue`, not on whatever thread
+        // released us. `removeTcpFlow` (the common path) is `stateQueue.async`
+        // AFTER the teardown already nilled `connection` on `flowQueue`, so a
+        // direct touch would be a safe no-op there — but `detachEngine` drops
+        // the registry ref via a synchronous `removeAll()` on `stateQueue`
+        // while that flow's `applyEngineDetached` is still queued on
+        // `flowQueue`, and touching `connection` here would race that write.
+        // Hopping keeps the access confined and FIFO-ordered after any queued
+        // teardown (which nils `connection`, making this a no-op).
+        // `cancelAndDetach` also drops the handlers so no stale `.cancelled`
+        // callback fires in the gap. Capture `ctx` (not `self`) so it outlives
+        // the deinit; engine-less test contexts with no `flowQueue` cancel
+        // inline (single-threaded, no race).
+        let ctx = self.ctx
+        if let queue = ctx.flowQueue {
+            queue.async {
+                ctx.connection?.cancelAndDetach()
+                ctx.connection = nil
+            }
+        } else {
+            ctx.connection?.cancelAndDetach()
+        }
     }
 
     /// Entry point. Returns `true` if the flow was claimed
@@ -573,13 +590,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func armPromoteCallback() {
         guard let session = sessionHandle else { return }
         let flow = self.flow
-        // Weak self: the Rust session keeps this closure alive until
-        // session.cancel() runs, which doesn't happen on the
-        // cutover-happy-path (the forwarder's onTerminal just closes
-        // the flow + removeTcpFlow). Strong self here would pin the
-        // session past every other anchor, leaking flow + connection.
-        // The state handler's strong self is sufficient: if the
-        // connection is alive, session is alive, weak self resolves.
+        // Weak self: the Rust session holds this closure for its whole
+        // lifetime. A strong capture would make the Rust session's box pin
+        // the Swift session, defeating the registry-owns-the-session model
+        // (the session must die when `removeTcpFlow` drops it, not when Rust
+        // releases the box). Weak self resolves as long as the session is
+        // registered, which is exactly when a promote can still fire.
         session.registerPromoteCallback { [weak self] in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }

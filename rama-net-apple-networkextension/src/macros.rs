@@ -726,14 +726,17 @@ macro_rules! __transparent_proxy_ffi_emit {
                 // false) let Swift apply its own defaults.
                 tcp_keepalive_enabled: opts.tcp_keepalive_enabled,
                 has_tcp_keepalive_idle_secs: opts.tcp_keepalive_idle.is_some(),
+                // Round up to whole seconds (the NW API's unit): a sub-second
+                // override must not floor to 0 and silently override Swift's
+                // default with a degenerate value.
                 tcp_keepalive_idle_secs: opts
                     .tcp_keepalive_idle
-                    .map(|d| d.as_secs() as u32)
+                    .map(|d| d.as_millis().div_ceil(1000) as u32)
                     .unwrap_or(0),
                 has_tcp_keepalive_interval_secs: opts.tcp_keepalive_interval.is_some(),
                 tcp_keepalive_interval_secs: opts
                     .tcp_keepalive_interval
-                    .map(|d| d.as_secs() as u32)
+                    .map(|d| d.as_millis().div_ceil(1000) as u32)
                     .unwrap_or(0),
                 has_tcp_keepalive_count: opts.tcp_keepalive_count.is_some(),
                 tcp_keepalive_count: opts.tcp_keepalive_count.unwrap_or(0),

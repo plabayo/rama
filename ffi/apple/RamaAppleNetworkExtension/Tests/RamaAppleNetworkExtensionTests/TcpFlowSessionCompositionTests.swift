@@ -96,7 +96,7 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
 
     /// Two `.failed` state callbacks in a row — only the first
     /// runs teardown; the second is a no-op via the sticky `done`
-    /// flag on `TcpFlowTeardown`.
+    /// flag on `TcpFlowContext`.
     func testTwoFailedCallbacksOnlyFirstRunsTeardown() {
         let fx = Fixture()
         fx.session.egressReady = true
