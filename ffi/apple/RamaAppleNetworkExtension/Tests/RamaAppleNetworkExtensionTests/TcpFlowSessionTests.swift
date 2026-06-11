@@ -167,7 +167,8 @@ final class TcpFlowSessionTests: XCTestCase {
 
         XCTAssertTrue(timeout.isCancelled, "connect timer must be invalidated")
         XCTAssertTrue(fx.session.teardown.isDone, "teardown fired exactly once")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-ready failure does NOT touch the kernel flow")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed (unopened) flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
@@ -193,7 +194,8 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.teardown.isDone, "connect timeout must tear the flow down")
         XCTAssertEqual(fx.conn.cancelCount, 1, "stale connect connection must be cancelled")
         XCTAssertNil(fx.session.ctx.connection, "connection slot cleared on connect timeout")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "connect timeout rejects the claimed (unopened) flow")
     }
 
     /// A `.ready` arriving before the connect deadline flips `egressReady`,
@@ -280,7 +282,7 @@ final class TcpFlowSessionTests: XCTestCase {
     }
 
     /// An EXTERNAL `.cancelled` before `.ready` tears the flow down via
-    /// the pre-open path (connection cancelled, kernel flow untouched).
+    /// the pre-open path (connection cancelled, claimed flow rejected).
     /// Self-initiated cancels never reach here (cancelAndDetach nils the
     /// handler), so a `.cancelled` that does arrive must not leak.
     func testHandleEgressCancelledPreReadyTearsDownPreOpen() {
@@ -289,7 +291,8 @@ final class TcpFlowSessionTests: XCTestCase {
         fx.session.handleEgressCancelled()
         XCTAssertTrue(fx.session.teardown.isDone, "external pre-ready cancel must tear down")
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "pre-open teardown rejects the claimed (unopened) flow")
     }
 
     /// An EXTERNAL `.cancelled` after `.ready` runs the full teardown

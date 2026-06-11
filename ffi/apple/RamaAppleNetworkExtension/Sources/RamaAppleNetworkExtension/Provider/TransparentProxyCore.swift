@@ -790,9 +790,10 @@ final class TransparentProxyCore: @unchecked Sendable {
 #if DEBUG
     /// Stub anchor used by `testInsertUdpContext` — wraps a bare
     /// `UdpFlowContext` so the production registry's
-    /// `UdpFlowSessionAnchor` invariant holds in tests that drive
-    /// registry-walk code paths (`handleSystemSleep`,
-    /// `detachEngine`) without spinning up a full session.
+    /// `UdpFlowSessionAnchor` invariant holds in tests that drive the
+    /// `detachEngine` registry walk without spinning up a full session.
+    /// (System sleep no longer iterates the registry — it just stops the
+    /// telemetry timer and notifies the engine.)
     final class _TestUdpFlowSessionAnchor: UdpFlowSessionAnchor {
         let ctx: UdpFlowContext
         init(ctx: UdpFlowContext) { self.ctx = ctx }

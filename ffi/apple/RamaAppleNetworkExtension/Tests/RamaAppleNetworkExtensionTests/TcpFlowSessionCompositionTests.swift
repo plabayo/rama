@@ -47,11 +47,14 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
         fx.session.handleEgressReady(connection: fx.conn)
 
         // `egressReady` flips locally (the session has no idea the
-        // teardown ran), but no extra cancel and the kernel flow
-        // stays untouched because the session lacks a sessionHandle.
+        // teardown ran), but the stale .ready adds no extra cancel and no
+        // extra flow close: the connect-timeout already rejected the
+        // claimed flow (closeReadCallCount == 1), and the late .ready is a
+        // no-op because the session lacks a sessionHandle.
         XCTAssertTrue(fx.session.egressReady)
         XCTAssertEqual(fx.conn.cancelCount, 1, "no double-cancel from stale .ready")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "connect timeout rejected the flow; stale .ready adds nothing")
     }
 
     /// `.ready` → `.waiting` → `.ready` recovery clears the
@@ -132,6 +135,8 @@ final class TcpFlowSessionCompositionTests: XCTestCase {
         fx.session.handleEgressFailed(nil)
 
         XCTAssertEqual(fx.conn.cancelCount, 1, "second teardown variant is a no-op")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "first teardown was pre-open; flow stays untouched")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1,
+            "first teardown (pre-open) rejected the flow once; the second variant is a no-op")
     }
 }

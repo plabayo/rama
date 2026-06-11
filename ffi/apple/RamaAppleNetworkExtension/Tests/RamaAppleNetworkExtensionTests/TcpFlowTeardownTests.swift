@@ -96,31 +96,36 @@ final class TcpFlowTeardownTests: XCTestCase {
     // MARK: - Pre-open variants
 
     /// `applyPreReadyFailure` runs in the egress-connection-failed-
-    /// before-`.ready` path. The kernel flow has not been opened
-    /// (`flow.open` was never called), so calling
-    /// `closeReadWithError` would be premature. Verify the
-    /// pre-open variants leave the flow alone.
-    func testApplyPreReadyFailureLeavesFlowUntouched() {
+    /// before-`.ready` path. The kernel flow has not been opened, but we
+    /// DID claim it (`handleNewFlow` returned `true`), so per Apple's
+    /// `NEAppProxyFlow` contract it must be opened or closed — dropping it
+    /// unopened strands the app's `connect()`. Reject it by closing with
+    /// the `upstreamUnavailable` error (same mechanism as the `blocked`
+    /// path) so the app fails fast and can retry.
+    func testApplyPreReadyFailureRejectsUnopenedFlow() {
         let fx = Fixture()
 
         fx.teardown.applyPreReadyFailure()
 
         XCTAssertTrue(fx.teardown.isDone)
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-ready failure must not touch the flow")
-        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed flow")
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertNotNil(
+            fx.flow.lastCloseReadError,
+            "rejecting an unopened flow closes with a non-nil error so the app sees a failure")
         XCTAssertEqual(fx.conn.cancelCount, 1, "the egress connection still gets cancelled")
         XCTAssertNil(fx.ctx.connection, "ctx.connection is nilled for racing teardown paths")
     }
 
     /// Symmetric of `applyPreReadyFailure` — connect-timeout fires
     /// in the same pre-ready window, same cleanup shape.
-    func testApplyConnectTimeoutLeavesFlowUntouched() {
+    func testApplyConnectTimeoutRejectsUnopenedFlow() {
         let fx = Fixture()
 
         fx.teardown.applyConnectTimeout()
 
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
-        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
@@ -220,13 +225,13 @@ final class TcpFlowTeardownTests: XCTestCase {
         let fx = Fixture()
 
         fx.teardown.applyPreReadyFailure()
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
 
         fx.teardown.applyPostReadyFailure(NSError(domain: "late", code: 1))
 
         XCTAssertEqual(
-            fx.flow.closeReadCallCount, 0, "second variant must not run; flow stays untouched")
+            fx.flow.closeReadCallCount, 1, "second variant must not run; flow not closed again")
         XCTAssertEqual(fx.conn.cancelCount, 1, "connection cancel does not double-fire")
     }
 }

@@ -51,8 +51,8 @@ final class TcpFlowTeardown: @unchecked Sendable {
     // MARK: - Pre-open terminal states
 
     /// Egress NWConnection went to `.failed` before reaching
-    /// `.ready`. No kernel flow open, no pumps wired. The minimal
-    /// cleanup: cancel + detach the connection, cancel the
+    /// `.ready`. No kernel flow open, no pumps wired. Reject the
+    /// claimed flow, cancel + detach the connection, cancel the
     /// session, remove from the registry.
     func applyPreReadyFailure() {
         applyPreOpenCleanup()
@@ -77,11 +77,26 @@ final class TcpFlowTeardown: @unchecked Sendable {
         applyPreOpenCleanup()
     }
 
-    /// Shared body for the two pre-open shapes: nothing was
-    /// queued, nothing to drain, no pumps to cancel.
+    /// Shared body for the pre-open shapes: nothing was queued, nothing
+    /// to drain, no pumps to cancel.
+    ///
+    /// Closes the kernel flow with an error. We returned `true` from
+    /// `handleNewFlow` — claiming the flow — but never reached
+    /// `flow.open()`. Per Apple's `NEAppProxyFlow` contract a claimed
+    /// flow MUST be opened or closed; dropping it unopened strands the
+    /// originating app's `connect()` until the app's own (often 30–75 s)
+    /// timeout. Rejecting it here (the same mechanism the `blocked` path
+    /// uses for an unopened flow) makes the app's connect fail fast so it
+    /// can retry. This is especially load-bearing for `applySystemWake`:
+    /// a flow still connecting across a network-changing sleep is reaped
+    /// post-wake and the app reconnects over the live path instead of
+    /// freezing.
     private func applyPreOpenCleanup() {
         guard !done else { return }
         done = true
+        let err = tcpUpstreamUnavailableError()
+        flow.closeReadWithError(err)
+        flow.closeWriteWithError(err)
         ctx?.connection?.cancelAndDetach()
         ctx?.connection = nil
         ctx?.session?.cancel()

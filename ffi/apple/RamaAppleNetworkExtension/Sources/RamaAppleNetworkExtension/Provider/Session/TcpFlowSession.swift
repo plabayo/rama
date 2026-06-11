@@ -135,9 +135,11 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
 
     func startEgressConnection(session: RamaTcpSessionHandle) -> Bool {
         guard let remoteHost = meta.remoteHost, meta.remotePort > 0 else {
-            core?.logDebug("handleTcpFlow: missing remote endpoint; cancelling session")
-            session.cancel()
-            core?.removeTcpFlow(flowId)
+            core?.logDebug("handleTcpFlow: missing remote endpoint; rejecting flow")
+            // Reject via the shared pre-open path so the claimed-but-never-
+            // opened kernel flow is closed (app's connect fails fast) rather
+            // than stranded — see `TcpFlowTeardown.applyPreOpenCleanup`.
+            ctx.teardown?.applyPreReadyFailure()
             return true
         }
 
@@ -159,9 +161,10 @@ final class TcpFlowSession<F: TcpFlowLike>: @unchecked Sendable {
             let connection = factory(remoteHost, meta.remotePort, nwParams)
         else {
             core?.logDebug(
-                "handleTcpFlow: invalid remote port \(meta.remotePort); cancelling session")
-            session.cancel()
-            core?.removeTcpFlow(flowId)
+                "handleTcpFlow: invalid remote port \(meta.remotePort); rejecting flow")
+            // Same as the missing-endpoint guard: reject the claimed flow
+            // rather than strand it (no connection was built).
+            ctx.teardown?.applyPreReadyFailure()
             return true
         }
         ctx.connection = connection

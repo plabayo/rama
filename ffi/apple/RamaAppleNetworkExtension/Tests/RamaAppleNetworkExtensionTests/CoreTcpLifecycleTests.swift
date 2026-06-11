@@ -268,7 +268,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
     // MARK: - Pre-ready waiting (path down at connect)
 
     /// `.waiting` that never reaches `.ready` fails fast on the budget
-    /// (pre-open shape: connection cancelled, kernel flow untouched).
+    /// (pre-open shape: connection cancelled, claimed flow rejected so the
+    /// app's connect fails fast instead of stranding).
     func testPreReadyWaitingFailsFastWithinBudget() {
         let savedBudget = defaultEgressPreReadyWaitingBudgetMs
         defaultEgressPreReadyWaitingBudgetMs = 200
@@ -290,8 +291,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1, "stale connect must be cancelled")
         XCTAssertFalse(flow.openWasInvoked, "flow.open must not be called on a failed connect")
         XCTAssertEqual(
-            flow.closeReadCallCount, 0,
-            "pre-open teardown does not touch the kernel flow (parity with connect-timeout)"
+            flow.closeReadCallCount, 1,
+            "pre-open teardown rejects the claimed (unopened) flow so the app's connect fails fast"
         )
     }
 

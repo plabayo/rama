@@ -225,11 +225,13 @@ let writeRetryMaxDelayMs: Int = 200
 /// milliseconds without a successful write the pump tears down,
 /// regardless of how short each individual retry was. Without a hard
 /// deadline, sustained kernel-buffer pressure on a flow whose calling
-/// app has effectively died keeps the retry loop spinning indefinitely
-/// — the loop's `asyncAfter` strongly captures the pump, so it pins
-/// itself alive until the kernel finally returns a non-transient
-/// error. 5 s is enough to ride out a real h2 stall while bounding
-/// the worst-case wedge.
+/// app has effectively died keeps the retry loop spinning indefinitely:
+/// the retry `asyncAfter` is `[weak self]`, so a *deallocated* pump stops
+/// on its own — but while the per-flow ctx is still registered it holds
+/// the pump strongly, so a registered-but-app-dead flow would re-arm the
+/// retry forever, waiting on a non-transient error the dead app may never
+/// produce promptly. The deadline bounds that. 5 s is enough to ride out
+/// a real h2 stall while bounding the worst-case wedge.
 ///
 /// `var` for tests that need a short deadline to keep runtime bounded
 /// — same pattern as `defaultLingerCloseMs` / `defaultEgressWaitingToleranceMs`.
