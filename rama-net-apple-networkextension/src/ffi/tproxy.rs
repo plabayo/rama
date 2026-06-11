@@ -468,6 +468,30 @@ pub struct TcpEgressConnectOptions {
     /// connection. See
     /// [`crate::tproxy::NwTcpConnectOptions::egress_eof_grace`].
     pub egress_eof_grace_ms: u32,
+    /// Whether the egress `NWConnection` should enable TCP keepalive
+    /// (`NWProtocolTCP.Options.enableKeepalive`). Unlike the optional
+    /// timing fields below, this carries no `has_` flag: it is always
+    /// meaningful and **defaults to `true`** on the Rust side. See
+    /// [`crate::tproxy::NwTcpConnectOptions::tcp_keepalive_enabled`].
+    pub tcp_keepalive_enabled: bool,
+    /// Whether `tcp_keepalive_idle_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_tcp_keepalive_idle_secs: bool,
+    /// Idle period (seconds) before the first keepalive probe
+    /// (`NWProtocolTCP.Options.keepaliveIdle`).
+    pub tcp_keepalive_idle_secs: u32,
+    /// Whether `tcp_keepalive_interval_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_tcp_keepalive_interval_secs: bool,
+    /// Interval (seconds) between keepalive probes after the first
+    /// (`NWProtocolTCP.Options.keepaliveInterval`).
+    pub tcp_keepalive_interval_secs: u32,
+    /// Whether `tcp_keepalive_count` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    pub has_tcp_keepalive_count: bool,
+    /// Number of unanswered probes before the connection is declared
+    /// dead (`NWProtocolTCP.Options.keepaliveCount`).
+    pub tcp_keepalive_count: u32,
 }
 
 /// Callbacks passed to

@@ -427,6 +427,39 @@ typedef struct {
     /// (`on_server_closed` → cancel) stalls because the originating
     /// app stopped reading from its NEAppProxyFlow.
     uint32_t egress_eof_grace_ms;
+    /// Whether the egress NWConnection should enable TCP keepalive
+    /// (NWProtocolTCP.Options.enableKeepalive). Carries no `has_` flag —
+    /// it is always meaningful and DEFAULTS TO true on the Rust side.
+    ///
+    /// Keepalive is the transport-layer self-heal for a silently-dead
+    /// egress: after a network-changing sleep / VPN reset / NAT rebind an
+    /// established connection can stay locally .ready over an upstream
+    /// path that is actually black-holed — NW emits neither .waiting nor
+    /// .failed and viability never reports false, so the per-flow reapers
+    /// never fire. Keepalive probes fail on a dead path → NWConnection
+    /// .failed → the existing post-ready reaper tears it down → the
+    /// client reconnects. Healthy peers answer the probes (no false
+    /// positives). Set false to opt out.
+    bool tcp_keepalive_enabled;
+    /// Whether `tcp_keepalive_idle_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_idle_secs;
+    /// Idle period (seconds) before the first keepalive probe
+    /// (NWProtocolTCP.Options.keepaliveIdle).
+    uint32_t tcp_keepalive_idle_secs;
+    /// Whether `tcp_keepalive_interval_secs` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_interval_secs;
+    /// Interval (seconds) between keepalive probes after the first
+    /// (NWProtocolTCP.Options.keepaliveInterval).
+    uint32_t tcp_keepalive_interval_secs;
+    /// Whether `tcp_keepalive_count` carries a meaningful value;
+    /// `false` ⇒ Swift uses its built-in default.
+    bool has_tcp_keepalive_count;
+    /// Number of unanswered probes before the connection is declared
+    /// dead (NWProtocolTCP.Options.keepaliveCount). Worst-case
+    /// time-to-detect a dead path ≈ idle + interval * count.
+    uint32_t tcp_keepalive_count;
 } RamaTcpEgressConnectOptions;
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's

@@ -820,7 +820,18 @@ final class RamaTcpSessionHandle {
             has_linger_close_ms: false,
             linger_close_ms: 0,
             has_egress_eof_grace_ms: false,
-            egress_eof_grace_ms: 0
+            egress_eof_grace_ms: 0,
+            // Keepalive defaults: enabled, timings unset (Swift applies
+            // its own). This struct is only the scratch buffer the FFI
+            // call fills; the values here are overwritten when the
+            // handler supplied custom options (hasCustom == true).
+            tcp_keepalive_enabled: true,
+            has_tcp_keepalive_idle_secs: false,
+            tcp_keepalive_idle_secs: 0,
+            has_tcp_keepalive_interval_secs: false,
+            tcp_keepalive_interval_secs: 0,
+            has_tcp_keepalive_count: false,
+            tcp_keepalive_count: 0
         )
         let hasCustom = rama_transparent_proxy_tcp_session_get_egress_connect_options(s, &opts)
         return hasCustom ? opts : nil

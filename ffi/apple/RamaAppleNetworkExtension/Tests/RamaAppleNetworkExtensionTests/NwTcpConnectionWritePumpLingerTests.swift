@@ -219,6 +219,68 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
     }
 
+    /// Regression (promoted-teardown NWConnection leak): when
+    /// `closeWhenDrained` is called on a pump whose core is ALREADY
+    /// closed — e.g. an external `cancel()` raced the graceful drain, or
+    /// a terminal error closed the core first — `beginDraining` no-ops,
+    /// so NO FIN is sent and the FIN→linger watchdog (which normally owns
+    /// cancelling the connection) is never armed.
+    ///
+    /// `.promoted` teardown (`TcpFlowTeardown.applyPromotedTerminal`)
+    /// deliberately does NOT cancel the egress connection — it delegates
+    /// that to this pump's linger watchdog so an in-flight graceful FIN
+    /// isn't clipped. But on this already-closed fast path no watchdog
+    /// exists, so without cancelling here the `NWConnection` (and the
+    /// whole per-flow graph anchored by its `stateUpdateHandler`) leaked
+    /// inside Network.framework until process exit. The fast path must
+    /// force-cancel the connection while still firing the callback so the
+    /// forwarder's state machine can't wedge.
+    func testCloseWhenDrainedOnAlreadyClosedCoreForceCancels() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let drained = expectation(description: "closeWhenDrained callback fired")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(300),
+            onDrained: {}
+        )
+
+        // Close the core WITHOUT cancelling the connection — exactly what
+        // `pump.cancel()` does (the connection cancel is normally the
+        // teardown caller's responsibility, but promoted teardown
+        // delegates it to this pump).
+        pump.cancel()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "precondition: pump.cancel() alone does not cancel the connection"
+        )
+
+        // The graceful close now arrives on an already-closed core → the
+        // `isClosed()` fast path. It must force-cancel the connection AND
+        // fire the callback.
+        pump.closeWhenDrained { drained.fulfill() }
+        wait(for: [drained], timeout: 2.0)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "closeWhenDrained on an already-closed core must force-cancel the connection so the promoted-teardown path can't leak it"
+        )
+        XCTAssertEqual(
+            mock.sentChunks.count, 0,
+            "no FIN is possible on an already-closed core"
+        )
+
+        // Past the would-be linger deadline: still exactly one cancel
+        // (no watchdog was armed; cancelAndDetach is idempotent).
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
+    }
+
     func testDrainOnNonReadyConnectionForceCancelsInsteadOfLeaking() {
         let mock = MockNwConnection()
         mock.transition(to: .preparing)

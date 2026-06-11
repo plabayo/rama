@@ -45,4 +45,35 @@ extension RamaTcpEgressConnectOptions {
     var egressEofGraceMs: UInt32? {
         has_egress_eof_grace_ms ? egress_eof_grace_ms : nil
     }
+
+    /// Whether the egress `NWConnection` should enable TCP
+    /// keepalive. Unlike the other fields this is NOT optional —
+    /// the FFI struct always carries a meaningful value (Rust
+    /// defaults it to `true`), so there is no `has_*` companion.
+    /// A non-negated accessor is kept for symmetry / call-site
+    /// readability. See `applyTcpKeepalive`.
+    var tcpKeepaliveEnabled: Bool {
+        tcp_keepalive_enabled
+    }
+
+    /// Idle period (seconds) before the first keepalive probe.
+    /// `nil` when the engine didn't set one (caller falls back
+    /// to `defaultTcpKeepaliveIdleSec`).
+    var tcpKeepaliveIdleSec: Int? {
+        has_tcp_keepalive_idle_secs ? Int(tcp_keepalive_idle_secs) : nil
+    }
+
+    /// Interval (seconds) between keepalive probes after the
+    /// first. `nil` ⇒ caller falls back to
+    /// `defaultTcpKeepaliveIntervalSec`.
+    var tcpKeepaliveIntervalSec: Int? {
+        has_tcp_keepalive_interval_secs ? Int(tcp_keepalive_interval_secs) : nil
+    }
+
+    /// Number of unanswered probes before the connection is
+    /// declared dead. `nil` ⇒ caller falls back to
+    /// `defaultTcpKeepaliveCount`.
+    var tcpKeepaliveCount: Int? {
+        has_tcp_keepalive_count ? Int(tcp_keepalive_count) : nil
+    }
 }

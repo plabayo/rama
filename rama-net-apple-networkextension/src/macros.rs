@@ -722,6 +722,23 @@ macro_rules! __transparent_proxy_ffi_emit {
                     .egress_eof_grace
                     .map(|d| d.as_millis() as u32)
                     .unwrap_or(0),
+                // Keepalive: `enabled` is always meaningful (defaults true
+                // in `NwTcpConnectOptions`); the timing knobs use the
+                // `has_` / value pair so an unset knob lets Swift apply
+                // its own default.
+                tcp_keepalive_enabled: opts.tcp_keepalive_enabled,
+                has_tcp_keepalive_idle_secs: opts.tcp_keepalive_idle.is_some(),
+                tcp_keepalive_idle_secs: opts
+                    .tcp_keepalive_idle
+                    .map(|d| d.as_secs() as u32)
+                    .unwrap_or(0),
+                has_tcp_keepalive_interval_secs: opts.tcp_keepalive_interval.is_some(),
+                tcp_keepalive_interval_secs: opts
+                    .tcp_keepalive_interval
+                    .map(|d| d.as_secs() as u32)
+                    .unwrap_or(0),
+                has_tcp_keepalive_count: opts.tcp_keepalive_count.is_some(),
+                tcp_keepalive_count: opts.tcp_keepalive_count.unwrap_or(0),
             };
             unsafe { *out_options = c_opts };
             true

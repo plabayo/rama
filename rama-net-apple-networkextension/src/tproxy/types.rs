@@ -174,7 +174,7 @@ impl Default for NwEgressParameters {
 ///
 /// TCP-specific: wraps [`NwEgressParameters`] and adds a connection timeout
 /// that maps to `NWProtocolTCP.Options.connectionTimeout`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct NwTcpConnectOptions {
     /// Shared `NWParameters`-level settings.
     pub parameters: NwEgressParameters,
@@ -200,6 +200,60 @@ pub struct NwTcpConnectOptions {
     /// upstream EOF regardless of app behavior. `None` falls back to
     /// the Swift-side default (currently 2 seconds).
     pub egress_eof_grace: Option<Duration>,
+    /// Enable TCP keepalive on the egress `NWConnection`
+    /// (`NWProtocolTCP.Options.enableKeepalive`).
+    ///
+    /// **Defaults to `true`** — see [`Self::default`]. Keepalive is the
+    /// transport-layer self-heal for a "silently dead" egress: after a
+    /// network-changing sleep / VPN reset / NAT rebind, an established
+    /// connection can stay locally `.ready` over an upstream path that
+    /// is actually black-holed. Network.framework emits neither
+    /// `.waiting` nor `.failed` (the local interface is still up), and
+    /// `viabilityUpdateHandler` never reports `false`, so the per-flow
+    /// reapers never fire and the flow wedges until the 60 s maintenance
+    /// watchdog. With keepalive on, the unanswered probes fail the
+    /// connection (`.failed`), which the existing post-ready reaper
+    /// already handles — the client then reconnects promptly. Healthy
+    /// peers answer the probes, so there are no false positives.
+    ///
+    /// Set to `false` to opt out (e.g. a handler that manages liveness
+    /// itself, or a workload that legitimately idles for very long
+    /// stretches and tolerates the slower watchdog backstop).
+    pub tcp_keepalive_enabled: bool,
+    /// Idle period before the first keepalive probe is sent
+    /// (`NWProtocolTCP.Options.keepaliveIdle`). `None` falls back to the
+    /// Swift-side default. Only meaningful when
+    /// [`Self::tcp_keepalive_enabled`] is `true`.
+    pub tcp_keepalive_idle: Option<Duration>,
+    /// Interval between keepalive probes after the first
+    /// (`NWProtocolTCP.Options.keepaliveInterval`). `None` falls back to
+    /// the Swift-side default. Only meaningful when
+    /// [`Self::tcp_keepalive_enabled`] is `true`.
+    pub tcp_keepalive_interval: Option<Duration>,
+    /// Number of unanswered probes before the connection is declared
+    /// dead (`NWProtocolTCP.Options.keepaliveCount`). `None` falls back
+    /// to the Swift-side default. Worst-case time-to-detect a dead path
+    /// is roughly `idle + interval * count`. Only meaningful when
+    /// [`Self::tcp_keepalive_enabled`] is `true`.
+    pub tcp_keepalive_count: Option<u32>,
+}
+
+impl Default for NwTcpConnectOptions {
+    fn default() -> Self {
+        Self {
+            parameters: NwEgressParameters::default(),
+            connect_timeout: None,
+            linger_close_timeout: None,
+            egress_eof_grace: None,
+            // Keepalive defaults ON — see the field doc. The timing knobs
+            // default to `None` so Swift applies its own sane defaults
+            // (idle/interval/count) unless a handler tunes them.
+            tcp_keepalive_enabled: true,
+            tcp_keepalive_idle: None,
+            tcp_keepalive_interval: None,
+            tcp_keepalive_count: None,
+        }
+    }
 }
 
 /// Protocol filter used by transparent-proxy network rules.
@@ -651,6 +705,26 @@ mod transparent_proxy_config_tests {
             .with_remote_port(80)
             .with_remote_port(8080);
         assert_eq!(r2.remote_port(), Some(8080), "later setter wins");
+    }
+
+    /// Pin keepalive-on as the default for egress TCP options. This is
+    /// the transport-layer self-heal for a silently-dead upstream path
+    /// (sleep/wake, VPN reset, NAT rebind); flipping the default to
+    /// `false` silently re-opens the "wedged flow until the 60 s
+    /// watchdog" class of sleep/wake hangs.
+    #[test]
+    fn tcp_connect_options_default_enables_keepalive() {
+        let opts = NwTcpConnectOptions::default();
+        assert!(
+            opts.tcp_keepalive_enabled,
+            "egress TCP keepalive must default ON so a black-holed \
+             established connection fails its probes and is reaped, \
+             instead of wedging until the 60s maintenance watchdog",
+        );
+        // Timing knobs default to None → Swift applies its own defaults.
+        assert_eq!(opts.tcp_keepalive_idle, None);
+        assert_eq!(opts.tcp_keepalive_interval, None);
+        assert_eq!(opts.tcp_keepalive_count, None);
     }
 }
 
