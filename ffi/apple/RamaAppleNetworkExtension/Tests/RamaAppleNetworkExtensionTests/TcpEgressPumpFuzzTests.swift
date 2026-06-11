@@ -159,7 +159,13 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = makeInterceptedSession(engine)
-        let queue = DispatchQueue(label: "rama.tproxy.test.fuzz.\(seed)", qos: .utility)
+        // `.userInitiated`, not `.utility`: the leak invariant is QoS-
+        // independent, but `.utility` work is the class macOS deprioritizes
+        // hardest under load, so on a contended CI runner a queue drain or the
+        // final dealloc settle could slip past the timeouts below and fail
+        // spuriously. The seeded RNG fixes the action *sequence*, not the
+        // scheduler, so such a flake won't reliably reproduce by seed.
+        let queue = DispatchQueue(label: "rama.tproxy.test.fuzz.\(seed)", qos: .userInitiated)
         let mock = MockNwConnection()
         mock.transition(to: .ready)
 
@@ -217,14 +223,14 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
                 apply(action, write: writePump, read: readPump, mock: mock, queue: queue)
             }
 
-            waitForQueueDrain(queue, timeout: 2.0)
+            waitForQueueDrain(queue, timeout: 5.0)
         }
 
         // Wait past every armed deadline + slack.
         Thread.sleep(forTimeInterval: 0.25)
-        waitForQueueDrain(queue, timeout: 2.0)
+        waitForQueueDrain(queue, timeout: 5.0)
 
-        let deadline = Date().addingTimeInterval(2.0)
+        let deadline = Date().addingTimeInterval(5.0)
         while (weakWritePump != nil || weakReadPump != nil) && Date() < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
@@ -275,7 +281,7 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
         // Let the queue process this action before issuing the
         // next one. Without this the test depends on the OS's
         // implicit scheduling fairness and becomes flakier.
-        waitForQueueDrain(queue, timeout: 2.0)
+        waitForQueueDrain(queue, timeout: 5.0)
     }
 
     func testRandomSequencesDoNotLeakPumps() {
