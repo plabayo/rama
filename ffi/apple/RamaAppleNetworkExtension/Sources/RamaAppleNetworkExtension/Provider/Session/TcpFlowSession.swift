@@ -107,8 +107,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerTcpFlow(flowId, anchor: self)
-            return startEgressConnection(session: session)
+            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
+            // Admit unconditionally — the flow-pressure backstop NEVER refuses
+            // or delays a new flow. If admitting this one reached the soft cap,
+            // ask the core to reap idle promoted flows asynchronously (off this
+            // delivery thread) to free slots for SUBSEQUENT flows.
+            let admitted = startEgressConnection(session: session)
+            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
+                core?.reapIdleUnderPressure()
+            }
+            return admitted
         case .passthrough:
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false

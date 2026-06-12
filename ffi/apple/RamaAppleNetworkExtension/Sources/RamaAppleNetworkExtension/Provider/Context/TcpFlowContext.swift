@@ -337,6 +337,25 @@ final class TcpFlowContext: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
+    /// The flow-pressure backstop evicted this flow: the combined live flow
+    /// count crossed the soft cap and this was among the most-idle `.promoted`
+    /// flows (idle past the pressure floor), chosen LRU to free a kernel
+    /// nexus-flow slot for subsequent flows — rather than let the per-process
+    /// allocation exhaust and freeze ALL proxied networking. Full teardown so
+    /// BOTH the ingress kernel flow and the egress NWConnection slots are
+    /// released. Idempotent via `isDone`. The caller re-checks idleness on
+    /// `flowQueue` first, so a flow that just became active is never evicted.
+    /// See `TransparentProxyCore.reapIdleUnderPressure`.
+    func applyPressureEvicted() {
+        let err = NSError(
+            domain: "rama.tproxy.pressure-evicted", code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "idle flow evicted under nexus-flow pressure; flow force-dropped"
+            ])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
     /// Post-wake reconcile found this established flow's egress path no
     /// longer viable after the settle window: the path was torn down across
     /// a network-changing sleep but the NWConnection stayed `.ready`, so

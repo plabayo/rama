@@ -378,6 +378,42 @@ nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt32 = 60_000
 /// `defaultLingerCloseMs` / `defaultUdpIdleTimeoutMs`.
 nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 
+// ── Flow-pressure backstop (nexus-slot exhaustion) ───────────────────────────
+//
+// A macOS NE app-proxy provider has a per-process kernel nexus-flow allocation;
+// each intercepted flow consumes a slot (the app's ingress NEAppProxyFlow plus
+// our egress NWConnection). When `NECP_CLIENT_ACTION_ADD_FLOW` starts returning
+// ENOMEM, ALL proxied networking stalls — a machine-wide freeze. Keepalive
+// (dead peers, ~30s) and the idle reapers (wedged/idle flows, minutes) keep the
+// steady-state population bounded, but a fast BURST of connections can approach
+// the ceiling faster than those act. This is the burst backstop.
+//
+// Policy (deliberately conservative — see the constraints it honours below):
+//   * Triggered when the COMBINED live flow count (TCP + UDP — the nexus ceiling
+//     is global across the flowswitch) crosses `…SoftCap` at admission time.
+//   * NEVER refuses or delays a new flow: the new flow is always admitted; the
+//     reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
+//   * NEVER touches an active or recently-active flow: only `.promoted` flows
+//     (which carry an accurate per-flow byte-activity signal via the forwarder)
+//     idle past `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU)
+//     down to `…LowWater` for hysteresis. There is intentionally NO
+//     activity-blind eviction: under genuine all-active saturation we admit and
+//     log rather than reset a live connection — the SoftCap margin below the
+//     ceiling is the cushion for that (rare) case.
+//   * `viaRust` flows are left to the Rust engine's own idle timeout
+//     (`DEFAULT_TCP_IDLE_TIMEOUT`); they carry no Swift-side activity signal, so
+//     evicting them by a stale clock could kill an actively-transferring flow.
+//
+// IMPORTANT — these defaults are UNVALIDATED guesses. The kernel ceiling is
+// undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits
+// below that with margin. They MUST be calibrated against an on-device
+// burst/soak run (see scripts/soak_test.sh + the burst regression test) before
+// being trusted. `…SoftCap == 0` disables the backstop. `var` for test tuning,
+// same pattern as the other `default…Ms` knobs above.
+nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
+nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
+nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields
