@@ -50,7 +50,10 @@ final class FlowPressureReaperTests: XCTestCase {
         let ctx: TcpFlowContext
         let flowId: ObjectIdentifier
 
-        init(core: TransparentProxyCore, idleSeconds: UInt64, mode: TcpFlowMode = .promoted) {
+        init(
+            core: TransparentProxyCore, idleSeconds: UInt64, mode: TcpFlowMode = .promoted,
+            ready: Bool = true
+        ) {
             self.flow = MockTcpFlow()
             self.conn = MockNwConnection()
             self.ctx = TcpFlowContext()
@@ -59,7 +62,7 @@ final class FlowPressureReaperTests: XCTestCase {
             self.ctx.flow = flow
             self.ctx.core = core
             self.ctx.flowId = flowId
-            self.ctx.egressReady = true
+            self.ctx.egressReady = ready
             self.ctx.mode = mode
             let backNs = idleSeconds &* 1_000_000_000
             let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -230,6 +233,46 @@ final class FlowPressureReaperTests: XCTestCase {
         core.testReapIdleUnderPressure()
 
         XCTAssertEqual(fxs.filter { $0.wasTornDown }.count, 0, "no eviction below the soft cap")
+    }
+
+    // MARK: - Near-cap fan-out (scale invariants)
+
+    /// The proof-obligation test: a registry filled past the soft cap with a
+    /// realistic MIX — actively-transferring flows, idle flows of varying age,
+    /// and still-connecting (pre-ready) flows — reaped in one pass. Asserts the
+    /// load-bearing invariants at scale: occupancy is brought DOWN TO low-water
+    /// (not below), ONLY idle flows are evicted (oldest-first), and NO active
+    /// or pre-ready flow is ever touched.
+    func testFanOutReapsOldestIdleToLowWaterSparingActiveAndPreReady() {
+        defaultFlowPressureSoftCap = 100
+        defaultFlowPressureLowWater = 80
+        defaultFlowPressureIdleFloorMs = 5_000  // 5s
+        let core = makeCore()
+
+        // 40 active (idle ~0 < floor), 70 idle (ages 11…80s, all > floor),
+        // 10 pre-ready (old but egress not yet up). Total 120 ≥ cap 100 ⇒
+        // want = 120 − low-water 80 = 40 evicted, all from the idle pool
+        // (oldest first); everything else spared.
+        let active = (0..<40).map { _ in Fx(core: core, idleSeconds: 0) }
+        let idle = (11...80).map { Fx(core: core, idleSeconds: UInt64($0)) }
+        let preReady = (0..<10).map { _ in Fx(core: core, idleSeconds: 999, ready: false) }
+        insert(core, active)
+        insert(core, idle)
+        insert(core, preReady)
+
+        core.testReapIdleUnderPressure()
+
+        XCTAssertEqual(idle.filter { $0.wasTornDown }.count, 40, "evict 40 idle (down to low-water)")
+        XCTAssertEqual(active.filter { $0.wasTornDown }.count, 0, "no active flow evicted")
+        XCTAssertEqual(preReady.filter { $0.wasTornDown }.count, 0, "no pre-ready flow evicted")
+        let survivors = (active + idle + preReady).filter { !$0.wasTornDown }.count
+        XCTAssertEqual(
+            survivors, 80, "occupancy brought down to exactly low-water (stops there, not below)")
+
+        // LRU boundary: `idle` is built ages 11…80, so the stalest is last and
+        // the freshest is first. The stalest must be evicted, the freshest kept.
+        XCTAssertTrue(idle.last!.wasTornDown, "stalest idle flow (80s) evicted")
+        XCTAssertFalse(idle.first!.wasTornDown, "freshest idle flow (11s) spared")
     }
 
     func testZeroSoftCapDisablesBackstop() {
