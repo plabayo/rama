@@ -13,6 +13,15 @@ Set-Location (Join-Path $PSScriptRoot "..")
 
 function Fail($msg) { Write-Error "FAIL: $msg"; exit 1 }
 
+# Trusting the CA requires writing the LocalMachine Root store, which needs
+# elevation (see the Import-Certificate note below). Fail fast and clearly when
+# not elevated rather than dying mid-run on an access-denied. CI runners are
+# already elevated; run this script from an elevated shell locally.
+$admin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $admin) { Fail "must run elevated (administrator) to trust the MITM CA in LocalMachine\Root" }
+
 cargo build --example mitm_ocsp_relay_gate --features=http-full,boring
 if ($LASTEXITCODE -ne 0) { Fail "failed to build the harness" }
 $bin = "target\debug\examples\mitm_ocsp_relay_gate.exe"
@@ -41,9 +50,13 @@ try {
     if (-not $addr) { Get-Content $log -ErrorAction SilentlyContinue; Fail "harness never became READY" }
     Write-Host "[connect] proxy=$addr -> real crates.io"
 
-    # Trust the MITM CA in the current-user Root store; schannel reads it (no admin,
-    # no prompt for CurrentUser). Captured for cleanup.
-    $cert = Import-Certificate -FilePath $ca -CertStoreLocation Cert:\CurrentUser\Root
+    # Trust the MITM CA in the machine Root store; schannel reads it for chain
+    # building + revocation. Must be LocalMachine, not CurrentUser: adding to the
+    # CurrentUser Root store always raises an interactive "Security Warning"
+    # consent dialog (CryptUI) that nothing can click in CI, hanging the job.
+    # LocalMachine requires elevation and is therefore prompt-free. Captured for
+    # cleanup.
+    $cert = Import-Certificate -FilePath $ca -CertStoreLocation Cert:\LocalMachine\Root
     $thumb = $cert.Thumbprint
 
     # A real crate resolved through the MITM. Windows enforces revocation by
@@ -74,7 +87,7 @@ itoa = "1"
     Write-Host "OCSP RELAY GATE (WINDOWS/CARGO) PASSED"
 }
 finally {
-    if ($thumb) { Remove-Item -Path ("Cert:\CurrentUser\Root\" + $thumb) -ErrorAction SilentlyContinue }
+    if ($thumb) { Remove-Item -Path ("Cert:\LocalMachine\Root\" + $thumb) -ErrorAction SilentlyContinue }
     if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
