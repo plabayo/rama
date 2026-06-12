@@ -392,13 +392,19 @@ final class SystemLifecycleTests: XCTestCase {
         let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
         wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
 
+        // Read the flag via `queue.sync`: the armed re-check timer writes it
+        // on `queue`, so a bare test-thread read would be unordered with that
+        // write (the value is deterministic here, the access ordering isn't).
         f.conn.simulateViability(false)
-        XCTAssertTrue(f.ctx.deadPathRecheckPending, "first loss schedules the re-check")
+        XCTAssertTrue(
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "first loss schedules the re-check")
         f.conn.simulateViability(true)
         f.conn.simulateViability(false)
         f.conn.simulateViability(true)
         XCTAssertTrue(
-            f.ctx.deadPathRecheckPending, "burst must not stack additional re-checks")
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "burst must not stack additional re-checks")
 
         let exp = expectation(description: "coalesced re-check fired")
         queue.asyncAfter(deadline: .now() + .milliseconds(500)) { exp.fulfill() }

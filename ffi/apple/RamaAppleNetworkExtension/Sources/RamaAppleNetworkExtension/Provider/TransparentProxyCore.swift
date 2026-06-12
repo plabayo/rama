@@ -230,8 +230,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         queue.asyncAfter(
             deadline: .now() + .milliseconds(Int(afterMs))
         ) { [weak self, weak ctx] in
-            guard let self, let ctx else { return }
+            // Clear the coalescing flag even if the core died — a stuck
+            // `true` would suppress every future re-check for this flow.
+            guard let ctx else { return }
             ctx.deadPathRecheckPending = false
+            guard let self else { return }
             self.checkDeadPath(ctx, trigger: trigger)
         }
     }

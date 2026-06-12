@@ -334,6 +334,11 @@ nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 /// otherwise the only backstop for a flow stranded `.ready` over a dead
 /// path mid-session (`.waiting`/`.failed` never fire for that strand).
 ///
+/// A value below `defaultEgressWaitingToleranceMs` also shortens the
+/// effective post-ready `.waiting` budget for flows that ADDITIONALLY
+/// report non-viable — intended: viability loss is the stronger
+/// dead-path signal.
+///
 /// `0` (the shipped default) disables mid-session re-checks entirely —
 /// the kill switch, mirroring `defaultFlowPressureSoftCap`. Flip to
 /// ~3_000 once the on-device soak validates it; `var` so tests can
