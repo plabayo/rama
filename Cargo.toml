@@ -696,6 +696,10 @@ name = "http_mitm_relay_proxy_boring"
 required-features = ["http-full", "boring"]
 
 [[example]]
+name = "mitm_ocsp_relay_gate"
+required-features = ["http-full", "boring"]
+
+[[example]]
 name = "http_mitm_proxy_rustls"
 # ensure to also enable at least one of following features: aws-lc, ring
 # in order to test this example we cannot add this to required features, sorry
