@@ -55,6 +55,10 @@ pin_project! {
         // Reused as much as possible to optimize allocations.
         buf: BytesMut,
         read_all_data: bool,
+        // When set, a mid-stream decode error (after some data was decoded) ends
+        // the body cleanly instead of erroring. Opt-in, response-decompression
+        // only — see `with_tolerate_decode_errors`.
+        tolerate_decode_errors: bool,
     }
 }
 
@@ -86,7 +90,21 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
             read,
             buf: BytesMut::with_capacity(Self::INTERNAL_BUF_CAPACITY),
             read_all_data: false,
+            tolerate_decode_errors: false,
         }
+    }
+
+    /// Opt in to ending the body cleanly on a mid-stream decode error (after at
+    /// least one decoded chunk) instead of surfacing the error.
+    ///
+    /// Used only for RESPONSE decompression where a downstream consumer re-encodes
+    /// and relays the decoded stream (e.g. the MITM HTML-rewrite proxy): a truncated
+    /// upstream body then yields a short-but-well-formed stream to the client rather
+    /// than aborting it. Off by default; genuine upstream transport errors still
+    /// propagate, and request-body decompression stays strict.
+    pub(crate) fn with_tolerate_decode_errors(mut self, tolerate: bool) -> Self {
+        self.tolerate_decode_errors = tolerate;
+        self
     }
 }
 
@@ -146,6 +164,22 @@ where
                                 .yielded_all_data
                         {
                             *this.read_all_data = true;
+                        } else if *this.tolerate_decode_errors {
+                            // Opt-in: a mid-stream decode error (e.g. a corrupt /
+                            // truncated upstream body) ends the decoded stream
+                            // cleanly instead of erroring. Already-decoded frames
+                            // were emitted earlier; `buf` is empty at this point (it
+                            // is split on every Ok and not advanced on Err), so we
+                            // lose nothing by ending now. We return None directly
+                            // rather than falling through to the trailer poll, which
+                            // could otherwise surface leftover undecoded source bytes
+                            // as an "extra bytes" error and re-abort the stream. Lets
+                            // a re-encoding relay deliver a short-but-well-formed
+                            // stream instead of an aborted one (RST_STREAM).
+                            rama_core::telemetry::tracing::debug!(
+                                "decompression: tolerating mid-stream decode error ({err}); ending body cleanly"
+                            );
+                            return Poll::Ready(None);
                         } else {
                             return Poll::Ready(Some(Err(err.into())));
                         }

@@ -25,6 +25,7 @@ pub struct Decompression<S, M = DefaultDecompressionMatcher> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
     pub(crate) insert_accept_encoding_header: bool,
+    pub(crate) tolerate_decode_errors: bool,
     pub(crate) matcher: M,
 }
 
@@ -35,6 +36,7 @@ impl<S> Decompression<S> {
             inner: service,
             accept: AcceptEncoding::default(),
             insert_accept_encoding_header: true,
+            tolerate_decode_errors: false,
             matcher: DefaultDecompressionMatcher,
         }
     }
@@ -65,7 +67,22 @@ impl<S, M> Decompression<S, M> {
             inner: self.inner,
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
+            tolerate_decode_errors: self.tolerate_decode_errors,
             matcher,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// End a response body cleanly on a mid-stream decode error (after some
+        /// data decoded) instead of surfacing the error.
+        ///
+        /// For relays that decode → modify → re-encode a response (e.g. a MITM
+        /// HTML rewriter): a truncated upstream body yields a short-but-well-formed
+        /// client stream rather than an aborted one (RST_STREAM). Off by default;
+        /// genuine upstream transport errors still propagate.
+        pub fn tolerate_decode_errors(mut self, tolerate: bool) -> Self {
+            self.tolerate_decode_errors = tolerate;
+            self
         }
     }
 
@@ -229,16 +246,20 @@ where
             let body =
                 match marker {
                     DecompressedFrom::Gzip => DecompressionBody::new(BodyInner::gzip(
-                        WrapBody::new(body, CompressionLevel::default()),
+                        WrapBody::new(body, CompressionLevel::default())
+                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
                     )),
                     DecompressedFrom::Deflate => DecompressionBody::new(BodyInner::deflate(
-                        WrapBody::new(body, CompressionLevel::default()),
+                        WrapBody::new(body, CompressionLevel::default())
+                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
                     )),
                     DecompressedFrom::Brotli => DecompressionBody::new(BodyInner::brotli(
-                        WrapBody::new(body, CompressionLevel::default()),
+                        WrapBody::new(body, CompressionLevel::default())
+                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
                     )),
                     DecompressedFrom::Zstd => DecompressionBody::new(BodyInner::zstd(
-                        WrapBody::new(body, CompressionLevel::default()),
+                        WrapBody::new(body, CompressionLevel::default())
+                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
                     )),
                 };
 
