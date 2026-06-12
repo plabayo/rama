@@ -6,8 +6,20 @@ use crate::address::{Authority, Host, HostWithOptPort, HostWithPort, ProxyAddres
 ///
 /// Canonical means:
 /// - IPv4 stays IPv4.
-/// - IPv6 stays IPv6, except when the IPv6 address is an IPv4 mapped address.
-///   In that cases we convert it to the embedded IPv4 address.
+/// - IPv6 stays IPv6, except for IPv4-mapped addresses (`::ffff:a.b.c.d`,
+///   [RFC 4291, Section 2.5.5.2]), which convert to the embedded IPv4 address.
+///
+/// IPv4-mapped addresses represent IPv4 connectivity exposed through the
+/// IPv6 socket API of dual-stack hosts ([RFC 4038, Section 4.2]); they never
+/// appear on the wire as IPv6 and are not routable as IPv6 ([IANA registry]).
+/// Connecting to one is therefore always IPv4 wire traffic, and dialing the
+/// embedded IPv4 address directly is the only form that also works on hosts
+/// without (working) dual-stack IPv6 sockets — e.g. Windows, where sockets
+/// default to `IPV6_V6ONLY`.
+///
+/// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
+/// [RFC 4038, Section 4.2]: https://datatracker.ietf.org/doc/html/rfc4038#section-4.2
+/// [IANA registry]: https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
 pub trait IntoCanonicalIpAddr {
     #[must_use]
     fn into_canonical_ip_addr(self) -> Self;

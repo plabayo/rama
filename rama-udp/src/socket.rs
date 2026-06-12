@@ -11,7 +11,7 @@ use rama_dns::client::{
     GlobalDnsResolver,
     resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt},
 };
-use rama_net::address::{HostWithPort, SocketAddress};
+use rama_net::address::{HostWithPort, SocketAddress, ip::IntoCanonicalIpAddr as _};
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
@@ -48,6 +48,8 @@ pub async fn bind_udp_socket_with_connect_default_dns(
 /// The first successful connection attempt completes the function. The strategy
 /// also respects IP/Dns connect/resolve preferences (e.g. Ipv6 addresses won't
 /// be allowed if running in Ipv4 only modes), even if host was an Ip to begin with.
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) are canonicalized to the embedded
+/// IPv4 address, as they identify IPv4 wire traffic.
 ///
 /// Returns an error if the host is not compatible or
 /// does not resolve to any IP address or
@@ -88,7 +90,9 @@ where
             }
         };
 
-        let address: SocketAddr = (ip, port).into();
+        // dial canonical (RFC 4291, Section 2.5.5.2) — keeps the bind-family
+        // choice below correct even for ip streams that bypassed the resolver
+        let address: SocketAddr = (ip.into_canonical_ip_addr(), port).into();
 
         if address.is_ipv4() {
             let socket = if let Some(socket) = ipv4_socket.take() {
@@ -225,4 +229,46 @@ fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSoc
         .set_nonblocking(true)
         .context("set socket as non-blocking")?;
     Ok(UdpSocket::from_std(socket)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bind_udp_socket_with_connect_canonicalizes_v4_mapped_ipv6_target() {
+        let anchor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = anchor.local_addr().unwrap().port();
+
+        // `::ffff:127.0.0.1` identifies IPv4 wire traffic (dual-stack
+        // socket form, e.g. WFP redirect targets on Windows): an IPv4
+        // socket must be bound and connected to the embedded IPv4
+        // address, instead of attempting it as IPv6.
+        let target: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        let socket = bind_udp_socket_with_connect_default_dns((target, port), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            socket.peer_addr().unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], port))
+        );
+        assert!(socket.local_addr().unwrap().is_ipv4());
+    }
+
+    #[tokio::test]
+    async fn bind_udp_socket_with_connect_plain_ipv4_target() {
+        let anchor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = anchor.local_addr().unwrap().port();
+
+        let target: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let socket = bind_udp_socket_with_connect_default_dns((target, port), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            socket.peer_addr().unwrap(),
+            SocketAddr::from(([127, 0, 0, 1], port))
+        );
+    }
 }
