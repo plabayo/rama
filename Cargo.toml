@@ -230,6 +230,8 @@ syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.27"
 terminal-prompt = "0.2"
+# TEMPORARY: see https://github.com/time-rs/time/issues/783.
+time = "=0.3.47"
 tokio = "1.52"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
@@ -516,6 +518,7 @@ rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+time = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
