@@ -327,17 +327,17 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     /// Flow-pressure backstop. Called (async, off the delivery thread) from
     /// `TcpFlowSession.start()` when admitting a flow pushed the COMBINED live
-    /// count to/over `defaultFlowPressureSoftCap`. Reaps `.promoted` flows idle
-    /// past `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
+    /// count to/over `defaultFlowPressureSoftCap`. Reaps flows idle past
+    /// `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
     /// `defaultFlowPressureLowWater`, to free nexus slots for SUBSEQUENT flows.
     ///
     /// Guarantees (see the tunable doc for the policy rationale):
     ///   * The just-admitted flow is NEVER the victim and is never delayed —
     ///     this runs after admission, asynchronously.
-    ///   * Only `.promoted` flows are eligible (they carry an accurate activity
-    ///     signal); `viaRust` flows are left to the Rust idle timeout. An
-    ///     actively-transferring promoted flow keeps bumping `lastActivityAt`
-    ///     and is never selected.
+    ///   * Mode-agnostic (nexus pressure is global): BOTH `viaRust` and
+    ///     `.promoted` flows are eligible. Both bump `lastActivityAt` on the
+    ///     shared write-pump flowQueue hop, so an actively-transferring flow of
+    ///     either mode is excluded by the idle-floor check and never selected.
     ///   * No activity-blind eviction: if nothing is idle past the floor we log
     ///     and do nothing (admit-and-ride) rather than reset a live connection.
     ///   * Each eviction re-checks idleness ON the victim's `flowQueue` before
@@ -375,8 +375,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.tcpSessions.values
             .map { $0.ctx }
             .filter {
-                $0.egressReady && !$0.terminalSignalled && $0.mode == .promoted
-                    && Self.flowIdleMs($0) > floorMs
+                // Mode-agnostic: nexus pressure is global, and BOTH modes now
+                // carry an accurate `lastActivityAt` (bumped on the shared
+                // write-pump flowQueue hop), so an actively-transferring flow
+                // of either mode is excluded by the idle-floor check below.
+                $0.egressReady && !$0.terminalSignalled && Self.flowIdleMs($0) > floorMs
             }
             .sorted {
                 $0.lastActivityAt.uptimeNanoseconds < $1.lastActivityAt.uptimeNanoseconds
@@ -410,7 +413,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         for ctx in victims {
             runFlowTeardown(ctx) {
                 guard ctx.egressReady, !ctx.isDone, !ctx.terminalSignalled,
-                    ctx.mode == .promoted, Self.flowIdleMs(ctx) > floorMs
+                    Self.flowIdleMs(ctx) > floorMs
                 else { return }
                 ctx.applyPressureEvicted()
             }

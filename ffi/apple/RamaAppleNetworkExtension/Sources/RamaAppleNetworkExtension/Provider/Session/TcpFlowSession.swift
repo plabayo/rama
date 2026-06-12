@@ -152,7 +152,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 // `.paused` replay it buffered.
                 ctx?.session?.signalServerDrain()
                 ctx?.directForwarder?.onClientPumpDrained()
-            }
+            },
+            // S→C byte progress on `flowQueue` — the flow-pressure backstop's
+            // activity signal. Fires for BOTH viaRust and promoted (the
+            // forwarder flushes through this pump too), so an actively
+            // transferring flow of EITHER mode is never reaped as "idle".
+            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() }
         )
         ctx.clientWritePump = writer
     }
@@ -511,7 +516,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 // routing through teardown here would just race that).
                 guard self.ctx.mode != .viaRust else { return }
                 self.ctx.directForwarder?.cancel()
-            }
+            },
+            // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
+            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() }
         )
         ctx.egressWritePump = pump
         return pump

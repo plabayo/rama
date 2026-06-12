@@ -157,24 +157,44 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertFalse(active2.wasTornDown, "recently-active flow spared")
     }
 
-    // MARK: - Scope: promoted-only
+    // MARK: - Scope: mode-agnostic (global)
 
-    func testViaRustFlowsNotEvictedUnderPressure() {
-        defaultFlowPressureSoftCap = 2
-        defaultFlowPressureLowWater = 1
+    /// The pressure backstop is GLOBAL: nexus pressure is mode-agnostic, and
+    /// both modes now bump `lastActivityAt` on the shared write-pump flowQueue
+    /// hop. So idle `viaRust` flows ARE reapable under pressure — not only
+    /// `.promoted`. (Their slower per-mode hygiene backstop is still the Rust
+    /// engine's idle timeout; this is the fast global one.)
+    func testIdleViaRustFlowsEvictedUnderPressure() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 2
         defaultFlowPressureIdleFloorMs = 5_000
         let core = makeCore()
-        // viaRust flows idle far past the floor: NOT pressure-evicted — their
-        // idle backstop is the Rust engine's DEFAULT_TCP_IDLE_TIMEOUT, and they
-        // carry no Swift-side activity signal to evict safely by.
-        let viaRust = (0..<4).map { _ in Fx(core: core, idleSeconds: 30, mode: .viaRust) }
+        let viaRust = (0..<5).map { _ in Fx(core: core, idleSeconds: 30, mode: .viaRust) }
         insert(core, viaRust)
 
         core.testReapIdleUnderPressure()
 
         XCTAssertEqual(
-            viaRust.filter { $0.wasTornDown }.count, 0,
-            "viaRust idle is the engine's job; the pressure backstop skips it")
+            viaRust.filter { $0.wasTornDown }.count, 3,
+            "idle viaRust flows are reapable under pressure too (occupancy 5 − low-water 2 = 3)")
+    }
+
+    /// The safety counterpart: an ACTIVE viaRust flow (recent `lastActivityAt`,
+    /// as the write-pump `onActivity` hook keeps it) is never pressure-evicted,
+    /// even over the cap — this is what the per-mode activity signal protects.
+    func testActiveViaRustFlowSparedUnderPressure() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 60_000  // 60s floor
+        let core = makeCore()
+        let active = (0..<5).map { _ in Fx(core: core, idleSeconds: 0, mode: .viaRust) }
+        insert(core, active)
+
+        core.testReapIdleUnderPressure()
+
+        XCTAssertEqual(
+            active.filter { $0.wasTornDown }.count, 0,
+            "actively-transferring viaRust flows must never be pressure-evicted")
     }
 
     // MARK: - Closing flows excluded

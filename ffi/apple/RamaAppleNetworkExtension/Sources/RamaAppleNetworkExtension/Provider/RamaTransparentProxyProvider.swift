@@ -393,16 +393,18 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //     is global across the flowswitch) crosses `…SoftCap` at admission time.
 //   * NEVER refuses or delays a new flow: the new flow is always admitted; the
 //     reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
-//   * NEVER touches an active or recently-active flow: only `.promoted` flows
-//     (which carry an accurate per-flow byte-activity signal via the forwarder)
-//     idle past `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU)
-//     down to `…LowWater` for hysteresis. There is intentionally NO
-//     activity-blind eviction: under genuine all-active saturation we admit and
-//     log rather than reset a live connection — the SoftCap margin below the
-//     ceiling is the cushion for that (rare) case.
-//   * `viaRust` flows are left to the Rust engine's own idle timeout
-//     (`DEFAULT_TCP_IDLE_TIMEOUT`); they carry no Swift-side activity signal, so
-//     evicting them by a stale clock could kill an actively-transferring flow.
+//   * NEVER touches an active or recently-active flow: only flows idle past
+//     `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU) down to
+//     `…LowWater` for hysteresis. There is intentionally NO activity-blind
+//     eviction: under genuine all-active saturation we admit and log rather
+//     than reset a live connection — the SoftCap margin below the ceiling is
+//     the cushion for that (rare) case.
+//   * Mode-agnostic (nexus pressure is global across the flowswitch): BOTH
+//     `viaRust` and `.promoted` flows are eligible. Both bump `lastActivityAt`
+//     on the shared write-pump flowQueue hop, so the idle-floor check excludes
+//     an actively-transferring flow of either mode. (The Rust engine's
+//     `DEFAULT_TCP_IDLE_TIMEOUT` and the promoted maintenance reaper remain the
+//     slower per-mode hygiene backstops; this is the fast, global one.)
 //
 // IMPORTANT — these defaults are UNVALIDATED guesses. The kernel ceiling is
 // undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits
