@@ -353,6 +353,31 @@ nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000
 /// runtime bounded — same pattern as `defaultLingerCloseMs`.
 nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt32 = 60_000
 
+/// Idle (no-progress) reaper deadline for promoted-path TCP flows
+/// (`TcpDirectForwarder`), in milliseconds. `0` disables the reaper.
+///
+/// The promoted path has NO in-Rust idle backstop: once a flow promotes, its
+/// Rust service task drains to EOF and exits, so the engine's
+/// `DEFAULT_TCP_IDLE_TIMEOUT` (15 min, byte-progress based) no longer applies.
+/// Without this, an established promoted flow whose peer goes silent — yet
+/// stays TCP-alive, so egress keepalive never fails it — pins its egress
+/// `NWConnection`'s kernel nexus-flow slot indefinitely; enough of them
+/// exhaust the extension's per-process NECP allocation and freeze ALL proxied
+/// networking (`NECP_CLIENT_ACTION_ADD_FLOW … ENOMEM`).
+///
+/// Default 15 min mirrors the engine's `viaRust` idle timeout EXACTLY, so a
+/// promoted flow is reaped on the same schedule it would have been before
+/// promotion: this RESTORES PARITY, it does not add a more aggressive kill.
+/// Like that timeout it keys on APP-byte progress, not TCP liveness — it
+/// cannot distinguish a silently-dead peer from a genuinely idle-but-alive
+/// one. Egress TCP keepalive (`applyTcpKeepalive`) is the precise dead-peer
+/// detector; this is the coarse last-resort backstop for the alive-but-idle
+/// remainder.
+///
+/// `var` so tests can shorten it to keep runtime bounded — same pattern as
+/// `defaultLingerCloseMs` / `defaultUdpIdleTimeoutMs`.
+nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
+
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
 /// Queue-confined phase for read pumps.  Three `Bool` fields

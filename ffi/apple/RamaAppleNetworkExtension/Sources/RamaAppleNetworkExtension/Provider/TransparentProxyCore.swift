@@ -286,11 +286,31 @@ final class TransparentProxyCore: @unchecked Sendable {
     private var stuckClosingFlowIds: Set<ObjectIdentifier> = []
 
     /// Per-tick teardown work split by disposition: pre-ready flows get
-    /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`.
+    /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`,
+    /// idle promoted flows get `applyIdleTimeout`.
     private struct MaintenanceKicks {
         var preReadyStuck: [TcpFlowContext] = []
         var closingStuck: [TcpFlowContext] = []
-        var isEmpty: Bool { preReadyStuck.isEmpty && closingStuck.isEmpty }
+        var idleStuck: [TcpFlowContext] = []
+        var isEmpty: Bool {
+            preReadyStuck.isEmpty && closingStuck.isEmpty && idleStuck.isEmpty
+        }
+    }
+
+    /// True when a promoted flow has gone without byte activity for at least
+    /// `defaultPromotedIdleTimeoutMs`. `0` disables the reaper. Uses the
+    /// monotonic `DispatchTime` clock (mach-uptime; pauses during system
+    /// sleep, matching the engine's tokio idle timers) so a flow is never
+    /// reaped merely for having spanned a sleep — that population is handled
+    /// by the wake reconcile + egress keepalive. Read off `flowQueue` from the
+    /// maintenance tick (same relaxation as `egressReady`); re-checked on
+    /// `flowQueue` before the teardown actually fires.
+    private static func promotedFlowIsIdle(_ ctx: TcpFlowContext) -> Bool {
+        let timeoutMs = defaultPromotedIdleTimeoutMs
+        guard timeoutMs > 0 else { return false }
+        let elapsedNs =
+            DispatchTime.now().uptimeNanoseconds &- ctx.lastActivityAt.uptimeNanoseconds
+        return elapsedNs / 1_000_000 > UInt64(timeoutMs)
     }
 
     private func startFlowCountReporting() {
@@ -372,6 +392,18 @@ final class TransparentProxyCore: @unchecked Sendable {
                 if stuckClosingFlowIds.contains(id) {
                     kicks.closingStuck.append(ctx)
                 }
+            } else if ctx.mode == .promoted, Self.promotedFlowIsIdle(ctx) {
+                // Promoted-path idle reaper. The `viaRust` path has the Rust
+                // engine's own DEFAULT_TCP_IDLE_TIMEOUT; promotion drops it
+                // (the Rust task exits at cutover), so an established promoted
+                // flow gone silent would otherwise pin its egress
+                // NWConnection's nexus-flow slot until the process exhausts its
+                // NECP allocation. No cross-tick "stuck set" is needed here:
+                // the multi-minute idle deadline far exceeds one tick, so the
+                // duration check is its own hysteresis, and an actively
+                // transferring flow keeps bumping `lastActivityAt` and is
+                // never selected.
+                kicks.idleStuck.append(ctx)
             }
         }
         stuckPreReadyFlowIds = nowStuckPreReady
@@ -419,6 +451,22 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // `stateQueue` decision and here.
                 runFlowTeardown(ctx) {
                     ctx.applyDrainBackstop()
+                }
+            }
+        }
+        if !kicks.idleStuck.isEmpty {
+            logLifecycle(
+                "watchdog: force-tearing down \(kicks.idleStuck.count) idle promoted flow(s)"
+            )
+            for ctx in kicks.idleStuck {
+                // Re-check idle ON `flowQueue`: a byte may have moved (bumping
+                // `lastActivityAt`) between the off-queue selection and here,
+                // and `mode` may have advanced if a teardown raced ahead.
+                // `applyIdleTimeout` has no internal idle-check, so this gate
+                // is its protection; it is idempotent via `isDone` regardless.
+                runFlowTeardown(ctx) {
+                    guard ctx.mode == .promoted, Self.promotedFlowIsIdle(ctx) else { return }
+                    ctx.applyIdleTimeout()
                 }
             }
         }
@@ -701,6 +749,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
 
         ctx.mode = .promoted
+        // Start the promoted-idle reaper clock at cutover, not context
+        // creation — a flow may have spent time on the `viaRust` path first,
+        // and only now loses the engine's in-Rust idle backstop.
+        ctx.lastActivityAt = .now()
         logTrace("promote: cutover begin")
 
         let forwarder = TcpDirectForwarder(
@@ -728,6 +780,14 @@ final class TransparentProxyCore: @unchecked Sendable {
                 // forwarder, and drops the registry entry. Idempotent via
                 // the sticky `isDone`.
                 ctx?.applyDrainBackstop()
+            },
+            onActivity: { [weak ctx] in
+                // Bump the promoted-idle reaper clock on every byte moved in
+                // either direction. Runs on `flowQueue`, the same queue as
+                // every other `ctx` mutation; read off-queue by the
+                // maintenance watchdog (same relaxation as `egressReady` /
+                // `terminalSignalled`).
+                ctx?.lastActivityAt = .now()
             },
             onTerminal: { [weak ctx] in
                 // Both direct directions done. Route through the shared

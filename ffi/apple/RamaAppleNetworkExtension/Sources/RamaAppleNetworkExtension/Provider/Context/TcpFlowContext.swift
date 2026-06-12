@@ -108,6 +108,23 @@ final class TcpFlowContext: @unchecked Sendable {
     /// NWConnection direct read/write loops + cutover
     /// buffer.
     var directForwarder: TcpDirectForwarder?
+    /// Monotonic timestamp (`DispatchTime`, mach-uptime — pauses during
+    /// system sleep, like the engine's tokio idle timers) of the last byte
+    /// observed on the promoted (`TcpDirectForwarder`) data path. Bumped by
+    /// the forwarder's `onActivity` hook on `flowQueue`; read off-queue by the
+    /// maintenance watchdog (same relaxation as `egressReady` /
+    /// `terminalSignalled`). A promoted flow idle past
+    /// `defaultPromotedIdleTimeoutMs` is reaped by `applyIdleTimeout`.
+    ///
+    /// Restores the idle backstop a flow already had on the `viaRust` path
+    /// (the Rust engine's `DEFAULT_TCP_IDLE_TIMEOUT`, also byte-progress
+    /// based) but LOST at promote cutover: once promoted, the Rust service
+    /// task exits and its idle timer is gone, so without this an established
+    /// promoted flow whose peer goes silent — yet stays TCP-alive, so
+    /// keepalive never fails it — pins its egress `NWConnection`'s kernel
+    /// nexus-flow slot forever. Defaults to creation time so a flow that
+    /// promotes and never transfers is still reaped on schedule.
+    var lastActivityAt: DispatchTime = .now()
     /// The per-flow serial queue that confines every mutation of this
     /// context (and the `isDone` teardown flag). Set once by
     /// `TcpFlowSession.init`. Lifecycle paths that originate off this
@@ -291,6 +308,31 @@ final class TcpFlowContext: @unchecked Sendable {
             domain: "rama.tproxy.drain-backstop", code: -1,
             userInfo: [
                 NSLocalizedDescriptionKey: "graceful close drain stalled; flow force-dropped"
+            ])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
+    /// The promoted (`TcpDirectForwarder`) data path made no progress for
+    /// longer than `defaultPromotedIdleTimeoutMs`. The promoted path has no
+    /// in-Rust idle backstop (the Rust service task exits at cutover), so
+    /// without this an established promoted flow whose peer is silently gone
+    /// — or one wedged mid-cutover before either direction reaches
+    /// `.finishing` — pins its egress `NWConnection`'s kernel nexus-flow slot
+    /// until the per-process NECP allocation exhausts and ALL proxied
+    /// networking stalls. Force a full teardown. Idempotent via `isDone`.
+    ///
+    /// NOTE: this is APP-byte idle, not liveness — it cannot distinguish a
+    /// silently-dead peer from a genuinely idle-but-alive one, exactly like
+    /// the engine's `viaRust` idle timeout whose parity it restores. Dead
+    /// peers are caught faster and more precisely by egress TCP keepalive
+    /// (`applyTcpKeepalive`); this is the coarse last-resort backstop for the
+    /// alive-but-idle remainder.
+    func applyIdleTimeout() {
+        let err = NSError(
+            domain: "rama.tproxy.idle-timeout", code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "promoted flow idle past timeout; flow force-dropped"
             ])
         applyFullTeardown(error: err, driveForwarder: true)
     }

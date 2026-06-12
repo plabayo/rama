@@ -2142,6 +2142,7 @@ dependencies = [
  "rama-ws",
  "rustversion",
  "serde",
+ "time",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
