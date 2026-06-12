@@ -39,6 +39,8 @@ pub mod pki_types {
 #[cfg_attr(docsrs, doc(cfg(feature = "native-certs")))]
 pub mod native_certs;
 
+pub mod ocsp;
+
 pub mod dep {
     //! Dependencies for rama crypto modules.
     //!

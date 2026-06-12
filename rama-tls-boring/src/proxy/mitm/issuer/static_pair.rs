@@ -6,7 +6,7 @@ use rama_boring::{
 };
 use rama_utils::collections::NonEmptyVec;
 
-use super::BoringMitmCertIssuer;
+use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
 #[derive(Clone)]
 /// A [`BoringMitmCertIssuer`] which clones its own pair data,
@@ -41,8 +41,11 @@ impl BoringMitmCertIssuer for StaticBoringMitmCertIssuer {
     fn issue_mitm_x509_cert(
         &self,
         _: X509,
-    ) -> impl Future<Output = Result<(NonEmptyVec<X509>, PKey<Private>), Self::Error>> + Send + '_
-    {
-        std::future::ready(Ok((self.crt_chain.clone(), self.key.clone())))
+    ) -> impl Future<Output = Result<MitmIssuedCert, Self::Error>> + Send + '_ {
+        std::future::ready(Ok(MitmIssuedCert {
+            crt_chain: self.crt_chain.clone(),
+            key: self.key.clone(),
+            ocsp_staple: None,
+        }))
     }
 }

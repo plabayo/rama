@@ -1,10 +1,6 @@
-use super::BoringMitmCertIssuer;
+use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
-use rama_boring::{
-    pkey::{PKey, Private},
-    x509::X509,
-};
-use rama_utils::collections::NonEmptyVec;
+use rama_boring::x509::X509;
 
 macro_rules! impl_boring_cert_issuer_either {
     ($id:ident, $first:ident $(, $param:ident)* $(,)?) => {
@@ -20,7 +16,7 @@ macro_rules! impl_boring_cert_issuer_either {
             async fn issue_mitm_x509_cert(
                 &self,
                 original: X509,
-            ) -> Result<(NonEmptyVec<X509>, PKey<Private>), Self::Error> {
+            ) -> Result<MitmIssuedCert, Self::Error> {
                 match self {
                     rama_core::combinators::$id::$first(issuer) => issuer.issue_mitm_x509_cert(original).await,
                     $(
