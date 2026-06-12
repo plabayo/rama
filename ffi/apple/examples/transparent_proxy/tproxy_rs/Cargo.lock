@@ -2142,6 +2142,7 @@ dependencies = [
  "rama-ws",
  "rustversion",
  "serde",
+ "time",
  "tokio",
  "tokio-util",
  "tracing-subscriber",
@@ -2222,8 +2223,10 @@ dependencies = [
  "security-framework",
  "serde",
  "serde_json",
+ "time",
  "webpki-root-certs",
  "x509-parser",
+ "yasna",
 ]
 
 [[package]]
@@ -3951,6 +3954,15 @@ dependencies = [
  "oid-registry",
  "rusticata-macros",
  "thiserror",
+ "time",
+]
+
+[[package]]
+name = "yasna"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5f6765e852b9b4dc8e2a76843e4d64d1cea8e79bcde0b6901aea8e7c7f08282"
+dependencies = [
  "time",
 ]
 
