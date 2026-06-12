@@ -12,6 +12,7 @@ use rama_core::{
 use rama_dns::client::resolver::{DnsAddressResolver, HappyEyeballAddressResolverExt};
 use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddresssResolverOverwrite};
 use rama_net::address::HostWithPort;
+use rama_net::address::ip::IntoCanonicalIpAddr as _;
 use rama_net::mode::ConnectIpMode;
 use rama_net::{address::SocketAddress, socket::SocketOptions};
 use rama_utils::collections::smallvec::SmallVec;
@@ -48,7 +49,9 @@ impl TcpStreamConnector for () {
     type Error = std::io::Error;
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
-        let stream = tokio::net::TcpStream::connect(addr).await?;
+        // v4-mapped IPv6 is IPv4 wire traffic: dial it as such
+        // (see `IntoCanonicalIpAddr`; RFC 4291, Section 2.5.5.2)
+        let stream = tokio::net::TcpStream::connect(addr.into_canonical_ip_addr()).await?;
         Ok(stream.into())
     }
 }
@@ -138,6 +141,8 @@ async fn tcp_connect_with_socket_opts_async(
     opts: &SocketOptions,
     addr: SocketAddr,
 ) -> Result<TcpStream, BoxError> {
+    // dial canonical (RFC 4291, Section 2.5.5.2) — the socket family derives from it
+    let addr = addr.into_canonical_ip_addr();
     let socket = opts
         .try_build_socket(addr.into())
         .context("try to build TCP socket's underlying OS socket")?;
@@ -249,6 +254,10 @@ where
 }
 
 /// Establish a [`TcpStream`] connection for the given [`HostWithPort`].
+///
+/// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) — whether given as an
+/// IP literal host or resolved from AAAA records — are canonicalized to
+/// the embedded IPv4 address, as they identify IPv4 wire traffic.
 pub async fn tcp_connect<Dns, Connector>(
     extensions: &Extensions,
     address: HostWithPort,
@@ -538,6 +547,92 @@ mod tests {
         .await;
     }
 
+    #[derive(Clone, Default)]
+    struct RecordingDenyConnector {
+        addrs: Arc<rama_utils::collections::AppendOnlyVec<SocketAddr>>,
+    }
+
+    impl RecordingDenyConnector {
+        fn recorded_addrs(&self) -> Vec<SocketAddr> {
+            self.addrs.iter().copied().collect()
+        }
+    }
+
+    impl TcpStreamConnector for RecordingDenyConnector {
+        type Error = TcpConnectDeniedError;
+
+        async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+            self.addrs.push(addr);
+            Err(TcpConnectDeniedError)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tcp_connect_canonicalizes_v4_mapped_ipv6_target() {
+        // `::ffff:127.0.0.1` identifies IPv4 wire traffic (dual-stack
+        // socket form, e.g. WFP redirect targets on Windows): the
+        // connector must be asked to connect to the embedded IPv4
+        // address, never to an (AF_INET6) v4-mapped one.
+        let connector = RecordingDenyConnector::default();
+        let ext = Extensions::new();
+        let target: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+
+        let result = tcp_connect(
+            &ext,
+            (target, 443).into(),
+            EmptyDnsResolver::new(),
+            connector.clone(),
+            Executor::default(),
+        )
+        .await;
+        assert!(result.is_err(), "deny connector: connect must fail");
+
+        assert_eq!(
+            connector.recorded_addrs(),
+            vec![SocketAddr::from(([127, 0, 0, 1], 443))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tcp_connect_v4_mapped_ipv6_target_counts_as_ipv4_for_connect_ip_mode() {
+        let target: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+
+        // allowed under IPv4-only connect mode (it IS IPv4 traffic)...
+        let connector = RecordingDenyConnector::default();
+        let ext = Extensions::new();
+        ext.insert(ConnectIpMode::Ipv4);
+        let result = tcp_connect(
+            &ext,
+            (target, 443).into(),
+            EmptyDnsResolver::new(),
+            connector.clone(),
+            Executor::default(),
+        )
+        .await;
+        assert!(result.is_err(), "deny connector: connect must fail");
+        assert_eq!(
+            connector.recorded_addrs(),
+            vec![SocketAddr::from(([127, 0, 0, 1], 443))]
+        );
+
+        // ...and rejected under IPv6-only connect mode, without
+        // ever reaching the connector.
+        let ext = Extensions::new();
+        ext.insert(ConnectIpMode::Ipv6);
+        let result = tcp_connect(
+            &ext,
+            (target, 443).into(),
+            EmptyDnsResolver::new(),
+            PanicTcpConnector,
+            Executor::default(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "v4-mapped target must be rejected in IPv6-only mode"
+        );
+    }
+
     #[derive(Debug, Clone)]
     struct NeverConnector;
 
@@ -716,6 +811,44 @@ mod unix_windows_tests {
             ext.insert(DnsAddresssResolverOverwrite::new(Ipv6Addr::LOCALHOST));
             Some(ext)
         })
+        .await;
+    }
+
+    // The dial primitives canonicalize themselves, so even a raw
+    // (resolver-bypassing) `TcpStreamConnector` call with a v4-mapped
+    // target must dial the embedded IPv4 address.
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test helper: cfg(test) module, but clippy's allow-*-in-tests detection doesn't propagate through this generic test fn"
+    )]
+    async fn test_generic_connector_dials_v4_mapped_target_as_ipv4<C>(connector: C)
+    where
+        C: TcpStreamConnector<Error: std::fmt::Debug>,
+    {
+        use rama_net::stream::Socket as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let target: SocketAddr = format!("[::ffff:127.0.0.1]:{port}").parse().unwrap();
+        let stream = connector.connect(target).await.unwrap();
+        assert_eq!(
+            stream.peer_addr().unwrap(),
+            SocketAddress::from(([127, 0, 0, 1], port))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unit_connector_dials_v4_mapped_target_as_ipv4() {
+        test_generic_connector_dials_v4_mapped_target_as_ipv4(()).await;
+    }
+
+    #[tokio::test]
+    async fn test_socket_opts_connector_dials_v4_mapped_target_as_ipv4() {
+        test_generic_connector_dials_v4_mapped_target_as_ipv4(Arc::new(
+            SocketOptions::default_tcp(),
+        ))
         .await;
     }
 }

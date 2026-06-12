@@ -14,7 +14,7 @@ use rama_core::{
     stream::{StreamExt as _, adapters::Merge},
 };
 use rama_net::{
-    address::Host,
+    address::{Host, ip::IntoCanonicalIpAddr as _},
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
 
@@ -69,6 +69,14 @@ impl<'a, R> HappyEyeballAddressResolver<'a, R> {
 }
 
 impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressResolver<'a, R> {
+    /// Stream the resolved IP addresses for the configured host,
+    /// in happy-eyeballs order, respecting the IP connect/resolve modes.
+    ///
+    /// IPv4-mapped IPv6 addresses ([RFC 4291, Section 2.5.5.2]) — as IP
+    /// literal host or in AAAA records — canonicalize to the embedded
+    /// IPv4 address and classify as IPv4 for the IP modes.
+    ///
+    /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
     pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
         let ip_mode = self
             .extensions
@@ -86,6 +94,9 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // both via pct-decode + IDN. Non-promotable hosts (sub-delim
         // reg-name, IPvFuture) error — DNS can't resolve them.
         if let Ok(ip) = self.host.try_as_ip() {
+            // fold v4-mapped down to IPv4 (RFC 4291, Section 2.5.5.2)
+            // before the family checks below
+            let ip = ip.into_canonical_ip_addr();
             return HappyEyeballIpStream::Once {
                 stream: rama_core::stream::once(match (ip, ip_mode) {
                     (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
@@ -139,7 +150,8 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
                     .lookup_ipv6(domain.clone())
                     .map(|result| result.map_err(ErrorExt::into_opaque_error)),
             )
-            .map(|result| result.map(IpAddr::V6))
+            // AAAA records can carry v4-mapped addresses too — same fold-down
+            .map(|result| result.map(|ip| IpAddr::V6(ip).into_canonical_ip_addr()))
         };
 
         match dns_mode {
@@ -265,6 +277,89 @@ mod tests {
         assert_eq!(
             first.unwrap(),
             "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn v4_mapped_ip_literal_host_canonicalizes_to_ipv4() {
+        // `::ffff:127.0.0.1` identifies IPv4 wire traffic (dual-stack
+        // socket form, e.g. WFP redirect targets on Windows) — the
+        // resolver must emit the embedded IPv4 address.
+        let host: Host = "::ffff:127.0.0.1"
+            .parse::<std::net::IpAddr>()
+            .unwrap()
+            .into();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = stream.next().await.expect("should emit the canonical IP");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn real_ipv6_literal_host_passes_through_unchanged() {
+        let host: Host = "2001:db8::1".parse::<std::net::IpAddr>().unwrap().into();
+        let mut stream = std::pin::pin!(EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip());
+        let first = stream.next().await.expect("should emit the IP directly");
+        assert_eq!(
+            first.unwrap(),
+            "2001:db8::1".parse::<std::net::IpAddr>().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn v4_mapped_ip_literal_host_counts_as_ipv4_for_connect_ip_mode() {
+        use rama_core::extensions::Extensions;
+        use rama_net::mode::ConnectIpMode;
+
+        // allowed under IPv4-only connect mode (it IS IPv4 traffic)...
+        let ext = Extensions::new();
+        ext.insert(ConnectIpMode::Ipv4);
+        let host: Host = "::ffff:127.0.0.1"
+            .parse::<std::net::IpAddr>()
+            .unwrap()
+            .into();
+        let mut stream = std::pin::pin!(
+            EmptyDnsResolver
+                .happy_eyeballs_resolver(host)
+                .with_extensions(&ext)
+                .lookup_ip()
+        );
+        let first = stream.next().await.expect("should emit the canonical IP");
+        assert_eq!(
+            first.unwrap(),
+            "127.0.0.1".parse::<std::net::IpAddr>().unwrap()
+        );
+
+        // ...and rejected under IPv6-only connect mode.
+        let ext = Extensions::new();
+        ext.insert(ConnectIpMode::Ipv6);
+        let host: Host = "::ffff:127.0.0.1"
+            .parse::<std::net::IpAddr>()
+            .unwrap()
+            .into();
+        let mut stream = std::pin::pin!(
+            EmptyDnsResolver
+                .happy_eyeballs_resolver(host)
+                .with_extensions(&ext)
+                .lookup_ip()
+        );
+        let first = stream.next().await.expect("should emit a result");
+        first.expect_err("v4-mapped (= IPv4 wire traffic) must be rejected in IPv6-only mode");
+    }
+
+    #[tokio::test]
+    async fn v4_mapped_aaaa_record_canonicalizes_to_ipv4() {
+        // an `Ipv6Addr` acts as a stub resolver yielding itself as the
+        // sole AAAA record for any domain.
+        let mapped: std::net::Ipv6Addr = "::ffff:192.0.2.1".parse().unwrap();
+        let host = Host::Name(rama_net::address::Domain::from_static("example.com"));
+        let mut stream = std::pin::pin!(mapped.happy_eyeballs_resolver(host).lookup_ip());
+        let first = stream.next().await.expect("should emit the canonical IP");
+        assert_eq!(
+            first.unwrap(),
+            "192.0.2.1".parse::<std::net::IpAddr>().unwrap()
         );
     }
 
