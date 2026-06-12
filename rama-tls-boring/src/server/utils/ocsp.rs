@@ -89,8 +89,13 @@ fn validity_until_not_after(leaf: &X509Ref, produced_at: SystemTime) -> Result<D
         .duration_since(UNIX_EPOCH)
         .context("ocsp: producedAt before unix epoch")?
         .as_secs();
+    // `from_unix` takes a `time_t` (i32 on 32-bit platforms, i64 elsewhere);
+    // infer the width via `try_into` so this builds on every target.
+    let produced_unix = produced_unix
+        .try_into()
+        .context("ocsp: producedAt out of range for ASN1 time")?;
     let produced_asn1 =
-        Asn1Time::from_unix(produced_unix as i64).context("ocsp: producedAt to ASN1 time")?;
+        Asn1Time::from_unix(produced_unix).context("ocsp: producedAt to ASN1 time")?;
     let diff = produced_asn1
         .diff(leaf.not_after())
         .context("ocsp: diff producedAt..notAfter")?;
