@@ -31,7 +31,10 @@ use rama::{
     io::BridgeIo,
     net::{
         address::Domain,
-        tls::{client::ServerVerifyMode, server::SelfSignedData},
+        tls::{
+            client::ServerVerifyMode,
+            server::{SelfSignedData, peek_client_hello_from_input},
+        },
     },
     tls::boring::{
         client::TlsConnectorDataBuilder,
@@ -160,8 +163,9 @@ fn announce_ready(proxy_addr: std::net::SocketAddr, ca_out: &str) -> Result<(), 
 }
 
 /// CONNECT-proxy one client: read its `CONNECT host:port`, reply `200`, dial the
-/// real host, run the relay handshake (egress verifies the real cert via native
-/// roots and sends SNI), then bridge plaintext both ways.
+/// real host, peek the client's ClientHello to mirror its TLS version/SNI onto
+/// the egress connector (which verifies the real cert via native roots), run the
+/// relay handshake, then bridge plaintext both ways.
 async fn connect_one(
     relay: &TlsMitmRelay<
         impl rama::tls::boring::proxy::cert_issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
@@ -177,16 +181,32 @@ async fn connect_one(
         .await
         .with_context(|| format!("dial upstream {target}"))?;
     let host = target.rsplit_once(':').map_or(target.as_str(), |(h, _)| h);
-    let mut builder = TlsConnectorDataBuilder::new();
+
+    // Peek the client's ClientHello off the ingress side and mirror its TLS
+    // capabilities onto the egress connector — the same thing the production
+    // `TlsMitmRelayService` does. The relay pins the ingress acceptor to the
+    // version it negotiated on egress; with a generic egress connector that
+    // version can be newer (e.g. TLS 1.3 with crates.io) than the real client
+    // offered — cargo's libcurl+schannel is TLS 1.2 only over a CONNECT tunnel
+    // — and the pinned ingress would then reject it with UNSUPPORTED_PROTOCOL.
+    // Mirroring caps egress to the client's own versions, keeping them aligned.
+    let bridge = BridgeIo(ServiceInput::new(client), ServiceInput::new(upstream));
+    let (bridge, client_hello) = peek_client_hello_from_input(bridge, None)
+        .await
+        .context("peek client hello")?;
+
+    let mut builder = match client_hello {
+        Some(hello) => TlsConnectorDataBuilder::try_from(hello)
+            .unwrap_or_else(|_| TlsConnectorDataBuilder::new()),
+        None => TlsConnectorDataBuilder::new(),
+    };
     if let Ok(domain) = Domain::try_from(host) {
-        builder = builder.with_server_name(domain); // SNI for the egress handshake
+        builder = builder.with_server_name(domain); // SNI + verify hostname for egress
     }
     let egress = builder.build().ok();
+
     let BridgeIo(mut ingress, mut egress_stream) = relay
-        .handshake(
-            BridgeIo(ServiceInput::new(client), ServiceInput::new(upstream)),
-            egress,
-        )
+        .handshake(bridge, egress)
         .await
         .map_err(BoxError::from)?;
     copy_bidirectional(&mut ingress, &mut egress_stream)
