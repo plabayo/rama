@@ -88,8 +88,8 @@ pub fn build_ocsp_response(
 ) -> Result<Vec<u8>, BoxError> {
     let OcspCertStatus::Good = status;
 
+    // producedAt and thisUpdate are the same instant — encode it once.
     let produced = generalized_time(produced_at)?;
-    let this_update = generalized_time(produced_at)?;
     let next_at = produced_at
         .checked_add(validity)
         .ok_or_else(|| BoxError::from("ocsp: nextUpdate overflow"))?;
@@ -122,8 +122,8 @@ pub fn build_ocsp_response(
                     // certStatus ::= good [0] IMPLICIT NULL
                     w.next()
                         .write_tagged_implicit(Tag::context(0), |w| w.write_null());
-                    // thisUpdate
-                    w.next().write_generalized_time(&this_update);
+                    // thisUpdate (same instant as producedAt)
+                    w.next().write_generalized_time(&produced);
                     // nextUpdate [0] EXPLICIT GeneralizedTime
                     w.next()
                         .write_tagged(Tag::context(0), |w| w.write_generalized_time(&next_update));

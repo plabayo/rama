@@ -12,9 +12,10 @@
 //! issuer, an issuer-signed `good` status the client already trusts resolves it
 //! inline, without an external responder.
 
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rama_boring::{
+    asn1::Asn1Time,
     hash::{MessageDigest, hash},
     pkey::{Id, PKeyRef, Private},
     sign::Signer,
@@ -26,10 +27,11 @@ use rama_crypto::ocsp::{OcspCertId, OcspSignatureAlgorithm, build_ocsp_response}
 #[doc(inline)]
 pub use rama_crypto::ocsp::OcspCertStatus as MitmLeafOcspStatus;
 
-/// `nextUpdate` window for the produced status (7 days).
-const DEFAULT_VALIDITY: Duration = Duration::from_hours(24 * 7);
 /// Backdate `producedAt`/`thisUpdate` to tolerate client clock skew.
 const CLOCK_SKEW_BACKDATE: Duration = Duration::from_hours(1);
+/// Floor on the derived validity, for the degenerate case of a leaf `notAfter`
+/// at/before `producedAt` (shouldn't happen post egress handshake).
+const MIN_VALIDITY: Duration = Duration::from_hours(1);
 
 /// Build a DER-encoded OCSP response for `leaf`, signed by the MITM CA
 /// (`issuer` + `issuer_key`), ready for `SslRef::set_ocsp_status`.
@@ -70,8 +72,33 @@ pub fn build_mitm_leaf_ocsp_response(
         .checked_sub(CLOCK_SKEW_BACKDATE)
         .unwrap_or_else(SystemTime::now);
 
-    build_ocsp_response(&cert, status, produced_at, DEFAULT_VALIDITY, |tbs| {
+    // nextUpdate = the leaf's own notAfter, so the staple never goes stale
+    // before the cert it attests (independent of the issuer cache TTL).
+    let validity = validity_until_not_after(leaf, produced_at)?;
+
+    build_ocsp_response(&cert, status, produced_at, validity, |tbs| {
         sign_tbs(issuer_key, tbs)
+    })
+}
+
+/// Window from `produced_at` to the leaf's `notAfter`, so the OCSP `nextUpdate`
+/// lands on the cert's own expiry. Clamped to [`MIN_VALIDITY`] for the
+/// degenerate near-/post-expiry case.
+fn validity_until_not_after(leaf: &X509Ref, produced_at: SystemTime) -> Result<Duration, BoxError> {
+    let produced_unix = produced_at
+        .duration_since(UNIX_EPOCH)
+        .context("ocsp: producedAt before unix epoch")?
+        .as_secs();
+    let produced_asn1 =
+        Asn1Time::from_unix(produced_unix as i64).context("ocsp: producedAt to ASN1 time")?;
+    let diff = produced_asn1
+        .diff(leaf.not_after())
+        .context("ocsp: diff producedAt..notAfter")?;
+    let secs = i64::from(diff.days) * 86_400 + i64::from(diff.secs);
+    Ok(if secs <= MIN_VALIDITY.as_secs() as i64 {
+        MIN_VALIDITY
+    } else {
+        Duration::from_secs(secs as u64)
     })
 }
 
