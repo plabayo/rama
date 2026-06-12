@@ -325,6 +325,21 @@ nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 /// same pattern as `defaultEgressWaitingToleranceMs`.
 nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 
+/// Mid-session sibling of `defaultPostWakePathRecheckMs`: settle delay
+/// before re-judging an established egress flow whose
+/// `viabilityUpdateHandler` reported `false` WITHOUT a system sleep —
+/// Wi-Fi roam, Wi-Fi↔Ethernet, VPN up/down. Long enough to ride out a
+/// roam blip (a path that recovers in the window is spared by the
+/// re-check), far shorter than the minutes-scale idle reapers that are
+/// otherwise the only backstop for a flow stranded `.ready` over a dead
+/// path mid-session (`.waiting`/`.failed` never fire for that strand).
+///
+/// `0` (the shipped default) disables mid-session re-checks entirely —
+/// the kill switch, mirroring `defaultFlowPressureSoftCap`. Flip to
+/// ~3_000 once the on-device soak validates it; `var` so tests can
+/// shorten it.
+nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 0
+
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
 /// transition). Fail fast instead of hanging the full connect timeout;

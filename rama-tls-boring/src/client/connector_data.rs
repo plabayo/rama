@@ -1405,7 +1405,10 @@ mod tests {
 
     // A minimal hello: modern legacy version, no cipher suites (→ not TLS1.3
     // viable), carrying only the given supported_versions plus any extras.
-    fn hello_from(versions: Vec<ProtocolVersion>, exts_extra: Vec<ClientHelloExtension>) -> ClientHello {
+    fn hello_from(
+        versions: Vec<ProtocolVersion>,
+        exts_extra: Vec<ClientHelloExtension>,
+    ) -> ClientHello {
         let mut exts = vec![ClientHelloExtension::SupportedVersions(versions)];
         exts.extend(exts_extra);
         ClientHello::new(ProtocolVersion::TLSv1_2, Vec::new(), Vec::new(), exts)

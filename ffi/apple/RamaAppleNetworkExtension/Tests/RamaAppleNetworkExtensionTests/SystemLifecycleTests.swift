@@ -309,4 +309,155 @@ final class SystemLifecycleTests: XCTestCase {
             f.flow.closeReadCallCount, closesAfterTerminal,
             "wake check must not re-close the kernel flow post-terminal")
     }
+
+    // MARK: - mid-session viability-loss re-check (handleEgressViabilityLoss)
+
+    /// Mirror the production `installEgressStateHandler` viability wiring
+    /// (cache into `ctx.lastPathViable` + mid-session loss trigger) for an
+    /// engine-less flow, the way `testViabilityHandlerCachesIntoContext`
+    /// mirrors the cache-only half.
+    private func wireViabilityHandler(
+        conn: MockNwConnection, ctx: TcpFlowContext, core: TransparentProxyCore
+    ) {
+        conn.viabilityUpdateHandler = { [weak ctx] viable in
+            guard let ctx else { return }
+            ctx.lastPathViable = viable
+            if !viable { core.handleEgressViabilityLoss(ctx) }
+        }
+    }
+
+    /// A mid-session viability loss (Wi-Fi roam / interface switch / VPN
+    /// toggle — no sleep, no wake callback) on an established flow that
+    /// stays dead through the settle window is reset promptly, instead of
+    /// hanging until an idle reaper.
+    func testViabilityLossResetsEstablishedFlowWhenStillDead() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        // The re-check is scheduled on `queue` at +10ms; a barrier at
+        // +200ms on the same serial queue runs strictly after it.
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(f.ctx.isDone, "still-dead path after settle must reset the flow")
+        XCTAssertEqual(f.conn.cancelCount, 1, "egress connection cancelled")
+        XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
+    }
+
+    /// A viability loss that RECOVERS within the settle window is spared —
+    /// the sub-second roam blip must never reset a healthy flow.
+    func testViabilityLossSparesFlowThatRecovers() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 100
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.recover")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+        f.conn.simulateViability(true)  // recovery lands well inside the settle
+
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(400)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "recovered path must spare the flow")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertFalse(
+            f.ctx.deadPathRecheckPending, "flag must clear once the re-check fires")
+    }
+
+    /// A viability flap (false / true / false …) coalesces into ONE
+    /// outstanding re-check via `deadPathRecheckPending`; the single
+    /// verdict judges whatever the path looks like when it fires.
+    func testViabilityFlapCoalescesToOneOutstandingRecheck() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 200
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.flap")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+        XCTAssertTrue(f.ctx.deadPathRecheckPending, "first loss schedules the re-check")
+        f.conn.simulateViability(true)
+        f.conn.simulateViability(false)
+        f.conn.simulateViability(true)
+        XCTAssertTrue(
+            f.ctx.deadPathRecheckPending, "burst must not stack additional re-checks")
+
+        let exp = expectation(description: "coalesced re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(500)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "flap ending viable must spare the flow")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertFalse(f.ctx.deadPathRecheckPending)
+    }
+
+    /// With the kill switch at its shipped default (`0`), a viability loss
+    /// schedules nothing — behavior is byte-identical to before the
+    /// feature, and the loss is still cached for the wake reconcile.
+    func testViabilityLossDisabledByDefault() {
+        XCTAssertEqual(
+            defaultViabilityLossRecheckMs, 0, "feature must ship disabled")
+        let core = TransparentProxyCore()
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.off")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        XCTAssertFalse(
+            f.ctx.deadPathRecheckPending, "kill switch must schedule nothing")
+        XCTAssertFalse(f.ctx.lastPathViable, "loss is still cached for wake")
+        let exp = expectation(description: "settle window elapsed")
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone)
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// Pre-ready flows are out of scope for the mid-session re-check: the
+    /// verdict's `egressReady` guard spares them (the connect timeout /
+    /// pre-ready waiting budget own pre-ready strands), so a loss before
+    /// `.ready` never tears the connecting flow down.
+    func testViabilityLossSparesPreReadyFlow() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.preready")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        f.ctx.egressReady = false  // still connecting
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "pre-ready flow must not be reset by the re-check")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
 }

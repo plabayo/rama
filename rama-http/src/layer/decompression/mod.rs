@@ -272,7 +272,9 @@ mod tests {
     // A long, mildly-varied plaintext so the brotli stream spans multiple chunks
     // (guarantees the decoder yields some output before the truncation errors).
     fn long_plaintext() -> String {
-        (0..4000).map(|i| format!("line {i}: the quick brown fox\n")).collect()
+        (0..4000)
+            .map(|i| format!("line {i}: the quick brown fox\n"))
+            .collect()
     }
 
     // Corrupt a run of bytes in the middle of a valid brotli stream: the decoder

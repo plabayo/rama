@@ -80,9 +80,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// fresh `currentPath` snapshot per read) to decide whether an
     /// established flow stranded on a dead path should be reset. Defaults
     /// `true` so a flow we have no signal about is never reset. Mutated on
-    /// `flowQueue`; read off-queue by `checkWakeDeadPath` (same relaxation
+    /// `flowQueue`; read off-queue by `checkDeadPath` (same relaxation
     /// as `egressReady`).
     var lastPathViable = true
+    /// A settle-delayed dead-path re-check (post-wake reconcile or
+    /// mid-session viability-loss trigger) is already scheduled for this
+    /// flow — coalesces a burst of triggers into one outstanding verdict.
+    /// Set / cleared on `flowQueue`, like `lastPathViable`.
+    var deadPathRecheckPending = false
     /// A terminal close signal (server EOF / egress close, `viaRust`
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
@@ -356,11 +361,12 @@ final class TcpFlowContext: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
-    /// Post-wake reconcile found this established flow's egress path no
-    /// longer viable after the settle window: the path was torn down across
-    /// a network-changing sleep but the NWConnection stayed `.ready`, so
-    /// neither `.waiting` nor `.failed` fired. Reset it so the client
-    /// reconnects instead of hanging until the 60s watchdog.
+    /// The settle-delayed dead-path re-check (post-wake reconcile, or the
+    /// mid-session viability-loss trigger) found this established flow's
+    /// egress path no longer viable: the path was torn down across a
+    /// network change but the NWConnection stayed `.ready`, so neither
+    /// `.waiting` nor `.failed` fired. Reset it so the client reconnects
+    /// instead of hanging until an idle reaper.
     func applyWakeDeadPath() {
         let err = NSError(
             domain: "rama.tproxy.wake-dead-path", code: -1,

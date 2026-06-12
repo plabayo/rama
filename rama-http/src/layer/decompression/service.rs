@@ -243,25 +243,24 @@ where
                 ));
             };
 
-            let body =
-                match marker {
-                    DecompressedFrom::Gzip => DecompressionBody::new(BodyInner::gzip(
-                        WrapBody::new(body, CompressionLevel::default())
-                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
-                    )),
-                    DecompressedFrom::Deflate => DecompressionBody::new(BodyInner::deflate(
-                        WrapBody::new(body, CompressionLevel::default())
-                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
-                    )),
-                    DecompressedFrom::Brotli => DecompressionBody::new(BodyInner::brotli(
-                        WrapBody::new(body, CompressionLevel::default())
-                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
-                    )),
-                    DecompressedFrom::Zstd => DecompressionBody::new(BodyInner::zstd(
-                        WrapBody::new(body, CompressionLevel::default())
-                            .with_tolerate_decode_errors(self.tolerate_decode_errors),
-                    )),
-                };
+            let body = match marker {
+                DecompressedFrom::Gzip => DecompressionBody::new(BodyInner::gzip(
+                    WrapBody::new(body, CompressionLevel::default())
+                        .with_tolerate_decode_errors(self.tolerate_decode_errors),
+                )),
+                DecompressedFrom::Deflate => DecompressionBody::new(BodyInner::deflate(
+                    WrapBody::new(body, CompressionLevel::default())
+                        .with_tolerate_decode_errors(self.tolerate_decode_errors),
+                )),
+                DecompressedFrom::Brotli => DecompressionBody::new(BodyInner::brotli(
+                    WrapBody::new(body, CompressionLevel::default())
+                        .with_tolerate_decode_errors(self.tolerate_decode_errors),
+                )),
+                DecompressedFrom::Zstd => DecompressionBody::new(BodyInner::zstd(
+                    WrapBody::new(body, CompressionLevel::default())
+                        .with_tolerate_decode_errors(self.tolerate_decode_errors),
+                )),
+            };
 
             entry.remove();
             remove_payload_metadata_headers(&mut parts.headers);

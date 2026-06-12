@@ -313,11 +313,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // which IS `flowQueue`, so we're already serialised here. A second
         // hop would re-order this write to AFTER work already queued ahead
         // of it: e.g. a recovery `viable=true` arriving just before a due
-        // `checkWakeDeadPath` would land BEHIND the check, so the check
+        // `checkDeadPath` would land BEHIND the check, so the check
         // reads a stale `false` and resets a flow whose path just came back.
         // Direct assignment lands the value in FIFO order with the callback.
         connection.viabilityUpdateHandler = { [weak self] viable in
-            self?.ctx.lastPathViable = viable
+            guard let self else { return }
+            self.ctx.lastPathViable = viable
+            // Mid-session loss (roam / interface switch / VPN toggle):
+            // schedule the settle-delayed dead-path re-check now instead of
+            // waiting for a wake that never comes. No-op while
+            // `defaultViabilityLossRecheckMs == 0` (the shipped default).
+            if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
         }
     }
 
