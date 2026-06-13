@@ -109,9 +109,9 @@ where
     }
 }
 
-/// Error for [`TimeoutBody`].
+/// Error for [`TimeoutBody`] and [`DeadlineBody`][super::DeadlineBody].
 #[derive(Debug)]
-pub struct TimeoutError(());
+pub struct TimeoutError(pub(super) ());
 
 impl std::error::Error for TimeoutError {}
 

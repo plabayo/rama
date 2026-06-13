@@ -802,4 +802,91 @@ mod tests {
             "205 response must not carry Content-Encoding"
         );
     }
+
+    #[tokio::test]
+    async fn wildcard_q_zero_returns_406() {
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*;q=0")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::NOT_ACCEPTABLE);
+        assert!(
+            res.headers()
+                .get_all(crate::header::VARY)
+                .iter()
+                .any(|v| v.to_str().unwrap().contains("accept-encoding"))
+        );
+    }
+
+    #[tokio::test]
+    async fn wildcard_q_zero_with_gzip_picks_gzip() {
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*;q=0,gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::OK);
+        assert_eq!(res.headers().get(CONTENT_ENCODING).unwrap(), "gzip");
+    }
+
+    #[tokio::test]
+    async fn wildcard_alone_compresses() {
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::OK);
+        // `*` makes every encoding acceptable, so the best supported one is picked.
+        assert!(res.headers().contains_key(CONTENT_ENCODING));
+    }
+
+    #[tokio::test]
+    async fn identity_q_zero_alone_returns_406() {
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "identity;q=0")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[tokio::test]
+    async fn identity_q_zero_with_gzip_picks_gzip() {
+        let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "identity;q=0,gzip")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::OK);
+        assert_eq!(res.headers().get(CONTENT_ENCODING).unwrap(), "gzip");
+    }
+
+    #[tokio::test]
+    async fn enforce_not_acceptable_opt_out_falls_back_to_identity() {
+        // With 406 enforcement disabled, an otherwise-unsatisfiable Accept-Encoding falls back
+        // to an uncompressed identity response instead of 406.
+        let svc = Compression::new(service_fn(handle))
+            .with_compress_predicate(Always)
+            .with_enforce_not_acceptable(false);
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*;q=0")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::OK);
+        assert!(!res.headers().contains_key(CONTENT_ENCODING));
+    }
 }

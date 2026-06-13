@@ -1549,3 +1549,284 @@ fn test_build_and_validate_path_reserved_dos_names() {
         }
     }
 }
+
+#[tokio::test]
+async fn etag_is_set_on_response() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res
+        .headers()
+        .get(header::ETAG)
+        .expect("missing ETag header");
+    let etag_str = etag.to_str().unwrap();
+    // Strong ETag format: a quoted, non-weak opaque value.
+    assert!(etag_str.starts_with('"'));
+    assert!(etag_str.ends_with('"'));
+    assert!(!etag_str.starts_with("W/"));
+    assert!(etag_str.contains('-'));
+}
+
+#[tokio::test]
+async fn if_none_match_returns_304() {
+    let svc = ServeDir::new("../rama-http");
+
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res.headers().get(header::ETAG).unwrap().clone();
+    let last_modified = res.headers().get(header::LAST_MODIFIED).unwrap().clone();
+
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, &etag)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+    // RFC 9110 §15.4.5: 304 must include the validators.
+    assert_eq!(res.headers().get(header::ETAG).unwrap(), &etag);
+    assert_eq!(
+        res.headers().get(header::LAST_MODIFIED).unwrap(),
+        &last_modified
+    );
+    assert!(res.into_body().frame().await.is_none());
+}
+
+#[tokio::test]
+async fn if_none_match_with_non_matching_etag_returns_200() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, "\"not-a-real-etag\"")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn if_none_match_wildcard_returns_304() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, "*")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn if_match_with_matching_etag_succeeds() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res.headers().get(header::ETAG).unwrap().clone();
+
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MATCH, etag)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn if_match_with_non_matching_etag_returns_412() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MATCH, "\"not-a-real-etag\"")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn if_none_match_takes_precedence_over_if_modified_since() {
+    // Per RFC 9110 §13.2.2, If-None-Match takes precedence over If-Modified-Since.
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res.headers().get(header::ETAG).unwrap().clone();
+
+    // Matching If-None-Match plus a very old If-Modified-Since (which alone would be 200):
+    // If-None-Match wins → 304.
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, etag)
+        .header(header::IF_MODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn if_match_takes_precedence_over_if_unmodified_since() {
+    // Per RFC 9110 §13.2.2, If-Match takes precedence over If-Unmodified-Since.
+    // Non-matching If-Match (would 412) plus a far-future If-Unmodified-Since (would pass):
+    // If-Match wins → 412.
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MATCH, "\"not-a-real-etag\"")
+        .header(header::IF_UNMODIFIED_SINCE, "Sun, 01 Jan 2100 00:00:00 GMT")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn if_none_match_weak_comparison() {
+    // Weak comparison: `W/"etag"` should match `"etag"` for If-None-Match.
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let weak_etag = format!("W/{etag}");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, &weak_etag)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn if_match_strong_comparison_rejects_weak_etag() {
+    // Strong comparison: `W/"etag"` must NOT match `"etag"` for If-Match.
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let etag = res
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    let weak_etag = format!("W/{etag}");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MATCH, &weak_etag)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn if_none_match_multiple_etags() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    let etag = res
+        .headers()
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    // One matching tag among several should still produce 304.
+    let multi = format!("\"bogus\", {etag}, \"also-bogus\"");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_NONE_MATCH, &multi)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn if_match_wildcard_succeeds() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MATCH, "*")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn etag_on_head_request() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .method(Method::HEAD)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::ETAG).is_some());
+}
+
+#[tokio::test]
+async fn if_modified_since_304_includes_etag() {
+    let svc = ServeDir::new("../rama-http");
+    let req = Request::builder()
+        .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    let last_modified = res.headers().get(header::LAST_MODIFIED).unwrap().clone();
+    let etag = res.headers().get(header::ETAG).unwrap().clone();
+
+    // A time-based 304 should also carry the ETag.
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::IF_MODIFIED_SINCE, &last_modified)
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(res.headers().get(header::ETAG).unwrap(), &etag);
+    assert_eq!(
+        res.headers().get(header::LAST_MODIFIED).unwrap(),
+        &last_modified
+    );
+}

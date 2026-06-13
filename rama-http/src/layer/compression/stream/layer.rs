@@ -11,11 +11,23 @@ use rama_core::Layer;
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](crate::layer::compression) for more details.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct StreamCompressionLayer<P = DefaultStreamPredicate> {
     accept: AcceptEncoding,
     predicate: P,
     quality: CompressionLevel,
+    enforce_not_acceptable: bool,
+}
+
+impl<P: Default> Default for StreamCompressionLayer<P> {
+    fn default() -> Self {
+        Self {
+            accept: AcceptEncoding::default(),
+            predicate: P::default(),
+            quality: CompressionLevel::default(),
+            enforce_not_acceptable: true,
+        }
+    }
 }
 
 impl<S, P> Layer<S> for StreamCompressionLayer<P>
@@ -30,6 +42,7 @@ where
             accept: self.accept,
             predicate: self.predicate.clone(),
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 
@@ -39,6 +52,7 @@ where
             accept: self.accept,
             predicate: self.predicate,
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 }
@@ -50,6 +64,21 @@ impl StreamCompressionLayer {
         Self::default()
     }
 
+    /// Replace the current compression predicate.
+    pub fn with_compress_predicate<C>(self, predicate: C) -> StreamCompressionLayer<C>
+    where
+        C: Predicate,
+    {
+        StreamCompressionLayer {
+            accept: self.accept,
+            predicate,
+            quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
+        }
+    }
+}
+
+impl<P> StreamCompressionLayer<P> {
     rama_utils::macros::generate_set_and_with! {
         /// Sets whether to enable the gzip encoding.
         pub fn gzip(mut self, enable: bool) -> Self {
@@ -90,15 +119,16 @@ impl StreamCompressionLayer {
         }
     }
 
-    /// Replace the current compression predicate.
-    pub fn with_compress_predicate<C>(self, predicate: C) -> StreamCompressionLayer<C>
-    where
-        C: Predicate,
-    {
-        StreamCompressionLayer {
-            accept: self.accept,
-            predicate,
-            quality: self.quality,
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to respond with `406 Not Acceptable` when the client's
+        /// `Accept-Encoding` header rejects every available representation
+        /// (e.g. `*;q=0` or a lone `identity;q=0`), as recommended by RFC 9110 §12.5.3.
+        ///
+        /// Enabled by default. Disable to opt out and instead fall back to sending an
+        /// uncompressed (identity) response regardless of the client's stated preference.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.enforce_not_acceptable = enable;
+            self
         }
     }
 }
@@ -388,5 +418,36 @@ mod tests {
             !res.headers().contains_key(CONTENT_ENCODING),
             "range response must not carry Content-Encoding"
         );
+    }
+
+    // RFC 9110 §12.5.3: `*;q=0` rejects every representation, so the negotiation is
+    // unsatisfiable and the middleware responds 406 Not Acceptable by default.
+    #[tokio::test]
+    async fn wildcard_q_zero_returns_406() {
+        use crate::StatusCode;
+        let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*;q=0")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
+    }
+
+    // Disabling enforcement falls back to an uncompressed identity response instead of 406.
+    #[tokio::test]
+    async fn enforce_not_acceptable_opt_out_falls_back_to_identity() {
+        use crate::StatusCode;
+        use crate::header::CONTENT_ENCODING;
+        let service = StreamCompressionLayer::new()
+            .with_enforce_not_acceptable(false)
+            .into_layer(service_fn(handle));
+        let req = Request::builder()
+            .header(ACCEPT_ENCODING, "*;q=0")
+            .body(Body::empty())
+            .unwrap();
+        let res = service.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(!res.headers().contains_key(CONTENT_ENCODING));
     }
 }
