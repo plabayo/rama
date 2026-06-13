@@ -12,6 +12,7 @@ use rama_core::Layer;
 pub struct DecompressionLayer<M = DefaultDecompressionMatcher> {
     accept: AcceptEncoding,
     insert_accept_encoding_header: bool,
+    tolerate_decode_errors: bool,
     matcher: M,
 }
 
@@ -20,6 +21,7 @@ impl<M: Default> Default for DecompressionLayer<M> {
         Self {
             accept: Default::default(),
             insert_accept_encoding_header: true,
+            tolerate_decode_errors: false,
             matcher: Default::default(),
         }
     }
@@ -36,6 +38,7 @@ where
             inner: service,
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
+            tolerate_decode_errors: self.tolerate_decode_errors,
             matcher: self.matcher.clone(),
         }
     }
@@ -68,7 +71,21 @@ impl<M> DecompressionLayer<M> {
         DecompressionLayer {
             accept: self.accept,
             insert_accept_encoding_header: self.insert_accept_encoding_header,
+            tolerate_decode_errors: self.tolerate_decode_errors,
             matcher,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// End a response body cleanly on a mid-stream decode error (after some
+        /// data decoded) instead of surfacing the error. Off by default.
+        ///
+        /// Intended for relays that decode → modify → re-encode a response (e.g. a
+        /// MITM HTML rewriter): a truncated upstream body then yields a short-but-
+        /// well-formed client stream rather than an aborted one.
+        pub fn tolerate_decode_errors(mut self, tolerate: bool) -> Self {
+            self.tolerate_decode_errors = tolerate;
+            self
         }
     }
 

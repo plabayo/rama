@@ -127,6 +127,22 @@ run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
         -Xlinker -framework -Xlinker NetworkExtension \
         -Xlinker -framework -Xlinker SystemConfiguration
 
+# Swift unit tests under ThreadSanitizer. The suppressions file silences known
+# TEST-HARNESS races only (tests observing flowQueue-confined ctx state from the
+# test thread; ChaosTests' deliberate raw-thread teardown idempotency probe) —
+# every suppressed function is single-threaded in production, so a REAL
+# production data race would be in a different function and still fail this. See
+# the file header in RamaAppleNetworkExtension/tsan-suppressions.txt.
+[working-directory: '.']
+run-tproxy-ffi-e2e-swift-tsan: build-tproxy-rs-debug
+    TSAN_OPTIONS="suppressions=$(pwd)/../../RamaAppleNetworkExtension/tsan-suppressions.txt" \
+    swift test --sanitize=thread \
+        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
+        -Xlinker -lrama_tproxy_example \
+        -Xlinker -lz \
+        -Xlinker -framework -Xlinker NetworkExtension \
+        -Xlinker -framework -Xlinker SystemConfiguration
+
 qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 
 qa: qa-rust build-tproxy-dev

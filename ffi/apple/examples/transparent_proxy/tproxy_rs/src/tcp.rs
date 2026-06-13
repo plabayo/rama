@@ -234,6 +234,10 @@ impl DemoTcpMitmService {
             html_badge_layer,
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
+                // A truncated egress body (e.g. stale path after a network change)
+                // must not abort the rewritten client stream; end it cleanly so the
+                // client gets a short-but-well-formed page, not an integrity error.
+                .with_tolerate_decode_errors(true)
                 .with_matcher(decompressor_matcher),
             SetResponseHeaderLayer::if_not_present_typed(
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),

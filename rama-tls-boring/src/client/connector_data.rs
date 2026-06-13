@@ -1243,6 +1243,14 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
                 "TlsConnectorData: builder: mirrored ClientHello advertises TLS 1.3 but is not viable as TLS 1.3; clamp egress connector to TLS 1.2"
             );
             builder.max_ssl_version = Some(SslVersion::TLS1_2);
+            // A TLS 1.3-only supported_versions offer leaves min_ssl_version at
+            // TLS 1.3; clamping max down to TLS 1.2 would then make min > max,
+            // which boring rejects. TLS 1.3 is the only version above TLS 1.2, so
+            // lower exactly that floor to keep the connector internally consistent
+            // (a lower legitimate floor, e.g. TLS 1.1, is left untouched).
+            if builder.min_ssl_version == Some(SslVersion::TLS1_3) {
+                builder.min_ssl_version = Some(SslVersion::TLS1_2);
+            }
         }
 
         Ok(builder)
@@ -1391,5 +1399,69 @@ mod tests {
             TlsConnectorDataBuilder::new().with_base_config(base_builder.into_shared_builder());
 
         assert_eq!(builder.store_server_certificate_chain(), Some(true));
+    }
+
+    use rama_net::tls::{CipherSuite, SignatureScheme};
+
+    // A minimal hello: modern legacy version, no cipher suites (→ not TLS1.3
+    // viable), carrying only the given supported_versions plus any extras.
+    fn hello_from(
+        versions: Vec<ProtocolVersion>,
+        exts_extra: Vec<ClientHelloExtension>,
+    ) -> ClientHello {
+        let mut exts = vec![ClientHelloExtension::SupportedVersions(versions)];
+        exts.extend(exts_extra);
+        ClientHello::new(ProtocolVersion::TLSv1_2, Vec::new(), Vec::new(), exts)
+    }
+
+    #[test]
+    fn requires_tls12_clamp_truth_table() {
+        for supported in [false, true] {
+            for ciphers in [false, true] {
+                for sigalgs in [false, true] {
+                    let facts = Tls13ClientHelloFacts {
+                        supported,
+                        cipher_suites_present: ciphers,
+                        capable_signature_algorithms_present: sigalgs,
+                    };
+                    // Clamp iff TLS1.3 is offered but it is not coherently viable
+                    // (missing 1.3 cipher suites OR missing 1.3-capable sigalgs).
+                    let want = supported && (!ciphers || !sigalgs);
+                    assert_eq!(facts.requires_tls12_clamp(), want, "facts={facts:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tls13_only_but_not_viable_clamps_and_keeps_min_le_max() {
+        // TLS 1.3 advertised, but no TLS 1.3 cipher suites (empty) → not viable.
+        let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new());
+        let builder = TlsConnectorDataBuilder::try_from(hello).unwrap();
+        // Regression guard for the min>max inversion: both ends pinned to TLS 1.2.
+        assert_eq!(builder.max_ssl_version, Some(SslVersion::TLS1_2));
+        assert_eq!(builder.min_ssl_version, Some(SslVersion::TLS1_2));
+    }
+
+    #[test]
+    fn valid_tls13_hello_is_not_clamped() {
+        let hello = ClientHello::new(
+            ProtocolVersion::TLSv1_2,
+            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+            Vec::new(),
+            vec![
+                ClientHelloExtension::SupportedVersions(vec![
+                    ProtocolVersion::TLSv1_2,
+                    ProtocolVersion::TLSv1_3,
+                ]),
+                ClientHelloExtension::SignatureAlgorithms(vec![
+                    SignatureScheme::ECDSA_NISTP256_SHA256,
+                ]),
+            ],
+        );
+        let builder = TlsConnectorDataBuilder::try_from(hello).unwrap();
+        // A coherent TLS 1.3 hello must NOT be clamped down to TLS 1.2.
+        assert_eq!(builder.max_ssl_version, Some(SslVersion::TLS1_3));
+        assert_eq!(builder.min_ssl_version, Some(SslVersion::TLS1_2));
     }
 }

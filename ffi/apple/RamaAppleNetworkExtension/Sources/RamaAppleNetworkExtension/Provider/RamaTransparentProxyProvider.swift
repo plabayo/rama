@@ -325,6 +325,34 @@ nonisolated(unsafe) var defaultEgressWaitingToleranceMs: UInt32 = 5_000
 /// same pattern as `defaultEgressWaitingToleranceMs`.
 nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 
+/// Mid-session sibling of `defaultPostWakePathRecheckMs`: settle delay
+/// before re-judging an established egress flow whose
+/// `viabilityUpdateHandler` reported `false` WITHOUT a system sleep —
+/// Wi-Fi roam, Wi-Fi↔Ethernet, VPN up/down. Long enough to ride out a
+/// roam blip (a path that recovers in the window is spared by the
+/// re-check), far shorter than the minutes-scale idle reapers that are
+/// otherwise the only backstop for a flow stranded `.ready` over a dead
+/// path mid-session (`.waiting`/`.failed` never fire for that strand).
+///
+/// Set to == `defaultEgressWaitingToleranceMs` ON PURPOSE: the two are
+/// the same dead-path budget seen through two signals. A path loss that
+/// ALSO drives the connection to `.waiting` arms the precise per-flow
+/// `.waiting` tolerance timer; the viability re-check must NOT preempt
+/// that timer (an earlier settle would silently shorten the carefully
+/// chosen recovery budget and reset a flow that was still inside it —
+/// e.g. an interface-pinned egress whose roam routinely exceeds a few
+/// seconds). Keeping them equal means the `.waiting` timer owns flows
+/// that report both signals, and the re-check is left to cover ONLY the
+/// silent-strand case where `.waiting` never fires. `handleEgressViabilityLoss`
+/// additionally defers to an armed `.waiting` timer (`postReadyWaitingArmed`)
+/// so a value below the tolerance still cannot preempt it. Do not set this
+/// below `defaultEgressWaitingToleranceMs` (see the guard test).
+///
+/// Ships ENABLED at `5_000`. Set to `0` to disable mid-session
+/// re-checks entirely — the kill switch, mirroring
+/// `defaultFlowPressureSoftCap`.
+nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 5_000
+
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
 /// transition). Fail fast instead of hanging the full connect timeout;
@@ -352,6 +380,74 @@ nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000
 /// `var` for tests that need a short timeout to keep ARC-leak-check
 /// runtime bounded — same pattern as `defaultLingerCloseMs`.
 nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt32 = 60_000
+
+/// Idle (no-progress) reaper deadline for promoted-path TCP flows
+/// (`TcpDirectForwarder`), in milliseconds. `0` disables the reaper.
+///
+/// The promoted path has NO in-Rust idle backstop: once a flow promotes, its
+/// Rust service task drains to EOF and exits, so the engine's
+/// `DEFAULT_TCP_IDLE_TIMEOUT` (15 min, byte-progress based) no longer applies.
+/// Without this, an established promoted flow whose peer goes silent — yet
+/// stays TCP-alive, so egress keepalive never fails it — pins its egress
+/// `NWConnection`'s kernel nexus-flow slot indefinitely; enough of them
+/// exhaust the extension's per-process NECP allocation and freeze ALL proxied
+/// networking (`NECP_CLIENT_ACTION_ADD_FLOW … ENOMEM`).
+///
+/// Default 15 min mirrors the engine's `viaRust` idle timeout EXACTLY, so a
+/// promoted flow is reaped on the same schedule it would have been before
+/// promotion: this RESTORES PARITY, it does not add a more aggressive kill.
+/// Like that timeout it keys on APP-byte progress, not TCP liveness — it
+/// cannot distinguish a silently-dead peer from a genuinely idle-but-alive
+/// one. Egress TCP keepalive (`applyTcpKeepalive`) is the precise dead-peer
+/// detector; this is the coarse last-resort backstop for the alive-but-idle
+/// remainder.
+///
+/// `var` so tests can shorten it to keep runtime bounded — same pattern as
+/// `defaultLingerCloseMs` / `defaultUdpIdleTimeoutMs`.
+nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
+
+// ── Flow-pressure backstop (nexus-slot exhaustion) ───────────────────────────
+//
+// A macOS NE app-proxy provider has a per-process kernel nexus-flow allocation;
+// each intercepted flow consumes a slot (the app's ingress NEAppProxyFlow plus
+// our egress NWConnection). When `NECP_CLIENT_ACTION_ADD_FLOW` starts returning
+// ENOMEM, ALL proxied networking stalls — a machine-wide freeze. Keepalive
+// (dead peers, ~30s) and the idle reapers (wedged/idle flows, minutes) keep the
+// steady-state population bounded, but a fast BURST of connections can approach
+// the ceiling faster than those act. This is the burst backstop.
+//
+// Policy (deliberately conservative — see the constraints it honours below):
+//   * Triggered when the COMBINED live flow count (TCP + UDP — the nexus ceiling
+//     is global across the flowswitch) crosses `…SoftCap` at admission time, on
+//     BOTH TCP and UDP admission (a UDP burst can approach the ceiling too).
+//   * NEVER refuses or delays a new flow: the new flow is always admitted; the
+//     reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
+//     A burst of triggers is coalesced (`pressureReapInFlight`) into one scan.
+//   * NEVER touches an active or recently-active flow: only flows idle past
+//     `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU) down to
+//     `…LowWater` for hysteresis. There is intentionally NO activity-blind
+//     eviction: under genuine all-active saturation we admit and log (once per
+//     episode) rather than reset a live connection — the SoftCap margin below
+//     the ceiling is the cushion for that (rare) case.
+//   * Mode-agnostic eviction: BOTH `viaRust` and `.promoted` flows are evictable
+//     (both bump `lastActivityAt` on the shared write-pump flowQueue hop, so the
+//     idle-floor check excludes an actively-transferring flow of either mode).
+//     Eviction is TCP-only: UDP flows self-bound via `defaultUdpIdleTimeoutMs`
+//     (60s, far tighter than TCP), so a UDP-driven burst TRIGGERS the reap
+//     (relieving the global ceiling by reaping idle TCP slots) but UDP flows are
+//     not themselves evicted here. (The Rust engine's `DEFAULT_TCP_IDLE_TIMEOUT`
+//     and the promoted maintenance reaper remain the slower per-mode hygiene
+//     backstops; this is the fast, global one.)
+//
+// IMPORTANT — these defaults are UNVALIDATED guesses. The kernel ceiling is
+// undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits
+// below that with margin. They MUST be calibrated against an on-device
+// burst/soak run (see scripts/soak_test.sh + the burst regression test) before
+// being trusted. `…SoftCap == 0` disables the backstop. `var` for test tuning,
+// same pattern as the other `default…Ms` knobs above.
+nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
+nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
+nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 
 // ── Per-pump lifecycle / state enums ─────────────────────────────────────────
 
@@ -395,7 +491,6 @@ struct WriteRetry {
     /// Hard wall-clock deadline for the whole retry sequence.
     var deadline: DispatchTime
 }
-
 
 func blockedFlowError() -> NSError {
     NSError(
@@ -457,7 +552,6 @@ struct TcpReadTerminal {
         }
     }
 }
-
 
 /// Classify a `NEAppProxyFlow` callback error into an expected
 /// disconnect vs. an actionable failure. Codes come from
@@ -635,7 +729,6 @@ struct TcpWriterState {
 /// invoked after the lock has been released, so there is no active lock
 /// to re-enter — but future implementors should not assume otherwise.
 
-
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// The Apple-framework-free state machine, engine handle, and
     /// per-flow registration maps live here. This subclass exists
@@ -729,7 +822,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         // drifted from what the comments described.
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        core.logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        core.logLifecycle(
+            "tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
         let settings = Self.buildNetworkSettings(
             from: startup,
@@ -871,11 +965,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             let portStr = String(port)
             let v4 = NWHostEndpoint(hostname: "0.0.0.0", port: portStr)
             let v6 = NWHostEndpoint(hostname: "::", port: portStr)
-            let localPrefix = resolvedPrefix(
-                endpoint: local,
-                networkText: rule.localNetwork,
-                explicitPrefix: rule.localPrefix
-            ) ?? 0
+            let localPrefix =
+                resolvedPrefix(
+                    endpoint: local,
+                    networkText: rule.localNetwork,
+                    explicitPrefix: rule.localPrefix
+                ) ?? 0
             return [v4, v6].map {
                 NENetworkRule(
                     remoteNetwork: $0,
@@ -911,14 +1006,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return []
         }
 
-        return [NENetworkRule(
-            remoteNetwork: remote,
-            remotePrefix: remotePrefix,
-            localNetwork: local,
-            localPrefix: localPrefix,
-            protocol: proto,
-            direction: .outbound
-        )]
+        return [
+            NENetworkRule(
+                remoteNetwork: remote,
+                remotePrefix: remotePrefix,
+                localNetwork: local,
+                localPrefix: localPrefix,
+                protocol: proto,
+                direction: .outbound
+            )
+        ]
     }
 
     internal static func resolvedPrefix(
@@ -1055,7 +1152,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return resolved >= 0 ? resolved : nil
             }
-        return (signingIdentifier, deriveBundleId(fromSigningId: signingIdentifier), auditToken, pid)
+        return (
+            signingIdentifier, deriveBundleId(fromSigningId: signingIdentifier), auditToken, pid
+        )
     }
 
     /// Best-effort derivation of the bundle identifier from
@@ -1241,7 +1340,8 @@ let defaultTcpKeepaliveCount: Int = 3
 /// `.failed`, viability stays true) and wedge until the 60 s watchdog;
 /// keepalive probes fail it → `.failed` → existing reaper → app reconnects.
 /// Opt out with `tcp_keepalive_enabled = false`.
-private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options) {
+private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
+{
     guard opts?.tcpKeepaliveEnabled ?? true else {
         tcp.enableKeepalive = false
         return

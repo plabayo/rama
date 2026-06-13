@@ -112,6 +112,36 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
     }
 
+    /// The wired handler must also TRIGGER the mid-session dead-path
+    /// re-check on a loss (not just cache it) — through the REAL
+    /// `installEgressStateHandler` wiring, so the lifecycle tests' mirrored
+    /// handler can't drift from production. With the kill switch (`0`) it
+    /// schedules nothing; enabled, a `false` schedules the coalesced
+    /// re-check. The long settle keeps the timer from firing in-test (the
+    /// fixture dies first; the weak-ctx guard then no-ops).
+    func testViabilityHandlerSchedulesMidSessionRecheck() {
+        let prev = defaultViabilityLossRecheckMs
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        // Kill switch: the real handler caches viability but schedules nothing.
+        defaultViabilityLossRecheckMs = 0
+        let fxOff = Fixture()
+        fxOff.session.installEgressStateHandler(connection: fxOff.conn)
+        fxOff.conn.simulateViability(false)
+        XCTAssertFalse(
+            fxOff.session.ctx.deadPathRecheckPending,
+            "kill switch (0) must schedule nothing")
+
+        // Enabled: the real handler schedules the coalesced re-check.
+        defaultViabilityLossRecheckMs = 60_000
+        let fxOn = Fixture()
+        fxOn.session.installEgressStateHandler(connection: fxOn.conn)
+        fxOn.conn.simulateViability(false)
+        XCTAssertTrue(
+            fxOn.session.ctx.deadPathRecheckPending,
+            "enabled loss must schedule the re-check through the real handler")
+    }
+
     // MARK: - state-timer recovery (FIFO via direct dispatch)
 
     /// With the `stateUpdateHandler` hop removed and the mock delivering

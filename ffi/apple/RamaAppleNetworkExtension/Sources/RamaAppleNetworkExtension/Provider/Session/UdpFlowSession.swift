@@ -85,8 +85,16 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerUdpFlow(flowId, anchor: self)
+            let occupancy = core?.registerUdpFlow(flowId, anchor: self) ?? 0
             openKernelFlow()
+            // Nexus pressure is global (tcp+udp). A UDP burst can approach the
+            // kernel ceiling too, so drive the same backstop TCP admission does
+            // — it reaps idle TCP slots to free room. NEVER refuses/delays this
+            // flow (the reap is async, off this delivery thread, for SUBSEQUENT
+            // flows). No-op when the soft cap is disabled or unmet.
+            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
+                core?.reapIdleUnderPressure()
+            }
             return true
         case .passthrough:
             core?.logDebug("handleNewFlow udp bypassed by rust flow policy")

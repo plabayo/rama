@@ -80,9 +80,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// fresh `currentPath` snapshot per read) to decide whether an
     /// established flow stranded on a dead path should be reset. Defaults
     /// `true` so a flow we have no signal about is never reset. Mutated on
-    /// `flowQueue`; read off-queue by `checkWakeDeadPath` (same relaxation
+    /// `flowQueue`; read off-queue by `checkDeadPath` (same relaxation
     /// as `egressReady`).
     var lastPathViable = true
+    /// A settle-delayed dead-path re-check (post-wake reconcile or
+    /// mid-session viability-loss trigger) is already scheduled for this
+    /// flow — coalesces a burst of triggers into one outstanding verdict.
+    /// Set / cleared on `flowQueue`, like `lastPathViable`.
+    var deadPathRecheckPending = false
     /// A terminal close signal (server EOF / egress close, `viaRust`
     /// mode) was observed on `flowQueue` and the graceful drain +
     /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
@@ -94,6 +99,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `TcpFlowSession.armTerminalDrainBackstop` /
     /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
     var terminalSignalled = false
+    /// A post-ready egress `.waiting` tolerance timer is currently armed
+    /// (`TcpFlowSession.handleEgressWaiting` armed it; cleared when it fires,
+    /// is cancelled on `.ready` recovery, or on teardown). That timer is the
+    /// PRECISE per-flow recovery budget for a path loss, so while it is armed
+    /// the coarser mid-session viability re-check must defer to it rather than
+    /// preempt it (see `handleEgressViabilityLoss` / `defaultViabilityLossRecheckMs`).
+    /// Set / cleared on `flowQueue`, like the other lifecycle flags.
+    var postReadyWaitingArmed = false
     /// Effective graceful-close linger budget for this flow (from the
     /// egress connect options, else `defaultLingerCloseMs`). Set once by
     /// `TcpFlowSession.startEgressConnection`; read by
@@ -108,6 +121,23 @@ final class TcpFlowContext: @unchecked Sendable {
     /// NWConnection direct read/write loops + cutover
     /// buffer.
     var directForwarder: TcpDirectForwarder?
+    /// Monotonic timestamp (`DispatchTime`, mach-uptime — pauses during
+    /// system sleep, like the engine's tokio idle timers) of the last byte
+    /// observed on the promoted (`TcpDirectForwarder`) data path. Bumped by
+    /// the forwarder's `onActivity` hook on `flowQueue`; read off-queue by the
+    /// maintenance watchdog (same relaxation as `egressReady` /
+    /// `terminalSignalled`). A promoted flow idle past
+    /// `defaultPromotedIdleTimeoutMs` is reaped by `applyIdleTimeout`.
+    ///
+    /// Restores the idle backstop a flow already had on the `viaRust` path
+    /// (the Rust engine's `DEFAULT_TCP_IDLE_TIMEOUT`, also byte-progress
+    /// based) but LOST at promote cutover: once promoted, the Rust service
+    /// task exits and its idle timer is gone, so without this an established
+    /// promoted flow whose peer goes silent — yet stays TCP-alive, so
+    /// keepalive never fails it — pins its egress `NWConnection`'s kernel
+    /// nexus-flow slot forever. Defaults to creation time so a flow that
+    /// promotes and never transfers is still reaped on schedule.
+    var lastActivityAt: DispatchTime = .now()
     /// The per-flow serial queue that confines every mutation of this
     /// context (and the `isDone` teardown flag). Set once by
     /// `TcpFlowSession.init`. Lifecycle paths that originate off this
@@ -295,11 +325,57 @@ final class TcpFlowContext: @unchecked Sendable {
         applyFullTeardown(error: err, driveForwarder: true)
     }
 
-    /// Post-wake reconcile found this established flow's egress path no
-    /// longer viable after the settle window: the path was torn down across
-    /// a network-changing sleep but the NWConnection stayed `.ready`, so
-    /// neither `.waiting` nor `.failed` fired. Reset it so the client
-    /// reconnects instead of hanging until the 60s watchdog.
+    /// The promoted (`TcpDirectForwarder`) data path made no progress for
+    /// longer than `defaultPromotedIdleTimeoutMs`. The promoted path has no
+    /// in-Rust idle backstop (the Rust service task exits at cutover), so
+    /// without this an established promoted flow whose peer is silently gone
+    /// — or one wedged mid-cutover before either direction reaches
+    /// `.finishing` — pins its egress `NWConnection`'s kernel nexus-flow slot
+    /// until the per-process NECP allocation exhausts and ALL proxied
+    /// networking stalls. Force a full teardown. Idempotent via `isDone`.
+    ///
+    /// NOTE: this is APP-byte idle, not liveness — it cannot distinguish a
+    /// silently-dead peer from a genuinely idle-but-alive one, exactly like
+    /// the engine's `viaRust` idle timeout whose parity it restores. Dead
+    /// peers are caught faster and more precisely by egress TCP keepalive
+    /// (`applyTcpKeepalive`); this is the coarse last-resort backstop for the
+    /// alive-but-idle remainder.
+    func applyIdleTimeout() {
+        let err = NSError(
+            domain: "rama.tproxy.idle-timeout", code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "promoted flow idle past timeout; flow force-dropped"
+            ])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
+    /// The flow-pressure backstop evicted this flow: the combined live flow
+    /// count crossed the soft cap and this was among the most-idle flows of
+    /// EITHER mode (idle past the pressure floor — nexus pressure is global, and
+    /// both `viaRust` and `.promoted` carry an accurate `lastActivityAt`),
+    /// chosen LRU to free a kernel nexus-flow slot for subsequent flows —
+    /// rather than let the per-process allocation exhaust and freeze ALL
+    /// proxied networking. Full teardown so BOTH the ingress kernel flow and
+    /// the egress NWConnection slots are released. Idempotent via `isDone`. The
+    /// caller re-checks idleness on `flowQueue` first, so a flow that just
+    /// became active is never evicted. See `TransparentProxyCore.reapIdleUnderPressure`.
+    func applyPressureEvicted() {
+        let err = NSError(
+            domain: "rama.tproxy.pressure-evicted", code: -1,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "idle flow evicted under nexus-flow pressure; flow force-dropped"
+            ])
+        applyFullTeardown(error: err, driveForwarder: true)
+    }
+
+    /// The settle-delayed dead-path re-check (post-wake reconcile, or the
+    /// mid-session viability-loss trigger) found this established flow's
+    /// egress path no longer viable: the path was torn down across a
+    /// network change but the NWConnection stayed `.ready`, so neither
+    /// `.waiting` nor `.failed` fired. Reset it so the client reconnects
+    /// instead of hanging until an idle reaper.
     func applyWakeDeadPath() {
         let err = NSError(
             domain: "rama.tproxy.wake-dead-path", code: -1,

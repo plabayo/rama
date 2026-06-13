@@ -107,8 +107,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case .intercept(let session):
             sessionHandle = session
             ctx.session = session
-            core?.registerTcpFlow(flowId, anchor: self)
-            return startEgressConnection(session: session)
+            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
+            // Admit unconditionally — the flow-pressure backstop NEVER refuses
+            // or delays a new flow. If admitting this one reached the soft cap,
+            // ask the core to reap idle promoted flows asynchronously (off this
+            // delivery thread) to free slots for SUBSEQUENT flows.
+            let admitted = startEgressConnection(session: session)
+            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
+                core?.reapIdleUnderPressure()
+            }
+            return admitted
         case .passthrough:
             core?.logDebug("handleNewFlow tcp bypassed by rust flow policy")
             return false
@@ -144,7 +152,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 // `.paused` replay it buffered.
                 ctx?.session?.signalServerDrain()
                 ctx?.directForwarder?.onClientPumpDrained()
-            }
+            },
+            // S→C byte progress on `flowQueue` — the flow-pressure backstop's
+            // activity signal. Fires for BOTH viaRust and promoted (the
+            // forwarder flushes through this pump too), so an actively
+            // transferring flow of EITHER mode is never reaped as "idle".
+            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() }
         )
         ctx.clientWritePump = writer
     }
@@ -300,11 +313,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // which IS `flowQueue`, so we're already serialised here. A second
         // hop would re-order this write to AFTER work already queued ahead
         // of it: e.g. a recovery `viable=true` arriving just before a due
-        // `checkWakeDeadPath` would land BEHIND the check, so the check
+        // `checkDeadPath` would land BEHIND the check, so the check
         // reads a stale `false` and resets a flow whose path just came back.
         // Direct assignment lands the value in FIFO order with the callback.
         connection.viabilityUpdateHandler = { [weak self] viable in
-            self?.ctx.lastPathViable = viable
+            guard let self else { return }
+            self.ctx.lastPathViable = viable
+            // Mid-session loss (roam / interface switch / VPN toggle):
+            // schedule the settle-delayed dead-path re-check now instead of
+            // waiting for a wake that never comes. No-op when
+            // `defaultViabilityLossRecheckMs == 0`.
+            if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
         }
     }
 
@@ -327,6 +346,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // any pending tolerance timer.
             waitingWork?.cancel()
             waitingWork = nil
+            ctx.postReadyWaitingArmed = false
             return
         }
         egressReady = true
@@ -337,6 +357,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // now-healthy connection down.
         waitingWork?.cancel()
         waitingWork = nil
+        ctx.postReadyWaitingArmed = false
+        // The egress reached `.ready`, but `viabilityUpdateHandler` fires only
+        // on CHANGE: if the path was already non-viable when we connected, it
+        // will NOT re-fire, so this established-but-non-viable flow would have
+        // no mid-session re-check and could strand until a wake/idle reaper —
+        // exactly the hang the re-check exists to prevent. Arm it now. No-op
+        // when the path is viable or the feature is disabled.
+        if !ctx.lastPathViable { core?.handleEgressViabilityLoss(ctx) }
         guard let session = sessionHandle else { return }
 
         let writePump = buildEgressWritePump(connection: connection)
@@ -417,9 +445,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // this timer (`handleEgressReady` → `waitingWork?.cancel()`)
             // before it fires — no stale-timer reset of a recovered flow.
             let work = DispatchWorkItem { [weak self] in
+                self?.ctx.postReadyWaitingArmed = false
                 self?.applyPostReadyTeardown(error: error)
             }
             waitingWork = work
+            // Mark the precise recovery budget as armed so the coarser
+            // mid-session viability re-check defers to it instead of
+            // preempting it (see `handleEgressViabilityLoss`).
+            ctx.postReadyWaitingArmed = true
             flowQueue.asyncAfter(
                 deadline: .now() + .milliseconds(Int(defaultEgressWaitingToleranceMs)),
                 execute: work
@@ -503,7 +536,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 // routing through teardown here would just race that).
                 guard self.ctx.mode != .viaRust else { return }
                 self.ctx.directForwarder?.cancel()
-            }
+            },
+            // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
+            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() }
         )
         ctx.egressWritePump = pump
         return pump

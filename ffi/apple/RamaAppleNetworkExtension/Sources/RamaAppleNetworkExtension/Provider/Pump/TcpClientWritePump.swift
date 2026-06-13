@@ -16,7 +16,8 @@ final class TcpClientWritePump: @unchecked Sendable {
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void,
-        onDrained: @escaping () -> Void
+        onDrained: @escaping () -> Void,
+        onActivity: @escaping () -> Void = {}
     ) {
         self.logger = logger
         self.onTerminalError = onTerminalError
@@ -30,7 +31,8 @@ final class TcpClientWritePump: @unchecked Sendable {
                     level: .trace,
                     text: "tcp client write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
                 ))
-            }
+            },
+            onActivity: onActivity
         )
         self.core = core
         core.delegate = self

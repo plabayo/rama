@@ -79,7 +79,13 @@ final class CoreStressTests: XCTestCase {
         flows: [MockTcpFlow],
         conns: [MockNwConnection],
         description: String,
-        timeout: TimeInterval = 30.0
+        // 60s (matching the failure-mix / UDP churn siblings): the aggregate
+        // async-cleanup drain of 100 parallel flows completes in ~1.6s in
+        // isolation, but on a heavily loaded box (e.g. a CI host, or a run that
+        // also recompiles) the GCD pool is contended and the drain can lag past
+        // a tighter bound — a FALSE flaky, not a hang. Generous margin keeps a
+        // genuine wedge detectable while never tripping on load.
+        timeout: TimeInterval = 60.0
     ) {
         precondition(
             flows.count == conns.count,
@@ -314,7 +320,10 @@ final class CoreStressTests: XCTestCase {
         for flow in flows {
             flow.completePendingRead(datagrams: [], endpoints: nil, error: nil)
         }
-        waitFor("all \(flowCount) flows cleaned up", timeout: 30.0) {
+        // 60s like the TCP / failure-mix churn siblings — see
+        // `drainBatchAndAwaitRemoval`'s timeout note (load-induced drain lag,
+        // not a hang).
+        waitFor("all \(flowCount) flows cleaned up", timeout: 60.0) {
             core.udpFlowCount == 0
         }
     }
