@@ -130,6 +130,10 @@ impl AsyncWrite for ReadyOnPollStream {
 async fn body_test() {
     init_tracing();
     let (server, client) = ReadyOnPollStream::new_pair();
-    let config = fixture::TestConfig::with_timeout(WRITE_DELAY * 2);
+    // Generous STALL watchdog, not a tight pacing assertion — see the matching
+    // note in `unbuffered_stream::body_test`. The thin `WRITE_DELAY * 2` margin
+    // flaked on slow/loaded CI (notably Windows) where connection setup before
+    // the first chunk can exceed it.
+    let config = fixture::TestConfig::with_timeout(WRITE_DELAY * 30);
     fixture::run(server, client, config).await;
 }
