@@ -52,7 +52,7 @@ final class FlowPressureReaperTests: XCTestCase {
 
         init(
             core: TransparentProxyCore, idleSeconds: UInt64, mode: TcpFlowMode = .promoted,
-            ready: Bool = true
+            ready: Bool = true, flowQueue: DispatchQueue? = nil
         ) {
             self.flow = MockTcpFlow()
             self.conn = MockNwConnection()
@@ -62,6 +62,11 @@ final class FlowPressureReaperTests: XCTestCase {
             self.ctx.flow = flow
             self.ctx.core = core
             self.ctx.flowId = flowId
+            // A real per-flow serial queue makes `runFlowTeardown` DISPATCH the
+            // eviction (as in production) instead of running it inline, so the
+            // on-`flowQueue` re-check is exercised against the real async window.
+            // Defaults nil to preserve the synchronous-assertion tests.
+            self.ctx.flowQueue = flowQueue
             self.ctx.egressReady = ready
             self.ctx.mode = mode
             let backNs = idleSeconds &* 1_000_000_000
@@ -71,6 +76,9 @@ final class FlowPressureReaperTests: XCTestCase {
         }
 
         var wasTornDown: Bool { ctx.isDone }
+
+        /// Bump activity to "now" so the flow reads as freshly active.
+        func markActiveNow() { ctx.lastActivityAt = .now() }
     }
 
     private func makeCore() -> TransparentProxyCore { TransparentProxyCore() }
@@ -287,5 +295,98 @@ final class FlowPressureReaperTests: XCTestCase {
 
         XCTAssertEqual(
             fxs.filter { $0.wasTornDown }.count, 0, "soft cap 0 disables the backstop entirely")
+    }
+
+    // MARK: - TG-2: the select-then-revive on-flowQueue re-check
+
+    /// The reaper SELECTS victims off-queue, then RE-CHECKS idleness on each
+    /// victim's `flowQueue` before tearing it down. This injects activity into a
+    /// selected victim AFTER selection but BEFORE the fire body, and asserts the
+    /// re-check spares it. The existing reaper tests revive a flow BEFORE
+    /// selection (so it's filtered at selection and the re-check never runs);
+    /// this is the only test that exercises the guard itself — deleting it would
+    /// tear the revived victim down and fail here.
+    func testVictimRevivedBetweenSelectionAndFireIsSparedByRecheck() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        // 3 idle flows → want = 3 − low-water 1 = 2 victims (the two stalest).
+        let stalest = Fx(core: core, idleSeconds: 30)
+        let middle = Fx(core: core, idleSeconds: 20)
+        let freshest = Fx(core: core, idleSeconds: 10)
+        insert(core, [stalest, middle, freshest])
+
+        let victims = core.testCollectPressureVictims()
+        XCTAssertEqual(victims.count, 2, "the two stalest flows are selected")
+
+        // Revive the stalest selected victim AFTER selection; the fire-body
+        // re-check must now spare it.
+        stalest.markActiveNow()
+        core.testFirePressureEvictions(victims)
+
+        XCTAssertFalse(
+            stalest.wasTornDown,
+            "a victim that became active between selection and teardown must be spared")
+        XCTAssertTrue(middle.wasTornDown, "the still-idle selected victim is evicted")
+        XCTAssertFalse(freshest.wasTornDown, "a non-selected flow is never touched")
+    }
+
+    // MARK: - TG-6: UDP counts toward occupancy but is never a victim
+
+    /// Eviction selects ONLY from `tcpSessions`, but occupancy counts
+    /// `tcp + udp` (the nexus ceiling is global). A UDP-dominated population
+    /// over the cap must evict idle TCP flows (what it can) while never
+    /// selecting a UDP flow as a victim.
+    func testUdpCountsTowardOccupancyButIsNeverEvicted() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let idleTcp = Fx(core: core, idleSeconds: 30)
+        insert(core, [idleTcp])
+        // 5 UDP entries → combined occupancy 6 ≥ cap 4.
+        var udpHolders: [NSObject] = []
+        for _ in 0..<5 {
+            let o = NSObject()
+            udpHolders.append(o)
+            core.testInsertUdpContext(ObjectIdentifier(o), UdpFlowContext())
+        }
+        XCTAssertEqual(core.udpFlowCount, 5)
+
+        core.testReapIdleUnderPressure()
+
+        XCTAssertTrue(idleTcp.wasTornDown, "the idle TCP flow IS evicted (TCP is evictable)")
+        XCTAssertEqual(
+            core.udpFlowCount, 5, "UDP flows count toward occupancy but are never evicted")
+        _ = udpHolders
+    }
+
+    // MARK: - TG-7: the production async reap path (not the sync test shim)
+
+    /// Drive the REAL `reapIdleUnderPressure()` (stateQueue.async selection →
+    /// per-victim flowQueue.async teardown) end to end, with real per-flow
+    /// queues, rather than the synchronous `testReapIdleUnderPressure` shim. The
+    /// async path must evict down to low-water just like the shim.
+    func testProductionAsyncReapEvictsIdleFlows() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let q = DispatchQueue(label: "rama.test.pressure.async")
+        let fxs = (0..<5).map { _ in Fx(core: core, idleSeconds: 30, flowQueue: q) }
+        insert(core, fxs)
+
+        core.reapIdleUnderPressure()  // production async entrypoint
+
+        // The teardowns are dispatched onto `q`; a barrier well after they are
+        // enqueued runs strictly after them on this serial queue.
+        let exp = expectation(description: "async reap completed")
+        q.asyncAfter(deadline: .now() + .milliseconds(300)) { exp.fulfill() }
+        wait(for: [exp], timeout: 3.0)
+
+        XCTAssertEqual(
+            fxs.filter { $0.wasTornDown }.count, 3,
+            "the async production path evicts down to low-water (5 − 2 = 3)")
     }
 }

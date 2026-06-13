@@ -260,6 +260,14 @@ final class TransparentProxyCore: @unchecked Sendable {
     func handleEgressViabilityLoss(_ ctx: TcpFlowContext) {
         let settleMs = defaultViabilityLossRecheckMs
         guard settleMs > 0 else { return }
+        // Defer to the precise per-flow `.waiting` tolerance timer when it is
+        // armed: that timer is the deliberately-chosen recovery budget for this
+        // exact path loss, and the coarser viability re-check must not preempt
+        // it (a shorter settle would reset a flow still inside its budget). The
+        // re-check still owns the silent-strand case where `.waiting` never
+        // fires. Belt-and-suspenders on top of the default being == the
+        // tolerance; this also holds if an operator misconfigures it lower.
+        guard !ctx.postReadyWaitingArmed else { return }
         scheduleDeadPathRecheck(ctx, afterMs: settleMs, trigger: "path change")
     }
 
@@ -337,6 +345,22 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// mutated from `stateQueue`.
     private var flowCountHighWater = 0
 
+    /// Coalesces a burst of `reapIdleUnderPressure` triggers (one fires per
+    /// admission while combined occupancy is over the soft cap) into a single
+    /// outstanding selection scan. Only mutated on `stateQueue`. Without it,
+    /// every over-cap admission enqueues a fresh O(n log n) selection on the
+    /// serial `stateQueue`, behind which the next admission's
+    /// `registerTcpFlow.sync` (on the NE delivery thread) head-of-line-blocks.
+    private var pressureReapInFlight = false
+
+    /// Rate-limits the "over cap but nothing idle to reap" lifecycle log to once
+    /// per pressure episode (re-armed when occupancy drops back under the cap or
+    /// a reap actually fires). A sustained over-cap population — notably
+    /// UDP-dominated occupancy, where the TCP-only reap can never reach
+    /// low-water — would otherwise emit a persisted os_log on EVERY admission.
+    /// Only mutated on `stateQueue`.
+    private var pressureNoHeadroomLogged = false
+
     /// Per-tick teardown work split by disposition: pre-ready flows get
     /// `applyConnectTimeout`, wedged-closing flows get `applyDrainBackstop`,
     /// idle promoted flows get `applyIdleTimeout`.
@@ -371,11 +395,44 @@ final class TransparentProxyCore: @unchecked Sendable {
         (DispatchTime.now().uptimeNanoseconds &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
     }
 
+    /// Whether a closing flow is GENUINELY drain-wedged (its graceful close
+    /// stalled) — the only state the closing-stuck watchdog should force-tear-
+    /// down. `terminalSignalled` alone is NOT sufficient: for a `.promoted` flow
+    /// it is set (and stays set — sticky) the moment the FIRST direction enters
+    /// `.finishing`, so a flow that took a clean client half-close while the
+    /// OPPOSITE direction is still actively streaming a long download would
+    /// otherwise be wrongly reset ~1-2 ticks later (the pre-existing STUCK-1
+    /// bug).
+    ///
+    /// Discriminator (race-free — uses ONLY already-`flowQueue`-relaxed fields,
+    /// no forwarder-phase read which would widen the off-queue read surface):
+    ///   * `viaRust` (`mode != .promoted`): no forwarder — `terminalSignalled`
+    ///     IS the wedge indicator (graceful drain signalled but the flow never
+    ///     left the registry; its per-flow backstop must have been starved), as
+    ///     before.
+    ///   * `.promoted`: genuinely wedged only if it has ALSO stopped making byte
+    ///     progress past its linger budget. A live half-close keeps bumping
+    ///     `lastActivityAt` (the shared per-flow activity signal) on its still-
+    ///     active direction → not wedged → spared; if it later goes quiet it is
+    ///     reaped here (or by the idle reaper). A stalled FIN (peer stopped
+    ///     reading) makes no progress → quiet past the budget → wedged.
+    /// The cross-tick "stuck for ≥1 tick" set adds ~one maintenance interval of
+    /// hysteresis on top, so a merely bursty-but-alive flow is never selected.
+    /// Read off `flowQueue` from the maintenance tick (same relaxation as
+    /// `egressReady`); re-checked on `flowQueue` before the teardown fires.
+    private static func flowIsDrainWedged(_ ctx: TcpFlowContext) -> Bool {
+        guard ctx.terminalSignalled else { return false }
+        guard ctx.mode == .promoted else { return true }
+        return flowIdleMs(ctx) > UInt64(ctx.lingerCloseMs)
+    }
+
     /// Flow-pressure backstop. Called (async, off the delivery thread) from
-    /// `TcpFlowSession.start()` when admitting a flow pushed the COMBINED live
-    /// count to/over `defaultFlowPressureSoftCap`. Reaps flows idle past
+    /// `TcpFlowSession.start()` OR `UdpFlowSession.start()` when admitting a flow
+    /// pushed the COMBINED (tcp+udp) live count to/over
+    /// `defaultFlowPressureSoftCap`. Reaps idle TCP flows past
     /// `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
     /// `defaultFlowPressureLowWater`, to free nexus slots for SUBSEQUENT flows.
+    /// Coalesced via `pressureReapInFlight` so a burst is a single scan.
     ///
     /// Guarantees (see the tunable doc for the policy rationale):
     ///   * The just-admitted flow is NEVER the victim and is never delayed —
@@ -397,6 +454,16 @@ final class TransparentProxyCore: @unchecked Sendable {
         // DISPATCHES teardowns to each victim's `flowQueue`, so nothing heavy
         // runs while on `stateQueue`.
         stateQueue.async {
+            // Coalesce a burst: if a selection scan is already outstanding this
+            // trigger rides it rather than enqueuing another O(n log n) scan on
+            // the serial queue behind the delivery thread's register `.sync`.
+            // The flag guards selection + dispatch (the stateQueue-bound work);
+            // the dispatched teardowns run independently on their flowQueues, and
+            // a trigger arriving after dispatch correctly runs a fresh scan that
+            // re-reads occupancy.
+            guard !self.pressureReapInFlight else { return }
+            self.pressureReapInFlight = true
+            defer { self.pressureReapInFlight = false }
             let victims = self.collectPressureVictimsLocked()
             self.firePressureEvictions(victims)
         }
@@ -405,45 +472,68 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Victim selection. MUST be called on `stateQueue`. Re-reads live occupancy
     /// (it may have changed since the triggering admission). Eligible:
     /// established (`egressReady`), not already closing (`terminalSignalled`),
-    /// `.promoted` (accurate activity signal), idle past the floor — ranked
-    /// oldest-idle first (true LRU), capped at the count needed to reach
-    /// low-water. Empty result = nothing to do (under cap, or no idle headroom).
+    /// idle past the floor — ranked oldest-idle first (true LRU), capped at the
+    /// count needed to reach low-water. MODE-AGNOSTIC: both `viaRust` and
+    /// `.promoted` flows are evictable (nexus pressure is global and both carry
+    /// an accurate `lastActivityAt`). Eviction is TCP-only because UDP flows
+    /// self-bound via `defaultUdpIdleTimeoutMs`; a UDP-driven burst still TRIGGERS
+    /// this (via `registerUdpFlow` occupancy), reaping idle TCP slots to relieve
+    /// the global ceiling. Empty result = nothing to do (under cap, or no idle
+    /// headroom).
     private func collectPressureVictimsLocked() -> [TcpFlowContext] {
         let softCap = defaultFlowPressureSoftCap
         guard softCap > 0 else { return [] }
         let lowWater = max(UInt64(defaultFlowPressureLowWater), 1)
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         let occupancy = UInt64(self.tcpSessions.count + self.udpSessions.count)
-        guard occupancy >= UInt64(softCap) else { return [] }
-        let want = occupancy > lowWater ? Int(occupancy - lowWater) : 0
-        guard want > 0 else { return [] }
-        let eligible =
-            self.tcpSessions.values
-            .map { $0.ctx }
-            .filter {
-                // Mode-agnostic: nexus pressure is global, and BOTH modes now
-                // carry an accurate `lastActivityAt` (bumped on the shared
-                // write-pump flowQueue hop), so an actively-transferring flow
-                // of either mode is excluded by the idle-floor check below.
-                $0.egressReady && !$0.terminalSignalled && Self.flowIdleMs($0) > floorMs
-            }
-            .sorted {
-                $0.lastActivityAt.uptimeNanoseconds < $1.lastActivityAt.uptimeNanoseconds
-            }
-        if eligible.isEmpty {
-            // Over the cap but nothing idle enough to sacrifice — admit and ride
-            // rather than reset a live flow. Loud so soak/telemetry sees we ran
-            // near the ceiling with no idle headroom.
-            self.logLifecycle(
-                "flow pressure: over soft cap (\(softCap)) at occupancy \(occupancy) but no flow "
-                    + "idle past \(floorMs)ms floor; admitting without reap"
-            )
+        guard occupancy >= UInt64(softCap) else {
+            // Back under the cap: re-arm the no-headroom log for the next episode.
+            pressureNoHeadroomLogged = false
             return []
         }
+        let want = occupancy > lowWater ? Int(occupancy - lowWater) : 0
+        guard want > 0 else { return [] }
+        // Snapshot the LRU sort key (`lastActivityAt`) and a single `now` into
+        // immutable locals BEFORE filtering/sorting. `lastActivityAt` is mutated
+        // on each flow's own `flowQueue` (onActivity), so sorting the live
+        // objects would read a key that another thread is changing mid-sort — a
+        // data race and an unstable comparator. Snapshotting makes the ordering
+        // self-consistent; the fire-loop re-check on `flowQueue` remains the
+        // authority on whether a chosen victim is actually still idle.
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let eligible =
+            self.tcpSessions.values
+            .map { (ctx: $0.ctx, lastNs: $0.ctx.lastActivityAt.uptimeNanoseconds) }
+            .filter {
+                // Mode-agnostic idle-floor check: BOTH modes carry an accurate
+                // `lastActivityAt` (bumped on the shared write-pump flowQueue
+                // hop), so an actively-transferring flow of either mode is
+                // excluded here and never selected.
+                $0.ctx.egressReady && !$0.ctx.terminalSignalled
+                    && (nowNs &- $0.lastNs) / 1_000_000 > floorMs
+            }
+            .sorted { $0.lastNs < $1.lastNs }
+            .map { $0.ctx }
+        if eligible.isEmpty {
+            // Over the cap but nothing idle enough to sacrifice — admit and ride
+            // rather than reset a live flow. Logged ONCE per episode (not per
+            // admission): a sustained over-cap population — notably UDP-dominated
+            // occupancy, where the TCP-only reap can never reach low-water —
+            // would otherwise spam a persisted os_log on every new flow.
+            if !pressureNoHeadroomLogged {
+                self.logLifecycle(
+                    "flow pressure: over soft cap (\(softCap)) at occupancy \(occupancy) but no "
+                        + "flow idle past \(floorMs)ms floor; admitting without reap"
+                )
+                pressureNoHeadroomLogged = true
+            }
+            return []
+        }
+        pressureNoHeadroomLogged = false
         let victims = Array(eligible.prefix(want))
         self.logLifecycle(
             "flow pressure: occupancy \(occupancy) over soft cap \(softCap); reaping "
-                + "\(victims.count) idle promoted flow(s) toward low-water \(lowWater)"
+                + "\(victims.count) idle flow(s) toward low-water \(lowWater)"
         )
         return victims
     }
@@ -546,7 +636,13 @@ final class TransparentProxyCore: @unchecked Sendable {
                 if stuckPreReadyFlowIds.contains(id) {
                     kicks.preReadyStuck.append(ctx)
                 }
-            } else if ctx.terminalSignalled {
+            } else if Self.flowIsDrainWedged(ctx) {
+                // Genuinely drain-wedged (viaRust: terminalSignalled; promoted:
+                // a direction stuck in `.finishing`). A clean half-close whose
+                // opposite direction is still actively transferring is NOT
+                // wedged — `flowIsDrainWedged` excludes it, so it falls through
+                // to the idle reaper below and is reaped only if it later goes
+                // quiet, never force-reset while live.
                 nowStuckClosing.insert(id)
                 if stuckClosingFlowIds.contains(id) {
                     kicks.closingStuck.append(ctx)
@@ -603,12 +699,15 @@ final class TransparentProxyCore: @unchecked Sendable {
                 "watchdog: force-tearing down \(kicks.closingStuck.count) wedged closing flow(s)"
             )
             for ctx in kicks.closingStuck {
-                // No ready-race re-check needed: `applyDrainBackstop`
-                // routes through `applyFullTeardown`, whose sticky `done`
-                // flag makes it a no-op if the graceful close (or the
-                // per-flow backstop timer) already completed between the
-                // `stateQueue` decision and here.
+                // Re-check drain-wedge ON `flowQueue`: between the off-queue
+                // selection and here a `.finishing` direction may have drained
+                // (reaching `.finished`) or the active opposite direction may
+                // have advanced, so a flow that is no longer genuinely wedged
+                // must be spared rather than force-reset while still live.
+                // `applyDrainBackstop` has no internal wedge-check, so this gate
+                // is its protection; it is idempotent via `isDone` regardless.
                 runFlowTeardown(ctx) {
+                    guard Self.flowIsDrainWedged(ctx) else { return }
                     ctx.applyDrainBackstop()
                 }
             }
@@ -642,12 +741,33 @@ final class TransparentProxyCore: @unchecked Sendable {
             // [`fireWatchdogKicks`] for the deadlock rationale.
             fireWatchdogKicks(toKick)
         }
+
+        /// Test hook: run one maintenance tick with a caller-supplied mutation
+        /// injected BETWEEN selection and the fire bodies. Lets a test revive a
+        /// flow after it was selected as idle/stuck, exercising the
+        /// on-`flowQueue` re-check that must then spare it.
+        func testRunMaintenanceWithRevival(_ reviveBetweenSelectAndFire: () -> Void) {
+            let toKick = stateQueue.sync { self.collectMaintenanceKicksLocked() }
+            reviveBetweenSelectAndFire()
+            fireWatchdogKicks(toKick)
+        }
         /// Test hook: run one flow-pressure reap synchronously (selection on
         /// `stateQueue`, evictions fired outside it — same shape as
         /// `testRunPeriodicMaintenance`). Lets unit tests exercise the backstop
         /// without the production async dispatch or a live occupancy burst.
         func testReapIdleUnderPressure() {
             let victims = stateQueue.sync { self.collectPressureVictimsLocked() }
+            firePressureEvictions(victims)
+        }
+
+        /// Test hooks: the two halves of the pressure reap exposed separately so
+        /// a test can inject a state change (e.g. a flow becoming active again)
+        /// BETWEEN selection and the fire body, exercising the on-`flowQueue`
+        /// re-check that protects a just-revived victim.
+        func testCollectPressureVictims() -> [TcpFlowContext] {
+            stateQueue.sync { self.collectPressureVictimsLocked() }
+        }
+        func testFirePressureEvictions(_ victims: [TcpFlowContext]) {
             firePressureEvictions(victims)
         }
 
@@ -706,8 +826,18 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// keeping the session alive while the flow is open; dropping
     /// it via `removeUdpFlow` deallocates the session and the
     /// `ctx`/writer/closure graph it owns.
-    func registerUdpFlow(_ flowId: ObjectIdentifier, anchor: UdpFlowSessionAnchor) {
-        stateQueue.sync { self.udpSessions[flowId] = anchor }
+    ///
+    /// Returns the COMBINED (TCP + UDP) live flow count after insertion so the
+    /// caller can drive the flow-pressure backstop on UDP admission too: the
+    /// kernel nexus ceiling is global across the flowswitch, so a UDP burst can
+    /// approach it just as a TCP burst can. (The reap evicts idle TCP flows;
+    /// UDP self-bounds via `defaultUdpIdleTimeoutMs`.)
+    @discardableResult
+    func registerUdpFlow(_ flowId: ObjectIdentifier, anchor: UdpFlowSessionAnchor) -> Int {
+        stateQueue.sync {
+            self.udpSessions[flowId] = anchor
+            return self.tcpSessions.count + self.udpSessions.count
+        }
     }
 
     func removeTcpFlow(_ flowId: ObjectIdentifier) {

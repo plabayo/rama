@@ -346,6 +346,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // any pending tolerance timer.
             waitingWork?.cancel()
             waitingWork = nil
+            ctx.postReadyWaitingArmed = false
             return
         }
         egressReady = true
@@ -356,6 +357,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // now-healthy connection down.
         waitingWork?.cancel()
         waitingWork = nil
+        ctx.postReadyWaitingArmed = false
+        // The egress reached `.ready`, but `viabilityUpdateHandler` fires only
+        // on CHANGE: if the path was already non-viable when we connected, it
+        // will NOT re-fire, so this established-but-non-viable flow would have
+        // no mid-session re-check and could strand until a wake/idle reaper —
+        // exactly the hang the re-check exists to prevent. Arm it now. No-op
+        // when the path is viable or the feature is disabled.
+        if !ctx.lastPathViable { core?.handleEgressViabilityLoss(ctx) }
         guard let session = sessionHandle else { return }
 
         let writePump = buildEgressWritePump(connection: connection)
@@ -436,9 +445,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // this timer (`handleEgressReady` → `waitingWork?.cancel()`)
             // before it fires — no stale-timer reset of a recovered flow.
             let work = DispatchWorkItem { [weak self] in
+                self?.ctx.postReadyWaitingArmed = false
                 self?.applyPostReadyTeardown(error: error)
             }
             waitingWork = work
+            // Mark the precise recovery budget as armed so the coarser
+            // mid-session viability re-check defers to it instead of
+            // preempting it (see `handleEgressViabilityLoss`).
+            ctx.postReadyWaitingArmed = true
             flowQueue.asyncAfter(
                 deadline: .now() + .milliseconds(Int(defaultEgressWaitingToleranceMs)),
                 execute: work

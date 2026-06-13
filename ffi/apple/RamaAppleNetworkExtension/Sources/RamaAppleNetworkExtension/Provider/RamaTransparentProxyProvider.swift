@@ -334,15 +334,24 @@ nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 /// otherwise the only backstop for a flow stranded `.ready` over a dead
 /// path mid-session (`.waiting`/`.failed` never fire for that strand).
 ///
-/// A value below `defaultEgressWaitingToleranceMs` also shortens the
-/// effective post-ready `.waiting` budget for flows that ADDITIONALLY
-/// report non-viable — intended: viability loss is the stronger
-/// dead-path signal.
+/// Set to == `defaultEgressWaitingToleranceMs` ON PURPOSE: the two are
+/// the same dead-path budget seen through two signals. A path loss that
+/// ALSO drives the connection to `.waiting` arms the precise per-flow
+/// `.waiting` tolerance timer; the viability re-check must NOT preempt
+/// that timer (an earlier settle would silently shorten the carefully
+/// chosen recovery budget and reset a flow that was still inside it —
+/// e.g. an interface-pinned egress whose roam routinely exceeds a few
+/// seconds). Keeping them equal means the `.waiting` timer owns flows
+/// that report both signals, and the re-check is left to cover ONLY the
+/// silent-strand case where `.waiting` never fires. `handleEgressViabilityLoss`
+/// additionally defers to an armed `.waiting` timer (`postReadyWaitingArmed`)
+/// so a value below the tolerance still cannot preempt it. Do not set this
+/// below `defaultEgressWaitingToleranceMs` (see the guard test).
 ///
-/// Ships ENABLED at `3_000`. Set to `0` to disable mid-session
+/// Ships ENABLED at `5_000`. Set to `0` to disable mid-session
 /// re-checks entirely — the kill switch, mirroring
 /// `defaultFlowPressureSoftCap`.
-nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 3_000
+nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 5_000
 
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
@@ -409,21 +418,26 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //
 // Policy (deliberately conservative — see the constraints it honours below):
 //   * Triggered when the COMBINED live flow count (TCP + UDP — the nexus ceiling
-//     is global across the flowswitch) crosses `…SoftCap` at admission time.
+//     is global across the flowswitch) crosses `…SoftCap` at admission time, on
+//     BOTH TCP and UDP admission (a UDP burst can approach the ceiling too).
 //   * NEVER refuses or delays a new flow: the new flow is always admitted; the
 //     reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
+//     A burst of triggers is coalesced (`pressureReapInFlight`) into one scan.
 //   * NEVER touches an active or recently-active flow: only flows idle past
 //     `…IdleFloorMs` are eligible, evicted oldest-idle first (LRU) down to
 //     `…LowWater` for hysteresis. There is intentionally NO activity-blind
-//     eviction: under genuine all-active saturation we admit and log rather
-//     than reset a live connection — the SoftCap margin below the ceiling is
-//     the cushion for that (rare) case.
-//   * Mode-agnostic (nexus pressure is global across the flowswitch): BOTH
-//     `viaRust` and `.promoted` flows are eligible. Both bump `lastActivityAt`
-//     on the shared write-pump flowQueue hop, so the idle-floor check excludes
-//     an actively-transferring flow of either mode. (The Rust engine's
-//     `DEFAULT_TCP_IDLE_TIMEOUT` and the promoted maintenance reaper remain the
-//     slower per-mode hygiene backstops; this is the fast, global one.)
+//     eviction: under genuine all-active saturation we admit and log (once per
+//     episode) rather than reset a live connection — the SoftCap margin below
+//     the ceiling is the cushion for that (rare) case.
+//   * Mode-agnostic eviction: BOTH `viaRust` and `.promoted` flows are evictable
+//     (both bump `lastActivityAt` on the shared write-pump flowQueue hop, so the
+//     idle-floor check excludes an actively-transferring flow of either mode).
+//     Eviction is TCP-only: UDP flows self-bound via `defaultUdpIdleTimeoutMs`
+//     (60s, far tighter than TCP), so a UDP-driven burst TRIGGERS the reap
+//     (relieving the global ceiling by reaping idle TCP slots) but UDP flows are
+//     not themselves evicted here. (The Rust engine's `DEFAULT_TCP_IDLE_TIMEOUT`
+//     and the promoted maintenance reaper remain the slower per-mode hygiene
+//     backstops; this is the fast, global one.)
 //
 // IMPORTANT — these defaults are UNVALIDATED guesses. The kernel ceiling is
 // undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits

@@ -448,9 +448,49 @@ final class SystemLifecycleTests: XCTestCase {
     /// behavior, not as the default).
     func testViabilityLossEnabledByDefault() {
         XCTAssertEqual(
-            defaultViabilityLossRecheckMs, 3_000,
-            "feature ships enabled with a 3s mid-session settle")
+            defaultViabilityLossRecheckMs, 5_000,
+            "feature ships enabled with a mid-session settle == the post-ready waiting tolerance")
     }
+
+    /// The mid-session re-check settle must never ship below the post-ready
+    /// `.waiting` tolerance: a shorter settle would let the coarse viability
+    /// re-check preempt the precise per-flow `.waiting` recovery budget and
+    /// reset a flow still inside it (BEH-1/BEH-2). Guards the shipped default.
+    func testViabilityRecheckDefaultNotBelowWaitingTolerance() {
+        XCTAssertGreaterThanOrEqual(
+            defaultViabilityLossRecheckMs, defaultEgressWaitingToleranceMs,
+            "viability re-check must not preempt the post-ready .waiting tolerance")
+    }
+
+    /// BEH-2: while the precise post-ready `.waiting` tolerance timer is armed
+    /// (`postReadyWaitingArmed`), a viability loss must NOT independently arm the
+    /// re-check — the `.waiting` timer owns that flow's recovery budget. Holds
+    /// even if the re-check tunable is (mis)configured below the tolerance.
+    func testViabilityLossDefersToArmedWaitingTimer() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10  // deliberately tiny: must still defer
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.waitingdefer")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+        // Model the post-ready `.waiting` tolerance timer being armed.
+        queue.sync { f.ctx.postReadyWaitingArmed = true }
+
+        f.conn.simulateViability(false)
+
+        XCTAssertFalse(
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "viability loss must defer to the armed .waiting tolerance timer")
+
+        let exp = expectation(description: "settle window elapsed")
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+        XCTAssertFalse(f.ctx.isDone, "deferred re-check must not reset the flow")
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
 
     /// Pre-ready flows are out of scope for the mid-session re-check: the
     /// verdict's `egressReady` guard spares them (the connect timeout /

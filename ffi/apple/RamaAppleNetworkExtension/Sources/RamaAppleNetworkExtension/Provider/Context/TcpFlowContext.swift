@@ -99,6 +99,14 @@ final class TcpFlowContext: @unchecked Sendable {
     /// `TcpFlowSession.armTerminalDrainBackstop` /
     /// `TransparentProxyCore.collectMaintenanceKicksLocked`.
     var terminalSignalled = false
+    /// A post-ready egress `.waiting` tolerance timer is currently armed
+    /// (`TcpFlowSession.handleEgressWaiting` armed it; cleared when it fires,
+    /// is cancelled on `.ready` recovery, or on teardown). That timer is the
+    /// PRECISE per-flow recovery budget for a path loss, so while it is armed
+    /// the coarser mid-session viability re-check must defer to it rather than
+    /// preempt it (see `handleEgressViabilityLoss` / `defaultViabilityLossRecheckMs`).
+    /// Set / cleared on `flowQueue`, like the other lifecycle flags.
+    var postReadyWaitingArmed = false
     /// Effective graceful-close linger budget for this flow (from the
     /// egress connect options, else `defaultLingerCloseMs`). Set once by
     /// `TcpFlowSession.startEgressConnection`; read by
@@ -343,14 +351,15 @@ final class TcpFlowContext: @unchecked Sendable {
     }
 
     /// The flow-pressure backstop evicted this flow: the combined live flow
-    /// count crossed the soft cap and this was among the most-idle `.promoted`
-    /// flows (idle past the pressure floor), chosen LRU to free a kernel
-    /// nexus-flow slot for subsequent flows — rather than let the per-process
-    /// allocation exhaust and freeze ALL proxied networking. Full teardown so
-    /// BOTH the ingress kernel flow and the egress NWConnection slots are
-    /// released. Idempotent via `isDone`. The caller re-checks idleness on
-    /// `flowQueue` first, so a flow that just became active is never evicted.
-    /// See `TransparentProxyCore.reapIdleUnderPressure`.
+    /// count crossed the soft cap and this was among the most-idle flows of
+    /// EITHER mode (idle past the pressure floor — nexus pressure is global, and
+    /// both `viaRust` and `.promoted` carry an accurate `lastActivityAt`),
+    /// chosen LRU to free a kernel nexus-flow slot for subsequent flows —
+    /// rather than let the per-process allocation exhaust and freeze ALL
+    /// proxied networking. Full teardown so BOTH the ingress kernel flow and
+    /// the egress NWConnection slots are released. Idempotent via `isDone`. The
+    /// caller re-checks idleness on `flowQueue` first, so a flow that just
+    /// became active is never evicted. See `TransparentProxyCore.reapIdleUnderPressure`.
     func applyPressureEvicted() {
         let err = NSError(
             domain: "rama.tproxy.pressure-evicted", code: -1,

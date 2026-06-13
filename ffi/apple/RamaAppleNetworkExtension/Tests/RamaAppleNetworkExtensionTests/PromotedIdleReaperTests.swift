@@ -50,7 +50,7 @@ final class PromotedIdleReaperTests: XCTestCase {
         let ctx: TcpFlowContext
         let flowId: ObjectIdentifier
 
-        init(core: TransparentProxyCore) {
+        init(core: TransparentProxyCore, flowQueue: DispatchQueue? = nil) {
             self.flow = MockTcpFlow()
             self.conn = MockNwConnection()
             self.ctx = TcpFlowContext()
@@ -59,6 +59,10 @@ final class PromotedIdleReaperTests: XCTestCase {
             self.ctx.flow = flow
             self.ctx.core = core
             self.ctx.flowId = flowId
+            // A real per-flow serial queue makes the reaper teardown DISPATCH
+            // (as in production) rather than run inline. Defaults nil to keep
+            // the synchronous-assertion tests.
+            self.ctx.flowQueue = flowQueue
             self.ctx.egressReady = true
             self.ctx.mode = .promoted
             self.ctx.lastActivityAt = .now()
@@ -183,5 +187,51 @@ final class PromotedIdleReaperTests: XCTestCase {
         XCTAssertFalse(
             fx.wasTornDown, "a flow active again before the tick must not be reaped")
         XCTAssertEqual(fx.conn.cancelCount, 0)
+    }
+
+    /// TG-2 (idle path): unlike `testFlowActiveAgainBeforeTickIsSpared` (which
+    /// revives the flow BEFORE the tick, so it's filtered at SELECTION and the
+    /// re-check never runs), this revives it AFTER selection but BEFORE the fire
+    /// body. The reaper appended it to `idleStuck` at selection; only the
+    /// on-`flowQueue` re-check (`guard mode == .promoted, promotedFlowIsIdle`)
+    /// stands between it and teardown. Deleting that re-check would reap a flow
+    /// that just became active and fail this test.
+    func testIdleVictimRevivedBetweenSelectionAndFireIsSparedByRecheck() {
+        defaultPromotedIdleTimeoutMs = 5_000
+        let core = makeCore()
+        let fx = PromotedFx(core: core)
+        fx.backdateActivity(bySeconds: 10)  // idle at selection time
+        core.testInsertTcpContext(fx.flowId, fx.ctx)
+
+        core.testRunMaintenanceWithRevival {
+            fx.ctx.lastActivityAt = .now()  // a byte moves between select and fire
+        }
+
+        XCTAssertFalse(
+            fx.wasTornDown,
+            "a flow that became active between selection and the fire body must be spared")
+        XCTAssertEqual(fx.conn.cancelCount, 0)
+    }
+
+    /// STUCK-1 counterpart: a promoted flow that signalled close AND has gone
+    /// quiet past its linger budget (a stalled FIN, or a half-close whose
+    /// surviving direction also went silent) is genuinely drain-wedged and IS
+    /// reaped by the closing watchdog on the second consecutive tick. Proves the
+    /// `flowIsDrainWedged` heuristic still reaps real wedges — it only spares
+    /// the LIVE half-close (`testHalfClosedPromotedFlowWithActiveOppositeDirectionIsSpared`).
+    func testQuietWedgedPromotedFlowIsReapedByClosingWatchdog() {
+        let core = makeCore()
+        let fx = PromotedFx(core: core)
+        fx.ctx.terminalSignalled = true
+        fx.backdateActivity(bySeconds: 60)  // quiet ≫ lingerCloseMs (5s)
+        core.testInsertTcpContext(fx.flowId, fx.ctx)
+
+        core.testRunPeriodicMaintenance()  // tick 1: record, do not kick
+        XCTAssertFalse(fx.wasTornDown, "first stuck tick only records")
+
+        core.testRunPeriodicMaintenance()  // tick 2: kick
+        XCTAssertTrue(
+            fx.wasTornDown, "quiet drain-wedged promoted flow reaped on the 2nd consecutive tick")
+        XCTAssertEqual(fx.conn.cancelCount, 1, "egress connection cancelled once")
     }
 }

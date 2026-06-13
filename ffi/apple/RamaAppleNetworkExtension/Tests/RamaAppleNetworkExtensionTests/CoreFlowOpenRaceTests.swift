@@ -149,6 +149,47 @@ final class CoreFlowOpenRaceTests: XCTestCase {
         )
     }
 
+    // MARK: - CRIT-C: .ready reached over an already-non-viable path
+
+    /// `viabilityUpdateHandler` fires only on CHANGE. If the path goes
+    /// non-viable BEFORE `.ready`, the pre-ready re-check fires, no-ops (its
+    /// `egressReady` guard spares pre-ready flows) and CLEARS the coalescing
+    /// flag — and no further viability callback arrives after `.ready`. Without
+    /// `handleEgressReady` re-arming the re-check, the now-established flow would
+    /// strand `.ready` over a dead path until a wake/idle reaper. This pins the
+    /// fix: after the pre-ready re-check has fired-and-cleared, reaching `.ready`
+    /// must re-arm and reset the flow.
+    func testReadyReachedOverNonViablePathIsResetByRearmedRecheck() {
+        let prevRecheck = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 20
+        defer { defaultViabilityLossRecheckMs = prevRecheck }
+
+        let fx = makeFixture()
+        defer { tearDownFixture(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeTcpMeta()))
+        let conn = fx.capture.waitForLastConnection()
+
+        // Path goes non-viable while still connecting (pre-`.ready`).
+        conn.simulateViability(false)
+
+        // Let the pre-ready re-check fire: it no-ops (egressReady is false) and
+        // clears `deadPathRecheckPending`, leaving the flow with NO armed
+        // re-check — exactly the stranding setup CRIT-C closes. Flow still live.
+        Thread.sleep(forTimeInterval: 0.12)
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "pre-ready re-check must not reset a connecting flow")
+
+        // Now reach `.ready` over the still-dead path. No fresh viability
+        // callback fires (no change), so `handleEgressReady` must re-arm.
+        conn.transition(to: .ready)
+
+        waitFor("re-armed re-check reset the established-but-dead flow") {
+            fx.core.tcpFlowCount == 0
+        }
+        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1, "egress connection cancelled on reset")
+    }
+
     // No UDP mirror of the post-ready failure race: the UDP path no
     // longer drives an `NWConnection` state machine — egress is a
     // Rust-owned BSD socket on the service side, opened after
