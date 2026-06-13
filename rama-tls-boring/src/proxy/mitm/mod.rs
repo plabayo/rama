@@ -624,7 +624,11 @@ where
             };
             // `egress_ssl_ref` borrow is released here.
 
-            let (mirrored_leaf_cert_chain, mirrored_leaf_key) = self
+            let self::issuer::MitmIssuedCert {
+                crt_chain: mirrored_leaf_cert_chain,
+                key: mirrored_leaf_key,
+                ocsp_staple: mirrored_ocsp_staple,
+            } = self
                 .issuer
                 .issue_mitm_x509_cert(snapshot.source_cert)
                 .await
@@ -665,6 +669,17 @@ where
                 .check_private_key()
                 .context("tls mitm relay: check mirrored private key")
                 .map_err(TlsMitmRelayError::config)?;
+
+            // Staple the issuer-signed OCSP `good` response (when one was built
+            // for this leaf) so revocation-strict clients accept the re-signed
+            // leaf inline. Boring only emits it if the client sent
+            // `status_request`, so this is a no-op for clients that don't ask.
+            if let Some(staple) = mirrored_ocsp_staple {
+                acceptor_builder
+                    .set_status_callback(move |ssl| ssl.set_ocsp_status(&staple).map(|()| true))
+                    .context("tls mitm relay: set OCSP status callback")
+                    .map_err(TlsMitmRelayError::config)?;
+            }
 
             let maybe_negotiated_params =
                 if let Some(protocol_version) = snapshot.session_protocol_version {

@@ -1,10 +1,7 @@
-use rama_boring::{
-    pkey::{PKey, Private},
-    x509::X509,
-};
-use rama_utils::{collections::NonEmptyVec, macros::error::static_str_error};
+use rama_boring::x509::X509;
+use rama_utils::macros::error::static_str_error;
 
-use super::BoringMitmCertIssuer;
+use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -32,8 +29,7 @@ impl BoringMitmCertIssuer for DenyBoringMitmCertIssuer {
     fn issue_mitm_x509_cert(
         &self,
         _: X509,
-    ) -> impl Future<Output = Result<(NonEmptyVec<X509>, PKey<Private>), Self::Error>> + Send + '_
-    {
+    ) -> impl Future<Output = Result<MitmIssuedCert, Self::Error>> + Send + '_ {
         std::future::ready(Err(CertIssueDeniedError))
     }
 }

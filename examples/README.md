@@ -100,6 +100,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 - [`http_mitm_proxy_rustls.rs`](./http_mitm_proxy_rustls.rs) - MITM proxy using Rustls
 - [`http_mitm_proxy_boring.rs`](./http_mitm_proxy_boring.rs) - MITM proxy using BoringSSL
 - [`http_mitm_relay_proxy_boring.rs`](./http_mitm_relay_proxy_boring.rs) - MITM proxy using BoringSSL with a more advanced relay approach
+- [`mitm_ocsp_relay_gate.rs`](./mitm_ocsp_relay_gate.rs) - harness for the MITM OCSP-stapling gate (curl/openssl validate stapled leaves through the relay)
 
 ### Http within TLS Proxies
 
