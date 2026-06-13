@@ -1,4 +1,4 @@
-use super::TimeoutBody;
+use super::{DeadlineBody, TimeoutBody};
 use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{Extension, ExtensionsRef};
 use rama_core::{Layer, Service, telemetry::tracing};
@@ -250,6 +250,136 @@ impl<S> ResponseBodyTimeout<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+/// Applies a [`DeadlineBody`] to the request body.
+///
+/// Unlike [`RequestBodyTimeoutLayer`], which resets on each frame, this enforces a hard
+/// deadline on the entire body transfer.
+#[derive(Clone, Debug)]
+pub struct RequestBodyDeadlineLayer {
+    timeout: Duration,
+}
+
+impl RequestBodyDeadlineLayer {
+    /// Creates a new [`RequestBodyDeadlineLayer`].
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+}
+
+impl<S> Layer<S> for RequestBodyDeadlineLayer {
+    type Service = RequestBodyDeadline<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RequestBodyDeadline::new(inner, self.timeout)
+    }
+}
+
+/// Applies a [`DeadlineBody`] to the request body.
+#[derive(Clone, Debug)]
+pub struct RequestBodyDeadline<S> {
+    inner: S,
+    timeout: Duration,
+}
+
+impl<S> RequestBodyDeadline<S> {
+    /// Creates a new [`RequestBodyDeadline`].
+    pub fn new(service: S, timeout: Duration) -> Self {
+        Self {
+            inner: service,
+            timeout,
+        }
+    }
+
+    /// Returns a new [`Layer`] that wraps services with a [`RequestBodyDeadlineLayer`] middleware.
+    #[must_use]
+    pub fn layer(timeout: Duration) -> RequestBodyDeadlineLayer {
+        RequestBodyDeadlineLayer::new(timeout)
+    }
+
+    define_inner_service_accessors!();
+}
+
+impl<S, ReqBody> Service<Request<ReqBody>> for RequestBodyDeadline<S>
+where
+    S: Service<Request<DeadlineBody<ReqBody>>>,
+    ReqBody: Send + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let req = req.map(|body| DeadlineBody::new(self.timeout, body));
+        self.inner.serve(req).await
+    }
+}
+
+/// Applies a [`DeadlineBody`] to the response body.
+///
+/// Unlike [`ResponseBodyTimeoutLayer`], which resets on each frame, this enforces a hard
+/// deadline on the entire body transfer.
+#[derive(Clone, Debug)]
+pub struct ResponseBodyDeadlineLayer {
+    timeout: Duration,
+}
+
+impl ResponseBodyDeadlineLayer {
+    /// Creates a new [`ResponseBodyDeadlineLayer`].
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
+        Self { timeout }
+    }
+}
+
+impl<S> Layer<S> for ResponseBodyDeadlineLayer {
+    type Service = ResponseBodyDeadline<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ResponseBodyDeadline::new(inner, self.timeout)
+    }
+}
+
+/// Applies a [`DeadlineBody`] to the response body.
+#[derive(Clone, Debug)]
+pub struct ResponseBodyDeadline<S> {
+    inner: S,
+    timeout: Duration,
+}
+
+impl<S> ResponseBodyDeadline<S> {
+    /// Creates a new [`ResponseBodyDeadline`].
+    pub fn new(service: S, timeout: Duration) -> Self {
+        Self {
+            inner: service,
+            timeout,
+        }
+    }
+
+    /// Returns a new [`Layer`] that wraps services with a [`ResponseBodyDeadlineLayer`] middleware.
+    #[must_use]
+    pub fn layer(timeout: Duration) -> ResponseBodyDeadlineLayer {
+        ResponseBodyDeadlineLayer::new(timeout)
+    }
+
+    define_inner_service_accessors!();
+}
+
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyDeadline<S>
+where
+    S: Service<Request<ReqBody>, Output = Response<ResBody>>,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+{
+    type Output = Response<DeadlineBody<ResBody>>;
+    type Error = S::Error;
+
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let res = self.inner.serve(req).await?;
+        let res = res.map(|body| DeadlineBody::new(self.timeout, body));
+        Ok(res)
+    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,8 @@
 use super::{
     DirSource, DirectoryServeMode, ServeVariant,
-    headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
+    headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
 };
+use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch};
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use http_range_header::RangeUnsatisfiableError;
@@ -37,13 +38,20 @@ pub(super) enum OpenFileOutput {
     Html(String),
     FileNotFound,
     PreconditionFailed,
-    NotModified,
+    NotModified {
+        etag: Option<ETag>,
+        last_modified: Option<LastModified>,
+    },
     InvalidRedirectUri,
     InvalidFilename,
 }
 
 impl OpenFileOutput {
     /// Create a new FileOpened variant with the given parameters.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal helper aggregating the opened-file response data"
+    )]
     pub(super) fn new_file_opened(
         extent: FileRequestExtent,
         chunk_size: usize,
@@ -52,6 +60,7 @@ impl OpenFileOutput {
         maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
         last_modified: Option<LastModified>,
         precompression_configured: bool,
+        etag: Option<ETag>,
     ) -> Self {
         Self::FileOpened(Box::new(FileOpened {
             extent,
@@ -61,6 +70,7 @@ impl OpenFileOutput {
             maybe_range,
             last_modified,
             precompression_configured,
+            etag,
         }))
     }
 }
@@ -78,6 +88,8 @@ pub(super) struct FileOpened {
     /// this particular response was served uncompressed, per RFC 9110
     /// §12.5.3 — a different request could yield a different encoding.
     pub(super) precompression_configured: bool,
+    /// Strong [`ETag`] derived from the file metadata, when available.
+    pub(super) etag: Option<ETag>,
 }
 
 /// Represents different ways a file can be accessed for serving.
@@ -149,6 +161,8 @@ pub(super) async fn open_file(
         ServeVariant::SingleFile { mime } => mime,
     };
 
+    let preconditions = Preconditions::from_request(&req);
+
     if req.method() == Method::HEAD {
         match source {
             DirSource::Filesystem(_) => {
@@ -156,7 +170,11 @@ pub(super) async fn open_file(
                     file_metadata_with_fallback(path_to_file, negotiated_encodings).await?;
 
                 let last_modified = meta.modified().ok().map(LastModified::from);
-                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                let etag = meta
+                    .modified()
+                    .ok()
+                    .and_then(|mtime| etag_from_metadata(meta.len(), mtime));
+                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
                     return Ok(output);
                 }
 
@@ -170,6 +188,7 @@ pub(super) async fn open_file(
                     maybe_range,
                     last_modified,
                     precompression_configured,
+                    etag,
                 ))
             }
             DirSource::Embedded(base) => {
@@ -182,14 +201,16 @@ pub(super) async fn open_file(
                     Err(err) => return Err(err),
                 };
 
+                let content_length = contents.len() as u64;
                 let last_modified =
                     metadata.map(|metadata| LastModified::from(metadata.modified()));
+                let etag = metadata
+                    .and_then(|metadata| etag_from_metadata(content_length, metadata.modified()));
 
-                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
                     return Ok(output);
                 }
 
-                let content_length = contents.len() as u64;
                 let maybe_range = try_parse_range(range_header, content_length);
 
                 Ok(OpenFileOutput::new_file_opened(
@@ -200,6 +221,7 @@ pub(super) async fn open_file(
                     maybe_range,
                     last_modified,
                     precompression_configured,
+                    etag,
                 ))
             }
         }
@@ -216,7 +238,11 @@ pub(super) async fn open_file(
                     };
                 let meta = file.metadata().await?;
                 let last_modified = meta.modified().ok().map(LastModified::from);
-                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                let etag = meta
+                    .modified()
+                    .ok()
+                    .and_then(|mtime| etag_from_metadata(meta.len(), mtime));
+                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
                     return Ok(output);
                 }
 
@@ -235,6 +261,7 @@ pub(super) async fn open_file(
                     maybe_range,
                     last_modified,
                     precompression_configured,
+                    etag,
                 ))
             }
             DirSource::Embedded(base) => {
@@ -247,15 +274,17 @@ pub(super) async fn open_file(
                     Err(err) => return Err(err),
                 };
 
+                let content_length = contents.len() as u64;
                 let last_modified = metadata
                     .as_ref()
                     .map(|meta| LastModified::from(meta.modified()));
+                let etag =
+                    metadata.and_then(|meta| etag_from_metadata(content_length, meta.modified()));
 
-                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                if let Some(output) = preconditions.check(etag.as_ref(), last_modified.as_ref()) {
                     return Ok(output);
                 }
 
-                let content_length = contents.len() as u64;
                 let maybe_range = try_parse_range(range_header, content_length);
 
                 let mut content = contents;
@@ -274,6 +303,7 @@ pub(super) async fn open_file(
                     maybe_range,
                     last_modified,
                     precompression_configured,
+                    etag,
                 ))
             }
         }
@@ -309,45 +339,90 @@ fn guess_mime_type(path: &Path) -> Mime {
         .unwrap_or(crate::mime::APPLICATION_OCTET_STREAM)
 }
 
-/// Check conditional request headers (If-Modified-Since, If-Unmodified-Since)
-/// and return appropriate response if conditions are not met.
-fn check_modified_headers(
-    modified: Option<&LastModified>,
-    req: &Request,
-) -> Option<OpenFileOutput> {
-    let if_unmodified_since = req
-        .headers()
-        .get(header::IF_UNMODIFIED_SINCE)
-        .and_then(IfUnmodifiedSince::from_header_value);
+/// Conditional request precondition headers parsed from the request.
+struct Preconditions {
+    if_match: Option<IfMatch>,
+    if_unmodified_since: Option<IfUnmodifiedSince>,
+    if_none_match: Option<IfNoneMatch>,
+    if_modified_since: Option<IfModifiedSince>,
+}
 
-    let if_modified_since = req
-        .headers()
-        .get(header::IF_MODIFIED_SINCE)
-        .and_then(IfModifiedSince::from_header_value);
-
-    if let Some(since) = if_unmodified_since {
-        let precondition = modified
-            .as_ref()
-            .map(|time| since.precondition_passes(time))
-            .unwrap_or(false);
-
-        if !precondition {
-            return Some(OpenFileOutput::PreconditionFailed);
+impl Preconditions {
+    fn from_request(req: &Request) -> Self {
+        Self {
+            if_match: req.headers().typed_get::<IfMatch>(),
+            if_unmodified_since: req
+                .headers()
+                .get(header::IF_UNMODIFIED_SINCE)
+                .and_then(IfUnmodifiedSince::from_header_value),
+            if_none_match: req.headers().typed_get::<IfNoneMatch>(),
+            if_modified_since: req
+                .headers()
+                .get(header::IF_MODIFIED_SINCE)
+                .and_then(IfModifiedSince::from_header_value),
         }
     }
 
-    if let Some(since) = if_modified_since {
-        let unmodified = modified
-            .as_ref()
-            .map(|time| !since.is_modified(time))
-            // no last_modified means its always modified
-            .unwrap_or(false);
-        if unmodified {
-            return Some(OpenFileOutput::NotModified);
+    /// Evaluate preconditions per [RFC 9110 §13.2.2](https://www.rfc-editor.org/rfc/rfc9110#section-13.2.2).
+    ///
+    /// Precedence order:
+    /// 1. `If-Match` (strong comparison) → 412 on failure
+    /// 2. `If-Unmodified-Since` (only if `If-Match` absent) → 412 on failure
+    /// 3. `If-None-Match` (weak comparison) → 304 on failure (for GET/HEAD)
+    /// 4. `If-Modified-Since` (only if `If-None-Match` absent) → 304 on failure
+    fn check(
+        self,
+        etag: Option<&ETag>,
+        last_modified: Option<&LastModified>,
+    ) -> Option<OpenFileOutput> {
+        // Step 1: If-Match. RFC 9110 §13.1.1: with no current representation (no ETag), the
+        // condition is false, including for `*`.
+        if let Some(if_match) = self.if_match {
+            let passes = etag
+                .map(|etag| if_match.precondition_passes(etag))
+                .unwrap_or(false);
+            if !passes {
+                return Some(OpenFileOutput::PreconditionFailed);
+            }
+        } else if let Some(since) = self.if_unmodified_since {
+            // Step 2: If-Unmodified-Since (only when If-Match is absent). RFC 9110 §13.1.4:
+            // ignored when no modification date is available.
+            let passes = last_modified
+                .map(|lm| since.precondition_passes(lm))
+                .unwrap_or(true);
+            if !passes {
+                return Some(OpenFileOutput::PreconditionFailed);
+            }
         }
-    }
 
-    None
+        // Step 3: If-None-Match (weak comparison). No ETag means the condition is vacuously
+        // satisfied, so serve normally.
+        if let Some(if_none_match) = self.if_none_match {
+            let passes = etag
+                .map(|etag| if_none_match.precondition_passes(etag))
+                .unwrap_or(true);
+            if !passes {
+                return Some(OpenFileOutput::NotModified {
+                    etag: etag.cloned(),
+                    last_modified: last_modified.cloned(),
+                });
+            }
+        } else if let Some(since) = self.if_modified_since {
+            // Step 4: If-Modified-Since (only when If-None-Match is absent). No last-modified
+            // date means it is treated as modified (serve normally).
+            let unmodified = last_modified
+                .map(|lm| !since.is_modified(lm))
+                .unwrap_or(false);
+            if unmodified {
+                return Some(OpenFileOutput::NotModified {
+                    etag: etag.cloned(),
+                    last_modified: last_modified.cloned(),
+                });
+            }
+        }
+
+        None
+    }
 }
 
 // Returns the preferred_encoding encoding and modifies the path extension

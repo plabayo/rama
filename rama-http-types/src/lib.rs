@@ -93,6 +93,9 @@ pub mod header {
     // new standard sec-headers
     static_header!["sec-gpc"];
 
+    // fetch metadata request headers (W3C Fetch Metadata Request Headers)
+    static_header!["sec-fetch-site"];
+
     // additional W3C / Fetch / HTML standard security headers
     // not yet covered by hyperium/http's name table
     static_header![

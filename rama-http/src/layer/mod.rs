@@ -22,6 +22,7 @@ pub mod catch_panic;
 pub mod classify;
 pub mod collect_body;
 pub mod cors;
+pub mod csrf;
 pub mod dns;
 pub mod dpi_proxy_credential;
 pub mod error_handling;

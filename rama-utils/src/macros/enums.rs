@@ -353,6 +353,14 @@ macro_rules! __enum_builder {
                 }
             }
 
+            #[allow(dead_code)]
+            $enum_vis fn as_static_str(&self) -> ::std::borrow::Cow<'static, str> {
+                match self {
+                    $( $enum_name::$enum_var => ::std::borrow::Cow::Borrowed($enum_val)),*
+                    ,$enum_name::Unknown(v) => ::std::borrow::Cow::Owned(v.clone()),
+                }
+            }
+
             // NOTE(allow) generated irrespective if there are callers
             #[allow(dead_code)]
             $enum_vis fn as_smol_str(&self) -> $crate::macros::enums::__SmolStr {

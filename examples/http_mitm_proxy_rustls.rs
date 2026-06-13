@@ -190,7 +190,11 @@ fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Inf
             ConsumeErrLayer::default(),
             RemoveResponseHeaderLayer::hop_by_hop(),
             RemoveRequestHeaderLayer::hop_by_hop(),
-            CompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
+            // A MITM proxy relays whatever `Accept-Encoding` the client sends; it must not turn an
+            // unsatisfiable negotiation into its own 406, so opt out of that enforcement.
+            CompressionLayer::new()
+                .with_compress_predicate(MirrorDecompressed::new())
+                .with_enforce_not_acceptable(false),
             AddRequiredRequestHeadersLayer::new(),
         )
             .into_layer(service_fn(http_mitm_proxy)),
@@ -218,7 +222,11 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 
     let client = (
         MapResponseBodyLayer::new_boxed_streaming_body(),
-        DecompressionLayer::new().with_insert_accept_encoding_header(false),
+        // A MITM proxy decodes the upstream body to (potentially) inspect/rewrite it; a truncated
+        // upstream response should end the client stream cleanly rather than surface a decode error.
+        DecompressionLayer::new()
+            .with_insert_accept_encoding_header(false)
+            .with_tolerate_decode_errors(true),
     )
         .into_layer(client);
 
