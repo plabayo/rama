@@ -564,6 +564,14 @@ final class CoreTcpLifecycleTests: XCTestCase {
         let savedRecheck = defaultPostWakePathRecheckMs
         defaultPostWakePathRecheckMs = 20
         defer { defaultPostWakePathRecheckMs = savedRecheck }
+        // Isolate the WAKE recheck: with the mid-session viability feature
+        // enabled by default, the `simulateViability(false)` below would also
+        // arm the mid-session recheck and — via the shared `deadPathRecheckPending`
+        // coalescing flag — suppress the fast wake recheck this test waits on,
+        // delaying the reset to the longer mid-session settle. Disable it here.
+        let savedViab = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 0
+        defer { defaultViabilityLossRecheckMs = savedViab }
 
         let engine = makeEngine()
         let core = TransparentProxyCore()
@@ -617,6 +625,13 @@ final class CoreTcpLifecycleTests: XCTestCase {
         let savedRecheck = defaultPostWakePathRecheckMs
         defaultPostWakePathRecheckMs = 50
         defer { defaultPostWakePathRecheckMs = savedRecheck }
+        // Isolate the WAKE recheck (see `testFlowDeallocatesAfterWakeDeadPathReset`):
+        // with the mid-session feature on by default the wake recheck would be
+        // coalesced away, so this would stop exercising the wake recheck reading
+        // the recovered `lastPathViable == true`. Pin the mid-session feature off.
+        let savedViab = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 0
+        defer { defaultViabilityLossRecheckMs = savedViab }
 
         let fx = makeFixture()
         defer { tearDown(fx) }

@@ -339,8 +339,9 @@ nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 /// report non-viable — intended: viability loss is the stronger
 /// dead-path signal.
 ///
-/// `0` (the shipped default) disables mid-session re-checks entirely —
-/// the kill switch, mirroring `defaultFlowPressureSoftCap`.
+/// Ships ENABLED at `3_000`. Set to `0` to disable mid-session
+/// re-checks entirely — the kill switch, mirroring
+/// `defaultFlowPressureSoftCap`.
 nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 3_000
 
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it

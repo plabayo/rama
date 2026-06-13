@@ -416,12 +416,13 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertFalse(f.ctx.deadPathRecheckPending)
     }
 
-    /// With the kill switch at its shipped default (`0`), a viability loss
-    /// schedules nothing — behavior is byte-identical to before the
+    /// Kill switch: with `defaultViabilityLossRecheckMs == 0` a viability
+    /// loss schedules nothing — behavior is byte-identical to before the
     /// feature, and the loss is still cached for the wake reconcile.
-    func testViabilityLossDisabledByDefault() {
-        XCTAssertEqual(
-            defaultViabilityLossRecheckMs, 0, "feature must ship disabled")
+    func testViabilityLossKillSwitchSchedulesNothing() {
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 0
+        defer { defaultViabilityLossRecheckMs = prev }
         let core = TransparentProxyCore()
         let queue = DispatchQueue(label: "rama.test.flow.pathloss.off")
         let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
@@ -439,6 +440,16 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertFalse(f.ctx.isDone)
         XCTAssertEqual(f.conn.cancelCount, 0)
         XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// The feature ships ENABLED: the production default is the mid-session
+    /// 3s settle, not the kill switch. Guards against an accidental flip
+    /// back to `0` (which is what `…KillSwitch…` above already covers as a
+    /// behavior, not as the default).
+    func testViabilityLossEnabledByDefault() {
+        XCTAssertEqual(
+            defaultViabilityLossRecheckMs, 3_000,
+            "feature ships enabled with a 3s mid-session settle")
     }
 
     /// Pre-ready flows are out of scope for the mid-session re-check: the

@@ -221,6 +221,15 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// outstanding verdict per flow. Call on `flowQueue` (both triggers
     /// do). No-op without a `flowQueue` (engine-less test contexts), as
     /// before.
+    ///
+    /// Coalescing is across triggers, not just within one: if a viability
+    /// loss already armed a re-check, an overlapping `handleSystemWake` finds
+    /// `deadPathRecheckPending` set and rides the in-flight one rather than
+    /// scheduling its own. The verdict is identical either way (`checkDeadPath`
+    /// only reads `lastPathViable`/`egressReady`/`isDone`), so the only effect
+    /// is timing: the FIRST-scheduled trigger's settle wins, so the reset can
+    /// land up to `max(afterMs)` out — still far inside the idle reapers. Tests
+    /// that exercise ONE trigger in isolation pin the other's tunable to 0.
     private func scheduleDeadPathRecheck(
         _ ctx: TcpFlowContext, afterMs: UInt32, trigger: String
     ) {
