@@ -340,10 +340,8 @@ nonisolated(unsafe) var defaultPostWakePathRecheckMs: UInt32 = 1_500
 /// dead-path signal.
 ///
 /// `0` (the shipped default) disables mid-session re-checks entirely —
-/// the kill switch, mirroring `defaultFlowPressureSoftCap`. Flip to
-/// ~3_000 once the on-device soak validates it; `var` so tests can
-/// shorten it.
-nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 0
+/// the kill switch, mirroring `defaultFlowPressureSoftCap`.
+nonisolated(unsafe) var defaultViabilityLossRecheckMs: UInt32 = 3_000
 
 /// Budget for an egress `NWConnection` in `.waiting(_)` *before* it
 /// ever reaches `.ready` (path down at connect — boot, wake, VPN
@@ -479,7 +477,6 @@ struct WriteRetry {
     var deadline: DispatchTime
 }
 
-
 func blockedFlowError() -> NSError {
     NSError(
         domain: "NEAppProxyFlowErrorDomain",
@@ -540,7 +537,6 @@ struct TcpReadTerminal {
         }
     }
 }
-
 
 /// Classify a `NEAppProxyFlow` callback error into an expected
 /// disconnect vs. an actionable failure. Codes come from
@@ -718,7 +714,6 @@ struct TcpWriterState {
 /// invoked after the lock has been released, so there is no active lock
 /// to re-enter — but future implementors should not assume otherwise.
 
-
 public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     /// The Apple-framework-free state machine, engine handle, and
     /// per-flow registration maps live here. This subclass exists
@@ -812,7 +807,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         // drifted from what the comments described.
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        core.logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
+        core.logLifecycle(
+            "tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
 
         let settings = Self.buildNetworkSettings(
             from: startup,
@@ -954,11 +950,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             let portStr = String(port)
             let v4 = NWHostEndpoint(hostname: "0.0.0.0", port: portStr)
             let v6 = NWHostEndpoint(hostname: "::", port: portStr)
-            let localPrefix = resolvedPrefix(
-                endpoint: local,
-                networkText: rule.localNetwork,
-                explicitPrefix: rule.localPrefix
-            ) ?? 0
+            let localPrefix =
+                resolvedPrefix(
+                    endpoint: local,
+                    networkText: rule.localNetwork,
+                    explicitPrefix: rule.localPrefix
+                ) ?? 0
             return [v4, v6].map {
                 NENetworkRule(
                     remoteNetwork: $0,
@@ -994,14 +991,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return []
         }
 
-        return [NENetworkRule(
-            remoteNetwork: remote,
-            remotePrefix: remotePrefix,
-            localNetwork: local,
-            localPrefix: localPrefix,
-            protocol: proto,
-            direction: .outbound
-        )]
+        return [
+            NENetworkRule(
+                remoteNetwork: remote,
+                remotePrefix: remotePrefix,
+                localNetwork: local,
+                localPrefix: localPrefix,
+                protocol: proto,
+                direction: .outbound
+            )
+        ]
     }
 
     internal static func resolvedPrefix(
@@ -1138,7 +1137,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return resolved >= 0 ? resolved : nil
             }
-        return (signingIdentifier, deriveBundleId(fromSigningId: signingIdentifier), auditToken, pid)
+        return (
+            signingIdentifier, deriveBundleId(fromSigningId: signingIdentifier), auditToken, pid
+        )
     }
 
     /// Best-effort derivation of the bundle identifier from
@@ -1324,7 +1325,8 @@ let defaultTcpKeepaliveCount: Int = 3
 /// `.failed`, viability stays true) and wedge until the 60 s watchdog;
 /// keepalive probes fail it → `.failed` → existing reaper → app reconnects.
 /// Opt out with `tcp_keepalive_enabled = false`.
-private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options) {
+private func applyTcpKeepalive(_ opts: RamaTcpEgressConnectOptions?, to tcp: NWProtocolTCP.Options)
+{
     guard opts?.tcpKeepaliveEnabled ?? true else {
         tcp.enableKeepalive = false
         return

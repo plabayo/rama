@@ -321,8 +321,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             self.ctx.lastPathViable = viable
             // Mid-session loss (roam / interface switch / VPN toggle):
             // schedule the settle-delayed dead-path re-check now instead of
-            // waiting for a wake that never comes. No-op while
-            // `defaultViabilityLossRecheckMs == 0` (the shipped default).
+            // waiting for a wake that never comes. No-op when
+            // `defaultViabilityLossRecheckMs == 0`.
             if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
         }
     }

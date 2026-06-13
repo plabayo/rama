@@ -247,8 +247,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// settle-delayed verdict as wake: a path that recovers in the window
     /// is spared, and pre-ready flows are spared by the verdict's
     /// `egressReady` guard (the connect timeout / pre-ready waiting budget
-    /// own those). Disabled while `defaultViabilityLossRecheckMs == 0`
-    /// (the shipped default — kill switch).
+    /// own those). Disabled when `defaultViabilityLossRecheckMs == 0`.
     func handleEgressViabilityLoss(_ ctx: TcpFlowContext) {
         let settleMs = defaultViabilityLossRecheckMs
         guard settleMs > 0 else { return }
@@ -854,7 +853,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         TcpFlowSession(core: self, flow: flow, meta: meta).start()
     }
 
-
     // MARK: - Promote cutover orchestration
 
     /// Coordinate a service-initiated promote: cancel the
@@ -903,10 +901,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         // unopened flow; refuse cleanly and let the service fall
         // back to the in-Rust path.
         guard let session = ctx.session,
-              let connection = ctx.connection,
-              let clientWritePump = ctx.clientWritePump,
-              let egressWritePump = ctx.egressWritePump,
-              ctx.clientReadPump != nil
+            let connection = ctx.connection,
+            let clientWritePump = ctx.clientWritePump,
+            let egressWritePump = ctx.egressWritePump,
+            ctx.clientReadPump != nil
         else {
             logDebug(
                 "promote: flow not in a promotable state (missing session/connection/pumps or flow.open not yet complete); confirming failed"
