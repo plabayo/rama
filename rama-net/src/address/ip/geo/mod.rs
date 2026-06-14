@@ -24,6 +24,9 @@
 //! [`IpAddr`]: std::net::IpAddr
 //! [`rama-net/specifications/geoip/MaxMind-DB-spec.md`]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/geoip/MaxMind-DB-spec.md
 
+mod db;
+pub use db::{IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_DB_ENV};
+
 mod location;
 pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision, TimeZoneName};
 
@@ -52,6 +55,17 @@ pub enum GeoIpError {
     Unsupported(&'static str),
     /// Failed to read the database from disk.
     Io(std::io::Error),
+    /// A geolocation database configuration string (e.g. the value of the
+    /// `RAMA_IP_GEO_DB` environment variable) was malformed.
+    InvalidConfig(Box<str>),
+    /// A configured database source could not be loaded; carries the offending
+    /// path and the underlying error.
+    Source {
+        /// The configured filesystem path that failed to load.
+        path: Box<str>,
+        /// The underlying load error.
+        error: Box<Self>,
+    },
 }
 
 impl fmt::Display for GeoIpError {
@@ -63,6 +77,10 @@ impl fmt::Display for GeoIpError {
             Self::Corrupt(why) => write!(f, "mmdb: corrupt database: {why}"),
             Self::Unsupported(why) => write!(f, "mmdb: unsupported database: {why}"),
             Self::Io(err) => write!(f, "mmdb: i/o error: {err}"),
+            Self::InvalidConfig(why) => write!(f, "geoip: invalid configuration: {why}"),
+            Self::Source { path, error } => {
+                write!(f, "geoip: failed to load source {path:?}: {error}")
+            }
         }
     }
 }
@@ -71,6 +89,7 @@ impl std::error::Error for GeoIpError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
+            Self::Source { error, .. } => Some(error),
             _ => None,
         }
     }

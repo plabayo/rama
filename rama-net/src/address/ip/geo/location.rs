@@ -142,6 +142,40 @@ impl GeoLocation {
             && self.location.is_none()
             && self.autonomous_system.is_none()
     }
+
+    /// Fill any field that is empty in `self` with the corresponding value from
+    /// `other`, leaving already-populated fields untouched.
+    ///
+    /// This is the building block for merging results across several databases
+    /// (e.g. a country DB + an ASN DB): values from earlier sources take
+    /// precedence, later sources only fill the gaps.
+    pub fn fill_gaps_from(&mut self, other: &Self) {
+        if self.continent.is_none() {
+            self.continent.clone_from(&other.continent);
+        }
+        if self.country.is_none() {
+            self.country.clone_from(&other.country);
+        }
+        if self.registered_country.is_none() {
+            self.registered_country
+                .clone_from(&other.registered_country);
+        }
+        if self.subdivisions.is_empty() {
+            self.subdivisions.clone_from(&other.subdivisions);
+        }
+        if self.city.is_none() {
+            self.city.clone_from(&other.city);
+        }
+        if self.postal_code.is_none() {
+            self.postal_code.clone_from(&other.postal_code);
+        }
+        if self.location.is_none() {
+            self.location.clone_from(&other.location);
+        }
+        if self.autonomous_system.is_none() {
+            self.autonomous_system.clone_from(&other.autonomous_system);
+        }
+    }
 }
 
 /// A borrowing, zero-copy view over a single decoded geolocation record.
