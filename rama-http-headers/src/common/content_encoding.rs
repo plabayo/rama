@@ -221,10 +221,7 @@ mod tests {
         let ContentEncoding(directives) = test_decode(&[""]).unwrap();
 
         assert_eq!(directives.len(), 1);
-        assert_eq!(
-            directives[0],
-            ContentEncodingDirective::Unknown("".to_owned())
-        );
+        assert_eq!(directives[0], ContentEncodingDirective::Unknown("".into()));
     }
 
     #[test]
@@ -239,7 +236,7 @@ mod tests {
         assert_eq!(directives.len(), 1);
         assert_eq!(
             directives[0],
-            ContentEncodingDirective::Unknown("foobar".to_owned())
+            ContentEncodingDirective::Unknown("foobar".into())
         );
     }
 }

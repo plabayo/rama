@@ -83,7 +83,7 @@ impl From<RamaHttpVersion> for HttpVersion {
             RamaHttpVersion::HTTP_11 => Self::Http11,
             RamaHttpVersion::HTTP_2 => Self::Http2,
             RamaHttpVersion::HTTP_3 => Self::Http3,
-            other => Self::Unknown(format!("{other:?}")),
+            other => Self::Unknown(format!("{other:?}").into()),
         }
     }
 }
