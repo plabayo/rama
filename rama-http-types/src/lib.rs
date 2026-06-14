@@ -133,6 +133,9 @@ pub mod header {
         "sec-ch-downlink",
     ];
 
+    // client hint negotiation response headers (advertised by servers)
+    static_header!["accept-ch", "critical-ch"];
+
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
         const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),

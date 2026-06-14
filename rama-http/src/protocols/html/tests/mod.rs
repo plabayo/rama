@@ -13,6 +13,7 @@ mod content;
 mod custom_elements;
 mod elements;
 mod escape;
+mod join;
 mod rama_types;
 mod response;
 mod user_types;
