@@ -58,6 +58,6 @@ pub mod forwarded;
 
 pub mod client_hints;
 pub use client_hints::{
-    ClientHint, Downlink, Ect, Rtt, SaveData, all_client_hint_header_name_strings,
-    all_client_hint_header_names, all_client_hints,
+    AcceptCh, ClientHint, CriticalCh, Downlink, Ect, Rtt, SaveData,
+    all_client_hint_header_name_strings, all_client_hint_header_names, all_client_hints,
 };

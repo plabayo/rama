@@ -67,6 +67,7 @@
 
 mod core;
 mod either_impls;
+mod join;
 mod rama_impls;
 mod response;
 
@@ -79,6 +80,8 @@ pub use self::core::{
     End, IntoHtml, Marker, PreEscaped, Start, decode_entities, end, escape, escape_into, marker,
     start,
 };
+#[doc(inline)]
+pub use self::join::join_display;
 #[doc(inline)]
 pub use self::response::HtmlBuf;
 

@@ -12,7 +12,8 @@ use rama::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
+            AcceptCh, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol, Vary,
+            all_client_hint_header_names, all_client_hints,
             exotic::XClacksOverhead,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
@@ -42,7 +43,11 @@ use rama::{
     telemetry::tracing,
     tls::boring::server::TlsAcceptorLayer,
     ua::layer::classifier::UserAgentClassifierLayer,
-    utils::{backoff::ExponentialBackoff, collections::non_empty_smallvec, str::non_empty_str},
+    utils::{
+        backoff::ExponentialBackoff,
+        collections::{NonEmptySmallVec, NonEmptyVec, non_empty_smallvec},
+        str::non_empty_str,
+    },
 };
 
 use clap::Args;
@@ -166,10 +171,17 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
             })),
     );
 
-    let ch_headers = all_client_hint_header_name_strings()
-        .join(", ")
-        .parse::<HeaderValue>()
-        .context("parse header value")?;
+    // advertise (and mark critical) every client hint we know about, encoded
+    // via each hint's canonical `Sec-CH-` name.
+    let client_hints: NonEmptySmallVec<16, ClientHint> =
+        NonEmptySmallVec::collect(all_client_hints()).context("collect known client hints")?;
+
+    // `Vary` lists the request header names the response depends on, so it keeps
+    // every advertised client-hint name (incl. legacy aliases).
+    let vary_client_hints = Vary::headers(
+        NonEmptyVec::collect(all_client_hint_header_names())
+            .context("collect client hint header names")?,
+    );
 
     // --- defence-in-depth response headers ---
     //
@@ -203,15 +215,9 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
         referrer_layer,
         frame_layer,
         StorageAuthLayer::new(&state),
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("accept-ch"),
-            ch_headers.clone(),
-        ),
-        SetResponseHeaderLayer::if_not_present(
-            HeaderName::from_static("critical-ch"),
-            ch_headers.clone(),
-        ),
-        SetResponseHeaderLayer::if_not_present(HeaderName::from_static("vary"), ch_headers),
+        SetResponseHeaderLayer::if_not_present_typed(AcceptCh(client_hints.clone())),
+        SetResponseHeaderLayer::if_not_present_typed(CriticalCh(client_hints)),
+        SetResponseHeaderLayer::if_not_present_typed(vary_client_hints),
         UserAgentClassifierLayer::new(),
         ConsumeErrLayer::trace_as(tracing::Level::WARN),
         http_forwarded_layer,

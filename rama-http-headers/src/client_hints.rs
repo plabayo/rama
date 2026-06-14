@@ -224,6 +224,73 @@ client_hint! {
 }
 
 // ---------------------------------------------------------------------------
+// Client-hint negotiation headers: a server advertises which [`ClientHint`]s
+// it wants (`Accept-CH`) and which of those are critical (`Critical-CH`).
+// Both are flat comma-separated lists of client-hint header names, encoded
+// using each hint's preferred (`Sec-CH-` prefixed) form.
+// ---------------------------------------------------------------------------
+
+derive_non_empty_flat_csv_header! {
+    #[header(name = ACCEPT_CH, sep = Comma)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    /// `Accept-CH` header, defined in [RFC8942](https://datatracker.ietf.org/doc/html/rfc8942#section-3.1).
+    ///
+    /// Sent by a server to advertise the set of [`ClientHint`]s it would like
+    /// the user agent to send on subsequent requests to the same origin. Each
+    /// entry is encoded using the hint's preferred (`Sec-CH-` prefixed) header
+    /// name; entries that do not map to a known [`ClientHint`] are rejected on
+    /// decode.
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Accept-CH = #client-hint-name
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_smallvec;
+    /// use rama_http_headers::{AcceptCh, ClientHint};
+    ///
+    /// let accept_ch = AcceptCh(
+    ///     non_empty_smallvec![ClientHint::Ua, ClientHint::Platform, ClientHint::Mobile; 16],
+    /// );
+    /// ```
+    pub struct AcceptCh(pub NonEmptySmallVec<16, ClientHint>);
+}
+
+derive_non_empty_flat_csv_header! {
+    #[header(name = CRITICAL_CH, sep = Comma)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    /// `Critical-CH` header, defined by the
+    /// [Client Hints Infrastructure](https://wicg.github.io/client-hints-infrastructure/#critical-ch).
+    ///
+    /// Sent alongside [`AcceptCh`] to mark a subset of the advertised
+    /// [`ClientHint`]s as *critical*: if the original request was not sent with
+    /// these hints, a conforming user agent retries the request before handing
+    /// the response to the page. Same wire format as `Accept-CH`.
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Critical-CH = #client-hint-name
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_smallvec;
+    /// use rama_http_headers::{ClientHint, CriticalCh};
+    ///
+    /// let critical_ch = CriticalCh(
+    ///     non_empty_smallvec![ClientHint::Ua, ClientHint::Platform; 16],
+    /// );
+    /// ```
+    pub struct CriticalCh(pub NonEmptySmallVec<16, ClientHint>);
+}
+
+// ---------------------------------------------------------------------------
 // Typed value parsers for a subset of the client hints above.
 //
 // Each parses a single header value with a strict spec, following the same
@@ -728,6 +795,71 @@ mod tests {
         assert_eq!(encode(Downlink::new(1.5)), "1.5");
         assert_eq!(encode(Downlink::new(100.0)), "100");
         assert_eq!(decode::<Downlink>(&["1.5"]), Some(Downlink::new(1.5)));
+    }
+
+    #[test]
+    fn test_accept_ch_decode() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        assert_eq!(
+            decode::<AcceptCh>(&["sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Ua,
+                ClientHint::Platform,
+                ClientHint::Mobile; 16
+            ])),
+        );
+        // case-insensitive and legacy aliases both map onto the canonical hint
+        assert_eq!(
+            decode::<AcceptCh>(&["DPR, save-data"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Dpr,
+                ClientHint::SaveData; 16
+            ])),
+        );
+        // multiple header lines fold into a single list
+        assert_eq!(
+            decode::<AcceptCh>(&["sec-ch-ua", "sec-ch-ua-platform"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Ua,
+                ClientHint::Platform; 16
+            ])),
+        );
+        // an unknown hint poisons the whole list
+        assert!(decode::<AcceptCh>(&["sec-ch-ua, not-a-hint"]).is_none());
+        assert!(decode::<AcceptCh>(&[""]).is_none());
+        assert!(decode::<AcceptCh>(&[]).is_none());
+    }
+
+    #[test]
+    fn test_accept_ch_round_trip() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        let header = AcceptCh(non_empty_smallvec![
+            ClientHint::Ua,
+            ClientHint::Platform,
+            ClientHint::Mobile; 16
+        ]);
+        assert_eq!(
+            encode(header.clone()),
+            "sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile",
+        );
+        assert_eq!(
+            decode::<AcceptCh>(&[encode(header.clone()).as_str()]),
+            Some(header)
+        );
+    }
+
+    #[test]
+    fn test_critical_ch_round_trip() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        let header = CriticalCh(non_empty_smallvec![ClientHint::Ua, ClientHint::Platform; 16]);
+        assert_eq!(encode(header.clone()), "sec-ch-ua, sec-ch-ua-platform");
+        assert_eq!(
+            decode::<CriticalCh>(&[encode(header.clone()).as_str()]),
+            Some(header),
+        );
     }
 
     #[test]
