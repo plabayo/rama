@@ -5,16 +5,20 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// autonomous system number (ASN).
 ///
 /// Within Rama this has little use as we do facilitate or drive BGP routing.
 /// It is however defined to allow interaction with services that do interact
 /// with this layer, such as proxy gateway services, especially one
 /// of residential type.
+///
+/// Only assignable ASNs are representable; see [`LossyAsn`] when you need to
+/// preserve a raw `u32` that may fall outside the assignable ranges (e.g. as
+/// found in third-party geolocation data).
 pub struct Asn(AsnData);
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum AsnData {
     Unspecified,
     Specified(u32),
@@ -155,7 +159,153 @@ impl<'de> Deserialize<'de> for Asn {
     }
 }
 
+/// An autonomous system number that may fall outside the assignable ranges.
+///
+/// Unlike [`Asn`], this preserves any `u32` verbatim — including reserved,
+/// documentation, or special values such as `AS_TRANS` (`23456`) and
+/// `4294967295` that legitimately appear in third-party data sets (e.g.
+/// geolocation ASN databases). It is a [`Copy`] type, so it can be returned
+/// from borrowing views as easily as from owned ones.
+///
+/// Convert to a strict [`Asn`] with [`Asn::try_from`] (or [`Self::to_asn`])
+/// when you need the validated form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LossyAsn(LossyAsnData);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum LossyAsnData {
+    /// A `u32` that is not a valid assignable ASN.
+    Invalid(u32),
+    /// A value that maps onto a valid [`Asn`].
+    Valid(AsnData),
+}
+
+impl LossyAsn {
+    /// Return the underlying value as a `u32` (`0` for an unspecified ASN).
+    #[must_use]
+    pub fn as_u32(self) -> u32 {
+        match self.0 {
+            LossyAsnData::Invalid(n) | LossyAsnData::Valid(AsnData::Specified(n)) => n,
+            LossyAsnData::Valid(AsnData::Unspecified) => 0,
+        }
+    }
+
+    /// Returns `true` if this value maps onto a valid assignable [`Asn`].
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        matches!(self.0, LossyAsnData::Valid(_))
+    }
+
+    /// Returns `true` if this is the unspecified ("any") ASN.
+    #[must_use]
+    pub fn is_any(self) -> bool {
+        matches!(self.0, LossyAsnData::Valid(AsnData::Unspecified))
+    }
+
+    /// Convert into a strict [`Asn`], or `None` if the value is not assignable.
+    #[must_use]
+    pub fn to_asn(self) -> Option<Asn> {
+        match self.0 {
+            LossyAsnData::Valid(data) => Some(Asn(data)),
+            LossyAsnData::Invalid(_) => None,
+        }
+    }
+}
+
+impl From<u32> for LossyAsn {
+    fn from(value: u32) -> Self {
+        match Asn::try_from(value) {
+            Ok(asn) => Self(LossyAsnData::Valid(asn.0)),
+            Err(_) => Self(LossyAsnData::Invalid(value)),
+        }
+    }
+}
+
+impl From<Asn> for LossyAsn {
+    fn from(asn: Asn) -> Self {
+        Self(LossyAsnData::Valid(asn.0))
+    }
+}
+
+impl TryFrom<LossyAsn> for Asn {
+    type Error = InvalidAsn;
+
+    fn try_from(value: LossyAsn) -> Result<Self, Self::Error> {
+        value.to_asn().ok_or(InvalidAsn)
+    }
+}
+
+impl fmt::Display for LossyAsn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            LossyAsnData::Valid(data) => Asn(data).fmt(f),
+            LossyAsnData::Invalid(n) => write!(f, "AS{n}"),
+        }
+    }
+}
+
+impl Serialize for LossyAsn {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.as_u32().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LossyAsn {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::from(u32::deserialize(deserializer)?))
+    }
+}
+
 rama_utils::macros::error::static_str_error! {
     #[doc = "invalid ASN (e.g. within reserved space)"]
     pub struct InvalidAsn;
+}
+
+#[cfg(test)]
+mod lossy_asn_tests {
+    use super::*;
+
+    #[test]
+    fn valid_asn_roundtrips() {
+        let a = LossyAsn::from(15169);
+        assert!(a.is_valid());
+        assert!(!a.is_any());
+        assert_eq!(a.as_u32(), 15169);
+        assert_eq!(a.to_asn(), Some(Asn::from_static(15169)));
+    }
+
+    #[test]
+    fn out_of_range_is_preserved_but_invalid() {
+        // AS_TRANS and the all-ones value are not assignable but must survive.
+        for n in [23456u32, 4_294_967_295] {
+            let a = LossyAsn::from(n);
+            assert!(!a.is_valid(), "{n} should be invalid");
+            assert_eq!(a.as_u32(), n);
+            assert_eq!(a.to_asn(), None);
+            assert_eq!(Asn::try_from(a), Err(InvalidAsn));
+        }
+    }
+
+    #[test]
+    fn zero_is_unspecified() {
+        let a = LossyAsn::from(0);
+        assert!(a.is_valid());
+        assert!(a.is_any());
+        assert_eq!(a.as_u32(), 0);
+    }
+
+    #[test]
+    fn serde_is_a_bare_u32() {
+        let a = LossyAsn::from(23456);
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, "23456");
+        let back: LossyAsn = serde_json::from_str(&json).unwrap();
+        assert_eq!(a, back);
+    }
 }
