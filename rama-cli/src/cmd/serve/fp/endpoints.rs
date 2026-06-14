@@ -803,7 +803,12 @@ where
             ),
             meta!(
                 "http-equiv" = "Accept-CH",
-                content = join_display(all_client_hints(), ", ")
+                // advertise every spelling each hint answers to (Sec-CH-* + any
+                // legacy bare alias), matching the `Accept-CH` response header
+                content = join_display(
+                    all_client_hints().flat_map(|h| h.header_name_strs().iter().copied()),
+                    ", ",
+                )
             ),
             link!(
                 rel = "stylesheet",
