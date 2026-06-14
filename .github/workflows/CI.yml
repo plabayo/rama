@@ -690,17 +690,23 @@ jobs:
         run: |
           bash rama-http-core/ci/h2spec.sh -F
 
-  semver-checks:
-    runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    steps:
-      - uses: actions/checkout@v6
-      - name: Check semver
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+  # semver-checks: DISABLED until the 0.3 release. On 0.3.0-rcN there is no
+  # stable API to guard, and the action's isolated rustdoc re-resolve (which
+  # ignores our Cargo.lock) keeps breaking on unrelated upstream churn — most
+  # recently brotli 8.0.3 vs the freshly-published alloc-no-stdlib 3.0.0, the
+  # 2nd such failure. Re-enable (and re-add to deploy-rama-cli-docker needs)
+  # once 0.3.0 ships.
+  # semver-checks:
+  #   runs-on: ubuntu-latest
+  #   needs:
+  #     - precheck-rust
+  #     - precheck-docs
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - name: Check semver
+  #       uses: obi1kenobi/cargo-semver-checks-action@v2
+  #       with:
+  #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
   deploy-rama-cli-docker:
     runs-on: ubuntu-latest
@@ -722,7 +728,6 @@ jobs:
       - test-rust-e2e-release
       - test-ws-autobahn
       - test-spec-h2
-      - semver-checks
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub
