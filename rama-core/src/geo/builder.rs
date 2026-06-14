@@ -5,11 +5,17 @@
 //! holds a `Box<str>`, and a borrowing, [`Copy`] `*Ref` form whose `Unknown`
 //! holds a `&str`. Both expose `code()` / `name()` / `from_code()`, round-trip
 //! through their canonical code via `Display` + serde, and convert between each
-//! other (`to_owned`).
+//! other (`to_owned`). The owned form also exposes a `Self::ALL` slice of every
+//! known value.
+//!
+//! An optional `meta <Struct> { field: Option<T>, .. }` prelude adds per-value
+//! metadata accessors (one method per field, returning the field's `Option<T>`,
+//! `None` for `Unknown`) on both the owned and borrowing forms — used for e.g.
+//! a country's ISO alpha-3 / numeric codes.
 
 /// Define an owned + borrowing pair of closed, code-keyed enums.
 ///
-/// Syntax:
+/// Syntax (without metadata):
 /// ```ignore
 /// geo_enum! {
 ///     /// docs for the owned type
@@ -19,8 +25,23 @@
 ///     }
 /// }
 /// ```
+///
+/// Syntax (with metadata accessors — every field must be `Option<_>`):
+/// ```ignore
+/// geo_enum! {
+///     meta CountryMeta {
+///         alpha3: Option<&'static str>,
+///         numeric: Option<u16>,
+///     }
+///     /// docs for the owned type
+///     pub enum Country / CountryRef {
+///         Belgium => "BE", "Belgium", { alpha3: Some("BEL"), numeric: Some(56) },
+///     }
+/// }
+/// ```
 macro_rules! geo_enum {
-    (
+    // ===== shared body: enum defs + code/name/from_code/ALL + serde =====
+    (@common
         $(#[$meta:meta])*
         $vis:vis enum $name:ident / $name_ref:ident {
             $( $(#[$vmeta:meta])* $var:ident => $code:literal, $label:literal ),* $(,)?
@@ -43,6 +64,9 @@ macro_rules! geo_enum {
         }
 
         impl $name {
+            /// Every known value, in canonical-code order (excludes `Unknown`).
+            pub const ALL: &'static [Self] = &[ $( Self::$var ),* ];
+
             /// The canonical code for this value (e.g. `"BE"`).
             #[must_use]
             pub fn code(&self) -> &str {
@@ -190,6 +214,76 @@ macro_rules! geo_enum {
             ) -> ::std::result::Result<Self, D::Error> {
                 let s = <::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
                 Ok(Self::from_code(&s))
+            }
+        }
+    };
+
+    // ===== with per-value metadata accessors =====
+    (
+        meta $meta_struct:ident { $( $field:ident : $fty:ty ),+ $(,)? }
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident / $name_ref:ident {
+            $( $(#[$vmeta:meta])* $var:ident => $code:literal, $label:literal, { $($init:tt)* } ),* $(,)?
+        }
+    ) => {
+        geo_enum! { @common
+            $(#[$meta])*
+            $vis enum $name / $name_ref {
+                $( $(#[$vmeta])* $var => $code, $label ),*
+            }
+        }
+
+        /// Static per-value metadata; every field is `Option<_>` so it can be
+        /// flattened against the absence of a value for `Unknown`.
+        #[derive(Clone, Copy)]
+        struct $meta_struct { $( $field : $fty ),+ }
+
+        impl $name {
+            fn meta(&self) -> Option<$meta_struct> {
+                Some(match self {
+                    $( Self::$var => $meta_struct { $($init)* }, )*
+                    Self::Unknown(_) => return None,
+                })
+            }
+
+            $(
+                #[doc = concat!("The `", stringify!($field), "` metadata for this value, or `None` if unknown.")]
+                #[must_use]
+                pub fn $field(&self) -> $fty {
+                    self.meta().and_then(|m| m.$field)
+                }
+            )+
+        }
+
+        impl $name_ref<'_> {
+            fn meta(self) -> Option<$meta_struct> {
+                Some(match self {
+                    $( Self::$var => $meta_struct { $($init)* }, )*
+                    Self::Unknown(_) => return None,
+                })
+            }
+
+            $(
+                #[doc = concat!("The `", stringify!($field), "` metadata for this value, or `None` if unknown.")]
+                #[must_use]
+                pub fn $field(self) -> $fty {
+                    self.meta().and_then(|m| m.$field)
+                }
+            )+
+        }
+    };
+
+    // ===== plain (no metadata) =====
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident / $name_ref:ident {
+            $( $(#[$vmeta:meta])* $var:ident => $code:literal, $label:literal ),* $(,)?
+        }
+    ) => {
+        geo_enum! { @common
+            $(#[$meta])*
+            $vis enum $name / $name_ref {
+                $( $(#[$vmeta])* $var => $code, $label ),*
             }
         }
     };

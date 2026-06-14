@@ -14,8 +14,10 @@ mod continent;
 mod country;
 mod language;
 mod locale;
+mod script;
 
 pub use continent::{Continent, ContinentRef};
 pub use country::{Country, CountryRef};
-pub use language::{Language, LanguageRef, Script, ScriptRef};
+pub use language::{Language, LanguageRef};
 pub use locale::Locale;
+pub use script::{Script, ScriptRef};
