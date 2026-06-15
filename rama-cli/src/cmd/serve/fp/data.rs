@@ -160,8 +160,6 @@ pub(super) struct RequestInfo {
     pub(super) peer_addr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) geo: Option<IpGeoInfo>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) geo_attribution: Option<[&'static str; 2]>,
 }
 
 pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInfo {
@@ -202,9 +200,6 @@ pub(super) async fn get_request_info(
             })
             .and_then(|ip| db.resolve(ip))
     });
-    let geo_attribution = geo
-        .as_ref()
-        .map(|_| rama::cli::service::geo::GEO_ATTRIBUTION);
 
     Ok(RequestInfo {
         version: format!("{:?}", parts.version),
@@ -236,7 +231,6 @@ pub(super) async fn get_request_info(
                     .map(|v| v.peer_addr().to_string())
             }),
         geo,
-        geo_attribution,
     })
 }
 

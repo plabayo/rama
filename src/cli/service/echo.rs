@@ -352,10 +352,17 @@ where
             }
         };
 
+        // Attribution header, present only when a geo database is configured.
+        let geo_attribution = self
+            .geo_db
+            .is_some()
+            .then(crate::cli::service::geo::geo_attribution_layers);
+
         (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            geo_attribution,
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
@@ -746,30 +753,29 @@ impl Service<Request> for EchoService {
             }));
         }
 
-        let (geo, geo_attribution) = match self.geo_db.as_ref().and_then(|db| {
-            parts
-                .extensions
-                .get_ref::<Forwarded>()
-                .and_then(|f| f.client_ip())
-                .or_else(|| {
-                    parts
-                        .extensions
-                        .get_ref::<SocketInfo>()
-                        .map(|s| s.peer_addr().ip_addr)
-                })
-                .and_then(|ip| db.resolve(ip))
-        }) {
-            Some(info) => (
-                serde_json::to_value(&info).unwrap_or_default(),
-                json!(crate::cli::service::geo::GEO_ATTRIBUTION),
-            ),
-            None => (serde_json::Value::Null, serde_json::Value::Null),
-        };
+        // attribution rides in the x-geo-attribution response header, not the body
+        let geo = self
+            .geo_db
+            .as_ref()
+            .and_then(|db| {
+                parts
+                    .extensions
+                    .get_ref::<Forwarded>()
+                    .and_then(|f| f.client_ip())
+                    .or_else(|| {
+                        parts
+                            .extensions
+                            .get_ref::<SocketInfo>()
+                            .map(|s| s.peer_addr().ip_addr)
+                    })
+                    .and_then(|ip| db.resolve(ip))
+            })
+            .map(|info| serde_json::to_value(&info).unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null);
 
         Ok(Json(json!({
             "ua": user_agent_info,
             "geo": geo,
-            "geo_attribution": geo_attribution,
             "http": {
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,

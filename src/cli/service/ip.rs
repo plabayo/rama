@@ -226,9 +226,8 @@ impl Service<Request> for HttpIpService {
                     let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
                     let mut body = serde_json::json!({ "ip": ip });
                     if let Some(info) = geo {
+                        // attribution rides in the x-geo-attribution header, not the body
                         body["geo"] = serde_json::to_value(&info).unwrap_or_default();
-                        body["geo_attribution"] =
-                            serde_json::json!(crate::cli::service::geo::GEO_ATTRIBUTION);
                     }
                     Json(body).into_response()
                 }
@@ -462,6 +461,12 @@ impl<M> IpServiceBuilder<M> {
                 crate::cli::service::http_security::rama_html_csp(),
             );
 
+        // Attribution header, present only when a geo database is configured.
+        let geo_attribution = self
+            .geo_db
+            .is_some()
+            .then(crate::cli::service::geo::geo_attribution_layers);
+
         // Route the IP echo + its asset sidecars through a Router so we
         // get clean method-aware matching (anything outside the three
         // known routes redirects to `/`).
@@ -480,6 +485,7 @@ impl<M> IpServiceBuilder<M> {
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            geo_attribution,
             csp_layer,
             nosniff_layer,
             referrer_layer,
