@@ -35,11 +35,9 @@ pub(crate) async fn race_resolve_dual(
                                 "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
                             )
                         }
-                    },
+                    }
                     Some(Err(err)) => {
-                        tracing::debug!(
-                            "failed to lookup ipv4 addresses for domain: {err:?}"
-                        );
+                        tracing::debug!("failed to lookup ipv4 addresses for domain: {err:?}");
                     }
                     None => {
                         tracing::debug!(
@@ -63,11 +61,9 @@ pub(crate) async fn race_resolve_dual(
                                 "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
                             )
                         }
-                    },
+                    }
                     Some(Err(err)) => {
-                        tracing::debug!(
-                            "failed to lookup ipv6 addresses for domain: {err:?}"
-                        );
+                        tracing::debug!("failed to lookup ipv6 addresses for domain: {err:?}");
                     }
                     None => {
                         tracing::debug!(
