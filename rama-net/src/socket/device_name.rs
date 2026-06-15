@@ -100,25 +100,7 @@ impl TryFrom<&[u8]> for DeviceName {
     }
 }
 
-impl serde::Serialize for DeviceName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let name = self.as_str();
-        name.serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for DeviceName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str DeviceName);
 
 pub(super) const fn is_valid(s: &[u8]) -> bool {
     if s.is_empty() || s.len() > DEVICE_MAX_LEN {
