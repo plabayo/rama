@@ -6,8 +6,8 @@
 //! private-use range endpoints. Each carries its ISO 15924 numeric code via
 //! [`Script::numeric`]. Any other code round-trips through `Unknown`.
 //!
-//! Source (cross-verified): ISO 15924 (Unicode Consortium registration
-//! authority), <https://www.unicode.org/iso15924/>.
+//! Source: ISO 15924 (Unicode Consortium registration authority),
+//! <https://www.unicode.org/iso15924/>.
 
 use super::builder::geo_enum;
 

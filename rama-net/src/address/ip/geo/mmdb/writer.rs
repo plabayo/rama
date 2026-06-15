@@ -1,16 +1,9 @@
 //! Minimal MaxMind DB writer.
 //!
-//! This builds a spec-compliant `.mmdb` byte image from inserted
-//! `(network, value)` pairs. It emits 32-bit records and encodes records
-//! inline, but **deduplicates identical records** — two networks with the same
-//! value share a single data offset — which keeps the image (and peak memory)
-//! reasonable when compiling repetitive inputs such as a city CSV. It does not
-//! do sub-structure pointer compression, so the result is still larger than a
-//! hand-optimised database.
-//!
-//! [`MmdbBuilder::write_to`] / [`MmdbBuilder::write_to_file`] serialise the
-//! image straight to the sink without first buffering the whole thing, so a
-//! large compiled database can be streamed to disk.
+//! Builds a spec-compliant `.mmdb` image from inserted `(network, value)`
+//! pairs, emitting 32-bit records. Identical records are stored once and
+//! shared. [`MmdbBuilder::write_to`] / [`MmdbBuilder::write_to_file`] serialise
+//! directly to the sink, so a large database can be streamed to disk.
 
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -157,8 +150,8 @@ pub struct MmdbBuilder {
     build_epoch: u64,
     nodes: Vec<Node>,
     data: Vec<u8>,
-    /// Maps an encoded record to its offset in `data`, so identical records
-    /// are stored once and shared by every network that resolves to them.
+    /// Encoded record -> its offset in `data`, so identical records are
+    /// stored once.
     dedup: HashMap<Box<[u8]>, usize>,
 }
 
@@ -304,9 +297,8 @@ impl MmdbBuilder {
         Ok(out)
     }
 
-    /// Serialise the database straight into `w` without first buffering the
-    /// whole image in memory (only the in-RAM tree and the deduplicated data
-    /// section are held). Used by [`Self::write_to`] / [`Self::write_to_file`].
+    /// Serialise the database directly into `w` without buffering the whole
+    /// image first.
     fn serialize_to<W: Write>(&self, w: &mut W) -> Result<(), MmdbWriteError> {
         let node_count = self.nodes.len() as u32;
         for node in &self.nodes {

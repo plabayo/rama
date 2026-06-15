@@ -143,12 +143,8 @@ impl GeoLocation {
             && self.autonomous_system.is_none()
     }
 
-    /// Fill any field that is empty in `self` with the corresponding value from
-    /// `other`, leaving already-populated fields untouched.
-    ///
-    /// This is the building block for merging results across several databases
-    /// (e.g. a country DB + an ASN DB): values from earlier sources take
-    /// precedence, later sources only fill the gaps.
+    /// Fill any field that is empty in `self` with the corresponding value
+    /// from `other`; already-populated fields are left untouched.
     pub fn fill_gaps_from(&mut self, other: &Self) {
         if self.continent.is_none() {
             self.continent.clone_from(&other.continent);

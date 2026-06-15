@@ -1,20 +1,16 @@
 //! Compile range-based geolocation CSV into a MaxMind DB.
 //!
 //! Many free databases ship as CSV with one row per `(ip_from, ip_to, …)`
-//! range (notably the IP2Location LITE editions). This module parses such a
-//! file — with the [`csv`] crate — and compiles it via [`MmdbBuilder`] into a
-//! database the rest of this crate can query like any other `.mmdb`.
+//! range (notably the IP2Location LITE editions). This compiles such a file
+//! via [`MmdbBuilder`] into a database queryable like any other `.mmdb`.
 //!
 //! - [`compile_ip2location_lite`] / [`compile_ip2location_lite_to_file`] handle
 //!   the IP2Location LITE country / city / ASN layouts.
 //! - [`compile_csv`] / [`compile_csv_into`] take a custom row mapper for any
 //!   other range-based format.
 //!
-//! The `*_into` / `*_to_file` variants stream the compiled image straight to
-//! disk (or any builder you own) without holding a second copy or a live reader
-//! in memory, and the writer deduplicates identical records — so a large,
-//! repetitive input (e.g. a city CSV) compiles without buffering the whole
-//! result. The input CSV itself is read incrementally, never fully buffered.
+//! The input is read incrementally; the `*_into` / `*_to_file` variants stream
+//! the result to disk without buffering a second copy.
 
 use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -167,7 +163,7 @@ fn make_builder(
     }
 }
 
-/// Convert a `csv::Error` into a [`CsvError`] without leaking the `csv` type.
+/// Map a row-read error onto a [`CsvError`].
 fn map_csv_err(err: csv::Error, line: usize) -> CsvError {
     let reason = err.to_string().into_boxed_str();
     match err.into_kind() {
@@ -279,7 +275,7 @@ pub fn compile_ip2location_lite<R: Read>(
 }
 
 /// Compile an IP2Location LITE CSV export and write the database to `path`,
-/// streaming directly to disk (no second in-memory copy, no live reader).
+/// streaming it to disk.
 ///
 /// See [`compile_ip2location_lite`] for the layout and row handling.
 ///
@@ -494,7 +490,7 @@ mod tests {
 
     #[test]
     fn compile_ip2location_country_db1() {
-        // quoted fields, with the csv crate handling the dialect
+        // quoted fields
         let csv = "\"16777216\",\"16777471\",\"US\",\"United States of America\"\n\
                    \"16777472\",\"16777727\",\"CN\",\"China\"\n\
                    \"16777728\",\"16777983\",\"-\",\"-\"\n";
@@ -565,7 +561,7 @@ mod tests {
 
     #[test]
     fn generic_compile_csv_with_custom_mapper() {
-        // unquoted, with an embedded comma the csv crate keeps via quoting
+        // a plain unquoted row + custom mapper
         let csv = "1.0.0.0,1.0.0.255,BE\n";
         let reader = compile_csv(
             csv.as_bytes(),

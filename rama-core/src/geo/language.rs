@@ -6,8 +6,7 @@
 //! the handful where it differs — the bibliographic code via
 //! [`Language::bibliographic`]. Any other code round-trips through `Unknown`.
 //!
-//! Source (cross-verified): ISO 639-1 / ISO 639-2 (Library of Congress
-//! registration authority), via the `iso-codes` dataset.
+//! Source: ISO 639-1 / ISO 639-2 (Library of Congress registration authority).
 
 use super::builder::geo_enum;
 

@@ -7,15 +7,12 @@
 //! rama takes no political stance: contested territories are included purely
 //! for completeness of the standard.
 //!
-//! Sources (cross-verified):
-//! - ISO 3166-1 official standard (ISO 3166 Maintenance Agency)
-//! - ISO Online Browsing Platform: <https://www.iso.org/obp/ui/#search>
-//! - <https://en.wikipedia.org/wiki/ISO_3166-1> (and the alpha-2 / alpha-3 /
-//!   numeric sub-pages)
+//! Source: ISO 3166-1 (ISO 3166 Maintenance Agency); see the ISO Online
+//! Browsing Platform <https://www.iso.org/obp/ui/#search>.
 //!
-//! This file is generated; the owned form encodes identity only (the
-//! database's localised name is not retained). Use [`Country::name`] for the
-//! canonical English name and [`Country::code`] for the alpha-2 code.
+//! The owned form encodes identity only (the localised name is not retained);
+//! use [`Country::name`] for the English name and [`Country::code`] for the
+//! alpha-2 code.
 
 use super::builder::geo_enum;
 

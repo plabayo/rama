@@ -54,9 +54,8 @@ fn merge_readers(readers: &[MmdbReader], ip: IpAddr) -> Option<GeoLocation> {
 
 /// A collection of labelled IP geolocation sources, queried together.
 ///
-/// Cloning is cheap: each [`MmdbReader`] shares its backing buffer behind an
-/// `Arc`, so an `IpGeoDb` can live in shared application state and be queried
-/// concurrently without locks.
+/// Cheap to clone and safe to query concurrently, so it suits shared
+/// application state.
 #[derive(Debug, Clone, Default)]
 pub struct IpGeoDb {
     sources: Vec<GeoSource>,
