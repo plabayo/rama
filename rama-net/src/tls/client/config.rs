@@ -12,7 +12,7 @@ use crate::{
 /// and exposes typed setters for the settings both TLS backends support.
 /// Backend crates add setters for their backend-specific pieces via extension
 /// traits (`RustlsClientConfigExt`).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct TlsClientConfig(Extensions);
 
 impl TlsClientConfig {
@@ -133,6 +133,14 @@ impl TlsClientConfig {
     #[doc(hidden)]
     pub fn insert<T: Extension>(&self, piece: T) {
         self.0.insert(piece);
+    }
+}
+
+impl Clone for TlsClientConfig {
+    fn clone(&self) -> Self {
+        let clone = Self::new();
+        clone.as_extensions().extend(self.as_extensions());
+        clone
     }
 }
 
