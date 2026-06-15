@@ -1,16 +1,23 @@
 //! Minimal MaxMind DB writer.
 //!
 //! This builds a spec-compliant `.mmdb` byte image from inserted
-//! `(network, value)` pairs. It is intentionally small: it emits 32-bit
-//! records and encodes data inline (no pointer deduplication), which keeps
-//! the implementation simple and obviously correct. Its primary use is
-//! synthesising deterministic test fixtures; a later phase can reuse it to
-//! compile other inputs (e.g. CSV) into the same in-memory representation.
+//! `(network, value)` pairs. It emits 32-bit records and encodes records
+//! inline, but **deduplicates identical records** — two networks with the same
+//! value share a single data offset — which keeps the image (and peak memory)
+//! reasonable when compiling repetitive inputs such as a city CSV. It does not
+//! do sub-structure pointer compression, so the result is still larger than a
+//! hand-optimised database.
+//!
+//! [`MmdbBuilder::write_to`] / [`MmdbBuilder::write_to_file`] serialise the
+//! image straight to the sink without first buffering the whole thing, so a
+//! large compiled database can be streamed to disk.
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::net::IpAddr;
 use std::path::Path;
+
+use ahash::HashMap;
 
 use super::{IpVersion, METADATA_MARKER, RecordSize};
 
@@ -150,6 +157,9 @@ pub struct MmdbBuilder {
     build_epoch: u64,
     nodes: Vec<Node>,
     data: Vec<u8>,
+    /// Maps an encoded record to its offset in `data`, so identical records
+    /// are stored once and shared by every network that resolves to them.
+    dedup: HashMap<Box<[u8]>, usize>,
 }
 
 impl MmdbBuilder {
@@ -166,6 +176,7 @@ impl MmdbBuilder {
             build_epoch: 0,
             nodes: vec![Node::default()],
             data: Vec::new(),
+            dedup: HashMap::default(),
         }
     }
 
@@ -269,8 +280,14 @@ impl MmdbBuilder {
     }
 
     fn append_data(&mut self, value: &MmdbValue) -> usize {
+        let mut encoded = Vec::new();
+        encode_inline(value, &mut encoded);
+        if let Some(&offset) = self.dedup.get(encoded.as_slice()) {
+            return offset;
+        }
         let offset = self.data.len();
-        encode_inline(value, &mut self.data);
+        self.data.extend_from_slice(&encoded);
+        self.dedup.insert(encoded.into_boxed_slice(), offset);
         offset
     }
 
@@ -282,28 +299,35 @@ impl MmdbBuilder {
     /// exceeds the format's `u32` addressing limit. `follow_or_create` already
     /// bounds the node count, so `node_count as u32` here is always exact.
     pub fn build(&self) -> Result<Vec<u8>, MmdbWriteError> {
-        let node_count = self.nodes.len() as u32;
         let mut out = Vec::new();
-        for node in &self.nodes {
-            write_record(&mut out, node.left, node_count)?;
-            write_record(&mut out, node.right, node_count)?;
-        }
-        out.extend_from_slice(&[0u8; 16]); // data section separator
-        out.extend_from_slice(&self.data);
-        out.extend_from_slice(METADATA_MARKER);
-        out.extend_from_slice(&self.encode_metadata(node_count));
+        self.serialize_to(&mut out)?;
         Ok(out)
     }
 
-    /// Serialise the database to any writer.
+    /// Serialise the database straight into `w` without first buffering the
+    /// whole image in memory (only the in-RAM tree and the deduplicated data
+    /// section are held). Used by [`Self::write_to`] / [`Self::write_to_file`].
+    fn serialize_to<W: Write>(&self, w: &mut W) -> Result<(), MmdbWriteError> {
+        let node_count = self.nodes.len() as u32;
+        for node in &self.nodes {
+            write_record(w, node.left, node_count)?;
+            write_record(w, node.right, node_count)?;
+        }
+        w.write_all(&[0u8; 16])?; // data section separator
+        w.write_all(&self.data)?;
+        w.write_all(METADATA_MARKER)?;
+        w.write_all(&self.encode_metadata(node_count))?;
+        Ok(())
+    }
+
+    /// Serialise the database to any writer, streaming directly to the sink.
     ///
     /// # Errors
     ///
     /// Returns [`MmdbWriteError`] if the database is too large to encode or the
     /// underlying write fails.
     pub fn write_to<W: Write>(&self, mut w: W) -> Result<(), MmdbWriteError> {
-        w.write_all(&self.build()?)?;
-        Ok(())
+        self.serialize_to(&mut w)
     }
 
     /// Serialise the database to a file at `path`.
@@ -313,7 +337,10 @@ impl MmdbBuilder {
     /// Returns [`MmdbWriteError`] if the database is too large to encode or the
     /// file cannot be written.
     pub fn write_to_file(&self, path: impl AsRef<Path>) -> Result<(), MmdbWriteError> {
-        std::fs::write(path, self.build()?)?;
+        let file = std::fs::File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        self.serialize_to(&mut writer)?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -353,7 +380,7 @@ impl MmdbBuilder {
     }
 }
 
-fn write_record(out: &mut Vec<u8>, rec: Record, node_count: u32) -> Result<(), MmdbWriteError> {
+fn write_record<W: Write>(w: &mut W, rec: Record, node_count: u32) -> Result<(), MmdbWriteError> {
     let value: u32 = match rec {
         Record::Node(idx) => idx,
         Record::Empty => node_count,
@@ -364,7 +391,7 @@ fn write_record(out: &mut Vec<u8>, rec: Record, node_count: u32) -> Result<(), M
             .and_then(|v| v.checked_add(off))
             .ok_or(MmdbWriteError::TooLarge)?,
     };
-    out.extend_from_slice(&value.to_be_bytes());
+    w.write_all(&value.to_be_bytes())?;
     Ok(())
 }
 

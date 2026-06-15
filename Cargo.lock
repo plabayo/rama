@@ -3917,6 +3917,7 @@ version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
+ "csv",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
  "flume",

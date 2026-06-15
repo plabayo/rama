@@ -25,7 +25,10 @@
 //! [`rama-net/specifications/geoip/MaxMind-DB-spec.md`]: https://github.com/plabayo/rama/blob/main/rama-net/specifications/geoip/MaxMind-DB-spec.md
 
 mod csv;
-pub use csv::{CsvError, CsvGeoRecord, Ip2LocationLite, compile_csv, compile_ip2location_lite};
+pub use csv::{
+    CsvError, CsvGeoRecord, Ip2LocationLite, compile_csv, compile_csv_into,
+    compile_ip2location_lite, compile_ip2location_lite_to_file,
+};
 
 mod db;
 pub use db::{IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_DB_ENV};

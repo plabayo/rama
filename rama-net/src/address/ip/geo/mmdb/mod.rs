@@ -637,6 +637,52 @@ mod tests {
     }
 
     #[test]
+    fn identical_records_are_deduplicated() {
+        let rec = MmdbValue::map([(
+            "country",
+            MmdbValue::map([("iso_code", MmdbValue::string("US"))]),
+        )]);
+        let other = MmdbValue::map([(
+            "country",
+            MmdbValue::map([("iso_code", MmdbValue::string("DE"))]),
+        )]);
+
+        // same value at two networks -> one shared data copy
+        let mut same = MmdbBuilder::new(IpVersion::V4, "T");
+        same.insert(ip("1.0.0.0"), 24, &rec).unwrap();
+        same.insert(ip("2.0.0.0"), 24, &rec).unwrap();
+
+        // distinct (same-length) values at the same two networks -> two copies
+        let mut diff = MmdbBuilder::new(IpVersion::V4, "T");
+        diff.insert(ip("1.0.0.0"), 24, &rec).unwrap();
+        diff.insert(ip("2.0.0.0"), 24, &other).unwrap();
+
+        // the trees are identical, so the smaller image proves the dedup
+        assert!(same.build().unwrap().len() < diff.build().unwrap().len());
+
+        // and both networks still resolve to the shared record
+        let reader = MmdbReader::from_bytes(same.build().unwrap()).unwrap();
+        assert_eq!(
+            reader
+                .lookup(ip("1.0.0.5"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .code(),
+            "US"
+        );
+        assert_eq!(
+            reader
+                .lookup(ip("2.0.0.5"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .code(),
+            "US"
+        );
+    }
+
+    #[test]
     fn malformed_inputs_error_not_panic() {
         assert!(matches!(
             MmdbReader::from_bytes(vec![0u8; 32]),

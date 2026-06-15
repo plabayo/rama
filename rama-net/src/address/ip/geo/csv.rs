@@ -1,25 +1,24 @@
-//! Compile range-based geolocation CSV into an in-memory MaxMind DB.
+//! Compile range-based geolocation CSV into a MaxMind DB.
 //!
 //! Many free databases ship as CSV with one row per `(ip_from, ip_to, …)`
 //! range (notably the IP2Location LITE editions). This module parses such a
-//! file and compiles it — via [`MmdbBuilder`] — into an [`MmdbReader`] that the
-//! rest of this crate can query like any other `.mmdb`.
+//! file — with the [`csv`] crate — and compiles it via [`MmdbBuilder`] into a
+//! database the rest of this crate can query like any other `.mmdb`.
 //!
-//! [`compile_ip2location_lite`] handles the IP2Location LITE country / city /
-//! ASN layouts; [`compile_csv`] takes a custom row mapper for any other
-//! range-based format.
+//! - [`compile_ip2location_lite`] / [`compile_ip2location_lite_to_file`] handle
+//!   the IP2Location LITE country / city / ASN layouts.
+//! - [`compile_csv`] / [`compile_csv_into`] take a custom row mapper for any
+//!   other range-based format.
 //!
-//! No third-party dependencies: the CSV parser is a small std-only reader that
-//! handles `"`-quoted fields with doubled-quote escaping (the IP2Location
-//! dialect). Fields may not contain embedded newlines.
-//!
-//! The underlying writer encodes records inline (no pointer dedup), so the
-//! compiled image is larger than a hand-optimised `.mmdb`; this is a deliberate
-//! simplicity trade-off — see [`MmdbBuilder`].
+//! The `*_into` / `*_to_file` variants stream the compiled image straight to
+//! disk (or any builder you own) without holding a second copy or a live reader
+//! in memory, and the writer deduplicates identical records — so a large,
+//! repetitive input (e.g. a city CSV) compiles without buffering the whole
+//! result. The input CSV itself is read incrementally, never fully buffered.
 
-use std::fmt;
-use std::io::{self, BufRead};
+use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 
 use super::mmdb::{IpVersion, MmdbBuilder, MmdbValue, MmdbWriteError};
 use super::{GeoIpError, MmdbReader};
@@ -43,8 +42,8 @@ pub enum CsvError {
     Build(GeoIpError),
 }
 
-impl fmt::Display for CsvError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for CsvError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(err) => write!(f, "csv: i/o error: {err}"),
             Self::Parse { line, reason } => write!(f, "csv: line {line}: {reason}"),
@@ -76,72 +75,115 @@ pub struct CsvGeoRecord {
     pub value: MmdbValue,
 }
 
-/// Compile range-based CSV into an in-memory [`MmdbReader`].
+/// Compile range-based CSV into an existing [`MmdbBuilder`].
 ///
-/// `map_row` receives the parsed fields of each non-empty line and returns
+/// This is the lowest-level entry point: you own the builder, so you choose how
+/// to finish — [`MmdbBuilder::build`] for an in-memory image,
+/// [`MmdbReader::from_bytes`] for a live reader, or
+/// [`MmdbBuilder::write_to_file`] to stream it to disk.
+///
+/// `map_row` receives the parsed fields of each row and returns
 /// `Ok(Some(record))` to store a range, `Ok(None)` to skip the row, or
 /// `Err(reason)` to fail with a [`CsvError::Parse`] carrying the line number.
 ///
 /// # Errors
 ///
-/// Returns [`CsvError`] on I/O failure, a row the mapper rejects, overlapping
-/// ranges, or if the compiled image is not a valid database.
+/// Returns [`CsvError`] on I/O failure, a row the mapper rejects, or
+/// overlapping ranges.
+pub fn compile_csv_into<R, F>(
+    read: R,
+    builder: &mut MmdbBuilder,
+    mut map_row: F,
+) -> Result<(), CsvError>
+where
+    R: Read,
+    F: FnMut(&[&str]) -> Result<Option<CsvGeoRecord>, Box<str>>,
+{
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(read);
+    let mut record = csv::StringRecord::new();
+    let mut line = 0usize;
+    loop {
+        match reader.read_record(&mut record) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(err) => return Err(map_csv_err(err, line + 1)),
+        }
+        line += 1;
+        if record.iter().all(str::is_empty) {
+            continue;
+        }
+        let fields: Vec<&str> = record.iter().collect();
+        match map_row(&fields) {
+            Ok(Some(rec)) => {
+                insert_record(builder, &rec).map_err(|reason| CsvError::Parse { line, reason })?
+            }
+            Ok(None) => {}
+            Err(reason) => return Err(CsvError::Parse { line, reason }),
+        }
+    }
+    Ok(())
+}
+
+/// Compile range-based CSV into an in-memory [`MmdbReader`].
+///
+/// A convenience wrapper over [`compile_csv_into`] for the common case; see it
+/// for the `map_row` contract. Use [`compile_csv_into`] + [`MmdbBuilder::write_to_file`]
+/// to stream a large database to disk instead.
+///
+/// # Errors
+///
+/// Returns [`CsvError`] on I/O failure, a rejected row, overlapping ranges, or
+/// if the compiled image is not a valid database.
 pub fn compile_csv<R, F>(
     read: R,
     ip_version: IpVersion,
     database_type: impl Into<String>,
     languages: &[&str],
-    mut map_row: F,
+    map_row: F,
 ) -> Result<MmdbReader, CsvError>
 where
-    R: BufRead,
+    R: Read,
     F: FnMut(&[&str]) -> Result<Option<CsvGeoRecord>, Box<str>>,
 {
-    let mut builder = MmdbBuilder::new(ip_version, database_type);
-    if !languages.is_empty() {
-        builder = builder.with_languages(languages.iter().copied());
-    }
-    for (idx, line) in read.lines().enumerate() {
-        let line = line.map_err(CsvError::Io)?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let fields = parse_csv_line(&line);
-        let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
-        match map_row(&refs) {
-            Ok(Some(record)) => {
-                insert_record(&mut builder, ip_version, &record).map_err(|reason| {
-                    CsvError::Parse {
-                        line: idx + 1,
-                        reason,
-                    }
-                })?
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                return Err(CsvError::Parse {
-                    line: idx + 1,
-                    reason,
-                });
-            }
-        }
-    }
+    let mut builder = make_builder(ip_version, database_type, languages);
+    compile_csv_into(read, &mut builder, map_row)?;
     let bytes = builder.build().map_err(CsvError::Write)?;
     MmdbReader::from_bytes(bytes).map_err(CsvError::Build)
 }
 
-/// Split a record's range into CIDR blocks and insert each into the builder.
-fn insert_record(
-    builder: &mut MmdbBuilder,
+fn make_builder(
     ip_version: IpVersion,
-    record: &CsvGeoRecord,
-) -> Result<(), Box<str>> {
-    let (start, end, bits) = match (ip_version, record.start, record.end) {
-        (IpVersion::V4, IpAddr::V4(a), IpAddr::V4(b)) => {
+    database_type: impl Into<String>,
+    languages: &[&str],
+) -> MmdbBuilder {
+    let builder = MmdbBuilder::new(ip_version, database_type);
+    if languages.is_empty() {
+        builder
+    } else {
+        builder.with_languages(languages.iter().copied())
+    }
+}
+
+/// Convert a `csv::Error` into a [`CsvError`] without leaking the `csv` type.
+fn map_csv_err(err: csv::Error, line: usize) -> CsvError {
+    let reason = err.to_string().into_boxed_str();
+    match err.into_kind() {
+        csv::ErrorKind::Io(io) => CsvError::Io(io),
+        _ => CsvError::Parse { line, reason },
+    }
+}
+
+/// Split a record's range into CIDR blocks and insert each into the builder.
+fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(), Box<str>> {
+    let (start, end, bits) = match (record.start, record.end) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => {
             (u128::from(u32::from(a)), u128::from(u32::from(b)), 32u32)
         }
-        (IpVersion::V6, IpAddr::V6(a), IpAddr::V6(b)) => (u128::from(a), u128::from(b), 128u32),
-        _ => return Err("range endpoints do not match the database ip version".into()),
+        (IpAddr::V6(a), IpAddr::V6(b)) => (u128::from(a), u128::from(b), 128u32),
+        _ => return Err("range endpoints mix IPv4 and IPv6".into()),
     };
     if start > end {
         return Err("range start is greater than range end".into());
@@ -198,38 +240,6 @@ fn floor_log2(x: u128) -> u32 {
     127 - x.leading_zeros()
 }
 
-/// Parse a single CSV line into fields, honouring `"`-quoted fields with
-/// doubled-quote (`""`) escaping. Embedded newlines are not supported.
-fn parse_csv_line(line: &str) -> Vec<String> {
-    let line = line.trim_end_matches(['\r', '\n']);
-    let mut fields = Vec::new();
-    let mut cur = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_quotes {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    cur.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                cur.push(c);
-            }
-        } else {
-            match c {
-                '"' => in_quotes = true,
-                ',' => fields.push(std::mem::take(&mut cur)),
-                _ => cur.push(c),
-            }
-        }
-    }
-    fields.push(cur);
-    fields
-}
-
 /// IP2Location LITE database layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -243,35 +253,69 @@ pub enum Ip2LocationLite {
     Asn,
 }
 
-/// Compile an IP2Location LITE CSV export into an [`MmdbReader`].
+/// Compile an IP2Location LITE CSV export into an in-memory [`MmdbReader`].
 ///
 /// The records are written with MaxMind-style field names, so the resulting
 /// database is queried through the usual [`MmdbReader::lookup`] path. Rows with
 /// no usable data (e.g. country code `-`) are skipped. `ip_version` selects how
 /// the decimal `ip_from`/`ip_to` columns are interpreted (`u32` vs `u128`).
 ///
+/// Use [`compile_ip2location_lite_to_file`] to stream a large database straight
+/// to disk instead of materialising it.
+///
 /// # Errors
 ///
 /// Returns [`CsvError`] on I/O failure, a malformed row, or an invalid image.
-pub fn compile_ip2location_lite<R: BufRead>(
+pub fn compile_ip2location_lite<R: Read>(
     read: R,
     ip_version: IpVersion,
     kind: Ip2LocationLite,
 ) -> Result<MmdbReader, CsvError> {
+    let (database_type, languages) = ip2location_meta(kind);
+    let mut builder = make_builder(ip_version, database_type, languages);
+    fill_ip2location(read, ip_version, kind, &mut builder)?;
+    let bytes = builder.build().map_err(CsvError::Write)?;
+    MmdbReader::from_bytes(bytes).map_err(CsvError::Build)
+}
+
+/// Compile an IP2Location LITE CSV export and write the database to `path`,
+/// streaming directly to disk (no second in-memory copy, no live reader).
+///
+/// See [`compile_ip2location_lite`] for the layout and row handling.
+///
+/// # Errors
+///
+/// Returns [`CsvError`] on I/O failure, a malformed row, or a write failure.
+pub fn compile_ip2location_lite_to_file<R: Read>(
+    read: R,
+    ip_version: IpVersion,
+    kind: Ip2LocationLite,
+    path: impl AsRef<Path>,
+) -> Result<(), CsvError> {
+    let (database_type, languages) = ip2location_meta(kind);
+    let mut builder = make_builder(ip_version, database_type, languages);
+    fill_ip2location(read, ip_version, kind, &mut builder)?;
+    builder.write_to_file(path).map_err(CsvError::Write)
+}
+
+fn ip2location_meta(kind: Ip2LocationLite) -> (&'static str, &'static [&'static str]) {
     match kind {
-        Ip2LocationLite::Country => {
-            compile_csv(read, ip_version, "IP2LOCATION-LITE-DB1", &["en"], |f| {
-                map_country(f, ip_version)
-            })
-        }
-        Ip2LocationLite::City => {
-            compile_csv(read, ip_version, "IP2LOCATION-LITE-DB11", &["en"], |f| {
-                map_city(f, ip_version)
-            })
-        }
-        Ip2LocationLite::Asn => compile_csv(read, ip_version, "IP2LOCATION-LITE-ASN", &[], |f| {
-            map_asn(f, ip_version)
-        }),
+        Ip2LocationLite::Country => ("IP2LOCATION-LITE-DB1", &["en"]),
+        Ip2LocationLite::City => ("IP2LOCATION-LITE-DB11", &["en"]),
+        Ip2LocationLite::Asn => ("IP2LOCATION-LITE-ASN", &[]),
+    }
+}
+
+fn fill_ip2location<R: Read>(
+    read: R,
+    ip_version: IpVersion,
+    kind: Ip2LocationLite,
+    builder: &mut MmdbBuilder,
+) -> Result<(), CsvError> {
+    match kind {
+        Ip2LocationLite::Country => compile_csv_into(read, builder, |f| map_country(f, ip_version)),
+        Ip2LocationLite::City => compile_csv_into(read, builder, |f| map_city(f, ip_version)),
+        Ip2LocationLite::Asn => compile_csv_into(read, builder, |f| map_asn(f, ip_version)),
     }
 }
 
@@ -415,21 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn csv_line_parsing() {
-        assert_eq!(parse_csv_line("a,b,c"), vec!["a", "b", "c"]);
-        assert_eq!(
-            parse_csv_line(r#""16777216","16777471","US","United States""#),
-            vec!["16777216", "16777471", "US", "United States"]
-        );
-        // doubled-quote escape inside a quoted field
-        assert_eq!(
-            parse_csv_line(r#""x","a ""b"" c""#),
-            vec!["x", r#"a "b" c"#]
-        );
-        assert_eq!(parse_csv_line("a,,c"), vec!["a", "", "c"]);
-    }
-
-    #[test]
     fn range_to_cidrs_cases() {
         // one aligned /24
         assert_eq!(
@@ -449,7 +478,6 @@ mod tests {
     fn range_to_cidrs_covers_exactly() {
         for (start, end) in [(0u128, 0u128), (5, 5), (10, 37), (256, 1000), (0, 255)] {
             let blocks = range_to_cidrs(start, end, 32);
-            // contiguous, aligned, and summing to the inclusive count
             let mut next = start;
             let mut count = 0u128;
             for (addr, prefix) in &blocks {
@@ -466,6 +494,7 @@ mod tests {
 
     #[test]
     fn compile_ip2location_country_db1() {
+        // quoted fields, with the csv crate handling the dialect
         let csv = "\"16777216\",\"16777471\",\"US\",\"United States of America\"\n\
                    \"16777472\",\"16777727\",\"CN\",\"China\"\n\
                    \"16777728\",\"16777983\",\"-\",\"-\"\n";
@@ -510,7 +539,33 @@ mod tests {
     }
 
     #[test]
+    fn compile_to_file_streams_and_loads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("country.mmdb");
+        let csv = "\"16777216\",\"16777471\",\"BE\",\"Belgium\"\n";
+        compile_ip2location_lite_to_file(
+            csv.as_bytes(),
+            IpVersion::V4,
+            Ip2LocationLite::Country,
+            &path,
+        )
+        .unwrap();
+        // the streamed-to-disk database loads and queries like any other
+        let reader = MmdbReader::open(&path).unwrap();
+        assert_eq!(
+            reader
+                .lookup(ip("1.0.0.5"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .to_owned(),
+            Country::Belgium
+        );
+    }
+
+    #[test]
     fn generic_compile_csv_with_custom_mapper() {
+        // unquoted, with an embedded comma the csv crate keeps via quoting
         let csv = "1.0.0.0,1.0.0.255,BE\n";
         let reader = compile_csv(
             csv.as_bytes(),
