@@ -489,3 +489,56 @@ impl<'a> GeoLocationRef<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_empty_tracks_every_field() {
+        assert!(GeoLocation::default().is_empty());
+        let loc = GeoLocation {
+            registered_country: Some(Country::France),
+            ..Default::default()
+        };
+        assert!(!loc.is_empty(), "registered_country alone is not empty");
+    }
+
+    #[test]
+    fn fill_gaps_keeps_populated_and_fills_empty() {
+        let mut a = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        let b = GeoLocation {
+            country: Some(Country::Germany),
+            registered_country: Some(Country::France),
+            ..Default::default()
+        };
+        a.fill_gaps_from(&b);
+        assert_eq!(a.country, Some(Country::Belgium)); // not overwritten
+        assert_eq!(a.registered_country, Some(Country::France)); // filled
+    }
+
+    #[test]
+    fn fill_gaps_does_not_merge_subdivisions_elementwise() {
+        let mut a = GeoLocation {
+            subdivisions: vec![Subdivision {
+                iso_code: Some("X".into()),
+                name: None,
+            }],
+            ..Default::default()
+        };
+        let b = GeoLocation {
+            subdivisions: vec![Subdivision {
+                iso_code: Some("Y".into()),
+                name: None,
+            }],
+            ..Default::default()
+        };
+        a.fill_gaps_from(&b);
+        // self already had subdivisions, so other's are not appended
+        assert_eq!(a.subdivisions.len(), 1);
+        assert_eq!(a.subdivisions[0].iso_code.as_deref(), Some("X"));
+    }
+}

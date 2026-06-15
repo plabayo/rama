@@ -340,4 +340,28 @@ mod tests {
         let d = Decoder::new(&bad, 0);
         d.read_str(0).unwrap_err();
     }
+
+    #[test]
+    fn map_key_must_be_a_string() {
+        // map{ <u16 5> : "x" } — the key is an integer, not a string
+        let bad = vec![0xE1, 0xA1, 0x05, 0x41, b'x'];
+        let d = Decoder::new(&bad, 0);
+        d.map_get(0, "x").unwrap_err();
+    }
+
+    #[test]
+    fn integer_wider_than_expected_is_rejected() {
+        // a uint16-typed field claiming 4 payload bytes
+        let bad = vec![0xA4, 0x00, 0x00, 0x00, 0x01];
+        let d = Decoder::new(&bad, 0);
+        d.read_u16(0).unwrap_err();
+    }
+
+    #[test]
+    fn array_offsets_rejects_non_array() {
+        // a string where an array is expected
+        let bad = vec![0x42, b'h', b'i'];
+        let d = Decoder::new(&bad, 0);
+        d.array_offsets(0).unwrap_err();
+    }
 }

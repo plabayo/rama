@@ -412,9 +412,9 @@ mod tests {
     use super::*;
     use crate::address::ip::geo::{AsOrg, Coordinates, GeoLocation, Subdivision};
     use crate::asn::LossyAsn;
-    use ipnet::IpNet;
+    use ipnet::{IpNet, Ipv4Net};
     use rama_core::geo::{Continent, Country, Locale};
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -719,5 +719,143 @@ mod tests {
         let mut junk = b"\xab\xcd\xefMaxMind.com".to_vec();
         junk.push(0xff);
         MmdbReader::from_bytes(junk).unwrap_err();
+    }
+
+    /// Property: any IPv4 address inserted as a `/32` with any country resolves
+    /// back to that country.
+    #[quickcheck_macros::quickcheck]
+    fn prop_v4_country_roundtrips(ip_bits: u32, country_idx: u8) -> bool {
+        let country = Country::ALL[country_idx as usize % Country::ALL.len()].clone();
+        let addr = Ipv4Addr::from(ip_bits);
+        let loc = GeoLocation {
+            country: Some(country.clone()),
+            ..Default::default()
+        };
+        let mut b = MmdbBuilder::new(IpVersion::V4, "T");
+        b.insert(IpNet::V4(Ipv4Net::new(addr, 32).unwrap()), &loc)
+            .unwrap();
+        let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
+        reader
+            .lookup(IpAddr::V4(addr))
+            .and_then(|r| r.country())
+            .map(|c| c.to_owned())
+            == Some(country)
+    }
+
+    #[test]
+    fn every_field_roundtrips() {
+        // populate every GeoLocation field, including both subdivision shapes,
+        // to guard the From<&GeoLocation> encoder and the reader accessors.
+        let loc = GeoLocation {
+            continent: Some(Continent::Europe),
+            country: Some(Country::Belgium),
+            registered_country: Some(Country::Netherlands),
+            subdivisions: vec![
+                Subdivision {
+                    iso_code: Some("VLG".into()),
+                    name: Some("Flanders".into()),
+                },
+                Subdivision {
+                    iso_code: None,
+                    name: Some("Antwerp".into()),
+                },
+            ],
+            city: Some("Antwerp".into()),
+            postal_code: Some("2000".into()),
+            location: Some(Coordinates {
+                latitude: 51.2194,
+                longitude: 4.4025,
+                accuracy_radius_km: Some(20),
+                time_zone: Some("Europe/Brussels".into()),
+            }),
+            autonomous_system: Some(AsOrg {
+                asn: Some(LossyAsn::from(5432)),
+                organization: Some("Proximus".into()),
+            }),
+        };
+        let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en"]);
+        b.insert(net("1.2.3.0/24"), &loc).unwrap();
+        let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
+        assert_eq!(reader.lookup(ip("1.2.3.4")).unwrap().to_owned(), loc);
+    }
+
+    #[test]
+    fn native_ipv6_lookup() {
+        let mut b = MmdbBuilder::new(IpVersion::V6, "GeoLite2-Country");
+        let cf = GeoLocation {
+            country: Some(Country::UnitedStates),
+            ..Default::default()
+        };
+        let goog = GeoLocation {
+            country: Some(Country::Ireland),
+            ..Default::default()
+        };
+        b.insert(net("2606:4700::/32"), &cf).unwrap();
+        b.insert(net("2a00:1450::/32"), &goog).unwrap();
+        let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
+
+        let code = |addr: &str| {
+            reader
+                .lookup(ip(addr))
+                .and_then(|r| r.country())
+                .map(|c| c.code().to_owned())
+        };
+        assert_eq!(code("2606:4700::1111").as_deref(), Some("US"));
+        assert_eq!(code("2a00:1450:4001::1").as_deref(), Some("IE"));
+        // outside any inserted v6 network
+        assert!(reader.lookup(ip("2001:db8::1")).is_none());
+    }
+
+    #[test]
+    fn writer_error_paths() {
+        let loc = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        // a zero-length prefix is rejected
+        let mut b = MmdbBuilder::new(IpVersion::V4, "T");
+        assert!(matches!(
+            b.insert(net("0.0.0.0/0"), &loc),
+            Err(MmdbWriteError::ZeroPrefix)
+        ));
+        // an IPv6 network in an IPv4 database is a family mismatch
+        assert!(matches!(
+            b.insert(net("2001:db8::/32"), &loc),
+            Err(MmdbWriteError::FamilyMismatch)
+        ));
+        // a network nested inside an already-inserted one overlaps
+        b.insert(net("1.2.3.0/24"), &loc).unwrap();
+        assert!(matches!(
+            b.insert(net("1.2.3.0/25"), &loc),
+            Err(MmdbWriteError::OverlappingNetwork)
+        ));
+    }
+
+    #[test]
+    fn metadata_roundtrips() {
+        let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City")
+            .with_languages(["en", "de", "pt-BR"])
+            .with_build_epoch(1_700_000_000);
+        b.insert(
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                country: Some(Country::Belgium),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let md = MmdbReader::from_bytes(b.build().unwrap())
+            .unwrap()
+            .metadata()
+            .clone();
+        assert_eq!(md.build_epoch, 1_700_000_000);
+        assert_eq!(
+            md.languages,
+            vec![
+                Locale::parse("en"),
+                Locale::parse("de"),
+                Locale::parse("pt-BR")
+            ]
+        );
     }
 }

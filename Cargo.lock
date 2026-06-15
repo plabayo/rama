@@ -3936,6 +3936,8 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "psl",
+ "quickcheck",
+ "quickcheck_macros",
  "radix_trie 0.3.0",
  "rama-core",
  "rama-http-types",

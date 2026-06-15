@@ -571,4 +571,80 @@ mod tests {
             Country::Belgium
         );
     }
+
+    /// Property: for any `[start, end]`, `range_to_cidrs` yields contiguous,
+    /// aligned blocks with valid prefixes that cover the range exactly.
+    #[quickcheck_macros::quickcheck]
+    fn prop_range_to_cidrs_covers_v4(a: u32, b: u32) -> bool {
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let (start, end) = (u128::from(start), u128::from(end));
+        let blocks = range_to_cidrs(start, end, 32);
+        if blocks.is_empty() {
+            return false;
+        }
+        let mut next = start;
+        for (addr, prefix) in &blocks {
+            let p = u32::from(*prefix);
+            if *addr != next || !(1..=32).contains(&p) {
+                return false;
+            }
+            let size = 1u128 << (32 - p);
+            if addr % size != 0 {
+                return false; // block must be aligned to its own size
+            }
+            next += size;
+        }
+        next == end + 1
+    }
+
+    #[test]
+    fn compile_ipv6_country() {
+        // 42540766411282592856903984951653826560 == 2001:db8:: ; the row spans
+        // the /48 below it, so the v6 path of parse_ip + range_to_cidrs(.,.,128)
+        // is exercised.
+        let from: u128 = u128::from(ip6("2001:db8::"));
+        let to: u128 = u128::from(ip6("2001:db8:0:ffff:ffff:ffff:ffff:ffff"));
+        let csv = format!("\"{from}\",\"{to}\",\"BE\",\"Belgium\"\n");
+        let reader =
+            compile_ip2location_lite(csv.as_bytes(), IpVersion::V6, Ip2LocationLite::Country)
+                .unwrap();
+        assert_eq!(
+            reader
+                .lookup(ip("2001:db8:0:1234::1"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .to_owned(),
+            Country::Belgium
+        );
+        assert!(reader.lookup(ip("2001:db9::1")).is_none());
+    }
+
+    #[test]
+    fn malformed_rows_report_line_and_range_errors() {
+        // a too-short row carries its 1-based line number
+        let err = compile_ip2location_lite(
+            "\"1\",\"2\",\"US\",\"x\"\n\"oops\"\n".as_bytes(),
+            IpVersion::V4,
+            Ip2LocationLite::Country,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CsvError::Parse { line: 2, .. }));
+
+        // ip_from > ip_to is rejected as a range error
+        let err = compile_ip2location_lite(
+            "\"100\",\"50\",\"US\",\"x\"\n".as_bytes(),
+            IpVersion::V4,
+            Ip2LocationLite::Country,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, CsvError::Parse { reason, .. } if reason.contains("greater than")),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn ip6(s: &str) -> std::net::Ipv6Addr {
+        s.parse().unwrap()
+    }
 }
