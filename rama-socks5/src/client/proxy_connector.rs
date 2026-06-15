@@ -237,7 +237,7 @@ impl<S> Socks5ProxyConnector<S> {
                         }
                     }
                     DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                        crate::dns::race_resolve_dual(dns_resolver, domain.clone())
+                        crate::dns::race_resolve_dual(dns_resolver, domain.clone(), dns_mode)
                             .await
                             .map(Host::Address)
                             .unwrap_or(Host::Name(domain))

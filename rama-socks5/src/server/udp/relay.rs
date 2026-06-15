@@ -412,9 +412,13 @@ impl UdpSocketRelay {
                         .context("ipv6 dns lookup")?,
                 ),
                 DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                    crate::dns::race_resolve_dual(&dns_resolver, domain.clone())
-                        .await
-                        .context("receive resolved ip address")?
+                    crate::dns::race_resolve_dual(
+                        &dns_resolver,
+                        domain.clone(),
+                        self.dns_resolve_mode,
+                    )
+                    .await
+                    .context("receive resolved ip address")?
                 }
             }
         };
