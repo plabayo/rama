@@ -34,7 +34,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
-    utils::{backoff::ExponentialBackoff, rng::HasherRng},
+    utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},
 };
 
 use serde_json::{Value, json};
@@ -351,7 +351,7 @@ async fn test_http_mitm_proxy() {
             .extension(proxy_address.clone());
 
         let builder = if let Some(app_protocol) = desired_app_protocol {
-            builder.extension(TlsAlpn(vec![app_protocol]))
+            builder.extension(TlsAlpn(smallvec![app_protocol]))
         } else {
             builder
         };

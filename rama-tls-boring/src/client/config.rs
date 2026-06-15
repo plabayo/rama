@@ -337,7 +337,7 @@ impl RamaFrom<&ClientHello, RamaTlsBoringCrateMarker> for TlsClientConfig {
                 // the config here.
                 ClientHelloExtension::ServerName(_) => {}
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn) => {
-                    config.set_alpn(alpn.clone());
+                    config.set_alpn(alpn.clone().into());
                 }
                 ClientHelloExtension::SupportedGroups(groups) => {
                     if groups.iter().any(|g| g.is_grease()) {

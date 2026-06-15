@@ -60,6 +60,7 @@ use rama::{
 };
 
 use rama_net::tls::client::TlsClientConfig;
+use rama_utils::collections::smallvec::smallvec;
 use rand::prelude::*;
 
 pub mod e2e_utils;
@@ -410,7 +411,7 @@ fn get_inner_client(
         Tls::Rustls => {
             let tls_config = TlsClientConfig::new()
                 .with_keylog(rama::net::tls::KeyLogIntent::Environment)
-                .with_alpn(vec![proto])
+                .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
             b.without_tls_proxy_support()
@@ -422,7 +423,7 @@ fn get_inner_client(
         Tls::Boring => {
             let tls_config = TlsClientConfig::new()
                 .with_keylog(rama::net::tls::KeyLogIntent::Environment)
-                .with_alpn(vec![proto])
+                .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
             b.without_tls_proxy_support()

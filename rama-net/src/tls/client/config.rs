@@ -1,5 +1,8 @@
 use rama_core::extensions::{Extension, Extensions};
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{
+    collections::smallvec::{SmallVec, smallvec},
+    macros::generate_set_and_with,
+};
 
 use crate::{
     address::Host,
@@ -40,7 +43,7 @@ impl TlsClientConfig {
 
     generate_set_and_with! {
         /// Set the ALPN protocols to offer.
-        pub fn alpn(mut self, protocols: Vec<ApplicationProtocol>) -> Self {
+        pub fn alpn(mut self, protocols: SmallVec<[ApplicationProtocol; 2]>) -> Self {
             self.0.insert(TlsAlpn(protocols));
             self
         }
@@ -150,15 +153,15 @@ impl Clone for TlsClientConfig {
 pub struct TlsServerName(pub Host);
 
 /// ALPN protocols to offer.
-#[derive(Debug, Clone, Extension)]
+#[derive(Clone, Debug, Extension)]
 #[extension(tags(tls))]
-pub struct TlsAlpn(pub Vec<ApplicationProtocol>);
+pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
 
 impl TlsAlpn {
     /// Offer HTTP/2 and HTTP/1.1.
     #[must_use]
     pub fn http_auto() -> Self {
-        Self(vec![
+        Self(smallvec![
             ApplicationProtocol::HTTP_2,
             ApplicationProtocol::HTTP_11,
         ])
@@ -167,13 +170,13 @@ impl TlsAlpn {
     /// Offer HTTP/1.1 only.
     #[must_use]
     pub fn http_1() -> Self {
-        Self(vec![ApplicationProtocol::HTTP_11])
+        Self(smallvec![ApplicationProtocol::HTTP_11])
     }
 
     /// Offer HTTP/2 only.
     #[must_use]
     pub fn http_2() -> Self {
-        Self(vec![ApplicationProtocol::HTTP_2])
+        Self(smallvec![ApplicationProtocol::HTTP_2])
     }
 }
 
@@ -249,7 +252,7 @@ mod tests {
 
         assert_eq!(
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone()),
-            Some(vec![
+            Some(smallvec![
                 ApplicationProtocol::HTTP_2,
                 ApplicationProtocol::HTTP_11
             ]),
@@ -272,7 +275,7 @@ mod tests {
 
         assert_eq!(
             bag.get_ref::<TlsAlpn>().map(|a| a.0.clone()),
-            Some(vec![
+            Some(smallvec![
                 ApplicationProtocol::HTTP_2,
                 ApplicationProtocol::HTTP_11
             ]),

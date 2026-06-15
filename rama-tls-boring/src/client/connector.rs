@@ -12,6 +12,8 @@ use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::transport::TryRefIntoTransportContext;
+#[cfg(feature = "http")]
+use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
@@ -424,7 +426,7 @@ fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
         "override TLS ALPN to match TargetHttpVersion",
     );
 
-    ext.insert(TlsAlpn(vec![target_alpn]));
+    ext.insert(TlsAlpn(smallvec![target_alpn]));
     Ok(())
 }
 

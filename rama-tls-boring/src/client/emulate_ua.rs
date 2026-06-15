@@ -67,7 +67,7 @@ where
                 && let Some(alpn) = overwrites.alpn.clone()
             {
                 tracing::trace!(?alpn, "ua tls emulator: layer websocket ALPN overwrite");
-                cfg.set_alpn(alpn);
+                cfg.set_alpn(alpn.into());
             }
 
             // Apply config to our input
