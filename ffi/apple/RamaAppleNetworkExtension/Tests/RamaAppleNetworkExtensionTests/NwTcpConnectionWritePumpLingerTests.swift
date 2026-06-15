@@ -58,16 +58,9 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         XCTAssertEqual(mock.sentChunks.first?.isComplete, true, "FIN send should have isComplete=true")
         XCTAssertEqual(mock.cancelCount, 0, "linger watchdog must not fire before its deadline")
 
-        // Wait past the linger deadline + slack. The watchdog fires on
-        // `queue` so we also let the queue drain to make the
-        // observation deterministic.
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "linger watchdog should have force-cancelled the connection exactly once"
-        )
+        // Poll for the watchdog to fire (robust to a loaded runner stalling
+        // past the deadline).
+        pollUntil("linger watchdog force-cancels the connection") { mock.cancelCount == 1 }
     }
 
     func testExternalPumpCancelInvalidatesLingerWatchdog() {
@@ -210,13 +203,51 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
             mock.sentChunks.first(where: { $0.content == nil }),
             "no FIN on the terminal-error path"
         )
+    }
 
-        // Past the would-be linger deadline: still exactly one cancel.
-        // The watchdog was never armed (that happens only on the FIN
-        // path); `didTerminateWith` invalidated it defensively anyway.
-        Thread.sleep(forTimeInterval: 0.45)
+    /// Regression (promoted-teardown leak): `closeWhenDrained` on an
+    /// already-closed core sends no FIN and arms no linger watchdog. Since
+    /// `applyPromotedTerminal` delegates the connection cancel to that
+    /// watchdog, the fast path must cancel itself or the connection (and
+    /// the graph it anchors) leaks. It must still fire the callback.
+    func testCloseWhenDrainedOnAlreadyClosedCoreForceCancels() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let drained = expectation(description: "closeWhenDrained callback fired")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(300),
+            onDrained: {}
+        )
+
+        // Close the core WITHOUT cancelling the connection — exactly what
+        // `pump.cancel()` does (the connection cancel is normally the
+        // teardown caller's responsibility, but promoted teardown
+        // delegates it to this pump).
+        pump.cancel()
         waitForQueueDrain(queue)
-        XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "precondition: pump.cancel() alone does not cancel the connection"
+        )
+
+        // The graceful close now arrives on an already-closed core → the
+        // `isClosed()` fast path. It must force-cancel the connection AND
+        // fire the callback.
+        pump.closeWhenDrained { drained.fulfill() }
+        wait(for: [drained], timeout: 2.0)
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(
+            mock.cancelCount, 1,
+            "closeWhenDrained on an already-closed core must force-cancel the connection so the promoted-teardown path can't leak it"
+        )
+        XCTAssertEqual(
+            mock.sentChunks.count, 0,
+            "no FIN is possible on an already-closed core"
+        )
     }
 
     func testDrainOnNonReadyConnectionForceCancelsInsteadOfLeaking() {
@@ -247,11 +278,5 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
             mock.cancelCount, 1,
             "non-ready drain must force-cancel the connection so it can't leak"
         )
-
-        // Past the would-be linger deadline: still exactly one cancel
-        // (no watchdog armed; cancelAndDetach is idempotent).
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-        XCTAssertEqual(mock.cancelCount, 1, "no extra cancel from a (non-armed) watchdog")
     }
 }

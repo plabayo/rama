@@ -3,11 +3,21 @@ import Network
 import NetworkExtension
 import RamaAppleNEFFI
 
+/// The upstream→Rust egress sink the egress read pump delivers into.
+/// Abstracts `RamaTcpSessionHandle.onEgressBytes`/`onEgressEof` so unit
+/// tests can drive the pump's `.paused` replay state machine with a
+/// scripted sink — the egress counterpart of [`TcpClientBytesSink`].
+protocol NwEgressBytesSink: AnyObject {
+    func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge
+    func onEgressEof()
+}
+extension RamaTcpSessionHandle: NwEgressBytesSink {}
+
 final class NwTcpConnectionReadPump {
     private let connection: any NwConnectionLike
     /// `weak` for the same retain-cycle / ownership reasons as
     /// [`TcpClientReadPump.session`].
-    private weak var session: RamaTcpSessionHandle?
+    private weak var session: (any NwEgressBytesSink)?
     private let queue: DispatchQueue
     /// Grace window between observing peer EOF / error and force-
     /// cancelling the underlying connection. The clean teardown path
@@ -33,7 +43,7 @@ final class NwTcpConnectionReadPump {
 
     init(
         connection: any NwConnectionLike,
-        session: RamaTcpSessionHandle,
+        session: any NwEgressBytesSink,
         queue: DispatchQueue,
         eofGraceDeadline: DispatchTimeInterval
     ) {

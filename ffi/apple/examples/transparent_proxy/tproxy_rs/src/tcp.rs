@@ -230,10 +230,18 @@ impl DemoTcpMitmService {
 
         (
             MapResponseBodyLayer::new_boxed_streaming_body(),
-            StreamCompressionLayer::new().with_compress_predicate(MirrorDecompressed::new()),
+            // A MITM relay forwards whatever `Accept-Encoding` the client sends; it must not turn
+            // an unsatisfiable negotiation into its own 406, so opt out of that enforcement.
+            StreamCompressionLayer::new()
+                .with_enforce_not_acceptable(false)
+                .with_compress_predicate(MirrorDecompressed::new()),
             html_badge_layer,
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
+                // A truncated egress body (e.g. stale path after a network change)
+                // must not abort the rewritten client stream; end it cleanly so the
+                // client gets a short-but-well-formed page, not an integrity error.
+                .with_tolerate_decode_errors(true)
                 .with_matcher(decompressor_matcher),
             SetResponseHeaderLayer::if_not_present_typed(
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),

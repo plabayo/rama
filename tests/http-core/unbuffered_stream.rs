@@ -117,6 +117,13 @@ impl AsyncWrite for UnbufferedStream {
 async fn body_test() {
     init_tracing();
     let (server, client) = UnbufferedStream::new_pair();
-    let config = fixture::TestConfig::with_timeout(WRITE_DELAY * 2);
+    // The per-chunk timeout is a STALL watchdog, not a tight pacing assertion —
+    // the unbuffered/backpressure behaviour is asserted by the `poll_cnt > 4`
+    // hot-poll guard and the final byte-count check, not by chunk latency. A
+    // thin `WRITE_DELAY * 2` (200ms) margin over the injected 100ms write pacing
+    // flaked on slow/loaded CI (notably Windows), where connection setup before
+    // the first chunk alone can exceed it. Give a generous multiple so a healthy
+    // run never trips while a genuine stall is still caught.
+    let config = fixture::TestConfig::with_timeout(WRITE_DELAY * 30);
     fixture::run(server, client, config).await;
 }

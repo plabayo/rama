@@ -174,6 +174,12 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         connect_timeout: Some(Duration::from_millis(7_000)),
         linger_close_timeout: Some(Duration::from_millis(12_345)),
         egress_eof_grace: Some(Duration::from_millis(6_789)),
+        // Opt out of keepalive and tune the knobs so the round-trip
+        // asserts both the enable flag and the timing fields propagate.
+        tcp_keepalive_enabled: false,
+        tcp_keepalive_idle: Some(Duration::from_secs(11)),
+        tcp_keepalive_interval: Some(Duration::from_secs(7)),
+        tcp_keepalive_count: Some(4),
     };
 
     let handler = TestHandler {
@@ -213,6 +219,13 @@ fn tcp_egress_options_override_flows_from_handler_to_session() {
         Some(Duration::from_millis(12_345))
     );
     assert_eq!(opts.egress_eof_grace, Some(Duration::from_millis(6_789)));
+    assert!(
+        !opts.tcp_keepalive_enabled,
+        "handler opted out of keepalive; session must surface that"
+    );
+    assert_eq!(opts.tcp_keepalive_idle, Some(Duration::from_secs(11)));
+    assert_eq!(opts.tcp_keepalive_interval, Some(Duration::from_secs(7)));
+    assert_eq!(opts.tcp_keepalive_count, Some(4));
 
     drop(session);
     engine.stop(0);

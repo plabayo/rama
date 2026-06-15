@@ -112,7 +112,19 @@ test-doc-crate CRATE *ARGS:
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
 
-test-spec: test-spec-h2
+# MITM OCSP-stapling gate (Linux/macOS): hermetic curl --cert-status matrix
+# (incl. the no-staple negative) + a real-crates.io curl/cargo leg through the
+# CONNECT proxy. Skips the strict legs if no OpenSSL-backed curl is found (set
+# OCSP_GATE_REQUIRE=1 to make that a failure, as CI does).
+test-ocsp-gate *ARGS:
+    bash scripts/ocsp-relay-gate.sh {{ARGS}}
+
+# MITM OCSP-stapling gate (Windows): cargo through the CONNECT proxy to real
+# crates.io, where schannel enforces revocation (the customer scenario).
+test-ocsp-gate-windows:
+    pwsh scripts/ocsp-relay-gate.ps1
+
+test-spec: test-spec-h2 test-ocsp-gate
 
 test-ignored:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked

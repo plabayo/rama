@@ -23,6 +23,21 @@ final class EngineHandleTests: XCTestCase {
         XCTAssertNotNil(handle, "engine should construct with the test CA config")
     }
 
+    /// Malformed / wrong-shape engine config must fail the FALLIBLE init
+    /// (return nil), not crash and not silently produce a half-built engine.
+    /// Every other test feeds a valid config, so the rejection path — the
+    /// one a misconfigured container app actually hits — was untested.
+    func testInitWithMalformedConfigReturnsNil() {
+        // Not valid JSON at all.
+        XCTAssertNil(
+            RamaTransparentProxyEngineHandle(engineConfigJson: Data("{ not valid json".utf8)),
+            "unparseable config JSON must fail init")
+        // Valid JSON, wrong shape (array, not the config object).
+        XCTAssertNil(
+            RamaTransparentProxyEngineHandle(engineConfigJson: Data("[1,2,3]".utf8)),
+            "wrong-shaped config JSON must fail init")
+    }
+
     /// `stop()` swaps `enginePtr` to nil under the lock. Subsequent
     /// methods short-circuit (return nil / passthrough), they do not
     /// dereference the freed pointer.

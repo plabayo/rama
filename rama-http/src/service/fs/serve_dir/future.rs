@@ -3,7 +3,7 @@ use std::{convert::Infallible, io};
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
-use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
+use rama_http_headers::{AcceptRanges, ContentType, HeaderMapExt as _, HttpResponseBuilderExt};
 
 use super::open_file::{FileOpened, OpenFileOutput};
 use crate::headers::encoding::Encoding;
@@ -54,7 +54,23 @@ where
             Ok(response_with_status(StatusCode::PRECONDITION_FAILED))
         }
 
-        Ok(OpenFileOutput::NotModified) => Ok(response_with_status(StatusCode::NOT_MODIFIED)),
+        // RFC 9110 §15.4.5: a 304 response must carry the validators (ETag / Last-Modified)
+        // that would have been sent on a 200, so caches can refresh their stored metadata.
+        Ok(OpenFileOutput::NotModified {
+            etag,
+            last_modified,
+        }) => {
+            let mut res = response_with_status(StatusCode::NOT_MODIFIED);
+            if let Some(etag) = etag {
+                res.headers_mut().typed_insert(etag);
+            }
+            if let Some(last_modified) = last_modified
+                && let Ok(value) = HeaderValue::try_from(last_modified.0.to_string())
+            {
+                res.headers_mut().insert(header::LAST_MODIFIED, value);
+            }
+            Ok(res)
+        }
 
         Ok(OpenFileOutput::InvalidRedirectUri) => {
             Ok(response_with_status(StatusCode::INTERNAL_SERVER_ERROR))
@@ -154,6 +170,10 @@ fn build_response(output: FileOpened) -> Response {
 
     if let Some(last_modified) = output.last_modified {
         builder = builder.header(header::LAST_MODIFIED, last_modified.0.to_string());
+    }
+
+    if let Some(etag) = output.etag {
+        builder = builder.typed_header(etag);
     }
 
     match output.maybe_range {

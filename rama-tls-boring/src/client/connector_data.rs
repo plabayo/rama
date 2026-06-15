@@ -172,6 +172,18 @@ impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
             })?);
         }
 
+        // A TLS 1.3-only `supported_versions` offer derives min == max == TLS 1.3
+        // from the list. If an egress max-version clamp (mitm safety, see
+        // `BoringMaxVersion` / `TlsClientConfig::rama_from(&ClientHello)`) then lowered
+        // max to TLS 1.2, min would exceed max, which boring rejects. TLS 1.3 is
+        // the only version above TLS 1.2, so lower exactly that floor to keep the
+        // connector internally consistent (a lower legitimate floor is untouched).
+        if min_ssl_version == Some(SslVersion::TLS1_3)
+            && max_ssl_version == Some(SslVersion::TLS1_2)
+        {
+            min_ssl_version = Some(SslVersion::TLS1_2);
+        }
+
         // `no_default_verify_builder` skips boring's per-call
         // `set_default_verify_paths`, which would otherwise parse the entire OS
         // trust store into a throwaway per-connector store on every build. We
@@ -587,12 +599,15 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
+    use rama_core::extensions::Extensions;
+    use rama_net::tls::client::{
+        ClientHello, ClientHelloExtension, TlsAlpn, TlsServerVerify, TlsStoreServerCertChain,
+    };
+    use rama_net::tls::{CipherSuite, ProtocolVersion, SignatureScheme};
 
     #[test]
     fn build_from_common_pieces() {
-        use rama_core::extensions::Extensions;
-        use rama_net::tls::client::{TlsAlpn, TlsServerVerify, TlsStoreServerCertChain};
-
         let ext = Extensions::new();
         ext.insert(TlsAlpn::http_auto());
         ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
@@ -606,10 +621,6 @@ mod tests {
 
     #[test]
     fn build_dedups_duplicate_signature_schemes() {
-        use crate::client::BoringSignatureSchemes;
-        use rama_core::extensions::Extensions;
-        use rama_net::tls::SignatureScheme;
-
         let ext = Extensions::new();
         ext.insert(BoringSignatureSchemes(vec![
             SignatureScheme::RSA_PSS_SHA256,
@@ -624,10 +635,6 @@ mod tests {
 
     #[test]
     fn build_applies_max_version_clamp() {
-        use crate::client::BoringMaxVersion;
-        use rama_core::extensions::Extensions;
-        use rama_net::tls::ProtocolVersion;
-
         let ext = Extensions::new();
         ext.insert(BoringMaxVersion(ProtocolVersion::TLSv1_2));
 
@@ -635,5 +642,102 @@ mod tests {
         let data = TlsConnectorData::try_from(config).unwrap();
 
         assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    /// A minimal hello: TLS 1.2 legacy version, carrying the given
+    /// supported_versions and cipher suites plus any extra extensions
+    /// (cipher suites / sig algs control TLS 1.3 viability).
+    fn hello_from(
+        versions: Vec<ProtocolVersion>,
+        cipher_suites: Vec<CipherSuite>,
+        exts_extra: Vec<ClientHelloExtension>,
+    ) -> ClientHello {
+        let mut exts = vec![ClientHelloExtension::SupportedVersions(versions)];
+        exts.extend(exts_extra);
+        ClientHello::new(ProtocolVersion::TLSv1_2, cipher_suites, Vec::new(), exts)
+    }
+
+    /// Build connector data straight from a captured ClientHello, through the
+    /// full pieces pipeline (clamp decision in `config.rs` + min/max derivation
+    /// here), so these tests exercise the real `tls13` egress safeguard.
+    fn connector_data_from_hello(hello: &ClientHello) -> TlsConnectorData {
+        use crate::client::BoringClientConfigExt as _;
+        let config = TlsClientConfig::new_from_client_hello(hello);
+        TlsConnectorData::try_from(&config).expect("build connector data from client hello")
+    }
+
+    #[test]
+    fn tls13_only_but_not_viable_clamps_and_keeps_min_le_max() {
+        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable.
+        let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new(), Vec::new());
+        let mut data = connector_data_from_hello(&hello);
+        // Regression guard for the min>max inversion: both ends pinned to TLS 1.2.
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    #[test]
+    fn valid_tls13_hello_is_not_clamped() {
+        let hello = hello_from(
+            vec![ProtocolVersion::TLSv1_2, ProtocolVersion::TLSv1_3],
+            vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
+            vec![ClientHelloExtension::SignatureAlgorithms(vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+            ])],
+        );
+        let mut data = connector_data_from_hello(&hello);
+        // A coherent TLS 1.3 hello must NOT be clamped down to TLS 1.2.
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_3));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    #[test]
+    fn tls13_viability_clamp_truth_table_never_inverts_min_max() {
+        // Drive the whole pipeline for every TLS 1.3 viability combination: the
+        // connector must always be internally consistent (boring never sees
+        // min > max), and the clamp must fire exactly when TLS 1.3 is offered
+        // without being coherently viable.
+        for supported in [false, true] {
+            for ciphers in [false, true] {
+                for sigalgs in [false, true] {
+                    let mut versions = vec![ProtocolVersion::TLSv1_2];
+                    if supported {
+                        versions.push(ProtocolVersion::TLSv1_3);
+                    }
+                    let cipher_suites = if ciphers {
+                        vec![CipherSuite::TLS13_AES_128_GCM_SHA256]
+                    } else {
+                        Vec::new()
+                    };
+                    let exts = if sigalgs {
+                        vec![ClientHelloExtension::SignatureAlgorithms(vec![
+                            SignatureScheme::ECDSA_NISTP256_SHA256,
+                        ])]
+                    } else {
+                        Vec::new()
+                    };
+
+                    let hello = hello_from(versions, cipher_suites, exts);
+                    let mut data = connector_data_from_hello(&hello);
+                    let min = data.config.min_proto_version();
+                    let max = data.config.max_proto_version();
+
+                    // The only inversion the clamp could introduce is min=1.3, max=1.2.
+                    assert!(
+                        !(min == Some(SslVersion::TLS1_3) && max == Some(SslVersion::TLS1_2)),
+                        "inverted min>max (supported={supported} ciphers={ciphers} sigalgs={sigalgs}): min={min:?} max={max:?}"
+                    );
+
+                    // Clamp fires iff TLS 1.3 is offered but not viable.
+                    if supported && (!ciphers || !sigalgs) {
+                        assert_eq!(
+                            max,
+                            Some(SslVersion::TLS1_2),
+                            "expected TLS 1.2 clamp (supported={supported} ciphers={ciphers} sigalgs={sigalgs})"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

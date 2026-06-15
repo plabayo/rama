@@ -38,11 +38,44 @@ final class TcpFlowSessionTests: XCTestCase {
 
     // MARK: - Construction
 
-    /// init() wires teardown into ctx so racing closures can reach it.
+    /// init() wires the teardown inputs (flow/core/flowId) onto ctx so its
+    /// `applyX` methods can run.
     func testInitWiresTeardownIntoContext() {
         let fx = Fixture()
-        XCTAssertNotNil(fx.session.ctx.teardown)
+        XCTAssertNotNil(fx.session.ctx.flow, "ctx.flow wired for teardown")
+        XCTAssertNotNil(fx.session.ctx.flowId, "ctx.flowId wired for teardown")
         XCTAssertFalse(fx.session.egressReady)
+    }
+
+    /// The ownership-inversion backstop: the registry is the session's sole
+    /// owner, so dropping it must cancel the egress connection even if no
+    /// teardown ran first (otherwise the `NWConnection` + its NECP entry
+    /// outlive the session and leak). `deinit` hops the cancel onto
+    /// `flowQueue`, so we poll for it.
+    func testDeinitCancelsConnectionWhenDroppedWithoutTeardown() {
+        let conn = MockNwConnection()
+        let core = TransparentProxyCore()
+        let flow = MockTcpFlow()
+        let meta = RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: 1, remoteHost: "example.com", remotePort: 443,
+            localHost: nil, localPort: 0,
+            sourceAppSigningIdentifier: nil, sourceAppBundleIdentifier: nil,
+            sourceAppAuditToken: nil, sourceAppPid: 4242)
+
+        var session: TcpFlowSession<MockTcpFlow>? = TcpFlowSession(
+            core: core, flow: flow, meta: meta)
+        session!.ctx.connection = conn
+        XCTAssertEqual(conn.cancelCount, 0, "not cancelled while the session is alive")
+
+        session = nil  // sole strong ref dropped → deinit backstop fires
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while conn.cancelCount == 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.002)
+        }
+        XCTAssertEqual(
+            conn.cancelCount, 1,
+            "deinit must cancel a connection that no teardown released")
     }
 
     // MARK: - buildClientWritePump
@@ -79,6 +112,36 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertTrue(fx.session.ctx.lastPathViable, "recovery must update synchronously too")
     }
 
+    /// The wired handler must also TRIGGER the mid-session dead-path
+    /// re-check on a loss (not just cache it) — through the REAL
+    /// `installEgressStateHandler` wiring, so the lifecycle tests' mirrored
+    /// handler can't drift from production. With the kill switch (`0`) it
+    /// schedules nothing; enabled, a `false` schedules the coalesced
+    /// re-check. The long settle keeps the timer from firing in-test (the
+    /// fixture dies first; the weak-ctx guard then no-ops).
+    func testViabilityHandlerSchedulesMidSessionRecheck() {
+        let prev = defaultViabilityLossRecheckMs
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        // Kill switch: the real handler caches viability but schedules nothing.
+        defaultViabilityLossRecheckMs = 0
+        let fxOff = Fixture()
+        fxOff.session.installEgressStateHandler(connection: fxOff.conn)
+        fxOff.conn.simulateViability(false)
+        XCTAssertFalse(
+            fxOff.session.ctx.deadPathRecheckPending,
+            "kill switch (0) must schedule nothing")
+
+        // Enabled: the real handler schedules the coalesced re-check.
+        defaultViabilityLossRecheckMs = 60_000
+        let fxOn = Fixture()
+        fxOn.session.installEgressStateHandler(connection: fxOn.conn)
+        fxOn.conn.simulateViability(false)
+        XCTAssertTrue(
+            fxOn.session.ctx.deadPathRecheckPending,
+            "enabled loss must schedule the re-check through the real handler")
+    }
+
     // MARK: - state-timer recovery (FIFO via direct dispatch)
 
     /// With the `stateUpdateHandler` hop removed and the mock delivering
@@ -104,7 +167,7 @@ final class TcpFlowSessionTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
 
         XCTAssertFalse(
-            fx.session.ctx.teardown?.isDone ?? true,
+            fx.session.ctx.isDone,
             "the .ready handler must cancel the tolerance timer before it fires")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connection must not be cancelled")
     }
@@ -128,14 +191,13 @@ final class TcpFlowSessionTests: XCTestCase {
 
     // MARK: - handleEgressReady
 
-    /// `.ready` arms BOTH egress pumps and flips egressReady.
-    func testHandleEgressReadyBuildsBothEgressPumpsWhenSessionPresent() {
+    /// `.ready` flips `egressReady` and then early-returns when there is no
+    /// `sessionHandle` (we can't build a real `RamaTcpSessionHandle` in a
+    /// unit test — the integration tests exercise the both-pumps-built happy
+    /// path with a real engine). This pins the session-nil early-return; the
+    /// name no longer over-claims pump construction it can't reach here.
+    func testHandleEgressReadyFlipsEgressReadyThenEarlyReturnsWhenSessionNil() {
         let fx = Fixture()
-        // The session decision lives on the Rust side, so for this
-        // unit test we can't construct a RamaTcpSessionHandle; the
-        // method early-returns when sessionHandle is nil. We pin
-        // that contract here and the integration tests exercise the
-        // happy path with a real engine.
         XCTAssertNil(fx.session.sessionHandle)
         fx.session.handleEgressReady(connection: fx.conn)
         XCTAssertTrue(fx.session.egressReady, "egressReady flips even when session is nil")
@@ -161,13 +223,14 @@ final class TcpFlowSessionTests: XCTestCase {
         let fx = Fixture()
         let timeout = DispatchWorkItem {}
         fx.session.timeoutWork = timeout
-        XCTAssertFalse(fx.session.teardown.isDone)
+        XCTAssertFalse(fx.session.ctx.isDone)
 
         fx.session.handleEgressFailed(nil)
 
         XCTAssertTrue(timeout.isCancelled, "connect timer must be invalidated")
-        XCTAssertTrue(fx.session.teardown.isDone, "teardown fired exactly once")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-ready failure does NOT touch the kernel flow")
+        XCTAssertTrue(fx.session.ctx.isDone, "teardown fired exactly once")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "pre-ready failure rejects the claimed (unopened) flow")
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
@@ -190,10 +253,11 @@ final class TcpFlowSessionTests: XCTestCase {
         fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertTrue(fx.session.teardown.isDone, "connect timeout must tear the flow down")
+        XCTAssertTrue(fx.session.ctx.isDone, "connect timeout must tear the flow down")
         XCTAssertEqual(fx.conn.cancelCount, 1, "stale connect connection must be cancelled")
         XCTAssertNil(fx.session.ctx.connection, "connection slot cleared on connect timeout")
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "connect timeout rejects the claimed (unopened) flow")
     }
 
     /// A `.ready` arriving before the connect deadline flips `egressReady`,
@@ -209,7 +273,7 @@ final class TcpFlowSessionTests: XCTestCase {
         fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(250)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertFalse(fx.session.teardown.isDone, "connected flow must survive the connect deadline")
+        XCTAssertFalse(fx.session.ctx.isDone, "connected flow must survive the connect deadline")
         XCTAssertEqual(fx.conn.cancelCount, 0, "connected flow's connection must not be cancelled")
     }
 
@@ -223,7 +287,7 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready failure closes the flow")
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
     }
 
     // MARK: - handleEgressWaiting
@@ -280,16 +344,17 @@ final class TcpFlowSessionTests: XCTestCase {
     }
 
     /// An EXTERNAL `.cancelled` before `.ready` tears the flow down via
-    /// the pre-open path (connection cancelled, kernel flow untouched).
+    /// the pre-open path (connection cancelled, claimed flow rejected).
     /// Self-initiated cancels never reach here (cancelAndDetach nils the
     /// handler), so a `.cancelled` that does arrive must not leak.
     func testHandleEgressCancelledPreReadyTearsDownPreOpen() {
         let fx = Fixture()
         XCTAssertFalse(fx.session.egressReady)
         fx.session.handleEgressCancelled()
-        XCTAssertTrue(fx.session.teardown.isDone, "external pre-ready cancel must tear down")
+        XCTAssertTrue(fx.session.ctx.isDone, "external pre-ready cancel must tear down")
         XCTAssertEqual(fx.conn.cancelCount, 1)
-        XCTAssertEqual(fx.flow.closeReadCallCount, 0, "pre-open teardown does not touch the kernel flow")
+        XCTAssertEqual(
+            fx.flow.closeReadCallCount, 1, "pre-open teardown rejects the claimed (unopened) flow")
     }
 
     /// An EXTERNAL `.cancelled` after `.ready` runs the full teardown
@@ -299,7 +364,7 @@ final class TcpFlowSessionTests: XCTestCase {
         let fx = Fixture()
         fx.session.egressReady = true
         fx.session.handleEgressCancelled()
-        XCTAssertTrue(fx.session.teardown.isDone)
+        XCTAssertTrue(fx.session.ctx.isDone)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1, "post-ready cancel closes the flow")
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
         XCTAssertEqual(fx.conn.cancelCount, 1)

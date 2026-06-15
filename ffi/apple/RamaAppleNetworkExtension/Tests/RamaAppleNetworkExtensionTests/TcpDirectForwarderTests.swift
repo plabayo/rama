@@ -38,6 +38,11 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// `queue.sync` so assertions see all queue-ordered writes.
         var closingCount = 0
         var drainStallCount = 0
+        /// Counts the forwarder's `onActivity` callback — fired on every
+        /// byte moved in either direction. Production routes this to
+        /// `ctx.lastActivityAt` for the promoted-idle reaper. Mutated on
+        /// `queue`, read via `queue.sync`.
+        var activityCount = 0
         /// Background thread that auto-fires pending send
         /// completions on the mock connection. The egress
         /// write pump serialises sends — each `send` call
@@ -95,6 +100,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             var capturedTerminalRef: (() -> Void)? = nil
             var capturedClosingRef: (() -> Void)? = nil
             var capturedDrainStallRef: (() -> Void)? = nil
+            var capturedActivityRef: (() -> Void)? = nil
             self.forwarder = TcpDirectForwarder(
                 flow: flow, connection: conn,
                 clientWritePump: clientWritePump,
@@ -104,6 +110,7 @@ final class TcpDirectForwarderTests: XCTestCase {
                 drainStallDeadline: drainStallDeadline,
                 onClosing: { capturedClosingRef?() },
                 onDrainStall: { capturedDrainStallRef?() },
+                onActivity: { capturedActivityRef?() },
                 onTerminal: { capturedTerminalRef?() }
             )
             forwarderRef = self.forwarder
@@ -118,6 +125,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             // serialised with the rest of the forwarder's state.
             capturedClosingRef = { [weak self] in self?.closingCount += 1 }
             capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
+            capturedActivityRef = { [weak self] in self?.activityCount += 1 }
             if preDrained {
                 forwarder.markClientReadDrained()
                 forwarder.markEgressReadDrained()
@@ -274,6 +282,30 @@ final class TcpDirectForwarderTests: XCTestCase {
         }
         waitFor("forwarder issued next connection.receive", timeout: 1.0) {
             h.conn.pendingReceiveCount >= 1
+        }
+    }
+
+    /// Every byte moved in either direction fires `onActivity`.
+    /// Production routes that to `ctx.lastActivityAt` so the
+    /// promoted-idle reaper only drops genuinely-quiet flows; here we
+    /// just prove the hook fires for a C→S read and an S→C receive.
+    func testByteMovementFiresOnActivity() {
+        let h = Harness("activity.bump")
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(
+            h.queue.sync { h.activityCount }, 0, "no activity before any bytes move")
+
+        h.flow.completeRead(data: Data([0x01, 0x02]), error: nil)
+        waitFor("C→S byte bumped activity", timeout: 1.0) {
+            h.queue.sync { h.activityCount } >= 1
+        }
+
+        let afterC2S = h.queue.sync { h.activityCount }
+        _ = h.conn.completePendingReceive(data: Data([0xAA]), isComplete: false, error: nil)
+        waitFor("S→C byte bumped activity", timeout: 1.0) {
+            h.queue.sync { h.activityCount } > afterC2S
         }
     }
 
@@ -834,6 +866,45 @@ final class TcpDirectForwarderTests: XCTestCase {
         }
         // Drain the second send so the pump's lifecycle wraps up.
         _ = h.conn.completePendingSend(error: nil)
+        h.drain()
+    }
+
+    /// S→C mirror of `testActiveC2SBufferedReplayUnderBackpressure`: the
+    /// client write pump (kernel-bound) rejects an over-cap chunk with
+    /// `.paused`, the forwarder holds it, and the pump's drain edge replays
+    /// it — none dropped. The audit flagged the entire S→C backpressure
+    /// path (`flushS2CBufferLocked` paused-latch + `onClientPumpDrained`
+    /// replay) as untested; only C→S was covered.
+    func testActiveS2CBufferedReplayUnderBackpressure() {
+        let h = Harness("backpressure.s2c.carryover", autoCompleter: false)
+        // Hold the client (S→C) writes in flight so `pendingBytes` stays high
+        // and the second chunk pauses.
+        h.flow.captureWriteCompletions = true
+        let big = Data(repeating: 0xAB, count: 300 * 1024)
+        let small = Data([0xCD, 0xEF])
+
+        // Pre-cutover: both chunks land in `s2cBuffer`.
+        h.forwarder.acceptEgressCarryover(big)
+        h.forwarder.acceptEgressCarryover(small)
+        // Transition: enqueue(big) → accepted (first-chunk rule);
+        // enqueue(small) → paused; loop exits with `small` held.
+        h.forwarder.markRustS2CDone()
+
+        waitFor("first chunk reached the kernel flow", timeout: 1.0) {
+            h.flow.writes.contains(big)
+        }
+        h.drain()
+        XCTAssertEqual(h.flow.pendingWriteCompletionCount, 1, "exactly the first chunk in flight")
+        XCTAssertFalse(
+            h.flow.writes.contains(small), "second chunk MUST be buffered, not dropped")
+
+        // Complete the in-flight write → drain edge → onClientPumpDrained →
+        // flushS2CBufferLocked replays `small`.
+        _ = h.flow.completeNextWrite()
+        waitFor("buffered chunk replayed after drain", timeout: 2.0) {
+            h.flow.writes.contains(small)
+        }
+        _ = h.flow.completeNextWrite()
         h.drain()
     }
 

@@ -1,0 +1,48 @@
+# ThreadSanitizer suppressions for the RamaAppleNetworkExtension Swift test suite.
+#
+# Run via:  just run-tproxy-ffi-e2e-swift-tsan
+#   (from ffi/apple/examples/transparent_proxy; or set
+#    TSAN_OPTIONS=suppressions=<this file> for a raw `swift test --sanitize=thread …`).
+#
+# WHY THESE EXIST — read before adding/removing
+# ---------------------------------------------
+# Production confines EVERY mutable `TcpFlowContext` / `TcpDirectForwarder` field
+# to the flow's own serial `flowQueue`. The maintenance tick / pressure selection
+# read a few of them OFF-queue as an intentional, documented relaxation and
+# RE-CHECK on the flowQueue before acting (see TransparentProxyCore). So no
+# PRODUCTION code path mutates this state from two threads at once.
+#
+# The unit tests, however, legitimately observe/drive that state from the TEST
+# (main) thread — `waitFor { ctx… }` polling loops, `XCTAssert` autoclosures
+# reading a field right after an async teardown fired, direct mock manipulation
+# in TcpDirectForwarderTests, `MockNwConnection.simulateViability(_:)` firing the
+# viability handler on the caller (production delivers it on the flowQueue), and
+# `ChaosTests.testConcurrentTeardownFromMultipleThreads`, which DELIBERATELY
+# invokes teardown from 8 raw threads to pin the `isDone` idempotency invariant
+# for a scenario production avoids. Each is a benign test-harness access, not a
+# production data race — but TSan can't know the polling is benign.
+#
+# TSan reports a race "in" whichever of the two racing accesses it observes
+# second, so it names EITHER the test access OR the production function — hence
+# both kinds of pattern below.
+#
+# 1. Any access whose racing function/file carries "Tests" is test code. Every
+#    test class AND every test file in this target ends in "Tests"
+#    (RamaAppleNetworkExtensionTests / *Tests.swift); NO production symbol does
+#    (module RamaAppleNetworkExtension, types TcpFlowContext / TransparentProxyCore
+#    / TcpDirectForwarder, files *.swift without "Tests"). So this matches only
+#    test-thread accesses; a real production race is between two production
+#    workers (no "Tests" in either frame) and is NOT suppressed.
+race:Tests
+#
+# 2. Races TSan happens to name on the PRODUCTION side. Each of these functions
+#    is single-threaded in production (flowQueue-confined), so the only racer is
+#    the test-thread poll above. A future commit that adds a genuine OFF-queue
+#    mutation to one of these MUST remove its line and fix it (or route the test
+#    read through `ctx.flowQueue?.sync { … }`, the idiom used by
+#    SystemLifecycleTests.testRecoveryQueuedBeforeWakeCheckSparesFlow).
+race:TcpFlowContext.applyFullTeardown
+race:TransparentProxyCore.beginPromoteCutover
+race:TransparentProxyCore.checkDeadPath
+race:TcpDirectForwarder.finishC2SLocked
+race:ramaTcpOnPromoteRequestCallback

@@ -66,9 +66,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `drainStallDeadline` later: the peer stopped reading, so the
     /// `closeWhenDrained` completion never arrived and the forwarder
     /// would otherwise never reach `.finished`. Production routes this
-    /// to `ctx.teardown.applyDrainBackstop()` (a full teardown), the
+    /// to `ctx.applyDrainBackstop()` (a full teardown), the
     /// same reaper the `viaRust` backstop uses.
     private let onDrainStall: () -> Void
+    /// Fired (on `queue`) whenever bytes move in either direction.
+    /// Production bumps `ctx.lastActivityAt` so the maintenance watchdog's
+    /// promoted-flow idle reaper only drops flows that have genuinely gone
+    /// quiet — never an actively-transferring one.
+    private let onActivity: () -> Void
 
     // Existing per-flow write pumps. We do NOT take ownership —
     // tests can also hand in standalone pumps. The forwarder
@@ -175,6 +180,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
         onClosing: @escaping () -> Void = {},
         onDrainStall: @escaping () -> Void = {},
+        onActivity: @escaping () -> Void = {},
         onTerminal: @escaping () -> Void
     ) {
         self.flow = flow
@@ -186,6 +192,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.drainStallDeadline = drainStallDeadline
         self.onClosing = onClosing
         self.onDrainStall = onDrainStall
+        self.onActivity = onActivity
         self.onTerminal = onTerminal
     }
 
@@ -346,12 +353,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// for every C→S write in the `.active` phase so the paused/
     /// buffered-replay logic lives in exactly one place.
     private func writeC2SLocked(_ data: Data) {
+        onActivity()
         c2sBuffer.pushBack(data)
         flushC2SBufferLocked()
     }
 
     /// S→C counterpart.
     private func writeS2CLocked(_ data: Data) {
+        onActivity()
         s2cBuffer.pushBack(data)
         flushS2CBufferLocked()
     }

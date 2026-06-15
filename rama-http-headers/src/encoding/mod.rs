@@ -181,6 +181,85 @@ pub fn parse_accept_encoding_headers<'a>(
         })
 }
 
+/// Extracts the quality value of the `*` wildcard from `Accept-Encoding` headers.
+///
+/// Returns `None` if no wildcard is present. A bare `*` (without a `q=` part) defaults
+/// to a quality of `1`.
+pub fn parse_accept_encoding_wildcard_quality(
+    headers: &rama_http_types::HeaderMap,
+) -> Option<Quality> {
+    headers
+        .get_all(rama_http_types::header::ACCEPT_ENCODING)
+        .iter()
+        .filter_map(|hval| hval.to_str().ok())
+        .flat_map(|s| s.split(','))
+        .find_map(|v| {
+            let mut v = v.splitn(2, ';');
+            if v.next()?.trim() != "*" {
+                return None;
+            }
+            Some(match v.next() {
+                Some(qval) => qval.trim().parse::<Quality>().ok()?,
+                None => Quality::one(),
+            })
+        })
+}
+
+/// Selects the preferred encoding while honoring the `*` wildcard per RFC 9110 §12.5.3.
+///
+/// `accepted` is the list of explicitly listed (and supported) encodings with their quality,
+/// as produced by [`parse_accept_encoding_headers`]. `wildcard_quality` is the quality of the
+/// `*` wildcard if present (see [`parse_accept_encoding_wildcard_quality`]). The wildcard
+/// quality applies to every supported encoding not explicitly listed.
+///
+/// Returns `Some(encoding)` (possibly [`Encoding::Identity`]) for the best acceptable encoding,
+/// or `None` when the client rejects every available representation (e.g. `*;q=0` or a lone
+/// `identity;q=0`). A `None` result signals that the server should respond with
+/// `406 Not Acceptable`.
+pub fn maybe_preferred_encoding_with_wildcard(
+    accepted: &[QualityValue<Encoding>],
+    wildcard_quality: Option<Quality>,
+    supported: impl SupportedEncodings,
+) -> Option<Encoding> {
+    let Some(wildcard_quality) = wildcard_quality else {
+        // No wildcard: use only the explicitly listed encodings. Per RFC 9110 §12.5.3, if
+        // identity is excluded (q=0) and nothing else is acceptable, the server should 406.
+        let identity_rejected = accepted
+            .iter()
+            .any(|qval| qval.value == Encoding::Identity && qval.quality.as_u16() == 0);
+        return match Encoding::maybe_preferred_encoding(accepted.iter().copied()) {
+            Some(enc) => Some(enc),
+            None if identity_rejected => None,
+            None => Some(Encoding::Identity),
+        };
+    };
+
+    // Wildcard present: build the effective (encoding, quality) set over every supported
+    // encoding, using the explicit quality where listed and the wildcard quality otherwise.
+    let effective = all_supported_encodings(supported)
+        .into_iter()
+        .flatten()
+        .map(|enc| {
+            let quality = accepted
+                .iter()
+                .find(|qval| qval.value == enc)
+                .map_or(wildcard_quality, |qval| qval.quality);
+            QualityValue::new(enc, quality)
+        });
+    Encoding::maybe_preferred_encoding(effective)
+}
+
+/// Returns every encoding the server supports (always including [`Encoding::Identity`]).
+fn all_supported_encodings(supported: impl SupportedEncodings) -> [Option<Encoding>; 5] {
+    [
+        Some(Encoding::Identity),
+        supported.gzip().then_some(Encoding::Gzip),
+        supported.deflate().then_some(Encoding::Deflate),
+        supported.br().then_some(Encoding::Brotli),
+        supported.zstd().then_some(Encoding::Zstd),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +618,126 @@ mod tests {
         );
         let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
+    }
+
+    #[derive(Copy, Clone)]
+    struct SupportedGzipOnly;
+
+    impl SupportedEncodings for SupportedGzipOnly {
+        fn gzip(&self) -> bool {
+            true
+        }
+        fn deflate(&self) -> bool {
+            false
+        }
+        fn br(&self) -> bool {
+            false
+        }
+        fn zstd(&self) -> bool {
+            false
+        }
+    }
+
+    fn negotiate(
+        headers: &rama_http_types::HeaderMap,
+        supported: impl SupportedEncodings,
+    ) -> Option<Encoding> {
+        let accepted: Vec<_> = parse_accept_encoding_headers(headers, supported).collect();
+        let wildcard = parse_accept_encoding_wildcard_quality(headers);
+        maybe_preferred_encoding_with_wildcard(&accepted, wildcard, supported)
+    }
+
+    fn accept_encoding(value: &'static str) -> rama_http_types::HeaderMap {
+        let mut headers = rama_http_types::HeaderMap::new();
+        headers.append(
+            rama_http_types::header::ACCEPT_ENCODING,
+            rama_http_types::HeaderValue::from_static(value),
+        );
+        headers
+    }
+
+    #[test]
+    fn wildcard_alone_picks_best_supported() {
+        let headers = accept_encoding("*");
+        // `*` with q=1 means all encodings are acceptable; pick the highest-priority supported.
+        assert_eq!(
+            Some(Encoding::Zstd),
+            negotiate(&headers, SupportedEncodingsAll)
+        );
+    }
+
+    #[test]
+    fn wildcard_q_zero_with_nothing_else_returns_not_satisfiable() {
+        // `*;q=0` rejects everything, including identity.
+        let headers = accept_encoding("*;q=0");
+        assert_eq!(None, negotiate(&headers, SupportedEncodingsAll));
+    }
+
+    #[test]
+    fn wildcard_q_zero_with_gzip_picks_gzip() {
+        let headers = accept_encoding("*;q=0,gzip");
+        assert_eq!(
+            Some(Encoding::Gzip),
+            negotiate(&headers, SupportedEncodingsAll)
+        );
+    }
+
+    #[test]
+    fn identity_q_zero_alone_returns_not_satisfiable() {
+        // `identity;q=0` with no other encoding explicitly listed: the server cannot
+        // determine what the client accepts, so 406 per RFC 9110 §12.5.3.
+        let headers = accept_encoding("identity;q=0");
+        assert_eq!(None, negotiate(&headers, SupportedEncodingsAll));
+    }
+
+    #[test]
+    fn identity_q_zero_with_gzip_picks_gzip() {
+        let headers = accept_encoding("identity;q=0,gzip");
+        assert_eq!(
+            Some(Encoding::Gzip),
+            negotiate(&headers, SupportedEncodingsAll)
+        );
+    }
+
+    #[test]
+    fn wildcard_q_zero_identity_q_zero_no_compression_returns_not_satisfiable() {
+        // Both wildcard and identity are q=0, and no explicit encoding is listed with q>0.
+        let headers = accept_encoding("*;q=0,identity;q=0");
+        assert_eq!(None, negotiate(&headers, SupportedEncodingsAll));
+    }
+
+    #[test]
+    fn wildcard_with_low_qvalue() {
+        // gzip is explicitly q=1, everything else gets q=0.5 from the wildcard.
+        let headers = accept_encoding("*;q=0.5,gzip;q=1");
+        assert_eq!(
+            Some(Encoding::Gzip),
+            negotiate(&headers, SupportedEncodingsAll)
+        );
+    }
+
+    #[test]
+    fn wildcard_q_zero_with_identity_picks_identity() {
+        // `*;q=0` rejects all, but identity is explicitly listed with q=1.
+        let headers = accept_encoding("*;q=0,identity");
+        assert_eq!(
+            Some(Encoding::Identity),
+            negotiate(&headers, SupportedEncodingsAll)
+        );
+    }
+
+    #[test]
+    fn wildcard_with_partial_server_support_picks_best_available() {
+        // Server only supports gzip, so `*` should pick gzip (not zstd/br).
+        let headers = accept_encoding("*");
+        assert_eq!(Some(Encoding::Gzip), negotiate(&headers, SupportedGzipOnly));
+    }
+
+    #[test]
+    fn wildcard_q_zero_with_unsupported_encoding_returns_not_satisfiable() {
+        // Client wants br, but server only supports gzip. br is not in the supported set so
+        // it's ignored; the wildcard rejects everything else. Result: 406.
+        let headers = accept_encoding("*;q=0,br");
+        assert_eq!(None, negotiate(&headers, SupportedGzipOnly));
     }
 }

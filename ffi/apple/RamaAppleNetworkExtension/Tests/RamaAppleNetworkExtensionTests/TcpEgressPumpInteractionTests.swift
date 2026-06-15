@@ -165,7 +165,10 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         writePump.closeWhenDrained()
         mock.completePendingReceive(isComplete: true)
         waitForQueueDrain(queue)
-        XCTAssertEqual(mock.cancelCount, 0)
+        // No pre-assert that cancelCount == 0 here: under heavy parallel-test
+        // load the setup above can itself take >200 ms, so a backstop may have
+        // already fired (the same slippage the poll below guards against). The
+        // real invariant is "at least one backstop fires", checked below.
 
         // Both watchdogs are armed at ~200 ms. POLL for a backstop to fire
         // rather than fixed-sleeping a fixed 1 s and asserting: under heavy

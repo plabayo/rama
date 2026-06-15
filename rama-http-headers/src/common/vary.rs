@@ -3,6 +3,7 @@ use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_utils::collections::{NonEmptyVec, non_empty_vec};
 
+use crate::ClientHint;
 use crate::util::{
     FlatCsvSeparator, TryFromValues, try_decode_flat_csv_header_values_as_non_empty_vec,
     try_encode_non_empty_vec_as_flat_csv_header_value,
@@ -133,6 +134,17 @@ impl Vary {
         Self(Directive::Headers(values))
     }
 
+    /// Create a `Vary` listing every request-header spelling the given
+    /// [`ClientHint`]s are read under — the same `Sec-CH-*` + legacy bare names
+    /// an [`AcceptCh`](crate::AcceptCh) built from the same hints advertises —
+    /// so caches keep a separate representation per client-hint value. Returns
+    /// `None` only for an empty hint iterator.
+    #[must_use]
+    pub fn from_client_hints<'a>(hints: impl IntoIterator<Item = &'a ClientHint>) -> Option<Self> {
+        NonEmptyVec::collect(hints.into_iter().flat_map(ClientHint::iter_header_names))
+            .map(Self::headers)
+    }
+
     /// Check if this includes `*`.
     pub const fn is_any(&self) -> bool {
         matches!(&self.0, Directive::Any)
@@ -192,6 +204,24 @@ mod tests {
 
         let headers = test_encode(vary);
         assert_eq!(headers["vary"], "user-agent, content-encoding");
+    }
+
+    #[test]
+    fn from_client_hints_lists_every_spelling() {
+        let vary = Vary::from_client_hints(&[ClientHint::SaveData, ClientHint::Ect])
+            .expect("non-empty hint set");
+        let headers = test_encode(vary);
+        // both the Sec-CH-* and the legacy bare name of each hint, matching what
+        // `AcceptCh` advertises, so caches key on whichever the UA sends.
+        assert_eq!(
+            headers["vary"],
+            "sec-ch-save-data, save-data, sec-ch-ect, ect",
+        );
+    }
+
+    #[test]
+    fn from_client_hints_empty_is_none() {
+        assert!(Vary::from_client_hints(std::iter::empty::<&ClientHint>()).is_none());
     }
 
     #[test]

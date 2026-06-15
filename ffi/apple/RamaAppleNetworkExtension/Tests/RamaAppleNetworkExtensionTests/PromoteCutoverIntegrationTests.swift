@@ -585,6 +585,92 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
             conn.pendingReceiveCount >= 1
         }
     }
+
+    // MARK: - STUCK-1: half-close must not be force-torn-down
+
+    /// A promoted flow that took a clean half-close on ONE direction (C→S EOFs
+    /// and its FIN drains to `.finished`) while the OPPOSITE direction is still
+    /// actively transferring (`.active`) must NOT be force-reset by the
+    /// closing-stuck watchdog. `terminalSignalled` is sticky (set when C→S
+    /// entered `.finishing`), so a `terminalSignalled`-only watchdog would
+    /// wrongly tear this live download down after two ticks. The fix keys the
+    /// watchdog on a GENUINE drain-wedge (a direction stuck in `.finishing`),
+    /// which a clean half-close is not.
+    func testHalfClosedPromotedFlowWithActiveOppositeDirectionIsSpared() {
+        let fx = makeFixture(); defer { tearDown(fx) }
+        let flow = MockTcpFlow()
+        let (conn, ctx) = driveToActivePumps(fx, flow: flow)
+        let completer = startSendCompleter(conn); defer { completer.store(true) }
+
+        let flowQueue = DispatchQueue(label: "test.fwd.halfclose")
+        fx.core.beginPromoteCutover(
+            ctx: ctx, flow: flow, flowQueue: flowQueue, flowId: ObjectIdentifier(flow))
+        flowQueue.sync {}
+
+        // Half-close: client read EOFs (C→S finishes) while the egress receive
+        // returns DATA (S→C stays active — server still streaming).
+        flow.completeRead(data: nil, error: nil)
+        _ = conn.completePendingReceive(data: Data([0x01, 0x02]), isComplete: false, error: nil)
+        ctx.directForwarder?.markRustC2SDone()
+        ctx.directForwarder?.markRustS2CDone()
+        flowQueue.sync {}
+
+        waitFor("C→S drained to .finished") {
+            flowQueue.sync { ctx.directForwarder?.c2sPhase == .finished }
+        }
+        // Preconditions that make this the STUCK-1 scenario.
+        XCTAssertEqual(
+            flowQueue.sync { ctx.directForwarder?.s2cPhase }, .active,
+            "S→C must still be actively transferring")
+        XCTAssertTrue(
+            flowQueue.sync { ctx.terminalSignalled },
+            "terminalSignalled is sticky from C→S entering .finishing")
+
+        // Model the still-active S→C direction making byte progress: a live
+        // half-close keeps bumping `lastActivityAt`, which is exactly what marks
+        // it not-drain-wedged. (Deterministic regardless of `lingerCloseMs` and
+        // the time the cutover/drain took above.)
+        flowQueue.sync { ctx.lastActivityAt = .now() }
+
+        // Two consecutive maintenance ticks — the threshold a terminalSignalled-
+        // only watchdog would tear down on. The drain-wedge re-check must spare
+        // this live half-close.
+        fx.core.testRunPeriodicMaintenance()
+        fx.core.testRunPeriodicMaintenance()
+        flowQueue.sync {}
+
+        XCTAssertFalse(
+            ctx.isDone,
+            "a live half-close with an active opposite direction must NOT be force-torn-down")
+        XCTAssertEqual(fx.core.tcpFlowCount, 1, "flow must remain registered")
+    }
+
+    // MARK: - promoted-idle clock reset at cutover
+
+    /// The promoted-idle reaper keys on `lastActivityAt`. A flow may spend time
+    /// on the `viaRust` path first; `beginPromoteCutover` must reset the clock so
+    /// a previously-idle flow gets a fresh full timeout once promoted (it only
+    /// now loses the engine's in-Rust idle backstop). A regression would
+    /// prematurely reap freshly-promoted flows.
+    func testCutoverResetsPromotedIdleClock() {
+        let fx = makeFixture(); defer { tearDown(fx) }
+        let flow = MockTcpFlow()
+        let (conn, ctx) = driveToActivePumps(fx, flow: flow)
+        let completer = startSendCompleter(conn); defer { completer.store(true) }
+
+        // Make the pre-cutover activity look ancient.
+        ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: 1)
+        let before = ctx.lastActivityAt.uptimeNanoseconds
+
+        let flowQueue = DispatchQueue(label: "test.fwd.idlereset")
+        fx.core.beginPromoteCutover(
+            ctx: ctx, flow: flow, flowQueue: flowQueue, flowId: ObjectIdentifier(flow))
+        flowQueue.sync {}
+
+        XCTAssertGreaterThan(
+            ctx.lastActivityAt.uptimeNanoseconds, before,
+            "cutover must reset the promoted-idle clock to ~now, giving a fresh full timeout")
+    }
 }
 
 /// Tiny atomic-bool helper for background coordination — same

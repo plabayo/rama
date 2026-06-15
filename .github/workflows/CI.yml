@@ -53,7 +53,9 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          - windows-latest
+          # windows-2022: windows-latest/windows-2025 both moved to
+          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
+          - windows-2022
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -85,7 +87,9 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          - windows-latest
+          # windows-2022: windows-latest/windows-2025 both moved to
+          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
+          - windows-2022
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -119,7 +123,9 @@ jobs:
           - ubuntu-24.04-arm
           - macos-15-intel
           - macos-15
-          - windows-2025
+          # windows-2022: windows-latest/windows-2025 both moved to
+          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
+          - windows-2022
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -164,6 +170,19 @@ jobs:
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
         run: cargo nextest run --all-features --workspace --run-ignored=only
+      # MITM OCSP-stapling gate. Linux: hermetic curl --cert-status matrix
+      # (incl. the no-staple negative) + a real-crates.io curl/cargo leg.
+      # Windows: cargo through the CONNECT proxy to real crates.io, where
+      # schannel enforces revocation (the customer scenario).
+      - name: MITM OCSP stapling gate (curl + cargo)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          OCSP_GATE_REQUIRE: "1"
+        run: bash scripts/ocsp-relay-gate.sh
+      - name: MITM OCSP stapling gate (cargo / schannel)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: ./scripts/ocsp-relay-gate.ps1
 
   test-ffi-apple-example-transparent-proxy-e2e:
     runs-on: macos-latest
@@ -671,17 +690,23 @@ jobs:
         run: |
           bash rama-http-core/ci/h2spec.sh -F
 
-  semver-checks:
-    runs-on: ubuntu-latest
-    needs:
-      - precheck-rust
-      - precheck-docs
-    steps:
-      - uses: actions/checkout@v6
-      - name: Check semver
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+  # semver-checks: DISABLED until the 0.3 release. On 0.3.0-rcN there is no
+  # stable API to guard, and the action's isolated rustdoc re-resolve (which
+  # ignores our Cargo.lock) keeps breaking on unrelated upstream churn — most
+  # recently brotli 8.0.3 vs the freshly-published alloc-no-stdlib 3.0.0, the
+  # 2nd such failure. Re-enable (and re-add to deploy-rama-cli-docker needs)
+  # once 0.3.0 ships.
+  # semver-checks:
+  #   runs-on: ubuntu-latest
+  #   needs:
+  #     - precheck-rust
+  #     - precheck-docs
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - name: Check semver
+  #       uses: obi1kenobi/cargo-semver-checks-action@v2
+  #       with:
+  #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
   deploy-rama-cli-docker:
     runs-on: ubuntu-latest
@@ -703,7 +728,6 @@ jobs:
       - test-rust-e2e-release
       - test-ws-autobahn
       - test-spec-h2
-      - semver-checks
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub

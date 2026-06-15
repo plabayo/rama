@@ -269,6 +269,85 @@ mod tests {
         _ = client.serve(req).await.unwrap();
     }
 
+    // A long, mildly-varied plaintext so the brotli stream spans multiple chunks
+    // (guarantees the decoder yields some output before the truncation errors).
+    fn long_plaintext() -> String {
+        (0..4000)
+            .map(|i| format!("line {i}: the quick brown fox\n"))
+            .collect()
+    }
+
+    // Corrupt a run of bytes in the middle of a valid brotli stream: the decoder
+    // produces output for the valid prefix, then hits an invalid block and errors
+    // with InvalidData (the real "brotli error" case — a clean tail-truncation
+    // instead hits brotli's UnexpectedEof clean-EOF path and would NOT error).
+    fn corrupt_brotli(plaintext: &str) -> Vec<u8> {
+        let mut full = Vec::new();
+        {
+            let mut w = brotli::CompressorWriter::new(&mut full, 4096, 5, 22);
+            w.write_all(plaintext.as_bytes()).unwrap();
+        } // drop finishes the stream
+        let n = full.len();
+        let start = n / 3;
+        let end = (start + n / 4).min(n);
+        for b in &mut full[start..end] {
+            *b ^= 0xFF;
+        }
+        full
+    }
+
+    async fn collect_truncated_br(
+        tolerate: bool,
+    ) -> Result<rama_core::bytes::Bytes, rama_core::error::BoxError> {
+        let body = corrupt_brotli(&long_plaintext());
+        let client = Decompression::new(service_fn(move |_req: Request<Body>| {
+            let body = body.clone();
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(header::CONTENT_ENCODING, "br")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+            }
+        }))
+        .with_tolerate_decode_errors(tolerate);
+        let req = Request::builder()
+            .header("accept-encoding", "br")
+            .body(Body::empty())
+            .unwrap();
+        let res = client.serve(req).await.unwrap();
+        res.into_body().collect().await.map(|c| c.to_bytes())
+    }
+
+    #[tokio::test]
+    async fn truncated_brotli_with_tolerance_ends_cleanly() {
+        let collected = collect_truncated_br(true).await;
+        assert!(
+            collected.is_ok(),
+            "tolerant decode must end the stream cleanly, not error"
+        );
+        let bytes = collected.unwrap();
+        // The salvaged output must be a clean prefix of the original (no garbage
+        // from the corrupt block); it may be empty if the decoder had not flushed
+        // output before the corruption — the load-bearing property is that the
+        // stream ENDS rather than ABORTS.
+        assert!(
+            long_plaintext().as_bytes().starts_with(&bytes),
+            "decoded bytes must be a clean prefix of the original plaintext (len={})",
+            bytes.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_brotli_without_tolerance_still_errors() {
+        // Regression guard: the default (strict) behavior must be unchanged.
+        assert!(
+            collect_truncated_br(false).await.is_err(),
+            "strict decode must surface the truncation as an error"
+        );
+    }
+
     #[tokio::test]
     async fn response_matcher_can_disable_decompression() {
         let client = Decompression::new(Compression::new(service_fn(handle)))

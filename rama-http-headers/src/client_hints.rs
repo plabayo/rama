@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use rama_http_types::{HeaderName, HeaderValue};
+use rama_utils::collections::NonEmptySmallVec;
 
 use crate::util::{self, IterExt};
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -35,25 +36,29 @@ macro_rules! client_hint {
                 name.try_into().ok()
             }
 
-            #[doc = "Return an iterator of all header names for this client hint."]
-            pub fn iter_header_names(&self) -> impl Iterator<Item = ::rama_http_types::HeaderName> {
+            #[doc = "All header-name spellings this client hint answers to, as borrowed `'static` strs: the preferred (`Sec-CH-` prefixed) form first, followed by any legacy bare alias (e.g. `[\"sec-ch-ect\", \"ect\"]`). Allocation-free — the slice is statically promoted."]
+            #[must_use] pub fn header_name_strs(&self) -> &'static [&'static str] {
                 match self {
                     $(
-                        Self::$name => vec![$(::rama_http_types::HeaderName::from_static($str),)+].into_iter(),
+                        Self::$name => {
+                            const NAMES: &[&str] = &[$($str,)+];
+                            NAMES
+                        },
                     )+
                 }
             }
 
+            #[doc = "Return an iterator of all header names for this client hint. Allocation-free."]
+            pub fn iter_header_names(&self) -> impl Iterator<Item = ::rama_http_types::HeaderName> {
+                self.header_name_strs()
+                    .iter()
+                    .copied()
+                    .map(::rama_http_types::HeaderName::from_static)
+            }
+
             #[doc = "Returns the preferred string representation of the client hint."]
             #[must_use] pub fn as_str(&self) -> &'static str {
-                match self {
-                    $(
-                        Self::$name => {
-                            const VARIANTS: &'static [&'static str] = &[$($str,)+];
-                            VARIANTS[0]
-                        },
-                    )+
-                }
+                self.header_name_strs()[0]
             }
         }
 
@@ -221,6 +226,154 @@ client_hint! {
         /// Sec-CH-Forced-Colors is used to detect if the user agent has enabled a forced colors mode where it enforces a user-chosen limited color palette on the page.
         ForcedColors("sec-ch-forced-colors"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Client-hint negotiation headers: a server advertises which [`ClientHint`]s
+// it wants (`Accept-CH`) and which of those are critical (`Critical-CH`).
+//
+// Both are flat comma-separated lists of client-hint header names. Each hint is
+// advertised under *every* spelling it answers to — the preferred `Sec-CH-`
+// form and any legacy bare alias (e.g. both `sec-ch-ect` and `ect`) — so a user
+// agent that recognises only one form still sees its slot. Several deployed
+// hints (the Network Information set `rtt`/`downlink`/`ect`, `device-memory`,
+// `dpr`, `viewport-width`, `save-data`) are only honoured under the bare name,
+// so canonical-only advertisement would silently fail to elicit them. Decoding
+// accepts any known spelling and normalises it back to the [`ClientHint`].
+// ---------------------------------------------------------------------------
+
+/// Encode a hint set as a `", "`-joined list of every header-name spelling each
+/// hint answers to (see [`ClientHint::header_name_strs`]). Allocation-free per
+/// item. The names are static ASCII tokens and the set is non-empty, so this
+/// only ever returns `None` in the unreachable case of an invalid header value.
+fn encode_client_hint_names(hints: &NonEmptySmallVec<16, ClientHint>) -> Option<HeaderValue> {
+    let mut buf = Vec::new();
+    for name in hints
+        .iter()
+        .flat_map(|h| h.header_name_strs().iter().copied())
+    {
+        if !buf.is_empty() {
+            buf.extend_from_slice(b", ");
+        }
+        buf.extend_from_slice(name.as_bytes());
+    }
+    HeaderValue::from_bytes(&buf).ok()
+}
+
+macro_rules! client_hint_advert_header {
+    (
+        #[header(name = $name:ident)]
+        $(#[$m:meta])*
+        $type:ident
+    ) => {
+        $(#[$m])*
+        #[derive(Clone, Debug, PartialEq, Eq)]
+        pub struct $type(pub NonEmptySmallVec<16, ClientHint>);
+
+        impl $type {
+            #[doc = concat!("Create a `", stringify!($type), "` advertising a single [`ClientHint`].")]
+            #[must_use]
+            pub fn new(hint: ClientHint) -> Self {
+                Self(NonEmptySmallVec::new(hint))
+            }
+        }
+
+        impl TypedHeader for $type {
+            fn name() -> &'static HeaderName {
+                &rama_http_types::header::$name
+            }
+        }
+
+        impl HeaderDecode for $type {
+            fn decode<'i, I>(values: &mut I) -> Result<Self, Error>
+            where
+                I: Iterator<Item = &'i HeaderValue>,
+            {
+                util::try_decode_flat_csv_header_values_as_non_empty_smallvec(
+                    values,
+                    util::FlatCsvSeparator::Comma,
+                )
+                .map(Self)
+                .map_err(|err| {
+                    rama_core::telemetry::tracing::debug!(
+                        concat!("failed to decode ", stringify!($name), ": {}"),
+                        err,
+                    );
+                    Error::invalid()
+                })
+            }
+        }
+
+        impl HeaderEncode for $type {
+            fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+                match encode_client_hint_names(&self.0) {
+                    Some(value) => values.extend(std::iter::once(value)),
+                    None => rama_core::telemetry::tracing::debug!(
+                        concat!("failed to encode ", stringify!($name), " client-hint names")
+                    ),
+                }
+            }
+        }
+    };
+}
+
+client_hint_advert_header! {
+    #[header(name = ACCEPT_CH)]
+    /// `Accept-CH` header, defined in [RFC8942](https://datatracker.ietf.org/doc/html/rfc8942#section-3.1).
+    ///
+    /// Sent by a server to advertise the set of [`ClientHint`]s it would like
+    /// the user agent to send on subsequent requests to the same origin. Each
+    /// hint is advertised under *every* spelling it answers to (its preferred
+    /// `Sec-CH-` form plus any legacy bare alias); entries that do not map to a
+    /// known [`ClientHint`] are rejected on decode.
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Accept-CH = #client-hint-name
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_smallvec;
+    /// use rama_http_headers::{AcceptCh, ClientHint};
+    ///
+    /// let accept_ch = AcceptCh(
+    ///     non_empty_smallvec![ClientHint::Ua, ClientHint::Platform, ClientHint::Mobile; 16],
+    /// );
+    /// ```
+    AcceptCh
+}
+
+client_hint_advert_header! {
+    #[header(name = CRITICAL_CH)]
+    /// `Critical-CH` header, defined by the
+    /// [Client Hints Infrastructure](https://wicg.github.io/client-hints-infrastructure/#critical-ch).
+    ///
+    /// Sent alongside [`AcceptCh`] to mark a subset of the advertised
+    /// [`ClientHint`]s as *critical*: if the original request was not sent with
+    /// these hints, a conforming user agent retries the request before handing
+    /// the response to the page. Same wire format as `Accept-CH` (each hint
+    /// under every spelling it answers to).
+    ///
+    /// # ABNF
+    ///
+    /// ```text
+    /// Critical-CH = #client-hint-name
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_utils::collections::non_empty_smallvec;
+    /// use rama_http_headers::{ClientHint, CriticalCh};
+    ///
+    /// let critical_ch = CriticalCh(
+    ///     non_empty_smallvec![ClientHint::Ua, ClientHint::Platform; 16],
+    /// );
+    /// ```
+    CriticalCh
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +881,129 @@ mod tests {
         assert_eq!(encode(Downlink::new(1.5)), "1.5");
         assert_eq!(encode(Downlink::new(100.0)), "100");
         assert_eq!(decode::<Downlink>(&["1.5"]), Some(Downlink::new(1.5)));
+    }
+
+    #[test]
+    fn test_accept_ch_decode() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        assert_eq!(
+            decode::<AcceptCh>(&["sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Ua,
+                ClientHint::Platform,
+                ClientHint::Mobile; 16
+            ])),
+        );
+        // case-insensitive and legacy aliases both map onto the canonical hint
+        assert_eq!(
+            decode::<AcceptCh>(&["DPR, save-data"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Dpr,
+                ClientHint::SaveData; 16
+            ])),
+        );
+        // multiple header lines fold into a single list
+        assert_eq!(
+            decode::<AcceptCh>(&["sec-ch-ua", "sec-ch-ua-platform"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::Ua,
+                ClientHint::Platform; 16
+            ])),
+        );
+        // an unknown hint poisons the whole list
+        assert!(decode::<AcceptCh>(&["sec-ch-ua, not-a-hint"]).is_none());
+        assert!(decode::<AcceptCh>(&[""]).is_none());
+        assert!(decode::<AcceptCh>(&[]).is_none());
+    }
+
+    #[test]
+    fn test_accept_ch_round_trip() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        let header = AcceptCh(non_empty_smallvec![
+            ClientHint::Ua,
+            ClientHint::Platform,
+            ClientHint::Mobile; 16
+        ]);
+        assert_eq!(
+            encode(header.clone()),
+            "sec-ch-ua, sec-ch-ua-platform, sec-ch-ua-mobile",
+        );
+        assert_eq!(
+            decode::<AcceptCh>(&[encode(header.clone()).as_str()]),
+            Some(header)
+        );
+    }
+
+    #[test]
+    fn test_critical_ch_round_trip() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        let header = CriticalCh(non_empty_smallvec![ClientHint::Ua, ClientHint::Platform; 16]);
+        assert_eq!(encode(header.clone()), "sec-ch-ua, sec-ch-ua-platform");
+        assert_eq!(
+            decode::<CriticalCh>(&[encode(header.clone()).as_str()]),
+            Some(header),
+        );
+    }
+
+    #[test]
+    fn test_header_name_strs() {
+        // dual-name hints expose the Sec-CH-* form first, then the bare alias
+        assert_eq!(ClientHint::Ect.header_name_strs(), &["sec-ch-ect", "ect"]);
+        assert_eq!(
+            ClientHint::SaveData.header_name_strs(),
+            &["sec-ch-save-data", "save-data"]
+        );
+        // single-name hints expose just the one
+        assert_eq!(ClientHint::Ua.header_name_strs(), &["sec-ch-ua"]);
+        // `as_str` is always the first (preferred) spelling
+        for hint in all_client_hints() {
+            assert_eq!(hint.as_str(), hint.header_name_strs()[0]);
+            // `iter_header_names` agrees with the str slice
+            let names: Vec<_> = hint
+                .iter_header_names()
+                .map(|n| n.as_str().to_owned())
+                .collect();
+            assert_eq!(names, hint.header_name_strs());
+        }
+    }
+
+    #[test]
+    fn test_accept_ch_emits_all_aliases() {
+        use rama_utils::collections::non_empty_smallvec;
+
+        // every dual-name hint is advertised under BOTH spellings, so a UA that
+        // only honours the legacy bare name (e.g. Chrome for the network hints)
+        // still sees its slot.
+        let header = AcceptCh(non_empty_smallvec![
+            ClientHint::SaveData,
+            ClientHint::Ect,
+            ClientHint::Rtt,
+            ClientHint::Downlink; 16
+        ]);
+        assert_eq!(
+            encode(header),
+            "sec-ch-save-data, save-data, sec-ch-ect, ect, \
+             sec-ch-rtt, rtt, sec-ch-downlink, downlink",
+        );
+        // and decoding any spelling round-trips back to the hint set
+        assert_eq!(
+            decode::<AcceptCh>(&["save-data, ect, rtt, downlink"]),
+            Some(AcceptCh(non_empty_smallvec![
+                ClientHint::SaveData,
+                ClientHint::Ect,
+                ClientHint::Rtt,
+                ClientHint::Downlink; 16
+            ])),
+        );
+    }
+
+    #[test]
+    fn test_critical_ch_emits_all_aliases() {
+        let header = CriticalCh::new(ClientHint::SaveData);
+        assert_eq!(encode(header), "sec-ch-save-data, save-data");
     }
 
     #[test]

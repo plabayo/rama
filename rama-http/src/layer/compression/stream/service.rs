@@ -7,17 +7,20 @@ use super::CompressionLevel;
 use super::body::StreamCompressionBody;
 use crate::HeaderValue;
 use crate::StreamingBody;
-use crate::headers::encoding::{AcceptEncoding, Encoding, parse_accept_encoding_headers};
+use crate::headers::encoding::{
+    AcceptEncoding, Encoding, maybe_preferred_encoding_with_wildcard,
+    parse_accept_encoding_headers, parse_accept_encoding_wildcard_quality,
+};
 use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate, PreferredEncoding};
 use crate::layer::remove_header::remove_payload_metadata_headers;
-use crate::{Request, Response, header};
+use crate::{Request, Response, StatusCode, header};
 use http::Method;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::TransferEncoding;
-use rama_http_headers::specifier::QualityValue;
+use rama_http_headers::specifier::{Quality, QualityValue};
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
@@ -34,6 +37,7 @@ pub struct StreamCompression<S, P = DefaultStreamPredicate> {
     pub(crate) accept: AcceptEncoding,
     pub(crate) predicate: P,
     pub(crate) quality: CompressionLevel,
+    pub(crate) enforce_not_acceptable: bool,
 }
 
 impl<S> StreamCompression<S, DefaultStreamPredicate> {
@@ -44,6 +48,7 @@ impl<S> StreamCompression<S, DefaultStreamPredicate> {
             accept: AcceptEncoding::default(),
             predicate: DefaultStreamPredicate::default(),
             quality: CompressionLevel::default(),
+            enforce_not_acceptable: true,
         }
     }
 }
@@ -91,6 +96,19 @@ impl<S, P> StreamCompression<S, P> {
         }
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to respond with `406 Not Acceptable` when the client's
+        /// `Accept-Encoding` header rejects every available representation
+        /// (e.g. `*;q=0` or a lone `identity;q=0`), as recommended by RFC 9110 §12.5.3.
+        ///
+        /// Enabled by default. Disable to opt out and instead fall back to sending an
+        /// uncompressed (identity) response regardless of the client's stated preference.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.enforce_not_acceptable = enable;
+            self
+        }
+    }
+
     /// Replace the current StreamCompression predicate.
     ///
     /// Predicates are used to determine whether a response should be compressed or not.
@@ -109,6 +127,7 @@ impl<S, P> StreamCompression<S, P> {
             accept: self.accept,
             predicate,
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 }
@@ -127,43 +146,52 @@ where
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let accepted_encodings: SmallVec<[QualityValue<Encoding>; 4]> =
             parse_accept_encoding_headers(req.headers(), self.accept).collect();
+        let wildcard_quality = parse_accept_encoding_wildcard_quality(req.headers());
         let req_method = req.method().clone();
 
         let mut res = self.inner.serve(req).await?;
 
-        let should_compress =
-            // RFC 9110 §9.3.2 (HEAD) and §9.3.6 (CONNECT): server MUST NOT send
-            // a body for HEAD or CONNECT responses, so there is nothing to compress.
-            !matches!(req_method, Method::HEAD | Method::CONNECT) &&
-            // RFC 9110 §15.2 (1xx Informational), §15.3.5 (204 No Content),
-            // §15.3.6 (205 Reset Content), §15.4.5 (304 Not Modified): these
-            // status codes prohibit a message body, so compression would
-            // produce an empty Content-Encoding wrapper with no benefit.
-            !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304) &&
+        // RFC 9110 §9.3.2 (HEAD) / §9.3.6 (CONNECT) and the body-prohibiting status codes
+        // (1xx Informational, 204 No Content, 205 Reset Content, 304 Not Modified) mean there
+        // is no representation body to encode (or to reject for the client).
+        let body_allowed = !matches!(req_method, Method::HEAD | Method::CONNECT)
+            && !matches!(res.status().as_u16(), 100..=199 | 204 | 205 | 304);
+
+        let should_compress = body_allowed
             // never recompress responses that are already compressed
-            !res.headers().contains_key(header::CONTENT_ENCODING)
+            && !res.headers().contains_key(header::CONTENT_ENCODING)
             // never compress responses that are ranges
             && !res.headers().contains_key(header::CONTENT_RANGE)
             && self.predicate.should_compress(&mut res);
 
-        let encoding = negotiate_response_encoding(
+        let negotiated = negotiate_response_encoding(
             &accepted_encodings,
+            wildcard_quality,
+            self.accept,
             res.extensions().get_ref::<PreferredEncoding>().copied(),
         );
 
+        // RFC 9110 §12.5.3: when the client's `Accept-Encoding` rejects every available
+        // representation (e.g. `*;q=0` or a lone `identity;q=0`), respond 406 Not Acceptable.
+        // This can be opted out of, in which case we fall back to an identity response.
+        let encoding = match negotiated {
+            Some(encoding) => encoding,
+            None if self.enforce_not_acceptable && body_allowed => {
+                let (mut parts, body) = res.into_parts();
+                parts.status = StatusCode::NOT_ACCEPTABLE;
+                ensure_vary_accept_encoding(&mut parts.headers);
+                return Ok(Response::from_parts(
+                    parts,
+                    StreamCompressionBody::identity(body),
+                ));
+            }
+            None => Encoding::Identity,
+        };
+
         let (mut parts, body) = res.into_parts();
 
-        if should_compress
-            && !parts.headers.get_all(header::VARY).iter().any(|value| {
-                submatch_ignore_ascii_case(
-                    value.as_bytes(),
-                    header::ACCEPT_ENCODING.as_str().as_bytes(),
-                )
-            })
-        {
-            parts
-                .headers
-                .append(header::VARY, header::ACCEPT_ENCODING.into());
+        if should_compress {
+            ensure_vary_accept_encoding(&mut parts.headers);
         }
 
         let always_flush = parts
@@ -208,20 +236,35 @@ where
     }
 }
 
+/// Picks the response encoding, returning `None` when the client's `Accept-Encoding` rejects
+/// every available representation (406 Not Acceptable per RFC 9110 §12.5.3).
 fn negotiate_response_encoding(
     accepted_encodings: &[QualityValue<Encoding>],
+    wildcard_quality: Option<Quality>,
+    supported: AcceptEncoding,
     preferred: Option<PreferredEncoding>,
-) -> Encoding {
+) -> Option<Encoding> {
     if let Some(preferred) = preferred.map(PreferredEncoding::as_encoding)
         && accepted_encodings
             .iter()
             .any(|qval| qval.value == preferred && qval.quality.as_u16() > 0)
     {
-        return preferred;
+        return Some(preferred);
     }
 
-    Encoding::maybe_preferred_encoding(accepted_encodings.iter().copied())
-        .unwrap_or(Encoding::Identity)
+    maybe_preferred_encoding_with_wildcard(accepted_encodings, wildcard_quality, supported)
+}
+
+/// Appends `Vary: accept-encoding` unless an equivalent value is already present.
+fn ensure_vary_accept_encoding(headers: &mut header::HeaderMap) {
+    if !headers.get_all(header::VARY).iter().any(|value| {
+        submatch_ignore_ascii_case(
+            value.as_bytes(),
+            header::ACCEPT_ENCODING.as_str().as_bytes(),
+        )
+    }) {
+        headers.append(header::VARY, header::ACCEPT_ENCODING.into());
+    }
 }
 
 fn is_streaming_content_type(headers: &header::HeaderMap) -> bool {

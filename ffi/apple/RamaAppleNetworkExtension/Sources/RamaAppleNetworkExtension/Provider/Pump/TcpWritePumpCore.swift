@@ -34,18 +34,29 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
 
+    /// Fired on `queue` (flowQueue) each time an accepted data chunk is
+    /// processed — i.e. real byte progress in this direction. The owner bumps
+    /// the flow's `lastActivityAt` so the flow-pressure backstop's idle/LRU
+    /// selection is accurate for BOTH data-path modes: both `TcpDirectForwarder`
+    /// (promoted) and the in-Rust path flush through these pumps, so this single
+    /// flowQueue-confined hook is the one race-free activity signal for all
+    /// flows. No-op by default (standalone-pump tests).
+    private let onActivity: () -> Void
+
     init(
         queue: DispatchQueue,
         initialLifecycle: WritePumpLifecycle = .open,
         onDrained: @escaping () -> Void,
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
-        logHwm: @escaping (Int) -> Void
+        logHwm: @escaping (Int) -> Void,
+        onActivity: @escaping () -> Void = {}
     ) {
         self.queue = queue
         self.lifecycle = initialLifecycle
         self.onDrained = onDrained
         self.doWrite = doWrite
         self.logHwm = logHwm
+        self.onActivity = onActivity
     }
 
     func isClosed() -> Bool { state.withLock { $0.closed } }
@@ -133,6 +144,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
             // already zeroed the counter, and subtracting again would push
             // it negative.
             guard !self.state.withLock({ $0.closed }) else { return }
+            // Real byte progress on `queue` (flowQueue): the one race-free
+            // activity signal for the flow-pressure backstop, for both modes.
+            self.onActivity()
             self.pending.pushBack(data)
             self.flush()
         }
@@ -238,12 +252,17 @@ final class TcpWritePumpCore: @unchecked Sendable {
 
     private func finishCloseIfDrained() {
         guard lifecycle == .draining, !writing, pending.isEmpty else { return }
-        let alreadyClosed: Bool = state.withLock { s in
-            let wasClosed = s.closed
-            if !wasClosed { s.closed = true }
-            return wasClosed
+        // Also require `pendingBytes == 0`: `enqueue` bumps the count and
+        // returns `.accepted` on the FFI thread, then appends to `pending`
+        // via `queue.async`. Between those, `pending.isEmpty` is true while
+        // a chunk is in flight — closing here would FIN and drop it. Checked
+        // in the same lock that publishes `closed`, for one snapshot.
+        let proceed: Bool = state.withLock { s in
+            if s.closed || s.pendingBytes != 0 { return false }
+            s.closed = true
+            return true
         }
-        if alreadyClosed { return }
+        if !proceed { return }
         delegate?.pumpCoreDidFinishDraining(self)
     }
 }

@@ -21,7 +21,7 @@ final class SystemLifecycleTests: XCTestCase {
     /// fires its completion promptly.
     func testHandleSystemSleepLeavesRegisteredTcpFlowsIntact() {
         let core = TransparentProxyCore()
-        var teardowns: [TcpFlowTeardown] = []
+        var ctxs: [TcpFlowContext] = []
         var flows: [MockTcpFlow] = []
         var conns: [MockNwConnection] = []
         // Build a few mock contexts and shove them straight into
@@ -32,15 +32,15 @@ final class SystemLifecycleTests: XCTestCase {
             let c = MockNwConnection()
             let ctx = TcpFlowContext()
             ctx.connection = c
-            let td = TcpFlowTeardown(
-                ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-            ctx.teardown = td
+            ctx.flow = f
+            ctx.core = core
+            ctx.flowId = ObjectIdentifier(f)
             // Use the registry directly — registerTcpFlow needs a
             // RamaTcpSessionHandle which we can't construct here.
             core.testInsertTcpContext(ObjectIdentifier(f), ctx)
             flows.append(f)
             conns.append(c)
-            teardowns.append(td)
+            ctxs.append(ctx)
         }
         XCTAssertEqual(core.tcpFlowCount, 5)
 
@@ -51,8 +51,8 @@ final class SystemLifecycleTests: XCTestCase {
         // Nothing was torn down: the flows survive the suspend and
         // are reaped (if needed) only by the post-wake path.
         XCTAssertEqual(core.tcpFlowCount, 5, "sleep must not drop flows")
-        for (i, td) in teardowns.enumerated() {
-            XCTAssertFalse(td.isDone, "teardown[\(i)] must not fire on sleep")
+        for (i, ctx) in ctxs.enumerated() {
+            XCTAssertFalse(ctx.isDone, "teardown[\(i)] must not fire on sleep")
             XCTAssertEqual(conns[i].cancelCount, 0)
             XCTAssertEqual(flows[i].closeReadCallCount, 0)
         }
@@ -84,7 +84,7 @@ final class SystemLifecycleTests: XCTestCase {
         on core: TransparentProxyCore,
         viable: Bool,
         flowQueue: DispatchQueue? = nil
-    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
+    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext)
     {
         let f = MockTcpFlow()
         let c = MockNwConnection()
@@ -93,11 +93,11 @@ final class SystemLifecycleTests: XCTestCase {
         ctx.egressReady = true
         ctx.lastPathViable = viable
         ctx.flowQueue = flowQueue
-        let td = TcpFlowTeardown(
-            ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-        ctx.teardown = td
+        ctx.flow = f
+        ctx.core = core
+        ctx.flowId = ObjectIdentifier(f)
         core.testInsertTcpContext(ObjectIdentifier(f), ctx)
-        return (f, c, ctx, td)
+        return (f, c, ctx)
     }
 
     /// An established flow whose egress path is no longer viable after the
@@ -112,7 +112,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertTrue(f.teardown.isDone, "dead-path established flow must be torn down")
+        XCTAssertTrue(f.ctx.isDone, "dead-path established flow must be torn down")
         XCTAssertEqual(f.conn.cancelCount, 1, "egress connection cancelled")
         XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
     }
@@ -125,7 +125,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertFalse(f.teardown.isDone, "healthy flow must survive the wake re-check")
+        XCTAssertFalse(f.ctx.isDone, "healthy flow must survive the wake re-check")
         XCTAssertEqual(f.conn.cancelCount, 0)
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -141,7 +141,7 @@ final class SystemLifecycleTests: XCTestCase {
 
         core.testCheckWakeDeadPath(f.ctx)
 
-        XCTAssertFalse(f.teardown.isDone)
+        XCTAssertFalse(f.ctx.isDone)
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -181,7 +181,7 @@ final class SystemLifecycleTests: XCTestCase {
         queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertTrue(f.teardown.isDone, "scheduled re-check must reset the dead-path flow")
+        XCTAssertTrue(f.ctx.isDone, "scheduled re-check must reset the dead-path flow")
         XCTAssertEqual(core.tcpFlowCount, 0)
     }
 
@@ -202,7 +202,7 @@ final class SystemLifecycleTests: XCTestCase {
         queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)
 
-        XCTAssertFalse(f.teardown.isDone, "healthy flow must survive the scheduled re-check")
+        XCTAssertFalse(f.ctx.isDone, "healthy flow must survive the scheduled re-check")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -228,7 +228,7 @@ final class SystemLifecycleTests: XCTestCase {
         wait(for: [drained], timeout: 2.0)
 
         XCTAssertFalse(
-            f.teardown.isDone, "recovery queued before the check must spare the flow")
+            f.ctx.isDone, "recovery queued before the check must spare the flow")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
 
@@ -238,7 +238,7 @@ final class SystemLifecycleTests: XCTestCase {
     /// (which flips `egressReady`) is still queued behind the reconcile.
     private func makePreReadyFlowThatSilentlyReachedReady(
         on core: TransparentProxyCore
-    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext, teardown: TcpFlowTeardown)
+    ) -> (flow: MockTcpFlow, conn: MockNwConnection, ctx: TcpFlowContext)
     {
         let f = MockTcpFlow()
         let c = MockNwConnection()
@@ -246,11 +246,11 @@ final class SystemLifecycleTests: XCTestCase {
         let ctx = TcpFlowContext()
         ctx.connection = c
         ctx.egressReady = false  // our flag lags behind NW's .ready
-        let td = TcpFlowTeardown(
-            ctx: ctx, core: core, flow: f, flowId: ObjectIdentifier(f))
-        ctx.teardown = td
+        ctx.flow = f
+        ctx.core = core
+        ctx.flowId = ObjectIdentifier(f)
         core.testInsertTcpContext(ObjectIdentifier(f), ctx)
-        return (f, c, ctx, td)
+        return (f, c, ctx)
     }
 
     /// FIFO does NOT cover this site (it's a read, not a timer-cancel):
@@ -264,7 +264,7 @@ final class SystemLifecycleTests: XCTestCase {
         core.handleSystemWake()
 
         XCTAssertFalse(
-            f.teardown.isDone,
+            f.ctx.isDone,
             "a flow that reached .ready must not be pre-ready-reset on wake")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -281,7 +281,7 @@ final class SystemLifecycleTests: XCTestCase {
         core.testRunPeriodicMaintenance()
 
         XCTAssertFalse(
-            f.teardown.isDone,
+            f.ctx.isDone,
             "watchdog must not connect-timeout a flow that already reached .ready")
         XCTAssertEqual(core.tcpFlowCount, 1)
     }
@@ -296,8 +296,8 @@ final class SystemLifecycleTests: XCTestCase {
         // viable:false so the check WOULD reset it if the guards didn't hold.
         let f = makeEstablishedFlow(on: core, viable: false)
 
-        f.teardown.applyPromotedTerminal()
-        XCTAssertTrue(f.teardown.isDone, "promoted terminal marks teardown done")
+        f.ctx.applyPromotedTerminal()
+        XCTAssertTrue(f.ctx.isDone, "promoted terminal marks teardown done")
         XCTAssertEqual(f.conn.cancelCount, 0, "promoted terminal must NOT cancel the connection")
         let closesAfterTerminal = f.flow.closeReadCallCount
 
@@ -308,5 +308,213 @@ final class SystemLifecycleTests: XCTestCase {
         XCTAssertEqual(
             f.flow.closeReadCallCount, closesAfterTerminal,
             "wake check must not re-close the kernel flow post-terminal")
+    }
+
+    // MARK: - mid-session viability-loss re-check (handleEgressViabilityLoss)
+
+    /// Mirror the production `installEgressStateHandler` viability wiring
+    /// (cache into `ctx.lastPathViable` + mid-session loss trigger) for an
+    /// engine-less flow, the way `testViabilityHandlerCachesIntoContext`
+    /// mirrors the cache-only half.
+    private func wireViabilityHandler(
+        conn: MockNwConnection, ctx: TcpFlowContext, core: TransparentProxyCore
+    ) {
+        conn.viabilityUpdateHandler = { [weak ctx] viable in
+            guard let ctx else { return }
+            ctx.lastPathViable = viable
+            if !viable { core.handleEgressViabilityLoss(ctx) }
+        }
+    }
+
+    /// A mid-session viability loss (Wi-Fi roam / interface switch / VPN
+    /// toggle — no sleep, no wake callback) on an established flow that
+    /// stays dead through the settle window is reset promptly, instead of
+    /// hanging until an idle reaper.
+    func testViabilityLossResetsEstablishedFlowWhenStillDead() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        // The re-check is scheduled on `queue` at +10ms; a barrier at
+        // +200ms on the same serial queue runs strictly after it.
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(f.ctx.isDone, "still-dead path after settle must reset the flow")
+        XCTAssertEqual(f.conn.cancelCount, 1, "egress connection cancelled")
+        XCTAssertEqual(core.tcpFlowCount, 0, "registry entry removed")
+    }
+
+    /// A viability loss that RECOVERS within the settle window is spared —
+    /// the sub-second roam blip must never reset a healthy flow.
+    func testViabilityLossSparesFlowThatRecovers() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 100
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.recover")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+        f.conn.simulateViability(true)  // recovery lands well inside the settle
+
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(400)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "recovered path must spare the flow")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertFalse(
+            f.ctx.deadPathRecheckPending, "flag must clear once the re-check fires")
+    }
+
+    /// A viability flap (false / true / false …) coalesces into ONE
+    /// outstanding re-check via `deadPathRecheckPending`; the single
+    /// verdict judges whatever the path looks like when it fires.
+    func testViabilityFlapCoalescesToOneOutstandingRecheck() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 200
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.flap")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        // Read the flag via `queue.sync`: the armed re-check timer writes it
+        // on `queue`, so a bare test-thread read would be unordered with that
+        // write (the value is deterministic here, the access ordering isn't).
+        f.conn.simulateViability(false)
+        XCTAssertTrue(
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "first loss schedules the re-check")
+        f.conn.simulateViability(true)
+        f.conn.simulateViability(false)
+        f.conn.simulateViability(true)
+        XCTAssertTrue(
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "burst must not stack additional re-checks")
+
+        let exp = expectation(description: "coalesced re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(500)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "flap ending viable must spare the flow")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertFalse(f.ctx.deadPathRecheckPending)
+    }
+
+    /// Kill switch: with `defaultViabilityLossRecheckMs == 0` a viability
+    /// loss schedules nothing — behavior is byte-identical to before the
+    /// feature, and the loss is still cached for the wake reconcile.
+    func testViabilityLossKillSwitchSchedulesNothing() {
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 0
+        defer { defaultViabilityLossRecheckMs = prev }
+        let core = TransparentProxyCore()
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.off")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        XCTAssertFalse(
+            f.ctx.deadPathRecheckPending, "kill switch must schedule nothing")
+        XCTAssertFalse(f.ctx.lastPathViable, "loss is still cached for wake")
+        let exp = expectation(description: "settle window elapsed")
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone)
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+    /// The feature ships ENABLED: the production default is the mid-session
+    /// 3s settle, not the kill switch. Guards against an accidental flip
+    /// back to `0` (which is what `…KillSwitch…` above already covers as a
+    /// behavior, not as the default).
+    func testViabilityLossEnabledByDefault() {
+        XCTAssertEqual(
+            defaultViabilityLossRecheckMs, 5_000,
+            "feature ships enabled with a mid-session settle == the post-ready waiting tolerance")
+    }
+
+    /// The mid-session re-check settle must never ship below the post-ready
+    /// `.waiting` tolerance: a shorter settle would let the coarse viability
+    /// re-check preempt the precise per-flow `.waiting` recovery budget and
+    /// reset a flow still inside it (BEH-1/BEH-2). Guards the shipped default.
+    func testViabilityRecheckDefaultNotBelowWaitingTolerance() {
+        XCTAssertGreaterThanOrEqual(
+            defaultViabilityLossRecheckMs, defaultEgressWaitingToleranceMs,
+            "viability re-check must not preempt the post-ready .waiting tolerance")
+    }
+
+    /// BEH-2: while the precise post-ready `.waiting` tolerance timer is armed
+    /// (`postReadyWaitingArmed`), a viability loss must NOT independently arm the
+    /// re-check — the `.waiting` timer owns that flow's recovery budget. Holds
+    /// even if the re-check tunable is (mis)configured below the tolerance.
+    func testViabilityLossDefersToArmedWaitingTimer() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10  // deliberately tiny: must still defer
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.waitingdefer")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+        // Model the post-ready `.waiting` tolerance timer being armed.
+        queue.sync { f.ctx.postReadyWaitingArmed = true }
+
+        f.conn.simulateViability(false)
+
+        XCTAssertFalse(
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "viability loss must defer to the armed .waiting tolerance timer")
+
+        let exp = expectation(description: "settle window elapsed")
+        queue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+        XCTAssertFalse(f.ctx.isDone, "deferred re-check must not reset the flow")
+        XCTAssertEqual(core.tcpFlowCount, 1)
+    }
+
+
+    /// Pre-ready flows are out of scope for the mid-session re-check: the
+    /// verdict's `egressReady` guard spares them (the connect timeout /
+    /// pre-ready waiting budget own pre-ready strands), so a loss before
+    /// `.ready` never tears the connecting flow down.
+    func testViabilityLossSparesPreReadyFlow() {
+        let core = TransparentProxyCore()
+        let prev = defaultViabilityLossRecheckMs
+        defaultViabilityLossRecheckMs = 10
+        defer { defaultViabilityLossRecheckMs = prev }
+
+        let queue = DispatchQueue(label: "rama.test.flow.pathloss.preready")
+        let f = makeEstablishedFlow(on: core, viable: true, flowQueue: queue)
+        f.ctx.egressReady = false  // still connecting
+        wireViabilityHandler(conn: f.conn, ctx: f.ctx, core: core)
+
+        f.conn.simulateViability(false)
+
+        let exp = expectation(description: "viability-loss re-check fired")
+        queue.asyncAfter(deadline: .now() + .milliseconds(200)) { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertFalse(f.ctx.isDone, "pre-ready flow must not be reset by the re-check")
+        XCTAssertEqual(f.conn.cancelCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 1)
     }
 }

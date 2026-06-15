@@ -3,7 +3,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         BodyExtractExt, Request, Response, StatusCode, Version,
-        headers::ContentType,
+        headers::{ContentType, all_client_hints},
         proto::h2,
         protocols::html::*,
         service::web::{
@@ -757,12 +757,6 @@ const FAVICON_DATA_URL: PreEscaped<&str> = PreEscaped(
      <text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>",
 );
 
-const CH_HEADERS: &str = "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, \
-                          ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, \
-                          Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, \
-                          Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, \
-                          Device-Memory, RTT, Sec-GPC";
-
 /// Render the standard page chrome (head + body shell) with the given
 /// per-page h1 title, optional extra `<head>` content, and body content.
 ///
@@ -807,7 +801,15 @@ where
                 content =
                     "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg"
             ),
-            meta!("http-equiv" = "Accept-CH", content = CH_HEADERS),
+            meta!(
+                "http-equiv" = "Accept-CH",
+                // advertise every spelling each hint answers to (Sec-CH-* + any
+                // legacy bare alias), matching the `Accept-CH` response header
+                content = join_display(
+                    all_client_hints().flat_map(|h| h.header_name_strs().iter().copied()),
+                    ", ",
+                )
+            ),
             link!(
                 rel = "stylesheet",
                 r#type = "text/css",

@@ -10,12 +10,25 @@ use rama_core::Layer;
 /// `Content-Encoding` header to responses.
 ///
 /// See the [module docs](crate::layer::compression) for more details.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct CompressionLayer<P = DefaultPredicate> {
     accept: AcceptEncoding,
     predicate: P,
     respect_content_encoding_if_possible: bool,
     quality: CompressionLevel,
+    enforce_not_acceptable: bool,
+}
+
+impl<P: Default> Default for CompressionLayer<P> {
+    fn default() -> Self {
+        Self {
+            accept: AcceptEncoding::default(),
+            predicate: P::default(),
+            respect_content_encoding_if_possible: false,
+            quality: CompressionLevel::default(),
+            enforce_not_acceptable: true,
+        }
+    }
 }
 
 impl<S, P> Layer<S> for CompressionLayer<P>
@@ -31,6 +44,7 @@ where
             predicate: self.predicate.clone(),
             respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 
@@ -41,6 +55,7 @@ where
             predicate: self.predicate,
             respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 }
@@ -62,6 +77,7 @@ impl CompressionLayer {
             predicate,
             respect_content_encoding_if_possible: self.respect_content_encoding_if_possible,
             quality: self.quality,
+            enforce_not_acceptable: self.enforce_not_acceptable,
         }
     }
 }
@@ -115,6 +131,19 @@ impl<P> CompressionLayer<P> {
         /// or most use cases for that matter.
         pub fn respect_content_encoding_if_possible(mut self) -> Self {
             self.respect_content_encoding_if_possible = true;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets whether to respond with `406 Not Acceptable` when the client's
+        /// `Accept-Encoding` header rejects every available representation
+        /// (e.g. `*;q=0` or a lone `identity;q=0`), as recommended by RFC 9110 §12.5.3.
+        ///
+        /// Enabled by default. Disable to opt out and instead fall back to sending an
+        /// uncompressed (identity) response regardless of the client's stated preference.
+        pub fn enforce_not_acceptable(mut self, enable: bool) -> Self {
+            self.enforce_not_acceptable = enable;
             self
         }
     }

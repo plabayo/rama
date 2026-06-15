@@ -99,14 +99,8 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0, "EOF backstop must not fire before its deadline")
 
-        // Past the grace deadline + slack.
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "EOF backstop should have force-cancelled the connection exactly once"
-        )
+        // Poll for the deadline to fire (robust to a loaded runner).
+        pollUntil("EOF backstop force-cancels the connection") { mock.cancelCount == 1 }
     }
 
     func testReadErrorSchedulesCancelWithinGrace() {
@@ -132,13 +126,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0)
 
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "EOF backstop should fire on the read-error branch as well"
-        )
+        pollUntil("EOF backstop fires on the read-error branch") { mock.cancelCount == 1 }
     }
 
     func testExternalPumpCancelInvalidatesEofBackstop() {
@@ -217,14 +205,9 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             // `pump` goes out of scope → deallocated.
         }
 
-        // Past the grace deadline + slack.
-        Thread.sleep(forTimeInterval: 0.70)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "EOF backstop must cancel the connection even after the pump is deallocated"
-        )
+        pollUntil("EOF backstop fires even after the pump is deallocated") {
+            mock.cancelCount == 1
+        }
     }
 
     /// Regression (audit "Medium": egress `.closed` asymmetry). When the
@@ -273,13 +256,9 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             "pump must stop reading once the egress consumer is closed"
         )
 
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "egress `.closed` must arm the same bounded release as EOF/error"
-        )
+        pollUntil("egress `.closed` arms the same bounded release as EOF/error") {
+            mock.cancelCount == 1
+        }
     }
 
     /// Regression (same audit finding, session-gone branch). If the per-flow
@@ -318,13 +297,9 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             "pump must stop reading once the session is gone"
         )
 
-        Thread.sleep(forTimeInterval: 0.45)
-        waitForQueueDrain(queue)
-
-        XCTAssertEqual(
-            mock.cancelCount, 1,
-            "a session that vanishes mid-receive must arm the bounded release"
-        )
+        pollUntil("a session that vanishes mid-receive arms the bounded release") {
+            mock.cancelCount == 1
+        }
     }
 
     func testNonTerminalReceiveDoesNotScheduleBackstop() {

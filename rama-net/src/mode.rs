@@ -24,7 +24,13 @@ impl DnsResolveIpMode {
         matches!(self, Self::Dual | Self::SingleIpV6 | Self::DualPreferIpV4)
     }
 }
-///Mode for establishing a connection
+/// Mode for establishing a connection.
+///
+/// Classification is by wire family: an IPv4-mapped IPv6 address
+/// (`::ffff:a.b.c.d`, [RFC 4291, Section 2.5.5.2]) counts as IPv4,
+/// so [`Self::Ipv6`] rejects it and [`Self::Ipv4`] accepts it.
+///
+/// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Extension)]
 #[extension(tags(net))]
 pub enum ConnectIpMode {
