@@ -35,6 +35,7 @@ use crate::{
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::address::ip::geo::IpGeoDb,
     net::fingerprint::{AkamaiH2, Ja4H},
     net::forwarded::Forwarded,
     net::http::RequestContext,
@@ -95,6 +96,8 @@ pub struct EchoServiceBuilder<H> {
     http_service_builder: H,
 
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
 }
 
 impl Default for EchoServiceBuilder<()> {
@@ -115,6 +118,8 @@ impl Default for EchoServiceBuilder<()> {
             http_service_builder: (),
 
             uadb: None,
+
+            geo_db: None,
         }
     }
 }
@@ -210,6 +215,8 @@ impl<H> EchoServiceBuilder<H> {
             http_service_builder: (self.http_service_builder, layer),
 
             uadb: self.uadb,
+
+            geo_db: self.geo_db,
         }
     }
 
@@ -221,6 +228,15 @@ impl<H> EchoServiceBuilder<H> {
             db: Option<std::sync::Arc<UserAgentDatabase>>,
         ) -> Self {
             self.uadb = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// attach an IP geolocation database, enabling geo enrichment of the
+        /// echoed JSON. Typically built from `RAMA_IP_GEO_DB`.
+        pub fn geo_db(mut self, db: Option<std::sync::Arc<IpGeoDb>>) -> Self {
+            self.geo_db = db;
             self
         }
     }
@@ -368,6 +384,7 @@ where
         )
             .into_layer(self.http_service_builder.layer(EchoService {
                 uadb: self.uadb.clone(),
+                geo_db: self.geo_db.clone(),
             }))
     }
 }
@@ -377,6 +394,7 @@ where
 /// The inner echo-service used by the [`EchoServiceBuilder`].
 pub struct EchoService {
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
 }
 
 impl Service<Request> for EchoService {
@@ -728,8 +746,30 @@ impl Service<Request> for EchoService {
             }));
         }
 
+        let (geo, geo_attribution) = match self.geo_db.as_ref().and_then(|db| {
+            parts
+                .extensions
+                .get_ref::<Forwarded>()
+                .and_then(|f| f.client_ip())
+                .or_else(|| {
+                    parts
+                        .extensions
+                        .get_ref::<SocketInfo>()
+                        .map(|s| s.peer_addr().ip_addr)
+                })
+                .and_then(|ip| db.resolve(ip))
+        }) {
+            Some(info) => (
+                serde_json::to_value(&info).unwrap_or_default(),
+                json!(crate::cli::service::geo::GEO_ATTRIBUTION),
+            ),
+            None => (serde_json::Value::Null, serde_json::Value::Null),
+        };
+
         Ok(Json(json!({
             "ua": user_agent_info,
+            "geo": geo,
+            "geo_attribution": geo_attribution,
             "http": {
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,

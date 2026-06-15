@@ -196,6 +196,7 @@ pub(super) async fn get_report(
         ResourceType::Document,
         Initiator::Navigator,
         &parts,
+        state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
@@ -432,6 +433,7 @@ pub(super) async fn post_api_fetch_number(
         ResourceType::Xhr,
         Initiator::Fetch,
         &parts,
+        state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
@@ -513,6 +515,7 @@ pub(super) async fn post_api_xml_http_request_number(
         ResourceType::Xhr,
         Initiator::Fetch,
         &parts,
+        state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
@@ -568,6 +571,7 @@ pub(super) async fn form(
         ResourceType::Form,
         Initiator::Form,
         &parts,
+        state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;

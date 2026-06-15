@@ -203,12 +203,6 @@ struct HttpIpService {
     geo_db: Option<Arc<IpGeoDb>>,
 }
 
-/// Attribution required by the free geolocation databases the demo targets.
-const GEO_ATTRIBUTION: [&str; 2] = [
-    "This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com",
-    "This site or product includes IP2Location LITE data available from https://lite.ip2location.com",
-];
-
 impl Service<Request> for HttpIpService {
     type Output = Response;
     type Error = Infallible;
@@ -233,7 +227,8 @@ impl Service<Request> for HttpIpService {
                     let mut body = serde_json::json!({ "ip": ip });
                     if let Some(info) = geo {
                         body["geo"] = serde_json::to_value(&info).unwrap_or_default();
-                        body["geo_attribution"] = serde_json::json!(GEO_ATTRIBUTION);
+                        body["geo_attribution"] =
+                            serde_json::json!(crate::cli::service::geo::GEO_ATTRIBUTION);
                     }
                     Json(body).into_response()
                 }
