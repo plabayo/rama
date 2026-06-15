@@ -30,7 +30,7 @@ use crate::{
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    net::address::ip::geo::IpGeoDb,
+    net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
@@ -221,7 +221,10 @@ impl Service<Request> for HttpIpService {
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
-                HttpBodyContentFormat::Html => render_html_page(ip).into_response(),
+                HttpBodyContentFormat::Html => {
+                    let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
+                    render_html_page(ip, geo.as_ref()).into_response()
+                }
                 HttpBodyContentFormat::Json => {
                     let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
                     let mut body = serde_json::json!({ "ip": ip });
@@ -519,8 +522,42 @@ pub mod mode {
     pub struct Transport;
 }
 
-fn render_html_page(ip: IpAddr) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
+fn render_html_page(
+    ip: IpAddr,
+    geo: Option<&IpGeoInfo>,
+) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
     use crate::http::protocols::html::*;
+
+    // attribution comment + geo panel, only when a location was resolved
+    let geo_comment =
+        geo.map(|_| PreEscaped(crate::cli::service::geo::geo_attribution_html_comment()));
+    let geo_panel = geo.map(|info| {
+        let rows = |loc: &GeoLocation| {
+            crate::cli::service::geo::geo_location_rows(loc)
+                .into_iter()
+                .map(|(k, v)| div!(class = "georow", div!(class = "muted", k), div!(code!(v))))
+                .collect::<Vec<_>>()
+        };
+        let sources = info
+            .by_source
+            .iter()
+            .map(|src| {
+                (
+                    div!(class = "muted geo-source", src.label.to_string()),
+                    rows(&src.location),
+                )
+            })
+            .collect::<Vec<_>>();
+        div!(
+            class = "panel",
+            role = "region",
+            "aria-label" = "geo panel",
+            div!(class = "muted", "Geolocation"),
+            rows(&info.location),
+            sources,
+        )
+    });
+
     html!(
         lang = "en",
         head!(
@@ -543,31 +580,35 @@ fn render_html_page(ip: IpAddr) -> impl crate::http::protocols::html::IntoHtml +
                 href = "/style/ip.css"
             ),
         ),
-        body!(div!(
-            class = "card",
+        body!(
+            geo_comment,
             div!(
-                class = "logo",
-                div!("🦙"),
-                div!(a!(href = "https://ramaproxy.org", "ラマ")),
-            ),
-            div!(
-                class = "panel",
-                role = "region",
-                "aria-label" = "ip panel",
-                div!(class = "muted", "Your public ip"),
-                div!(id = "ip", class = "ip", code!(ip.to_string())),
+                class = "card",
                 div!(
-                    class = "controls",
-                    button!(
-                        id = "copyBtn",
-                        class = "primary",
-                        title = "Copy ip to clipboard",
-                        "📋 Copy IP",
+                    class = "logo",
+                    div!("🦙"),
+                    div!(a!(href = "https://ramaproxy.org", "ラマ")),
+                ),
+                div!(
+                    class = "panel",
+                    role = "region",
+                    "aria-label" = "ip panel",
+                    div!(class = "muted", "Your public ip"),
+                    div!(id = "ip", class = "ip", code!(ip.to_string())),
+                    div!(
+                        class = "controls",
+                        button!(
+                            id = "copyBtn",
+                            class = "primary",
+                            title = "Copy ip to clipboard",
+                            "📋 Copy IP",
+                        ),
                     ),
                 ),
-            ),
-            script!(src = "/script/ip.js"),
-        )),
+                geo_panel,
+                script!(src = "/script/ip.js"),
+            )
+        ),
     )
 }
 
@@ -584,7 +625,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_embeds_ip_safely() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None).into_string();
         assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
         assert!(out.contains("<title>Rama IP</title>"));
         assert!(out.contains(r#"<div id="ip" class="ip"><code>127.0.0.1</code></div>"#));
@@ -597,7 +638,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_emits_aria_label() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None).into_string();
         assert!(out.contains(r#"aria-label="ip panel""#));
     }
 
@@ -609,7 +650,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_uses_external_assets() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None).into_string();
         assert!(
             !out.contains("<style>") && !out.contains("<style "),
             "IP page must not embed inline <style>; CSP blocks it"
@@ -628,5 +669,39 @@ mod render_html_page_tests {
             out.contains(r#"<script src="/script/ip.js">"#),
             "IP page must source /script/ip.js",
         );
+    }
+
+    /// When a location is resolved, the page renders a geo panel (merged +
+    /// per-source) and embeds the attribution as an HTML comment.
+    #[test]
+    fn render_html_page_renders_geo_panel() {
+        use crate::net::address::ip::geo::{Country, GeoLocation, IpGeoInfo, IpGeoSourceResult};
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let loc = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        let info = IpGeoInfo {
+            ip,
+            location: loc.clone(),
+            by_source: vec![IpGeoSourceResult {
+                label: "geolite2".into(),
+                location: loc,
+            }],
+        };
+        let out = render_html_page(ip, Some(&info)).into_string();
+        assert!(out.contains("Geolocation"), "geo panel title missing");
+        assert!(out.contains("Belgium"), "resolved country missing");
+        assert!(out.contains("geolite2"), "per-source label missing");
+        // attribution is an HTML comment, never visible structured data
+        assert!(
+            out.contains("<!-- This product includes GeoLite2"),
+            "attribution comment missing"
+        );
+
+        // …and absent when no database resolved a location
+        let plain = render_html_page(ip, None).into_string();
+        assert!(!plain.contains("Geolocation"));
+        assert!(!plain.contains("<!--"));
     }
 }

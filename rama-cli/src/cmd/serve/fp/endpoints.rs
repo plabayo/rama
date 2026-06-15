@@ -16,7 +16,7 @@ use rama::{
             protocol::{CloseFrame, frame::coding::CloseCode},
         },
     },
-    net::tls::SecureTransport,
+    net::{address::ip::geo::IpGeoInfo, tls::SecureTransport},
     telemetry::tracing,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
@@ -191,7 +191,7 @@ pub(super) async fn get_report(
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
-    let request_info = get_request_info(
+    let mut request_info = get_request_info(
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
@@ -200,6 +200,8 @@ pub(super) async fn get_report(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+    // taken out so the merged + per-source geo render as their own tables
+    let geo = request_info.geo.take();
 
     let user_agent = user_agent_info.user_agent.clone();
 
@@ -259,10 +261,17 @@ pub(super) async fn get_report(
         tables.append(&mut tls_tables);
     }
 
+    if let Some(geo) = &geo {
+        tables.extend(geo_tables(geo));
+    }
+    let geo_comment = geo
+        .as_ref()
+        .map(|_| PreEscaped(rama::cli::service::geo::geo_attribution_html_comment()));
+
     Ok(page(
         "🕵️ Fingerprint Report",
         script!(src = "/assets/script.js"),
-        report_body(None::<&str>, tables),
+        (geo_comment, report_body(None::<&str>, tables)),
     )
     .into_response())
 }
@@ -566,7 +575,7 @@ pub(super) async fn form(
 
     let user_agent = user_agent_info.user_agent.clone();
 
-    let request_info = get_request_info(
+    let mut request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
@@ -575,6 +584,8 @@ pub(super) async fn form(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+    // taken out so the merged + per-source geo render as their own tables
+    let geo = request_info.geo.take();
 
     let http_info = get_and_store_http_info(
         &state,
@@ -632,12 +643,19 @@ pub(super) async fn form(
         tables.append(&mut tls_tables);
     }
 
+    if let Some(geo) = &geo {
+        tables.extend(geo_tables(geo));
+    }
+    let geo_comment = geo
+        .as_ref()
+        .map(|_| PreEscaped(rama::cli::service::geo::geo_attribution_html_comment()));
+
     let show_form = parts.method == "POST";
 
     Ok(page(
         "🕵️ Fingerprint Report » Form",
         (),
-        report_body(Some(form_top(show_form)), tables),
+        (geo_comment, report_body(Some(form_top(show_form)), tables)),
     )
     .into_response())
 }
@@ -960,6 +978,28 @@ impl From<RequestInfo> for Table {
             ],
         }
     }
+}
+
+/// Build the geolocation report tables: a merged table plus one per source,
+/// side-by-side. Attribution is carried in the `x-geo-attribution` header.
+fn geo_tables(info: &IpGeoInfo) -> Vec<Table> {
+    let rows = |loc: &rama::net::address::ip::geo::GeoLocation| {
+        rama::cli::service::geo::geo_location_rows(loc)
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect::<Vec<_>>()
+    };
+    let mut tables = vec![Table {
+        title: format!("🌍 Geolocation ({})", info.ip),
+        rows: rows(&info.location),
+    }];
+    for source in &info.by_source {
+        tables.push(Table {
+            title: format!("🌍 {} (source)", source.label),
+            rows: rows(&source.location),
+        });
+    }
+    tables
 }
 
 impl From<DataSource> for Table {
