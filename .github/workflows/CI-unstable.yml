@@ -28,9 +28,7 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          # windows-2022: windows-latest/windows-2025 both moved to
-          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
-          - windows-2022
+          - windows-latest
     runs-on: ${{ matrix.os }}
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable

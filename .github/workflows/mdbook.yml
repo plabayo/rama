@@ -83,9 +83,7 @@ jobs:
           retention-days: 1
 
   doc-windows:
-    # windows-2022: windows-latest moved to VS2026 (Jun 2026), breaking
-    # boringssl's cmake VS2022 build.
-    runs-on: windows-2022
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
       - uses: ilammy/setup-nasm@v1
