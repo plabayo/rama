@@ -1253,7 +1253,7 @@ impl<B> StreamRef<B> {
             // Create the data frame. `stream.id` is server/client-allocated
             // and is guaranteed non-zero by the time we reach send_data,
             // so the `InvalidStreamId` arm cannot fire here.
-            #[allow(
+            #[expect(
                 clippy::expect_used,
                 reason = "internal stream ids are non-zero by construction"
             )]
