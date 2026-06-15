@@ -53,9 +53,7 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          # windows-2022: windows-latest/windows-2025 both moved to
-          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
-          - windows-2022
+          - windows-latest
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -87,9 +85,7 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          # windows-2022: windows-latest/windows-2025 both moved to
-          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
-          - windows-2022
+          - windows-latest
     runs-on: ${{ matrix.os }}
     needs:
       - precheck-rust
@@ -123,9 +119,7 @@ jobs:
           - ubuntu-24.04-arm
           - macos-15-intel
           - macos-15
-          # windows-2022: windows-latest/windows-2025 both moved to
-          # VS2026 (Jun 2026), breaking boringssl's cmake VS2022 build.
-          - windows-2022
+          - windows-latest
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -180,7 +174,7 @@ jobs:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
       - name: MITM OCSP stapling gate (cargo / schannel)
-        if: matrix.os == 'windows-2022'
+        if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1
 
