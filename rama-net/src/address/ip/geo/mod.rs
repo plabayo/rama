@@ -40,9 +40,7 @@ pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision,
 pub use rama_core::geo::{Continent, ContinentRef, Country, CountryRef, Locale};
 
 pub mod mmdb;
-pub use mmdb::{
-    IpVersion, Metadata, MmdbBuilder, MmdbReader, MmdbValue, MmdbWriteError, RecordSize,
-};
+pub use mmdb::{IpVersion, Metadata, MmdbBuilder, MmdbReader, MmdbWriteError, RecordSize};
 
 use std::fmt;
 

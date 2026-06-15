@@ -21,7 +21,7 @@ use rama_core::geo::Country;
 
 use crate::asn::LossyAsn;
 
-use super::mmdb::{IpVersion, MmdbBuilder, MmdbValue, MmdbWriteError};
+use super::mmdb::{IpVersion, MmdbBuilder, MmdbWriteError};
 use super::{AsOrg, Coordinates, GeoIpError, GeoLocation, MmdbReader, Subdivision, TimeZoneName};
 
 /// Error while compiling CSV into a MaxMind DB.
@@ -65,15 +65,15 @@ impl std::error::Error for CsvError {
     }
 }
 
-/// A CSV row mapped to an inclusive IP range and its record value.
+/// A CSV row mapped to an inclusive IP range and its geolocation.
 #[derive(Debug, Clone)]
 pub struct CsvGeoRecord {
     /// First address of the range (inclusive).
     pub start: IpAddr,
     /// Last address of the range (inclusive).
     pub end: IpAddr,
-    /// The record stored for every address in the range.
-    pub value: MmdbValue,
+    /// The geolocation stored for every address in the range.
+    pub location: GeoLocation,
 }
 
 /// Compile range-based CSV into an existing [`MmdbBuilder`].
@@ -197,7 +197,7 @@ fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(),
             IpNet::V6(Ipv6Net::new(Ipv6Addr::from(addr), prefix).map_err(to_box)?)
         };
         builder
-            .insert(net, record.value.clone())
+            .insert(net, &record.location)
             .map_err(|e| e.to_string().into_boxed_str())?;
     }
     Ok(())
@@ -342,11 +342,11 @@ fn cell<'a>(s: Option<&&'a str>) -> Option<&'a str> {
 }
 
 /// Wrap a typed [`GeoLocation`] for a parsed range, or skip it if empty.
-fn record(start: IpAddr, end: IpAddr, loc: &GeoLocation) -> Option<CsvGeoRecord> {
-    (!loc.is_empty()).then(|| CsvGeoRecord {
+fn record(start: IpAddr, end: IpAddr, location: GeoLocation) -> Option<CsvGeoRecord> {
+    (!location.is_empty()).then_some(CsvGeoRecord {
         start,
         end,
-        value: MmdbValue::from(loc),
+        location,
     })
 }
 
@@ -360,7 +360,7 @@ fn map_country(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRe
         country: cell(fields.get(2)).map(Country::from_code),
         ..Default::default()
     };
-    Ok(record(start, end, &loc))
+    Ok(record(start, end, loc))
 }
 
 fn map_city(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord>, Box<str>> {
@@ -394,7 +394,7 @@ fn map_city(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecor
             time_zone: cell(fields.get(9)).map(TimeZoneName::from),
         });
     }
-    Ok(record(start, end, &loc))
+    Ok(record(start, end, loc))
 }
 
 fn map_asn(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord>, Box<str>> {
@@ -414,7 +414,7 @@ fn map_asn(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord
         }),
         ..Default::default()
     };
-    Ok(record(start, end, &loc))
+    Ok(record(start, end, loc))
 }
 
 #[cfg(test)]
@@ -549,14 +549,14 @@ mod tests {
                 let end: IpAddr = f[1]
                     .parse()
                     .map_err(|e| format!("bad ip {:?}: {e}", f[1]).into_boxed_str())?;
-                let loc = GeoLocation {
+                let location = GeoLocation {
                     country: Some(Country::from_code(f[2])),
                     ..Default::default()
                 };
                 Ok(Some(CsvGeoRecord {
                     start,
                     end,
-                    value: MmdbValue::from(&loc),
+                    location,
                 }))
             },
         )

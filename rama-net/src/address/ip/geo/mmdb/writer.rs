@@ -63,9 +63,15 @@ impl From<io::Error> for MmdbWriteError {
 }
 
 /// A value that can be stored in a MaxMind DB data record.
+///
+/// Internal building block: databases are built from typed [`GeoLocation`]
+/// values via [`MmdbBuilder::insert`], not from this dynamic representation.
+///
+/// [`GeoLocation`]: crate::address::ip::geo::GeoLocation
+/// [`MmdbBuilder::insert`]: crate::address::ip::geo::MmdbBuilder::insert
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
-pub enum MmdbValue {
+pub(crate) enum MmdbValue {
     /// A map of string keys to values (insertion order preserved).
     Map(Vec<(String, Self)>),
     /// An ordered list of values.
@@ -74,28 +80,17 @@ pub enum MmdbValue {
     String(String),
     /// An IEEE-754 `binary64` double.
     Double(f64),
-    /// An IEEE-754 `binary32` float.
-    Float(f32),
-    /// Arbitrary binary data.
-    Bytes(Vec<u8>),
     /// An unsigned 16-bit integer.
     U16(u16),
     /// An unsigned 32-bit integer.
     U32(u32),
     /// An unsigned 64-bit integer.
     U64(u64),
-    /// An unsigned 128-bit integer.
-    U128(u128),
-    /// A signed 32-bit integer.
-    I32(i32),
-    /// A boolean.
-    Bool(bool),
 }
 
 impl MmdbValue {
     /// Convenience constructor for a map.
-    #[must_use]
-    pub fn map<I, K>(pairs: I) -> Self
+    pub(crate) fn map<I, K>(pairs: I) -> Self
     where
         I: IntoIterator<Item = (K, Self)>,
         K: Into<String>,
@@ -104,8 +99,7 @@ impl MmdbValue {
     }
 
     /// Convenience constructor for a string value.
-    #[must_use]
-    pub fn string(s: impl Into<String>) -> Self {
+    pub(crate) fn string(s: impl Into<String>) -> Self {
         Self::String(s.into())
     }
 }
@@ -188,19 +182,20 @@ impl MmdbBuilder {
         self
     }
 
-    /// Insert a `(network, value)` mapping.
+    /// Insert a `(network, value)` mapping. Internal: the public, typed entry
+    /// point is [`MmdbBuilder::insert`] (which takes a `&GeoLocation`).
     ///
-    /// `value` is anything convertible into an [`MmdbValue`] — including a
-    /// `&GeoLocation`, so typed records can be inserted directly. For an IPv6
-    /// database, IPv4 networks are placed in the `::/96` range so the reader's
-    /// IPv4-in-IPv6 traversal finds them.
+    /// For an IPv6 database, IPv4 networks are placed in the `::/96` range so
+    /// the reader's IPv4-in-IPv6 traversal finds them.
     ///
     /// # Errors
     ///
     /// Returns [`MmdbWriteError`] if the IP family does not match the database,
     /// the network overlaps an existing entry, or the data section grows beyond
     /// 4 GiB.
-    pub fn insert(
+    ///
+    /// [`MmdbBuilder::insert`]: crate::address::ip::geo::MmdbBuilder::insert
+    pub(crate) fn insert_value(
         &mut self,
         net: IpNet,
         value: impl Into<MmdbValue>,
@@ -397,20 +392,9 @@ fn encode_inline(value: &MmdbValue, out: &mut Vec<u8>) {
             encode_header(3, 8, out);
             out.extend_from_slice(&f.to_be_bytes());
         }
-        MmdbValue::Float(f) => {
-            encode_header(15, 4, out);
-            out.extend_from_slice(&f.to_be_bytes());
-        }
-        MmdbValue::Bytes(b) => {
-            encode_header(4, b.len(), out);
-            out.extend_from_slice(b);
-        }
         MmdbValue::U16(n) => encode_uint(5, u128::from(*n), out),
         MmdbValue::U32(n) => encode_uint(6, u128::from(*n), out),
         MmdbValue::U64(n) => encode_uint(9, u128::from(*n), out),
-        MmdbValue::U128(n) => encode_uint(10, *n, out),
-        MmdbValue::I32(n) => encode_i32(*n, out),
-        MmdbValue::Bool(b) => encode_header(14, usize::from(*b), out),
     }
 }
 
@@ -423,18 +407,6 @@ fn encode_uint(type_num: u8, value: u128, out: &mut Vec<u8>) {
     let bytes = min_be_bytes(value);
     encode_header(type_num, bytes.len(), out);
     out.extend_from_slice(&bytes);
-}
-
-fn encode_i32(value: i32, out: &mut Vec<u8>) {
-    if value < 0 {
-        // negative values must use the full width so the sign bit is set
-        encode_header(8, 4, out);
-        out.extend_from_slice(&(value as u32).to_be_bytes());
-    } else {
-        let bytes = min_be_bytes(value as u128);
-        encode_header(8, bytes.len(), out);
-        out.extend_from_slice(&bytes);
-    }
 }
 
 /// Minimal big-endian byte representation of `value` (empty for zero).

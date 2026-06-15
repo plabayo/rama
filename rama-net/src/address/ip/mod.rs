@@ -5,6 +5,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 mod canonical;
 pub use canonical::IntoCanonicalIpAddr;
 
+/// CIDR network types, re-exported from the [`ipnet`](https://docs.rs/ipnet)
+/// crate so you can name them without depending on `ipnet` directly.
+pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+
 pub mod geo;
 pub mod private;
 

@@ -6,13 +6,36 @@
 
 use std::fmt;
 
+use ipnet::IpNet;
 use rama_core::geo::{Continent, ContinentRef, Country, CountryRef};
 use serde::{Deserialize, Serialize};
 
 use crate::asn::LossyAsn;
 
-use super::mmdb::MmdbValue;
 use super::mmdb::decoder::Decoder;
+use super::mmdb::{MmdbBuilder, MmdbValue, MmdbWriteError};
+
+/// MaxMind-DB record field names, shared by the reader and the [`MmdbValue`]
+/// encoder below so the two can never drift.
+mod keys {
+    pub(super) const CONTINENT: &str = "continent";
+    pub(super) const COUNTRY: &str = "country";
+    pub(super) const REGISTERED_COUNTRY: &str = "registered_country";
+    pub(super) const SUBDIVISIONS: &str = "subdivisions";
+    pub(super) const CITY: &str = "city";
+    pub(super) const POSTAL: &str = "postal";
+    pub(super) const LOCATION: &str = "location";
+    pub(super) const ISO_CODE: &str = "iso_code";
+    pub(super) const CODE: &str = "code";
+    pub(super) const NAMES: &str = "names";
+    pub(super) const EN: &str = "en";
+    pub(super) const LATITUDE: &str = "latitude";
+    pub(super) const LONGITUDE: &str = "longitude";
+    pub(super) const ACCURACY_RADIUS: &str = "accuracy_radius";
+    pub(super) const TIME_ZONE: &str = "time_zone";
+    pub(super) const ASN_NUMBER: &str = "autonomous_system_number";
+    pub(super) const ASN_ORG: &str = "autonomous_system_organization";
+}
 
 /// An IANA time-zone identifier (e.g. `"Europe/Brussels"`), stored verbatim.
 ///
@@ -185,20 +208,20 @@ impl From<&GeoLocation> for MmdbValue {
         let mut record: Vec<(String, Self)> = Vec::new();
         if let Some(continent) = &loc.continent {
             record.push((
-                "continent".to_owned(),
-                Self::map([("code", Self::string(continent.code()))]),
+                keys::CONTINENT.to_owned(),
+                Self::map([(keys::CODE, Self::string(continent.code()))]),
             ));
         }
         if let Some(country) = &loc.country {
             record.push((
-                "country".to_owned(),
-                Self::map([("iso_code", Self::string(country.code()))]),
+                keys::COUNTRY.to_owned(),
+                Self::map([(keys::ISO_CODE, Self::string(country.code()))]),
             ));
         }
         if let Some(country) = &loc.registered_country {
             record.push((
-                "registered_country".to_owned(),
-                Self::map([("iso_code", Self::string(country.code()))]),
+                keys::REGISTERED_COUNTRY.to_owned(),
+                Self::map([(keys::ISO_CODE, Self::string(country.code()))]),
             ));
         }
         if !loc.subdivisions.is_empty() {
@@ -208,59 +231,69 @@ impl From<&GeoLocation> for MmdbValue {
                 .map(|sd| {
                     let mut m: Vec<(String, Self)> = Vec::new();
                     if let Some(code) = &sd.iso_code {
-                        m.push(("iso_code".to_owned(), Self::string(&**code)));
+                        m.push((keys::ISO_CODE.to_owned(), Self::string(&**code)));
                     }
                     if let Some(name) = &sd.name {
                         m.push((
-                            "names".to_owned(),
-                            Self::map([("en", Self::string(&**name))]),
+                            keys::NAMES.to_owned(),
+                            Self::map([(keys::EN, Self::string(&**name))]),
                         ));
                     }
                     Self::Map(m)
                 })
                 .collect();
-            record.push(("subdivisions".to_owned(), Self::Array(subs)));
+            record.push((keys::SUBDIVISIONS.to_owned(), Self::Array(subs)));
         }
         if let Some(city) = &loc.city {
             record.push((
-                "city".to_owned(),
-                Self::map([("names", Self::map([("en", Self::string(&**city))]))]),
+                keys::CITY.to_owned(),
+                Self::map([(keys::NAMES, Self::map([(keys::EN, Self::string(&**city))]))]),
             ));
         }
         if let Some(postal) = &loc.postal_code {
             record.push((
-                "postal".to_owned(),
-                Self::map([("code", Self::string(&**postal))]),
+                keys::POSTAL.to_owned(),
+                Self::map([(keys::CODE, Self::string(&**postal))]),
             ));
         }
         if let Some(c) = &loc.location {
             let mut m: Vec<(String, Self)> = vec![
-                ("latitude".to_owned(), Self::Double(c.latitude)),
-                ("longitude".to_owned(), Self::Double(c.longitude)),
+                (keys::LATITUDE.to_owned(), Self::Double(c.latitude)),
+                (keys::LONGITUDE.to_owned(), Self::Double(c.longitude)),
             ];
             if let Some(radius) = c.accuracy_radius_km {
-                m.push(("accuracy_radius".to_owned(), Self::U16(radius)));
+                m.push((keys::ACCURACY_RADIUS.to_owned(), Self::U16(radius)));
             }
             if let Some(tz) = &c.time_zone {
-                m.push(("time_zone".to_owned(), Self::string(tz.as_str())));
+                m.push((keys::TIME_ZONE.to_owned(), Self::string(tz.as_str())));
             }
-            record.push(("location".to_owned(), Self::Map(m)));
+            record.push((keys::LOCATION.to_owned(), Self::Map(m)));
         }
         if let Some(asys) = &loc.autonomous_system {
             if let Some(asn) = asys.asn {
-                record.push((
-                    "autonomous_system_number".to_owned(),
-                    Self::U32(asn.as_u32()),
-                ));
+                record.push((keys::ASN_NUMBER.to_owned(), Self::U32(asn.as_u32())));
             }
             if let Some(org) = &asys.organization {
-                record.push((
-                    "autonomous_system_organization".to_owned(),
-                    Self::string(&**org),
-                ));
+                record.push((keys::ASN_ORG.to_owned(), Self::string(&**org)));
             }
         }
         Self::Map(record)
+    }
+}
+
+impl MmdbBuilder {
+    /// Insert a typed [`GeoLocation`] for a network into the database.
+    ///
+    /// For an IPv6 database an IPv4 `net` is placed in the `::/96` range so the
+    /// reader's IPv4-in-IPv6 traversal finds it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmdbWriteError`] if `net`'s family does not match the
+    /// database, it overlaps an existing entry, or the data section grows
+    /// beyond 4 GiB.
+    pub fn insert(&mut self, net: IpNet, location: &GeoLocation) -> Result<(), MmdbWriteError> {
+        self.insert_value(net, location)
     }
 }
 
@@ -308,72 +341,76 @@ impl<'a> GeoLocationRef<'a> {
     /// Resolve a localised name from the `names` sub-map of `container`,
     /// preferring the configured language and falling back to English.
     fn pick_name(&self, container: usize) -> Option<&'a str> {
-        let names = self.decoder.map_get(container, "names").ok().flatten()?;
+        let names = self
+            .decoder
+            .map_get(container, keys::NAMES)
+            .ok()
+            .flatten()?;
         if let Some(off) = self.decoder.map_get(names, self.lang).ok().flatten()
             && let Ok(s) = self.decoder.read_str(off)
         {
             return Some(s);
         }
-        let off = self.decoder.map_get(names, "en").ok().flatten()?;
+        let off = self.decoder.map_get(names, keys::EN).ok().flatten()?;
         self.decoder.read_str(off).ok()
     }
 
     /// Continent of the IP address, if recorded.
     #[must_use]
     pub fn continent(&self) -> Option<ContinentRef<'a>> {
-        let code = self.sub_str(self.field("continent")?, "code")?;
+        let code = self.sub_str(self.field(keys::CONTINENT)?, keys::CODE)?;
         Some(ContinentRef::from_code(code))
     }
 
     /// Country of the IP address, if recorded.
     #[must_use]
     pub fn country(&self) -> Option<CountryRef<'a>> {
-        let code = self.sub_str(self.field("country")?, "iso_code")?;
+        let code = self.sub_str(self.field(keys::COUNTRY)?, keys::ISO_CODE)?;
         Some(CountryRef::from_code(code))
     }
 
     /// Registered country of the IP address, if recorded.
     #[must_use]
     pub fn registered_country(&self) -> Option<CountryRef<'a>> {
-        let code = self.sub_str(self.field("registered_country")?, "iso_code")?;
+        let code = self.sub_str(self.field(keys::REGISTERED_COUNTRY)?, keys::ISO_CODE)?;
         Some(CountryRef::from_code(code))
     }
 
     /// Localised city name, if available.
     #[must_use]
     pub fn city(&self) -> Option<&'a str> {
-        self.pick_name(self.field("city")?)
+        self.pick_name(self.field(keys::CITY)?)
     }
 
     /// Postal / ZIP code, if available.
     #[must_use]
     pub fn postal_code(&self) -> Option<&'a str> {
-        self.sub_str(self.field("postal")?, "code")
+        self.sub_str(self.field(keys::POSTAL)?, keys::CODE)
     }
 
     /// Approximate latitude in degrees, if available.
     #[must_use]
     pub fn latitude(&self) -> Option<f64> {
-        let loc = self.field("location")?;
-        let off = self.decoder.map_get(loc, "latitude").ok().flatten()?;
+        let loc = self.field(keys::LOCATION)?;
+        let off = self.decoder.map_get(loc, keys::LATITUDE).ok().flatten()?;
         self.decoder.read_f64(off).ok()
     }
 
     /// Approximate longitude in degrees, if available.
     #[must_use]
     pub fn longitude(&self) -> Option<f64> {
-        let loc = self.field("location")?;
-        let off = self.decoder.map_get(loc, "longitude").ok().flatten()?;
+        let loc = self.field(keys::LOCATION)?;
+        let off = self.decoder.map_get(loc, keys::LONGITUDE).ok().flatten()?;
         self.decoder.read_f64(off).ok()
     }
 
     /// Accuracy radius in kilometres, if available.
     #[must_use]
     pub fn accuracy_radius_km(&self) -> Option<u16> {
-        let loc = self.field("location")?;
+        let loc = self.field(keys::LOCATION)?;
         let off = self
             .decoder
-            .map_get(loc, "accuracy_radius")
+            .map_get(loc, keys::ACCURACY_RADIUS)
             .ok()
             .flatten()?;
         self.decoder.read_u16(off).ok()
@@ -382,26 +419,26 @@ impl<'a> GeoLocationRef<'a> {
     /// IANA time zone identifier, if available.
     #[must_use]
     pub fn time_zone(&self) -> Option<&'a str> {
-        self.sub_str(self.field("location")?, "time_zone")
+        self.sub_str(self.field(keys::LOCATION)?, keys::TIME_ZONE)
     }
 
     /// Autonomous system number, if available, preserved verbatim as a
     /// [`LossyAsn`] (the value may be outside the assignable ranges).
     #[must_use]
     pub fn asn(&self) -> Option<LossyAsn> {
-        let off = self.field("autonomous_system_number")?;
+        let off = self.field(keys::ASN_NUMBER)?;
         self.decoder.read_u32(off).ok().map(LossyAsn::from)
     }
 
     /// Autonomous system organisation, if available.
     #[must_use]
     pub fn as_organization(&self) -> Option<&'a str> {
-        let off = self.field("autonomous_system_organization")?;
+        let off = self.field(keys::ASN_ORG)?;
         self.decoder.read_str(off).ok()
     }
 
     fn subdivisions_owned(&self) -> Vec<Subdivision> {
-        let Some(arr) = self.field("subdivisions") else {
+        let Some(arr) = self.field(keys::SUBDIVISIONS) else {
             return Vec::new();
         };
         let Ok(elements) = self.decoder.array_offsets(arr) else {
@@ -410,7 +447,7 @@ impl<'a> GeoLocationRef<'a> {
         elements
             .into_iter()
             .filter_map(|off| {
-                let iso_code = self.sub_str(off, "iso_code").map(Box::from);
+                let iso_code = self.sub_str(off, keys::ISO_CODE).map(Box::from);
                 let name = self.pick_name(off).map(Box::from);
                 if iso_code.is_none() && name.is_none() {
                     None

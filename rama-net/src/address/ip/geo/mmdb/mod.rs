@@ -18,7 +18,8 @@ pub(crate) mod decoder;
 use decoder::Decoder;
 
 mod writer;
-pub use writer::{MmdbBuilder, MmdbValue, MmdbWriteError};
+pub(crate) use writer::MmdbValue;
+pub use writer::{MmdbBuilder, MmdbWriteError};
 
 /// The marker that separates the data section from the metadata section.
 const METADATA_MARKER: &[u8] = b"\xab\xcd\xefMaxMind.com";
@@ -477,6 +478,8 @@ mod tests {
     fn language_fallback_and_selection() {
         // localised names (city, subdivision) honour the preferred language;
         // country/continent are identity enums and are language-independent.
+        // Built via the internal raw API: multi-language names have no typed
+        // GeoLocation representation (which carries a single resolved name).
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en", "de"]);
         let rec = MmdbValue::map([(
             "city",
@@ -488,7 +491,7 @@ mod tests {
                 ]),
             )]),
         )]);
-        b.insert(net("1.2.3.0/24"), rec).unwrap();
+        b.insert_value(net("1.2.3.0/24"), rec).unwrap();
         let bytes = b.build().unwrap();
 
         let de = MmdbReader::from_bytes(bytes.clone())
