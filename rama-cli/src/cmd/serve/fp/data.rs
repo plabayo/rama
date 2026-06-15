@@ -503,7 +503,8 @@ pub(super) async fn get_tls_display_info_and_store(
                         .as_ref()
                         .map(|d| TlsDisplayInfoExtensionData::Single(d.to_string())),
                 },
-                ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
+                ClientHelloExtension::SignatureAlgorithms(v)
+                | ClientHelloExtension::DelegatedCredentials(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: multi(v),
                 },
@@ -532,10 +533,6 @@ pub(super) async fn get_tls_display_info_and_store(
                     data: multi(v),
                 },
                 ClientHelloExtension::CertificateCompression(v) => TlsDisplayInfoExtension {
-                    id: extension.id().to_string(),
-                    data: multi(v),
-                },
-                ClientHelloExtension::DelegatedCredentials(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: multi(v),
                 },
