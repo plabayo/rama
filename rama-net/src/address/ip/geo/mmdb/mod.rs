@@ -5,7 +5,6 @@
 
 use std::net::IpAddr;
 use std::path::Path;
-use std::sync::Arc;
 
 use rama_core::bytes::Bytes;
 use rama_core::geo::Locale;
@@ -139,8 +138,8 @@ impl MmdbReader {
     ///
     /// Returns [`GeoIpError`] if the bytes are not a valid MaxMind DB or use
     /// an unsupported record size / format version.
-    pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self, GeoIpError> {
-        Self::from_buf(Bytes::from_owner(bytes.into()))
+    pub fn from_bytes(bytes: impl Into<Bytes>) -> Result<Self, GeoIpError> {
+        Self::from_buf(bytes.into())
     }
 
     fn from_buf(buf: Bytes) -> Result<Self, GeoIpError> {
@@ -410,76 +409,44 @@ fn parse_metadata(buf: &[u8]) -> Result<Metadata, GeoIpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::geo::{Country, Locale};
+    use crate::address::ip::geo::{AsOrg, Coordinates, GeoLocation, Subdivision};
+    use crate::asn::LossyAsn;
+    use ipnet::IpNet;
+    use rama_core::geo::{Continent, Country, Locale};
     use std::net::IpAddr;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
 
-    fn city_record() -> MmdbValue {
-        MmdbValue::map([
-            (
-                "continent",
-                MmdbValue::map([
-                    ("code", MmdbValue::string("NA")),
-                    (
-                        "names",
-                        MmdbValue::map([("en", MmdbValue::string("North America"))]),
-                    ),
-                ]),
-            ),
-            (
-                "country",
-                MmdbValue::map([
-                    ("iso_code", MmdbValue::string("US")),
-                    ("is_in_european_union", MmdbValue::Bool(false)),
-                    (
-                        "names",
-                        MmdbValue::map([
-                            ("en", MmdbValue::string("United States")),
-                            ("de", MmdbValue::string("Vereinigte Staaten")),
-                        ]),
-                    ),
-                ]),
-            ),
-            (
-                "subdivisions",
-                MmdbValue::Array(vec![MmdbValue::map([
-                    ("iso_code", MmdbValue::string("NY")),
-                    (
-                        "names",
-                        MmdbValue::map([("en", MmdbValue::string("New York"))]),
-                    ),
-                ])]),
-            ),
-            (
-                "city",
-                MmdbValue::map([(
-                    "names",
-                    MmdbValue::map([("en", MmdbValue::string("Buffalo"))]),
-                )]),
-            ),
-            (
-                "postal",
-                MmdbValue::map([("code", MmdbValue::string("14202"))]),
-            ),
-            (
-                "location",
-                MmdbValue::map([
-                    ("latitude", MmdbValue::Double(42.886_4)),
-                    ("longitude", MmdbValue::Double(-78.878_4)),
-                    ("accuracy_radius", MmdbValue::U16(50)),
-                    ("time_zone", MmdbValue::string("America/New_York")),
-                ]),
-            ),
-        ])
+    fn net(s: &str) -> IpNet {
+        s.parse().unwrap()
+    }
+
+    fn city_record() -> GeoLocation {
+        GeoLocation {
+            continent: Some(Continent::NorthAmerica),
+            country: Some(Country::UnitedStates),
+            subdivisions: vec![Subdivision {
+                iso_code: Some("NY".into()),
+                name: Some("New York".into()),
+            }],
+            city: Some("Buffalo".into()),
+            postal_code: Some("14202".into()),
+            location: Some(Coordinates {
+                latitude: 42.886_4,
+                longitude: -78.878_4,
+                accuracy_radius_km: Some(50),
+                time_zone: Some("America/New_York".into()),
+            }),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn city_lookup_ipv4_roundtrip() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en", "de"]);
-        b.insert(ip("1.2.3.0"), 24, &city_record()).unwrap();
+        b.insert(net("1.2.3.0/24"), &city_record()).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
 
         assert_eq!(reader.metadata().ip_version, IpVersion::V4);
@@ -521,7 +488,7 @@ mod tests {
                 ]),
             )]),
         )]);
-        b.insert(ip("1.2.3.0"), 24, &rec).unwrap();
+        b.insert(net("1.2.3.0/24"), rec).unwrap();
         let bytes = b.build().unwrap();
 
         let de = MmdbReader::from_bytes(bytes.clone())
@@ -537,7 +504,7 @@ mod tests {
     #[test]
     fn to_owned_and_serialize() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en"]);
-        b.insert(ip("1.2.3.0"), 24, &city_record()).unwrap();
+        b.insert(net("1.2.3.0/24"), &city_record()).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
         let owned = reader.lookup(ip("1.2.3.4")).unwrap().to_owned();
 
@@ -564,16 +531,16 @@ mod tests {
     #[test]
     fn ipv4_in_ipv6_tree() {
         let mut b = MmdbBuilder::new(IpVersion::V6, "GeoLite2-Country");
-        let be = MmdbValue::map([(
-            "country",
-            MmdbValue::map([("iso_code", MmdbValue::string("BE"))]),
-        )]);
-        let de = MmdbValue::map([(
-            "country",
-            MmdbValue::map([("iso_code", MmdbValue::string("DE"))]),
-        )]);
-        b.insert(ip("9.9.9.0"), 24, &be).unwrap();
-        b.insert(ip("2001:db8::"), 32, &de).unwrap();
+        let be = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        let de = GeoLocation {
+            country: Some(Country::Germany),
+            ..Default::default()
+        };
+        b.insert(net("9.9.9.0/24"), &be).unwrap();
+        b.insert(net("2001:db8::/32"), &de).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
 
         let code = |r: &MmdbReader, addr: &str| {
@@ -594,14 +561,14 @@ mod tests {
     #[test]
     fn asn_database() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
-        let rec = MmdbValue::map([
-            ("autonomous_system_number", MmdbValue::U32(15169)),
-            (
-                "autonomous_system_organization",
-                MmdbValue::string("Google LLC"),
-            ),
-        ]);
-        b.insert(ip("8.8.8.0"), 24, &rec).unwrap();
+        let rec = GeoLocation {
+            autonomous_system: Some(AsOrg {
+                asn: Some(LossyAsn::from(15169)),
+                organization: Some("Google LLC".into()),
+            }),
+            ..Default::default()
+        };
+        b.insert(net("8.8.8.0/24"), &rec).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
 
         let loc = reader.lookup(ip("8.8.8.8")).unwrap();
@@ -626,14 +593,14 @@ mod tests {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
         // 23456 (AS_TRANS) is outside rama's assignable-ASN ranges yet appears
         // in real ASN data — the owned conversion must not drop the record.
-        let rec = MmdbValue::map([
-            ("autonomous_system_number", MmdbValue::U32(23456)),
-            (
-                "autonomous_system_organization",
-                MmdbValue::string("Placeholder AS"),
-            ),
-        ]);
-        b.insert(ip("203.0.113.0"), 24, &rec).unwrap();
+        let rec = GeoLocation {
+            autonomous_system: Some(AsOrg {
+                asn: Some(LossyAsn::from(23456)),
+                organization: Some("Placeholder AS".into()),
+            }),
+            ..Default::default()
+        };
+        b.insert(net("203.0.113.0/24"), &rec).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
         let loc = reader.lookup(ip("203.0.113.5")).unwrap();
         // the raw zero-copy view preserves the number verbatim
@@ -653,9 +620,8 @@ mod tests {
 
     #[test]
     fn owned_serde_roundtrip() {
-        use crate::address::ip::geo::GeoLocation;
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City").with_languages(["en"]);
-        b.insert(ip("1.2.3.0"), 24, &city_record()).unwrap();
+        b.insert(net("1.2.3.0/24"), &city_record()).unwrap();
         let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
         let owned = reader.lookup(ip("1.2.3.4")).unwrap().to_owned();
 
@@ -666,24 +632,24 @@ mod tests {
 
     #[test]
     fn identical_records_are_deduplicated() {
-        let rec = MmdbValue::map([(
-            "country",
-            MmdbValue::map([("iso_code", MmdbValue::string("US"))]),
-        )]);
-        let other = MmdbValue::map([(
-            "country",
-            MmdbValue::map([("iso_code", MmdbValue::string("DE"))]),
-        )]);
+        let rec = GeoLocation {
+            country: Some(Country::UnitedStates),
+            ..Default::default()
+        };
+        let other = GeoLocation {
+            country: Some(Country::Germany),
+            ..Default::default()
+        };
 
         // same value at two networks -> one shared data copy
         let mut same = MmdbBuilder::new(IpVersion::V4, "T");
-        same.insert(ip("1.0.0.0"), 24, &rec).unwrap();
-        same.insert(ip("2.0.0.0"), 24, &rec).unwrap();
+        same.insert(net("1.0.0.0/24"), &rec).unwrap();
+        same.insert(net("2.0.0.0/24"), &rec).unwrap();
 
         // distinct (same-length) values at the same two networks -> two copies
         let mut diff = MmdbBuilder::new(IpVersion::V4, "T");
-        diff.insert(ip("1.0.0.0"), 24, &rec).unwrap();
-        diff.insert(ip("2.0.0.0"), 24, &other).unwrap();
+        diff.insert(net("1.0.0.0/24"), &rec).unwrap();
+        diff.insert(net("2.0.0.0/24"), &other).unwrap();
 
         // the trees are identical, so the smaller image proves the dedup
         assert!(same.build().unwrap().len() < diff.build().unwrap().len());
@@ -717,12 +683,11 @@ mod tests {
         let path = dir.path().join("country.mmdb");
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-Country");
         b.insert(
-            ip("1.2.3.0"),
-            24,
-            &MmdbValue::map([(
-                "country",
-                MmdbValue::map([("iso_code", MmdbValue::string("BE"))]),
-            )]),
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                country: Some(Country::Belgium),
+                ..Default::default()
+            },
         )
         .unwrap();
         b.write_to_file(&path).unwrap();

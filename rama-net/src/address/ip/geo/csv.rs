@@ -16,8 +16,13 @@ use std::io::{self, Read};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 
+use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+use rama_core::geo::Country;
+
+use crate::asn::LossyAsn;
+
 use super::mmdb::{IpVersion, MmdbBuilder, MmdbValue, MmdbWriteError};
-use super::{GeoIpError, MmdbReader};
+use super::{AsOrg, Coordinates, GeoIpError, GeoLocation, MmdbReader, Subdivision, TimeZoneName};
 
 /// Error while compiling CSV into a MaxMind DB.
 #[derive(Debug)]
@@ -184,14 +189,15 @@ fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(),
     if start > end {
         return Err("range start is greater than range end".into());
     }
+    let to_box = |e: ipnet::PrefixLenError| e.to_string().into_boxed_str();
     for (addr, prefix) in range_to_cidrs(start, end, bits) {
-        let ip = if bits == 32 {
-            IpAddr::V4(Ipv4Addr::from(addr as u32))
+        let net = if bits == 32 {
+            IpNet::V4(Ipv4Net::new(Ipv4Addr::from(addr as u32), prefix).map_err(to_box)?)
         } else {
-            IpAddr::V6(Ipv6Addr::from(addr))
+            IpNet::V6(Ipv6Net::new(Ipv6Addr::from(addr), prefix).map_err(to_box)?)
         };
         builder
-            .insert(ip, prefix, &record.value)
+            .insert(net, record.value.clone())
             .map_err(|e| e.to_string().into_boxed_str())?;
     }
     Ok(())
@@ -335,15 +341,13 @@ fn cell<'a>(s: Option<&&'a str>) -> Option<&'a str> {
     s.map(|s| s.trim()).filter(|s| !s.is_empty() && *s != "-")
 }
 
-/// A localised-names map `{ "en": name }` (used as a record's `names` value).
-fn en_names(name: &str) -> MmdbValue {
-    MmdbValue::map([("en", MmdbValue::string(name))])
-}
-
-/// A container holding only localised names, `{ "names": { "en": name } }`
-/// (the shape the reader expects for city / subdivision entries).
-fn names_container(name: &str) -> MmdbValue {
-    MmdbValue::map([("names", en_names(name))])
+/// Wrap a typed [`GeoLocation`] for a parsed range, or skip it if empty.
+fn record(start: IpAddr, end: IpAddr, loc: &GeoLocation) -> Option<CsvGeoRecord> {
+    (!loc.is_empty()).then(|| CsvGeoRecord {
+        start,
+        end,
+        value: MmdbValue::from(loc),
+    })
 }
 
 fn map_country(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord>, Box<str>> {
@@ -352,15 +356,11 @@ fn map_country(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRe
     }
     let start = parse_ip(fields[0], ip_version)?;
     let end = parse_ip(fields[1], ip_version)?;
-    let Some(code) = cell(fields.get(2)) else {
-        return Ok(None);
+    let loc = GeoLocation {
+        country: cell(fields.get(2)).map(Country::from_code),
+        ..Default::default()
     };
-    let mut country = vec![("iso_code".to_owned(), MmdbValue::string(code))];
-    if let Some(name) = cell(fields.get(3)) {
-        country.push(("names".to_owned(), en_names(name)));
-    }
-    let value = MmdbValue::map([("country", MmdbValue::Map(country))]);
-    Ok(Some(CsvGeoRecord { start, end, value }))
+    Ok(record(start, end, &loc))
 }
 
 fn map_city(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord>, Box<str>> {
@@ -370,51 +370,31 @@ fn map_city(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecor
     let start = parse_ip(fields[0], ip_version)?;
     let end = parse_ip(fields[1], ip_version)?;
 
-    let mut record: Vec<(String, MmdbValue)> = Vec::new();
-    if let Some(code) = cell(fields.get(2)) {
-        let mut country = vec![("iso_code".to_owned(), MmdbValue::string(code))];
-        if let Some(name) = cell(fields.get(3)) {
-            country.push(("names".to_owned(), en_names(name)));
-        }
-        record.push(("country".to_owned(), MmdbValue::Map(country)));
-    }
+    let mut loc = GeoLocation {
+        country: cell(fields.get(2)).map(Country::from_code),
+        city: cell(fields.get(5)).map(Box::from),
+        postal_code: cell(fields.get(8)).map(Box::from),
+        ..Default::default()
+    };
     if let Some(region) = cell(fields.get(4)) {
-        record.push((
-            "subdivisions".to_owned(),
-            MmdbValue::Array(vec![names_container(region)]),
-        ));
+        loc.subdivisions.push(Subdivision {
+            iso_code: None,
+            name: Some(region.into()),
+        });
     }
-    if let Some(city) = cell(fields.get(5)) {
-        record.push(("city".to_owned(), names_container(city)));
-    }
-    if let Some(zip) = cell(fields.get(8)) {
-        record.push((
-            "postal".to_owned(),
-            MmdbValue::map([("code", MmdbValue::string(zip))]),
-        ));
-    }
-    let mut location: Vec<(String, MmdbValue)> = Vec::new();
+    // DB11 always pairs a time zone with coordinates; a bare time zone (no
+    // lat/lon) has nowhere to live in the typed record and is dropped.
     if let (Some(lat), Some(lon)) = (cell(fields.get(6)), cell(fields.get(7)))
-        && let (Ok(lat), Ok(lon)) = (lat.parse::<f64>(), lon.parse::<f64>())
+        && let (Ok(latitude), Ok(longitude)) = (lat.parse::<f64>(), lon.parse::<f64>())
     {
-        location.push(("latitude".to_owned(), MmdbValue::Double(lat)));
-        location.push(("longitude".to_owned(), MmdbValue::Double(lon)));
+        loc.location = Some(Coordinates {
+            latitude,
+            longitude,
+            accuracy_radius_km: None,
+            time_zone: cell(fields.get(9)).map(TimeZoneName::from),
+        });
     }
-    if let Some(tz) = cell(fields.get(9)) {
-        location.push(("time_zone".to_owned(), MmdbValue::string(tz)));
-    }
-    if !location.is_empty() {
-        record.push(("location".to_owned(), MmdbValue::Map(location)));
-    }
-
-    if record.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(CsvGeoRecord {
-        start,
-        end,
-        value: MmdbValue::Map(record),
-    }))
+    Ok(record(start, end, &loc))
 }
 
 fn map_asn(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord>, Box<str>> {
@@ -423,32 +403,23 @@ fn map_asn(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecord
     }
     let start = parse_ip(fields[0], ip_version)?;
     let end = parse_ip(fields[1], ip_version)?;
-    let mut record: Vec<(String, MmdbValue)> = Vec::new();
-    if let Some(asn) = cell(fields.get(3)).and_then(|s| s.parse::<u32>().ok())
-        && asn != 0
-    {
-        record.push(("autonomous_system_number".to_owned(), MmdbValue::U32(asn)));
-    }
-    if let Some(name) = cell(fields.get(4)) {
-        record.push((
-            "autonomous_system_organization".to_owned(),
-            MmdbValue::string(name),
-        ));
-    }
-    if record.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(CsvGeoRecord {
-        start,
-        end,
-        value: MmdbValue::Map(record),
-    }))
+    let asn = cell(fields.get(3))
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|n| *n != 0);
+    let organization = cell(fields.get(4)).map(Box::from);
+    let loc = GeoLocation {
+        autonomous_system: (asn.is_some() || organization.is_some()).then(|| AsOrg {
+            asn: asn.map(LossyAsn::from),
+            organization,
+        }),
+        ..Default::default()
+    };
+    Ok(record(start, end, &loc))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::geo::Country;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -578,11 +549,15 @@ mod tests {
                 let end: IpAddr = f[1]
                     .parse()
                     .map_err(|e| format!("bad ip {:?}: {e}", f[1]).into_boxed_str())?;
-                let value = MmdbValue::map([(
-                    "country",
-                    MmdbValue::map([("iso_code", MmdbValue::string(f[2]))]),
-                )]);
-                Ok(Some(CsvGeoRecord { start, end, value }))
+                let loc = GeoLocation {
+                    country: Some(Country::from_code(f[2])),
+                    ..Default::default()
+                };
+                Ok(Some(CsvGeoRecord {
+                    start,
+                    end,
+                    value: MmdbValue::from(&loc),
+                }))
             },
         )
         .unwrap();

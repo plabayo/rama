@@ -275,8 +275,11 @@ pub struct IpGeoInfo {
 
 #[cfg(test)]
 mod tests {
+    use super::super::AsOrg;
     use super::*;
-    use crate::address::ip::geo::mmdb::{IpVersion, MmdbBuilder, MmdbValue};
+    use crate::address::ip::geo::mmdb::{IpVersion, MmdbBuilder};
+    use crate::asn::LossyAsn;
+    use ipnet::IpNet;
     use rama_core::geo::Country;
     use std::net::IpAddr;
 
@@ -284,23 +287,30 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn net(s: &str) -> IpNet {
+        s.parse().unwrap()
+    }
+
     fn country_reader(code: &str) -> MmdbReader {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-Country");
-        let rec = MmdbValue::map([(
-            "country",
-            MmdbValue::map([("iso_code", MmdbValue::string(code))]),
-        )]);
-        b.insert(ip("1.2.3.0"), 24, &rec).unwrap();
+        let loc = GeoLocation {
+            country: Some(Country::from_code(code)),
+            ..Default::default()
+        };
+        b.insert(net("1.2.3.0/24"), &loc).unwrap();
         MmdbReader::from_bytes(b.build().unwrap()).unwrap()
     }
 
     fn asn_reader(asn: u32, org: &str) -> MmdbReader {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
-        let rec = MmdbValue::map([
-            ("autonomous_system_number", MmdbValue::U32(asn)),
-            ("autonomous_system_organization", MmdbValue::string(org)),
-        ]);
-        b.insert(ip("1.2.3.0"), 24, &rec).unwrap();
+        let loc = GeoLocation {
+            autonomous_system: Some(AsOrg {
+                asn: Some(LossyAsn::from(asn)),
+                organization: Some(org.into()),
+            }),
+            ..Default::default()
+        };
+        b.insert(net("1.2.3.0/24"), &loc).unwrap();
         MmdbReader::from_bytes(b.build().unwrap()).unwrap()
     }
 
@@ -390,20 +400,24 @@ mod tests {
 
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-Country");
         b.insert(
-            ip("1.2.3.0"),
-            24,
-            &MmdbValue::map([(
-                "country",
-                MmdbValue::map([("iso_code", MmdbValue::string("BE"))]),
-            )]),
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                country: Some(Country::Belgium),
+                ..Default::default()
+            },
         )
         .unwrap();
         b.write_to_file(&country).unwrap();
         let mut a = MmdbBuilder::new(IpVersion::V4, "GeoLite2-ASN");
         a.insert(
-            ip("1.2.3.0"),
-            24,
-            &MmdbValue::map([("autonomous_system_number", MmdbValue::U32(15169))]),
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                autonomous_system: Some(AsOrg {
+                    asn: Some(LossyAsn::from(15169)),
+                    organization: None,
+                }),
+                ..Default::default()
+            },
         )
         .unwrap();
         a.write_to_file(&asn).unwrap();

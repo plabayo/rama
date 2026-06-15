@@ -7,10 +7,10 @@
 
 use std::fmt;
 use std::io::{self, BufWriter, Write};
-use std::net::IpAddr;
 use std::path::Path;
 
 use ahash::HashMap;
+use ipnet::IpNet;
 
 use super::{IpVersion, METADATA_MARKER, RecordSize};
 
@@ -18,8 +18,6 @@ use super::{IpVersion, METADATA_MARKER, RecordSize};
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum MmdbWriteError {
-    /// The prefix length exceeds the width of its address family.
-    PrefixTooLong,
     /// A zero-length prefix (`/0`) was supplied; the builder requires at
     /// least one bit.
     ZeroPrefix,
@@ -38,7 +36,6 @@ pub enum MmdbWriteError {
 impl fmt::Display for MmdbWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PrefixTooLong => f.write_str("mmdb writer: prefix too long for address family"),
             Self::ZeroPrefix => f.write_str("mmdb writer: zero-length prefix is not supported"),
             Self::FamilyMismatch => {
                 f.write_str("mmdb writer: ip family does not match database ip_version")
@@ -193,50 +190,42 @@ impl MmdbBuilder {
 
     /// Insert a `(network, value)` mapping.
     ///
-    /// For an IPv6 database, IPv4 networks are placed in the `::/96` range so
-    /// the reader's IPv4-in-IPv6 traversal finds them.
+    /// `value` is anything convertible into an [`MmdbValue`] — including a
+    /// `&GeoLocation`, so typed records can be inserted directly. For an IPv6
+    /// database, IPv4 networks are placed in the `::/96` range so the reader's
+    /// IPv4-in-IPv6 traversal finds them.
     ///
     /// # Errors
     ///
-    /// Returns [`MmdbWriteError`] if the prefix is too long for its family, the
-    /// IP family does not match the database, the network overlaps an existing
-    /// entry, or the data section grows beyond 4 GiB.
+    /// Returns [`MmdbWriteError`] if the IP family does not match the database,
+    /// the network overlaps an existing entry, or the data section grows beyond
+    /// 4 GiB.
     pub fn insert(
         &mut self,
-        network: IpAddr,
-        prefix_len: u8,
-        value: &MmdbValue,
+        net: IpNet,
+        value: impl Into<MmdbValue>,
     ) -> Result<(), MmdbWriteError> {
-        let data_offset = self.append_data(value);
+        let data_offset = self.append_data(&value.into());
         let data_offset = u32::try_from(data_offset)
             .ok()
             .ok_or(MmdbWriteError::TooLarge)?;
 
         let mut octets = [0u8; 16];
-        let nbits = match (self.ip_version, network) {
-            (IpVersion::V4, IpAddr::V4(a)) => {
-                if prefix_len > 32 {
-                    return Err(MmdbWriteError::PrefixTooLong);
-                }
-                octets[..4].copy_from_slice(&a.octets());
-                prefix_len as usize
+        let nbits = match (self.ip_version, net) {
+            (IpVersion::V4, IpNet::V4(n)) => {
+                octets[..4].copy_from_slice(&n.addr().octets());
+                n.prefix_len() as usize
             }
-            (IpVersion::V6, IpAddr::V6(a)) => {
-                if prefix_len > 128 {
-                    return Err(MmdbWriteError::PrefixTooLong);
-                }
-                octets.copy_from_slice(&a.octets());
-                prefix_len as usize
+            (IpVersion::V6, IpNet::V6(n)) => {
+                octets.copy_from_slice(&n.addr().octets());
+                n.prefix_len() as usize
             }
-            (IpVersion::V6, IpAddr::V4(a)) => {
-                if prefix_len > 32 {
-                    return Err(MmdbWriteError::PrefixTooLong);
-                }
+            (IpVersion::V6, IpNet::V4(n)) => {
                 // place the IPv4 network in the ::/96 range (bits 96..128)
-                octets[12..16].copy_from_slice(&a.octets());
-                96 + prefix_len as usize
+                octets[12..16].copy_from_slice(&n.addr().octets());
+                96 + n.prefix_len() as usize
             }
-            (IpVersion::V4, IpAddr::V6(_)) => return Err(MmdbWriteError::FamilyMismatch),
+            (IpVersion::V4, IpNet::V6(_)) => return Err(MmdbWriteError::FamilyMismatch),
         };
         if nbits == 0 {
             return Err(MmdbWriteError::ZeroPrefix);

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::asn::LossyAsn;
 
+use super::mmdb::MmdbValue;
 use super::mmdb::decoder::Decoder;
 
 /// An IANA time-zone identifier (e.g. `"Europe/Brussels"`), stored verbatim.
@@ -99,7 +100,9 @@ pub struct AsOrg {
 /// [`rama_core::extensions`] and for serialisation. Every field is optional:
 /// different database editions (country / city / ASN) populate different
 /// subsets. EU membership is available via [`Country::is_in_eu`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, rama_core::extensions::Extension)]
+#[derive(
+    Debug, Clone, Default, PartialEq, Serialize, Deserialize, rama_core::extensions::Extension,
+)]
 #[extension(tags(net))]
 pub struct GeoLocation {
     /// Continent of the IP address.
@@ -171,6 +174,93 @@ impl GeoLocation {
         if self.autonomous_system.is_none() {
             self.autonomous_system.clone_from(&other.autonomous_system);
         }
+    }
+}
+
+/// Encode a [`GeoLocation`] into a MaxMind-DB record, using the same field
+/// layout the reader expects — so building a database from typed values
+/// round-trips through [`GeoLocationRef`].
+impl From<&GeoLocation> for MmdbValue {
+    fn from(loc: &GeoLocation) -> Self {
+        let mut record: Vec<(String, Self)> = Vec::new();
+        if let Some(continent) = &loc.continent {
+            record.push((
+                "continent".to_owned(),
+                Self::map([("code", Self::string(continent.code()))]),
+            ));
+        }
+        if let Some(country) = &loc.country {
+            record.push((
+                "country".to_owned(),
+                Self::map([("iso_code", Self::string(country.code()))]),
+            ));
+        }
+        if let Some(country) = &loc.registered_country {
+            record.push((
+                "registered_country".to_owned(),
+                Self::map([("iso_code", Self::string(country.code()))]),
+            ));
+        }
+        if !loc.subdivisions.is_empty() {
+            let subs = loc
+                .subdivisions
+                .iter()
+                .map(|sd| {
+                    let mut m: Vec<(String, Self)> = Vec::new();
+                    if let Some(code) = &sd.iso_code {
+                        m.push(("iso_code".to_owned(), Self::string(&**code)));
+                    }
+                    if let Some(name) = &sd.name {
+                        m.push((
+                            "names".to_owned(),
+                            Self::map([("en", Self::string(&**name))]),
+                        ));
+                    }
+                    Self::Map(m)
+                })
+                .collect();
+            record.push(("subdivisions".to_owned(), Self::Array(subs)));
+        }
+        if let Some(city) = &loc.city {
+            record.push((
+                "city".to_owned(),
+                Self::map([("names", Self::map([("en", Self::string(&**city))]))]),
+            ));
+        }
+        if let Some(postal) = &loc.postal_code {
+            record.push((
+                "postal".to_owned(),
+                Self::map([("code", Self::string(&**postal))]),
+            ));
+        }
+        if let Some(c) = &loc.location {
+            let mut m: Vec<(String, Self)> = vec![
+                ("latitude".to_owned(), Self::Double(c.latitude)),
+                ("longitude".to_owned(), Self::Double(c.longitude)),
+            ];
+            if let Some(radius) = c.accuracy_radius_km {
+                m.push(("accuracy_radius".to_owned(), Self::U16(radius)));
+            }
+            if let Some(tz) = &c.time_zone {
+                m.push(("time_zone".to_owned(), Self::string(tz.as_str())));
+            }
+            record.push(("location".to_owned(), Self::Map(m)));
+        }
+        if let Some(asys) = &loc.autonomous_system {
+            if let Some(asn) = asys.asn {
+                record.push((
+                    "autonomous_system_number".to_owned(),
+                    Self::U32(asn.as_u32()),
+                ));
+            }
+            if let Some(org) = &asys.organization {
+                record.push((
+                    "autonomous_system_organization".to_owned(),
+                    Self::string(&**org),
+                ));
+            }
+        }
+        Self::Map(record)
     }
 }
 
