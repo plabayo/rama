@@ -438,6 +438,12 @@ pub(super) enum TlsDisplayInfoExtensionData {
     Multi(Vec<String>),
 }
 
+fn multi<T: ToString>(v: &[T]) -> Option<TlsDisplayInfoExtensionData> {
+    Some(TlsDisplayInfoExtensionData::Multi(
+        v.iter().map(|s| s.to_string()).collect(),
+    ))
+}
+
 pub(super) async fn get_tls_display_info_and_store(
     state: &State,
     extensions: &Extensions,
@@ -499,55 +505,39 @@ pub(super) async fn get_tls_display_info_and_store(
                 },
                 ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::SupportedVersions(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => {
                     TlsDisplayInfoExtension {
                         id: extension.id().to_string(),
-                        data: Some(TlsDisplayInfoExtensionData::Multi(
-                            v.iter().map(|s| s.to_string()).collect(),
-                        )),
+                        data: multi(v),
                     }
                 }
                 ClientHelloExtension::ApplicationSettings { protocols, .. } => {
                     TlsDisplayInfoExtension {
                         id: extension.id().to_string(),
-                        data: Some(TlsDisplayInfoExtensionData::Multi(
-                            protocols.iter().map(|s| s.to_string()).collect(),
-                        )),
+                        data: multi(protocols),
                     }
                 }
                 ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::ECPointFormats(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::CertificateCompression(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::DelegatedCredentials(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: Some(TlsDisplayInfoExtensionData::Multi(
-                        v.iter().map(|s| s.to_string()).collect(),
-                    )),
+                    data: multi(v),
                 },
                 ClientHelloExtension::RecordSizeLimit(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
