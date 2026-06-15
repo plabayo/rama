@@ -145,6 +145,7 @@ loom = "0.7"
 matchit = "0.9"
 md5 = "0.8"
 memchr = "2.8"
+memmap2 = "0.9"
 mimalloc = { version = "0.1.52", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }

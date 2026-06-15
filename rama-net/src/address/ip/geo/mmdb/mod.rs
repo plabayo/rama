@@ -7,6 +7,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use rama_core::bytes::Bytes;
 use rama_core::geo::Locale;
 
 use crate::address::ip::IntoCanonicalIpAddr;
@@ -112,13 +113,15 @@ pub struct Metadata {
     pub build_epoch: u64,
 }
 
-/// A zero-copy reader over a MaxMind DB held entirely in memory.
+/// A zero-copy reader over a MaxMind DB.
 ///
-/// The database buffer is shared (`Arc`), so cloning a reader is cheap and a
-/// single database can be queried concurrently from many tasks without locks.
+/// The database buffer is shared, so cloning a reader is cheap and a single
+/// database can be queried concurrently from many tasks without locks. The
+/// bytes are either held in memory ([`Self::from_bytes`] / [`Self::open`]) or,
+/// with the `mmap` feature, memory-mapped from disk via `open_mmap`.
 #[derive(Debug, Clone)]
 pub struct MmdbReader {
-    buf: Arc<[u8]>,
+    buf: Bytes,
     metadata: Metadata,
     node_size: usize,
     tree_size: usize,
@@ -137,8 +140,11 @@ impl MmdbReader {
     /// Returns [`GeoIpError`] if the bytes are not a valid MaxMind DB or use
     /// an unsupported record size / format version.
     pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self, GeoIpError> {
-        let buf: Arc<[u8]> = bytes.into();
-        let metadata = parse_metadata(&buf)?;
+        Self::from_buf(Bytes::from_owner(bytes.into()))
+    }
+
+    fn from_buf(buf: Bytes) -> Result<Self, GeoIpError> {
+        let metadata = parse_metadata(buf.as_ref())?;
 
         // `record_size` and `ip_version` are validated into enums while
         // parsing, so they can no longer hold impossible values here. The
@@ -174,9 +180,9 @@ impl MmdbReader {
 
     /// Read a MaxMind DB from disk into memory.
     ///
-    /// The whole file is read into a shared buffer. For very large databases
-    /// on memory-constrained hosts a memory-mapped variant may be added later
-    /// behind an opt-in feature.
+    /// The whole file is read into a shared buffer. With the `mmap` feature,
+    /// `open_mmap` maps the file instead for a smaller resident set on very
+    /// large databases.
     ///
     /// # Errors
     ///
@@ -185,6 +191,28 @@ impl MmdbReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(bytes)
+    }
+
+    /// Memory-map a MaxMind DB from disk instead of reading it into memory.
+    ///
+    /// Lookups fault in only the pages they touch, so a large database costs
+    /// little resident memory. The mapping is held for the reader's lifetime.
+    ///
+    /// The file must not be modified or truncated while the reader is alive, or
+    /// lookups may observe garbage (or fault on some platforms).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeoIpError::Io`] if the file cannot be opened or mapped, or
+    /// another [`GeoIpError`] if it is not a valid database.
+    #[cfg(feature = "mmap")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "mmap")))]
+    pub fn open_mmap(path: impl AsRef<Path>) -> Result<Self, GeoIpError> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: the file is opened read-only; the caller is responsible (per
+        // the doc above) for not mutating it while the reader is alive.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Self::from_buf(Bytes::from_owner(mmap))
     }
 
     /// Set the preferred language code used to resolve localised names
@@ -680,6 +708,36 @@ mod tests {
                 .code(),
             "US"
         );
+    }
+
+    #[cfg(feature = "mmap")]
+    #[test]
+    fn mmap_open_and_lookup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("country.mmdb");
+        let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-Country");
+        b.insert(
+            ip("1.2.3.0"),
+            24,
+            &MmdbValue::map([(
+                "country",
+                MmdbValue::map([("iso_code", MmdbValue::string("BE"))]),
+            )]),
+        )
+        .unwrap();
+        b.write_to_file(&path).unwrap();
+
+        let reader = MmdbReader::open_mmap(&path).unwrap();
+        assert_eq!(
+            reader
+                .lookup(ip("1.2.3.4"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .code(),
+            "BE"
+        );
+        assert!(reader.lookup(ip("9.9.9.9")).is_none());
     }
 
     #[test]

@@ -31,6 +31,9 @@ http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
 #
 # Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.
 idna = ["dep:idna"]
+# Memory-map IP geolocation databases from disk (MmdbReader::open_mmap) instead
+# of reading them fully into memory.
+mmap = ["dep:memmap2"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:jiff"]
 opentelemetry = ["rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
@@ -55,6 +58,7 @@ itoa = { workspace = true }
 jiff = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
 memchr = { workspace = true }
+memmap2 = { workspace = true, optional = true }
 nom = { workspace = true }
 parking_lot = { workspace = true }
 percent-encoding = { workspace = true }
