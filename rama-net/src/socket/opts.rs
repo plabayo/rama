@@ -571,6 +571,20 @@ pub struct SocketOptions {
     /// that this option be set on the redirected socket.
     pub ip_transparent: Option<bool>,
 
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(docsrs, doc(cfg(target_os = "linux")))]
+    /// Set the value of the `IPV6_TRANSPARENT` option on this [`Socket`].
+    ///
+    /// This is the IPv6 counterpart of [`ip_transparent`] (which sets
+    /// `IP_TRANSPARENT`, governing IPv4 sockets only). A dual-stack TProxy
+    /// listener must set both: `IP_TRANSPARENT` for the IPv4 path and
+    /// `IPV6_TRANSPARENT` for the IPv6 path. See [`ip_transparent`] for the
+    /// routing and privilege (`CAP_NET_ADMIN`) requirements, which are
+    /// identical.
+    ///
+    /// [`ip_transparent`]: SocketOptions::ip_transparent
+    pub ip_transparent_v6: Option<bool>,
+
     /// Set the value of the `IP_TTL` option for this [`Socket`].
     ///
     /// This value sets the time-to-live field that
@@ -1116,6 +1130,10 @@ impl SocketOptions {
         #[cfg(target_os = "linux")]
         if let Some(transparent) = self.ip_transparent {
             socket.set_ip_transparent_v4(transparent)?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(transparent) = self.ip_transparent_v6 {
+            socket.set_ip_transparent_v6(transparent)?;
         }
         if let Some(ttl) = self.ttl {
             socket.set_ttl_v4(ttl)?;
