@@ -1,4 +1,4 @@
-use super::WriterMode;
+use super::{WriterMode, write_headers_body_flags};
 use crate::io::write_http_request;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
@@ -10,6 +10,19 @@ use rama_core::{Layer, Service};
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
+
+/// Write a single request entry (request followed by a `\r\n` separator) to the writer.
+async fn write_request_entry<W>(writer: &mut W, req: Request, write_headers: bool, write_body: bool)
+where
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    if let Err(err) = write_http_request(writer, req, write_headers, write_body).await {
+        tracing::error!("failed to write http request to writer: {err:?}")
+    }
+    if let Err(err) = writer.write_all(b"\r\n").await {
+        tracing::error!("failed to write separator to writer: {err:?}")
+    }
+}
 
 /// A trait for writing http requests.
 pub trait RequestWriter: Send + Sync + 'static {
@@ -69,12 +82,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = unbounded_channel();
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
@@ -82,14 +90,7 @@ impl<S> RequestWriterService<S, UnboundedSender<Request>> {
         executor.spawn_task(
             async move {
                 while let Some(req) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_request(&mut writer, req, write_headers, write_body).await
-                    {
-                        tracing::error!("failed to write http request to writer: {err:?}")
-                    }
-                    if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!("failed to write separator to writer: {err:?}")
-                    }
+                    write_request_entry(&mut writer, req, write_headers, write_body).await;
                 }
             }
             .instrument(span),
@@ -126,12 +127,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(buffer_size);
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
@@ -139,14 +135,7 @@ impl<S> RequestWriterService<S, Sender<Request>> {
         executor.spawn_task(
             async move {
                 while let Some(req) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_request(&mut writer, req, write_headers, write_body).await
-                    {
-                        tracing::error!("failed to write http request to writer: {err:?}")
-                    }
-                    if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!("failed to write separator to writer: {err:?}")
-                    }
+                    write_request_entry(&mut writer, req, write_headers, write_body).await;
                 }
             }
             .instrument(span),
@@ -264,12 +253,7 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = unbounded_channel();
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
@@ -277,14 +261,7 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         executor.spawn_task(
             async move {
                 while let Some(req) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_request(&mut writer, req, write_headers, write_body).await
-                    {
-                        tracing::error!("failed to write http request to writer: {err:?}")
-                    }
-                    if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!("failed to write separator to writer: {err:?}")
-                    }
+                    write_request_entry(&mut writer, req, write_headers, write_body).await;
                 }
             }
             .instrument(span),
@@ -320,12 +297,7 @@ impl RequestWriterLayer<Sender<Request>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(buffer_size);
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
@@ -333,14 +305,7 @@ impl RequestWriterLayer<Sender<Request>> {
         executor.spawn_task(
             async move {
                 while let Some(req) = rx.recv().await {
-                    if let Err(err) =
-                        write_http_request(&mut writer, req, write_headers, write_body).await
-                    {
-                        tracing::error!("failed to write http request to writer: {err:?}")
-                    }
-                    if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!("failed to write separator to writer: {err:?}")
-                    }
+                    write_request_entry(&mut writer, req, write_headers, write_body).await;
                 }
             }
             .instrument(span),

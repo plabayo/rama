@@ -36,6 +36,16 @@ pub enum WriterMode {
     Body,
 }
 
+/// Resolve a [`WriterMode`] into `(write_headers, write_body)` flags.
+pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool) {
+    match mode {
+        Some(WriterMode::All) => (true, true),
+        Some(WriterMode::Headers) => (true, false),
+        Some(WriterMode::Body) => (false, true),
+        None => (false, false),
+    }
+}
+
 /// A writer that can write both requests and responses.
 #[derive(Clone)]
 pub struct BidirectionalWriter<S> {
@@ -62,19 +72,8 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = unbounded_channel();
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         executor.spawn_task(async move {
             while let Some(msg) = rx.recv().await {
@@ -153,19 +152,8 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(buffer);
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         let span = tracing::trace_root_span!(
             "TrafficWriter::bidirectional::bounded",
@@ -227,19 +215,8 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(2);
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         let span = tracing::trace_root_span!(
             "TrafficWriter::bidirectional::last",
