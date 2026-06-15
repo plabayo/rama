@@ -13,10 +13,7 @@
 //! > - <https://github.com/FoxIO-LLC/ja4/blob/main/License%20FAQ.md>
 
 use itertools::Itertools as _;
-use std::{
-    borrow::Cow,
-    fmt::{self, Write},
-};
+use std::fmt::{self, Write};
 
 use rama_http_types::{
     Method, Version,
@@ -257,17 +254,7 @@ impl fmt::Display for Ja4HComputeError {
 
 impl std::error::Error for Ja4HComputeError {}
 
-fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
-    use sha2::{Digest as _, Sha256};
-
-    let s = s.as_ref();
-    if s.is_empty() {
-        "000000000000".into()
-    } else {
-        let sha256 = Sha256::digest(s);
-        hex::encode(&sha256.as_slice()[..6]).into()
-    }
-}
+use super::hash12;
 
 #[derive(Debug, Clone, PartialEq)]
 struct HttpRequestMethod(Method);

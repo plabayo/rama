@@ -1,6 +1,6 @@
 use itertools::Itertools as _;
 use rama_core::telemetry::tracing;
-use std::{borrow::Cow, fmt};
+use std::fmt;
 
 use rama_core::extensions::Extensions;
 
@@ -229,17 +229,7 @@ impl fmt::Debug for Ja4 {
     }
 }
 
-fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
-    use sha2::{Digest as _, Sha256};
-
-    let s = s.as_ref();
-    if s.is_empty() {
-        "000000000000".into()
-    } else {
-        let sha256 = Sha256::digest(s);
-        hex::encode(&sha256.as_slice()[..6]).into()
-    }
-}
+use super::hash12;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 enum TransportProtocol {
