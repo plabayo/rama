@@ -5,9 +5,15 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 mod canonical;
 pub use canonical::IntoCanonicalIpAddr;
 
-/// CIDR network types, re-exported from the [`ipnet`](https://docs.rs/ipnet)
-/// crate so you can name them without depending on `ipnet` directly.
-pub use ipnet::{IpNet, Ipv4Net, Ipv6Net};
+/// Re-export of the [`ipnet`] crate: IPv4/IPv6 network (CIDR) types, exposed so
+/// you can name them (e.g. for the typed `MmdbBuilder::insert`) without adding
+/// an `ipnet` dependency of your own.
+///
+/// [`ipnet`]: https://docs.rs/ipnet
+pub mod ipnet {
+    #[doc(inline)]
+    pub use ::ipnet::*;
+}
 
 pub mod geo;
 pub mod private;

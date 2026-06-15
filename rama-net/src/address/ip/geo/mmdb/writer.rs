@@ -27,7 +27,9 @@ pub enum MmdbWriteError {
     /// The network overlaps a previously inserted one (the builder does not
     /// split existing leaves).
     OverlappingNetwork,
-    /// The database exceeds the format's 4 GiB / `u32` addressing limit.
+    /// The database is too large to address. A 32-bit search-tree record
+    /// encodes a leaf's data pointer as `node_count + 16 + data_offset`, which
+    /// must fit in a `u32` — capping the combined tree + data image at ~4 GiB.
     TooLarge,
     /// Failed to write the serialised database to a sink.
     Io(io::Error),
