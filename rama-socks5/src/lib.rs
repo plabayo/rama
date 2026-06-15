@@ -60,3 +60,5 @@ pub mod proxy;
 
 mod auth;
 pub use auth::Socks5Auth;
+
+mod dns;

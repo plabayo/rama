@@ -13,7 +13,6 @@ use ::{
     rama_dns::client::resolver::{BoxDnsAddressResolver, DnsAddressResolver},
     rama_net::mode::DnsResolveIpMode,
     std::net::IpAddr,
-    tokio::sync::mpsc,
 };
 
 #[derive(Debug)]
@@ -413,68 +412,13 @@ impl UdpSocketRelay {
                         .context("ipv6 dns lookup")?,
                 ),
                 DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                    use tracing::{Instrument, trace_span};
-
-                    let (tx, mut rx) = mpsc::unbounded_channel();
-
-                    tokio::spawn(
-                        {
-                            let tx = tx.clone();
-                            let domain = domain.clone();
-                            let dns_resolver = dns_resolver.clone();
-                            async move {
-                                match dns_resolver.lookup_ipv4_rand(domain.clone()).await {
-                                    Some(Ok(addr)) => {
-                                        if let Err(err) = tx.send(IpAddr::V4(addr)) {
-                                            tracing::debug!(
-                                                "failed to send ipv4 lookup result for ip: {addr}; err = {err:?}"
-                                            )
-                                        }
-                                    },
-                                    Some(Err(err)) => {
-                                        tracing::debug!(
-                                            "failed to lookup ipv4 addresses for domain: {err:?}"
-                                        );
-                                    }
-                                    None => {
-                                        tracing::debug!(
-                                            "failed to lookup ipv4 addresses for domain: no addresses found"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        .instrument(trace_span!("dns::ipv4_lookup")),
-                    );
-
-                    tokio::spawn(
-                        {
-                            async move {
-                                match dns_resolver.lookup_ipv6_rand(domain.clone()).await {
-                                    Some(Ok(addr)) => {
-                                        if let Err(err) = tx.send(IpAddr::V6(addr)) {
-                                            tracing::debug!(
-                                                "failed to send ipv6 lookup result for ip: {addr}; err = {err:?}"
-                                            )
-                                        }
-                                    },
-                                    Some(Err(err)) => {
-                                        tracing::debug!(
-                                            "failed to lookup ipv6 addresses for domain: {err:?}"
-                                        );
-                                    }
-                                    None => {
-                                        tracing::debug!(
-                                            "failed to lookup ipv6 addresses for domain: no addresses found"
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        .instrument(trace_span!("dns::ipv6_lookup")),
-                    );
-
-                    rx.recv().await.context("receive resolved ip address")?
+                    crate::dns::race_resolve_dual(
+                        &dns_resolver,
+                        domain.clone(),
+                        self.dns_resolve_mode,
+                    )
+                    .await
+                    .context("receive resolved ip address")?
                 }
             }
         };
