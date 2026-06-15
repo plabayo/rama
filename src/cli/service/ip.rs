@@ -30,6 +30,7 @@ use crate::{
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::address::ip::geo::IpGeoDb,
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
@@ -68,6 +69,7 @@ pub struct IpServiceBuilder<M> {
     concurrent_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
+    geo_db: Option<Arc<IpGeoDb>>,
     _mode: PhantomData<fn(M)>,
 }
 
@@ -81,6 +83,7 @@ impl IpServiceBuilder<mode::Http> {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
+            geo_db: None,
             _mode: PhantomData,
         }
     }
@@ -96,6 +99,7 @@ impl IpServiceBuilder<mode::Transport> {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
+            geo_db: None,
             _mode: PhantomData,
         }
     }
@@ -140,6 +144,16 @@ impl<M> IpServiceBuilder<M> {
     }
 
     crate::utils::macros::generate_set_and_with! {
+        /// attach an IP geolocation database, enabling geo enrichment of the
+        /// HTTP (JSON) response. Typically built from `RAMA_IP_GEO_DB`.
+        #[must_use]
+        pub fn geo_db(mut self, db: Option<Arc<IpGeoDb>>) -> Self {
+            self.geo_db = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         /// define a tls server cert config to be used for tls terminaton
         /// by the IP service.
@@ -179,12 +193,21 @@ impl IpServiceBuilder<mode::Http> {
 }
 
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 /// The inner http ip-service used by the [`IpServiceBuilder`]. Mounted at
 /// `/` by the surrounding [`crate::http::service::web::Router`] in
 /// [`IpServiceBuilder::build_http`]; the asset sidecars are sibling
 /// routes on the same router.
-struct HttpIpService;
+struct HttpIpService {
+    /// Optional geolocation database; when present, the JSON response is
+    /// enriched with the resolved location (merged + per-source).
+    geo_db: Option<Arc<IpGeoDb>>,
+}
+
+/// Attribution required by the free geolocation databases the demo targets.
+const GEO_ATTRIBUTION: [&str; 2] = [
+    "This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com",
+    "This site or product includes IP2Location LITE data available from https://lite.ip2location.com",
+];
 
 impl Service<Request> for HttpIpService {
     type Output = Response;
@@ -205,10 +228,15 @@ impl Service<Request> for HttpIpService {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
                 HttpBodyContentFormat::Html => render_html_page(ip).into_response(),
-                HttpBodyContentFormat::Json => Json(serde_json::json!({
-                    "ip": ip,
-                }))
-                .into_response(),
+                HttpBodyContentFormat::Json => {
+                    let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
+                    let mut body = serde_json::json!({ "ip": ip });
+                    if let Some(info) = geo {
+                        body["geo"] = serde_json::to_value(&info).unwrap_or_default();
+                        body["geo_attribution"] = serde_json::json!(GEO_ATTRIBUTION);
+                    }
+                    Json(body).into_response()
+                }
             },
             None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         })
@@ -443,7 +471,12 @@ impl<M> IpServiceBuilder<M> {
         // get clean method-aware matching (anything outside the three
         // known routes redirects to `/`).
         let router = crate::http::service::web::Router::new()
-            .with_get("/", HttpIpService)
+            .with_get(
+                "/",
+                HttpIpService {
+                    geo_db: self.geo_db,
+                },
+            )
             .with_get("/style/ip.css", Css(IP_STYLE_CSS))
             .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
             .with_not_found(async || Redirect::permanent("/"));
