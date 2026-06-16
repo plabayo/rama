@@ -3,7 +3,6 @@ use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::extensions::Extension;
 use rama_http::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
-use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Arc;
 use std::{fmt, ops::Deref, str::FromStr};
 
@@ -99,24 +98,9 @@ impl fmt::Display for RequestInitiator {
     }
 }
 
-impl Serialize for RequestInitiator {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
+use rama_utils::macros::serde_str::impl_serde_str;
 
-impl<'de> Deserialize<'de> for RequestInitiator {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str RequestInitiator);
 
 impl FromStr for RequestInitiator {
     type Err = BoxError;

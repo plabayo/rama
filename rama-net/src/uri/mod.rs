@@ -1049,6 +1049,8 @@ uri_try_from!(&str, String, &[u8], Vec<u8>, rama_core::bytes::Bytes,);
 // implements `Deserialize` via `FromStr`. URIs constructed via
 // [`Uri::parse_authority_form`] or [`Uri::parse_reference`] are out of
 // scope for round-trip — those forms aren't reachable through `parse`.
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display Uri);
 
 impl Uri {

@@ -100,6 +100,8 @@ impl TryFrom<&[u8]> for DeviceName {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(as_str DeviceName);
 
 pub(super) const fn is_valid(s: &[u8]) -> bool {

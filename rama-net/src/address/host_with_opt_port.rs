@@ -601,6 +601,8 @@ impl TryFrom<&[u8]> for HostWithOptPort {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display HostWithOptPort);
 
 #[cfg(test)]

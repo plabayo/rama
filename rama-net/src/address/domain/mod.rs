@@ -1049,6 +1049,8 @@ impl PartialEq<Domain> for String {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(as_str Domain);
 
 #[expect(private_bounds)]
