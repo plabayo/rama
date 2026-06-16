@@ -43,31 +43,6 @@ use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
-/// Generate the `new` / `from_shared` constructors shared verbatim by the three
-/// `SetSensitive*HeadersLayer` types (identical but for the type named in their
-/// doc comments).
-macro_rules! impl_sensitive_headers_layer_ctors {
-    ($layer:ident) => {
-        impl $layer {
-            #[doc = concat!("Create a new [`", stringify!($layer), "`].")]
-            pub fn new<I>(headers: I) -> Self
-            where
-                I: IntoIterator<Item = HeaderName>,
-            {
-                let headers = headers.into_iter().collect::<Vec<_>>();
-                Self::from_shared(headers.into())
-            }
-
-            #[doc = concat!(
-                        "Create a new [`", stringify!($layer), "`] from a shared slice of headers."
-                    )]
-            pub fn from_shared(headers: Arc<[HeaderName]>) -> Self {
-                Self { headers }
-            }
-        }
-    };
-}
-
 /// Mark headers as [sensitive] on both requests and responses.
 ///
 /// Produces [`SetSensitiveHeaders`] services.
@@ -80,7 +55,21 @@ pub struct SetSensitiveHeadersLayer {
     headers: Arc<[HeaderName]>,
 }
 
-impl_sensitive_headers_layer_ctors!(SetSensitiveHeadersLayer);
+impl SetSensitiveHeadersLayer {
+    /// Create a new [`SetSensitiveHeadersLayer`].
+    pub fn new<I>(headers: I) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        let headers = headers.into_iter().collect::<Vec<_>>();
+        Self::from_shared(headers.into())
+    }
+
+    /// Create a new [`SetSensitiveHeadersLayer`] from a shared slice of headers.
+    pub fn from_shared(headers: Arc<[HeaderName]>) -> Self {
+        Self { headers }
+    }
+}
 
 impl<S> Layer<S> for SetSensitiveHeadersLayer {
     type Service = SetSensitiveHeaders<S>;
@@ -119,7 +108,21 @@ pub struct SetSensitiveRequestHeadersLayer {
     headers: Arc<[HeaderName]>,
 }
 
-impl_sensitive_headers_layer_ctors!(SetSensitiveRequestHeadersLayer);
+impl SetSensitiveRequestHeadersLayer {
+    /// Create a new [`SetSensitiveRequestHeadersLayer`].
+    pub fn new<I>(headers: I) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        let headers = headers.into_iter().collect::<Vec<_>>();
+        Self::from_shared(headers.into())
+    }
+
+    /// Create a new [`SetSensitiveRequestHeadersLayer`] from a shared slice of headers.
+    pub fn from_shared(headers: Arc<[HeaderName]>) -> Self {
+        Self { headers }
+    }
+}
 
 impl<S> Layer<S> for SetSensitiveRequestHeadersLayer {
     type Service = SetSensitiveRequestHeaders<S>;
@@ -203,7 +206,21 @@ pub struct SetSensitiveResponseHeadersLayer {
     headers: Arc<[HeaderName]>,
 }
 
-impl_sensitive_headers_layer_ctors!(SetSensitiveResponseHeadersLayer);
+impl SetSensitiveResponseHeadersLayer {
+    /// Create a new [`SetSensitiveResponseHeadersLayer`].
+    pub fn new<I>(headers: I) -> Self
+    where
+        I: IntoIterator<Item = HeaderName>,
+    {
+        let headers = headers.into_iter().collect::<Vec<_>>();
+        Self::from_shared(headers.into())
+    }
+
+    /// Create a new [`SetSensitiveResponseHeadersLayer`] from a shared slice of headers.
+    pub fn from_shared(headers: Arc<[HeaderName]>) -> Self {
+        Self { headers }
+    }
+}
 
 impl<S> Layer<S> for SetSensitiveResponseHeadersLayer {
     type Service = SetSensitiveResponseHeaders<S>;
