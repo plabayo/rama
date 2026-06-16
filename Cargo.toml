@@ -730,7 +730,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_telemetry"
-required-features = ["http-full", "opentelemetry"]
+required-features = ["http-full", "grpc", "opentelemetry"]
 
 [[example]]
 name = "http_user_agent_classifier"
