@@ -106,24 +106,7 @@ impl Display for ProxyAddress {
     }
 }
 
-impl serde::Serialize for ProxyAddress {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ProxyAddress {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(display ProxyAddress);
 
 #[cfg(test)]
 mod tests {

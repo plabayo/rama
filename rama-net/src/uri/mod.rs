@@ -1049,24 +1049,7 @@ uri_try_from!(&str, String, &[u8], Vec<u8>, rama_core::bytes::Bytes,);
 // implements `Deserialize` via `FromStr`. URIs constructed via
 // [`Uri::parse_authority_form`] or [`Uri::parse_reference`] are out of
 // scope for round-trip — those forms aren't reachable through `parse`.
-impl serde::Serialize for Uri {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_str(self)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Uri {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        Self::parse(s.as_ref()).map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(display Uri);
 
 impl Uri {
     /// Shared walker for [`Display`](std::fmt::Display) and
