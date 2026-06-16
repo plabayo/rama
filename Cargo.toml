@@ -414,6 +414,8 @@ net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
 net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
 idna = ["net", "rama-net?/idna"]
+# memory-map IP geolocation databases (only takes effect when rama-net is enabled)
+mmap = ["rama-net?/mmap"]
 dns = ["net", "dep:rama-dns", "rama-net?/http"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]

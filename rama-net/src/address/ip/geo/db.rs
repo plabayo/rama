@@ -210,7 +210,7 @@ impl IpGeoDb {
             };
             let mut readers = Vec::with_capacity(paths.len());
             for path in paths {
-                let reader = MmdbReader::open(path).map_err(|error| GeoIpError::Source {
+                let reader = open_reader(path).map_err(|error| GeoIpError::Source {
                     path: path.into(),
                     error: Box::new(error),
                 })?;
@@ -223,6 +223,19 @@ impl IpGeoDb {
             return Err(invalid(format!("no sources parsed from {spec:?}")));
         }
         Ok(db)
+    }
+}
+
+/// Open a configured database path. With the `mmap` feature it is memory-mapped
+/// so a large database stays out of resident memory; otherwise it is read in.
+fn open_reader(path: &str) -> Result<MmdbReader, GeoIpError> {
+    #[cfg(feature = "mmap")]
+    {
+        MmdbReader::open_mmap(path)
+    }
+    #[cfg(not(feature = "mmap"))]
+    {
+        MmdbReader::open(path)
     }
 }
 

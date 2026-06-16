@@ -34,6 +34,7 @@ rama = { version = "0.3.0-rc1", path = "..", features = [
     "http-full",
     "proxy-full",
     "opentelemetry",
+    "mmap",
 ] }
 ratatui = { workspace = true }
 serde = { workspace = true }
