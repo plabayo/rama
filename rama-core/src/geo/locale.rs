@@ -131,7 +131,7 @@ mod tests {
         let l = Locale::parse("zh-Hans-CN");
         let json = serde_json::to_string(&l).unwrap();
         assert_eq!(json, "\"zh-Hans-CN\"");
-        // CN is not in the placeholder country subset for region, but China is
+        // CN (China) is a known Country, so the region round-trips losslessly
         let back: Locale = serde_json::from_str(&json).unwrap();
         assert_eq!(back, l);
     }

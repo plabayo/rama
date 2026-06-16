@@ -832,6 +832,35 @@ mod tests {
     }
 
     #[test]
+    fn writer_overlap_is_symmetric_and_non_destructive() {
+        let be = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        let us = GeoLocation {
+            country: Some(Country::UnitedStates),
+            ..Default::default()
+        };
+        // inserting a *less*-specific prefix after a more-specific one must also
+        // be rejected (not silently clobber the existing subtree)
+        let mut b = MmdbBuilder::new(IpVersion::V4, "T");
+        b.insert(net("1.2.3.0/24"), &be).unwrap();
+        assert!(matches!(
+            b.insert(net("1.2.0.0/16"), &us),
+            Err(MmdbWriteError::OverlappingNetwork)
+        ));
+        // an exact duplicate is an overlap too (no silent last-wins)
+        assert!(matches!(
+            b.insert(net("1.2.3.0/24"), &us),
+            Err(MmdbWriteError::OverlappingNetwork)
+        ));
+        // the original /24 entry survives the rejected inserts intact
+        let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
+        let got = reader.lookup("1.2.3.4".parse().unwrap()).unwrap();
+        assert_eq!(got.country().unwrap().code(), "BE");
+    }
+
+    #[test]
     fn metadata_roundtrips() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City")
             .with_languages(["en", "de", "pt-BR"])

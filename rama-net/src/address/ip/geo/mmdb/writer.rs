@@ -202,11 +202,9 @@ impl MmdbBuilder {
         net: IpNet,
         value: impl Into<MmdbValue>,
     ) -> Result<(), MmdbWriteError> {
-        let data_offset = self.append_data(&value.into());
-        let data_offset = u32::try_from(data_offset)
-            .ok()
-            .ok_or(MmdbWriteError::TooLarge)?;
-
+        // Validate the network and locate the insertion slot *before* touching
+        // the data section, so a rejected insert never leaves an orphan record
+        // in the data blob or the dedup map.
         let mut octets = [0u8; 16];
         let nbits = match (self.ip_version, net) {
             (IpVersion::V4, IpNet::V4(n)) => {
@@ -228,15 +226,25 @@ impl MmdbBuilder {
             return Err(MmdbWriteError::ZeroPrefix);
         }
 
+        // Walk to the node holding the final bit, creating intermediates.
         let mut node = 0usize;
-        for i in 0..nbits {
+        for i in 0..nbits - 1 {
             let bit = (octets[i / 8] >> (7 - (i % 8))) & 1;
-            if i == nbits - 1 {
-                self.nodes[node].set(bit, Record::Data(data_offset));
-            } else {
-                node = self.follow_or_create(node, bit)?;
-            }
+            node = self.follow_or_create(node, bit)?;
         }
+        let last = nbits - 1;
+        let final_bit = (octets[last / 8] >> (7 - (last % 8))) & 1;
+        // Overlap is symmetric regardless of insertion order: a non-empty slot
+        // here is either a more-specific subtree (Node) or a duplicate (Data).
+        if !matches!(self.nodes[node].get(final_bit), Record::Empty) {
+            return Err(MmdbWriteError::OverlappingNetwork);
+        }
+
+        let data_offset = self.append_data(&value.into());
+        let data_offset = u32::try_from(data_offset)
+            .ok()
+            .ok_or(MmdbWriteError::TooLarge)?;
+        self.nodes[node].set(final_bit, Record::Data(data_offset));
         Ok(())
     }
 
@@ -298,14 +306,20 @@ impl MmdbBuilder {
         Ok(())
     }
 
-    /// Serialise the database to any writer, streaming directly to the sink.
+    /// Serialise the database to any writer.
+    ///
+    /// The tree is emitted one 4-byte record at a time, so the writer is
+    /// internally buffered — callers need not (and should not double-) wrap it.
     ///
     /// # Errors
     ///
     /// Returns [`MmdbWriteError`] if the database is too large to encode or the
     /// underlying write fails.
-    pub fn write_to<W: Write>(&self, mut w: W) -> Result<(), MmdbWriteError> {
-        self.serialize_to(&mut w)
+    pub fn write_to<W: Write>(&self, w: W) -> Result<(), MmdbWriteError> {
+        let mut w = BufWriter::new(w);
+        self.serialize_to(&mut w)?;
+        w.flush()?;
+        Ok(())
     }
 
     /// Serialise the database to a file at `path`.
@@ -431,6 +445,13 @@ fn encode_header(type_num: u8, size: usize, out: &mut Vec<u8>) {
     } else if size <= 65820 {
         (30, ((size - 285) as u16).to_be_bytes().to_vec())
     } else {
+        // A single field's payload tops out at 65821 + 0xFF_FFFF; beyond that the
+        // 3-byte size extension would wrap and silently understate the length.
+        // Unreachable for typed GeoLocation data (no field approaches 16 MiB).
+        debug_assert!(
+            size <= 65820 + 0xFF_FFFF,
+            "mmdb field payload exceeds the 3-byte size-extension limit"
+        );
         let s = (size - 65821) as u32;
         (31, vec![(s >> 16) as u8, (s >> 8) as u8, s as u8])
     };

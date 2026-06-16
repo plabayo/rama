@@ -170,7 +170,10 @@ impl GeoLocation {
     }
 
     /// Fill any field that is empty in `self` with the corresponding value
-    /// from `other`; already-populated fields are left untouched.
+    /// from `other`; already-populated fields are left untouched. The composite
+    /// `autonomous_system` and `location` are merged field-wise, so a partial
+    /// value in `self` (e.g. an org without an ASN) is completed from `other`
+    /// rather than blocking the merge.
     pub fn fill_gaps_from(&mut self, other: &Self) {
         if self.continent.is_none() {
             self.continent.clone_from(&other.continent);
@@ -193,9 +196,25 @@ impl GeoLocation {
         }
         if self.location.is_none() {
             self.location.clone_from(&other.location);
+        } else if let (Some(mine), Some(theirs)) = (&mut self.location, &other.location) {
+            if mine.accuracy_radius_km.is_none() {
+                mine.accuracy_radius_km = theirs.accuracy_radius_km;
+            }
+            if mine.time_zone.is_none() {
+                mine.time_zone.clone_from(&theirs.time_zone);
+            }
         }
         if self.autonomous_system.is_none() {
             self.autonomous_system.clone_from(&other.autonomous_system);
+        } else if let (Some(mine), Some(theirs)) =
+            (&mut self.autonomous_system, &other.autonomous_system)
+        {
+            if mine.asn.is_none() {
+                mine.asn.clone_from(&theirs.asn);
+            }
+            if mine.organization.is_none() {
+                mine.organization.clone_from(&theirs.organization);
+            }
         }
     }
 }
@@ -461,15 +480,31 @@ impl<'a> GeoLocationRef<'a> {
     /// Materialise this view into an owned, `'static` [`GeoLocation`].
     #[must_use]
     pub fn to_owned(&self) -> GeoLocation {
-        let location = match (self.latitude(), self.longitude()) {
-            (Some(latitude), Some(longitude)) => Some(Coordinates {
-                latitude,
-                longitude,
-                accuracy_radius_km: self.accuracy_radius_km(),
-                time_zone: self.time_zone().map(TimeZoneName::from),
-            }),
-            _ => None,
-        };
+        // Resolve the location submap once and read every coordinate field from
+        // it, rather than re-scanning the top-level record map per accessor.
+        let location = self.field(keys::LOCATION).and_then(|loc| {
+            let read_f64 = |key: &str| {
+                self.decoder
+                    .map_get(loc, key)
+                    .ok()
+                    .flatten()
+                    .and_then(|o| self.decoder.read_f64(o).ok())
+            };
+            match (read_f64(keys::LATITUDE), read_f64(keys::LONGITUDE)) {
+                (Some(latitude), Some(longitude)) => Some(Coordinates {
+                    latitude,
+                    longitude,
+                    accuracy_radius_km: self
+                        .decoder
+                        .map_get(loc, keys::ACCURACY_RADIUS)
+                        .ok()
+                        .flatten()
+                        .and_then(|o| self.decoder.read_u16(o).ok()),
+                    time_zone: self.sub_str(loc, keys::TIME_ZONE).map(TimeZoneName::from),
+                }),
+                _ => None,
+            }
+        });
         // Build the AS record whenever a number OR an organisation is present;
         // `LossyAsn` preserves the number verbatim, so nothing is dropped.
         let autonomous_system = {
@@ -540,5 +575,46 @@ mod tests {
         // self already had subdivisions, so other's are not appended
         assert_eq!(a.subdivisions.len(), 1);
         assert_eq!(a.subdivisions[0].iso_code.as_deref(), Some("X"));
+    }
+
+    #[test]
+    fn fill_gaps_merges_asorg_and_coords_fieldwise() {
+        let mut a = GeoLocation {
+            autonomous_system: Some(AsOrg {
+                asn: None,
+                organization: Some("Org A".into()),
+            }),
+            location: Some(Coordinates {
+                latitude: 1.0,
+                longitude: 2.0,
+                accuracy_radius_km: None,
+                time_zone: None,
+            }),
+            ..Default::default()
+        };
+        let b = GeoLocation {
+            autonomous_system: Some(AsOrg {
+                asn: Some(LossyAsn::from(15169)),
+                organization: Some("Org B".into()),
+            }),
+            location: Some(Coordinates {
+                latitude: 9.0,
+                longitude: 9.0,
+                accuracy_radius_km: Some(50),
+                time_zone: Some(TimeZoneName::from("Europe/Brussels")),
+            }),
+            ..Default::default()
+        };
+        a.fill_gaps_from(&b);
+        let asorg = a.autonomous_system.unwrap();
+        assert_eq!(asorg.asn, Some(LossyAsn::from(15169))); // filled from b
+        assert_eq!(asorg.organization.as_deref(), Some("Org A")); // a's kept
+        let coords = a.location.unwrap();
+        assert!(coords.latitude < 5.0); // a's coordinates kept, not replaced by b's
+        assert_eq!(coords.accuracy_radius_km, Some(50)); // filled from b
+        assert_eq!(
+            coords.time_zone,
+            Some(TimeZoneName::from("Europe/Brussels"))
+        ); // filled from b
     }
 }

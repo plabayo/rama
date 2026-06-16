@@ -167,12 +167,15 @@ impl IpGeoDb {
     ///
     /// # Errors
     ///
-    /// Returns [`GeoIpError`] if the value is malformed or a configured file
-    /// cannot be loaded.
+    /// Returns [`GeoIpError`] if the value is malformed, set but not valid
+    /// UTF-8, or a configured file cannot be loaded.
     pub fn from_env() -> Result<Option<Self>, GeoIpError> {
         match std::env::var(RAMA_IP_GEO_DB_ENV) {
             Ok(spec) if !spec.trim().is_empty() => Self::parse_spec(&spec).map(Some),
-            _ => Ok(None),
+            Ok(_) | Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(GeoIpError::InvalidConfig(
+                format!("{RAMA_IP_GEO_DB_ENV} is set but not valid UTF-8").into_boxed_str(),
+            )),
         }
     }
 

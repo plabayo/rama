@@ -63,6 +63,11 @@ VOLUME_MOUNT="${VOLUME_MOUNT:-/geoip}"
 IP2LOCATION_CODE="${IP2LOCATION_CODE:-DB11LITEMMDB}"
 RETRY_MAX="${RETRY_MAX:-8}"
 
+# all scratch (download archives, extract dirs, failure markers) lives under one
+# dir, removed on any exit including a die() — so nothing leaks on error paths
+_geoip_tmp="$(mktemp -d)"
+trap 'rm -rf "$_geoip_tmp"' EXIT
+
 # stable on-disk names the services reference via RAMA_IP_GEO_DB
 GEOLITE2_CITY="GeoLite2-City.mmdb"
 GEOLITE2_ASN="GeoLite2-ASN.mmdb"
@@ -93,7 +98,7 @@ retry() {
 # extract the single .mmdb out of an archive ($1) into $GEOIP_DIR/$2
 extract_mmdb() {
   local archive="$1" dest="$2" tmp found
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$_geoip_tmp/extract.XXXXXX")"
   case "$archive" in
     *.tar.gz|*.tgz) tar -xzf "$archive" -C "$tmp" ;;
     *.zip)          unzip -q -o "$archive" -d "$tmp" ;;
@@ -113,14 +118,16 @@ download_maxmind() {
   for spec in "GeoLite2-City:$GEOLITE2_CITY" "GeoLite2-ASN:$GEOLITE2_ASN"; do
     edition="${spec%%:*}"
     dest="${spec#*:}"
-    archive="$(mktemp).tar.gz"
+    archive="$(mktemp "$_geoip_tmp/mm.XXXXXX").tar.gz"
     log "downloading MaxMind $edition"
-    # since 2024 MaxMind authenticates downloads with account id + license key
+    # since 2024 MaxMind authenticates downloads with account id + license key;
+    # also confirm we actually got a tar.gz (a 200 can still be an error page)
     if curl -fsSL -u "${MAXMIND_ACCOUNT_ID}:${MAXMIND_LICENSE_KEY}" \
-         "${base}/${edition}/download?suffix=tar.gz" -o "$archive"; then
+         "${base}/${edition}/download?suffix=tar.gz" -o "$archive" \
+       && tar -tzf "$archive" >/dev/null 2>&1; then
       extract_mmdb "$archive" "$dest"
     elif [ -f "$GEOIP_DIR/$dest" ]; then
-      warn "MaxMind $edition download failed; reusing existing $dest"
+      warn "MaxMind $edition download failed or invalid; reusing existing $dest"
     else
       die "MaxMind download failed for $edition (check credentials)"
     fi
@@ -131,7 +138,7 @@ download_maxmind() {
 download_ip2location() {
   : "${IP2LOCATION_TOKEN:?set IP2LOCATION_TOKEN (see header)}"
   local archive
-  archive="$(mktemp).zip"
+  archive="$(mktemp "$_geoip_tmp/ip2.XXXXXX").zip"
   log "downloading IP2Location LITE ${IP2LOCATION_CODE}"
   # the endpoint returns a short text error (not a zip) on a bad token/code or
   # when the per-token rate limit (5 downloads / 24h) is hit
@@ -256,7 +263,8 @@ parallel_map() {
   local item active=0 tag
   for item in "$@"; do
     tag="$(printf '%s' "$item" | tr '/:' '__')"
-    ( "$fn" "$item" || : >"$FAIL_DIR/$tag" ) >"/tmp/geoip_${tag}.log" 2>&1 &
+    # include $fn so the three phases don't overwrite each other's logs
+    ( "$fn" "$item" || : >"$FAIL_DIR/$tag" ) >"/tmp/geoip_${fn}_${tag}.log" 2>&1 &
     active=$((active + 1))
     if [ "$active" -ge "$cap" ]; then wait; active=0; fi
   done
@@ -277,7 +285,7 @@ check_phase() {
 cmd_rollout() {
   require_cmd curl tar unzip fly
   ensure_downloaded
-  FAIL_DIR="$(mktemp -d)"
+  FAIL_DIR="$(mktemp -d "$_geoip_tmp/fail.XXXXXX")"
   # word-splitting of the app / "app:machine" lists into items is intentional
   # shellcheck disable=SC2046,SC2086
   {
@@ -294,7 +302,7 @@ cmd_rollout() {
 cmd_sync() {
   require_cmd curl tar unzip fly
   ensure_downloaded
-  FAIL_DIR="$(mktemp -d)"
+  FAIL_DIR="$(mktemp -d "$_geoip_tmp/fail.XXXXXX")"
   log "pushing databases to all machines (cap $PUSH_CONCURRENCY): $FLY_APPS"
   # word-splitting of the "app:machine" list into items is intentional
   # shellcheck disable=SC2046

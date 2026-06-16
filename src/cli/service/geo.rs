@@ -25,11 +25,15 @@ pub fn geo_attribution_layer(
     })
 }
 
-/// The attribution notices as a single HTML comment, or `None` when empty.
-/// (The notices contain no `--`, so this is a well-formed comment.)
+/// The attribution notices as a single well-formed HTML comment, or `None` when
+/// empty. Any `--` is neutralised so a notice cannot close the comment early
+/// (ours contain none, but the input is not assumed trusted).
 #[must_use]
 pub fn geo_attribution_html_comment(notices: &[&str]) -> Option<String> {
-    (!notices.is_empty()).then(|| format!("<!-- {} -->", notices.join(" | ")))
+    (!notices.is_empty()).then(|| {
+        let body = notices.join(" | ").replace("--", "- -");
+        format!("<!-- {body} -->")
+    })
 }
 
 /// Human-readable `(label, value)` rows for a resolved [`GeoLocation`], shared

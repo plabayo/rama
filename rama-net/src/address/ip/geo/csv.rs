@@ -170,10 +170,19 @@ fn make_builder(
 
 /// Map a row-read error onto a [`CsvError`].
 fn map_csv_err(err: csv::Error, line: usize) -> CsvError {
-    let reason = err.to_string().into_boxed_str();
-    match err.into_kind() {
-        csv::ErrorKind::Io(io) => CsvError::Io(io),
-        _ => CsvError::Parse { line, reason },
+    if err.is_io_error() {
+        match err.into_kind() {
+            csv::ErrorKind::Io(io) => CsvError::Io(io),
+            other => CsvError::Parse {
+                line,
+                reason: format!("{other:?}").into_boxed_str(),
+            },
+        }
+    } else {
+        CsvError::Parse {
+            line,
+            reason: err.to_string().into_boxed_str(),
+        }
     }
 }
 
@@ -384,8 +393,11 @@ fn map_city(fields: &[&str], ip_version: IpVersion) -> Result<Option<CsvGeoRecor
     }
     // DB11 always pairs a time zone with coordinates; a bare time zone (no
     // lat/lon) has nowhere to live in the typed record and is dropped.
+    // IP2Location emits 0,0 ("null island") for unknown coordinates — treat that
+    // as absent rather than a real point in the Gulf of Guinea.
     if let (Some(lat), Some(lon)) = (cell(fields.get(6)), cell(fields.get(7)))
         && let (Ok(latitude), Ok(longitude)) = (lat.parse::<f64>(), lon.parse::<f64>())
+        && !(latitude == 0.0 && longitude == 0.0)
     {
         loc.location = Some(Coordinates {
             latitude,
