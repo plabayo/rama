@@ -24,6 +24,55 @@ use std::{
 };
 use tokio::io::AsyncRead;
 
+/// The `StreamingBody::poll_frame` body shared verbatim by the compression and
+/// decompression `BodyInner` enums: forward the four codec variants and rechunk
+/// the `Identity` passthrough into `Bytes`.
+///
+/// `BodyInnerProj`, `ready!`, `Frame`, `Buf` and `Poll` resolve at the call
+/// site — both `body.rs` modules import the same set.
+macro_rules! compressed_body_poll_frame {
+    ($self:expr, $cx:expr) => {
+        match $self.project().inner.project() {
+            BodyInnerProj::Gzip { inner } => inner.poll_frame($cx),
+            BodyInnerProj::Deflate { inner } => inner.poll_frame($cx),
+            BodyInnerProj::Brotli { inner } => inner.poll_frame($cx),
+            BodyInnerProj::Zstd { inner } => inner.poll_frame($cx),
+            BodyInnerProj::Identity { inner } => match ready!(inner.poll_frame($cx)) {
+                Some(Ok(frame)) => {
+                    let frame = frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining()));
+                    Poll::Ready(Some(Ok(frame)))
+                }
+                Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
+                None => Poll::Ready(None),
+            },
+        }
+    };
+}
+pub(crate) use compressed_body_poll_frame;
+
+/// Generate a [`DecorateAsyncRead`] impl for a codec type. The four codec
+/// `Input`/`Output` aliases and the `get_pin_mut` delegation are identical
+/// across every (de)compression codec; only the `apply` body differs, so it is
+/// supplied as a closure-shaped block.
+macro_rules! impl_decorate_async_read {
+    ($codec:ident: |$input:pat_param, $quality:pat_param| $apply:block) => {
+        impl<B> DecorateAsyncRead for $codec<B>
+        where
+            B: StreamingBody,
+        {
+            type Input = AsyncReadBody<B>;
+            type Output = $codec<Self::Input>;
+
+            fn apply($input: Self::Input, $quality: CompressionLevel) -> Self::Output $apply
+
+            fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
+                pinned.get_pin_mut()
+            }
+        }
+    };
+}
+pub(crate) use impl_decorate_async_read;
+
 /// A `Body` that has been converted into an `AsyncRead`.
 pub(crate) type AsyncReadBody<B> = StreamReader<
     StreamErrorIntoIoError<BodyIntoStream<B>, <B as StreamingBody>::Error>,

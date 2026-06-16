@@ -809,6 +809,8 @@ impl fmt::Display for AuthorityRef<'_> {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display Authority);
 
 #[cfg(test)]
