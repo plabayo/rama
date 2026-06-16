@@ -85,6 +85,25 @@ impl IpGeoDb {
         self.sources.iter().map(|s| s.label.as_ref())
     }
 
+    /// The distinct attribution notices required by the loaded databases,
+    /// derived from each reader's `database_type` (e.g. GeoLite2, IP2Location
+    /// LITE, DB-IP). Databases with no known attribution requirement contribute
+    /// nothing, so the result reflects only what is actually loaded.
+    #[must_use]
+    pub fn attributions(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = Vec::new();
+        for source in &self.sources {
+            for reader in &source.readers {
+                if let Some(notice) = attribution_for(&reader.metadata().database_type)
+                    && !out.contains(&notice)
+                {
+                    out.push(notice);
+                }
+            }
+        }
+        out
+    }
+
     /// Look up `ip` across every source and merge into a single
     /// [`GeoLocation`], earlier sources taking precedence. Returns `None` if
     /// no source carries data for `ip`.
@@ -206,6 +225,29 @@ fn default_label(path: &str) -> &str {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(path)
+}
+
+const ATTRIBUTION_GEOLITE2: &str = "This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com";
+const ATTRIBUTION_IP2LOCATION_LITE: &str = "This site or product includes IP2Location LITE data available from https://lite.ip2location.com";
+const ATTRIBUTION_DBIP: &str =
+    "This product includes IP geolocation data from DB-IP, available from https://db-ip.com";
+
+/// The attribution notice required for a database of the given `database_type`
+/// (the MaxMind-DB metadata field), or `None` if none is known/required.
+///
+/// Matches the free editions whose licences require attribution; the
+/// commercial editions (GeoIP2, IP2Location DB*) require none.
+fn attribution_for(database_type: &str) -> Option<&'static str> {
+    let upper = database_type.to_ascii_uppercase();
+    if database_type.starts_with("GeoLite2") {
+        Some(ATTRIBUTION_GEOLITE2)
+    } else if upper.starts_with("IP2LOCATION-LITE") {
+        Some(ATTRIBUTION_IP2LOCATION_LITE)
+    } else if upper.starts_with("DBIP") || upper.starts_with("DB-IP") {
+        Some(ATTRIBUTION_DBIP)
+    } else {
+        None
+    }
 }
 
 /// Builder for [`IpGeoDb`].
@@ -438,5 +480,40 @@ mod tests {
         // a label-less entry is named by the file stem
         let db2 = IpGeoDb::parse_spec(&country.display().to_string()).unwrap();
         assert_eq!(db2.labels().collect::<Vec<_>>(), vec!["country"]);
+    }
+
+    fn reader_typed(database_type: &str) -> MmdbReader {
+        let mut b = MmdbBuilder::new(IpVersion::V4, database_type);
+        b.insert(
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                country: Some(Country::Belgium),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        MmdbReader::from_bytes(b.build().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn attributions_reflect_loaded_sources() {
+        let db = IpGeoDb::builder()
+            .source(
+                "known",
+                [
+                    reader_typed("GeoLite2-Country"),
+                    reader_typed("IP2LOCATION-LITE-DB1"),
+                ],
+            )
+            // an unmapped database type contributes no attribution
+            .reader("custom", reader_typed("Custom-DB"))
+            .build();
+        let attr = db.attributions();
+        assert_eq!(attr.len(), 2, "{attr:?}");
+        assert!(attr.iter().any(|a| a.contains("GeoLite2")));
+        assert!(attr.iter().any(|a| a.contains("IP2Location")));
+
+        // no sources -> no attribution
+        assert!(IpGeoDb::default().attributions().is_empty());
     }
 }

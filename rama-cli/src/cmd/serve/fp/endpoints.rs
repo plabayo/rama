@@ -264,9 +264,14 @@ pub(super) async fn get_report(
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
     }
-    let geo_comment = geo
-        .as_ref()
-        .map(|_| PreEscaped(rama::cli::service::geo::geo_attribution_html_comment()));
+    let geo_comment = rama::cli::service::geo::geo_attribution_html_comment(
+        &state
+            .geo_db
+            .as_ref()
+            .map(|db| db.attributions())
+            .unwrap_or_default(),
+    )
+    .map(PreEscaped);
 
     Ok(page(
         "🕵️ Fingerprint Report",
@@ -646,9 +651,14 @@ pub(super) async fn form(
     if let Some(geo) = &geo {
         tables.extend(geo_tables(geo));
     }
-    let geo_comment = geo
-        .as_ref()
-        .map(|_| PreEscaped(rama::cli::service::geo::geo_attribution_html_comment()));
+    let geo_comment = rama::cli::service::geo::geo_attribution_html_comment(
+        &state
+            .geo_db
+            .as_ref()
+            .map(|db| db.attributions())
+            .unwrap_or_default(),
+    )
+    .map(PreEscaped);
 
     let show_form = parts.method == "POST";
 

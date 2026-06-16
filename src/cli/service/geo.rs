@@ -1,44 +1,35 @@
 //! Shared bits for enriching CLI service responses with IP geolocation.
 
-use crate::http::layer::set_header::SetResponseHeaderLayer;
-use crate::http::{HeaderName, HeaderValue};
+use crate::http::{HeaderName, HeaderValue, Response};
+use crate::layer::MapOutputLayer;
 use crate::net::address::ip::geo::GeoLocation;
 
-/// Attribution required by the free geolocation databases the CLI demos target.
-///
-/// GeoLite2 (MaxMind) and IP2Location LITE both require their attribution
-/// notice to be shown wherever their data is surfaced. We surface it
-/// out-of-band — the `x-geo-attribution` response header and an HTML comment —
-/// never in the structured (JSON) data.
-pub const GEO_ATTRIBUTION: [&str; 2] = [
-    "This product includes GeoLite2 data created by MaxMind, available from https://www.maxmind.com",
-    "This site or product includes IP2Location LITE data available from https://lite.ip2location.com",
-];
-
 /// The response header carrying the geolocation attribution (one value per
-/// notice).
+/// notice). The notices themselves come from the loaded databases — see
+/// [`IpGeoDb::attributions`](crate::net::address::ip::geo::IpGeoDb::attributions).
 const GEO_ATTRIBUTION_HEADER: &str = "x-geo-attribution";
 
-/// Layers that append the attribution notices to every response (one
-/// `x-geo-attribution` value each). Add to a service's layer stack only when a
-/// geo database is configured.
-#[must_use]
-pub fn geo_attribution_layers() -> (
-    SetResponseHeaderLayer<HeaderValue>,
-    SetResponseHeaderLayer<HeaderValue>,
-) {
-    let name = || HeaderName::from_static(GEO_ATTRIBUTION_HEADER);
-    (
-        SetResponseHeaderLayer::appending(name(), HeaderValue::from_static(GEO_ATTRIBUTION[0])),
-        SetResponseHeaderLayer::appending(name(), HeaderValue::from_static(GEO_ATTRIBUTION[1])),
-    )
+/// A layer that appends each attribution `notice` to every response as an
+/// `x-geo-attribution` header value. Pass the loaded databases' notices
+/// (`IpGeoDb::attributions()`); add the layer only when that list is non-empty.
+pub fn geo_attribution_layer(
+    notices: Vec<&'static str>,
+) -> MapOutputLayer<impl Fn(Response) -> Response + Clone + Send + Sync + 'static> {
+    let name = HeaderName::from_static(GEO_ATTRIBUTION_HEADER);
+    MapOutputLayer::new(move |mut resp: Response| {
+        for notice in &notices {
+            resp.headers_mut()
+                .append(name.clone(), HeaderValue::from_static(notice));
+        }
+        resp
+    })
 }
 
-/// The attribution rendered as an HTML comment for embedding in HTML pages.
+/// The attribution notices as a single HTML comment, or `None` when empty.
 /// (The notices contain no `--`, so this is a well-formed comment.)
 #[must_use]
-pub fn geo_attribution_html_comment() -> String {
-    format!("<!-- {} -->", GEO_ATTRIBUTION.join(" | "))
+pub fn geo_attribution_html_comment(notices: &[&str]) -> Option<String> {
+    (!notices.is_empty()).then(|| format!("<!-- {} -->", notices.join(" | ")))
 }
 
 /// Human-readable `(label, value)` rows for a resolved [`GeoLocation`], shared

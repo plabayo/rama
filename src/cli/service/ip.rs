@@ -223,7 +223,12 @@ impl Service<Request> for HttpIpService {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
                 HttpBodyContentFormat::Html => {
                     let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
-                    render_html_page(ip, geo.as_ref()).into_response()
+                    let attributions = self
+                        .geo_db
+                        .as_ref()
+                        .map(|db| db.attributions())
+                        .unwrap_or_default();
+                    render_html_page(ip, geo.as_ref(), &attributions).into_response()
                 }
                 HttpBodyContentFormat::Json => {
                     let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
@@ -464,11 +469,11 @@ impl<M> IpServiceBuilder<M> {
                 crate::cli::service::http_security::rama_html_csp(),
             );
 
-        // Attribution header, present only when a geo database is configured.
-        let geo_attribution = self
-            .geo_db
-            .is_some()
-            .then(crate::cli::service::geo::geo_attribution_layers);
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices = db.attributions();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
 
         // Route the IP echo + its asset sidecars through a Router so we
         // get clean method-aware matching (anything outside the three
@@ -525,12 +530,13 @@ pub mod mode {
 fn render_html_page(
     ip: IpAddr,
     geo: Option<&IpGeoInfo>,
+    attributions: &[&str],
 ) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
     use crate::http::protocols::html::*;
 
-    // attribution comment + geo panel, only when a location was resolved
+    // attribution comment from the loaded databases; geo panel when resolved
     let geo_comment =
-        geo.map(|_| PreEscaped(crate::cli::service::geo::geo_attribution_html_comment()));
+        crate::cli::service::geo::geo_attribution_html_comment(attributions).map(PreEscaped);
     let geo_panel = geo.map(|info| {
         let rows = |loc: &GeoLocation| {
             crate::cli::service::geo::geo_location_rows(loc)
@@ -625,7 +631,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_embeds_ip_safely() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip, None).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
         assert!(out.contains("<title>Rama IP</title>"));
         assert!(out.contains(r#"<div id="ip" class="ip"><code>127.0.0.1</code></div>"#));
@@ -638,7 +644,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_emits_aria_label() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
-        let out = render_html_page(ip, None).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(out.contains(r#"aria-label="ip panel""#));
     }
 
@@ -650,7 +656,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_uses_external_assets() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip, None).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(
             !out.contains("<style>") && !out.contains("<style "),
             "IP page must not embed inline <style>; CSP blocks it"
@@ -689,7 +695,8 @@ mod render_html_page_tests {
                 location: loc,
             }],
         };
-        let out = render_html_page(ip, Some(&info)).into_string();
+        let notices = ["This product includes GeoLite2 data created by MaxMind"];
+        let out = render_html_page(ip, Some(&info), &notices).into_string();
         assert!(out.contains("Geolocation"), "geo panel title missing");
         assert!(out.contains("Belgium"), "resolved country missing");
         assert!(out.contains("geolite2"), "per-source label missing");
@@ -699,8 +706,8 @@ mod render_html_page_tests {
             "attribution comment missing"
         );
 
-        // …and absent when no database resolved a location
-        let plain = render_html_page(ip, None).into_string();
+        // …and absent when no database is configured
+        let plain = render_html_page(ip, None, &[]).into_string();
         assert!(!plain.contains("Geolocation"));
         assert!(!plain.contains("<!--"));
     }

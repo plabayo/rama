@@ -200,11 +200,15 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
     let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
         rama::cli::service::http_security::defence_in_depth_layer(fp_csp);
 
-    // Attribution header, present only when a geo database is configured.
-    let geo_attribution = state
-        .geo_db
-        .is_some()
-        .then(rama::cli::service::geo::geo_attribution_layers);
+    // Attribution header, derived from the loaded databases' notices.
+    let geo_attribution = {
+        let notices = state
+            .geo_db
+            .as_ref()
+            .map(|db| db.attributions())
+            .unwrap_or_default();
+        (!notices.is_empty()).then(|| rama::cli::service::geo::geo_attribution_layer(notices))
+    };
 
     let middlewares = (
         TraceLayer::new_for_http(),

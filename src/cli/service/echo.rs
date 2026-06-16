@@ -352,11 +352,11 @@ where
             }
         };
 
-        // Attribution header, present only when a geo database is configured.
-        let geo_attribution = self
-            .geo_db
-            .is_some()
-            .then(crate::cli::service::geo::geo_attribution_layers);
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices = db.attributions();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
 
         (
             TraceLayer::new_for_http(),
