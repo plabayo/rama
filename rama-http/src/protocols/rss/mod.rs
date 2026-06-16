@@ -48,6 +48,26 @@
 
 pub mod feed_ext;
 
+/// Generate the `to_xml` convenience method for a feed type by draining its
+/// `into_stream_writer()` stream into an in-memory `Vec<u8>`. The loop is
+/// identical for [`Rss2Feed`] and [`AtomFeed`]. Defined here, before the `atom`
+/// and `rss2` modules, so it is in textual scope for both.
+macro_rules! impl_feed_to_xml {
+    () => {
+        /// Drain [`Self::into_stream_writer`] into an in-memory `Vec<u8>` — the
+        /// convenience "collect" form when you don't need streaming.
+        pub async fn to_xml(self) -> Result<Vec<u8>, rama_core::error::BoxError> {
+            use rama_core::futures::StreamExt as _;
+            let mut stream = self.into_stream_writer();
+            let mut buf = Vec::with_capacity(4096);
+            while let Some(chunk) = stream.next().await {
+                buf.extend_from_slice(&chunk?);
+            }
+            Ok(buf)
+        }
+    };
+}
+
 mod atom;
 mod error;
 mod feed;

@@ -347,16 +347,7 @@ impl AtomFeed {
         crate::protocols::rss::AtomStreamWriter::from_feed(self)
     }
 
-    /// Drain [`Self::into_stream_writer`] into an in-memory `Vec<u8>`.
-    pub async fn to_xml(self) -> Result<Vec<u8>, rama_core::error::BoxError> {
-        use rama_core::futures::StreamExt as _;
-        let mut stream = self.into_stream_writer();
-        let mut buf = Vec::with_capacity(4096);
-        while let Some(chunk) = stream.next().await {
-            buf.extend_from_slice(&chunk?);
-        }
-        Ok(buf)
-    }
+    impl_feed_to_xml!();
 }
 
 /// An Atom entry.
