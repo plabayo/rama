@@ -1,12 +1,6 @@
-use crate::{Body, Request, StreamingBody, body::util::BodyExt};
-use rama_core::{
-    bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
-};
-use rama_http_types::proto::{
-    h1::Http1HeaderMap,
-    h2::{PseudoHeader, PseudoHeaderOrder},
-};
+use crate::{Request, StreamingBody};
+use rama_core::{bytes::Bytes, error::BoxError};
+use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write an HTTP request to a writer in std http format.
@@ -77,38 +71,11 @@ where
             }
         }
 
-        let header_map = Http1HeaderMap::new(parts.headers, Some(&parts.extensions));
-        // put a clone of this data back into parts as we don't really want to consume it, just trace it
-        parts.headers = header_map.clone().consume(&parts.extensions);
-
-        for (name, value) in header_map {
-            match parts.version {
-                rama_http_types::Version::HTTP_2 | rama_http_types::Version::HTTP_3 => {
-                    // write lower-case for H2/H3
-                    w.write_all(
-                        format!("{}: {}\r\n", name.header_name().as_str(), value.to_str()?)
-                            .as_bytes(),
-                    )
-                    .await?;
-                }
-                _ => {
-                    w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())
-                        .await?;
-                }
-            }
-        }
+        super::write_http1_header_map(w, &mut parts.headers, &parts.extensions, parts.version)
+            .await?;
     }
 
-    let body = if write_body {
-        let body = body.collect().await.into_box_error()?.to_bytes();
-        w.write_all(b"\r\n").await?;
-        if !body.is_empty() {
-            w.write_all(body.as_ref()).await?;
-        }
-        Body::from(body)
-    } else {
-        Body::new(body)
-    };
+    let body = super::write_http1_body(w, body, write_body).await?;
 
     let req = Request::from_parts(parts, body);
     Ok(req)
@@ -117,6 +84,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Body;
 
     #[tokio::test]
     async fn test_write_http_request_get() {
