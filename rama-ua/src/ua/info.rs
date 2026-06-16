@@ -3,7 +3,6 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::extensions::Extension;
 use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
-use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr};
 
 /// User Agent (UA) information.
@@ -248,24 +247,9 @@ impl FromStr for UserAgentKind {
     }
 }
 
-impl Serialize for UserAgentKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
+use rama_utils::macros::serde_str::impl_serde_str;
 
-impl<'de> Deserialize<'de> for UserAgentKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str UserAgentKind);
 
 /// Device on which the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -300,24 +284,7 @@ impl FromStr for DeviceKind {
     }
 }
 
-impl Serialize for DeviceKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for DeviceKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str DeviceKind);
 
 impl fmt::Display for DeviceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -378,24 +345,7 @@ impl FromStr for PlatformKind {
     }
 }
 
-impl Serialize for PlatformKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for PlatformKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str PlatformKind);
 
 impl fmt::Display for PlatformKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -437,24 +387,7 @@ impl fmt::Display for HttpAgent {
     }
 }
 
-impl Serialize for HttpAgent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for HttpAgent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str HttpAgent);
 
 impl FromStr for HttpAgent {
     type Err = BoxError;
@@ -508,24 +441,7 @@ impl fmt::Display for TlsAgent {
     }
 }
 
-impl Serialize for TlsAgent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for TlsAgent {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<Self>().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str TlsAgent);
 
 impl FromStr for TlsAgent {
     type Err = BoxError;

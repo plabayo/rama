@@ -106,6 +106,8 @@ impl Display for ProxyAddress {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display ProxyAddress);
 
 #[cfg(test)]

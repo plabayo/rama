@@ -353,6 +353,8 @@ impl TryFrom<&[u8]> for HostWithPort {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display HostWithPort);
 
 #[cfg(test)]

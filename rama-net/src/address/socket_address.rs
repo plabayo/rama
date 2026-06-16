@@ -388,6 +388,8 @@ impl TryFrom<&[u8]> for SocketAddress {
     }
 }
 
+use rama_utils::macros::serde_str::impl_serde_str;
+
 impl_serde_str!(display SocketAddress);
 
 #[cfg(test)]
