@@ -34,22 +34,23 @@ impl GeoSource {
     }
 }
 
+/// Fold `locations` in precedence order: the first becomes the base and each
+/// subsequent one fills only its gaps. `None` if the iterator yields nothing.
+fn merge_in_order(locations: impl IntoIterator<Item = GeoLocation>) -> Option<GeoLocation> {
+    locations.into_iter().reduce(|mut acc, loc| {
+        acc.fill_gaps_from(&loc);
+        acc
+    })
+}
+
 /// Merge every reader's record for `ip`, earlier readers winning.
 fn merge_readers(readers: &[MmdbReader], ip: IpAddr) -> Option<GeoLocation> {
-    let mut merged: Option<GeoLocation> = None;
-    for reader in readers {
-        let Some(loc) = reader.lookup(ip).map(|view| view.to_owned()) else {
-            continue;
-        };
-        if loc.is_empty() {
-            continue;
-        }
-        match &mut merged {
-            None => merged = Some(loc),
-            Some(m) => m.fill_gaps_from(&loc),
-        }
-    }
-    merged
+    merge_in_order(
+        readers
+            .iter()
+            .filter_map(|reader| reader.lookup(ip).map(|view| view.to_owned()))
+            .filter(|loc| !loc.is_empty()),
+    )
 }
 
 /// A collection of labelled IP geolocation sources, queried together.
@@ -116,16 +117,7 @@ impl IpGeoDb {
     /// no source carries data for `ip`.
     #[must_use]
     pub fn lookup(&self, ip: IpAddr) -> Option<GeoLocation> {
-        let mut merged: Option<GeoLocation> = None;
-        for source in &self.sources {
-            if let Some(loc) = source.lookup(ip) {
-                match &mut merged {
-                    None => merged = Some(loc),
-                    Some(m) => m.fill_gaps_from(&loc),
-                }
-            }
-        }
-        merged
+        merge_in_order(self.sources.iter().filter_map(|source| source.lookup(ip)))
     }
 
     /// Look up `ip` in each source separately, returning the per-source
@@ -149,11 +141,7 @@ impl IpGeoDb {
     #[must_use]
     pub fn resolve(&self, ip: IpAddr) -> Option<IpGeoInfo> {
         let by_source = self.lookup_all(ip);
-        let (first, rest) = by_source.split_first()?;
-        let mut location = first.location.clone();
-        for r in rest {
-            location.fill_gaps_from(&r.location);
-        }
+        let location = merge_in_order(by_source.iter().map(|r| r.location.clone()))?;
         Some(IpGeoInfo {
             ip,
             location,

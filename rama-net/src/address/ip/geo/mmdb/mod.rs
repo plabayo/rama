@@ -861,6 +861,36 @@ mod tests {
     }
 
     #[test]
+    fn open_missing_file_errors() {
+        MmdbReader::open("/no/such/path/geoip-missing.mmdb").unwrap_err();
+    }
+
+    #[cfg(feature = "mmap")]
+    #[test]
+    fn open_mmap_missing_file_errors() {
+        MmdbReader::open_mmap("/no/such/path/geoip-missing.mmdb").unwrap_err();
+    }
+
+    #[test]
+    fn writer_roundtrips_extended_size_header() {
+        // a string payload > 65820 bytes exercises the size-31 (3-byte) length
+        // header branch in encode_header
+        let big_city = "a".repeat(70_000);
+        let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City");
+        b.insert(
+            net("1.2.3.0/24"),
+            &GeoLocation {
+                city: Some(big_city.clone().into_boxed_str()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let reader = MmdbReader::from_bytes(b.build().unwrap()).unwrap();
+        let got = reader.lookup("1.2.3.4".parse().unwrap()).unwrap();
+        assert_eq!(got.city(), Some(big_city.as_str()));
+    }
+
+    #[test]
     fn metadata_roundtrips() {
         let mut b = MmdbBuilder::new(IpVersion::V4, "GeoLite2-City")
             .with_languages(["en", "de", "pt-BR"])

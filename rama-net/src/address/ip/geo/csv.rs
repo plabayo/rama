@@ -508,6 +508,57 @@ mod tests {
     }
 
     #[test]
+    fn compile_csv_into_streams_with_custom_mapper() {
+        // exercise the lowest-level streaming entry point directly
+        let mut builder = MmdbBuilder::new(IpVersion::V4, "Test-Country");
+        let csv = "16777216,16777471,BE\n16777472,16777727,FR\n";
+        compile_csv_into(csv.as_bytes(), &mut builder, |f| {
+            let start = parse_ip(f[0], IpVersion::V4)?;
+            let end = parse_ip(f[1], IpVersion::V4)?;
+            let loc = GeoLocation {
+                country: Some(Country::from_code(f[2])),
+                ..Default::default()
+            };
+            Ok(record(start, end, loc))
+        })
+        .unwrap();
+        let reader = MmdbReader::from_bytes(builder.build().unwrap()).unwrap();
+        assert_eq!(
+            reader
+                .lookup(ip("1.0.0.5"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .code(),
+            "BE"
+        );
+        assert_eq!(
+            reader
+                .lookup(ip("1.0.1.5"))
+                .unwrap()
+                .country()
+                .unwrap()
+                .code(),
+            "FR"
+        );
+    }
+
+    #[test]
+    fn compile_city_skips_null_island_coords() {
+        // a 0,0 row (IP2Location's "unknown" coordinates) keeps country but
+        // stores no location; a real row keeps its coordinates
+        let csv = "\"16777216\",\"16777471\",\"US\",\"United States\",\"\",\"\",\"0.000000\",\"0.000000\",\"\",\"\"\n\
+                   \"16777472\",\"16777727\",\"US\",\"United States\",\"NY\",\"Buffalo\",\"42.886\",\"-78.878\",\"14202\",\"-05:00\"\n";
+        let reader =
+            compile_ip2location_lite(csv.as_bytes(), IpVersion::V4, Ip2LocationLite::City).unwrap();
+        let null = reader.lookup(ip("1.0.0.5")).unwrap();
+        assert_eq!(null.country().unwrap().code(), "US");
+        assert_eq!(null.latitude(), None);
+        let real = reader.lookup(ip("1.0.1.5")).unwrap();
+        assert_eq!(real.latitude(), Some(42.886));
+    }
+
+    #[test]
     fn compile_ip2location_asn() {
         let csv = "\"16777216\",\"16777471\",\"1.0.0.0/24\",\"13335\",\"Cloudflare, Inc.\"\n";
         let reader =
