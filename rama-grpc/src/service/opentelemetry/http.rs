@@ -1,6 +1,6 @@
 use super::{
     HeaderBag, OtelExporter, OtelExporterConfigError, OtlpTransport, SignalKind,
-    parse_header_string,
+    await_with_optional_timeout, internal_failure, parse_header_string,
 };
 use crate::codec::{
     CompressionEncoding,
@@ -17,7 +17,7 @@ use rama_http::{
     uri::{PathAndQuery, Uri},
 };
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, str::FromStr, sync::atomic::Ordering};
+use std::{fmt, str::FromStr};
 
 pub(super) const DEFAULT_OTLP_HTTP_ENDPOINT: &str = "http://localhost:4318";
 const OTLP_HTTP_TRACE_PATH: &str = "/v1/traces";
@@ -124,9 +124,7 @@ where
         Req: Message + Send + 'static,
         Resp: Message + Default + Send + 'static,
     {
-        if self.shutdown_flag(signal).load(Ordering::Acquire) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
+        self.ensure_not_shutdown(signal)?;
 
         let path = match signal {
             SignalKind::Traces => OTLP_HTTP_TRACE_PATH,
@@ -138,16 +136,15 @@ where
             .resolve_config(signal, DEFAULT_OTLP_HTTP_ENDPOINT, |base| {
                 append_signal_path(base, path)
             })
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+            .map_err(internal_failure)?;
 
-        let body = encode_body(request_body, config.compression)
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+        let body = encode_body(request_body, config.compression).map_err(internal_failure)?;
 
         let mut request = Request::builder()
             .method(Method::POST)
             .uri(config.endpoint)
             .body(Body::from(body.freeze()))
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+            .map_err(internal_failure)?;
 
         request.headers_mut().insert(
             CONTENT_TYPE,
@@ -156,8 +153,7 @@ where
         if let Some(compression) = config.compression {
             request.headers_mut().insert(
                 HeaderName::from_static(CONTENT_ENCODING),
-                HeaderValue::from_str(compression.as_str())
-                    .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?,
+                HeaderValue::from_str(compression.as_str()).map_err(internal_failure)?,
             );
         }
         merge_headers(request.headers_mut(), &config.metadata);
@@ -165,16 +161,9 @@ where
         let service = self.service.clone();
         let timeout = config.timeout;
         let work = async move {
-            let response = match timeout {
-                Some(timeout) => {
-                    match tokio::time::timeout(timeout, service.serve(request)).await {
-                        Ok(result) => result,
-                        Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-                    }
-                }
-                None => service.serve(request).await,
-            }
-            .map_err(|err| OTelSdkError::InternalFailure(err.into().to_string()))?;
+            let response = await_with_optional_timeout(timeout, service.serve(request))
+                .await?
+                .map_err(|err| internal_failure(err.into()))?;
 
             decode_response(response).await
         };
@@ -236,20 +225,18 @@ where
         .into_body()
         .collect()
         .await
-        .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?
+        .map_err(internal_failure)?
         .to_bytes();
 
     if !status.is_success() {
-        return Err(OTelSdkError::InternalFailure(format!(
-            "export error: HTTP {status}"
-        )));
+        return Err(internal_failure(format!("export error: HTTP {status}")));
     }
 
     if body.is_empty() {
         return Ok(T::default());
     }
 
-    T::decode(body).map_err(|err| OTelSdkError::InternalFailure(err.to_string()))
+    T::decode(body).map_err(internal_failure)
 }
 
 #[expect(clippy::needless_pass_by_value)]

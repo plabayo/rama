@@ -1,6 +1,6 @@
 use super::{
     HeaderBag, OtelExporter, OtelExporterConfigError, OtlpTransport, SignalKind,
-    parse_header_string,
+    await_with_optional_timeout, internal_failure, parse_header_string,
 };
 use crate::{
     Request,
@@ -12,7 +12,7 @@ use prost::Message;
 use rama_core::{error::BoxError, telemetry::opentelemetry::sdk::error::OTelSdkError};
 use rama_http::{Body, StreamingBody, uri::PathAndQuery};
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, str::FromStr, sync::atomic::Ordering};
+use std::{fmt, str::FromStr};
 
 pub(super) const DEFAULT_OTLP_GRPC_ENDPOINT: &str = "http://localhost:4317";
 const TRACE_EXPORT_PATH: &str = "/opentelemetry.proto.collector.trace.v1.TraceService/Export";
@@ -123,9 +123,7 @@ where
         Req: Message + Send + 'static,
         Resp: Message + Default + Send + 'static,
     {
-        if self.shutdown_flag(signal).load(Ordering::Acquire) {
-            return Err(OTelSdkError::AlreadyShutdown);
-        }
+        self.ensure_not_shutdown(signal)?;
 
         let path = match signal {
             SignalKind::Traces => TRACE_EXPORT_PATH,
@@ -136,7 +134,7 @@ where
         // gRPC endpoints are host:port URIs without a per-signal path suffix.
         let config = self
             .resolve_config(signal, DEFAULT_OTLP_GRPC_ENDPOINT, Ok)
-            .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+            .map_err(internal_failure)?;
 
         let service = self.service.clone();
         let endpoint = config.endpoint;
@@ -155,9 +153,7 @@ where
             let mut request = Request::new(request_body);
             *request.metadata_mut() = metadata;
             if let Some(timeout) = timeout {
-                request
-                    .try_set_timeout(timeout)
-                    .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?;
+                request.try_set_timeout(timeout).map_err(internal_failure)?;
             }
 
             let rpc = grpc.unary(
@@ -166,14 +162,9 @@ where
                 ProstCodec::<Req, Resp>::new(),
             );
 
-            let response = match timeout {
-                Some(timeout) => match tokio::time::timeout(timeout, rpc).await {
-                    Ok(result) => result,
-                    Err(_) => return Err(OTelSdkError::Timeout(timeout)),
-                },
-                None => rpc.await,
-            }
-            .map_err(|status| OTelSdkError::InternalFailure(format!("export error: {status:?}")))?;
+            let response = await_with_optional_timeout(timeout, rpc)
+                .await?
+                .map_err(|status| internal_failure(format!("export error: {status:?}")))?;
             Ok(response.into_inner())
         };
         self.run_on_runtime(work).await
