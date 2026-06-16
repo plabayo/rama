@@ -108,6 +108,25 @@ pub trait OtlpTransport {
         Resp: Message + Default + Send + 'static;
 }
 
+/// Map any displayable error into an [`OTelSdkError::InternalFailure`].
+pub(super) fn internal_failure(err: impl fmt::Display) -> OTelSdkError {
+    OTelSdkError::InternalFailure(err.to_string())
+}
+
+/// Await `fut`, enforcing `timeout` when set and surfacing
+/// [`OTelSdkError::Timeout`] on expiry. Shared by the HTTP and gRPC transports.
+pub(super) async fn await_with_timeout<F: Future>(
+    timeout: Option<Duration>,
+    fut: F,
+) -> Result<F::Output, OTelSdkError> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, fut)
+            .await
+            .map_err(|_elapsed| OTelSdkError::Timeout(timeout)),
+        None => Ok(fut.await),
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SignalSettings<H> {
     pub(crate) endpoint: Option<Uri>,
@@ -345,12 +364,17 @@ impl<S, H: HeaderBag> OtelExporter<S, H> {
         }
     }
 
-    pub(crate) fn force_flush_signal(&self, signal: SignalKind) -> OTelSdkResult {
+    /// Returns [`OTelSdkError::AlreadyShutdown`] if `signal` has been shut down.
+    pub(crate) fn ensure_not_shutdown(&self, signal: SignalKind) -> OTelSdkResult {
         if self.shutdown_flag(signal).load(Ordering::Acquire) {
             Err(OTelSdkError::AlreadyShutdown)
         } else {
             Ok(())
         }
+    }
+
+    pub(crate) fn force_flush_signal(&self, signal: SignalKind) -> OTelSdkResult {
+        self.ensure_not_shutdown(signal)
     }
 
     pub(crate) fn store_resource(&self, resource: &sdk::Resource) {
@@ -413,10 +437,7 @@ impl<S, H: HeaderBag> OtelExporter<S, H> {
         T: Send + 'static,
     {
         match self.runtime.as_ref() {
-            Some(handle) => handle
-                .spawn(work)
-                .await
-                .map_err(|err| OTelSdkError::InternalFailure(err.to_string()))?,
+            Some(handle) => handle.spawn(work).await.map_err(internal_failure)?,
             None => work.await,
         }
     }
