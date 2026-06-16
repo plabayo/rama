@@ -288,6 +288,15 @@ pub(in crate::protocols::rss) struct ItemExtAcc {
 }
 
 impl ItemExtAcc {
+    /// Record an `<itunes:image href="…">` from either its start or
+    /// self-closing form.
+    fn set_itunes_image(&mut self, e: &Attrs<'_>) {
+        if let Some(href) = attr_value(e, attr::HREF) {
+            self.itunes.image = Some(href);
+            self.has_itunes = true;
+        }
+    }
+
     /// Handle a start event; returns `true` if the element was consumed.
     pub(in crate::protocols::rss) fn on_start(
         &mut self,
@@ -296,12 +305,7 @@ impl ItemExtAcc {
         e: &Attrs<'_>,
     ) -> bool {
         match (ns, local) {
-            (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, attr::HREF) {
-                    self.itunes.image = Some(href);
-                    self.has_itunes = true;
-                }
-            }
+            (Ns::ITunes, itunes::IMAGE) => self.set_itunes_image(e),
             (Ns::Media, media::CONTENT) => {
                 self.pending_media.push(media_content_from_attrs(e));
             }
@@ -364,12 +368,7 @@ impl ItemExtAcc {
         e: &Attrs<'_>,
     ) -> bool {
         match (ns, local) {
-            (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, attr::HREF) {
-                    self.itunes.image = Some(href);
-                    self.has_itunes = true;
-                }
-            }
+            (Ns::ITunes, itunes::IMAGE) => self.set_itunes_image(e),
             (Ns::Media, media::CONTENT) => {
                 self.media.contents.push(media_content_from_attrs(e));
                 self.has_media = true;
@@ -635,6 +634,15 @@ pub(in crate::protocols::rss) struct FeedExtAcc {
 }
 
 impl FeedExtAcc {
+    /// Record an `<itunes:image href="…">` from either its start or
+    /// self-closing form.
+    fn set_itunes_image(&mut self, e: &Attrs<'_>) {
+        if let Some(href) = attr_value(e, attr::HREF) {
+            self.itunes.image = Some(href);
+            self.has_itunes = true;
+        }
+    }
+
     pub(in crate::protocols::rss) fn on_start(
         &mut self,
         ns: Ns,
@@ -642,12 +650,7 @@ impl FeedExtAcc {
         e: &Attrs<'_>,
     ) -> bool {
         match (ns, local) {
-            (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, attr::HREF) {
-                    self.itunes.image = Some(href);
-                    self.has_itunes = true;
-                }
-            }
+            (Ns::ITunes, itunes::IMAGE) => self.set_itunes_image(e),
             (Ns::ITunes, itunes::CATEGORY) => {
                 // Apple's canonical shape nests subcategories inside their
                 // parent: `<itunes:category text="Technology">
@@ -696,12 +699,7 @@ impl FeedExtAcc {
         e: &Attrs<'_>,
     ) -> bool {
         match (ns, local) {
-            (Ns::ITunes, itunes::IMAGE) => {
-                if let Some(href) = attr_value(e, attr::HREF) {
-                    self.itunes.image = Some(href);
-                    self.has_itunes = true;
-                }
-            }
+            (Ns::ITunes, itunes::IMAGE) => self.set_itunes_image(e),
             (Ns::ITunes, itunes::CATEGORY) => {
                 if let Some(v) = attr_value(e, attr::TEXT) {
                     self.itunes.categories.push(v);
