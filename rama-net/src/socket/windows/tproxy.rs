@@ -12,7 +12,7 @@ use rama_core::{
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::Networking::WinSock::{
-    SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, SOCKET_ERROR, WSAEFAULT, WSAGetLastError,
+    SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT, SOCKET, WSAEFAULT, WSAEINVAL, WSAGetLastError,
     WSAIoctl,
 };
 
@@ -199,5 +199,10 @@ fn last_wsa_error() -> io::Error {
 }
 
 fn is_no_wfp_redirect_context_error(err_code: i32) -> bool {
-    err_code == SOCKET_ERROR
+    // The socket carries no redirect record: it was not redirected by a WFP
+    // callout. WSAIoctl(SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT) reports this
+    // as WSAEINVAL, which WSAGetLastError returns (never SOCKET_ERROR/-1, which
+    // is only the WSAIoctl *return* sentinel). Treat it as "no context", not a
+    // hard error, so the absent-context path is handled gracefully.
+    err_code == WSAEINVAL
 }
