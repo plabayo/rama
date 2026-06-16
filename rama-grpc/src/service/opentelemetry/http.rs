@@ -1,6 +1,6 @@
 use super::{
     HeaderBag, OtelExporter, OtelExporterConfigError, OtlpTransport, SignalKind,
-    await_with_timeout, internal_failure, parse_header_string,
+    await_with_optional_timeout, internal_failure, parse_header_string,
 };
 use crate::codec::{
     CompressionEncoding,
@@ -161,7 +161,7 @@ where
         let service = self.service.clone();
         let timeout = config.timeout;
         let work = async move {
-            let response = await_with_timeout(timeout, service.serve(request))
+            let response = await_with_optional_timeout(timeout, service.serve(request))
                 .await?
                 .map_err(|err| internal_failure(err.into()))?;
 

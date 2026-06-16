@@ -115,7 +115,7 @@ pub(super) fn internal_failure(err: impl fmt::Display) -> OTelSdkError {
 
 /// Await `fut`, enforcing `timeout` when set and surfacing
 /// [`OTelSdkError::Timeout`] on expiry. Shared by the HTTP and gRPC transports.
-pub(super) async fn await_with_timeout<F: Future>(
+pub(super) async fn await_with_optional_timeout<F: Future>(
     timeout: Option<Duration>,
     fut: F,
 ) -> Result<F::Output, OTelSdkError> {

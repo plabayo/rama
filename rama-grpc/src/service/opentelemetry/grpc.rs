@@ -1,6 +1,6 @@
 use super::{
     HeaderBag, OtelExporter, OtelExporterConfigError, OtlpTransport, SignalKind,
-    await_with_timeout, internal_failure, parse_header_string,
+    await_with_optional_timeout, internal_failure, parse_header_string,
 };
 use crate::{
     Request,
@@ -162,7 +162,7 @@ where
                 ProstCodec::<Req, Resp>::new(),
             );
 
-            let response = await_with_timeout(timeout, rpc)
+            let response = await_with_optional_timeout(timeout, rpc)
                 .await?
                 .map_err(|status| internal_failure(format!("export error: {status:?}")))?;
             Ok(response.into_inner())
