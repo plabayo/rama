@@ -8,7 +8,6 @@ use rama_http::{
 };
 use rama_net::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Marker header name for custom headers.
 ///
@@ -29,7 +28,7 @@ use std::sync::Arc;
 pub static CUSTOM_HEADER_MARKER: HeaderName =
     HeaderName::from_static("x-rama-custom-header-marker");
 
-#[derive(Debug, Clone, Extension)]
+#[derive(Debug, Extension)]
 #[extension(tags(ua, http))]
 /// A User Agent (UA) profile for HTTP.
 ///
@@ -40,9 +39,9 @@ pub static CUSTOM_HEADER_MARKER: HeaderName =
 /// [`Http2Profile`]: crate::profile::Http2Profile
 pub struct HttpProfile {
     /// The HTTP/1.1 profile.
-    pub h1: Arc<Http1Profile>,
+    pub h1: Http1Profile,
     /// The HTTP/2 profile.
-    pub h2: Arc<Http2Profile>,
+    pub h2: Http2Profile,
 }
 
 impl HttpProfile {
@@ -166,11 +165,8 @@ impl<'de> Deserialize<'de> for HttpProfile {
     where
         D: serde::Deserializer<'de>,
     {
-        let input = HttpProfileDeserialize::deserialize(deserializer)?;
-        Ok(Self {
-            h1: Arc::new(input.h1),
-            h2: Arc::new(input.h2),
-        })
+        let HttpProfileDeserialize { h1, h2 } = HttpProfileDeserialize::deserialize(deserializer)?;
+        Ok(Self { h1, h2 })
     }
 }
 
@@ -180,8 +176,8 @@ impl Serialize for HttpProfile {
         S: serde::Serializer,
     {
         HttpProfileSerialize {
-            h1: self.h1.as_ref(),
-            h2: self.h2.as_ref(),
+            h1: &self.h1,
+            h2: &self.h2,
         }
         .serialize(serializer)
     }

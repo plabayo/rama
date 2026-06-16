@@ -8,14 +8,14 @@ use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
 use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
 use rama::net::tls::ApplicationProtocol;
-use rama::net::tls::client::ServerVerifyMode;
 use rama::net::tls::client::parse_client_hello;
+use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};
 use rama::net::tls::server::ServerAuth;
 use rama::net::tls::server::ServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
+use rama::tls::boring::client::EmulateTlsProfileLayer;
 use rama::tls::boring::client::TlsConnector;
-use rama::tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder};
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::ua::layer::emulate::{
     SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
@@ -205,7 +205,7 @@ async fn test_ua_emulation() {
                 0x70, 0x73, 0x79, 0x80,
             ],
             http_profile: HttpProfile {
-                h1: Arc::new(Http1Profile {
+                h1: Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -214,8 +214,8 @@ async fn test_ua_emulation() {
                         ws : None,
                     },
                     settings: Http1Settings::default(),
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: [
                             (HeaderName::from_static("user-agent"), HeaderValue::from_static("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0")),
@@ -238,7 +238,7 @@ async fn test_ua_emulation() {
                         ws : None,
                     },
                     settings: Http2Settings::default(),
-                }),
+                },
             },
             expected: TestCaseExpected {
                 ja4: "t13d1717h2_5b57614c22b0_3cbfd9057e0d",
@@ -289,11 +289,11 @@ async fn test_ua_emulation() {
             ua_kind: test_case.ua_kind,
             ua_version: test_case.ua_version,
             platform: test_case.ua_platform,
-            http: test_case.http_profile,
-            tls: TlsProfile {
-                client_config: Arc::new(client_hello.into()),
+            http: Arc::new(test_case.http_profile),
+            tls: Arc::new(TlsProfile {
+                client_hello,
                 ws_client_config_overwrites: None,
-            },
+            }),
             runtime: None,
         };
 
@@ -302,14 +302,10 @@ async fn test_ua_emulation() {
             EmulateTlsProfileLayer::new(),
         )
             .into_layer(service_fn(async |req: Request| {
-                // We can edit our current builder directly or create a new one if needed
-                let mut builder = req
-                    .extensions()
-                    .get_ref::<TlsConnectorDataBuilder>()
-                    .cloned()
-                    .unwrap_or_default();
-                builder.set_server_verify_mode(ServerVerifyMode::Disable);
-                req.extensions().insert(builder);
+                // We can put overrides on our request directly
+                TlsClientConfig::new()
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .write_to(req.extensions());
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnectorLayer::default().into_layer(
@@ -372,15 +368,13 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
             }
 
             // We create a base config that will overwrite TlsProfile setting so we don't
-            // need to apply it to each Context. See `test_ua_emulation`` for how to set it on
-            // the Context instead
-            let tls_config = TlsConnectorDataBuilder::new()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .into_shared_builder();
+            // need to apply it to each request. See `test_ua_emulation`` for how to set it on
+            // the request instead
+            let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
             let client = (
                 UserAgentEmulateLayer::new(profile.clone()),
-                EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
+                EmulateTlsProfileLayer::new().with_config_overwrites(tls_config),
             )
                 .into_layer(service_fn(async |req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could

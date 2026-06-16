@@ -186,9 +186,7 @@ jobs:
 
   build-release-windows:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
-    # windows-2022: windows-latest moved to VS2026 (Jun 2026), breaking
-    # boringssl's cmake VS2022 build.
-    runs-on: windows-2022
+    runs-on: windows-latest
     env:
       RUST_BACKTRACE: full
     strategy:

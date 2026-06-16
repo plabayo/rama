@@ -67,7 +67,7 @@ use rama::{
         address::Domain,
         tls::{
             DataEncoding,
-            client::{ClientHello, ServerVerifyMode},
+            client::{ClientHello, ServerVerifyMode, TlsClientConfig},
             server::{
                 CacheKind, DynamicCertIssuer, ServerAuth, ServerAuthData, ServerCertIssuerData,
                 ServerConfig,
@@ -91,12 +91,10 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        boring::{
-            client::TlsConnectorDataBuilder,
-            server::{TlsAcceptorData, TlsAcceptorLayer},
-        },
+        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     },
 };
+use rama_net::tls::KeyLogIntent;
 
 use std::{convert::Infallible, time::Duration};
 use tokio::time::sleep;
@@ -117,11 +115,10 @@ async fn main() {
         )
         .init();
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .with_store_server_certificate_chain(true)
-        .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
-        .into_shared_builder();
+    let tls_config = TlsClientConfig::default_http()
+        .with_server_verify(ServerVerifyMode::Disable)
+        .with_keylog(KeyLogIntent::Environment)
+        .with_store_server_cert_chain(true);
 
     let graceful = crate::graceful::Shutdown::default();
 
@@ -129,7 +126,7 @@ async fn main() {
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::graceful(graceful.guard()))
         .build_client()
         .boxed();

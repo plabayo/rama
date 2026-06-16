@@ -9,13 +9,11 @@
 //! > Licensed under GPLv3.
 //! > See <https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme> for license details.
 
-use crate::fingerprint::ClientHelloProvider;
-use crate::tls::client::ClientHelloExtension;
+use crate::tls::client::{ClientHello, ClientHelloExtension};
 use crate::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
     ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
 };
-use itertools::Itertools;
 use rama_core::extensions::Extensions;
 use std::fmt;
 
@@ -46,18 +44,13 @@ impl PeetPrint {
         Self::compute_from_client_hello(client_hello)
     }
 
-    /// Compute the [`PeetPrint`] (hash) from a reference to either a
-    /// [`ClientHello`] or a [`ClientConfig`] data structure.
+    /// Compute the [`PeetPrint`] (hash) from a reference to a [`ClientHello`].
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
-    /// [`ClientConfig`]: crate::tls::client::ClientConfig
-    #[expect(clippy::needless_pass_by_value)]
-    pub fn compute_from_client_hello(
-        client_hello: impl ClientHelloProvider,
-    ) -> Result<Self, PeetComputeError> {
-        let cipher_suites: Vec<CipherSuite> = client_hello.cipher_suites().collect_vec();
+    pub fn compute_from_client_hello(client_hello: &ClientHello) -> Result<Self, PeetComputeError> {
+        let cipher_suites = client_hello.cipher_suites().to_vec();
 
         if cipher_suites.is_empty() {
             return Err(PeetComputeError::EmptyCipherSuites);

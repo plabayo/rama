@@ -189,7 +189,7 @@ pub fn self_signed_client_auth()
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod tests {
     use super::*;
-    use rama_core::extensions::Extensions;
+    use rama_core::{error::BoxErrorExt, extensions::Extensions};
     use rama_net::tls::client::{TlsAlpn, TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain};
 
     #[test]
@@ -304,7 +304,8 @@ mod tests {
 
         crate::ensure_default_crypto_provider();
 
-        let cfg = TlsClientConfig::new().with_modify_rustls_config(|_| Err(BoxError::from("boom")));
+        let cfg = TlsClientConfig::new()
+            .with_modify_rustls_config(|_| Err(BoxError::from_static_str("boom")));
 
         let ext = Extensions::new();
         cfg.write_to(&ext);

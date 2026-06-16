@@ -19,7 +19,7 @@ pub mod server;
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-/// Context information that can be provided by `tls` connectors`,
+/// Context information that can be provided by `tls` connectors,
 /// to configure the connection in function on an tls tunnel.
 pub struct TlsTunnel {
     /// The server name to use for the connection.

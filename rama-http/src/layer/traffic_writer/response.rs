@@ -1,4 +1,4 @@
-use super::WriterMode;
+use super::{WriterMode, write_headers_body_flags};
 use crate::io::write_http_response;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
@@ -62,12 +62,7 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = unbounded_channel();
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
@@ -116,12 +111,7 @@ impl ResponseWriterLayer<Sender<Response>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(buffer_size);
-        let (write_headers, write_body) = match mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_headers, write_body) = write_headers_body_flags(mode);
 
         let span =
             tracing::trace_root_span!("TrafficWriter::response::bounded", otel.kind = "consumer");

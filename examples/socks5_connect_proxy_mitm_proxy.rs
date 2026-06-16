@@ -49,7 +49,7 @@ use rama::{
     net::{
         tls::{
             ApplicationProtocol, SecureTransport,
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
         },
         user::credentials::basic,
@@ -63,7 +63,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::{
-        client::TlsConnectorDataBuilder,
+        client::BoringClientConfigExt,
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
 };
@@ -146,26 +146,19 @@ impl Service<Request> for HttpMitmProxy {
         // NOTE: use a custom connector (layers) in case you wish to add custom features,
         // such as upstream proxies or other configurations
 
-        let base_tls_config = if let Some(hello) = req
+        let tls_config = req
             .extensions()
             .get_ref::<SecureTransport>()
             .and_then(|st| st.client_hello())
-            .cloned()
-        {
-            // TODO once we fully support building this from client hello directly remove this unwrap
-            TlsConnectorDataBuilder::try_from(hello).unwrap()
-        } else {
-            TlsConnectorDataBuilder::new_http_auto()
-        };
-        let base_tls_config = base_tls_config
-            .with_server_verify_mode(ServerVerifyMode::Disable)
-            .into_shared_builder();
+            .map(TlsClientConfig::new_from_client_hello)
+            .unwrap_or_else(TlsClientConfig::default_http)
+            .with_server_verify(ServerVerifyMode::Disable);
 
         let client = EasyHttpWebClient::connector_builder()
             .with_default_transport_connector()
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
-            .with_tls_support_using_boringssl(Some(base_tls_config))
+            .with_tls_support_using_boringssl(tls_config)
             .with_default_http_connector(self.exec.clone())
             .build_client()
             .with_jit_layer(

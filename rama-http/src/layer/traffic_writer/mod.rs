@@ -36,6 +36,51 @@ pub enum WriterMode {
     Body,
 }
 
+/// Resolve a [`WriterMode`] into `(write_headers, write_body)` flags.
+pub(super) fn write_headers_body_flags(mode: Option<WriterMode>) -> (bool, bool) {
+    match mode {
+        Some(WriterMode::All) => (true, true),
+        Some(WriterMode::Headers) => (true, false),
+        Some(WriterMode::Body) => (false, true),
+        None => (false, false),
+    }
+}
+
+/// Drive a bidirectional-writer receive loop: write each request/response to
+/// `$writer` (logging any error), emit a `\r\n` separator between messages, and
+/// flush when the channel closes. Shared by the unbounded and bounded
+/// constructors, which differ only in receiver type and tracing span — both
+/// satisfied by passing `$rx` (`recv()` is common to both receivers).
+macro_rules! drive_bidirectional_writer {
+    ($writer:ident, $rx:ident, $req_headers:ident, $req_body:ident, $res_headers:ident, $res_body:ident) => {{
+        while let Some(msg) = $rx.recv().await {
+            match msg {
+                BidirectionalMessage::Request(req) => {
+                    if let Err(err) =
+                        write_http_request(&mut $writer, req, $req_headers, $req_body).await
+                    {
+                        tracing::error!("failed to write http request to writer: {err:?}")
+                    }
+                }
+                BidirectionalMessage::Response(res) => {
+                    if let Err(err) =
+                        write_http_response(&mut $writer, res, $res_headers, $res_body).await
+                    {
+                        tracing::error!("failed to write http response to writer: {err:?}")
+                    }
+                }
+            }
+            if let Err(err) = $writer.write_all(b"\r\n").await {
+                tracing::error!("failed to write separator to writer: {err:?}")
+            }
+        }
+
+        if let Err(err) = $writer.flush().await {
+            tracing::error!("failed to flush writer: {err:?}")
+        }
+    }};
+}
+
 /// A writer that can write both requests and responses.
 #[derive(Clone)]
 pub struct BidirectionalWriter<S> {
@@ -62,56 +107,18 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = unbounded_channel();
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         executor.spawn_task(async move {
-            while let Some(msg) = rx.recv().await {
-                match msg {
-                    BidirectionalMessage::Request(req) => {
-                        if let Err(err) = write_http_request(
-                            &mut writer,
-                            req,
-                            write_request_headers,
-                            write_request_body,
-                        )
-                        .await
-                        {
-                            tracing::error!("failed to write http request to writer: {err:?}")
-                        }
-                    }
-                    BidirectionalMessage::Response(res) => {
-                        if let Err(err) = write_http_response(
-                            &mut writer,
-                            res,
-                            write_response_headers,
-                            write_response_body,
-                        )
-                        .await
-                        {
-                            tracing::error!("failed to write http response to writer: {err:?}")
-                        }
-                    }
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!("failed to write separator to writer: {err:?}")
-                }
-            }
-
-            if let Err(err) = writer.flush().await {
-                tracing::error!("failed to flush writer: {err:?}")
-            }
+            drive_bidirectional_writer!(
+                writer,
+                rx,
+                write_request_headers,
+                write_request_body,
+                write_response_headers,
+                write_response_body
+            );
         });
 
         Self { sender: tx }
@@ -153,19 +160,8 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(buffer);
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         let span = tracing::trace_root_span!(
             "TrafficWriter::bidirectional::bounded",
@@ -174,41 +170,14 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
         executor.spawn_task(
             async move {
-                while let Some(msg) = rx.recv().await {
-                    match msg {
-                        BidirectionalMessage::Request(req) => {
-                            if let Err(err) = write_http_request(
-                                &mut writer,
-                                req,
-                                write_request_headers,
-                                write_request_body,
-                            )
-                            .await
-                            {
-                                tracing::error!("failed to write http request to writer: {err:?}")
-                            }
-                        }
-                        BidirectionalMessage::Response(res) => {
-                            if let Err(err) = write_http_response(
-                                &mut writer,
-                                res,
-                                write_response_headers,
-                                write_response_body,
-                            )
-                            .await
-                            {
-                                tracing::error!("failed to write http response to writer: {err:?}")
-                            }
-                        }
-                    }
-                    if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!("failed to write separator to writer: {err:?}")
-                    }
-                }
-
-                if let Err(err) = writer.flush().await {
-                    tracing::error!("failed to flush writer: {err:?}")
-                }
+                drive_bidirectional_writer!(
+                    writer,
+                    rx,
+                    write_request_headers,
+                    write_request_body,
+                    write_response_headers,
+                    write_response_body
+                );
             }
             .instrument(span),
         );
@@ -227,19 +196,8 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let (tx, mut rx) = channel(2);
-        let (write_request_headers, write_request_body) = match request_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
-
-        let (write_response_headers, write_response_body) = match response_mode {
-            Some(WriterMode::All) => (true, true),
-            Some(WriterMode::Headers) => (true, false),
-            Some(WriterMode::Body) => (false, true),
-            None => (false, false),
-        };
+        let (write_request_headers, write_request_body) = write_headers_body_flags(request_mode);
+        let (write_response_headers, write_response_body) = write_headers_body_flags(response_mode);
 
         let span = tracing::trace_root_span!(
             "TrafficWriter::bidirectional::last",

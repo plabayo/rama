@@ -6,7 +6,7 @@ use quick_xml::{
 
 use super::names::elem;
 use super::read::Rss2Channel;
-use super::types::Rss2Item;
+use super::types::{Rss2Category, Rss2Item};
 use crate::protocols::rss::feed_ext::names::{attr, content};
 use crate::protocols::rss::feed_ext::write as ext_write;
 use crate::protocols::rss::ns;
@@ -58,13 +58,7 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     }
 
     for cat in &channel.categories {
-        let mut tag = BytesStart::new(elem::CATEGORY);
-        if let Some(domain) = &cat.domain {
-            tag.push_attribute((attr::DOMAIN, domain.as_str()));
-        }
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(&cat.name)))?;
-        w.write_event(Event::End(BytesEnd::new(elem::CATEGORY)))?;
+        write_rss2_category(w, cat)?;
     }
 
     write_opt_text_elem(w, elem::GENERATOR, channel.generator.as_deref())?;
@@ -124,6 +118,22 @@ pub(in crate::protocols::rss) fn write_rss2_channel_open<W: std::io::Write>(
     Ok(())
 }
 
+/// Write a single `<category>` element (with optional `domain` attribute).
+/// Shared by the channel- and item-level category loops.
+fn write_rss2_category<W: std::io::Write>(
+    w: &mut Writer<W>,
+    cat: &Rss2Category,
+) -> Result<(), XmlWriteError> {
+    let mut tag = BytesStart::new(elem::CATEGORY);
+    if let Some(domain) = &cat.domain {
+        tag.push_attribute((attr::DOMAIN, domain.as_str()));
+    }
+    w.write_event(Event::Start(tag))?;
+    w.write_event(Event::Text(BytesText::new(&cat.name)))?;
+    w.write_event(Event::End(BytesEnd::new(elem::CATEGORY)))?;
+    Ok(())
+}
+
 /// Close `</channel></rss>`. Pairs with [`write_rss2_channel_open`] so callers
 /// can interleave items from an external source between the two.
 pub(in crate::protocols::rss) fn write_rss2_channel_close<W: std::io::Write>(
@@ -148,13 +158,7 @@ pub(in crate::protocols::rss) fn write_rss2_item<W: std::io::Write>(
     write_opt_text_elem(w, elem::AUTHOR, item.author.as_deref())?;
 
     for cat in &item.categories {
-        let mut tag = BytesStart::new(elem::CATEGORY);
-        if let Some(domain) = &cat.domain {
-            tag.push_attribute((attr::DOMAIN, domain.as_str()));
-        }
-        w.write_event(Event::Start(tag))?;
-        w.write_event(Event::Text(BytesText::new(&cat.name)))?;
-        w.write_event(Event::End(BytesEnd::new(elem::CATEGORY)))?;
+        write_rss2_category(w, cat)?;
     }
 
     write_opt_text_elem(w, elem::COMMENTS, item.comments.as_deref())?;

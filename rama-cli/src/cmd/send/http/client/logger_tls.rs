@@ -3,10 +3,13 @@ use rama::{
     extensions::ExtensionsRef,
     net::{
         client::{ConnectorService, EstablishedClientConnection},
-        tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
+        tls::{
+            DataEncoding,
+            client::{NegotiatedTlsParameters, TlsAlpn},
+        },
     },
     telemetry::tracing,
-    tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
+    tls::boring::core::x509::X509,
 };
 
 use super::VerboseLogs;
@@ -25,15 +28,8 @@ where
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let ec = self.0.connect(input).await?;
         if ec.input.extensions().contains::<VerboseLogs>() {
-            if let Some(client_tls_data) =
-                ec.input.extensions().get_ref::<TlsConnectorDataBuilder>()
-                && let Some(alpn) = client_tls_data.alpn_protos()
-            {
-                let mut protocols = Vec::new();
-                let mut reader = std::io::Cursor::new(&alpn[..]);
-                while let Ok(protocol) = ApplicationProtocol::decode_wire_format(&mut reader) {
-                    protocols.push(protocol.to_string());
-                }
+            if let Some(alpn) = ec.input.extensions().get_ref::<TlsAlpn>() {
+                let protocols: Vec<String> = alpn.0.iter().map(|p| p.to_string()).collect();
                 eprintln!("* ALPN: rama offers {}", protocols.join(","));
             }
             if let Some(server_tls_data) = ec.conn.extensions().get_ref::<NegotiatedTlsParameters>()

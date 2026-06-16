@@ -19,13 +19,13 @@ use rama::{
     net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
-        tls::client::ServerVerifyMode,
+        tls::client::{ServerVerifyMode, TlsClientConfig},
     },
     rt::Executor,
     service::BoxService,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
-    tls::boring::client::{TlsConnectorDataBuilder, tls_connect},
+    tls::boring::client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use tokio::{
@@ -73,13 +73,12 @@ pub(crate) fn build_http_client(
 
     let inner = match cert_store {
         Some(store) => {
-            let config = TlsConnectorDataBuilder::new_http_auto()
-                .with_server_verify_mode(ServerVerifyMode::Auto)
-                .with_server_verify_cert_store(store)
-                .into_shared_builder();
+            let config = TlsClientConfig::default_http()
+                .with_server_verify(ServerVerifyMode::Auto)
+                .with_server_verify_cert_store(store);
             builder
                 .with_tls_support_using_boringssl_and_default_http_version(
-                    Some(config),
+                    config,
                     Version::HTTP_11,
                 )
                 .with_default_http_connector(Executor::default())
@@ -416,11 +415,11 @@ pub(crate) async fn roundtrip_custom_protocol(
             buf
         }
         TcpMode::Tls => {
-            let connector = TlsConnectorDataBuilder::new()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .with_server_name(Domain::from_static("127.0.0.1"))
-                .build()
-                .expect("build tls connector data");
+            let config = TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_server_name(Domain::from_static("127.0.0.1").into());
+            let connector =
+                TlsConnectorData::try_from(&config).expect("build tls connector data");
             let tls_stream = tls_connect(stream, Some(connector))
                 .await
                 .expect("tls connect over established tunnel");

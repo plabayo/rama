@@ -32,12 +32,12 @@ use rama::{
     net::{
         address::Domain,
         tls::{
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{SelfSignedData, peek_client_hello_from_input},
         },
     },
     tls::boring::{
-        client::TlsConnectorDataBuilder,
+        client::{BoringClientConfigExt, TlsConnectorData},
         core::{
             asn1::{Asn1Object, Asn1Time},
             bn::{BigNum, MsbOption},
@@ -195,15 +195,14 @@ async fn connect_one(
         .await
         .context("peek client hello")?;
 
-    let mut builder = match client_hello {
-        Some(hello) => TlsConnectorDataBuilder::try_from(hello)
-            .unwrap_or_else(|_| TlsConnectorDataBuilder::new()),
-        None => TlsConnectorDataBuilder::new(),
+    let mut config = match &client_hello {
+        Some(hello) => TlsClientConfig::new_from_client_hello(hello),
+        None => TlsClientConfig::new(),
     };
     if let Ok(domain) = Domain::try_from(host) {
-        builder = builder.with_server_name(domain); // SNI + verify hostname for egress
+        config.set_server_name(domain.into()); // SNI + verify hostname for egress
     }
-    let egress = builder.build().ok();
+    let egress = TlsConnectorData::try_from(&config).ok();
 
     let BridgeIo(mut ingress, mut egress_stream) = relay
         .handshake(bridge, egress)
@@ -254,10 +253,10 @@ async fn relay_one(
     let upstream = TcpStream::connect(up_addr)
         .await
         .context("connect upstream")?;
-    let egress = TlsConnectorDataBuilder::new()
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .build()
-        .ok();
+    let egress = TlsConnectorData::try_from(
+        &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+    )
+    .ok();
     let BridgeIo(mut ingress, mut egress_stream) = relay
         .handshake(
             BridgeIo(ServiceInput::new(client), ServiceInput::new(upstream)),

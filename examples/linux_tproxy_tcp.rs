@@ -2,7 +2,8 @@
 //!
 //! This example shows how to:
 //!
-//! - create a TCP listener with `IP_TRANSPARENT`;
+//! - create dual-stack TCP listeners with `IP_TRANSPARENT` (IPv4) and
+//!   `IPV6_TRANSPARENT` (IPv6);
 //! - recover the original destination using
 //!   `rama::net::socket::linux::ProxyTargetFromGetSocketnameLayer`;
 //! - forward the intercepted stream to that destination.
@@ -40,12 +41,15 @@
 //!     sudo target/debug/examples/linux_tproxy_tcp
 //! ```
 //!
-//! The proxy listens on `0.0.0.0:62052`.
+//! The proxy listens on `0.0.0.0:62052` (IPv4) and `[::]:62052` (IPv6).
 //!
 //! # Required Linux setup
 //!
-//! The listener uses `IP_TRANSPARENT`, which requires `CAP_NET_ADMIN`
-//! privileges. Running the example with `sudo` is the easiest way to try it.
+//! The listeners use `IP_TRANSPARENT` / `IPV6_TRANSPARENT`, which require
+//! `CAP_NET_ADMIN` privileges. Running the example with `sudo` is the easiest
+//! way to try it. Note: the helper scripts below install IPv4 TPROXY rules
+//! only; exercising the IPv6 listener also needs analogous `ip6tables`/`nft
+//! inet` rules plus IPv6 policy routing.
 //!
 //! The easiest path is to use the helper scripts in this directory:
 //!
@@ -148,7 +152,19 @@ use ::{
 use rama::error::{BoxError, BoxErrorExt};
 
 #[cfg(target_os = "linux")]
-const LISTEN_ADDR: SocketAddress = SocketAddress::default_ipv4(62052);
+const LISTEN_ADDR_V4: SocketAddress = SocketAddress::default_ipv4(62052);
+
+#[cfg(target_os = "linux")]
+const LISTEN_ADDR_V6: SocketAddress = SocketAddress::default_ipv6(62052);
+
+#[cfg(target_os = "linux")]
+fn tcp_keep_alive() -> TcpKeepAlive {
+    TcpKeepAlive {
+        time: Some(Duration::from_mins(2)),
+        interval: Some(Duration::from_secs(30)),
+        retries: Some(5),
+    }
+}
 
 #[cfg(target_os = "linux")]
 #[tokio::main]
@@ -172,28 +188,47 @@ async fn main() {
 async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let exec = Executor::default();
 
-    let socket = SocketOptions {
-        address: Some(LISTEN_ADDR),
-        ip_transparent: Some(true),
-        freebind: Some(true),
+    // Socket tuning shared by both address families. The transparent + freebind
+    // options are per-family (set below): `IP_TRANSPARENT` / `IP_FREEBIND` apply
+    // to the IPv4 socket, `IPV6_TRANSPARENT` / `IPV6_FREEBIND` to the IPv6 one.
+    let base = SocketOptions {
         reuse_address: Some(true),
         reuse_port: Some(true),
         tcp_no_delay: Some(true),
-        tcp_keep_alive: Some(TcpKeepAlive {
-            time: Some(Duration::from_mins(2)),
-            interval: Some(Duration::from_secs(30)),
-            #[cfg(not(target_os = "windows"))]
-            retries: Some(5),
-        }),
+        tcp_keep_alive: Some(tcp_keep_alive()),
         ..SocketOptions::default_tcp()
+    };
+
+    // IPv4 transparent listener (`IP_TRANSPARENT`).
+    let socket_v4 = SocketOptions {
+        address: Some(LISTEN_ADDR_V4),
+        ip_transparent: Some(true),
+        freebind: Some(true),
+        ..base.clone()
     }
     .try_build_socket(Domain::IPv4)?;
-    socket.listen(32_768)?;
+    socket_v4.listen(32_768)?;
+    let listener_v4 = TcpListener::bind_socket(socket_v4, exec.clone()).await?;
 
-    let listener = TcpListener::bind_socket(socket, exec.clone()).await?;
+    // IPv6 transparent listener (`IPV6_TRANSPARENT`).
+    let socket_v6 = SocketOptions {
+        address: Some(LISTEN_ADDR_V6),
+        ip_transparent_v6: Some(true),
+        freebind_ipv6: Some(true),
+        ..base
+    }
+    .try_build_socket(Domain::IPv6)?;
+    socket_v6.listen(32_768)?;
+    let listener_v6 = TcpListener::bind_socket(socket_v6, exec.clone()).await?;
 
-    tracing::info!(listen.address = %LISTEN_ADDR, "transparent tcp proxy listening");
-    tracing::info!("make sure Linux policy routing and TPROXY rules are installed first");
+    tracing::info!(
+        listen.v4 = %LISTEN_ADDR_V4,
+        listen.v6 = %LISTEN_ADDR_V6,
+        "dual-stack transparent tcp proxy listening"
+    );
+    tracing::info!(
+        "make sure Linux policy routing and TPROXY rules are installed first (for both IPv4 and IPv6)"
+    );
 
     let service = ProxyTargetFromGetSocketnameLayer::new().into_layer(service_fn({
         let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
@@ -215,6 +250,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }));
 
-    listener.serve(service).await;
+    // Serve both address families concurrently; each runs until shutdown.
+    tokio::join!(
+        listener_v4.serve(service.clone()),
+        listener_v6.serve(service),
+    );
     Ok(())
 }

@@ -34,7 +34,7 @@ use rama::{
         proxy::IoForwardService,
         tls::{
             DataEncoding,
-            client::ServerVerifyMode,
+            client::{ServerVerifyMode, TlsClientConfig},
             server::{ServerAuth, ServerAuthData, ServerConfig},
         },
     },
@@ -42,7 +42,7 @@ use rama::{
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::boring::{
-        client::{TlsConnectorDataBuilder, TlsConnectorLayer},
+        client::{BoringClientConfigExt as _, TlsConnectorLayer},
         core::x509::{X509, store::X509StoreBuilder},
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
@@ -50,7 +50,7 @@ use rama::{
 };
 
 use clap::{Args, Subcommand};
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use crate::utils::tls::try_new_server_config;
 
@@ -194,7 +194,7 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
         let tcp_service = IoToProxyBridgeIoLayer::new(exec.clone(), connect_authority)
             .with_connector(
                 TlsConnectorLayer::secure()
-                    .with_connector_data(tls_connector_data)
+                    .with_base_config(tls_connector_data)
                     .into_layer(TcpConnector::new(exec.clone())),
             )
             .into_layer(IoForwardService::new(exec));
@@ -205,24 +205,24 @@ async fn run_entry_node(graceful: ShutdownGuard, cfg: EntryNodeArgs) -> Result<(
     Ok(())
 }
 
-fn build_tls_connector(cfg: &EntryNodeArgs) -> Result<Arc<TlsConnectorDataBuilder>, BoxError> {
-    let mut tls_builder = TlsConnectorDataBuilder::new();
+fn build_tls_connector(cfg: &EntryNodeArgs) -> Result<TlsClientConfig, BoxError> {
+    let mut tls_config = TlsClientConfig::new();
 
     if cfg.insecure {
-        tls_builder.set_server_verify_mode(ServerVerifyMode::Disable);
+        tls_config.set_server_verify(ServerVerifyMode::Disable);
         tracing::warn!("TLS certificate verification disabled (--insecure flag)");
         tracing::warn!("This is insecure and should only be used for testing!");
     } else if let Some(cacert_path) = &cfg.cacert {
-        load_ca_certificate(&mut tls_builder, cacert_path)?;
+        load_ca_certificate(&mut tls_config, cacert_path)?;
     } else {
         tracing::info!("Using system trust store for certificate verification");
     }
 
-    Ok(Arc::new(tls_builder))
+    Ok(tls_config)
 }
 
 fn load_ca_certificate(
-    tls_builder: &mut TlsConnectorDataBuilder,
+    tls_config: &mut TlsClientConfig,
     cacert_path: &PathBuf,
 ) -> Result<(), BoxError> {
     tracing::info!(
@@ -243,7 +243,7 @@ fn load_ca_certificate(
         .add_cert(ca_cert)
         .map_err(|e| format!("Failed to add CA certificate to store: {e}"))?;
 
-    tls_builder.set_server_verify_cert_store(store_builder.build().into());
+    tls_config.set_server_verify_cert_store(store_builder.build().into());
     tracing::info!("CA certificate loaded and added to trust store");
 
     Ok(())

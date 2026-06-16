@@ -82,52 +82,7 @@ pub trait DnsAddressResolver: Sized + Send + Sync + 'static {
         domain: Domain,
     ) -> impl Future<Output = Option<Result<Ipv4Addr, Self::Error>>> + Send + '_ {
         let stream = self.lookup_ipv4(domain);
-        async move {
-            let mut stream = std::pin::pin!(stream);
-
-            enum Slot<E> {
-                Ok(Ipv4Addr),
-                Err(E),
-                None,
-            }
-            let mut slot = Slot::None;
-
-            let mut seen = 0;
-            let mut rng: SmallRng = rand::make_rng();
-
-            let start = Instant::now();
-
-            while let Some(item) = stream.next().await {
-                slot = match slot {
-                    Slot::Ok(old_ip) => {
-                        if start.elapsed() > Duration::from_millis(50) {
-                            return Some(Ok(old_ip));
-                        }
-
-                        seen += 1;
-                        Slot::Ok(
-                            if let Ok(new_ip) = item
-                                && rng.random_range(0..seen) == 0
-                            {
-                                new_ip
-                            } else {
-                                old_ip
-                            },
-                        )
-                    }
-                    Slot::Err(_) | Slot::None => match item {
-                        Ok(addr) => Slot::Ok(addr),
-                        Err(err) => Slot::Err(err),
-                    },
-                }
-            }
-
-            match slot {
-                Slot::Ok(ip_addr) => Some(Ok(ip_addr)),
-                Slot::Err(err) => Some(Err(err)),
-                Slot::None => None,
-            }
-        }
+        reservoir_sample_lookup(stream)
     }
 
     /// Resolve the 'AAAA' records accessible by this resolver for the given [`Domain`] into [`Ipv6Addr`]esses.
@@ -162,57 +117,81 @@ pub trait DnsAddressResolver: Sized + Send + Sync + 'static {
         domain: Domain,
     ) -> impl Future<Output = Option<Result<Ipv6Addr, Self::Error>>> + Send + '_ {
         let stream = self.lookup_ipv6(domain);
-        async move {
-            let mut stream = std::pin::pin!(stream);
-
-            enum Slot<E> {
-                Ok(Ipv6Addr),
-                Err(E),
-                None,
-            }
-            let mut slot = Slot::None;
-
-            let mut seen = 0;
-            let mut rng: SmallRng = rand::make_rng();
-
-            let start = Instant::now();
-
-            while let Some(item) = stream.next().await {
-                slot = match slot {
-                    Slot::Ok(old_ip) => {
-                        if start.elapsed() > Duration::from_millis(50) {
-                            return Some(Ok(old_ip));
-                        }
-
-                        seen += 1;
-                        Slot::Ok(
-                            if let Ok(new_ip) = item
-                                && rng.random_range(0..seen) == 0
-                            {
-                                new_ip
-                            } else {
-                                old_ip
-                            },
-                        )
-                    }
-                    Slot::Err(_) | Slot::None => match item {
-                        Ok(addr) => Slot::Ok(addr),
-                        Err(err) => Slot::Err(err),
-                    },
-                }
-            }
-
-            match slot {
-                Slot::Ok(ip_addr) => Some(Ok(ip_addr)),
-                Slot::Err(err) => Some(Err(err)),
-                Slot::None => None,
-            }
-        }
+        reservoir_sample_lookup(stream)
     }
 
     /// Box this resolver to allow for dynamic dispatch.
     fn into_box_dns_address_resolver(self) -> BoxDnsAddressResolver {
         BoxDnsAddressResolver::new(self)
+    }
+}
+
+/// Shared reservoir-sampling loop used by `lookup_ipv4_rand`/`lookup_ipv6_rand`.
+///
+/// Drives the given lookup `stream`, picking a pseudo-random `Ok` address via
+/// reservoir sampling, while returning early after 50ms once at least one
+/// address has been observed.
+fn reservoir_sample_lookup<S, A, E>(stream: S) -> impl Future<Output = Option<Result<A, E>>> + Send
+where
+    S: Stream<Item = Result<A, E>> + Send,
+    A: Send,
+    E: Send,
+{
+    reservoir_sample_lookup_with_rng(stream, rand::make_rng::<SmallRng>())
+}
+
+async fn reservoir_sample_lookup_with_rng<S, A, E, R>(stream: S, mut rng: R) -> Option<Result<A, E>>
+where
+    S: Stream<Item = Result<A, E>> + Send,
+    A: Send,
+    E: Send,
+    R: rand::Rng + Send,
+{
+    let mut stream = std::pin::pin!(stream);
+
+    enum Slot<A, E> {
+        Ok(A),
+        Err(E),
+        None,
+    }
+    let mut slot = Slot::None;
+
+    let mut seen = 0;
+
+    let start = Instant::now();
+
+    while let Some(item) = stream.next().await {
+        slot = match slot {
+            Slot::Ok(old_ip) => {
+                if start.elapsed() > Duration::from_millis(50) {
+                    return Some(Ok(old_ip));
+                }
+
+                if let Ok(new_ip) = item {
+                    seen += 1;
+                    Slot::Ok(if rng.random_range(0..seen) == 0 {
+                        new_ip
+                    } else {
+                        old_ip
+                    })
+                } else {
+                    Slot::Ok(old_ip)
+                }
+            }
+            Slot::Err(_) | Slot::None => match item {
+                Ok(addr) => {
+                    seen = 1;
+                    Slot::Ok(addr)
+                }
+                Err(err) => Slot::Err(err),
+            },
+        }
+    }
+
+    match slot {
+        Slot::Ok(ip_addr) => Some(Ok(ip_addr)),
+        Slot::Err(err) => Some(Err(err)),
+        Slot::None => None,
     }
 }
 
@@ -773,5 +752,42 @@ impl DnsAddressResolver for BoxDnsAddressResolver {
 
     fn into_box_dns_address_resolver(self) -> BoxDnsAddressResolver {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{SeedableRng as _, rngs::StdRng};
+
+    #[tokio::test]
+    async fn reservoir_sample_lookup_samples_second_ok_with_probability_one_over_two() {
+        let first = Ipv4Addr::new(192, 0, 2, 1);
+        let second = Ipv4Addr::new(192, 0, 2, 2);
+        let mut first_hits = 0;
+        let mut second_hits = 0;
+
+        for seed in 0..64 {
+            let stream = stream::iter([Ok::<_, Infallible>(first), Ok(second)]);
+            let selected = reservoir_sample_lookup_with_rng(stream, StdRng::seed_from_u64(seed))
+                .await
+                .expect("two successful addresses should produce a result")
+                .expect("two successful addresses should not produce an error");
+
+            match selected {
+                addr if addr == first => first_hits += 1,
+                addr if addr == second => second_hits += 1,
+                addr => panic!("unexpected sampled address: {addr}"),
+            }
+        }
+
+        assert!(
+            first_hits > 0,
+            "the second successful address must not always replace the first"
+        );
+        assert!(
+            second_hits > 0,
+            "the second successful address should remain selectable"
+        );
     }
 }

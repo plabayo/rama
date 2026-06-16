@@ -18,15 +18,15 @@ use rama::{
     },
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
     net::{
-        tls::client::ServerVerifyMode,
+        tls::{
+            ProtocolVersion,
+            client::{ServerVerifyMode, TlsClientConfig},
+        },
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::Socks5ProxyConnectorLayer,
     rt::Executor,
-    tls::boring::{
-        client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
-        core::ssl::SslVersion,
-    },
+    tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
     ua::{
         layer::emulate::{
             UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,
@@ -131,46 +131,45 @@ fn new_inner_client(
     cfg: &SendCommand,
 ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError> + Clone, BoxError> {
     let mut tls_config = if cfg.emulate {
-        TlsConnectorDataBuilder::new()
+        TlsClientConfig::new()
     } else {
-        TlsConnectorDataBuilder::new_http_auto()
+        TlsClientConfig::new().with_alpn_http_auto()
     };
 
     if cfg.verbose {
-        tls_config.set_store_server_certificate_chain(true);
+        tls_config.set_store_server_cert_chain(true);
     }
 
     if let Some(min_ssl_version) = match (cfg.tls_v10, cfg.tls_v11, cfg.tls_v12, cfg.tls_v13) {
-        (true, false, false, false) => Some(SslVersion::TLS1),
-        (false, true, false, false) => Some(SslVersion::TLS1_1),
-        (false, false, true, false) => Some(SslVersion::TLS1_2),
-        (false, false, false, true) => Some(SslVersion::TLS1_3),
+        (true, false, false, false) => Some(ProtocolVersion::TLSv1_0),
+        (false, true, false, false) => Some(ProtocolVersion::TLSv1_1),
+        (false, false, true, false) => Some(ProtocolVersion::TLSv1_2),
+        (false, false, false, true) => Some(ProtocolVersion::TLSv1_3),
         (false, false, false, false) => None,
         _ => Err(BoxError::from_static_str(
             "--tlsv1.0, --tlsv1.1, --tlsv1.2, --tlsv1.3 are mutually exclusive",
         ))?,
     } {
-        tls_config.set_min_ssl_version(min_ssl_version);
+        tls_config.set_min_version(min_ssl_version);
     }
 
     if let Some(max_ssl_version) = cfg.tls_max.as_ref() {
         let max_ssl_version = match max_ssl_version {
-            crate::cmd::send::arg::TlsVersion::V10 => SslVersion::TLS1,
-            crate::cmd::send::arg::TlsVersion::V11 => SslVersion::TLS1_1,
-            crate::cmd::send::arg::TlsVersion::V12 => SslVersion::TLS1_2,
-            crate::cmd::send::arg::TlsVersion::V13 => SslVersion::TLS1_3,
+            crate::cmd::send::arg::TlsVersion::V10 => ProtocolVersion::TLSv1_0,
+            crate::cmd::send::arg::TlsVersion::V11 => ProtocolVersion::TLSv1_1,
+            crate::cmd::send::arg::TlsVersion::V12 => ProtocolVersion::TLSv1_2,
+            crate::cmd::send::arg::TlsVersion::V13 => ProtocolVersion::TLSv1_3,
         };
-
-        tls_config.set_max_ssl_version(max_ssl_version);
+        tls_config.set_max_version(max_ssl_version);
     }
 
-    let mut proxy_tls_config = TlsConnectorDataBuilder::new();
+    let mut proxy_tls_config = TlsClientConfig::new();
 
     if cfg.insecure {
-        tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+        tls_config.set_server_verify(ServerVerifyMode::Disable);
     }
     if cfg.proxy_insecure {
-        proxy_tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+        proxy_tls_config.set_server_verify(ServerVerifyMode::Disable);
     }
 
     let mut http_proxy_connector = HttpProxyConnectorLayer::required();
@@ -184,9 +183,9 @@ fn new_inner_client(
     let client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_custom_connector(layer_fn(logger_l4::TransportConnInfoLogger))
-        .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
+        .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
         .with_custom_proxy_connector(proxy_connector)
-        .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
+        .with_tls_support_using_boringssl(tls_config)
         .with_custom_connector(layer_fn(logger_tls::TlsInfoLogger))
         .with_custom_connector(UserAgentEmulateHttpConnectModifierLayer::default())
         .with_default_http_connector(Executor::default())

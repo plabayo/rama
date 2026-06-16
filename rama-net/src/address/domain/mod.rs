@@ -1049,24 +1049,9 @@ impl PartialEq<Domain> for String {
     }
 }
 
-impl serde::Serialize for Domain {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.as_str().serialize(serializer)
-    }
-}
+use rama_utils::macros::serde_str::impl_serde_str;
 
-impl<'de> serde::Deserialize<'de> for Domain {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
-    }
-}
+impl_serde_str!(as_str Domain);
 
 #[expect(private_bounds)]
 /// A trait which is used by the `rama-net` crate
