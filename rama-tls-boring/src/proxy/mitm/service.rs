@@ -7,12 +7,15 @@ use rama_core::{
 };
 use rama_net::{
     proxy::ProxyTarget,
-    tls::{client::ServerVerifyMode, server::InputWithClientHello},
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::InputWithClientHello,
+    },
 };
 
 use crate::{
     TlsStream,
-    client::TlsConnectorDataBuilder,
+    client::{BoringClientConfigExt, BoringTlsConnectorConfig, TlsConnectorData},
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
 
@@ -56,16 +59,20 @@ where
             "tls mitm relay: BridgeIo (no ClientHello) impl invoked; \
              egress will ship boring defaults"
         );
-        let maybe_connector_data = TlsConnectorDataBuilder::default()
-            .with_server_verify_mode(ServerVerifyMode::Disable)
-            .with_keylog_intent(self.relay.keylog_intent_ref().clone())
-            .build()
-            .inspect_err(|err| {
-                tracing::debug!(
-                    "failed to build default TlsConnectorData: {err}; try anyway without data"
-                )
-            })
-            .ok();
+        let cfg = TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(self.relay.keylog_intent_ref().clone());
+
+        let maybe_connector_data = TlsConnectorData::try_from(
+            BoringTlsConnectorConfig::from_extensions(cfg.as_extensions()),
+        )
+        .inspect_err(|err| {
+            tracing::debug!(
+                %err,
+                "failed to build default TlsConnectorData; try anyway without data"
+            )
+        })
+        .ok();
 
         let proxy_target = input.extensions().get_ref::<ProxyTarget>().cloned();
         let tls_input = self
@@ -106,22 +113,24 @@ where
         // CHs trip it. `try_from` failure here is the silent route to
         // a default builder; that builder is what produces the
         // ~133-byte SNI-less ClientHello seen on the wire.
-        let builder = match TlsConnectorDataBuilder::try_from(client_hello) {
-            Ok(b) => b,
-            Err(err) => {
+        let config = TlsClientConfig::new_from_client_hello(&client_hello)
+            .with_server_verify(ServerVerifyMode::Disable)
+            .with_keylog(self.relay.keylog_intent_ref().clone());
+
+        let maybe_connector_data = TlsConnectorData::try_from(&config)
+            .or_else(|err| {
                 tracing::warn!(
                     ?maybe_sni,
-                    "tls mitm relay: TlsConnectorDataBuilder::try_from(ClientHello) failed: {err}; falling back to default builder (no SNI / ALPN)"
+                    %err,
+                    "tls mitm relay: build TlsConnectorData from ClientHello failed; falling back to default (no SNI / ALPN)"
                 );
-                TlsConnectorDataBuilder::default()
-            }
-        };
-        let maybe_connector_data = builder
-            .with_server_verify_mode(ServerVerifyMode::Disable)
-            .with_keylog_intent(self.relay.keylog_intent_ref().clone())
-            .build()
+                let config = TlsClientConfig::new()
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .with_keylog(self.relay.keylog_intent_ref().clone());
+                TlsConnectorData::try_from(&config)
+            })
             .inspect_err(|err| {
-                tracing::debug!("failed to build TlsConnectorData (from CH or default): {err}; try anyway without data")
+                tracing::debug!(%err, "failed to build TlsConnectorData (from CH or default); try anyway without data")
             })
             .ok();
 

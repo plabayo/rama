@@ -6,7 +6,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt},
         mime,
     },
-    tls::boring::client::TlsConnectorDataBuilder,
+    net::tls::client::TlsAlpn,
 };
 
 #[tokio::test]
@@ -34,12 +34,7 @@ async fn test_ws_tls_server() {
     // test the actual ws content
 
     let extensions = Extensions::new();
-    let mut builder = extensions
-        .get_ref::<TlsConnectorDataBuilder>()
-        .cloned()
-        .unwrap_or_default();
-    builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
-    extensions.insert(builder);
+    extensions.insert(TlsAlpn::http_1());
 
     let mut ws = runner
         .websocket("wss://127.0.0.1:62034/echo")

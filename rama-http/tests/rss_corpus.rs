@@ -287,10 +287,8 @@ fn harvest_significant_tokens(xml: &[u8]) -> Vec<String> {
                     text_acc.push_str(&t);
                 }
             }
-            Event::GeneralRef(e) => {
-                if *stack.last().unwrap_or(&true) {
-                    append_general_ref(&e, &mut text_acc);
-                }
+            Event::GeneralRef(e) if *stack.last().unwrap_or(&true) => {
+                append_general_ref(&e, &mut text_acc);
             }
             Event::CData(e) => {
                 // CDATA is its own token (never entity-expanded); flush any

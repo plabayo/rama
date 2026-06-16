@@ -1,72 +1,212 @@
-use std::sync::Arc;
+use rama_core::extensions::{Extension, Extensions};
+use rama_utils::{
+    collections::smallvec::{SmallVec, smallvec},
+    macros::generate_set_and_with,
+};
 
-use super::{ClientHelloExtension, merge_client_hello_lists};
-use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent, ProtocolVersion};
+use crate::{
+    address::Host,
+    tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
+};
 
-#[derive(Debug, Clone, Default)]
-/// Common API to configure a Proxy TLS Client
+/// A backend agnostic builder for the common TLS configs.
 ///
-/// See [`ClientConfig`] for more information,
-/// this is only a new-type wrapper to be able to differentiate
-/// the info found in input extensions for a dynamic https client.
-pub struct ProxyClientConfig(pub Arc<ClientConfig>);
+/// It holds a set of fine grained config extensions (e.g. [`TlsAlpn`], [`TlsServerVerify`])
+/// and exposes typed setters for the settings both TLS backends support.
+/// Backend crates add setters for their backend-specific pieces via extension
+/// traits (`RustlsClientConfigExt`).
+#[derive(Debug, Default)]
+pub struct TlsClientConfig(Extensions);
 
-#[derive(Debug, Clone, Default)]
-/// Common API to configure a TLS Client
-pub struct ClientConfig {
-    /// optional intent for cipher suites to be used by client
-    pub cipher_suites: Option<Vec<CipherSuite>>,
-    /// optional intent for compression algorithms to be used by client
-    pub compression_algorithms: Option<Vec<CompressionAlgorithm>>,
-    /// optional intent for extensions to be used by client
-    ///
-    /// Commpon examples are:
-    ///
-    /// - [`super::ClientHelloExtension::ApplicationLayerProtocolNegotiation`]
-    /// - [`super::ClientHelloExtension::SupportedVersions`]
-    pub extensions: Option<Vec<ClientHelloExtension>>,
-    /// optionally define how server should be verified by client
-    pub server_verify_mode: Option<ServerVerifyMode>,
-    /// optionally define raw (PEM-encoded) client auth certs
-    pub client_auth: Option<ClientAuth>,
-    /// key log intent
-    pub key_logger: Option<KeyLogIntent>,
-    /// if enabled server certificates will be stored in [`NegotiatedTlsParameters`]
-    ///
-    /// [`NegotiatedTlsParameters`]: crate::tls::client::NegotiatedTlsParameters
-    pub store_server_certificate_chain: bool,
-}
+impl TlsClientConfig {
+    /// Create an empty config.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Extensions::new())
+    }
 
-impl ClientConfig {
-    /// Merge this [`ClientConfig`] with aother one.
-    pub fn merge(&mut self, other: Self) {
-        if let Some(cipher_suites) = other.cipher_suites {
-            self.cipher_suites = Some(cipher_suites);
-        }
+    /// Create a default TlsClientConfig that enables:
+    /// - ALPN: H2, http1.1
+    /// - Keylogger: [`KeyLogIntent::Environment`]
+    pub fn default_http() -> Self {
+        Self::new()
+            .with_alpn_http_auto()
+            .with_keylog(KeyLogIntent::Environment)
+    }
 
-        if let Some(compression_algorithms) = other.compression_algorithms {
-            self.compression_algorithms = Some(compression_algorithms);
-        }
+    /// Transfer this config's pieces onto `extensions` (appending, so they
+    /// override existing entries of the same type — newest-wins). Use this to
+    /// transfer the tls config to e.g. request extensions
+    pub fn write_to(&self, extensions: &Extensions) {
+        extensions.extend(&self.0);
+    }
 
-        self.extensions = match (self.extensions.take(), other.extensions) {
-            (Some(our_ext), Some(other_ext)) => Some(merge_client_hello_lists(our_ext, other_ext)),
-            (None, Some(other_ext)) => Some(other_ext),
-            (maybe_our_ext, None) => maybe_our_ext,
-        };
-
-        if let Some(server_verify_mode) = other.server_verify_mode {
-            self.server_verify_mode = Some(server_verify_mode);
-        }
-
-        if let Some(client_auth) = other.client_auth {
-            self.client_auth = Some(client_auth);
-        }
-
-        if let Some(key_logger) = other.key_logger {
-            self.key_logger = Some(key_logger);
+    generate_set_and_with! {
+        /// Set the ALPN protocols to offer.
+        pub fn alpn(mut self, protocols: SmallVec<[ApplicationProtocol; 2]>) -> Self {
+            self.0.insert(TlsAlpn(protocols));
+            self
         }
     }
+
+    generate_set_and_with! {
+        /// Offer HTTP/2 and HTTP/1.1 via ALPN.
+        pub fn alpn_http_auto(mut self) -> Self {
+            self.0.insert(TlsAlpn::http_auto());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Offer HTTP/1.1 only via ALPN.
+        pub fn alpn_http_1(mut self) -> Self {
+            self.0.insert(TlsAlpn::http_1());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Offer HTTP/2 only via ALPN.
+        pub fn alpn_http_2(mut self) -> Self {
+            self.0.insert(TlsAlpn::http_2());
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the client SNI (server name) to send.
+        ///
+        /// Overrides the SNI the connector would otherwise derive: the transport
+        /// authority host, or for a tunnel connector, the [`TlsTunnel`] sni
+        ///
+        /// [`TlsTunnel`]: crate::tls::TlsTunnel
+        pub fn server_name(mut self, server_name: Host) -> Self {
+            self.0.insert(TlsServerName(server_name));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set how the server certificate is verified.
+        pub fn server_verify(mut self, mode: ServerVerifyMode) -> Self {
+            self.0.insert(TlsServerVerify(mode));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the supported protocol versions.
+        pub fn supported_versions(mut self, versions: Vec<ProtocolVersion>) -> Self {
+            self.0.insert(TlsSupportedVersions(versions));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the keylog intent.
+        pub fn keylog(mut self, intent: KeyLogIntent) -> Self {
+            self.0.insert(TlsKeyLog(intent));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the client certificate authentication material (mTLS).
+        pub fn client_auth(mut self, client_auth: ClientAuth) -> Self {
+            self.0.insert(TlsClientAuth(client_auth));
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the peer certificate chain is captured.
+        pub fn store_server_cert_chain(mut self, store: bool) -> Self {
+            self.0.insert(TlsStoreServerCertChain(store));
+            self
+        }
+    }
+
+    pub fn as_extensions(&self) -> &Extensions {
+        &self.0
+    }
+
+    /// Set an any config piece (newest-wins override).
+    ///
+    /// Should be used by backends in their Ext traits
+    #[doc(hidden)]
+    pub fn insert<T: Extension>(&self, piece: T) {
+        self.0.insert(piece);
+    }
 }
+
+impl Clone for TlsClientConfig {
+    fn clone(&self) -> Self {
+        let clone = Self::new();
+        clone.as_extensions().extend(self.as_extensions());
+        clone
+    }
+}
+
+/// Client SNI (server name) to send, as configured on [`TlsClientConfig`].
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsServerName(pub Host);
+
+/// ALPN protocols to offer.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
+pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
+
+impl TlsAlpn {
+    /// Offer HTTP/2 and HTTP/1.1.
+    #[must_use]
+    pub fn http_auto() -> Self {
+        Self(smallvec![
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+        ])
+    }
+
+    /// Offer HTTP/1.1 only.
+    #[must_use]
+    pub fn http_1() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_11])
+    }
+
+    /// Offer HTTP/2 only.
+    #[must_use]
+    pub fn http_2() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_2])
+    }
+}
+
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+/// How the server certificate is verified.
+pub struct TlsServerVerify(pub ServerVerifyMode);
+
+/// Client certificate authentication material (mTLS).
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsClientAuth(pub ClientAuth);
+
+/// Keylog intent (e.g. `SSLKEYLOGFILE`) for the connection.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsKeyLog(pub KeyLogIntent);
+
+/// Whether to capture the peer certificate chain into `NegotiatedTlsParameters`.
+///
+/// [`NegotiatedTlsParameters`]: crate::tls::client::NegotiatedTlsParameters
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsStoreServerCertChain(pub bool);
+
+/// Supported protocol versions, as a list (backends derive min/max as needed,
+/// preserving any GREASE entries in the wire list).
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
 #[derive(Debug, Clone)]
 /// The kind of client auth to be used.
@@ -97,25 +237,52 @@ pub enum ServerVerifyMode {
     Disable,
 }
 
-impl From<super::ClientHello> for ClientConfig {
-    fn from(value: super::ClientHello) -> Self {
-        Self {
-            cipher_suites: (!value.cipher_suites.is_empty()).then_some(value.cipher_suites),
-            compression_algorithms: (!value.compression_algorithms.is_empty())
-                .then_some(value.compression_algorithms),
-            extensions: (!value.extensions.is_empty()).then_some(value.extensions),
-            ..Default::default()
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::extensions::Extensions;
 
-impl From<ClientConfig> for super::ClientHello {
-    fn from(value: ClientConfig) -> Self {
-        Self {
-            protocol_version: ProtocolVersion::TLSv1_2,
-            cipher_suites: value.cipher_suites.unwrap_or_default(),
-            compression_algorithms: value.compression_algorithms.unwrap_or_default(),
-            extensions: value.extensions.unwrap_or_default(),
-        }
+    #[test]
+    fn pieces_layer_newest_wins_per_type() {
+        let ext = Extensions::new();
+        ext.insert(TlsAlpn::http_1());
+        ext.insert(TlsStoreServerCertChain(true));
+        // a later layer overrides only ALPN
+        ext.insert(TlsAlpn::http_auto());
+
+        assert_eq!(
+            ext.get_ref::<TlsAlpn>().map(|a| a.0.clone()),
+            Some(smallvec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11
+            ]),
+        );
+        assert_eq!(
+            ext.get_ref::<TlsStoreServerCertChain>().map(|g| g.0),
+            Some(true),
+        );
+        assert!(ext.get_ref::<TlsServerVerify>().is_none());
+    }
+
+    #[test]
+    fn config_setters_write_to_bag() {
+        let config = TlsClientConfig::new()
+            .with_alpn_http_auto()
+            .with_server_verify(ServerVerifyMode::Disable);
+
+        let bag = Extensions::new();
+        config.write_to(&bag);
+
+        assert_eq!(
+            bag.get_ref::<TlsAlpn>().map(|a| a.0.clone()),
+            Some(smallvec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11
+            ]),
+        );
+        assert_eq!(
+            bag.get_ref::<TlsServerVerify>().map(|v| v.0),
+            Some(ServerVerifyMode::Disable),
+        );
     }
 }

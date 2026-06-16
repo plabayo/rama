@@ -7,7 +7,7 @@ use crate::tls::{
     client::NegotiatedTlsParameters,
 };
 
-use super::ClientHelloProvider;
+use crate::tls::client::ClientHello;
 
 #[derive(Debug, Clone)]
 /// Data which can be hashed using [`Self::hash`],
@@ -37,16 +37,13 @@ impl Ja3 {
         Self::compute_from_client_hello(client_hello, negotiated_tls_version)
     }
 
-    /// Compute the [`Ja3`] (hash) from a reference to either a
-    /// [`ClientHello`] or a [`ClientConfig`] data structure.
+    /// Compute the [`Ja3`] (hash) from a reference to a [`ClientHello`].
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
-    /// [`ClientConfig`]: crate::tls::client::ClientConfig
-    #[expect(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
-        client_hello: impl ClientHelloProvider,
+        client_hello: &ClientHello,
         negotiated_tls_version: Option<ProtocolVersion>,
     ) -> Result<Self, Ja3ComputeError> {
         let version = negotiated_tls_version.unwrap_or_else(|| {
@@ -58,7 +55,9 @@ impl Ja3 {
 
         let cipher_suites: Vec<_> = client_hello
             .cipher_suites()
+            .iter()
             .filter(|c| !c.is_grease())
+            .copied()
             .collect();
         if cipher_suites.is_empty() {
             return Err(Ja3ComputeError::EmptyCipherSuites);

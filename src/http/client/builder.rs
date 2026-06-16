@@ -24,7 +24,7 @@ use std::{marker::PhantomData, time::Duration};
 #[cfg(feature = "boring")]
 use crate::tls::boring::client as boring_client;
 
-#[cfg(feature = "rustls")]
+#[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::net::tls::client::TlsClientConfig;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
@@ -179,13 +179,13 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
     /// to the proxy itself
     pub fn with_tls_proxy_support_using_boringssl_config(
         self,
-        config: std::sync::Arc<boring_client::TlsConnectorDataBuilder>,
+        config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<
         boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
         ProxyTunnelStage,
     > {
         let connector =
-            boring_client::TlsConnector::tunnel(self.connector, None).with_connector_data(config);
+            boring_client::TlsConnector::tunnel(self.connector, None).with_base_config(config);
         EasyHttpConnectorBuilder {
             connector,
             _phantom: PhantomData,
@@ -381,11 +381,10 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     /// wanted, use [`Self::with_custom_tls_connector`] instead.
     pub fn with_tls_support_using_boringssl(
         self,
-        config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
+        config: TlsClientConfig,
     ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
     {
-        let connector =
-            boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector = RequestVersionAdapter::new(connector);
 
         EasyHttpConnectorBuilder {
@@ -406,12 +405,11 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyStage> {
     /// requests if the egress server does not handle multiple http versions.
     pub fn with_tls_support_using_boringssl_and_default_http_version(
         self,
-        config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
+        config: TlsClientConfig,
         default_http_version: rama_http::Version,
     ) -> EasyHttpConnectorBuilder<RequestVersionAdapter<boring_client::TlsConnector<T>>, TlsStage>
     {
-        let connector =
-            boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+        let connector = boring_client::TlsConnector::auto(self.connector).with_base_config(config);
         let connector =
             RequestVersionAdapter::new(connector).with_default_version(default_http_version);
 

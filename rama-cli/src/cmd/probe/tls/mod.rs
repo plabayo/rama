@@ -11,7 +11,7 @@ use rama::{
         stream::Socket,
         tls::{
             DataEncoding,
-            client::{NegotiatedTlsParameters, ServerVerifyMode},
+            client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
         },
     },
     rt::Executor,
@@ -20,10 +20,7 @@ use rama::{
         client::{Request, service::TcpConnector},
     },
     telemetry::tracing,
-    tls::boring::{
-        client::{TlsConnectorDataBuilder, TlsConnectorLayer},
-        core::x509::X509,
-    },
+    tls::boring::{client::TlsConnectorLayer, core::x509::X509},
 };
 
 use clap::Args;
@@ -56,16 +53,16 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         "connecting to server",
     );
 
-    let tls_conn_data = TlsConnectorDataBuilder::new()
-        .maybe_with_server_verify_mode(cfg.insecure.then_some(ServerVerifyMode::Disable))
-        .with_store_server_certificate_chain(true)
-        .into_shared_builder();
+    let mut tls_config = TlsClientConfig::new().with_store_server_cert_chain(true);
+    if cfg.insecure {
+        tls_config.set_server_verify(ServerVerifyMode::Disable);
+    }
 
     let tcp_connector = TcpConnector::new(Executor::default());
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()
-        .with_connector_data(tls_conn_data)
+        .with_base_config(tls_config)
         .layer(loggin_service);
 
     let EstablishedClientConnection { conn, .. } =

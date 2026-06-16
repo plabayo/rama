@@ -1,4 +1,4 @@
-use std::{io::Write as _, sync::Arc};
+use std::io::Write as _;
 
 use rama::{
     Layer as _, Service,
@@ -13,10 +13,9 @@ use rama::{
         layer::decompression::DecompressionLayer,
         service::client::{HttpClientExt, multipart},
     },
-    net::tls::client::ServerVerifyMode,
+    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     rt::Executor,
     service::BoxService,
-    tls::boring::client::TlsConnectorDataBuilder,
     utils::str::any_submatch_ignore_ascii_case,
 };
 
@@ -44,10 +43,9 @@ async fn run_http_tests(base_uri: &'static str) {
         .with_default_transport_connector()
         .without_tls_proxy_support()
         .without_proxy_support()
-        .with_tls_support_using_boringssl(Some(Arc::new(
-            TlsConnectorDataBuilder::new_http_auto()
-                .with_server_verify_mode(ServerVerifyMode::Disable),
-        )))
+        .with_tls_support_using_boringssl(
+            TlsClientConfig::default_http().with_server_verify(ServerVerifyMode::Disable),
+        )
         .with_default_http_connector(Executor::default())
         .build_client()
         .boxed();

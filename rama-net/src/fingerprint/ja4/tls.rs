@@ -4,12 +4,10 @@ use std::fmt;
 
 use rama_core::extensions::Extensions;
 
-use crate::{
-    fingerprint::ClientHelloProvider,
-    tls::{
-        ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
-        SignatureScheme, client::NegotiatedTlsParameters,
-    },
+use crate::tls::{
+    ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
+    SignatureScheme,
+    client::{ClientHello, NegotiatedTlsParameters},
 };
 
 #[derive(Clone)]
@@ -42,16 +40,13 @@ impl Ja4 {
         Self::compute_from_client_hello(client_hello, negotiated_tls_version)
     }
 
-    /// Compute the [`Ja4`] (hash) from a reference to either a
-    /// [`ClientHello`] or a [`ClientConfig`] data structure.
+    /// Compute the [`Ja4`] (hash) from a reference to a [`ClientHello`].
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
-    /// [`ClientConfig`]: crate::tls::client::ClientConfig
-    #[expect(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
-        client_hello: impl ClientHelloProvider,
+        client_hello: &ClientHello,
         negotiated_tls_version: Option<ProtocolVersion>,
     ) -> Result<Self, Ja4ComputeError> {
         let version: TlsVersion = negotiated_tls_version
@@ -63,7 +58,9 @@ impl Ja4 {
 
         let mut cipher_suites: Vec<_> = client_hello
             .cipher_suites()
+            .iter()
             .filter(|c| !c.is_grease())
+            .copied()
             .collect();
         if cipher_suites.is_empty() {
             return Err(Ja4ComputeError::EmptyCipherSuites);

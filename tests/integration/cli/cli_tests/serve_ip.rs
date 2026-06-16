@@ -6,14 +6,11 @@ use rama_net::address::HostWithPort;
 use tokio::io::AsyncReadExt as _;
 
 #[cfg(feature = "boring")]
-use ::{
-    rama::{
-        net::client::{ConnectorService, EstablishedClientConnection},
-        net::tls::client::ServerVerifyMode,
-        tcp::client::{Request as TcpRequest, service::TcpConnector},
-        tls::boring::client::{TlsConnector, TlsConnectorDataBuilder},
-    },
-    std::sync::Arc,
+use rama::{
+    net::client::{ConnectorService, EstablishedClientConnection},
+    net::tls::client::{ServerVerifyMode, TlsClientConfig},
+    tcp::client::{Request as TcpRequest, service::TcpConnector},
+    tls::boring::client::TlsConnector,
 };
 
 #[tokio::test]
@@ -106,9 +103,7 @@ async fn test_tls_tcp_ip() {
     let mut stream = None;
     for i in 0..5 {
         let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
-            .with_connector_data(Arc::new(
-                TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
-            ));
+            .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
             .connect(TcpRequest::new(HostWithPort::local_ipv4(63120)))
             .await

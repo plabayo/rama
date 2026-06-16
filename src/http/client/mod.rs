@@ -96,14 +96,13 @@ where
 {
     #[cfg(feature = "boring")]
     pub fn default_with_executor(exec: Executor) -> Self {
-        let tls_config =
-            rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
+        let tls_config = crate::net::tls::client::TlsClientConfig::default_http();
 
         EasyHttpConnectorBuilder::new()
             .with_default_transport_connector()
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
-            .with_tls_support_using_boringssl(Some(tls_config))
+            .with_tls_support_using_boringssl(tls_config)
             .with_default_http_connector(exec)
             .build_client()
     }

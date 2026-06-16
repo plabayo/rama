@@ -443,10 +443,10 @@ mod tests {
     /// ([`ServiceInput`] wraps the duplex ends for the `ExtensionsRef` bound.)
     #[tokio::test]
     async fn e2e_relay_handshake_staples_mirrored_leaf() {
-        use crate::client::TlsConnectorDataBuilder;
+        use crate::client::TlsConnectorData;
         use crate::proxy::mitm::TlsMitmRelay;
         use rama_core::{ServiceInput, io::BridgeIo};
-        use rama_net::tls::client::ServerVerifyMode;
+        use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
         // Upstream TLS server presenting a cert that advertises OCSP.
         let (upstream_key, upstream_x509) = upstream_identity(Revocation::Ocsp);
@@ -476,10 +476,10 @@ mod tests {
 
         // Egress connector: verification disabled (self-signed test upstream),
         // exactly as the relay service configures it.
-        let egress_cd = TlsConnectorDataBuilder::default()
-            .with_server_verify_mode(ServerVerifyMode::Disable)
-            .build()
-            .expect("egress connector data");
+        let egress_cd = TlsConnectorData::try_from(
+            &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
+        )
+        .expect("egress connector data");
 
         // Relay drives both handshakes: egress connect → mirror → ingress accept.
         let relay_task = tokio::spawn(async move {

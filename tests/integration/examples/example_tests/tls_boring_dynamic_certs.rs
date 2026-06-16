@@ -19,11 +19,11 @@ use rama::{
         address::Domain,
         tls::{
             DataEncoding,
-            client::{NegotiatedTlsParameters, ServerVerifyMode},
+            client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
         },
     },
     rt::Executor,
-    tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
+    tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use std::{str::FromStr, time::Duration};
@@ -85,16 +85,19 @@ where
 {
     let domain = host.map(|host| Domain::from_str(host).unwrap());
 
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .maybe_with_server_name(domain)
-        .with_store_server_certificate_chain(true)
-        .into_shared_builder();
+    let mut tls_config = TlsClientConfig::default_http()
+        .with_server_verify(ServerVerifyMode::Disable)
+        .with_store_server_cert_chain(true);
+
+    if let Some(domain) = domain {
+        tls_config.set_server_name(domain.into());
+    }
+
     let inner_client = EasyHttpWebClient::connector_builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
+        .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .build_client();
 

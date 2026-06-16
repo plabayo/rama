@@ -1,4 +1,4 @@
-use itertools::Itertools;
+use crate::client::config::BoringTlsConnectorConfig;
 use rama_boring::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -15,37 +15,25 @@ use rama_boring::{
 use rama_core::error::BoxErrorExt as _;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
-    bytes::Bytes,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
-    extensions::Extension,
 };
-use rama_net::tls::{
-    ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
-    ProtocolVersion, client::ClientHello,
-};
-use rama_net::tls::{
-    DataEncoding,
-    client::{ClientAuth, ClientHelloExtension},
-};
+use rama_net::tls::client::TlsClientConfig;
+use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
+use rama_net::tls::{DataEncoding, client::ClientAuth};
 use rama_net::{address::Domain, tls::client::ServerVerifyMode};
-use rama_utils::macros::generate_set_and_with;
-use std::{borrow::Cow, fmt, sync::Arc};
+use std::fmt;
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
+#[cfg(feature = "compression")]
+use rama_net::tls::CertificateCompressionAlgorithm;
 
 use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 
-/// [`TlsConnectorData`] that will be used by the connector
-///
-/// In almost all circumstances you should never create this.
-/// Instead you should use [`TlsConnectorDataBuilder`] and pass
-/// that around, [`TlsConnector`] will then build the final config.
-///
-/// [`TlsConnector`]: super::TlsConnector
+/// /// The resolved native boringssl config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
@@ -64,431 +52,138 @@ impl std::fmt::Debug for TlsConnectorData {
     }
 }
 
-impl TlsConnectorData {
-    #[must_use]
-    pub fn builder() -> TlsConnectorDataBuilder {
-        TlsConnectorDataBuilder::new()
+impl TryFrom<&TlsClientConfig> for TlsConnectorData {
+    type Error = BoxError;
+
+    /// Build [`TlsConnectorData`] from a [`TlsClientConfig`] by gathering its
+    /// pieces (the same path the connector uses internally).
+    fn try_from(value: &TlsClientConfig) -> Result<Self, Self::Error> {
+        Self::try_from(BoringTlsConnectorConfig::from_extensions(
+            value.as_extensions(),
+        ))
     }
 }
 
-#[derive(Clone, Default, Extension)]
-#[extension(tags(tls))]
-/// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
-///
-/// This builder is very powerful and is capable of stacking other builders. Using it
-/// this way gives each layer the option to modify what is needed in an efficient way.
-pub struct TlsConnectorDataBuilder {
-    base_builders: Vec<Arc<Self>>,
-    server_verify_mode: Option<ServerVerifyMode>,
-    keylog_intent: Option<KeyLogIntent>,
-    cipher_list: Option<Vec<u16>>,
-    server_verify_cert_store: Option<Arc<X509Store>>,
-    store_server_certificate_chain: Option<bool>,
-    alpn_protos: Option<Bytes>,
-    alps: Option<(Vec<ApplicationProtocol>, bool)>,
-    min_ssl_version: Option<SslVersion>,
-    max_ssl_version: Option<SslVersion>,
-    record_size_limit: Option<u16>,
-    encrypted_client_hello: Option<bool>,
-    grease_enabled: Option<bool>,
-    ocsp_stapling_enabled: Option<bool>,
-    signed_cert_timestamps_enabled: Option<bool>,
-    extension_order: Option<Vec<u16>>,
+impl TryFrom<BoringTlsConnectorConfig<'_>> for TlsConnectorData {
+    type Error = BoxError;
 
-    curves: Option<Vec<SslCurve>>,
-    verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
-    client_auth: Option<ConnectorConfigClientAuth>,
-    certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
-    delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-    server_name: Option<Domain>,
-}
+    fn try_from(value: BoringTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        let server_verify_mode = value.verify.map(|v| v.0).unwrap_or_default();
+        let store_server_certificate_chain = value.store_chain.map(|p| p.0).unwrap_or_default();
+        let server_name = value
+            .server_name
+            .and_then(|s| s.0.clone().try_into_domain().ok());
 
-macro_rules! implement_copy_getters {
-    ($($name:ident: Option<$type:ty>),* $(,)?) => {
-        $(
-            /// Get Copy of this field.
-            ///
-            /// Will return Some(value) if it is set on this builder.
-            /// If not set on this builder `base_builders` will be checked
-            /// starting from the end to see if one of them contains a value.
-            /// The first match is returned.
-            pub fn $name(&self) -> Option<$type> {
-                self.$name.or_else(|| {
-                    self.base_builders
-                        .iter()
-                        .rev()
-                        .find_map(|builder| builder.$name())
-                })
+        let keylog_intent = value
+            .keylog
+            .map(|k| k.0.clone())
+            .unwrap_or(KeyLogIntent::Environment);
+        let grease_enabled = value.grease.map(|p| p.0).unwrap_or_default();
+        let ocsp_stapling_enabled = value.ocsp_stapling.map(|p| p.0).unwrap_or_default();
+        let signed_cert_timestamps_enabled = value
+            .signed_cert_timestamps
+            .map(|p| p.0)
+            .unwrap_or_default();
+        let encrypted_client_hello = value
+            .encrypted_client_hello
+            .map(|p| p.0)
+            .unwrap_or_default();
+        let record_size_limit = value.record_size_limit.map(|p| p.0);
+        let server_verify_cert_store = value.verify_cert_store.map(|p| p.0.clone());
+        let alps = value.alps.map(|p| (p.protocols.clone(), p.new_codepoint));
+
+        let alpn_protos = value
+            .alpn
+            .map(|a| {
+                ApplicationProtocol::encode_alpns(&a.0)
+                    .context("build (boring) ssl connector: encode alpns")
+            })
+            .transpose()?;
+
+        let cipher_list: Option<Vec<u16>> = value
+            .cipher_suites
+            .map(|p| p.0.iter().map(|c| (*c).into()).collect());
+        let extension_order: Option<Vec<u16>> = value
+            .extension_order
+            .map(|p| p.0.iter().map(|e| u16::from(*e)).collect());
+        let certificate_compression_algorithms = value.cert_compression.map(|p| p.0.clone());
+
+        let curves = value.supported_groups.map(|p| {
+            // Distinct rama groups can map to the same boring `SslCurve`: drop the
+            // resulting consecutive duplicates (boring rejects a duplicate curve).
+            let mut curves: Vec<SslCurve> =
+                p.0.iter()
+                    .filter_map(|g| (*g).rama_try_into().ok())
+                    .collect();
+            curves.dedup();
+            curves
+        });
+        let verify_algorithm_prefs = value.signature_schemes.map(|p| {
+            // Distinct rama schemes can map to the same boring `SslSignatureAlgorithm`;
+            // drop the resulting consecutive duplicates (boring errors on
+            // DUPLICATE_SIGNATURE_ALGORITHM otherwise).
+            let mut prefs: Vec<SslSignatureAlgorithm> =
+                p.0.iter()
+                    .filter_map(|s| (*s).rama_try_into().ok())
+                    .collect();
+            prefs.dedup();
+            prefs
+        });
+        let delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>> =
+            value.delegated_credentials.map(|p| {
+                p.0.iter()
+                    .filter_map(|s| (*s).rama_try_into().ok())
+                    .collect()
+            });
+
+        let client_auth = value
+            .client_auth
+            .map(|c| ConnectorConfigClientAuth::try_from(c.0.clone()))
+            .transpose()?;
+
+        // Versions: min/max derived from the offered list, explicit overrides win.
+        // (The max override also doubles as the mitm egress safety clamp.)
+        let mut min_ssl_version: Option<SslVersion> = None;
+        let mut max_ssl_version: Option<SslVersion> = None;
+        if let Some(versions) = value.versions {
+            if let Some(min) = versions.0.iter().filter(|v| !v.is_grease()).min() {
+                min_ssl_version = Some((*min).rama_try_into().map_err(|v| {
+                    BoxError::from_static_str("boring connector: cast min proto version")
+                        .context_field("protocol_version", v)
+                })?);
             }
-        )*
-    };
-}
-
-macro_rules! implement_reference_getters {
-    ($($name:ident: Option<$type:ty>),* $(,)?) => {
-        $(
-            /// Get reference to this field.
-            ///
-            /// Will return Some(&value) if it is set on this builder.
-            /// If not set on this builder `base_builders` will be checked
-            /// starting from the end to see if one of them contains a value.
-            /// The first match is returned.
-            pub fn $name(&self) -> Option<&$type> {
-                self.$name.as_ref().or_else(|| {
-                    self.base_builders
-                        .iter()
-                        .rev()
-                        .find_map(|builder| builder.$name())
-                })
+            if let Some(max) = versions.0.iter().filter(|v| !v.is_grease()).max() {
+                max_ssl_version = Some((*max).rama_try_into().map_err(|v| {
+                    BoxError::from_static_str("boring connector: cast max proto version")
+                        .context_field("protocol_version", v)
+                })?);
             }
-        )*
-    };
-}
-
-#[derive(Debug, Clone)]
-pub struct ConnectorConfigClientAuth {
-    pub cert_chain: Vec<X509>,
-    pub private_key: PKey<Private>,
-}
-
-impl TlsConnectorDataBuilder {
-    implement_copy_getters!(
-        server_verify_mode: Option<ServerVerifyMode>,
-        min_ssl_version: Option<SslVersion>,
-        max_ssl_version: Option<SslVersion>,
-        record_size_limit: Option<u16>,
-        encrypted_client_hello: Option<bool>,
-        store_server_certificate_chain: Option<bool>,
-        grease_enabled: Option<bool>,
-        ocsp_stapling_enabled: Option<bool>,
-        signed_cert_timestamps_enabled: Option<bool>,
-    );
-
-    /// Get reference to this field.
-    ///
-    /// Will return Some(&value) if it is set on this builder.
-    /// If not set on this builder `base_builders` will be checked
-    /// starting from the end to see if one of them contains a value.
-    /// The first match is returned.
-    pub fn server_verify_cert_store(&self) -> Option<&X509Store> {
-        self.server_verify_cert_store.as_deref().or_else(|| {
-            self.base_builders
-                .iter()
-                .rev()
-                .find_map(|builder| builder.server_verify_cert_store())
-        })
-    }
-
-    implement_reference_getters!(
-        cipher_list: Option<Vec<u16>>,
-        extension_order: Option<Vec<u16>>,
-        alpn_protos: Option<Bytes>,
-        alps: Option<(Vec<ApplicationProtocol>, bool)>,
-        curves: Option<Vec<SslCurve>>,
-        verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
-        client_auth: Option<ConnectorConfigClientAuth>,
-        certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
-        delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-        server_name: Option<Domain>,
-    );
-
-    /// Return the effective keylog intent: the builder's own intent
-    /// if set, else the deepest base-builder's; defaulting to
-    /// [`KeyLogIntent::Environment`] when none of them carry one.
-    #[must_use]
-    pub fn effective_keylog_intent(&self) -> Cow<'_, KeyLogIntent> {
-        match self.keylog_intent_inner() {
-            Some(i) => Cow::Borrowed(i),
-            None => Cow::Owned(KeyLogIntent::Environment),
         }
-    }
-
-    fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
-        self.keylog_intent.as_ref().or_else(|| {
-            self.base_builders
-                .iter()
-                .rev()
-                .find_map(|builder| builder.keylog_intent_inner())
-        })
-    }
-
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn new_http_auto() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "wiring format for h2,http1 is known to always succeed"
-        )]
-        Self::new()
-            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
-            .expect("with http2 and http1")
-    }
-
-    #[must_use]
-    pub fn new_http_1() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "wiring format for http1 is known to always succeed"
-        )]
-        Self::new()
-            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
-            .expect("with http1")
-    }
-
-    #[must_use]
-    pub fn new_http_2() -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "wiring format for h2 is known to always succeed"
-        )]
-        Self::new()
-            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
-            .expect("with http 2")
-    }
-
-    /// Add [`TlsConnectorDataBuilder`] to the end of our base builder
-    ///
-    /// When evaluating builders we start from this builder (the last one) and
-    /// work our way back until we find a value.
-    pub fn push_base_config(&mut self, config: Arc<Self>) -> &mut Self {
-        self.base_builders.push(config);
-        self
-    }
-
-    /// Add [`TlsConnectorDataBuilder`] to the start of our base builders
-    ///
-    /// Builder in the start is evaluated as the last one when iterating over builders
-    pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {
-        self.base_builders.insert(0, config);
-        self
-    }
-
-    generate_set_and_with! {
-        /// Add [`ConfigBuilder`] to the start of our base builders
-        pub fn base_config(mut self, config: Arc<Self>) -> Self {
-            self.push_base_config(config);
-            self
+        if let Some(p) = value.min_version {
+            min_ssl_version = Some((p.0).rama_try_into().map_err(|v| {
+                BoxError::from_static_str("boring connector: cast min proto version override")
+                    .context_field("protocol_version", v)
+            })?);
         }
-    }
-
-    generate_set_and_with!(
-        /// Set the [`ServerVerifyMode`] that will be used by the tls client to verify the server
-        pub fn server_verify_mode(mut self, server_verify_mode: Option<ServerVerifyMode>) -> Self {
-            self.server_verify_mode = server_verify_mode;
-            self
+        if let Some(p) = value.max_version {
+            max_ssl_version = Some((p.0).rama_try_into().map_err(|v| {
+                BoxError::from_static_str("boring connector: cast max proto version override")
+                    .context_field("protocol_version", v)
+            })?);
         }
-    );
 
-    generate_set_and_with!(
-        /// Set the [`X509Store`] that will be used by the tls client to verify the server certs
-        ///
-        /// (unless the mode is [`ServerVerifyMode::Disable`])
-        pub fn server_verify_cert_store(
-            mut self,
-            server_verify_cert_store: Option<Arc<X509Store>>,
-        ) -> Self {
-            self.server_verify_cert_store = server_verify_cert_store;
-            self
+        // A TLS 1.3-only `supported_versions` offer derives min == max == TLS 1.3
+        // from the list. If an egress max-version clamp (mitm safety, see
+        // `BoringMaxVersion` / `TlsClientConfig::rama_from(&ClientHello)`) then lowered
+        // max to TLS 1.2, min would exceed max, which boring rejects. TLS 1.3 is
+        // the only version above TLS 1.2, so lower exactly that floor to keep the
+        // connector internally consistent (a lower legitimate floor is untouched).
+        if min_ssl_version == Some(SslVersion::TLS1_3)
+            && max_ssl_version == Some(SslVersion::TLS1_2)
+        {
+            min_ssl_version = Some(SslVersion::TLS1_2);
         }
-    );
 
-    generate_set_and_with!(
-        /// Set [`KeyLogIntent`] that will be used
-        pub fn keylog_intent(mut self, intent: Option<KeyLogIntent>) -> Self {
-            self.keylog_intent = intent;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the cipher list for this config
-        pub fn cipher_list(mut self, list: Option<Vec<u16>>) -> Self {
-            self.cipher_list = list;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Store server certificate chain if enabled in [`NegotiatedTlsParameters`] extension
-        ///
-        /// This will always clone the entire chain, so only enable this if needed.
-        pub fn store_server_certificate_chain(
-            mut self,
-            store_server_certificate_chain: Option<bool>,
-        ) -> Self {
-            self.store_server_certificate_chain = store_server_certificate_chain;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set alpn protos that this client will send to server
-        ///
-        /// Order of protocols here is important. When server supports
-        /// multiple protocols it will choose the first one it supports
-        /// from this list.
-        pub fn alpn_protos(mut self, protos: Option<Bytes>) -> Self {
-            self.alpn_protos = protos;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set [`ApplicationProtocol`] that this client will send to server
-        ///
-        /// Order of protocols here is important. When server supports
-        /// multiple protocols it will choose the first one it supports
-        /// from this list.
-        pub fn rama_alpn_protos(
-            mut self,
-            protos: Option<&[ApplicationProtocol]>,
-        ) -> Result<Self, BoxError> {
-            self.alpn_protos = protos
-                .map(|protos| {
-                    ApplicationProtocol::encode_alpns(protos)
-                        .context("build (boring) ssl connector: encode alpns")
-                })
-                .transpose()?;
-            Ok(self)
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the minimum ssl version that this connector will accept
-        pub fn min_ssl_version(mut self, version: Option<SslVersion>) -> Self {
-            self.min_ssl_version = version;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the maxium ssl version that this connector will accept
-        pub fn max_ssl_version(mut self, version: Option<SslVersion>) -> Self {
-            self.max_ssl_version = version;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the record size limit that will be set on this connector
-        pub fn record_size_limit(mut self, limit: Option<u16>) -> Self {
-            self.record_size_limit = limit;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set if encrypted client hello should be enabled
-        pub fn encrypted_client_hello(mut self, value: Option<bool>) -> Self {
-            self.encrypted_client_hello = value;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set if grease should be enable
-        pub fn grease_enabled(mut self, value: Option<bool>) -> Self {
-            self.grease_enabled = value;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set if ocsp stapling should be needed
-        pub fn ocsp_stapling_enabled(mut self, value: Option<bool>) -> Self {
-            self.ocsp_stapling_enabled = value;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set if signed certificate timestamps should be enabled
-        pub fn signed_cert_timestamps_enabled(mut self, value: Option<bool>) -> Self {
-            self.signed_cert_timestamps_enabled = value;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the order of client hello extensions
-        pub fn extension_order(mut self, order: Option<Vec<u16>>) -> Self {
-            self.extension_order = order;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set the eliptic curves supported by this client
-        pub fn curves(mut self, curves: Option<Vec<SslCurve>>) -> Self {
-            self.curves = curves;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set [`SslSignatureAlgorithm`]s for verifying
-        pub fn verify_algorithm_prefs(mut self, prefs: Option<Vec<SslSignatureAlgorithm>>) -> Self {
-            self.verify_algorithm_prefs = prefs;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set client auth that will be used by this connector
-        pub fn client_auth(mut self, auth: Option<ConnectorConfigClientAuth>) -> Self {
-            self.client_auth = auth;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set certificate compression algorithms
-        pub fn certificate_compression_algorithms(
-            mut self,
-            algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
-        ) -> Self {
-            self.certificate_compression_algorithms = algorithms;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set delegated credential schemes
-        pub fn delegated_credential_schemes(
-            mut self,
-            schemes: Option<Vec<SslSignatureAlgorithm>>,
-        ) -> Self {
-            self.delegated_credential_schemes = schemes;
-            self
-        }
-    );
-
-    generate_set_and_with!(
-        /// Set server name used for SNI extension
-        pub fn server_name(mut self, name: Option<Domain>) -> Self {
-            self.server_name = name;
-            self
-        }
-    );
-
-    pub fn into_shared_builder(self) -> Arc<Self> {
-        Arc::new(self)
-    }
-
-    /// Build the [`TlsConnectorData`] used by the [`TlsConnector`]
-    ///
-    /// NOTE: this method should in almost all circumstances never by called
-    /// directly. The [`TlsConnector`] will call build only when needed and
-    /// as late as possible. The only place where you manually need to build
-    /// the [`TlsConnectorData`] is if you use [`tls_connect`] directly.
-    ///
-    /// [`TlsConnector`]: super::TlsConnector
-    /// [`tls_connect`]: super::tls_connect
-    pub fn build(&self) -> Result<TlsConnectorData, BoxError> {
         // `no_default_verify_builder` skips boring's per-call
         // `set_default_verify_paths`, which would otherwise parse the entire OS
         // trust store into a throwaway per-connector store on every build. We
@@ -498,11 +193,11 @@ impl TlsConnectorDataBuilder {
         )
         .context("create (boring) ssl connector builder")?;
 
-        if let Some(store) = self.server_verify_cert_store() {
+        if let Some(store) = &server_verify_cert_store {
             trace!("boring connector: set provided cert store to verify as server");
             cfg_builder.set_cert_store_ref(store);
         } else {
-            match self.server_verify_mode().unwrap_or_default() {
+            match server_verify_mode {
                 ServerVerifyMode::Disable => {
                     // Verification is disabled (a NONE verify callback is
                     // installed below), so the trust store is never consulted:
@@ -522,7 +217,7 @@ impl TlsConnectorDataBuilder {
             }
         }
 
-        if let Some(sink) = open_intent_sink(&self.effective_keylog_intent())? {
+        if let Some(sink) = open_intent_sink(&keylog_intent)? {
             cfg_builder.set_keylog_callback(move |_, line| {
                 let mut buf = String::with_capacity(line.len() + 1);
                 buf.push_str(line);
@@ -531,70 +226,61 @@ impl TlsConnectorDataBuilder {
             });
         }
 
-        if let Some(order) = self.extension_order() {
-            trace!("boring connector: set extension order: {order:?}");
+        if let Some(order) = &extension_order {
+            trace!(?order, "boring connector: set extension order");
             cfg_builder
                 .set_extension_order(order)
                 .context("build (boring) ssl connector: set extension order")?;
         }
 
-        if let Some(list) = self.cipher_list() {
-            trace!("boring connector: set raw cipher list: {list:?}");
+        if let Some(list) = &cipher_list {
+            trace!(?list, "boring connector: set raw cipher list");
             cfg_builder
                 .set_raw_cipher_list(list)
                 .context("build (boring) ssl connector: set cipher list")?;
         }
 
-        if let Some(b) = self.alpn_protos() {
-            trace!("boring connector: set ALPN protos: {b:?}",);
+        if let Some(alpn_protos) = &alpn_protos {
+            trace!(?alpn_protos, "boring connector: set ALPN protos");
             cfg_builder
-                .set_alpn_protos(b)
+                .set_alpn_protos(alpn_protos)
                 .context("build (boring) ssl connector: set alpn protos")?;
         }
 
-        if let Some(c) = self.curves() {
-            trace!("boring connector: set {} SSL curve(s)", c.len());
+        if let Some(curves) = &curves {
+            trace!(curves = curves.len(), "boring connector: set SSL curve(s)");
             cfg_builder
-                .set_curves(c)
+                .set_curves(curves)
                 .context("build (boring) ssl connector: set curves")?;
         }
 
-        let min_ssl_version = self.min_ssl_version();
-        trace!(
-            "boring connector: set SSL version: min: {:?}",
-            min_ssl_version
-        );
+        trace!(?min_ssl_version, "boring connector: set min SSL version");
         cfg_builder
             .set_min_proto_version(min_ssl_version)
             .context("build (boring) ssl connector: set min proto version")?;
 
-        let max_ssl_version = self.max_ssl_version();
-        trace!(
-            "boring connector: set SSL version: max: {:?}",
-            max_ssl_version
-        );
+        trace!(?max_ssl_version, "boring connector: set max SSL version");
         cfg_builder
             .set_max_proto_version(max_ssl_version)
             .context("build (boring) ssl connector: set max proto version")?;
 
-        if let Some(s) = self.verify_algorithm_prefs() {
+        if let Some(s) = &verify_algorithm_prefs {
             cfg_builder.set_verify_algorithm_prefs(s).context(
                 "build (boring) ssl connector: set signature schemes (verify algorithm prefs)",
             )?;
         }
 
-        let grease_enabled = self.grease_enabled().unwrap_or_default();
         cfg_builder.set_grease_enabled(grease_enabled);
 
-        if self.ocsp_stapling_enabled().unwrap_or_default() {
+        if ocsp_stapling_enabled {
             cfg_builder.enable_ocsp_stapling();
         }
 
-        if self.signed_cert_timestamps_enabled().unwrap_or_default() {
+        if signed_cert_timestamps_enabled {
             cfg_builder.enable_signed_cert_timestamps();
         }
 
-        if let Some(compression_algorithms) = self.certificate_compression_algorithms() {
+        if let Some(compression_algorithms) = &certificate_compression_algorithms {
             for compressor in compression_algorithms.iter() {
                 #[cfg(feature = "compression")]
                 match compressor {
@@ -628,7 +314,7 @@ impl TlsConnectorDataBuilder {
             }
         }
 
-        match self.server_verify_mode().unwrap_or_default() {
+        match server_verify_mode {
             ServerVerifyMode::Auto => {
                 trace!("boring connector: server verify mode: auto (default verifier)");
             } // nothing explicit to do
@@ -638,7 +324,7 @@ impl TlsConnectorDataBuilder {
             }
         }
 
-        if let Some(auth) = self.client_auth() {
+        if let Some(auth) = &client_auth {
             trace!("boring connector: client mTls: set private key");
             cfg_builder
                 .set_private_key(auth.private_key.as_ref())
@@ -670,7 +356,7 @@ impl TlsConnectorDataBuilder {
             .configure()
             .context("create ssl connector configuration")?;
 
-        if let Some((alps_list, new_codepoint)) = self.alps() {
+        if let Some((alps_list, new_codepoint)) = &alps {
             trace!("boring connector: set ALPS config");
             cfg.set_alps_use_new_codepoint(*new_codepoint);
             for app_proto in alps_list {
@@ -679,36 +365,40 @@ impl TlsConnectorDataBuilder {
             }
         }
 
-        if let Some(limit) = self.record_size_limit() {
+        if let Some(limit) = record_size_limit {
             trace!("boring connector: setting record size limit");
             cfg.set_record_size_limit(limit)
                 .context("set record size limit")?;
         }
 
-        if let Some(schemes) = self.delegated_credential_schemes() {
+        if let Some(schemes) = &delegated_credential_schemes {
             trace!("boring connector: setting delegated credential schemes");
             cfg.set_delegated_credential_schemes(schemes)
                 .context("set delegated credential schemas")?;
         }
 
-        if self.encrypted_client_hello().unwrap_or_default() {
+        if encrypted_client_hello {
             trace!("boring connector: enabling ech grease");
             cfg.set_enable_ech_grease(true);
         }
 
         trace!(
-            "boring connector: return SSL connector config for server: {:?}",
-            self.server_name()
+            ?server_name,
+            "boring connector: return SSL connector config for server"
         );
 
-        Ok(TlsConnectorData {
+        Ok(Self {
             config: cfg,
-            store_server_certificate_chain: self
-                .store_server_certificate_chain()
-                .unwrap_or_default(),
-            server_name: self.server_name().cloned(),
+            store_server_certificate_chain,
+            server_name,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectorConfigClientAuth {
+    pub cert_chain: Vec<X509>,
+    pub private_key: PKey<Private>,
 }
 
 /// Process-wide trust store, built once and shared by every connector that
@@ -775,486 +465,6 @@ fn build_os_default_verify_store() -> Result<X509Store, BoxError> {
     }
 
     Ok(builder.build())
-}
-
-impl std::fmt::Debug for TlsConnectorDataBuilder {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Debug implementation of this struct will print each field, but also the getter of
-        // each field. E.g server_verify_mode will show the value set on this exact builder and
-        // server_verify_mode() will print the output of the getter, this will also go over
-        // the entire chain of base_builders and will show the final value that will be used during build.
-        f.debug_struct("TlsConnectorDataBuilder")
-            .field("server_verify_mode", &self.server_verify_mode)
-            .field("server_verify_mode()", &self.server_verify_mode())
-            .field("keylog_intent", &self.keylog_intent)
-            .field("keylog_intent()", &self.keylog_intent_inner())
-            .field("cipher_list", &self.cipher_list)
-            .field("cipher_list()", &self.cipher_list())
-            .field(
-                "store_server_certificate_chain",
-                &self.store_server_certificate_chain,
-            )
-            .field(
-                "store_server_certificate_chain()",
-                &self.store_server_certificate_chain(),
-            )
-            .field("alpn_protos", &self.alpn_protos)
-            .field("alpn_protos()", &self.alpn_protos())
-            .field("min_ssl_version", &self.min_ssl_version)
-            .field("min_ssl_version()", &self.min_ssl_version())
-            .field("max_ssl_version", &self.max_ssl_version)
-            .field("max_ssl_version()", &self.max_ssl_version())
-            .field("record_size_limit", &self.record_size_limit)
-            .field("record_size_limit()", &self.record_size_limit())
-            .field("encrypted_client_hello", &self.encrypted_client_hello)
-            .field("encrypted_client_hello()", &self.encrypted_client_hello())
-            .field("grease_enabled", &self.grease_enabled)
-            .field("grease_enabled()", &self.grease_enabled())
-            .field("ocsp_stapling_enabled", &self.ocsp_stapling_enabled)
-            .field("ocsp_stapling_enabled()", &self.ocsp_stapling_enabled())
-            .field(
-                "signed_cert_timestamps_enabled",
-                &self.signed_cert_timestamps_enabled,
-            )
-            .field(
-                "signed_cert_timestamps_enabled()",
-                &self.signed_cert_timestamps_enabled(),
-            )
-            .field("extension_order", &self.extension_order)
-            .field("extension_order()", &self.extension_order())
-            .field("curves", &self.curves)
-            .field("curves()", &self.curves())
-            .field("verify_algorithm_prefs", &self.verify_algorithm_prefs)
-            .field("verify_algorithm_prefs()", &self.verify_algorithm_prefs())
-            .field("client_auth", &self.client_auth)
-            .field("client_auth()", &self.client_auth())
-            .field(
-                "certificate_compression_algorithms",
-                &self.certificate_compression_algorithms,
-            )
-            .field(
-                "certificate_compression_algorithms()",
-                &self.certificate_compression_algorithms(),
-            )
-            .field(
-                "delegated_credential_schemes",
-                &self.delegated_credential_schemes,
-            )
-            .field(
-                "delegated_credential_schemes()",
-                &self.delegated_credential_schemes(),
-            )
-            .field("server_name", &self.server_name)
-            .field("server_name()", &self.server_name())
-            .field("base_builders", &self.base_builders)
-            .finish()
-    }
-}
-
-// TODO in the future ClientConfig will be removed and instead we will create
-// this builder from a client_hello (or something else) directly, but until we do that we also
-// support creating this builder from a ClientConfig chain.
-impl TlsConnectorDataBuilder {
-    pub fn try_from_multiple_client_configs<'a>(
-        cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
-    ) -> Result<Self, BoxError> {
-        let mut keylog_intent = None;
-        let mut extension_order = None;
-        let mut cipher_suites = None;
-        let mut server_name = None;
-        let mut alpn_protos = None;
-        let mut alps = None;
-        let mut curves = None;
-        let mut min_ssl_version = None;
-        let mut max_ssl_version = None;
-        let mut verify_algorithm_prefs = None;
-        let mut server_verify_mode = None;
-        let mut store_server_certificate_chain = false;
-        let mut client_auth = None;
-        let mut grease_enabled = false;
-        let mut ocsp_stapling_enabled = false;
-        let mut signed_cert_timestamps_enabled = false;
-        let mut certificate_compression_algorithms = None;
-        let mut record_size_limit = None;
-        let mut delegated_credential_schemes = None;
-        let mut encrypted_client_hello = None;
-
-        for cfg in cfg_it {
-            cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
-            keylog_intent = cfg.key_logger.as_ref().or(keylog_intent);
-            client_auth = cfg.client_auth.as_ref().or(client_auth);
-            server_verify_mode = cfg.server_verify_mode.or(server_verify_mode);
-            store_server_certificate_chain =
-                store_server_certificate_chain || cfg.store_server_certificate_chain;
-
-            extension_order = {
-                let v: Vec<_> = extension_order
-                    .into_iter()
-                    .flatten()
-                    .chain(
-                        cfg.extensions
-                            .iter()
-                            .flatten()
-                            .map(|ext| u16::from(ext.id())),
-                    )
-                    .dedup()
-                    .collect();
-                (!v.is_empty()).then_some(v)
-            };
-
-            // use the extensions that we can use for the builder
-            for extension in cfg.extensions.iter().flatten() {
-                match extension {
-                    ClientHelloExtension::ServerName(maybe_domain) => {
-                        server_name = if maybe_domain.is_some() {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                maybe_domain
-                            );
-                            maybe_domain.clone()
-                        } else {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: ignore server null value"
-                            );
-                            None
-                        };
-                    }
-                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn_list) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: alpn: {:?}",
-                            alpn_list
-                        );
-                        let alpns = ApplicationProtocol::encode_alpns(alpn_list)
-                            .context("build (boring) ssl connector: encode alpns")?;
-                        alpn_protos = Some(alpns);
-                    }
-                    ClientHelloExtension::SupportedGroups(groups) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: supported groups: {:?}",
-                            groups
-                        );
-                        curves = Some(groups.iter().filter_map(|c| {
-                            if c.is_grease() {
-                                grease_enabled = true;
-                                trace!("ignore grease support group (curve) {c}");
-                                return None;
-                            }
-
-                            match (*c).rama_try_into() {
-                                Ok(v) => Some(v),
-                                Err(c) => {
-                                trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
-                                None
-                                }
-                                }
-                        }).dedup().collect());
-                    }
-                    ClientHelloExtension::SupportedVersions(versions) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: supported versions: {:?}",
-                            versions
-                        );
-
-                        if let Some(min_ver) = versions
-                            .iter()
-                            .filter(|v| {
-                                if v.is_grease() {
-                                    grease_enabled = true;
-                                    trace!("ignore grease support version {v}");
-                                    return false;
-                                }
-                                true
-                            })
-                            .min()
-                        {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: min version: {:?}",
-                                min_ver
-                            );
-                            min_ssl_version = Some((*min_ver).rama_try_into().map_err(|v| {
-                                BoxError::from_static_str(
-                                    "build boring ssl connector: cast min proto version",
-                                )
-                                .context_field("protocol_version", v)
-                            })?);
-                        }
-
-                        if let Some(max_ver) = versions
-                            .iter()
-                            .filter(|v| {
-                                if v.is_grease() {
-                                    grease_enabled = true;
-                                    trace!("ignore grease support version {v}");
-                                    return false;
-                                }
-                                true
-                            })
-                            .max()
-                        {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: max version: {:?}",
-                                max_ver
-                            );
-                            max_ssl_version = Some((*max_ver).rama_try_into().map_err(|v| {
-                                BoxError::from_static_str(
-                                    "build boring ssl connector: cast max proto version",
-                                )
-                                .context_field("protocol_version", v)
-                            })?);
-                        }
-                    }
-                    ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: signature algorithms: {:?}",
-                            schemes
-                        );
-                        verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| {
-                            if s.is_grease() {
-                                grease_enabled = true;
-                                trace!("ignore grease signatured schemes {s}");
-                                return None;
-                            }
-
-                            match (*s).rama_try_into() {
-                                Ok(v) => Some(v),
-                                Err(s) => {
-                                    trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
-                                    None
-                                }
-                            }
-                        }).dedup().collect());
-                    }
-                    ClientHelloExtension::CertificateCompression(algorithms) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: certificate compression algorithms: {:?}",
-                            algorithms
-                        );
-                        certificate_compression_algorithms = Some(algorithms.clone());
-                    }
-                    ClientHelloExtension::DelegatedCredentials(schemes) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: delegated credentials signature algorithms: {:?}",
-                            schemes
-                        );
-                        delegated_credential_schemes = Some(
-                            schemes
-                                .iter()
-                                .filter_map(|s| {
-                                    match (*s).rama_try_into() {
-                                        Ok(v) => Some(v),
-                                        Err(s) => {
-                                            trace!("ignore unsupported signatured scheme for delegated creds {s} (file issue if you require it");
-                                            None
-                                        }
-                                    }
-                                })
-                                .collect(),
-                        );
-                    }
-                    ClientHelloExtension::RecordSizeLimit(limit) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: record size limit: {:?}",
-                            limit
-                        );
-                        record_size_limit = Some(*limit);
-                    }
-                    ClientHelloExtension::EncryptedClientHello(_) => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: encrypted client hello enabled",
-                        );
-                        encrypted_client_hello = Some(true);
-                    }
-                    ClientHelloExtension::ApplicationSettings {
-                        protocols,
-                        new_codepoint,
-                    } => {
-                        trace!(
-                            "TlsConnectorData: builder: from std client config: application settings (ALPS): {:?}",
-                            protocols
-                        );
-                        alps = Some((protocols.clone(), *new_codepoint));
-                    }
-                    other => match other.id() {
-                        ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: enable ocsp stapling (ext = {other:?})"
-                            );
-                            ocsp_stapling_enabled = true;
-                        }
-                        ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: enable signed cert timestamps (ext = {other:?})"
-                            );
-                            signed_cert_timestamps_enabled = true;
-                        }
-                        _ => {
-                            trace!(
-                                "TlsConnectorData: builder: from std client config: ignore client hello ext (ext = {other:?})"
-                            );
-                        }
-                    },
-                }
-            }
-        }
-
-        let cipher_list: Option<Vec<u16>> = cipher_suites
-            .as_ref()
-            .map(|v| v.iter().copied().map(Into::into).collect());
-        trace!(
-            "TlsConnectorData: builder: from std client config: cipher list: {:?}; supported groups: {:?}",
-            cipher_list, curves,
-        );
-
-        let client_auth = client_auth
-            .map(|auth| auth.clone().try_into())
-            .transpose()?;
-
-        let builder = Self {
-            base_builders: vec![],
-            keylog_intent: keylog_intent.cloned(),
-            extension_order,
-            cipher_list,
-            alpn_protos,
-            alps,
-            curves,
-            min_ssl_version,
-            max_ssl_version,
-            verify_algorithm_prefs,
-            server_verify_mode,
-            server_verify_cert_store: None,
-            client_auth,
-            store_server_certificate_chain: Some(store_server_certificate_chain),
-            grease_enabled: Some(grease_enabled),
-            ocsp_stapling_enabled: Some(ocsp_stapling_enabled),
-            signed_cert_timestamps_enabled: Some(signed_cert_timestamps_enabled),
-            certificate_compression_algorithms,
-            delegated_credential_schemes,
-            record_size_limit,
-            encrypted_client_hello,
-            server_name,
-        };
-
-        Ok(builder)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Tls13ClientHelloFacts {
-    supported: bool,
-    cipher_suites_present: bool,
-    capable_signature_algorithms_present: bool,
-}
-
-impl Tls13ClientHelloFacts {
-    fn from_client_hello(client_hello: &ClientHello) -> Self {
-        Self {
-            supported: client_hello.supported_versions().is_some_and(|versions| {
-                versions
-                    .iter()
-                    .filter(|v| !v.is_grease())
-                    .any(|v| *v == ProtocolVersion::TLSv1_3)
-            }),
-            cipher_suites_present: client_hello
-                .cipher_suites()
-                .iter()
-                .filter(|suite| !suite.is_grease())
-                .any(|suite| suite.is_tls13()),
-            capable_signature_algorithms_present: client_hello
-                .ext_signature_algorithms()
-                .is_some_and(|schemes| {
-                    schemes
-                        .iter()
-                        .filter(|scheme| !scheme.is_grease())
-                        .any(|scheme| scheme.is_tls13_capable())
-                }),
-        }
-    }
-
-    fn requires_tls12_clamp(self) -> bool {
-        // TLS 1.3 cipher suites are required for a coherent TLS 1.3 offer, and
-        // TLS 1.3-capable signature algorithms are also required in practice for
-        // successful negotiation with modern servers.
-        self.supported
-            && (!self.cipher_suites_present || !self.capable_signature_algorithms_present)
-    }
-}
-
-impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
-    type Error = BoxError;
-
-    fn try_from(value: &rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        Self::try_from_multiple_client_configs(std::iter::once(value))
-    }
-}
-
-impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuilder {
-    type Error = BoxError;
-
-    fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
-        Self::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
-    }
-}
-
-impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
-    type Error = BoxError;
-
-    fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
-        let legacy_protocol_version = value.protocol_version();
-        let has_supported_versions_extension = value.supported_versions().is_some();
-        let tls13_facts = Tls13ClientHelloFacts::from_client_hello(&value);
-
-        debug!(
-            ?legacy_protocol_version,
-            has_supported_versions_extension,
-            tls13_supported = tls13_facts.supported,
-            tls13_cipher_suites_present = tls13_facts.cipher_suites_present,
-            tls13_capable_signature_algorithms_present =
-                tls13_facts.capable_signature_algorithms_present,
-            "TlsConnectorData: builder: construct from mirrored ingress ClientHello"
-        );
-
-        let client_config = rama_net::tls::client::ClientConfig::from(value);
-        let mut builder = Self::try_from(&client_config)?;
-
-        if !has_supported_versions_extension {
-            let max_ssl_version =
-                legacy_protocol_version.rama_try_into().map_err(|v| {
-                    BoxError::from_static_str(
-                        "build boring ssl connector: cast max proto version from legacy ClientHello version",
-                    )
-                    .context_field("protocol_version", v)
-                })?;
-            debug!(
-                ?legacy_protocol_version,
-                ?max_ssl_version,
-                "TlsConnectorData: builder: mirrored ingress ClientHello has no supported_versions extension; cap egress connector to legacy ClientHello protocol version"
-            );
-            builder.max_ssl_version = Some(max_ssl_version);
-        }
-
-        // This is a targeted safeguard for mirrored ingress hellos that advertise TLS 1.3
-        // but are not viable as TLS 1.3 on egress. We clamp to TLS 1.2 rather than sending
-        // an internally inconsistent ClientHello that servers may reject immediately.
-        if tls13_facts.requires_tls12_clamp() {
-            debug!(
-                tls13_cipher_suites_present = tls13_facts.cipher_suites_present,
-                tls13_capable_signature_algorithms_present =
-                    tls13_facts.capable_signature_algorithms_present,
-                "TlsConnectorData: builder: mirrored ClientHello advertises TLS 1.3 but is not viable as TLS 1.3; clamp egress connector to TLS 1.2"
-            );
-            builder.max_ssl_version = Some(SslVersion::TLS1_2);
-            // A TLS 1.3-only supported_versions offer leaves min_ssl_version at
-            // TLS 1.3; clamping max down to TLS 1.2 would then make min > max,
-            // which boring rejects. TLS 1.3 is the only version above TLS 1.2, so
-            // lower exactly that floor to keep the connector internally consistent
-            // (a lower legitimate floor, e.g. TLS 1.1, is left untouched).
-            if builder.min_ssl_version == Some(SslVersion::TLS1_3) {
-                builder.min_ssl_version = Some(SslVersion::TLS1_2);
-            }
-        }
-
-        Ok(builder)
-    }
 }
 
 impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
@@ -1389,79 +599,145 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
+    use rama_core::extensions::Extensions;
+    use rama_net::tls::client::{
+        ClientHello, ClientHelloExtension, TlsAlpn, TlsServerVerify, TlsStoreServerCertChain,
+    };
+    use rama_net::tls::{CipherSuite, ProtocolVersion, SignatureScheme};
 
     #[test]
-    fn test_chaining() {
-        let base_builder =
-            TlsConnectorDataBuilder::new_http_1().with_store_server_certificate_chain(true);
+    fn build_from_common_pieces() {
+        let ext = Extensions::new();
+        ext.insert(TlsAlpn::http_auto());
+        ext.insert(TlsServerVerify(ServerVerifyMode::Disable));
+        ext.insert(TlsStoreServerCertChain(true));
 
-        let builder =
-            TlsConnectorDataBuilder::new().with_base_config(base_builder.into_shared_builder());
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
 
-        assert_eq!(builder.store_server_certificate_chain(), Some(true));
+        assert!(data.store_server_certificate_chain);
     }
 
-    use rama_net::tls::{CipherSuite, SignatureScheme};
+    #[test]
+    fn build_dedups_duplicate_signature_schemes() {
+        let ext = Extensions::new();
+        ext.insert(BoringSignatureSchemes(vec![
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+        ]));
 
-    // A minimal hello: modern legacy version, no cipher suites (→ not TLS1.3
-    // viable), carrying only the given supported_versions plus any extras.
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        // This would crash if we didn't dedup properly
+        TlsConnectorData::try_from(config).expect("build with duplicate signature schemes");
+    }
+
+    #[test]
+    fn build_applies_max_version_clamp() {
+        let ext = Extensions::new();
+        ext.insert(BoringMaxVersion(ProtocolVersion::TLSv1_2));
+
+        let config = BoringTlsConnectorConfig::from_extensions(&ext);
+        let data = TlsConnectorData::try_from(config).unwrap();
+
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    /// A minimal hello: TLS 1.2 legacy version, carrying the given
+    /// supported_versions and cipher suites plus any extra extensions
+    /// (cipher suites / sig algs control TLS 1.3 viability).
     fn hello_from(
         versions: Vec<ProtocolVersion>,
+        cipher_suites: Vec<CipherSuite>,
         exts_extra: Vec<ClientHelloExtension>,
     ) -> ClientHello {
         let mut exts = vec![ClientHelloExtension::SupportedVersions(versions)];
         exts.extend(exts_extra);
-        ClientHello::new(ProtocolVersion::TLSv1_2, Vec::new(), Vec::new(), exts)
+        ClientHello::new(ProtocolVersion::TLSv1_2, cipher_suites, Vec::new(), exts)
     }
 
-    #[test]
-    fn requires_tls12_clamp_truth_table() {
-        for supported in [false, true] {
-            for ciphers in [false, true] {
-                for sigalgs in [false, true] {
-                    let facts = Tls13ClientHelloFacts {
-                        supported,
-                        cipher_suites_present: ciphers,
-                        capable_signature_algorithms_present: sigalgs,
-                    };
-                    // Clamp iff TLS1.3 is offered but it is not coherently viable
-                    // (missing 1.3 cipher suites OR missing 1.3-capable sigalgs).
-                    let want = supported && (!ciphers || !sigalgs);
-                    assert_eq!(facts.requires_tls12_clamp(), want, "facts={facts:?}");
-                }
-            }
-        }
+    /// Build connector data straight from a captured ClientHello, through the
+    /// full pieces pipeline (clamp decision in `config.rs` + min/max derivation
+    /// here), so these tests exercise the real `tls13` egress safeguard.
+    fn connector_data_from_hello(hello: &ClientHello) -> TlsConnectorData {
+        use crate::client::BoringClientConfigExt as _;
+        let config = TlsClientConfig::new_from_client_hello(hello);
+        TlsConnectorData::try_from(&config).expect("build connector data from client hello")
     }
 
     #[test]
     fn tls13_only_but_not_viable_clamps_and_keeps_min_le_max() {
-        // TLS 1.3 advertised, but no TLS 1.3 cipher suites (empty) → not viable.
-        let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new());
-        let builder = TlsConnectorDataBuilder::try_from(hello).unwrap();
+        // TLS 1.3 advertised, but no TLS 1.3 cipher suites: not viable.
+        let hello = hello_from(vec![ProtocolVersion::TLSv1_3], Vec::new(), Vec::new());
+        let mut data = connector_data_from_hello(&hello);
         // Regression guard for the min>max inversion: both ends pinned to TLS 1.2.
-        assert_eq!(builder.max_ssl_version, Some(SslVersion::TLS1_2));
-        assert_eq!(builder.min_ssl_version, Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
     }
 
     #[test]
     fn valid_tls13_hello_is_not_clamped() {
-        let hello = ClientHello::new(
-            ProtocolVersion::TLSv1_2,
+        let hello = hello_from(
+            vec![ProtocolVersion::TLSv1_2, ProtocolVersion::TLSv1_3],
             vec![CipherSuite::TLS13_AES_128_GCM_SHA256],
-            Vec::new(),
-            vec![
-                ClientHelloExtension::SupportedVersions(vec![
-                    ProtocolVersion::TLSv1_2,
-                    ProtocolVersion::TLSv1_3,
-                ]),
-                ClientHelloExtension::SignatureAlgorithms(vec![
-                    SignatureScheme::ECDSA_NISTP256_SHA256,
-                ]),
-            ],
+            vec![ClientHelloExtension::SignatureAlgorithms(vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+            ])],
         );
-        let builder = TlsConnectorDataBuilder::try_from(hello).unwrap();
+        let mut data = connector_data_from_hello(&hello);
         // A coherent TLS 1.3 hello must NOT be clamped down to TLS 1.2.
-        assert_eq!(builder.max_ssl_version, Some(SslVersion::TLS1_3));
-        assert_eq!(builder.min_ssl_version, Some(SslVersion::TLS1_2));
+        assert_eq!(data.config.max_proto_version(), Some(SslVersion::TLS1_3));
+        assert_eq!(data.config.min_proto_version(), Some(SslVersion::TLS1_2));
+    }
+
+    #[test]
+    fn tls13_viability_clamp_truth_table_never_inverts_min_max() {
+        // Drive the whole pipeline for every TLS 1.3 viability combination: the
+        // connector must always be internally consistent (boring never sees
+        // min > max), and the clamp must fire exactly when TLS 1.3 is offered
+        // without being coherently viable.
+        for supported in [false, true] {
+            for ciphers in [false, true] {
+                for sigalgs in [false, true] {
+                    let mut versions = vec![ProtocolVersion::TLSv1_2];
+                    if supported {
+                        versions.push(ProtocolVersion::TLSv1_3);
+                    }
+                    let cipher_suites = if ciphers {
+                        vec![CipherSuite::TLS13_AES_128_GCM_SHA256]
+                    } else {
+                        Vec::new()
+                    };
+                    let exts = if sigalgs {
+                        vec![ClientHelloExtension::SignatureAlgorithms(vec![
+                            SignatureScheme::ECDSA_NISTP256_SHA256,
+                        ])]
+                    } else {
+                        Vec::new()
+                    };
+
+                    let hello = hello_from(versions, cipher_suites, exts);
+                    let mut data = connector_data_from_hello(&hello);
+                    let min = data.config.min_proto_version();
+                    let max = data.config.max_proto_version();
+
+                    // The only inversion the clamp could introduce is min=1.3, max=1.2.
+                    assert!(
+                        !(min == Some(SslVersion::TLS1_3) && max == Some(SslVersion::TLS1_2)),
+                        "inverted min>max (supported={supported} ciphers={ciphers} sigalgs={sigalgs}): min={min:?} max={max:?}"
+                    );
+
+                    // Clamp fires iff TLS 1.3 is offered but not viable.
+                    if supported && (!ciphers || !sigalgs) {
+                        assert_eq!(
+                            max,
+                            Some(SslVersion::TLS1_2),
+                            "expected TLS 1.2 clamp (supported={supported} ciphers={ciphers} sigalgs={sigalgs})"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

@@ -20,8 +20,8 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
             ua_kind: ua.ua_kind()?,
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: HttpProfile {
-                h1: Arc::new(Http1Profile {
+            http: Arc::new(HttpProfile {
+                h1: Http1Profile {
                     settings: row.h1_settings?,
                     headers: HttpHeadersProfile {
                         navigate: row.h1_headers_navigate?,
@@ -30,8 +30,8 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
                         form: row.h1_headers_form,
                         ws: row.h1_headers_ws,
                     },
-                }),
-                h2: Arc::new(Http2Profile {
+                },
+                h2: Http2Profile {
                     settings: row.h2_settings?,
                     headers: HttpHeadersProfile {
                         navigate: row.h2_headers_navigate?,
@@ -40,16 +40,13 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
                         form: row.h2_headers_form,
                         ws: row.h2_headers_ws,
                     },
-                }),
-            },
+                },
+            }),
             #[cfg(feature = "tls")]
-            tls: TlsProfile {
-                client_config: std::sync::Arc::new(
-                    row.tls_client_hello
-                        .map(rama_net::tls::client::ClientConfig::from)?,
-                ),
+            tls: Arc::new(TlsProfile {
+                client_hello: row.tls_client_hello?,
                 ws_client_config_overwrites: row.tls_ws_client_config_overwrites,
-            },
+            }),
             runtime: match (&row.js_web_apis, &row.source_info) {
                 (Some(_), _) | (_, Some(_)) => Some(Arc::new(UserAgentRuntimeProfile {
                     js_info: row.js_web_apis.map(|web_apis| JsProfile {

@@ -20,14 +20,9 @@ pub use parser::{
 
 mod config;
 #[doc(inline)]
-pub use config::{ClientAuth, ClientAuthData, ClientConfig, ProxyClientConfig, ServerVerifyMode};
-
-// TODO move this into config once done refactoring, but for now separate to make it clear what is still TODO
-mod ext;
-#[doc(inline)]
-pub use ext::{
-    TlsAlpn, TlsClientAuth, TlsClientConfig, TlsKeyLog, TlsServerName, TlsServerVerify,
-    TlsStoreServerCertChain, TlsSupportedVersions,
+pub use config::{
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsAlpn, TlsClientAuth, TlsClientConfig,
+    TlsKeyLog, TlsServerName, TlsServerVerify, TlsStoreServerCertChain, TlsSupportedVersions,
 };
 
 use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};

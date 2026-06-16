@@ -2241,6 +2241,7 @@ dependencies = [
  "rama-utils",
  "rcgen",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "webpki-roots",

@@ -42,7 +42,7 @@ use rama::{
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
-use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_client};
+use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
 #[cfg(all(
     feature = "http-full",
@@ -140,19 +140,17 @@ impl ExampleRunner {
 
             #[cfg(feature = "boring")]
             let inner_client = {
-                let tls_config = boring_client::TlsConnectorDataBuilder::new_http_auto()
-                    .with_server_verify_mode(ServerVerifyMode::Disable)
-                    .with_store_server_certificate_chain(true)
-                    .into_shared_builder();
-                let proxy_tls_config = boring_client::TlsConnectorDataBuilder::new()
-                    .with_server_verify_mode(ServerVerifyMode::Disable)
-                    .into_shared_builder();
+                let tls_config = TlsClientConfig::default_http()
+                    .with_server_verify(ServerVerifyMode::Disable)
+                    .with_store_server_cert_chain(true);
+                let proxy_tls_config =
+                    TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
 
                 EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()
                     .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                     .with_proxy_support()
-                    .with_tls_support_using_boringssl(Some(tls_config))
+                    .with_tls_support_using_boringssl(tls_config)
                     .with_default_http_connector(Executor::default())
                     .build_client()
             };

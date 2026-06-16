@@ -23,12 +23,15 @@ use rama::{
         },
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{address::ProxyAddress, tls::ApplicationProtocol, tls::server::SelfSignedData},
+    net::{
+        address::ProxyAddress,
+        tls::ApplicationProtocol,
+        tls::{client::TlsAlpn, server::SelfSignedData},
+    },
     rt::Executor,
     tcp::server::TcpListener,
-    tls::boring::client::TlsConnectorDataBuilder,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
-    utils::{backoff::ExponentialBackoff, rng::HasherRng},
+    utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},
 };
 
 use serde_json::{Value, json};
@@ -252,10 +255,7 @@ async fn test_http_mitm_relay_proxy() {
             .extension(proxy_address.clone());
 
         let builder = if let Some(app_protocol) = desired_app_protocol {
-            let tls_config = TlsConnectorDataBuilder::new()
-                .try_with_rama_alpn_protos(&[app_protocol])
-                .unwrap();
-            builder.extension(tls_config)
+            builder.extension(TlsAlpn(smallvec![app_protocol]))
         } else {
             builder
         };
