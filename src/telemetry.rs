@@ -10,6 +10,8 @@ pub mod opentelemetry {
 
     pub use ::rama_core::telemetry::opentelemetry::*;
 
+    #[cfg(feature = "grpc")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
     pub mod collector {
         //! OTLP exporter integrations supported by rama.
 
