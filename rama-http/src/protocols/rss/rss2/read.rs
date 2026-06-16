@@ -27,8 +27,8 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
-    attr_uri, attr_value, enclosure_from_attrs, feed_reader_handle_end_event, parse_rss2_date,
-    parse_uri, push_general_ref, push_text,
+    attr_uri, attr_value, enclosure_from_attrs, end_event_parts, parse_rss2_date, parse_uri,
+    push_general_ref, push_text,
 };
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
@@ -568,7 +568,13 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 }
                 Ok(Action::Continue)
             }
-            Event::End(e) => feed_reader_handle_end_event!(self, e, rr),
+            Event::End(e) => {
+                self.depth -= 1;
+                let ns = classify_ns(&rr);
+                let mut name = [0u8; 64];
+                let (local, text) = end_event_parts(e, &mut name, &mut self.text_buf);
+                self.handle_end(ns, local, text)
+            }
             Event::Eof => {
                 if self.strict && self.depth > 0 {
                     return Err(FeedParseError::new(format!(
