@@ -8,7 +8,7 @@
 use jiff::Timestamp;
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::{BytesRef, BytesText};
+use quick_xml::events::{BytesEnd, BytesRef, BytesText};
 use rama_core::telemetry::tracing;
 use rama_net::uri::Uri;
 
@@ -19,6 +19,41 @@ use super::rss2::Rss2Enclosure;
 
 /// Short alias kept so attribute-extraction helper signatures fit on a line.
 pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
+
+/// Extract the finished pieces of an `Event::End` — the element's local name
+/// and its reassembled text — so the caller can release the read-buffer borrow
+/// `e` holds before taking `&mut self` to dispatch them. Shared verbatim by the
+/// Atom and RSS2 streaming readers' `step` loops.
+///
+/// The local name is copied into `name_buf` (a stack buffer) and `e` is
+/// consumed, dropping its borrow on the reader's read buffer. This avoids the
+/// per-event `String` allocation the borrow-checker would otherwise force on
+/// this hot path. 64 bytes covers every Atom/RSS/extension element name in our
+/// vocabulary; longer or non-UTF-8 names fall through to `""` (which matches
+/// nothing) — same outcome as a heap copy.
+///
+/// The text is trimmed once (the readers run with `trim_text(false)`), dropping
+/// a field's surrounding whitespace while preserving whitespace interior to it.
+pub(in crate::protocols::rss) fn end_event_parts<'b>(
+    e: BytesEnd<'_>,
+    name_buf: &'b mut [u8; 64],
+    text_buf: &mut String,
+) -> (&'b str, String) {
+    let local_bytes = e.local_name();
+    let n = local_bytes.as_ref().len().min(name_buf.len());
+    name_buf[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
+    // Done with `e`: drop it to release its read-buffer borrow before we return
+    // (so the caller can take `&mut self`).
+    drop(e);
+    let local = std::str::from_utf8(&name_buf[..n]).unwrap_or("");
+
+    let mut text = std::mem::take(text_buf);
+    let trimmed = text.trim();
+    if trimmed.len() != text.len() {
+        text = trimmed.to_owned();
+    }
+    (local, text)
+}
 
 /// Read an attribute by qualified name and XML-unescape its value. Returns
 /// `None` if absent, malformed, or carrying an unresolvable entity — the
