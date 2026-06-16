@@ -20,6 +20,39 @@ use super::rss2::Rss2Enclosure;
 /// Short alias kept so attribute-extraction helper signatures fit on a line.
 pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
 
+/// Expand the `Event::End` arm shared verbatim by the Atom and RSS2 streaming
+/// readers' `step` loops. `$self` is the reader, `$e` the `BytesEnd`, `$rr` the
+/// resolved namespace.
+///
+/// Decrements depth, classifies the namespace, then copies the element's local
+/// name into a 64-byte stack buffer so the borrow on the reader's read buffer
+/// (held by `$e`) is released before `handle_end` takes `&mut self`. This
+/// avoids the per-event `String` allocation the borrow-checker would otherwise
+/// force on this hot path. 64 bytes covers every Atom/RSS/extension element
+/// name in our vocabulary; longer or non-UTF-8 names fall through to `""`
+/// (which matches nothing) — same outcome as a heap copy. The reassembled text
+/// is trimmed once (the readers run with `trim_text(false)`), dropping a
+/// field's surrounding whitespace while preserving whitespace interior to it.
+macro_rules! feed_reader_handle_end_event {
+    ($self:ident, $e:ident, $rr:ident) => {{
+        $self.depth -= 1;
+        let ns = $crate::protocols::rss::feed_ext::parse::classify_ns(&$rr);
+        let mut stack = [0u8; 64];
+        let local_bytes = $e.local_name();
+        let n = local_bytes.as_ref().len().min(stack.len());
+        stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
+        drop($e);
+        let local = ::std::str::from_utf8(&stack[..n]).unwrap_or("");
+        let mut text = ::std::mem::take(&mut $self.text_buf);
+        let trimmed = text.trim();
+        if trimmed.len() != text.len() {
+            text = trimmed.to_owned();
+        }
+        $self.handle_end(ns, local, text)
+    }};
+}
+pub(in crate::protocols::rss) use feed_reader_handle_end_event;
+
 /// Read an attribute by qualified name and XML-unescape its value. Returns
 /// `None` if absent, malformed, or carrying an unresolvable entity — the
 /// caller treats that the same as "missing".

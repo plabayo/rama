@@ -27,8 +27,9 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
-    atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value, make_atom_text,
-    parse_rfc3339_lax, parse_uri, parse_uri_reference, push_general_ref, push_text,
+    atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
+    feed_reader_handle_end_event, make_atom_text, parse_rfc3339_lax, parse_uri,
+    parse_uri_reference, push_general_ref, push_text,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
@@ -679,35 +680,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 }
                 Ok(Action::Continue)
             }
-            Event::End(e) => {
-                self.depth -= 1;
-                let ns = classify_ns(&rr);
-                // Copy the local name into a stack buffer so we can release
-                // the borrow on `self.buf` (held by `e`) before calling
-                // `handle_end`, which mutably borrows `&mut self`. Avoids
-                // the per-event String allocation that the borrow-checker
-                // would otherwise force on this hot path.
-                //
-                // 64 bytes covers every Atom/RSS/extension element name in
-                // our vocabulary; longer or non-UTF-8 names fall through
-                // to "" (which matches nothing) — same outcome as before.
-                let mut stack = [0u8; 64];
-                let local_bytes = e.local_name();
-                let n = local_bytes.as_ref().len().min(stack.len());
-                stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
-                drop(e);
-                let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
-                // Trim the reassembled value once (the reader runs with
-                // `trim_text(false)`; see `AtomReader::new`). This drops a
-                // field's surrounding whitespace while preserving whitespace
-                // interior to it — including spaces adjacent to entities.
-                let mut text = std::mem::take(&mut self.text_buf);
-                let trimmed = text.trim();
-                if trimmed.len() != text.len() {
-                    text = trimmed.to_owned();
-                }
-                self.handle_end(ns, local, text)
-            }
+            Event::End(e) => feed_reader_handle_end_event!(self, e, rr),
             Event::Eof => {
                 if self.strict && self.depth > 0 {
                     return Err(FeedParseError::new(format!(

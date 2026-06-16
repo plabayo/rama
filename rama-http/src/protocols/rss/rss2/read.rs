@@ -27,8 +27,8 @@ use crate::protocols::rss::feed_ext::FeedExtensions;
 use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::parse_util::{
-    attr_uri, attr_value, enclosure_from_attrs, parse_rss2_date, parse_uri, push_general_ref,
-    push_text,
+    attr_uri, attr_value, enclosure_from_attrs, feed_reader_handle_end_event, parse_rss2_date,
+    parse_uri, push_general_ref, push_text,
 };
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
@@ -568,34 +568,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 }
                 Ok(Action::Continue)
             }
-            Event::End(e) => {
-                self.depth -= 1;
-                let ns = classify_ns(&rr);
-                // Copy the local name into a stack buffer so we can release
-                // the borrow on `self.buf` (held by `e`) before calling
-                // `handle_end`, which mutably borrows `&mut self`. Avoids
-                // the per-event String allocation the borrow-checker would
-                // otherwise force on this hot path.
-                //
-                // 64 bytes covers every RSS/Atom/extension element name in
-                // our vocabulary; longer or non-UTF-8 names fall through
-                // to "" (which matches nothing) — same outcome as before.
-                let mut stack = [0u8; 64];
-                let local_bytes = e.local_name();
-                let n = local_bytes.as_ref().len().min(stack.len());
-                stack[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
-                drop(e);
-                let local = std::str::from_utf8(&stack[..n]).unwrap_or("");
-                // Trim the reassembled value once (the reader runs with
-                // `trim_text(false)`; see `Rss2Reader::new`) — drops a field's
-                // surrounding whitespace, preserves whitespace interior to it.
-                let mut text = std::mem::take(&mut self.text_buf);
-                let trimmed = text.trim();
-                if trimmed.len() != text.len() {
-                    text = trimmed.to_owned();
-                }
-                self.handle_end(ns, local, text)
-            }
+            Event::End(e) => feed_reader_handle_end_event!(self, e, rr),
             Event::Eof => {
                 if self.strict && self.depth > 0 {
                     return Err(FeedParseError::new(format!(
