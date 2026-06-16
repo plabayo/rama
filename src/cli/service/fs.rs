@@ -3,17 +3,15 @@
 use crate::{
     Layer, Service,
     cli::ForwardKind,
-    combinators::Either,
-    combinators::{Either3, Either7},
+    combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorExt},
     http::{
         Request, Response, Version,
         headers::exotic::XClacksOverhead,
-        headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::set_header::SetResponseHeaderLayer,
         layer::{
-            forwarded::GetForwardedHeaderLayer, into_response::IntoResponseService,
-            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
+            into_response::IntoResponseService, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::{
@@ -305,28 +303,7 @@ where
         &self,
     ) -> Result<impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H>, BoxError>
     {
-        let http_forwarded_layer = match &self.forward {
-            None | Some(ForwardKind::HaProxy) => None,
-            Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeaderLayer::forwarded())),
-            Some(ForwardKind::XForwardedFor) => {
-                Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for()))
-            }
-            Some(ForwardKind::XClientIp) => {
-                Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new()))
-            }
-            Some(ForwardKind::ClientIp) => {
-                Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new()))
-            }
-            Some(ForwardKind::XRealIp) => {
-                Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new()))
-            }
-            Some(ForwardKind::CFConnectingIp) => {
-                Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new()))
-            }
-            Some(ForwardKind::TrueClientIp) => {
-                Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new()))
-            }
-        };
+        let http_forwarded_layer = super::http_forwarded_layer(self.forward.as_ref());
 
         let serve_service = match &self.content_path {
             None => Either3::A(IntoResponseService::new(StaticOutput::new(Html(
