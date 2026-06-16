@@ -64,10 +64,13 @@ impl Asn {
     }
 }
 
+// Assignable ASN ranges only, excluding the reserved/documentation/private-use
+// blocks: 23456 (AS_TRANS), the 64496..=131071 gap (16-bit private + docs), the
+// 32-bit private-use block 4200000000..=4294967294 (RFC 6996), and 4294967295.
 const fn is_valid_asn_range(value: u32) -> bool {
     (value >= 1 && value <= 23455)
         || (value >= 23457 && value <= 64495)
-        || (value >= 131072 && value <= 4294967294)
+        || (value >= 131072 && value <= 4199999999)
 }
 
 impl TryFrom<u32> for Asn {
@@ -169,10 +172,27 @@ impl<'de> Deserialize<'de> for Asn {
 ///
 /// Convert to a strict [`Asn`] with [`Asn::try_from`] (or [`Self::to_asn`])
 /// when you need the validated form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Ordering is by the underlying ASN number (not the internal variant), so a
+/// reserved value like `AS_TRANS` (`23456`) sorts after `15169`, not before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LossyAsn(LossyAsnData);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl Ord for LossyAsn {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // a LossyAsn is only constructible via From, where as_u32 uniquely
+        // determines the value — so this stays consistent with Eq
+        self.as_u32().cmp(&other.as_u32())
+    }
+}
+
+impl PartialOrd for LossyAsn {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum LossyAsnData {
     /// A `u32` that is not a valid assignable ASN.
     Invalid(u32),
@@ -307,5 +327,29 @@ mod lossy_asn_tests {
         assert_eq!(json, "23456");
         let back: LossyAsn = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    #[test]
+    fn lossy_asn_orders_by_number_not_variant() {
+        // 23456 is reserved (Invalid), 15169 is valid — numeric order must win
+        assert!(LossyAsn::from(15169) < LossyAsn::from(23456));
+        let mut v = [
+            LossyAsn::from(23456),
+            LossyAsn::from(15169),
+            LossyAsn::from(0),
+        ];
+        v.sort();
+        assert_eq!(v.map(|a| a.as_u32()), [0, 15169, 23456]);
+    }
+
+    #[test]
+    fn thirty_two_bit_private_use_is_not_assignable() {
+        // RFC 6996 32-bit private-use: preserved by LossyAsn, rejected by Asn
+        let private = LossyAsn::from(4_200_000_000);
+        assert!(!private.is_valid());
+        assert_eq!(private.as_u32(), 4_200_000_000);
+        assert_eq!(Asn::try_from(4_200_000_000u32), Err(InvalidAsn));
+        // the value just below the private block stays assignable
+        Asn::try_from(4_199_999_999u32).unwrap();
     }
 }

@@ -267,9 +267,12 @@ impl HttpBodyContentFormat {
         let Some(accept) = req.headers().typed_get::<Accept>() else {
             return Self::default();
         };
-        accept
-            .0
-            .iter()
+        // honour q-values: try the most-preferred media types first (stable
+        // sort, so equal-quality entries keep their header order)
+        let mut entries: Vec<_> = accept.0.iter().collect();
+        entries.sort_by_key(|qv| std::cmp::Reverse(qv.quality));
+        entries
+            .into_iter()
             .find_map(|qv| {
                 let r#type = qv.value.subtype();
                 if r#type == mime::JSON {
