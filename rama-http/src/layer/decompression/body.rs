@@ -4,6 +4,7 @@ use crate::HeaderMap;
 use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
+    compressed_body_poll_frame, impl_decorate_async_read,
 };
 use rama_core::error::BoxError;
 
@@ -121,20 +122,7 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match self.project().inner.project() {
-            BodyInnerProj::Gzip { inner } => inner.poll_frame(cx),
-            BodyInnerProj::Deflate { inner } => inner.poll_frame(cx),
-            BodyInnerProj::Brotli { inner } => inner.poll_frame(cx),
-            BodyInnerProj::Zstd { inner } => inner.poll_frame(cx),
-            BodyInnerProj::Identity { inner } => match ready!(inner.poll_frame(cx)) {
-                Some(Ok(frame)) => {
-                    let frame = frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining()));
-                    Poll::Ready(Some(Ok(frame)))
-                }
-                Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
-                None => Poll::Ready(None),
-            },
-        }
+        compressed_body_poll_frame!(self, cx)
     }
 
     fn size_hint(&self) -> SizeHint {
@@ -148,68 +136,20 @@ where
     }
 }
 
-impl<B> DecorateAsyncRead for GzipDecoder<B>
-where
-    B: StreamingBody,
-{
-    type Input = AsyncReadBody<B>;
-    type Output = GzipDecoder<Self::Input>;
+impl_decorate_async_read!(GzipDecoder: |input, _quality| {
+    GzipDecoder::new(input)
+});
 
-    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
-        GzipDecoder::new(input)
-    }
+impl_decorate_async_read!(ZlibDecoder: |input, _quality| {
+    ZlibDecoder::new(input)
+});
 
-    fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
-        pinned.get_pin_mut()
-    }
-}
+impl_decorate_async_read!(BrotliDecoder: |input, _quality| {
+    BrotliDecoder::new(input)
+});
 
-impl<B> DecorateAsyncRead for ZlibDecoder<B>
-where
-    B: StreamingBody,
-{
-    type Input = AsyncReadBody<B>;
-    type Output = ZlibDecoder<Self::Input>;
-
-    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
-        ZlibDecoder::new(input)
-    }
-
-    fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
-        pinned.get_pin_mut()
-    }
-}
-
-impl<B> DecorateAsyncRead for BrotliDecoder<B>
-where
-    B: StreamingBody,
-{
-    type Input = AsyncReadBody<B>;
-    type Output = BrotliDecoder<Self::Input>;
-
-    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
-        BrotliDecoder::new(input)
-    }
-
-    fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
-        pinned.get_pin_mut()
-    }
-}
-
-impl<B> DecorateAsyncRead for ZstdDecoder<B>
-where
-    B: StreamingBody,
-{
-    type Input = AsyncReadBody<B>;
-    type Output = ZstdDecoder<Self::Input>;
-
-    fn apply(input: Self::Input, _quality: CompressionLevel) -> Self::Output {
-        let mut decoder = ZstdDecoder::new(input);
-        decoder.multiple_members(true);
-        decoder
-    }
-
-    fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {
-        pinned.get_pin_mut()
-    }
-}
+impl_decorate_async_read!(ZstdDecoder: |input, _quality| {
+    let mut decoder = ZstdDecoder::new(input);
+    decoder.multiple_members(true);
+    decoder
+});
