@@ -30,10 +30,11 @@ use super::{AsOrg, Coordinates, GeoIpError, GeoLocation, MmdbReader, Subdivision
 pub enum CsvError {
     /// Failed to read from the input.
     Io(io::Error),
-    /// A row could not be parsed; carries the 1-based line number and reason.
+    /// A row could not be parsed; carries the 1-based record number and reason.
     Parse {
-        /// 1-based line number of the offending row.
-        line: usize,
+        /// 1-based record number of the offending row (records, not physical
+        /// lines — a quoted field may span several lines).
+        record: usize,
         /// Why the row could not be parsed.
         reason: Box<str>,
     },
@@ -47,7 +48,7 @@ impl std::fmt::Display for CsvError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(err) => write!(f, "csv: i/o error: {err}"),
-            Self::Parse { line, reason } => write!(f, "csv: line {line}: {reason}"),
+            Self::Parse { record, reason } => write!(f, "csv: record {record}: {reason}"),
             Self::Write(err) => write!(f, "csv: {err}"),
             Self::Build(err) => write!(f, "csv: {err}"),
         }
@@ -85,7 +86,7 @@ pub struct CsvGeoRecord {
 ///
 /// `map_row` receives the parsed fields of each row and returns
 /// `Ok(Some(record))` to store a range, `Ok(None)` to skip the row, or
-/// `Err(reason)` to fail with a [`CsvError::Parse`] carrying the line number.
+/// `Err(reason)` to fail with a [`CsvError::Parse`] carrying the record number.
 ///
 /// # Errors
 ///
@@ -105,24 +106,33 @@ where
         .flexible(true)
         .from_reader(read);
     let mut record = csv::StringRecord::new();
-    let mut line = 0usize;
+    let mut record_num = 0usize;
+    let mut cidrs: Vec<(u128, u8)> = Vec::new();
     loop {
         match reader.read_record(&mut record) {
             Ok(true) => {}
             Ok(false) => break,
-            Err(err) => return Err(map_csv_err(err, line + 1)),
+            Err(err) => return Err(map_csv_err(err, record_num + 1)),
         }
-        line += 1;
+        record_num += 1;
         if record.iter().all(str::is_empty) {
             continue;
         }
         let fields: Vec<&str> = record.iter().collect();
         match map_row(&fields) {
             Ok(Some(rec)) => {
-                insert_record(builder, &rec).map_err(|reason| CsvError::Parse { line, reason })?
+                insert_record(builder, &rec, &mut cidrs).map_err(|reason| CsvError::Parse {
+                    record: record_num,
+                    reason,
+                })?
             }
             Ok(None) => {}
-            Err(reason) => return Err(CsvError::Parse { line, reason }),
+            Err(reason) => {
+                return Err(CsvError::Parse {
+                    record: record_num,
+                    reason,
+                });
+            }
         }
     }
     Ok(())
@@ -169,25 +179,30 @@ fn make_builder(
 }
 
 /// Map a row-read error onto a [`CsvError`].
-fn map_csv_err(err: csv::Error, line: usize) -> CsvError {
+fn map_csv_err(err: csv::Error, record: usize) -> CsvError {
     if err.is_io_error() {
         match err.into_kind() {
             csv::ErrorKind::Io(io) => CsvError::Io(io),
             other => CsvError::Parse {
-                line,
+                record,
                 reason: format!("{other:?}").into_boxed_str(),
             },
         }
     } else {
         CsvError::Parse {
-            line,
+            record,
             reason: err.to_string().into_boxed_str(),
         }
     }
 }
 
 /// Split a record's range into CIDR blocks and insert each into the builder.
-fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(), Box<str>> {
+/// `cidrs` is a reusable scratch buffer (cleared on entry).
+fn insert_record(
+    builder: &mut MmdbBuilder,
+    record: &CsvGeoRecord,
+    cidrs: &mut Vec<(u128, u8)>,
+) -> Result<(), Box<str>> {
     let (start, end, bits) = match (record.start, record.end) {
         (IpAddr::V4(a), IpAddr::V4(b)) => {
             (u128::from(u32::from(a)), u128::from(u32::from(b)), 32u32)
@@ -199,7 +214,8 @@ fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(),
         return Err("range start is greater than range end".into());
     }
     let to_box = |e: ipnet::PrefixLenError| e.to_string().into_boxed_str();
-    for (addr, prefix) in range_to_cidrs(start, end, bits) {
+    range_to_cidrs_into(start, end, bits, cidrs);
+    for &(addr, prefix) in cidrs.iter() {
         let net = if bits == 32 {
             IpNet::V4(Ipv4Net::new(Ipv4Addr::from(addr as u32), prefix).map_err(to_box)?)
         } else {
@@ -217,8 +233,17 @@ fn insert_record(builder: &mut MmdbBuilder, record: &CsvGeoRecord) -> Result<(),
 /// `bits` is the address width (32 or 128). The largest emitted block is a
 /// `/1` (the `/0` whole-space case is split into two `/1`s) so the result is
 /// always insertable.
+#[cfg(test)]
 fn range_to_cidrs(start: u128, end: u128, bits: u32) -> Vec<(u128, u8)> {
     let mut out = Vec::new();
+    range_to_cidrs_into(start, end, bits, &mut out);
+    out
+}
+
+/// As [`range_to_cidrs`], but fills a caller-owned buffer (cleared first) so it
+/// can be reused across rows instead of allocating a fresh `Vec` per record.
+fn range_to_cidrs_into(start: u128, end: u128, bits: u32, out: &mut Vec<(u128, u8)>) {
+    out.clear();
     let mut cur = start;
     loop {
         // largest power-of-two block that can start at `cur` (alignment)…
@@ -243,7 +268,6 @@ fn range_to_cidrs(start: u128, end: u128, bits: u32) -> Vec<(u128, u8)> {
             _ => break,
         }
     }
-    out
 }
 
 /// `floor(log2(x))` for `x >= 1`.
@@ -692,7 +716,7 @@ mod tests {
             Ip2LocationLite::Country,
         )
         .unwrap_err();
-        assert!(matches!(err, CsvError::Parse { line: 2, .. }));
+        assert!(matches!(err, CsvError::Parse { record: 2, .. }));
 
         // ip_from > ip_to is rejected as a range error
         let err = compile_ip2location_lite(

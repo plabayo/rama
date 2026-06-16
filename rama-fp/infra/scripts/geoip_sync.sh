@@ -204,7 +204,9 @@ machine_ids() {
 provision_app() {
   local app="$1" want have need
   want="$(machine_ids "$app" | grep -c . || true)"
-  have="$(fly volumes list -a "$app" 2>/dev/null | grep -cw "$FLY_VOLUME" || true)"
+  # only count volumes in the target region — a volume elsewhere can't satisfy a
+  # mount here, so it must not inflate the count and starve local machines
+  have="$(fly volumes list -a "$app" 2>/dev/null | grep -w "$FLY_VOLUME" | grep -cw "$FLY_REGION" || true)"
   need=$(( want - have ))
   if [ "$need" -gt 0 ]; then
     log "[$app] creating $need '$FLY_VOLUME' volume(s) (have $have, machines $want)"
