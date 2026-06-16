@@ -28,6 +28,23 @@ use std::{
     task::{Context, Poll},
 };
 
+/// Implement [`IntoResponse`] for an owned, sized body type by streaming it
+/// through [`Body`] and tagging the response with the given `Content-Type` plus
+/// an exact `Content-Length` (from the value's `len()`).
+macro_rules! impl_into_response_sized_body {
+    ($t:ty, $content_type:expr) => {
+        impl IntoResponse for $t {
+            fn into_response(self) -> Response {
+                let len = self.len();
+                let mut res = Body::from(self).into_response();
+                res.headers_mut().typed_insert($content_type);
+                res.headers_mut().typed_insert(ContentLength(len as u64));
+                res
+            }
+        }
+    };
+}
+
 /// Trait for generating responses.
 ///
 /// Types that implement `IntoResponse` can be returned from handlers.
@@ -122,45 +139,10 @@ impl IntoResponse for Box<str> {
     }
 }
 
-impl IntoResponse for Cow<'static, str> {
-    fn into_response(self) -> Response {
-        let len = self.len();
-        let mut res = Body::from(self).into_response();
-        res.headers_mut().typed_insert(ContentType::text_utf8());
-        res.headers_mut().typed_insert(ContentLength(len as u64));
-        res
-    }
-}
-
-impl IntoResponse for ArcStr {
-    fn into_response(self) -> Response {
-        let len = self.len();
-        let mut res = Body::from(self).into_response();
-        res.headers_mut().typed_insert(ContentType::text_utf8());
-        res.headers_mut().typed_insert(ContentLength(len as u64));
-        res
-    }
-}
-
-impl IntoResponse for &ArcStr {
-    fn into_response(self) -> Response {
-        let len = self.len();
-        let mut res = Body::from(self).into_response();
-        res.headers_mut().typed_insert(ContentType::text_utf8());
-        res.headers_mut().typed_insert(ContentLength(len as u64));
-        res
-    }
-}
-
-impl IntoResponse for Bytes {
-    fn into_response(self) -> Response {
-        let len = self.len();
-        let mut res = Body::from(self).into_response();
-        res.headers_mut().typed_insert(ContentType::octet_stream());
-        res.headers_mut().typed_insert(ContentLength(len as u64));
-        res
-    }
-}
+impl_into_response_sized_body!(Cow<'static, str>, ContentType::text_utf8());
+impl_into_response_sized_body!(ArcStr, ContentType::text_utf8());
+impl_into_response_sized_body!(&ArcStr, ContentType::text_utf8());
+impl_into_response_sized_body!(Bytes, ContentType::octet_stream());
 
 impl IntoResponse for BytesMut {
     fn into_response(self) -> Response {
@@ -276,15 +258,7 @@ impl IntoResponse for Box<[u8]> {
     }
 }
 
-impl IntoResponse for Cow<'static, [u8]> {
-    fn into_response(self) -> Response {
-        let len = self.len();
-        let mut res = Body::from(self).into_response();
-        res.headers_mut().typed_insert(ContentType::octet_stream());
-        res.headers_mut().typed_insert(ContentLength(len as u64));
-        res
-    }
-}
+impl_into_response_sized_body!(Cow<'static, [u8]>, ContentType::octet_stream());
 
 impl<R> IntoResponse for (StatusCode, R)
 where
