@@ -268,7 +268,7 @@ pub(super) async fn get_report(
         &state
             .geo_db
             .as_ref()
-            .map(|db| db.attributions())
+            .map(|db| db.attributions().collect::<Vec<_>>())
             .unwrap_or_default(),
     )
     .map(PreEscaped);
@@ -655,7 +655,7 @@ pub(super) async fn form(
         &state
             .geo_db
             .as_ref()
-            .map(|db| db.attributions())
+            .map(|db| db.attributions().collect::<Vec<_>>())
             .unwrap_or_default(),
     )
     .map(PreEscaped);

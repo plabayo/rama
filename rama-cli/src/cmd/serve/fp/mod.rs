@@ -202,10 +202,10 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
 
     // Attribution header, derived from the loaded databases' notices.
     let geo_attribution = {
-        let notices = state
+        let notices: Vec<_> = state
             .geo_db
             .as_ref()
-            .map(|db| db.attributions())
+            .map(|db| db.attributions().collect())
             .unwrap_or_default();
         (!notices.is_empty()).then(|| rama::cli::service::geo::geo_attribution_layer(notices))
     };

@@ -223,10 +223,10 @@ impl Service<Request> for HttpIpService {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
                 HttpBodyContentFormat::Html => {
                     let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
-                    let attributions = self
+                    let attributions: Vec<_> = self
                         .geo_db
                         .as_ref()
-                        .map(|db| db.attributions())
+                        .map(|db| db.attributions().collect())
                         .unwrap_or_default();
                     render_html_page(ip, geo.as_ref(), &attributions).into_response()
                 }
@@ -471,7 +471,7 @@ impl<M> IpServiceBuilder<M> {
 
         // Attribution header, derived from the loaded databases' notices.
         let geo_attribution = self.geo_db.as_ref().and_then(|db| {
-            let notices = db.attributions();
+            let notices: Vec<_> = db.attributions().collect();
             (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
         });
 

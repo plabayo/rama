@@ -89,19 +89,21 @@ impl IpGeoDb {
     /// derived from each reader's `database_type` (e.g. GeoLite2, IP2Location
     /// LITE, DB-IP). Databases with no known attribution requirement contribute
     /// nothing, so the result reflects only what is actually loaded.
-    #[must_use]
-    pub fn attributions(&self) -> Vec<&'static str> {
-        let mut out: Vec<&'static str> = Vec::new();
-        for source in &self.sources {
-            for reader in &source.readers {
-                if let Some(notice) = attribution_for(&reader.metadata().database_type)
-                    && !out.contains(&notice)
-                {
-                    out.push(notice);
+    ///
+    /// Yielded lazily and de-duplicated; `.collect()` if you need a slice.
+    pub fn attributions(&self) -> impl Iterator<Item = &'static str> + '_ {
+        let mut seen: Vec<&'static str> = Vec::new();
+        self.sources
+            .iter()
+            .flat_map(|source| source.readers.iter())
+            .filter_map(|reader| attribution_for(&reader.metadata().database_type))
+            .filter(move |&notice| {
+                let fresh = !seen.contains(&notice);
+                if fresh {
+                    seen.push(notice);
                 }
-            }
-        }
-        out
+                fresh
+            })
     }
 
     /// Look up `ip` across every source and merge into a single
@@ -508,12 +510,12 @@ mod tests {
             // an unmapped database type contributes no attribution
             .reader("custom", reader_typed("Custom-DB"))
             .build();
-        let attr = db.attributions();
+        let attr: Vec<_> = db.attributions().collect();
         assert_eq!(attr.len(), 2, "{attr:?}");
         assert!(attr.iter().any(|a| a.contains("GeoLite2")));
         assert!(attr.iter().any(|a| a.contains("IP2Location")));
 
         // no sources -> no attribution
-        assert!(IpGeoDb::default().attributions().is_empty());
+        assert!(IpGeoDb::default().attributions().next().is_none());
     }
 }

@@ -354,7 +354,7 @@ where
 
         // Attribution header, derived from the loaded databases' notices.
         let geo_attribution = self.geo_db.as_ref().and_then(|db| {
-            let notices = db.attributions();
+            let notices: Vec<_> = db.attributions().collect();
             (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
         });
 
