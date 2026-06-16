@@ -161,9 +161,7 @@ async fn bind_echo_http_service(
 ) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
-    let geo_db = rama::net::address::ip::geo::IpGeoDb::from_env()
-        .context("load IP geolocation database (RAMA_IP_GEO_DB)")?
-        .map(Arc::new);
+    let geo_db = crate::utils::geo::load_geo_db_from_env();
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))

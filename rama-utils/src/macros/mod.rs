@@ -110,28 +110,46 @@ pub use crate::__all_the_tuples_no_last_special_case as all_the_tuples_no_last_s
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __match_ignore_ascii_case_str {
-    (match ($s:expr) { $caseA:literal $(| $caseAVar:literal)* $(if $condA:expr)? => $retA:expr $(, $caseB:literal $(| $caseBVar:literal)* $(if $condB:expr)? => $retB:expr)* $(,)?}) => {
-        $crate::macros::match_ignore_ascii_case_str!(match ($s) {
-            $caseA $(| $caseAVar)* $(if $condA)? => $retA,
-            $($caseB $(| $caseBVar)* $(if $condB)? => $retB,)*
-            _ => panic!("{}", format!("failed to match {}", $s)),
-        })
-    };
-    (match ($s:expr) { $caseA:literal $(| $caseAVar:literal)* $(if $condA:expr)? => $retA:expr $(, $caseB:literal $(| $caseBVar:literal)* $(if $condB:expr)? => $retB:expr)*, _ => $fallback:expr $(,)? }) => {
-        {
-            let s = ($s).trim();
-            if $($condA &&)? (s.eq_ignore_ascii_case($caseA) $(|| s.eq_ignore_ascii_case($caseAVar))*) {
-                $retA
-            }
-            $(
-                else if $($condB &&)? (s.eq_ignore_ascii_case($caseB) $(|| s.eq_ignore_ascii_case($caseBVar))*) {
-                    $retB
-                }
-            )*
-            else {
-                $fallback
-            }
+    // Entry: trim the subject once, then evaluate the arms top-to-bottom.
+    //
+    // Each arm is either exact (`"lit" [| "lit"]* [if cond] => expr`) or a
+    // substring test (`contains "lit" [| "lit"]* [if cond] => expr`), optionally
+    // ending in a `_ => expr` fallback. Without a fallback, a non-match panics.
+    (match ($s:expr) { $($arms:tt)+ }) => {{
+        let s = ($s).trim();
+        $crate::macros::match_ignore_ascii_case_str!(@arm s ; $($arms)+)
+    }};
+
+    // substring arm (ASCII case-insensitive `contains`)
+    (@arm $s:ident ; contains $case:literal $(| $var:literal)* $(if $cond:expr)? => $ret:expr $(, $($rest:tt)*)?) => {
+        if $($cond &&)? (
+            $crate::str::submatch_ignore_ascii_case($s, $case)
+            $(|| $crate::str::submatch_ignore_ascii_case($s, $var))*
+        ) {
+            $ret
+        } else {
+            $crate::macros::match_ignore_ascii_case_str!(@arm $s ; $($($rest)*)?)
         }
+    };
+
+    // exact arm (ASCII case-insensitive equality)
+    (@arm $s:ident ; $case:literal $(| $var:literal)* $(if $cond:expr)? => $ret:expr $(, $($rest:tt)*)?) => {
+        if $($cond &&)? (
+            $s.eq_ignore_ascii_case($case)
+            $(|| $s.eq_ignore_ascii_case($var))*
+        ) {
+            $ret
+        } else {
+            $crate::macros::match_ignore_ascii_case_str!(@arm $s ; $($($rest)*)?)
+        }
+    };
+
+    // explicit fallback
+    (@arm $s:ident ; _ => $ret:expr $(,)?) => { $ret };
+
+    // no arm matched and no fallback given
+    (@arm $s:ident ;) => {
+        panic!("failed to match {}", $s)
     };
 }
 #[doc(inline)]
@@ -513,6 +531,45 @@ mod test {
         match_ignore_ascii_case_str!(match ("hello") {
             "world" => (),
         })
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_contains() {
+        let result = match_ignore_ascii_case_str!(match ("GeoLite2-City") {
+            contains "ip2location" => 1,
+            contains "geolite" => 2,
+            _ => 3,
+        });
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_contains_variants_and_fallback() {
+        // case-insensitive, multi-alternative, no match -> fallback
+        let hit = match_ignore_ascii_case_str!(match ("ACME-DB-IP-LITE") {
+            contains "geolite" | "maxmind" => 1,
+            contains "ip2location" => 2,
+            contains "dbip" | "db-ip" => 3,
+            _ => 4,
+        });
+        assert_eq!(hit, 3);
+        let miss = match_ignore_ascii_case_str!(match ("custom-source") {
+            contains "geolite" => 1,
+            _ => 9,
+        });
+        assert_eq!(miss, 9);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_mixed_exact_and_contains_with_guard() {
+        // exact and contains arms coexist; guards apply to both
+        let result = match_ignore_ascii_case_str!(match ("  ip2location-lite-db11  ") {
+            "geolite2" => 1,
+            contains "geolite" if false => 2,
+            contains "ip2location" => 3,
+            _ => 4,
+        });
+        assert_eq!(result, 3); // also confirms the subject is trimmed
     }
 
     #[test]

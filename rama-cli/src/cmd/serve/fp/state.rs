@@ -26,9 +26,7 @@ impl State {
             None => None,
         };
 
-        let geo_db = IpGeoDb::from_env()
-            .context("load IP geolocation database (RAMA_IP_GEO_DB)")?
-            .map(Arc::new);
+        let geo_db = crate::utils::geo::load_geo_db_from_env();
 
         Ok(Self {
             data_source: DataSource::default(),

@@ -85,18 +85,23 @@ impl IpGeoDb {
         self.sources.iter().map(|s| s.label.as_ref())
     }
 
-    /// The distinct attribution notices required by the loaded databases,
-    /// derived from each reader's `database_type` (e.g. GeoLite2, IP2Location
-    /// LITE, DB-IP). Databases with no known attribution requirement contribute
+    /// The distinct attribution notices required by the loaded sources,
+    /// derived from each source's label (e.g. a `geolite2` source requires the
+    /// MaxMind GeoLite2 notice, an `ip2location` source the IP2Location LITE
+    /// notice). Sources whose label maps to no known provider contribute
     /// nothing, so the result reflects only what is actually loaded.
+    ///
+    /// The operator-assigned label is used rather than the database's own
+    /// `database_type` metadata: some providers ship that field set to another
+    /// provider's value (IP2Location's MMDB reports `GeoLite2-City`), so it is
+    /// not a reliable signal of origin.
     ///
     /// Yielded lazily and de-duplicated; `.collect()` if you need a slice.
     pub fn attributions(&self) -> impl Iterator<Item = &'static str> + '_ {
         let mut seen: Vec<&'static str> = Vec::new();
         self.sources
             .iter()
-            .flat_map(|source| source.readers.iter())
-            .filter_map(|reader| attribution_for(&reader.metadata().database_type))
+            .filter_map(|source| attribution_for(&source.label))
             .filter(move |&notice| {
                 let fresh = !seen.contains(&notice);
                 if fresh {
@@ -234,21 +239,20 @@ const ATTRIBUTION_IP2LOCATION_LITE: &str = "This site or product includes IP2Loc
 const ATTRIBUTION_DBIP: &str =
     "This product includes IP geolocation data from DB-IP, available from https://db-ip.com";
 
-/// The attribution notice required for a database of the given `database_type`
-/// (the MaxMind-DB metadata field), or `None` if none is known/required.
+/// The attribution notice required for a source with the given `label`, or
+/// `None` if the label maps to no known provider.
 ///
-/// Matches the free editions whose licences require attribution; the
-/// commercial editions (GeoIP2, IP2Location DB*) require none.
-fn attribution_for(database_type: &str) -> Option<&'static str> {
-    let upper = database_type.to_ascii_uppercase();
-    if database_type.starts_with("GeoLite2") {
-        Some(ATTRIBUTION_GEOLITE2)
-    } else if upper.starts_with("IP2LOCATION-LITE") {
-        Some(ATTRIBUTION_IP2LOCATION_LITE)
-    } else if upper.starts_with("DBIP") || upper.starts_with("DB-IP") {
-        Some(ATTRIBUTION_DBIP)
-    } else {
-        None
+/// Matched case-insensitively as a substring, so labels like `geolite2-city`
+/// or `ip2location-lite-db11` resolve correctly. Covers the free editions whose
+/// licences require attribution; commercial editions require none.
+fn attribution_for(label: &str) -> Option<&'static str> {
+    rama_utils::macros::match_ignore_ascii_case_str! {
+        match (label) {
+            contains "geolite" | "maxmind" => Some(ATTRIBUTION_GEOLITE2),
+            contains "ip2location" => Some(ATTRIBUTION_IP2LOCATION_LITE),
+            contains "dbip" | "db-ip" => Some(ATTRIBUTION_DBIP),
+            _ => None,
+        }
     }
 }
 
@@ -501,13 +505,13 @@ mod tests {
     fn attributions_reflect_loaded_sources() {
         let db = IpGeoDb::builder()
             .source(
-                "known",
-                [
-                    reader_typed("GeoLite2-Country"),
-                    reader_typed("IP2LOCATION-LITE-DB1"),
-                ],
+                "geolite2",
+                [reader_typed("GeoLite2-City"), reader_typed("GeoLite2-ASN")],
             )
-            // an unmapped database type contributes no attribution
+            // IP2Location's MMDB reports its database_type as "GeoLite2-City";
+            // attribution must follow the label, not that spoofed metadata.
+            .source("ip2location", [reader_typed("GeoLite2-City")])
+            // an unmapped label contributes no attribution
             .reader("custom", reader_typed("Custom-DB"))
             .build();
         let attr: Vec<_> = db.attributions().collect();
