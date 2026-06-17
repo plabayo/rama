@@ -5,6 +5,7 @@ use rama_core::extensions::Extension;
 use rama_net::address::{Host, HostWithPort};
 use rama_utils::{
     macros::generate_set_and_with,
+    octets::kib,
     str::{NonEmptyStr, arcstr::ArcStr},
 };
 
@@ -551,7 +552,7 @@ impl TransparentProxyConfig {
             // on the Swift side — kept in lockstep so the Swift fallback
             // isn't dead code and the documented per-flow cap is what's
             // actually applied at runtime.
-            tcp_write_pump_max_pending_bytes: 256 * 1024,
+            tcp_write_pump_max_pending_bytes: kib(256),
         }
     }
 
@@ -626,7 +627,7 @@ mod transparent_proxy_config_tests {
         let cfg = TransparentProxyConfig::new();
         assert_eq!(
             cfg.tcp_write_pump_max_pending_bytes(),
-            256 * 1024,
+            kib(256),
             "Swift Provider defaults `writePumpMaxPendingBytes` to 256 KiB \
              and overrides it from this value; if the two drift, the \
              intended per-flow cap silently turns into something else."

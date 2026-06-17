@@ -48,6 +48,7 @@ use rama::{
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    utils::octets::kib,
 };
 
 use serde_json::json;
@@ -139,10 +140,10 @@ fn http_app(
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(4096)
                             .min(64 * 1024); // cap at 64 MiB to keep test runtime sane
-                        let total = size_kb * 1024;
+                        let total = kib(size_kb);
                         let body = Body::from_stream(stream_fn(move |mut yielder| async move {
                             // 16 KiB chunks — same shape as the bridge's read buffer.
-                            let chunk_size: usize = 16 * 1024;
+                            let chunk_size: usize = kib(16);
                             let mut sent: usize = 0;
                             let mut counter: u8 = 0;
                             while sent < total {

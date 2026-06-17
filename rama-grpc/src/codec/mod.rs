@@ -7,6 +7,7 @@ pub(crate) mod compression;
 mod decode;
 mod encode;
 use crate::Status;
+use rama_utils::octets::{kib, mib};
 use std::io;
 
 pub use self::buffer::{DecodeBuf, EncodeBuf};
@@ -23,8 +24,8 @@ pub use self::compression::SingleMessageCompressionOverride;
 /// This is spent per-rpc, so you may wish to adjust it. The default is
 /// pretty good for most uses, but if you have a ton of concurrent rpcs
 /// you may find it too expensive.
-const DEFAULT_CODEC_BUFFER_SIZE: usize = 8 * 1024;
-const DEFAULT_YIELD_THRESHOLD: usize = 32 * 1024;
+const DEFAULT_CODEC_BUFFER_SIZE: usize = kib(8);
+const DEFAULT_YIELD_THRESHOLD: usize = kib(32);
 
 /// Settings for how rama-grpc allocates and grows buffers.
 ///
@@ -99,7 +100,7 @@ pub const HEADER_SIZE: usize =
     std::mem::size_of::<u32>();
 
 // The default maximum uncompressed size in bytes for a message. Defaults to 4MB.
-const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+const DEFAULT_MAX_RECV_MESSAGE_SIZE: usize = mib(4);
 const DEFAULT_MAX_SEND_MESSAGE_SIZE: usize = usize::MAX;
 
 /// Trait that knows how to encode and decode gRPC messages.

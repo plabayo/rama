@@ -8,6 +8,7 @@ use rama_core::telemetry::tracing;
 use rama_net::address::HostWithPort;
 use rama_net::address::SocketAddress;
 use rama_udp::{UdpSocket, bind_udp_with_address};
+use rama_utils::octets::kib;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -350,8 +351,8 @@ impl<C: Send + Sync + 'static, S: Send + Sync + 'static> rama_net::stream::Socke
     }
 }
 
-const INITIAL_RD_CAPACITY: usize = 64 * 1024;
-const INITIAL_WR_CAPACITY: usize = 8 * 1024;
+const INITIAL_RD_CAPACITY: usize = kib(64);
+const INITIAL_WR_CAPACITY: usize = kib(8);
 
 impl<C, S: Unpin> Unpin for UdpFramedRelay<C, S> {}
 

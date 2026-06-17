@@ -46,6 +46,7 @@ use rama::{
     utils::{
         backoff::ExponentialBackoff,
         collections::{NonEmptySmallVec, NonEmptyVec, non_empty_smallvec},
+        octets::mib,
         str::non_empty_str,
     },
 };
@@ -329,7 +330,7 @@ where
             Either::B(UnlimitedPolicy::new())
         }),
         // Limit the body size to 1MB for both request and response
-        BodyLimitLayer::symmetric(1024 * 1024),
+        BodyLimitLayer::symmetric(mib(1)),
         tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
     );
 

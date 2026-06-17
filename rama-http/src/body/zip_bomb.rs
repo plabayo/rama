@@ -6,6 +6,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{bytes::Bytes, futures::Stream};
 use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::{kib, mib};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 use rawzip::{CompressionMethod, ZipArchiveWriter};
 use std::fmt;
@@ -46,7 +47,7 @@ impl Default for ZipBomb {
 impl ZipBomb {
     const DEFAULT_DEPTH: usize = 8;
     const DEFAULT_FANOUT: usize = 32;
-    const DEFAULT_FILE_SIZE: usize = 512 * 1024 * 1024;
+    const DEFAULT_FILE_SIZE: usize = mib(512);
 
     #[must_use]
     /// Create a new [`ZipBomb`].
@@ -189,12 +190,12 @@ impl fmt::Debug for RecursiveZipBomb {
 
 impl RecursiveZipBomb {
     fn new(filename: ArcStr, depth: usize, fanout: usize, file_size: usize) -> Self {
-        let mut buffer_size = 64 * 1024;
-        buffer_size += fanout * 32 * 1024;
-        buffer_size += file_size.min(4 * 1024 * 1024);
-        buffer_size += depth * 16 * 1024;
+        let mut buffer_size = kib(64);
+        buffer_size += fanout * kib(32);
+        buffer_size += file_size.min(mib(4));
+        buffer_size += depth * kib(16);
 
-        let (writer, reader) = duplex(buffer_size.min(8 * 1024 * 1024));
+        let (writer, reader) = duplex(buffer_size.min(mib(8)));
 
         tokio::task::spawn_blocking(move || {
             generate_recursive_base_zip(

@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn duration_to_grpc_timeout_a_very_long_time() {
-        let one_hour = Duration::from_secs(60 * 60);
+        let one_hour = Duration::from_hours(1);
         let value = duration_to_grpc_timeout(one_hour).unwrap();
         assert_eq!(value, format!("{}m", one_hour.as_millis()));
     }

@@ -65,6 +65,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::proxy::TlsMitmRelay,
+    utils::octets::mib,
 };
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -125,7 +126,7 @@ async fn main() -> Result<(), BoxError> {
         ));
 
         tcp_service
-            .serve(BodyLimitLayer::symmetric(2 * 1024 * 1024).into_layer(http_service))
+            .serve(BodyLimitLayer::symmetric(mib(2)).into_layer(http_service))
             .await;
     });
 

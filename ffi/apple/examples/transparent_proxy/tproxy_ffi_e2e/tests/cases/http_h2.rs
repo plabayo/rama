@@ -8,6 +8,7 @@ use rama::{
     bytes::Bytes,
     futures::future::join_all,
     http::{BodyExtractExt as _, Version, body::util::BodyExt as _},
+    utils::octets::kib,
 };
 use serial_test::serial;
 use std::time::Duration;
@@ -257,7 +258,7 @@ async fn run_h2_large_body_case(target: HttpTargetKind, proxy: ProxyKind, size_k
         .expect("body collect should not time out")
         .expect("body bytes")
         .to_bytes();
-    let expected_bytes = size_kb * 1024;
+    let expected_bytes = kib(size_kb);
     assert_eq!(
         body.len(),
         expected_bytes,
@@ -291,7 +292,7 @@ async fn run_h2_concurrent_large_case(
     });
     let proxy_addr = localhost(env.ports.proxy);
     let base = format!("{scheme}://127.0.0.1:{}", ingress_addr.port());
-    let expected_bytes = size_kb * 1024;
+    let expected_bytes = kib(size_kb);
 
     // `stream_count` simultaneous large bodies through the same TCP flow —
     // exercises h2 multiplexing through the bounded per-flow channel +

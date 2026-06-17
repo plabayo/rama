@@ -9,13 +9,14 @@ use crate::{HeaderName, HeaderValue};
 
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rama_core::bytes::BytesMut;
+use rama_utils::octets::kib;
 use rand::distr::slice::Choose;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng, rng};
 
 use std::io::Cursor;
 
-const MAX_CHUNK: usize = 2 * 1024;
+const MAX_CHUNK: usize = kib(2);
 
 #[test]
 fn hpack_fuzz() {

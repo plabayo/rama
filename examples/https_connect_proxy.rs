@@ -56,6 +56,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::octets::mib,
 };
 
 #[cfg(feature = "boring")]
@@ -149,7 +150,7 @@ async fn main() {
             .serve(
                 (
                     // protect the http proxy from too large bodies, both from request and response end
-                    BodyLimitLayer::symmetric(2 * 1024 * 1024),
+                    BodyLimitLayer::symmetric(mib(2)),
                     TlsAcceptorLayer::new(tls_service_data).with_store_client_hello(true),
                 )
                     .into_layer(http_service),

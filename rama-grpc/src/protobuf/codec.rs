@@ -160,6 +160,7 @@ mod tests {
     use rama_core::stream;
     use rama_http_types::StreamingBody as _;
     use rama_http_types::body::util::BodyExt as _;
+    use rama_utils::octets::mib;
 
     use crate::codec::SingleMessageCompressionOverride;
     use crate::codec::{EncodeBody, HEADER_SIZE, Streaming};
@@ -168,7 +169,7 @@ mod tests {
 
     const LEN: usize = 10000;
     // The maximum uncompressed size in bytes for a message. Set to 2MB.
-    const MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
+    const MAX_MESSAGE_SIZE: usize = mib(2);
 
     #[tokio::test]
     async fn decode() {

@@ -19,6 +19,7 @@ use rama_http_types::{
     body::{Frame, SizeHint, StreamingBody},
     header,
 };
+use rama_utils::octets::kib;
 use rama_utils::str::arcstr::arcstr;
 
 use crate::Status;
@@ -48,7 +49,7 @@ pub(crate) mod content_types {
     }
 }
 
-const BUFFER_SIZE: usize = 8 * 1024;
+const BUFFER_SIZE: usize = kib(8);
 
 const FRAME_HEADER_SIZE: usize = 5;
 

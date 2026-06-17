@@ -30,6 +30,7 @@ use rama_http_types::{
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
 };
 use rama_net::test_utils::client::{MockConnectorService, MockSocket};
+use rama_utils::octets::kib;
 use tokio_util::sync::CancellationToken;
 
 use crate::proxy::mitm::DefaultErrorResponse;
@@ -198,8 +199,8 @@ fn create_test_request_with_id(version: Version, id: usize) -> Request {
 }
 
 async fn test_mitm_relay_roundtrip_inner(version: Version) {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -261,8 +262,8 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
 }
 
 async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -353,8 +354,8 @@ async fn test_http2_mitm_relay_handles_200_concurrent_requests() {
 
 #[tokio::test]
 async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -435,8 +436,8 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
 
 #[tokio::test]
 async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -531,8 +532,8 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
     upstream_enables_connect: bool,
     upstream_max_concurrent_streams: u32,
 ) {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -634,8 +635,8 @@ async fn test_mitm_relay_mirrors_h2_settings_inner(
 /// client params present. Regression guard for the parity issue.
 #[tokio::test]
 async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -696,8 +697,8 @@ async fn test_h2_mitm_relay_eager_honors_egress_h2_client_params() {
 /// Locks in the narrowed-mirror policy from #932 review feedback.
 #[tokio::test]
 async fn test_h2_mitm_relay_does_not_mirror_per_direction_fields() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -790,8 +791,8 @@ async fn test_h2_mitm_relay_does_not_mirror_per_direction_fields() {
 async fn test_h2_mitm_relay_timeout_forces_connect_off_via_fail_safe() {
     use tokio::io::AsyncReadExt;
 
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, mut silent_upstream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, mut silent_upstream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());
@@ -859,8 +860,8 @@ async fn test_h2_mitm_relay_timeout_forces_connect_off_via_fail_safe() {
 /// advertised. Locks in the dropped-floor change.
 #[tokio::test]
 async fn test_h2_mitm_relay_mirrors_zero_max_concurrent_streams() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(16 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(16 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());

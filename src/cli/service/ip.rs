@@ -37,6 +37,7 @@ use crate::{
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
+    utils::octets::mib,
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
@@ -455,7 +456,7 @@ impl<M> IpServiceBuilder<M> {
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
-            BodyLimitLayer::request_only(1024 * 1024),
+            BodyLimitLayer::request_only(mib(1)),
             #[cfg(any(feature = "rustls", feature = "boring"))]
             maybe_tls_accept_layer,
         );

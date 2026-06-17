@@ -28,6 +28,7 @@ use crate::{
     tcp::TcpStream,
     telemetry::tracing,
     ua::layer::classifier::UserAgentClassifierLayer,
+    utils::octets::mib,
 };
 
 use std::{convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
@@ -72,7 +73,7 @@ impl Default for FsServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
-            body_limit: 1024 * 1024,
+            body_limit: mib(1),
             timeout: Duration::ZERO,
             forward: None,
 

@@ -27,6 +27,7 @@ use rama::{
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
+    utils::octets::mib,
 };
 use std::{convert::Infallible, time::Duration};
 
@@ -82,7 +83,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), Bo
 
         let tcp_service_builder = (
             // protect the http proxy from too large bodies, both from request and response end
-            BodyLimitLayer::symmetric(2 * 1024 * 1024),
+            BodyLimitLayer::symmetric(mib(2)),
             LimitLayer::new(if cfg.concurrent > 0 {
                 Either::A(ConcurrentPolicy::max(cfg.concurrent))
             } else {

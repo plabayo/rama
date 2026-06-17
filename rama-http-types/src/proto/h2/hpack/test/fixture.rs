@@ -2,6 +2,7 @@ use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
 use hex::FromHex;
 use rama_core::bytes::BytesMut;
+use rama_utils::octets::kib;
 use serde_json::Value;
 
 use std::io::Cursor;
@@ -84,7 +85,7 @@ fn test_story(story: &Value) {
 
         // Now, encode the headers
         for case in &cases {
-            let limit = 64 * 1024;
+            let limit = kib(64);
             let mut buf = BytesMut::with_capacity(limit);
 
             if let Some(size) = case.header_table_size {

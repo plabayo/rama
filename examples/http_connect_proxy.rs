@@ -95,6 +95,7 @@ use rama::{
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
+    utils::octets::mib,
 };
 
 use serde::Deserialize;
@@ -172,7 +173,7 @@ async fn main() {
 
             tcp_service.serve((
                 // protect the http proxy from too large bodies, both from request and response end
-                BodyLimitLayer::symmetric(2 * 1024 * 1024),
+                BodyLimitLayer::symmetric(mib(2)),
             ).into_layer(http_service)).await;
     });
 

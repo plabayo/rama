@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use rama::utils::octets::mib;
 use rama::{futures::future::join_all, http::Version};
 use serial_test::serial;
 
@@ -154,7 +155,7 @@ async fn ffi_stress_mixed_concurrent_load_with_large_body() {
     let client = build_http_client(None);
 
     const SMALL_FLOWS: usize = 16;
-    const POST_BYTES: usize = 4 * 1024 * 1024; // 4 MiB upload
+    const POST_BYTES: usize = mib(4); // 4 MiB upload
     let base = format!("http://127.0.0.1:{}", ingress_addr.port());
     let post_body = vec![0xA5_u8; POST_BYTES];
 

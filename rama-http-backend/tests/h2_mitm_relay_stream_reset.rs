@@ -40,6 +40,7 @@ use rama_http::{
 use rama_http_core::h2::{Reason, server as h2_server};
 use rama_http_types::{Body, Request, Response, StatusCode, Version};
 use rama_net::test_utils::client::MockSocket;
+use rama_utils::octets::kib;
 use tokio_util::sync::CancellationToken;
 
 use rama_http_backend::{client::http_connect, proxy::mitm::HttpMitmRelay};
@@ -54,8 +55,8 @@ const CONCURRENCY: usize = 6;
 
 #[tokio::test]
 async fn http2_mitm_relay_stream_reset_does_not_tear_down_ingress() {
-    let (client_stream, relay_ingress_stream) = tokio::io::duplex(64 * 1024);
-    let (relay_egress_stream, server_stream) = tokio::io::duplex(64 * 1024);
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(64));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(64));
 
     let token = CancellationToken::new();
     let graceful = Shutdown::new(token.clone().cancelled_owned());

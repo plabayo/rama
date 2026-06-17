@@ -94,6 +94,7 @@ use rama::{
         },
         profile::UserAgentDatabase,
     },
+    utils::octets::mib,
 };
 
 use std::{
@@ -195,7 +196,7 @@ async fn main() -> Result<(), BoxError> {
                 (
                     AddInputExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
-                    BodyLimitLayer::symmetric(2 * 1024 * 1024),
+                    BodyLimitLayer::symmetric(mib(2)),
                 )
                     .into_layer(http_service),
             )

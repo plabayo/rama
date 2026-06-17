@@ -2,6 +2,7 @@ use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
 use rama_core::stream::codec::{Decoder, Encoder};
+use rama_utils::octets::kib;
 use std::borrow::Borrow;
 use std::io;
 use std::pin::Pin;
@@ -41,8 +42,8 @@ pub struct UnixDatagramFramed<C, T = UnixDatagram> {
     current_addr: Option<UnixSocketAddress>,
 }
 
-const INITIAL_RD_CAPACITY: usize = 64 * 1024;
-const INITIAL_WR_CAPACITY: usize = 8 * 1024;
+const INITIAL_RD_CAPACITY: usize = kib(64);
+const INITIAL_WR_CAPACITY: usize = kib(8);
 
 impl<C, T> Unpin for UnixDatagramFramed<C, T> {}
 

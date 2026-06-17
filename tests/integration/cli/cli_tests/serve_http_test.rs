@@ -16,6 +16,7 @@ use rama::{
     net::tls::client::{ServerVerifyMode, TlsClientConfig},
     rt::Executor,
     service::BoxService,
+    utils::octets::{kib, mib},
     utils::str::any_submatch_ignore_ascii_case,
 };
 
@@ -345,7 +346,7 @@ async fn run_http_test_endpoint_multipart(
     // early-error responses. Either outcome proves the cap was
     // enforced; we accept both to keep the test stable across CI
     // load.
-    let big = vec![b'x'; 300 * 1024];
+    let big = vec![b'x'; kib(300)];
     let oversized = multipart::Form::new().part("blob", multipart::Part::bytes(big));
     match client
         .post(format!("{base_uri}/multipart"))
@@ -469,7 +470,7 @@ async fn run_http_test_endpoint_sink(
     assert_eq!(body["bytes"].as_u64(), Some(payload.len() as u64));
 
     // larger body (1 MiB) — exercises multi-frame draining
-    let big = vec![0u8; 1024 * 1024];
+    let big = vec![0u8; mib(1)];
     let resp = client
         .post(format!("{base_uri}/sink"))
         .version(http_version)

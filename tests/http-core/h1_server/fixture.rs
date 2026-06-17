@@ -7,6 +7,7 @@ use rama::http::core::service::RamaHttpService;
 use rama::http::{Request, Response, StatusCode};
 use rama::service::service_fn;
 use rama::telemetry::tracing::{error, info};
+use rama::utils::octets::kib;
 use rama_http_core::server::conn::http1;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -24,7 +25,7 @@ impl TestConfig {
     pub(crate) fn with_timeout(chunk_timeout: Duration) -> Self {
         Self {
             total_chunks: 16,
-            chunk_size: 64 * 1024,
+            chunk_size: kib(64),
             chunk_timeout,
         }
     }

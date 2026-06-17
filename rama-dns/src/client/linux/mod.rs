@@ -26,6 +26,7 @@ use rama_core::{
 use rama_net::address::Domain;
 use rama_utils::{
     macros::{error::static_str_error, generate_set_and_with},
+    octets::kib,
     str::arcstr::ArcStr,
 };
 
@@ -50,7 +51,7 @@ mod legacy;
 mod res_nsearch;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_CACHE_TTL: Duration = Duration::from_mins(5);
 const DEFAULT_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 /// Default `res_nsearch` response buffer size.
@@ -59,7 +60,7 @@ const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
 /// (DKIM, long SPF, multi-record AAAA sets) can exceed that. 16 KiB matches
 /// what most TCP-fallback paths advertise via EDNS0 and keeps the per-query
 /// allocation in the blocking thread modest.
-const DEFAULT_RESPONSE_BUFFER_SIZE: usize = 16 * 1024;
+const DEFAULT_RESPONSE_BUFFER_SIZE: usize = kib(16);
 
 #[derive(Debug, Clone)]
 /// Used to build a [`LinuxDnsResolver`] instance.

@@ -908,7 +908,10 @@ async fn podlove_chapters_preserved() {
     );
 
     assert_eq!(ch.chapters[2].title, "Main topic");
-    assert_eq!(ch.chapters[2].start, Duration::from_secs(5 * 60 + 42));
+    assert_eq!(
+        ch.chapters[2].start,
+        Duration::from_mins(5) + Duration::from_secs(42)
+    );
     assert_eq!(
         ch.chapters[2].image.as_deref(),
         Some("https://example.com/chapter3.png"),

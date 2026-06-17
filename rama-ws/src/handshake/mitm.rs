@@ -319,6 +319,7 @@ mod tests {
         io::BridgeIo,
     };
     use rama_net::test_utils::client::MockSocket;
+    use rama_utils::octets::kib;
     use tokio::io::duplex;
 
     use crate::{
@@ -398,8 +399,8 @@ mod tests {
         // Two duplex pairs: one for the ingress side of the relay, one for
         // the egress side. `MockSocket` wraps each end in an `ExtensionsRef`
         // shell so the relay's `from_raw_socket` is happy.
-        let (relay_ingress_dup, peer_ingress_dup) = duplex(16 * 1024);
-        let (relay_egress_dup, peer_egress_dup) = duplex(16 * 1024);
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
 
         let relay_ingress = MockSocket::new(relay_ingress_dup);
         let relay_egress = MockSocket::new(relay_egress_dup);

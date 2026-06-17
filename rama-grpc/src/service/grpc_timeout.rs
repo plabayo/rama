@@ -158,13 +158,13 @@ mod tests {
     #[test]
     fn test_hours() {
         let parsed_duration = setup_map_try_parse(Some("3H")).unwrap().unwrap();
-        assert_eq!(Duration::from_secs(3 * 60 * 60), parsed_duration);
+        assert_eq!(Duration::from_hours(3), parsed_duration);
     }
 
     #[test]
     fn test_minutes() {
         let parsed_duration = setup_map_try_parse(Some("1M")).unwrap().unwrap();
-        assert_eq!(Duration::from_secs(60), parsed_duration);
+        assert_eq!(Duration::from_mins(1), parsed_duration);
     }
 
     #[test]
