@@ -18,6 +18,7 @@
 pub mod address;
 pub mod asn;
 pub mod client;
+pub mod client_ip;
 pub mod conn;
 pub mod extensions;
 pub mod forwarded;
@@ -30,6 +31,8 @@ pub mod user;
 
 pub(crate) mod byte_sets;
 pub(crate) mod proto;
+#[doc(inline)]
+pub use client_ip::ClientIp;
 #[doc(inline)]
 pub use proto::Protocol;
 

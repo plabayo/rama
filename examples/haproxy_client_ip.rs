@@ -30,7 +30,6 @@
 use rama::{
     Layer,
     error::ErrorContext,
-    extensions::ExtensionsRef,
     http::{
         Request, StatusCode,
         layer::{
@@ -40,7 +39,7 @@ use rama::{
         service::web::{Router, response::ErrorResponse},
     },
     layer::ArcLayer,
-    net::{forwarded::Forwarded, stream::SocketInfo},
+    net::ClientIp,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
@@ -78,14 +77,7 @@ async fn main() {
                     "/",
                     async |req: Request| -> Result<String, ErrorResponse> {
                         let client_ip = req
-                            .extensions()
-                            .get_ref::<Forwarded>()
-                            .and_then(|f| f.client_ip())
-                            .or_else(|| {
-                                req.extensions()
-                                    .get_ref::<SocketInfo>()
-                                    .map(|info| info.peer_addr().ip_addr)
-                            })
+                            .client_ip()
                             .context("failed to fetch client IP")
                             .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
                         Ok(client_ip.to_string())
