@@ -301,11 +301,22 @@ impl MmdbReader {
             // explicit "no data" terminator
             Ok(None)
         } else if node > node_count {
-            // data pointer: file offset = tree_size + (value - node_count)
+            // A leaf resolves to file offset `tree_size + (value - node_count)`.
+            // Values `node_count + 1 ..= node_count + 15` fall inside the
+            // 16-byte data-section separator and are not valid data pointers;
+            // reject those (and any offset past the buffer) as corrupt rather
+            // than handing the decoder a bogus position.
+            let rel = node - node_count;
+            if rel < 16 {
+                return Err(GeoIpError::Corrupt(
+                    "data pointer inside the 16-byte separator",
+                ));
+            }
             let offset = self
                 .tree_size
-                .checked_add(node - node_count)
-                .ok_or(GeoIpError::Corrupt("data offset overflow"))?;
+                .checked_add(rel)
+                .filter(|&o| o < self.buf.len())
+                .ok_or(GeoIpError::Corrupt("data pointer out of bounds"))?;
             Ok(Some(offset))
         } else {
             // ran out of bits without reaching a leaf

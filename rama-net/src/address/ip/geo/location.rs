@@ -37,11 +37,13 @@ mod keys {
     pub(super) const ASN_ORG: &str = "autonomous_system_organization";
 }
 
-/// An IANA time-zone identifier (e.g. `"Europe/Brussels"`), stored verbatim.
+/// A time-zone value as recorded by the geolocation provider, stored verbatim.
 ///
-/// This carries no time-zone-database cost and no third-party dependency;
-/// resolve it to a live zone yourself when needed, e.g. with
-/// `jiff::tz::TimeZone::get(tz.as_str())`.
+/// The format is provider-dependent: an IANA identifier (e.g.
+/// `"Europe/Brussels"`, as emitted by GeoLite2) or a fixed UTC offset (e.g.
+/// `"-05:00"`, as emitted by IP2Location LITE). It carries no time-zone-database
+/// cost and no third-party dependency; interpret it according to your source —
+/// IANA names resolve via e.g. `jiff::tz::TimeZone::get(tz.as_str())`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct TimeZoneName(Box<str>);
