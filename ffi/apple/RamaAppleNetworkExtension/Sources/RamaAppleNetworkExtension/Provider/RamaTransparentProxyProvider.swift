@@ -744,8 +744,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         options: [String: Any]?, completionHandler: @escaping (Error?) -> Void
     ) {
         let storageDir = Self.defaultRustStorageDirectory()?.path
+        RamaLog.info("startProxy called pid=\(ProcessInfo.processInfo.processIdentifier)")
         guard RamaTransparentProxyEngineHandle.initialize(storageDir: storageDir, appGroupDir: nil)
         else {
+            RamaLog.error(
+                "initialize() returned false — rust tracing or allocator init failed; "
+                + "pid=\(ProcessInfo.processInfo.processIdentifier) "
+                + "storageDir=\(storageDir ?? "<nil>")"
+            )
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
                 code: 1,
