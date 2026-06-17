@@ -687,7 +687,8 @@ mod render_html_page_tests {
     /// per-source) and embeds the attribution as an HTML comment.
     #[test]
     fn render_html_page_renders_geo_panel() {
-        use crate::net::address::ip::geo::{Country, GeoLocation, IpGeoInfo, IpGeoSourceResult};
+        use crate::geo::Country;
+        use crate::net::address::ip::geo::{GeoLocation, IpGeoInfo, IpGeoSourceResult};
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
         let loc = GeoLocation {
             country: Some(Country::Belgium),
