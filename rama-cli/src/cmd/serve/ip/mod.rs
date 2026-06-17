@@ -59,6 +59,10 @@ pub struct CliCommandIp {
 /// run the rama ip service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
+
+    // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
+    let geo_db = crate::utils::geo::load_geo_db_from_env();
+
     let maybe_tls_server_config = cfg
         .secure
         .then(|| {
@@ -78,6 +82,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
                 .with_concurrent(cfg.concurrent)
                 .with_timeout(Duration::from_secs(cfg.timeout))
                 .maybe_with_forward(cfg.forward)
+                .maybe_with_geo_db(geo_db.clone())
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build()
                 .context("build ip TCP service")?,
@@ -88,6 +93,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIp) -> Result<(), BoxEr
                 .with_concurrent(cfg.concurrent)
                 .with_timeout(Duration::from_secs(cfg.timeout))
                 .maybe_with_forward(cfg.forward)
+                .maybe_with_geo_db(geo_db.clone())
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build(exec.clone())
                 .context("build ip HTTP service")?,

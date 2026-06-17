@@ -15,6 +15,7 @@ use rama::{
         request::Parts,
     },
     net::{
+        address::ip::geo::{IpGeoDb, IpGeoInfo},
         fingerprint::{AkamaiH2, Ja3, Ja4, Ja4H, PeetPrint},
         http::RequestContext,
         stream::SocketInfo,
@@ -157,6 +158,8 @@ pub(super) struct RequestInfo {
     pub(super) path: String,
     pub(super) uri: String,
     pub(super) peer_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) geo: Option<IpGeoInfo>,
 }
 
 pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInfo {
@@ -176,12 +179,27 @@ pub(super) async fn get_request_info(
     resource_type: ResourceType,
     initiator: Initiator,
     parts: &Parts,
+    geo_db: Option<&IpGeoDb>,
 ) -> Result<RequestInfo, BoxError> {
     let request_context =
         RequestContext::try_from(parts).context("get or compose RequestContext")?;
 
     let authority = request_context.authority.to_string();
     let scheme = request_context.protocol.to_string();
+
+    let geo = geo_db.and_then(|db| {
+        parts
+            .extensions
+            .get_ref::<Forwarded>()
+            .and_then(|f| f.client_ip())
+            .or_else(|| {
+                parts
+                    .extensions
+                    .get_ref::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip_addr)
+            })
+            .and_then(|ip| db.resolve(ip))
+    });
 
     Ok(RequestInfo {
         version: format!("{:?}", parts.version),
@@ -212,6 +230,7 @@ pub(super) async fn get_request_info(
                     .get_ref::<SocketInfo>()
                     .map(|v| v.peer_addr().to_string())
             }),
+        geo,
     })
 }
 

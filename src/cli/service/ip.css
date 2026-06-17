@@ -113,3 +113,18 @@ button.primary {
     color: #808080;
     margin-top: 0.7rem;
 }
+.georow {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.25rem 0;
+    border-top: 0.05rem solid rgba(255, 255, 255, 0.06);
+}
+.georow > div:last-child {
+    text-align: right;
+    word-break: break-word;
+}
+.geo-source {
+    margin-top: 0.8rem;
+    font-weight: 700;
+}

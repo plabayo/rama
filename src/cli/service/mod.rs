@@ -7,6 +7,7 @@
 
 pub mod echo;
 pub mod fs;
+pub mod geo;
 pub mod http_security;
 pub mod ip;
 

@@ -374,7 +374,9 @@ mod tests {
             ContentSecurityPolicy::empty().with("experimental-thing", SourceList::self_origin());
         assert_eq!(csp.to_string(), "experimental-thing 'self'");
         let d = csp.directives().next().unwrap();
-        assert!(matches!(d.name, DirectiveName::Unknown(ref s) if s == "experimental-thing"));
+        assert!(
+            matches!(d.name, DirectiveName::Unknown(ref s) if s.as_ref() == "experimental-thing")
+        );
     }
 
     #[test]

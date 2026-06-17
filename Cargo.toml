@@ -145,6 +145,7 @@ loom = "0.7"
 matchit = "0.9"
 md5 = "0.8"
 memchr = "2.8"
+memmap2 = "0.9"
 mimalloc = { version = "0.1.52", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
@@ -413,6 +414,8 @@ net = ["dep:rama-net"]
 net-apple-networkextension = ["net", "dep:rama-net-apple-networkextension"]
 net-apple-xpc = ["net", "dep:rama-net-apple-xpc"]
 idna = ["net", "rama-net?/idna"]
+# memory-map IP geolocation databases (only takes effect when rama-net is enabled)
+mmap = ["rama-net?/mmap"]
 dns = ["net", "dep:rama-dns", "rama-net?/http"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["dns", "dep:rama-tcp"]

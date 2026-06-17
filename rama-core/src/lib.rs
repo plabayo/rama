@@ -45,6 +45,8 @@ pub mod matcher;
 
 pub mod username;
 
+pub mod geo;
+
 pub mod telemetry;
 
 pub mod conversion;

@@ -30,6 +30,7 @@ use crate::{
     io::Io,
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
@@ -68,6 +69,7 @@ pub struct IpServiceBuilder<M> {
     concurrent_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
+    geo_db: Option<Arc<IpGeoDb>>,
     _mode: PhantomData<fn(M)>,
 }
 
@@ -81,6 +83,7 @@ impl IpServiceBuilder<mode::Http> {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
+            geo_db: None,
             _mode: PhantomData,
         }
     }
@@ -96,6 +99,7 @@ impl IpServiceBuilder<mode::Transport> {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
+            geo_db: None,
             _mode: PhantomData,
         }
     }
@@ -140,6 +144,16 @@ impl<M> IpServiceBuilder<M> {
     }
 
     crate::utils::macros::generate_set_and_with! {
+        /// attach an IP geolocation database, enabling geo enrichment of the
+        /// HTTP (JSON) response. Typically built from `RAMA_IP_GEO_DB`.
+        #[must_use]
+        pub fn geo_db(mut self, db: Option<Arc<IpGeoDb>>) -> Self {
+            self.geo_db = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         /// define a tls server cert config to be used for tls terminaton
         /// by the IP service.
@@ -179,12 +193,15 @@ impl IpServiceBuilder<mode::Http> {
 }
 
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 /// The inner http ip-service used by the [`IpServiceBuilder`]. Mounted at
 /// `/` by the surrounding [`crate::http::service::web::Router`] in
 /// [`IpServiceBuilder::build_http`]; the asset sidecars are sibling
 /// routes on the same router.
-struct HttpIpService;
+struct HttpIpService {
+    /// Optional geolocation database; when present, the JSON response is
+    /// enriched with the resolved location (merged + per-source).
+    geo_db: Option<Arc<IpGeoDb>>,
+}
 
 impl Service<Request> for HttpIpService {
     type Output = Response;
@@ -204,11 +221,24 @@ impl Service<Request> for HttpIpService {
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
                 HttpBodyContentFormat::Txt => ip.to_string().into_response(),
-                HttpBodyContentFormat::Html => render_html_page(ip).into_response(),
-                HttpBodyContentFormat::Json => Json(serde_json::json!({
-                    "ip": ip,
-                }))
-                .into_response(),
+                HttpBodyContentFormat::Html => {
+                    let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
+                    let attributions: Vec<_> = self
+                        .geo_db
+                        .as_ref()
+                        .map(|db| db.attributions().collect())
+                        .unwrap_or_default();
+                    render_html_page(ip, geo.as_ref(), &attributions).into_response()
+                }
+                HttpBodyContentFormat::Json => {
+                    let geo = self.geo_db.as_ref().and_then(|db| db.resolve(ip));
+                    let mut body = serde_json::json!({ "ip": ip });
+                    if let Some(info) = geo {
+                        // attribution rides in the x-geo-attribution header, not the body
+                        body["geo"] = serde_json::to_value(&info).unwrap_or_default();
+                    }
+                    Json(body).into_response()
+                }
             },
             None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         })
@@ -237,9 +267,12 @@ impl HttpBodyContentFormat {
         let Some(accept) = req.headers().typed_get::<Accept>() else {
             return Self::default();
         };
-        accept
-            .0
-            .iter()
+        // honour q-values: try the most-preferred media types first (stable
+        // sort, so equal-quality entries keep their header order)
+        let mut entries: Vec<_> = accept.0.iter().collect();
+        entries.sort_by_key(|qv| std::cmp::Reverse(qv.quality));
+        entries
+            .into_iter()
             .find_map(|qv| {
                 let r#type = qv.value.subtype();
                 if r#type == mime::JSON {
@@ -439,11 +472,22 @@ impl<M> IpServiceBuilder<M> {
                 crate::cli::service::http_security::rama_html_csp(),
             );
 
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices: Vec<_> = db.attributions().collect();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
+
         // Route the IP echo + its asset sidecars through a Router so we
         // get clean method-aware matching (anything outside the three
         // known routes redirects to `/`).
         let router = crate::http::service::web::Router::new()
-            .with_get("/", HttpIpService)
+            .with_get(
+                "/",
+                HttpIpService {
+                    geo_db: self.geo_db,
+                },
+            )
             .with_get("/style/ip.css", Css(IP_STYLE_CSS))
             .with_get("/script/ip.js", Script(IP_SCRIPT_JS))
             .with_not_found(async || Redirect::permanent("/"));
@@ -452,6 +496,7 @@ impl<M> IpServiceBuilder<M> {
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            geo_attribution,
             csp_layer,
             nosniff_layer,
             referrer_layer,
@@ -485,8 +530,43 @@ pub mod mode {
     pub struct Transport;
 }
 
-fn render_html_page(ip: IpAddr) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
+fn render_html_page(
+    ip: IpAddr,
+    geo: Option<&IpGeoInfo>,
+    attributions: &[&str],
+) -> impl crate::http::protocols::html::IntoHtml + IntoResponse {
     use crate::http::protocols::html::*;
+
+    // attribution comment from the loaded databases; geo panel when resolved
+    let geo_comment =
+        crate::cli::service::geo::geo_attribution_html_comment(attributions).map(PreEscaped);
+    let geo_panel = geo.map(|info| {
+        let rows = |loc: &GeoLocation| {
+            crate::cli::service::geo::geo_location_rows(loc)
+                .into_iter()
+                .map(|(k, v)| div!(class = "georow", div!(class = "muted", k), div!(code!(v))))
+                .collect::<Vec<_>>()
+        };
+        let sources = info
+            .by_source
+            .iter()
+            .map(|src| {
+                (
+                    div!(class = "muted geo-source", src.label.to_string()),
+                    rows(&src.location),
+                )
+            })
+            .collect::<Vec<_>>();
+        div!(
+            class = "panel",
+            role = "region",
+            "aria-label" = "geo panel",
+            div!(class = "muted", "Geolocation"),
+            rows(&info.location),
+            sources,
+        )
+    });
+
     html!(
         lang = "en",
         head!(
@@ -509,31 +589,35 @@ fn render_html_page(ip: IpAddr) -> impl crate::http::protocols::html::IntoHtml +
                 href = "/style/ip.css"
             ),
         ),
-        body!(div!(
-            class = "card",
+        body!(
+            geo_comment,
             div!(
-                class = "logo",
-                div!("🦙"),
-                div!(a!(href = "https://ramaproxy.org", "ラマ")),
-            ),
-            div!(
-                class = "panel",
-                role = "region",
-                "aria-label" = "ip panel",
-                div!(class = "muted", "Your public ip"),
-                div!(id = "ip", class = "ip", code!(ip.to_string())),
+                class = "card",
                 div!(
-                    class = "controls",
-                    button!(
-                        id = "copyBtn",
-                        class = "primary",
-                        title = "Copy ip to clipboard",
-                        "📋 Copy IP",
+                    class = "logo",
+                    div!("🦙"),
+                    div!(a!(href = "https://ramaproxy.org", "ラマ")),
+                ),
+                div!(
+                    class = "panel",
+                    role = "region",
+                    "aria-label" = "ip panel",
+                    div!(class = "muted", "Your public ip"),
+                    div!(id = "ip", class = "ip", code!(ip.to_string())),
+                    div!(
+                        class = "controls",
+                        button!(
+                            id = "copyBtn",
+                            class = "primary",
+                            title = "Copy ip to clipboard",
+                            "📋 Copy IP",
+                        ),
                     ),
                 ),
-            ),
-            script!(src = "/script/ip.js"),
-        )),
+                geo_panel,
+                script!(src = "/script/ip.js"),
+            )
+        ),
     )
 }
 
@@ -550,7 +634,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_embeds_ip_safely() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(out.starts_with("<!DOCTYPE html><html lang=\"en\">"));
         assert!(out.contains("<title>Rama IP</title>"));
         assert!(out.contains(r#"<div id="ip" class="ip"><code>127.0.0.1</code></div>"#));
@@ -563,7 +647,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_emits_aria_label() {
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(out.contains(r#"aria-label="ip panel""#));
     }
 
@@ -575,7 +659,7 @@ mod render_html_page_tests {
     #[test]
     fn render_html_page_uses_external_assets() {
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        let out = render_html_page(ip).into_string();
+        let out = render_html_page(ip, None, &[]).into_string();
         assert!(
             !out.contains("<style>") && !out.contains("<style "),
             "IP page must not embed inline <style>; CSP blocks it"
@@ -594,5 +678,40 @@ mod render_html_page_tests {
             out.contains(r#"<script src="/script/ip.js">"#),
             "IP page must source /script/ip.js",
         );
+    }
+
+    /// When a location is resolved, the page renders a geo panel (merged +
+    /// per-source) and embeds the attribution as an HTML comment.
+    #[test]
+    fn render_html_page_renders_geo_panel() {
+        use crate::net::address::ip::geo::{Country, GeoLocation, IpGeoInfo, IpGeoSourceResult};
+        let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let loc = GeoLocation {
+            country: Some(Country::Belgium),
+            ..Default::default()
+        };
+        let info = IpGeoInfo {
+            ip,
+            location: loc.clone(),
+            by_source: vec![IpGeoSourceResult {
+                label: "geolite2".into(),
+                location: loc,
+            }],
+        };
+        let notices = ["This product includes GeoLite2 data created by MaxMind"];
+        let out = render_html_page(ip, Some(&info), &notices).into_string();
+        assert!(out.contains("Geolocation"), "geo panel title missing");
+        assert!(out.contains("Belgium"), "resolved country missing");
+        assert!(out.contains("geolite2"), "per-source label missing");
+        // attribution is an HTML comment, never visible structured data
+        assert!(
+            out.contains("<!-- This product includes GeoLite2"),
+            "attribution comment missing"
+        );
+
+        // …and absent when no database is configured
+        let plain = render_html_page(ip, None, &[]).into_string();
+        assert!(!plain.contains("Geolocation"));
+        assert!(!plain.contains("<!--"));
     }
 }

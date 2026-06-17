@@ -31,6 +31,7 @@ use crate::{
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::address::ip::geo::IpGeoDb,
     net::fingerprint::{AkamaiH2, Ja4H},
     net::forwarded::Forwarded,
     net::http::RequestContext,
@@ -91,6 +92,8 @@ pub struct EchoServiceBuilder<H> {
     http_service_builder: H,
 
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
 }
 
 impl Default for EchoServiceBuilder<()> {
@@ -111,6 +114,8 @@ impl Default for EchoServiceBuilder<()> {
             http_service_builder: (),
 
             uadb: None,
+
+            geo_db: None,
         }
     }
 }
@@ -206,6 +211,8 @@ impl<H> EchoServiceBuilder<H> {
             http_service_builder: (self.http_service_builder, layer),
 
             uadb: self.uadb,
+
+            geo_db: self.geo_db,
         }
     }
 
@@ -217,6 +224,15 @@ impl<H> EchoServiceBuilder<H> {
             db: Option<std::sync::Arc<UserAgentDatabase>>,
         ) -> Self {
             self.uadb = db;
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// attach an IP geolocation database, enabling geo enrichment of the
+        /// echoed JSON. Typically built from `RAMA_IP_GEO_DB`.
+        pub fn geo_db(mut self, db: Option<std::sync::Arc<IpGeoDb>>) -> Self {
+            self.geo_db = db;
             self
         }
     }
@@ -311,10 +327,17 @@ where
     ) -> impl Service<Request, Output: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = super::http_forwarded_layer(self.forward.as_ref());
 
+        // Attribution header, derived from the loaded databases' notices.
+        let geo_attribution = self.geo_db.as_ref().and_then(|db| {
+            let notices: Vec<_> = db.attributions().collect();
+            (!notices.is_empty()).then(|| crate::cli::service::geo::geo_attribution_layer(notices))
+        });
+
         (
             TraceLayer::new_for_http(),
             SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
             AddRequiredResponseHeadersLayer::default(),
+            geo_attribution,
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
@@ -343,6 +366,7 @@ where
         )
             .into_layer(self.http_service_builder.layer(EchoService {
                 uadb: self.uadb.clone(),
+                geo_db: self.geo_db.clone(),
             }))
     }
 }
@@ -352,6 +376,7 @@ where
 /// The inner echo-service used by the [`EchoServiceBuilder`].
 pub struct EchoService {
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+    geo_db: Option<std::sync::Arc<IpGeoDb>>,
 }
 
 impl Service<Request> for EchoService {
@@ -703,8 +728,29 @@ impl Service<Request> for EchoService {
             }));
         }
 
+        // attribution rides in the x-geo-attribution response header, not the body
+        let geo = self
+            .geo_db
+            .as_ref()
+            .and_then(|db| {
+                parts
+                    .extensions
+                    .get_ref::<Forwarded>()
+                    .and_then(|f| f.client_ip())
+                    .or_else(|| {
+                        parts
+                            .extensions
+                            .get_ref::<SocketInfo>()
+                            .map(|s| s.peer_addr().ip_addr)
+                    })
+                    .and_then(|ip| db.resolve(ip))
+            })
+            .map(|info| serde_json::to_value(&info).unwrap_or_default())
+            .unwrap_or(serde_json::Value::Null);
+
         Ok(Json(json!({
             "ua": user_agent_info,
+            "geo": geo,
             "http": {
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,

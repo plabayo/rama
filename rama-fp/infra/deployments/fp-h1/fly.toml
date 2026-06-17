@@ -10,6 +10,19 @@ image = "glendc/rama:edge"
 
 [env]
   RUST_LOG = 'debug'
+  # opt-in IP geolocation; files are placed on the 'geoip' volume by geoip_sync.sh
+  RAMA_IP_GEO_DB = 'geolite2=/geoip/GeoLite2-City.mmdb+/geoip/GeoLite2-ASN.mmdb;ip2location=/geoip/IP2Location-LITE-DB11.mmdb'
+
+# one entry per process group: a bare [mounts] only attaches to one group
+[[mounts]]
+  source = 'geoip'
+  destination = '/geoip'
+  processes = ['app_secure']
+
+[[mounts]]
+  source = 'geoip'
+  destination = '/geoip'
+  processes = ['app_insecure']
 
 [[services]]
 protocol = 'tcp'

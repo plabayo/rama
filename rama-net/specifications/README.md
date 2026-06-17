@@ -107,6 +107,26 @@ Specifications enumerated by
 * [rfc6890.txt](./ip/rfc6890.txt) — IANA special-purpose address
   registries.
 
+### GeoIP / MMDB
+
+* [geoip/MaxMind-DB-spec.md](./geoip/MaxMind-DB-spec.md) — the MaxMind DB
+  (`.mmdb`) binary file format, version 2.0. Implemented by the
+  zero-copy reader and minimal writer under
+  [`src/address/ip/geo/`](../src/address/ip/geo). The format maps IP
+  prefixes to data records through a binary search tree plus a
+  tagged data section; rama parses it with `std` only (no
+  third-party crate).
+
+  License note: unlike the IETF RFCs vendored above, this document is
+  authored by MaxMind and licensed under
+  [Creative Commons Attribution-ShareAlike 3.0](https://creativecommons.org/licenses/by-sa/3.0/)
+  (the MaxMind-DB *repository code* is Apache-2.0/MIT, but the
+  specification text carries its own CC-BY-SA license — see the footer
+  of the vendored file). It is reproduced here verbatim with its
+  original attribution and license notice intact. We do **not** ship any
+  MaxMind (or other vendor) database files: those are separately
+  licensed. Test fixtures are synthetic, produced by our own writer.
+
 ### Fingerprinting
 
 The fingerprint algorithms implemented under

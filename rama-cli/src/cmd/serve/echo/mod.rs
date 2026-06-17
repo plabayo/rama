@@ -160,6 +160,8 @@ async fn bind_echo_http_service(
     maybe_tls_config: Option<ServerConfig>,
 ) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
+    // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
+    let geo_db = crate::utils::geo::load_geo_db_from_env();
     let tcp_service = EchoServiceBuilder::new()
         .with_concurrent(cfg.concurrent.unwrap_or_default())
         .with_timeout(Duration::from_secs(cfg.timeout.unwrap_or(300)))
@@ -168,6 +170,7 @@ async fn bind_echo_http_service(
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_config)
         .with_user_agent_database(Arc::new(UserAgentDatabase::try_embedded()?))
+        .maybe_with_geo_db(geo_db)
         .build(exec.clone())
         .context("build http(s) echo service")?;
 

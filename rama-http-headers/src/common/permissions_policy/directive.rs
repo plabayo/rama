@@ -157,7 +157,7 @@ impl AllowlistSource {
     /// for you. Pass `https://example.com`, not `"https://example.com"`.
     #[must_use]
     pub fn origin(origin: impl AsRef<str>) -> Self {
-        Self::Unknown(format!("\"{}\"", origin.as_ref()))
+        Self::Unknown(format!("\"{}\"", origin.as_ref()).into())
     }
 
     /// Parse a single allowlist token. Returns `None` on a
@@ -171,7 +171,7 @@ impl AllowlistSource {
             if inner.is_empty() {
                 None
             } else {
-                Some(Self::Unknown(format!("\"{inner}\"")))
+                Some(Self::Unknown(format!("\"{inner}\"").into()))
             }
         } else {
             // Bare keyword: macro-generated `From<&str>` matches

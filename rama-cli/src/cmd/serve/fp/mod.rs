@@ -200,12 +200,23 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFingerprint) -> Result<
     let (csp_layer, nosniff_layer, referrer_layer, frame_layer) =
         rama::cli::service::http_security::defence_in_depth_layer(fp_csp);
 
+    // Attribution header, derived from the loaded databases' notices.
+    let geo_attribution = {
+        let notices: Vec<_> = state
+            .geo_db
+            .as_ref()
+            .map(|db| db.attributions().collect())
+            .unwrap_or_default();
+        (!notices.is_empty()).then(|| rama::cli::service::geo::geo_attribution_layer(notices))
+    };
+
     let middlewares = (
         TraceLayer::new_for_http(),
         CompressionLayer::new(),
         CatchPanicLayer::new(),
         SetResponseHeaderLayer::<XClacksOverhead>::if_not_present_default_typed(),
-        AddRequiredResponseHeadersLayer::default(),
+        // nested with the attribution layer to keep the outer tuple arity low
+        (AddRequiredResponseHeadersLayer::default(), geo_attribution),
         SetResponseHeaderLayer::overriding(
             HeaderName::from_static("x-sponsored-by"),
             HeaderValue::from_static("fly.io"),

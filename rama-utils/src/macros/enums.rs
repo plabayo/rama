@@ -340,7 +340,7 @@ macro_rules! __enum_builder {
                 $(#[$enum_meta])*
                 $enum_var
             ),*
-            ,Unknown(String)
+            ,Unknown(Box<str>)
         }
 
         impl $enum_name {
@@ -357,7 +357,7 @@ macro_rules! __enum_builder {
             $enum_vis fn as_static_str(&self) -> ::std::borrow::Cow<'static, str> {
                 match self {
                     $( $enum_name::$enum_var => ::std::borrow::Cow::Borrowed($enum_val)),*
-                    ,$enum_name::Unknown(v) => ::std::borrow::Cow::Owned(v.clone()),
+                    ,$enum_name::Unknown(v) => ::std::borrow::Cow::Owned(v.to_string()),
                 }
             }
 
@@ -375,7 +375,7 @@ macro_rules! __enum_builder {
             fn from(s: &'a str) -> Self {
                 $crate::macros::match_ignore_ascii_case_str!(match(s) {
                     $($enum_val $(| $enum_val_alt)* => $enum_name::$enum_var),*
-                    , _ => $enum_name::Unknown(s.to_owned()),
+                    , _ => $enum_name::Unknown(s.into()),
                 })
             }
         }
@@ -403,7 +403,7 @@ macro_rules! __enum_builder {
             fn from(s: String) -> Self {
                 match s.as_str() {
                     $($enum_val $(| $enum_val_alt)* => $enum_name::$enum_var),*
-                    , _ => $enum_name::Unknown(s),
+                    , _ => $enum_name::Unknown(s.into_boxed_str()),
                 }
             }
         }
