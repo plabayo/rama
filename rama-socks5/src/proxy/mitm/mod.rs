@@ -361,13 +361,16 @@ mod tests {
         let mut ingress_stream = ServiceInput::new(tokio_test::io::Builder::new().build());
 
         let connector = RecordingTcpConnector::default();
+        // No tight connect_timeout: a short real-time bound races the spawned connect
+        // attempt (Windows' ~15.6ms timer tick) and can cancel it before connect() runs.
+        // The mock connector errors instantly, so tcp_connect completes on its own.
         let relay = Socks5MitmRelay::new()
             .dns_resolver(Ipv4Addr::new(203, 0, 113, 10))
-            .with_connect_timeout(Duration::from_millis(20))
             .tcp_connector(connector.clone());
 
         let outcome = tokio::time::timeout(
-            Duration::from_millis(100),
+            // generous safety net to catch a true hang, never races normal completion
+            Duration::from_secs(5),
             relay.handshake(
                 &mut ingress_stream,
                 Executor::default(),
