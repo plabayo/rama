@@ -175,46 +175,38 @@ impl GeoLocation {
     /// value in `self` (e.g. an org without an ASN) is completed from `other`
     /// rather than blocking the merge.
     pub fn fill_gaps_from(&mut self, other: &Self) {
-        if self.continent.is_none() {
-            self.continent.clone_from(&other.continent);
+        // Clone `other.$field` into `self.$field` only when `self`'s is empty.
+        macro_rules! fill {
+            ($dst:expr, $src:expr) => {
+                if $dst.is_none() {
+                    $dst.clone_from(&$src);
+                }
+            };
         }
-        if self.country.is_none() {
-            self.country.clone_from(&other.country);
-        }
-        if self.registered_country.is_none() {
-            self.registered_country
-                .clone_from(&other.registered_country);
-        }
+
+        fill!(self.continent, other.continent);
+        fill!(self.country, other.country);
+        fill!(self.registered_country, other.registered_country);
         if self.subdivisions.is_empty() {
             self.subdivisions.clone_from(&other.subdivisions);
         }
-        if self.city.is_none() {
-            self.city.clone_from(&other.city);
-        }
-        if self.postal_code.is_none() {
-            self.postal_code.clone_from(&other.postal_code);
-        }
+        fill!(self.city, other.city);
+        fill!(self.postal_code, other.postal_code);
         if self.location.is_none() {
             self.location.clone_from(&other.location);
         } else if let (Some(mine), Some(theirs)) = (&mut self.location, &other.location) {
             if mine.accuracy_radius_km.is_none() {
                 mine.accuracy_radius_km = theirs.accuracy_radius_km;
             }
-            if mine.time_zone.is_none() {
-                mine.time_zone.clone_from(&theirs.time_zone);
-            }
+            fill!(mine.time_zone, theirs.time_zone);
         }
         if self.autonomous_system.is_none() {
             self.autonomous_system.clone_from(&other.autonomous_system);
         } else if let (Some(mine), Some(theirs)) =
             (&mut self.autonomous_system, &other.autonomous_system)
         {
-            if mine.asn.is_none() {
-                mine.asn.clone_from(&theirs.asn);
-            }
-            if mine.organization.is_none() {
-                mine.organization.clone_from(&theirs.organization);
-            }
+            fill!(mine.asn, theirs.asn);
+            fill!(mine.organization, theirs.organization);
         }
     }
 }
@@ -224,23 +216,29 @@ impl GeoLocation {
 /// round-trips through [`GeoLocationRef`].
 impl From<&GeoLocation> for MmdbValue {
     fn from(loc: &GeoLocation) -> Self {
+        // A `{ sub_key: code }` map: the shared shape of continent/country
+        // records, which differ only in the sub-key (`code` vs `iso_code`).
+        let code_map = |sub_key: &str, code: &str| Self::map([(sub_key, Self::string(code))]);
+        // A localised `{ en: name }` names sub-map.
+        let en_names = |name: &str| Self::map([(keys::EN, Self::string(name))]);
+
         let mut record: Vec<(String, Self)> = Vec::new();
         if let Some(continent) = &loc.continent {
             record.push((
                 keys::CONTINENT.to_owned(),
-                Self::map([(keys::CODE, Self::string(continent.code()))]),
+                code_map(keys::CODE, continent.code()),
             ));
         }
         if let Some(country) = &loc.country {
             record.push((
                 keys::COUNTRY.to_owned(),
-                Self::map([(keys::ISO_CODE, Self::string(country.code()))]),
+                code_map(keys::ISO_CODE, country.code()),
             ));
         }
         if let Some(country) = &loc.registered_country {
             record.push((
                 keys::REGISTERED_COUNTRY.to_owned(),
-                Self::map([(keys::ISO_CODE, Self::string(country.code()))]),
+                code_map(keys::ISO_CODE, country.code()),
             ));
         }
         if !loc.subdivisions.is_empty() {
@@ -253,10 +251,7 @@ impl From<&GeoLocation> for MmdbValue {
                         m.push((keys::ISO_CODE.to_owned(), Self::string(&**code)));
                     }
                     if let Some(name) = &sd.name {
-                        m.push((
-                            keys::NAMES.to_owned(),
-                            Self::map([(keys::EN, Self::string(&**name))]),
-                        ));
+                        m.push((keys::NAMES.to_owned(), en_names(name)));
                     }
                     Self::Map(m)
                 })
@@ -266,7 +261,7 @@ impl From<&GeoLocation> for MmdbValue {
         if let Some(city) = &loc.city {
             record.push((
                 keys::CITY.to_owned(),
-                Self::map([(keys::NAMES, Self::map([(keys::EN, Self::string(&**city))]))]),
+                Self::map([(keys::NAMES, en_names(city))]),
             ));
         }
         if let Some(postal) = &loc.postal_code {
@@ -357,6 +352,19 @@ impl<'a> GeoLocationRef<'a> {
         self.decoder.read_str(off).ok()
     }
 
+    /// Read a string at `sub_key` within the top-level field `field_key`.
+    fn field_sub_str(&self, field_key: &str, sub_key: &str) -> Option<&'a str> {
+        self.sub_str(self.field(field_key)?, sub_key)
+    }
+
+    /// Offset of `key` within the `location` sub-map, if present.
+    fn loc_off(&self, key: &str) -> Option<usize> {
+        self.decoder
+            .map_get(self.field(keys::LOCATION)?, key)
+            .ok()
+            .flatten()
+    }
+
     /// Resolve a localised name from the `names` sub-map of `container`,
     /// preferring the configured language and falling back to English.
     fn pick_name(&self, container: usize) -> Option<&'a str> {
@@ -377,22 +385,25 @@ impl<'a> GeoLocationRef<'a> {
     /// Continent of the IP address, if recorded.
     #[must_use]
     pub fn continent(&self) -> Option<ContinentRef<'a>> {
-        let code = self.sub_str(self.field(keys::CONTINENT)?, keys::CODE)?;
-        Some(ContinentRef::from_code(code))
+        Some(ContinentRef::from_code(
+            self.field_sub_str(keys::CONTINENT, keys::CODE)?,
+        ))
     }
 
     /// Country of the IP address, if recorded.
     #[must_use]
     pub fn country(&self) -> Option<CountryRef<'a>> {
-        let code = self.sub_str(self.field(keys::COUNTRY)?, keys::ISO_CODE)?;
-        Some(CountryRef::from_code(code))
+        Some(CountryRef::from_code(
+            self.field_sub_str(keys::COUNTRY, keys::ISO_CODE)?,
+        ))
     }
 
     /// Registered country of the IP address, if recorded.
     #[must_use]
     pub fn registered_country(&self) -> Option<CountryRef<'a>> {
-        let code = self.sub_str(self.field(keys::REGISTERED_COUNTRY)?, keys::ISO_CODE)?;
-        Some(CountryRef::from_code(code))
+        Some(CountryRef::from_code(
+            self.field_sub_str(keys::REGISTERED_COUNTRY, keys::ISO_CODE)?,
+        ))
     }
 
     /// Localised city name, if available.
@@ -404,41 +415,33 @@ impl<'a> GeoLocationRef<'a> {
     /// Postal / ZIP code, if available.
     #[must_use]
     pub fn postal_code(&self) -> Option<&'a str> {
-        self.sub_str(self.field(keys::POSTAL)?, keys::CODE)
+        self.field_sub_str(keys::POSTAL, keys::CODE)
     }
 
     /// Approximate latitude in degrees, if available.
     #[must_use]
     pub fn latitude(&self) -> Option<f64> {
-        let loc = self.field(keys::LOCATION)?;
-        let off = self.decoder.map_get(loc, keys::LATITUDE).ok().flatten()?;
-        self.decoder.read_f64(off).ok()
+        self.decoder.read_f64(self.loc_off(keys::LATITUDE)?).ok()
     }
 
     /// Approximate longitude in degrees, if available.
     #[must_use]
     pub fn longitude(&self) -> Option<f64> {
-        let loc = self.field(keys::LOCATION)?;
-        let off = self.decoder.map_get(loc, keys::LONGITUDE).ok().flatten()?;
-        self.decoder.read_f64(off).ok()
+        self.decoder.read_f64(self.loc_off(keys::LONGITUDE)?).ok()
     }
 
     /// Accuracy radius in kilometres, if available.
     #[must_use]
     pub fn accuracy_radius_km(&self) -> Option<u16> {
-        let loc = self.field(keys::LOCATION)?;
-        let off = self
-            .decoder
-            .map_get(loc, keys::ACCURACY_RADIUS)
+        self.decoder
+            .read_u16(self.loc_off(keys::ACCURACY_RADIUS)?)
             .ok()
-            .flatten()?;
-        self.decoder.read_u16(off).ok()
     }
 
     /// IANA time zone identifier, if available.
     #[must_use]
     pub fn time_zone(&self) -> Option<&'a str> {
-        self.sub_str(self.field(keys::LOCATION)?, keys::TIME_ZONE)
+        self.field_sub_str(keys::LOCATION, keys::TIME_ZONE)
     }
 
     /// Autonomous system number, if available, preserved verbatim as a
