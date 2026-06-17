@@ -464,7 +464,6 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
-    "grpc",
     "rama-grpc?/opentelemetry",
 ]
 # Optional [dial9] runtime-telemetry support across the rama crate
@@ -731,7 +730,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_telemetry"
-required-features = ["http-full", "opentelemetry"]
+required-features = ["http-full", "grpc", "opentelemetry"]
 
 [[example]]
 name = "http_user_agent_classifier"
