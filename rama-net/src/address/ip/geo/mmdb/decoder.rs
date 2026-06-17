@@ -184,15 +184,27 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// Resolve `off`, require its field type to equal `expected`, and return
+    /// the decoded `(size, payload_offset)`. `what` names the expected type for
+    /// the error message.
+    fn typed_payload(
+        &self,
+        off: usize,
+        expected: u8,
+        what: &'static str,
+    ) -> Result<(usize, usize)> {
+        let off = self.resolve(off)?;
+        let (t, hl) = self.data_type(off)?;
+        if t != expected {
+            return Err(corrupt(what));
+        }
+        self.size_and_payload(off, hl)
+    }
+
     /// Look up `key` in the map at `map_off`, returning the offset of its
     /// value if present.
     pub(crate) fn map_get(&self, map_off: usize, key: &str) -> Result<Option<usize>> {
-        let off = self.resolve(map_off)?;
-        let (t, hl) = self.data_type(off)?;
-        if t != 7 {
-            return Err(corrupt("expected a map"));
-        }
-        let (count, po) = self.size_and_payload(off, hl)?;
+        let (count, po) = self.typed_payload(map_off, 7, "expected a map")?;
         let mut p = po;
         for _ in 0..count {
             let key_res = self.resolve(p)?;
@@ -213,12 +225,7 @@ impl<'a> Decoder<'a> {
 
     /// Resolve and decode a UTF-8 string field.
     pub(crate) fn read_str(&self, off: usize) -> Result<&'a str> {
-        let off = self.resolve(off)?;
-        let (t, hl) = self.data_type(off)?;
-        if t != 2 {
-            return Err(corrupt("expected a string"));
-        }
-        let (size, po) = self.size_and_payload(off, hl)?;
+        let (size, po) = self.typed_payload(off, 2, "expected a string")?;
         let bytes = self.slice(po, size)?;
         core::str::from_utf8(bytes)
             .ok()
@@ -263,12 +270,7 @@ impl<'a> Decoder<'a> {
     }
 
     pub(crate) fn read_f64(&self, off: usize) -> Result<f64> {
-        let off = self.resolve(off)?;
-        let (t, hl) = self.data_type(off)?;
-        if t != 3 {
-            return Err(corrupt("expected a double"));
-        }
-        let (size, po) = self.size_and_payload(off, hl)?;
+        let (size, po) = self.typed_payload(off, 3, "expected a double")?;
         if size != 8 {
             return Err(corrupt("double must be 8 bytes"));
         }
@@ -280,12 +282,7 @@ impl<'a> Decoder<'a> {
 
     /// Resolve an array field and return the (resolved) offset of each element.
     pub(crate) fn array_offsets(&self, off: usize) -> Result<Vec<usize>> {
-        let off = self.resolve(off)?;
-        let (t, hl) = self.data_type(off)?;
-        if t != 11 {
-            return Err(corrupt("expected an array"));
-        }
-        let (count, po) = self.size_and_payload(off, hl)?;
+        let (count, po) = self.typed_payload(off, 11, "expected an array")?;
         let mut out = Vec::new();
         let mut p = po;
         for _ in 0..count {
