@@ -16,6 +16,7 @@ use rama_core::{
     service::Service,
 };
 use rama_net::proxy::{BridgeCloseReason, IdleGuard, ProxyTarget};
+use rama_utils::octets::kib;
 
 use atomic_waker::AtomicWaker;
 use tokio::sync::{
@@ -134,7 +135,7 @@ impl std::fmt::Display for DecisionDeadlineAction {
 /// Default for the [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`]
 /// setter, which has no effect — per-flow buffering is bounded by
 /// [`DEFAULT_TCP_CHANNEL_CAPACITY`].
-const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = 16 * 1024;
+const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = kib(16);
 /// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
 /// buffers before backpressuring Swift. Each chunk is whatever Swift hands
 /// us in one `flow.readData` / `connection.receive` callback (typically

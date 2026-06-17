@@ -11,6 +11,7 @@ use rama_core::{
     io::{BridgeIo, Io},
 };
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::kib;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::IdleGuard;
@@ -34,7 +35,7 @@ enum CopyDirection {
 // flow stays cheap under high connection concurrency. Override per service via
 // [`IoForwardService::with_buf_size`] when a workload wants a different point on
 // that throughput-vs-resident-memory curve.
-const DEFAULT_BUF_SIZE: usize = 16 * 1024;
+const DEFAULT_BUF_SIZE: usize = kib(16);
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_millis(50);
 
 /// A proxy [`Service`] which takes a [`BridgeIo`]

@@ -37,6 +37,7 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
+use rama_utils::octets::kib;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +64,7 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
         tokio::spawn(async move {
             match behavior {
                 PeerBehavior::EchoAndClose => {
-                    let mut buf = vec![0u8; 8 * 1024];
+                    let mut buf = vec![0u8; kib(8)];
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {
@@ -72,7 +73,7 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     _ = socket.shutdown().await;
                 }
                 PeerBehavior::EchoThenHalfClose => {
-                    let mut buf = vec![0u8; 8 * 1024];
+                    let mut buf = vec![0u8; kib(8)];
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {
@@ -101,7 +102,7 @@ async fn run_peer_listener(addr: SocketAddr, behavior: PeerBehavior) {
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
                 PeerBehavior::EchoThenAbort => {
-                    let mut buf = vec![0u8; 8 * 1024];
+                    let mut buf = vec![0u8; kib(8)];
                     if let Ok(n) = socket.read(&mut buf).await
                         && n > 0
                     {

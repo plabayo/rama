@@ -412,6 +412,7 @@ mod test {
     use crate::StatusCode;
     use crate::service::web::WebService;
     use rama_core::Service;
+    use rama_utils::octets::kib_u64;
 
     const BOUNDARY: &str = "X-RAMA-TEST-BOUNDARY";
 
@@ -817,14 +818,14 @@ mod test {
     fn test_config_merge_floor_keeps_min() {
         let mut a = MultipartConfig::new()
             .with_default_field_limit(1024)
-            .with_field_limit("avatar", 8 * 1024);
+            .with_field_limit("avatar", kib_u64(8));
         let b = MultipartConfig::new()
             .with_default_field_limit(2048)
-            .with_field_limit("avatar", 4 * 1024)
+            .with_field_limit("avatar", kib_u64(4))
             .with_field_limit("doc", 100);
         a.merge_floor(&b);
         assert_eq!(a.default_field_limit, Some(1024));
-        assert_eq!(a.field_limits.get("avatar").copied(), Some(4 * 1024));
+        assert_eq!(a.field_limits.get("avatar").copied(), Some(kib_u64(4)));
         assert_eq!(a.field_limits.get("doc").copied(), Some(100));
     }
 }

@@ -7,6 +7,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+use rama::utils::octets::kib;
+
 use super::{bindings, ffi::EngineHandle};
 
 // ── Ingress (client → service) callback context ───────────────────────────────
@@ -321,7 +323,7 @@ async fn serve_one_ingress_connection(
     let egress_read_demand_for_reader = egress_read_demand.clone();
     let egress_reader = tokio::spawn(async move {
         let mut reader = egress_read;
-        let mut buf = [0_u8; 16 * 1024];
+        let mut buf = [0_u8; kib(16)];
         let mut pending: Option<Vec<u8>> = None;
         'outer: loop {
             // Replay any pending rejected chunk before reading new data.
@@ -382,7 +384,7 @@ async fn serve_one_ingress_connection(
     //
     // Same backpressure-honouring shape as the egress reader above.
     let mut reader = client_read;
-    let mut buf = [0_u8; 16 * 1024];
+    let mut buf = [0_u8; kib(16)];
     let mut pending: Option<Vec<u8>> = None;
     'ingress: loop {
         // Replay before reading new data.

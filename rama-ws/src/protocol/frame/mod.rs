@@ -5,6 +5,7 @@ use rama_core::{
     bytes::{self, BytesMut},
     telemetry::tracing::trace,
 };
+use rama_utils::octets::kib;
 use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 pub mod coding;
@@ -19,7 +20,7 @@ pub use self::{
 };
 
 /// Read buffer size used for `FrameSocket`.
-const READ_BUF_LEN: usize = 128 * 1024;
+const READ_BUF_LEN: usize = kib(128);
 
 /// A reader and writer for WebSocket frames.
 #[derive(Debug)]

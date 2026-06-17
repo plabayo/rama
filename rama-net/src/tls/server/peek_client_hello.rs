@@ -10,6 +10,7 @@ use rama_core::{
     service::RejectService,
     telemetry::tracing,
 };
+use rama_utils::octets::kib;
 use tokio::time::Instant;
 
 use crate::tls::client::{ClientHello, parse_client_hello_handshake};
@@ -130,7 +131,7 @@ where
     // "no extensions", that made us mirror a bare default ClientHello
     // and get rejected by SNI-routed upstreams. The bound still guards
     // against a malformed huge length triggering an unbounded alloc.
-    const MAX_TLS_RECORD_BODY: usize = 16 * 1024;
+    const MAX_TLS_RECORD_BODY: usize = kib(16);
     let record_size = (n + TLS_HEADER_PEEK_LEN).min(MAX_TLS_RECORD_BODY + TLS_HEADER_PEEK_LEN);
 
     let mut v = vec![0u8; record_size];

@@ -4142,6 +4142,7 @@ dependencies = [
  "rama-core",
  "rama-dns",
  "rama-net",
+ "rama-utils",
  "tokio",
  "tokio-util",
 ]
@@ -4154,6 +4155,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
+ "rama-utils",
  "tokio",
 ]
 

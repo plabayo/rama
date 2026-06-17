@@ -17,6 +17,7 @@ use rama_http::{
     uri::{PathAndQuery, Uri},
 };
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::octets::kib;
 use std::{fmt, str::FromStr};
 
 pub(super) const DEFAULT_OTLP_HTTP_ENDPOINT: &str = "http://localhost:4318";
@@ -257,7 +258,7 @@ where
             compress(
                 CompressionSettings {
                     encoding: compression,
-                    buffer_growth_interval: 8 * 1024,
+                    buffer_growth_interval: kib(8),
                 },
                 &mut body,
                 &mut compressed,

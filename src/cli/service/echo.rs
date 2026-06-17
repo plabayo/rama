@@ -41,6 +41,7 @@ use crate::{
     tcp::TcpStream,
     telemetry::tracing,
     ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
+    utils::octets::mib,
 };
 
 use rama_core::error::ErrorExt as _;
@@ -100,7 +101,7 @@ impl Default for EchoServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
-            body_limit: 1024 * 1024,
+            body_limit: mib(1),
             timeout: Duration::ZERO,
             forward: None,
 

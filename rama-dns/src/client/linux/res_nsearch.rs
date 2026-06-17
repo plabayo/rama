@@ -554,6 +554,7 @@ mod ffi {
 #[cfg(test)]
 mod soa_ttl_tests {
     use super::{ffi, parse_authority_soa_ttl};
+    use rama_utils::octets::kib;
 
     /// Build a minimal NXDOMAIN/NODATA DNS response carrying a single SOA RR
     /// in the authority section. Question section uses an A-record query for
@@ -645,7 +646,7 @@ mod soa_ttl_tests {
         // into a larger zeroed buffer: the parser must terminate via header
         // counts, not run off into the padding.
         let mut packet = build_negative_response(120, 90);
-        packet.resize(16 * 1024, 0);
+        packet.resize(kib(16), 0);
         assert_eq!(parse_authority_soa_ttl(&packet), Some(90));
     }
 }

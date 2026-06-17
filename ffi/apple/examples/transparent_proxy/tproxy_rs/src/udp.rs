@@ -12,6 +12,7 @@ use rama::{
     service::service_fn,
     telemetry::tracing,
     udp::{UdpSocket, bind_udp_with_address},
+    utils::octets::kib,
 };
 
 pub(super) async fn try_new_service(
@@ -161,7 +162,7 @@ async fn ensure_bound<'s>(
 ) -> Option<&'s UdpSocket> {
     if slot.is_none() {
         match bind_udp_with_address(bind_addr).await {
-            Ok(s) => *slot = Some((s, vec![0u8; 64 * 1024])),
+            Ok(s) => *slot = Some((s, vec![0u8; kib(64)])),
             Err(err) => {
                 tracing::error!(%err, bind_addr, "tproxy udp failed to bind egress socket");
                 return None;

@@ -15,6 +15,7 @@ use rama::futures::future::join_all;
 use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};
 use rama::rt::Executor;
+use rama::utils::octets::mib;
 use tokio::sync::Mutex;
 
 #[global_allocator]
@@ -54,7 +55,7 @@ fn http1_consecutive_x1_both_100kb(b: divan::Bencher) {
 
 #[divan::bench]
 fn http1_consecutive_x1_both_10mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024 * 10];
+    let body = &[b'x'; mib(10)];
     opts()
         .method(Method::POST)
         .request_body(body)
@@ -69,7 +70,7 @@ fn http1_parallel_x10_empty(b: divan::Bencher) {
 
 #[divan::bench]
 fn http1_parallel_x10_req_10mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024 * 10];
+    let body = &[b'x'; mib(10)];
     opts()
         .parallel(10)
         .method(Method::POST)
@@ -89,13 +90,13 @@ fn http1_parallel_x10_req_10kb_100_chunks(b: divan::Bencher) {
 
 #[divan::bench]
 fn http1_parallel_x10_res_1mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024];
+    let body = &[b'x'; mib(1)];
     opts().parallel(10).response_body(body).bench(b)
 }
 
 #[divan::bench]
 fn http1_parallel_x10_res_10mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024 * 10];
+    let body = &[b'x'; mib(10)];
     opts().parallel(10).response_body(body).bench(b)
 }
 
@@ -134,7 +135,7 @@ fn http2_parallel_x10_empty(b: divan::Bencher) {
 
 #[divan::bench]
 fn http2_parallel_x10_req_10mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024 * 10];
+    let body = &[b'x'; mib(10)];
     opts()
         .http2()
         .parallel(10)
@@ -183,7 +184,7 @@ fn http2_parallel_x10_req_10kb_100_chunks_max_window(b: divan::Bencher) {
 
 #[divan::bench]
 fn http2_parallel_x10_res_1mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024];
+    let body = &[b'x'; mib(1)];
     opts()
         .http2()
         .parallel(10)
@@ -195,7 +196,7 @@ fn http2_parallel_x10_res_1mb(b: divan::Bencher) {
 
 #[divan::bench]
 fn http2_parallel_x10_res_10mb(b: divan::Bencher) {
-    let body = &[b'x'; 1024 * 1024 * 10];
+    let body = &[b'x'; mib(10)];
     opts()
         .http2()
         .parallel(10)

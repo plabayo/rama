@@ -31,6 +31,7 @@ use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::stream::{self, BoxStream, StreamExt as _};
 use rama_net::uri::Uri;
+use rama_utils::octets::kib;
 
 use super::atom::{
     AtomEntry, AtomFeed, AtomFeedStream, AtomHeader, write_atom_entry, write_atom_feed_close,
@@ -489,7 +490,7 @@ impl FeedStream {
         // document, even though we consumed those bytes for detection.
         let prefix = std::io::Cursor::new(probe);
         let chained = tokio::io::AsyncReadExt::chain(prefix, reader);
-        let buf_reader = tokio::io::BufReader::with_capacity(8 * 1024, chained);
+        let buf_reader = tokio::io::BufReader::with_capacity(kib(8), chained);
 
         if is_atom {
             return Ok(Self::Atom(
@@ -763,7 +764,7 @@ fn body_reader(
         .map(|r| r.map_err(std::io::Error::other))
         .boxed();
     let inner = StreamReader::new(stream);
-    tokio::io::BufReader::with_capacity(8 * 1024, inner)
+    tokio::io::BufReader::with_capacity(kib(8), inner)
 }
 
 type BodyDataStream = BoxStream<'static, std::io::Result<rama_core::bytes::Bytes>>;

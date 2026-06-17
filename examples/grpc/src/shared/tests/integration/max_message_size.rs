@@ -10,6 +10,7 @@ use rama::{
     rt::Executor,
     stream,
     telemetry::tracing,
+    utils::octets::mib,
 };
 
 use crate::tests::integration::pb::{Input1, Output1, test1_client, test1_server};
@@ -19,20 +20,20 @@ fn max_message_recv_size() {
     // Server recv
     assert_server_recv_max_success(128);
     // 5 is the size of the gRPC header
-    assert_server_recv_max_success((4 * 1024 * 1024) - 5);
+    assert_server_recv_max_success(mib(4) - 5);
     // 4mb is the max recv size
-    assert_server_recv_max_failure(4 * 1024 * 1024);
-    assert_server_recv_max_failure(4 * 1024 * 1024 + 1);
-    assert_server_recv_max_failure(8 * 1024 * 1024);
+    assert_server_recv_max_failure(mib(4));
+    assert_server_recv_max_failure(mib(4) + 1);
+    assert_server_recv_max_failure(mib(8));
 
     // Client recv
     assert_client_recv_max_success(128);
     // 5 is the size of the gRPC header
-    assert_client_recv_max_success((4 * 1024 * 1024) - 5);
+    assert_client_recv_max_success(mib(4) - 5);
     // 4mb is the max recv size
-    assert_client_recv_max_failure(4 * 1024 * 1024);
-    assert_client_recv_max_failure(4 * 1024 * 1024 + 1);
-    assert_client_recv_max_failure(8 * 1024 * 1024);
+    assert_client_recv_max_failure(mib(4));
+    assert_client_recv_max_failure(mib(4) + 1);
+    assert_client_recv_max_failure(mib(8));
 
     // Custom limit settings
     assert_test_case(TestCase {
@@ -67,7 +68,7 @@ fn max_message_recv_size() {
 fn max_message_send_size() {
     // Check client send limit works
     assert_test_case(TestCase {
-        client_blob_size: 4 * 1024 * 1024,
+        client_blob_size: mib(4),
         server_recv_max: Some(usize::MAX),
         ..Default::default()
     });
@@ -81,7 +82,7 @@ fn max_message_send_size() {
 
     // Check server send limit works
     assert_test_case(TestCase {
-        server_blob_size: 4 * 1024 * 1024,
+        server_blob_size: mib(4),
         client_recv_max: Some(usize::MAX),
         ..Default::default()
     });

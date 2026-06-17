@@ -1,4 +1,5 @@
 use rama_core::extensions::ExtensionsRef;
+use rama_utils::octets::kib;
 // Re-export H2 crate
 pub use rama_http_core::h2;
 
@@ -123,16 +124,16 @@ where
 pub fn build_large_headers() -> Vec<(&'static str, String)> {
     vec![
         ("one", "hello".to_string()),
-        ("two", build_large_string('2', 4 * 1024)),
+        ("two", build_large_string('2', kib(4))),
         ("three", "three".to_string()),
-        ("four", build_large_string('4', 4 * 1024)),
+        ("four", build_large_string('4', kib(4))),
         ("five", "five".to_string()),
-        ("six", build_large_string('6', 4 * 1024)),
+        ("six", build_large_string('6', kib(4))),
         ("seven", "seven".to_string()),
-        ("eight", build_large_string('8', 4 * 1024)),
+        ("eight", build_large_string('8', kib(4))),
         ("nine", "nine".to_string()),
-        ("ten", build_large_string('0', 4 * 1024)),
-        ("eleven", build_large_string('1', 32 * 1024)),
+        ("ten", build_large_string('0', kib(4))),
+        ("eleven", build_large_string('1', kib(32))),
     ]
 }
 

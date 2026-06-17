@@ -9,6 +9,7 @@ use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::telemetry::tracing::{debug, trace};
+use rama_utils::octets::kib;
 use std::{
     fmt,
     io::{self, Read, Write},
@@ -268,8 +269,8 @@ impl Default for PerMessageDeflateConfig {
 impl Default for WebSocketConfig {
     fn default() -> Self {
         Self {
-            read_buffer_size: 128 * 1024,
-            write_buffer_size: 128 * 1024,
+            read_buffer_size: kib(128),
+            write_buffer_size: kib(128),
             max_write_buffer_size: usize::MAX,
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
