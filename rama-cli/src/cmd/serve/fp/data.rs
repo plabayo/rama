@@ -6,17 +6,16 @@
 use super::{State, StorageAuthorized};
 use rama::{
     error::{BoxError, ErrorContext},
-    extensions::Extensions,
+    extensions::{Extensions, ExtensionsRef},
     http::{
         self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
-        headers::forwarded::Forwarded,
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
-        request::Parts,
     },
     net::{
         address::ip::geo::{IpGeoDb, IpGeoInfo},
         fingerprint::{AkamaiH2, Ja3, Ja4, Ja4H, PeetPrint},
+        forwarded::Forwarded,
         http::RequestContext,
         stream::SocketInfo,
         tls::{
@@ -178,46 +177,45 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    parts: &Parts,
+    req: &Request,
     geo_db: Option<&IpGeoDb>,
 ) -> Result<RequestInfo, BoxError> {
-    let request_context =
-        RequestContext::try_from(parts).context("get or compose RequestContext")?;
+    let request_context = RequestContext::try_from(req).context("get or compose RequestContext")?;
 
     let authority = request_context.authority.to_string();
     let scheme = request_context.protocol.to_string();
 
-    let geo = geo_db.and_then(|db| {
-        parts
-            .extensions
-            .get_ref::<Forwarded>()
-            .and_then(|f| f.client_ip())
-            .or_else(|| {
-                parts
-                    .extensions
-                    .get_ref::<SocketInfo>()
-                    .map(|s| s.peer_addr().ip_addr)
-            })
-            .and_then(|ip| db.resolve(ip))
-    });
+    // The forwarded client IP lives in the request's extensions, which must be
+    // read from `req` — `req.into_parts()` yields the http `Parts` whose
+    // extensions do not carry layer-inserted values like `Forwarded`.
+    let client_ip = req
+        .extensions()
+        .get_ref::<Forwarded>()
+        .and_then(|f| f.client_ip())
+        .or_else(|| {
+            req.extensions()
+                .get_ref::<SocketInfo>()
+                .map(|s| s.peer_addr().ip_addr)
+        });
+    let geo = geo_db.and_then(|db| client_ip.and_then(|ip| db.resolve(ip)));
 
     Ok(RequestInfo {
-        version: format!("{:?}", parts.version),
+        version: format!("{:?}", req.version()),
         scheme,
         authority,
-        method: parts.method.as_str().to_owned(),
-        fetch_mode: parts
-            .headers
+        method: req.method().as_str().to_owned(),
+        fetch_mode: req
+            .headers()
             .get("sec-fetch-mode")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse().ok())
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: parts.uri.path().to_owned(),
-        uri: parts.uri.to_string(),
-        peer_addr: parts
-            .extensions
+        path: req.uri().path().to_owned(),
+        uri: req.uri().to_string(),
+        peer_addr: req
+            .extensions()
             .get_ref::<Forwarded>()
             .and_then(|f| {
                 f.client_socket_addr()
@@ -225,8 +223,7 @@ pub(super) async fn get_request_info(
                     .or_else(|| f.client_ip().map(|ip| ip.to_string()))
             })
             .or_else(|| {
-                parts
-                    .extensions
+                req.extensions()
                     .get_ref::<SocketInfo>()
                     .map(|v| v.peer_addr().to_string())
             }),
