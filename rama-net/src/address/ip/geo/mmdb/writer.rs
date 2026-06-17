@@ -240,7 +240,7 @@ impl MmdbBuilder {
             return Err(MmdbWriteError::OverlappingNetwork);
         }
 
-        let data_offset = self.append_data(&value.into());
+        let data_offset = self.append_data(&value.into())?;
         let data_offset = u32::try_from(data_offset)
             .ok()
             .ok_or(MmdbWriteError::TooLarge)?;
@@ -266,16 +266,16 @@ impl MmdbBuilder {
         }
     }
 
-    fn append_data(&mut self, value: &MmdbValue) -> usize {
+    fn append_data(&mut self, value: &MmdbValue) -> Result<usize, MmdbWriteError> {
         let mut encoded = Vec::new();
-        encode_inline(value, &mut encoded);
+        encode_inline(value, &mut encoded)?;
         if let Some(&offset) = self.dedup.get(encoded.as_slice()) {
-            return offset;
+            return Ok(offset);
         }
         let offset = self.data.len();
         self.data.extend_from_slice(&encoded);
         self.dedup.insert(encoded.into_boxed_slice(), offset);
-        offset
+        Ok(offset)
     }
 
     /// Serialise the database to a byte vector.
@@ -302,7 +302,7 @@ impl MmdbBuilder {
         w.write_all(&[0u8; 16])?; // data section separator
         w.write_all(&self.data)?;
         w.write_all(METADATA_MARKER)?;
-        w.write_all(&self.encode_metadata(node_count))?;
+        w.write_all(&self.encode_metadata(node_count)?)?;
         Ok(())
     }
 
@@ -336,7 +336,7 @@ impl MmdbBuilder {
         Ok(())
     }
 
-    fn encode_metadata(&self, node_count: u32) -> Vec<u8> {
+    fn encode_metadata(&self, node_count: u32) -> Result<Vec<u8>, MmdbWriteError> {
         let mut pairs = vec![
             ("node_count".to_owned(), MmdbValue::U32(node_count)),
             (
@@ -367,8 +367,8 @@ impl MmdbBuilder {
             ));
         }
         let mut out = Vec::new();
-        encode_inline(&MmdbValue::Map(pairs), &mut out);
-        out
+        encode_inline(&MmdbValue::Map(pairs), &mut out)?;
+        Ok(out)
     }
 }
 
@@ -388,41 +388,44 @@ fn write_record<W: Write>(w: &mut W, rec: Record, node_count: u32) -> Result<(),
 }
 
 /// Encode a value (and its children) inline into `out`.
-fn encode_inline(value: &MmdbValue, out: &mut Vec<u8>) {
+fn encode_inline(value: &MmdbValue, out: &mut Vec<u8>) -> Result<(), MmdbWriteError> {
     match value {
         MmdbValue::Map(pairs) => {
-            encode_header(7, pairs.len(), out);
+            encode_header(7, pairs.len(), out)?;
             for (k, v) in pairs {
-                encode_string(k, out);
-                encode_inline(v, out);
+                encode_string(k, out)?;
+                encode_inline(v, out)?;
             }
         }
         MmdbValue::Array(items) => {
-            encode_header(11, items.len(), out);
+            encode_header(11, items.len(), out)?;
             for v in items {
-                encode_inline(v, out);
+                encode_inline(v, out)?;
             }
         }
-        MmdbValue::String(s) => encode_string(s, out),
+        MmdbValue::String(s) => encode_string(s, out)?,
         MmdbValue::Double(f) => {
-            encode_header(3, 8, out);
+            encode_header(3, 8, out)?;
             out.extend_from_slice(&f.to_be_bytes());
         }
-        MmdbValue::U16(n) => encode_uint(5, u128::from(*n), out),
-        MmdbValue::U32(n) => encode_uint(6, u128::from(*n), out),
-        MmdbValue::U64(n) => encode_uint(9, u128::from(*n), out),
+        MmdbValue::U16(n) => encode_uint(5, u128::from(*n), out)?,
+        MmdbValue::U32(n) => encode_uint(6, u128::from(*n), out)?,
+        MmdbValue::U64(n) => encode_uint(9, u128::from(*n), out)?,
     }
+    Ok(())
 }
 
-fn encode_string(s: &str, out: &mut Vec<u8>) {
-    encode_header(2, s.len(), out);
+fn encode_string(s: &str, out: &mut Vec<u8>) -> Result<(), MmdbWriteError> {
+    encode_header(2, s.len(), out)?;
     out.extend_from_slice(s.as_bytes());
+    Ok(())
 }
 
-fn encode_uint(type_num: u8, value: u128, out: &mut Vec<u8>) {
+fn encode_uint(type_num: u8, value: u128, out: &mut Vec<u8>) -> Result<(), MmdbWriteError> {
     let bytes = min_be_bytes(value);
-    encode_header(type_num, bytes.len(), out);
+    encode_header(type_num, bytes.len(), out)?;
     out.extend_from_slice(&bytes);
+    Ok(())
 }
 
 /// Minimal big-endian byte representation of `value` (empty for zero).
@@ -436,7 +439,13 @@ fn min_be_bytes(value: u128) -> Vec<u8> {
 }
 
 /// Encode a control byte (+ extended type byte + size-extension bytes).
-fn encode_header(type_num: u8, size: usize, out: &mut Vec<u8>) {
+///
+/// # Errors
+///
+/// [`MmdbWriteError::TooLarge`] if `size` exceeds the format's per-field
+/// maximum (`65821 + 0xFF_FFFF` bytes), beyond which the 3-byte size extension
+/// would wrap and silently understate the length.
+fn encode_header(type_num: u8, size: usize, out: &mut Vec<u8>) -> Result<(), MmdbWriteError> {
     let type_bits = if type_num <= 7 { type_num } else { 0 };
     let (low5, ext): (u8, Vec<u8>) = if size <= 28 {
         (size as u8, Vec::new())
@@ -445,14 +454,14 @@ fn encode_header(type_num: u8, size: usize, out: &mut Vec<u8>) {
     } else if size <= 65820 {
         (30, ((size - 285) as u16).to_be_bytes().to_vec())
     } else {
-        // A single field's payload tops out at 65821 + 0xFF_FFFF; beyond that the
-        // 3-byte size extension would wrap and silently understate the length.
-        // Unreachable for typed GeoLocation data (no field approaches 16 MiB).
-        debug_assert!(
-            size <= 65820 + 0xFF_FFFF,
-            "mmdb field payload exceeds the 3-byte size-extension limit"
-        );
-        let s = (size - 65821) as u32;
+        // size-31: the 3-byte extension carries `size - 65821`, so the largest
+        // encodable field payload is `65821 + 0xFF_FFFF` bytes. Reject rather
+        // than truncate. (Unreachable for typed GeoLocation data.)
+        let s = size - 65821;
+        if s > 0xFF_FFFF {
+            return Err(MmdbWriteError::TooLarge);
+        }
+        let s = s as u32;
         (31, vec![(s >> 16) as u8, (s >> 8) as u8, s as u8])
     };
     out.push((type_bits << 5) | low5);
@@ -460,4 +469,5 @@ fn encode_header(type_num: u8, size: usize, out: &mut Vec<u8>) {
         out.push(type_num - 7);
     }
     out.extend_from_slice(&ext);
+    Ok(())
 }

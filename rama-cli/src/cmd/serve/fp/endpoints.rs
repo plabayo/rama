@@ -187,21 +187,23 @@ pub(super) async fn get_report(
 ) -> Result<Response, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
-
-    let user_agent_info = get_user_agent_info(&parts.extensions).await;
-
+    // resolve from `&req` before `into_parts`: layer-inserted extensions like
+    // `Forwarded` (used for geo) live on the request, not the http `Parts`.
     let mut request_info = get_request_info(
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &parts,
+        &req,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
     // taken out so the merged + per-source geo render as their own tables
     let geo = request_info.geo.take();
+
+    let (parts, _) = req.into_parts();
+
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let user_agent = user_agent_info.user_agent.clone();
 
@@ -436,21 +438,21 @@ pub(super) async fn post_api_fetch_number(
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &req,
+        state.geo_db.as_deref(),
+    )
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
     let (parts, body) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(parts.extensions()).await;
 
     let user_agent = user_agent_info.user_agent.clone();
-
-    let request_info = get_request_info(
-        FetchMode::SameOrigin,
-        ResourceType::Xhr,
-        Initiator::Fetch,
-        &parts,
-        state.geo_db.as_deref(),
-    )
-    .await
-    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
         &state,
@@ -518,21 +520,21 @@ pub(super) async fn post_api_xml_http_request_number(
 ) -> Result<Json<serde_json::Value>, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &req,
+        state.geo_db.as_deref(),
+    )
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
     let (parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let user_agent = user_agent_info.user_agent.clone();
-
-    let request_info = get_request_info(
-        FetchMode::SameOrigin,
-        ResourceType::Xhr,
-        Initiator::Fetch,
-        &parts,
-        state.geo_db.as_deref(),
-    )
-    .await
-    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
         &state,
@@ -574,23 +576,23 @@ pub(super) async fn form(
 ) -> Result<Response, ErrorResponse> {
     let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
-
-    let user_agent_info = get_user_agent_info(&parts.extensions).await;
-
-    let user_agent = user_agent_info.user_agent.clone();
-
     let mut request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &parts,
+        &req,
         state.geo_db.as_deref(),
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
     // taken out so the merged + per-source geo render as their own tables
     let geo = request_info.geo.take();
+
+    let (parts, _) = req.into_parts();
+
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
+
+    let user_agent = user_agent_info.user_agent.clone();
 
     let http_info = get_and_store_http_info(
         &state,

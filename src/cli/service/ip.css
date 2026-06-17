@@ -11,7 +11,7 @@
 }
 html,
 body {
-    height: 100%;
+    min-height: 100%;
     margin: 0;
     font-family:
         system-ui,
@@ -25,12 +25,15 @@ body {
     background: var(--bg);
     color: var(--muted);
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
+    min-height: 100vh;
     padding: 2.8rem;
 }
 .card {
     text-align: center;
+    width: 100%;
+    max-width: 64rem;
 }
 .logo {
     display: flex;
@@ -124,7 +127,29 @@ button.primary {
     text-align: right;
     word-break: break-word;
 }
+/* geolocation: heading on its own line, then as many source columns as fit,
+   wrapping to new rows on narrower screens */
+.geo-section {
+    width: 100%;
+    margin-top: 1.4rem;
+}
+.geo-title {
+    text-align: left;
+    margin-bottom: 0.6rem;
+}
+.geo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1rem;
+    text-align: left;
+}
+.geo-card {
+    padding: 1.4rem;
+}
 .geo-source {
-    margin-top: 0.8rem;
     font-weight: 700;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05rem;
+    color: var(--green);
 }

@@ -36,9 +36,6 @@ pub use db::{IpGeoDb, IpGeoDbBuilder, IpGeoInfo, IpGeoSourceResult, RAMA_IP_GEO_
 mod location;
 pub use location::{AsOrg, Coordinates, GeoLocation, GeoLocationRef, Subdivision, TimeZoneName};
 
-#[doc(no_inline)]
-pub use rama_core::geo::{Continent, ContinentRef, Country, CountryRef, Locale};
-
 pub mod mmdb;
 pub use mmdb::{IpVersion, Metadata, MmdbBuilder, MmdbReader, MmdbWriteError, RecordSize};
 
