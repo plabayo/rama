@@ -547,23 +547,26 @@ fn render_html_page(
                 .map(|(k, v)| div!(class = "georow", div!(class = "muted", k), div!(code!(v))))
                 .collect::<Vec<_>>()
         };
-        let sources = info
-            .by_source
-            .iter()
-            .map(|src| {
-                (
-                    div!(class = "muted geo-source", src.label.to_string()),
-                    rows(&src.location),
-                )
-            })
-            .collect::<Vec<_>>();
+        // merged result + one card per source, laid out in a responsive grid
+        let card = |label: String, loc: &GeoLocation| {
+            div!(
+                class = "panel geo-card",
+                div!(class = "muted geo-source", label),
+                rows(loc),
+            )
+        };
+        let mut cards = vec![card("merged".to_owned(), &info.location)];
+        cards.extend(
+            info.by_source
+                .iter()
+                .map(|src| card(src.label.to_string(), &src.location)),
+        );
         div!(
-            class = "panel",
+            class = "geo-section",
             role = "region",
             "aria-label" = "geo panel",
-            div!(class = "muted", "Geolocation"),
-            rows(&info.location),
-            sources,
+            div!(class = "muted geo-title", "Geolocation"),
+            div!(class = "geo-grid", cards),
         )
     });
 
