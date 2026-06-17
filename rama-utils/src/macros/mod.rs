@@ -115,9 +115,6 @@ macro_rules! __match_ignore_ascii_case_str {
     // Each arm is either exact (`"lit" [| "lit"]* [if cond] => expr`) or a
     // substring test (`contains "lit" [| "lit"]* [if cond] => expr`), optionally
     // ending in a `_ => expr` fallback. Without a fallback, a non-match panics.
-    //
-    // Note: literal/contains matching uses the *trimmed* subject, but an `if`
-    // guard sees the caller's original (untrimmed) binding (macro hygiene).
     (match ($s:expr) { $($arms:tt)+ }) => {{
         let s = ($s).trim();
         $crate::macros::match_ignore_ascii_case_str!(@arm s ; $($arms)+)
