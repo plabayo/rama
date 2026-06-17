@@ -203,3 +203,116 @@ fn push_then_pop_yields_encoded_form() {
     assert_eq!(popped.as_deref(), Some(b"a%2Fb".as_ref()));
     assert_eq!(uri.to_string(), "/api");
 }
+
+// ----------------------------------------------------------------------
+// push_segments — multi-segment append
+// ----------------------------------------------------------------------
+
+#[test]
+fn push_segments_shapes() {
+    for (start, segs, want) in [
+        ("/api", "v2/users", "/api/v2/users"),
+        ("/", "a/b/c", "/a/b/c"),
+        ("https://example.com", "v1/x", "https://example.com/v1/x"),
+        ("/api", "/v2/users", "/api/v2/users"), // leading slash absorbed
+        ("/api", "v2//users", "/api/v2/users"), // internal `//` collapses
+        ("/api", "v2/users/", "/api/v2/users/"), // trailing slash kept
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        uri.path_mut().push_segments(segs);
+        assert_eq!(uri.to_string(), want, "start={start:?} segs={segs:?}");
+    }
+}
+
+#[test]
+fn push_segments_encodes_each_piece() {
+    // `/` splits into separate segments; other non-pchar bytes are
+    // percent-encoded within each piece.
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.path_mut().push_segments("a b/c?d");
+    assert_eq!(uri.to_string(), "/p/a%20b/c%3Fd");
+}
+
+// ----------------------------------------------------------------------
+// pop_segments — multi-segment removal
+// ----------------------------------------------------------------------
+
+#[test]
+fn pop_segments_counts() {
+    let mut uri: Uri = parse_graceful("/a/b/c/d").unwrap();
+    assert_eq!(uri.path_mut().pop_segments(2), 2);
+    assert_eq!(uri.path().unwrap().as_raw_str(), "/a/b");
+}
+
+#[test]
+fn pop_segments_stops_at_empty() {
+    let mut uri: Uri = parse_graceful("/a/b").unwrap();
+    assert_eq!(uri.path_mut().pop_segments(5), 2);
+    assert_eq!(uri.path().unwrap().as_raw_str(), "");
+}
+
+#[test]
+fn pop_segments_zero_is_noop() {
+    let mut uri: Uri = parse_graceful("/a/b").unwrap();
+    assert_eq!(uri.path_mut().pop_segments(0), 0);
+    assert_eq!(uri.path().unwrap().as_raw_str(), "/a/b");
+}
+
+// ----------------------------------------------------------------------
+// strip_prefix — leading path-prefix removal (case-sensitive)
+// ----------------------------------------------------------------------
+
+#[test]
+fn strip_prefix_shapes() {
+    for (start, prefix, want_stripped, want_path) in [
+        ("/foo/bar", "foo", true, "/bar"),
+        ("/foo/bar", "/foo/", true, "/bar"), // slashes on prefix ignored
+        ("/foo/bar", "foo/b", true, "/ar"),  // match may land mid-segment
+        ("/foo/bar", "foo/bar", true, "/"),
+        ("/foo", "foo", true, "/"),
+        ("/foo/bar", "bar", false, "/foo/bar"), // no match: unchanged
+        ("/foo/bar", "", true, "/foo/bar"),     // empty prefix: re-root only
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        let stripped = uri.path_mut().strip_prefix(prefix);
+        assert_eq!(stripped, want_stripped, "start={start:?} prefix={prefix:?}");
+        assert_eq!(
+            uri.path().unwrap().as_raw_str(),
+            want_path,
+            "start={start:?} prefix={prefix:?}",
+        );
+    }
+}
+
+#[test]
+fn strip_prefix_preserves_query_and_authority() {
+    let mut uri: Uri = parse_graceful("https://example.com/api/v1/users?q=1").unwrap();
+    assert!(uri.path_mut().strip_prefix("api/v1"));
+    assert_eq!(uri.to_string(), "https://example.com/users?q=1");
+}
+
+#[test]
+fn strip_prefix_is_case_sensitive() {
+    let mut uri: Uri = parse_graceful("/FOO/bar").unwrap();
+    assert!(!uri.path_mut().strip_prefix("foo"));
+    assert_eq!(uri.path().unwrap().as_raw_str(), "/FOO/bar");
+}
+
+#[test]
+fn strip_prefix_ignore_ascii_case_matches_mixed_case() {
+    for (start, prefix, want_stripped, want_path) in [
+        ("/FOO/bar", "foo", true, "/bar"),
+        ("/foo/BAR", "FOO/bar", true, "/"),
+        ("/Api/V1/users", "api/v1", true, "/users"),
+        ("/foo/bar", "baz", false, "/foo/bar"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        let stripped = uri.path_mut().strip_prefix_ignore_ascii_case(prefix);
+        assert_eq!(stripped, want_stripped, "start={start:?} prefix={prefix:?}");
+        assert_eq!(
+            uri.path().unwrap().as_raw_str(),
+            want_path,
+            "start={start:?} prefix={prefix:?}",
+        );
+    }
+}

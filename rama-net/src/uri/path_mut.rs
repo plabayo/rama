@@ -82,6 +82,115 @@ impl<'a> PathMut<'a> {
         self.owned.path.clear();
         self
     }
+
+    /// Append multiple `/`-delimited segments at once.
+    ///
+    /// Splits the input on `/` and pushes each piece via
+    /// [`push_segment`](Self::push_segment), so every piece is
+    /// percent-encoded under the path-segment policy (a literal `/`
+    /// inside the input is the separator, not encoded). The normal
+    /// slash-insertion rule applies, so `"a/b"` and `"/a/b"` both append
+    /// `/a/b`, internal `//` collapses to a single separator, and a
+    /// trailing `/` yields a trailing empty segment.
+    ///
+    /// `"/api"` + `push_segments("v2/users")` → `/api/v2/users`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows because percent_encode can't consume its input"
+    )]
+    pub fn push_segments(&mut self, segments: impl IntoUriComponent) -> &mut Self {
+        let bytes = segments.as_uri_component_bytes();
+        for piece in bytes.split(|&b| b == b'/') {
+            self.push_segment(piece);
+        }
+        self
+    }
+
+    /// Remove up to `n` trailing segments, returning the number actually
+    /// removed (fewer than `n` if the path runs out first).
+    ///
+    /// Equivalent to calling [`pop_segment`](Self::pop_segment) `n`
+    /// times, stopping early at an empty path.
+    pub fn pop_segments(&mut self, n: usize) -> usize {
+        let mut removed = 0;
+        while removed < n && self.pop_segment().is_some() {
+            removed += 1;
+        }
+        removed
+    }
+
+    /// Strip a leading prefix from the path, re-rooting the remainder
+    /// with a single leading `/`. Matching is **case-sensitive** (RFC
+    /// 3986 paths are case-sensitive); see
+    /// [`strip_prefix_ignore_ascii_case`](Self::strip_prefix_ignore_ascii_case)
+    /// for the case-insensitive variant.
+    ///
+    /// The comparison is on the raw (percent-encoded) bytes. The path's
+    /// leading `/` and any leading/trailing `/` on `prefix` are ignored,
+    /// and the match may land mid-segment: `/foo/bar` with prefix `foo`
+    /// (or `/foo/`) becomes `/bar`, and prefix `foo/b` becomes `/ar`.
+    ///
+    /// Returns `true` when the prefix matched and was removed; on no
+    /// match the path is left unchanged and `false` is returned.
+    pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
+        self.strip_prefix_inner(prefix, false)
+    }
+
+    /// Like [`strip_prefix`](Self::strip_prefix) but compares the prefix
+    /// case-insensitively for ASCII bytes (`A-Z` ≡ `a-z`), e.g.
+    /// `/FOO/bar` with prefix `foo` becomes `/bar`. Non-ASCII bytes
+    /// still compare exactly.
+    ///
+    /// Returns `true` when the prefix matched and was removed.
+    pub fn strip_prefix_ignore_ascii_case(&mut self, prefix: impl IntoUriComponent) -> bool {
+        self.strip_prefix_inner(prefix, true)
+    }
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
+    )]
+    fn strip_prefix_inner(
+        &mut self,
+        prefix: impl IntoUriComponent,
+        ignore_ascii_case: bool,
+    ) -> bool {
+        let prefix_bytes = prefix.as_uri_component_bytes();
+        let prefix = trim_ascii_slashes(&prefix_bytes);
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let body = path.strip_prefix(b"/").unwrap_or(path);
+            let matches = if ignore_ascii_case {
+                body.len() >= prefix.len() && body[..prefix.len()].eq_ignore_ascii_case(prefix)
+            } else {
+                body.starts_with(prefix)
+            };
+            if !matches {
+                return false;
+            }
+            let mut rest = &body[prefix.len()..];
+            while let Some(stripped) = rest.strip_prefix(b"/") {
+                rest = stripped;
+            }
+            let mut new = BytesMut::with_capacity(rest.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(rest);
+            new
+        };
+        self.owned.path = new;
+        true
+    }
+}
+
+/// Trim all leading and trailing `/` bytes from a slice.
+fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
+    while let Some(rest) = bytes.strip_prefix(b"/") {
+        bytes = rest;
+    }
+    while let Some(rest) = bytes.strip_suffix(b"/") {
+        bytes = rest;
+    }
+    bytes
 }
 
 impl std::fmt::Debug for PathMut<'_> {
