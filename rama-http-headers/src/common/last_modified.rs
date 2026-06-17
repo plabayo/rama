@@ -30,7 +30,7 @@ use std::time::SystemTime;
 /// use rama_utils::time::now_system_time;
 ///
 /// let modified = LastModified::from(
-///     now_system_time() - Duration::from_secs(60 * 60 * 24)
+///     now_system_time() - Duration::from_hours(24)
 /// );
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
