@@ -3989,6 +3989,7 @@ dependencies = [
  "quickcheck_macros",
  "radix_trie 0.3.0",
  "rama-core",
+ "rama-crypto",
  "rama-macros",
  "rama-utils",
  "serde",

@@ -40,14 +40,14 @@ use rama::{
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
-        tls::server::SelfSignedData,
+        tls::server::{SelfSignedData, TlsServerConfig},
     },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
-    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
     utils::octets::kib,
 };
 
@@ -270,14 +270,13 @@ async fn spawn_https_server_inner(
     observations: SharedObservations,
     advertise_connect: bool,
 ) -> (u16, tokio::task::JoinHandle<()>) {
-    let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
-        common_name: Some(Domain::from_static("127.0.0.1")),
-        ..Default::default()
-    })
-    .expect("https tls data")
-    .with_alpn_protocols_http_auto()
-    .build();
+    let tls_data = TlsServerConfig::new()
+        .with_self_signed(SelfSignedData {
+            organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
+            common_name: Some(Domain::from_static("127.0.0.1")),
+            ..Default::default()
+        })
+        .with_alpn_http_auto();
 
     let mut server = HttpServer::auto(Executor::default());
     if advertise_connect {
@@ -334,13 +333,11 @@ pub(crate) async fn spawn_raw_tcp_echo() -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
-    let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
+    let tls_data = TlsServerConfig::new().with_self_signed(SelfSignedData {
         organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
         common_name: Some(Domain::from_static("127.0.0.1")),
         ..Default::default()
-    })
-    .expect("raw tls data")
-    .build();
+    });
 
     let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
         .await

@@ -7,19 +7,19 @@ use crate::http::{
 };
 use crate::net::address::{AsDomainRef, Domain, DomainTrie};
 use crate::net::tls::{
-    DataEncoding,
     client::ClientHello,
     server::{DynamicCertIssuer, ServerAuthData},
 };
 use crate::rt::Executor;
 use crate::telemetry::tracing;
-use crate::utils::str::NonEmptyStr;
 use crate::{Service, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_core::error::extra::OpaqueError;
 use rama_core::layer::MapErr;
+use rama_crypto::pki_types::pem::PemObject;
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,19 +222,15 @@ impl CertIssuerHttpClient {
         let crt = ENGINE.decode(crt_pem_base64).context("base64 decode crt")?;
         let key = ENGINE.decode(key_pem_base64).context("base64 decode crt")?;
 
+        let cert_chain = CertificateDer::pem_slice_iter(&crt)
+            .collect::<Result<Vec<_>, _>>()
+            .context("parse crt pem chain")?;
+        let private_key =
+            PrivateKeyDer::from_pem_slice(key.as_slice()).context("parse private key")?;
+
         Ok(ServerAuthData {
-            cert_chain: DataEncoding::Pem(
-                NonEmptyStr::try_from(
-                    String::from_utf8(crt).context("concert crt pem to utf8 string")?,
-                )
-                .context("convert crt utf8 string to non-empty")?,
-            ),
-            private_key: DataEncoding::Pem(
-                NonEmptyStr::try_from(
-                    String::from_utf8(key).context("concert private key pem to utf8 string")?,
-                )
-                .context("convert privatek key pem utf8 string to non-empty")?,
-            ),
+            cert_chain,
+            private_key,
             ocsp: None,
         })
     }

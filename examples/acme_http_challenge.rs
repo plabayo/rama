@@ -71,9 +71,8 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::tls::{
-        DataEncoding,
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{ServerAuth, ServerAuthData, ServerConfig},
+        server::{ServerAuthData, TlsServerConfig},
     },
     rt::Executor,
     service::service_fn,
@@ -92,7 +91,7 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+        boring::server::TlsAcceptorLayer,
     },
 };
 
@@ -224,17 +223,17 @@ async fn main() {
 
     order.finalize(csr.der()).await.expect("finalize order");
 
-    let cert = order
-        .download_certificate_as_pem_stack()
+    let cert_chain = order
+        .download_certificate_chain()
         .await
         .expect("download certificate");
 
-    tracing::info!(?cert, "received certificiate");
+    tracing::info!(?cert_chain, "received certificiate");
     challenge_server_handle.abort();
 
     let server_auth = ServerAuthData {
-        cert_chain: DataEncoding::DerStack(cert.into_iter().map(|pem| pem.contents).collect()),
-        private_key: DataEncoding::Der(key_pair.serialize_der()),
+        cert_chain,
+        private_key: key_pair.into(),
         ocsp: None,
     };
 
@@ -246,14 +245,11 @@ async fn main() {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
-        let tls_server_config = ServerConfig::new(ServerAuth::Single(server_auth));
-
-        let acceptor_data =
-            TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+        let tls_server_config = TlsServerConfig::new().with_single_cert(server_auth);
 
         let tcp_service = (
             ConsumeErrLayer::default(),
-            TlsAcceptorLayer::new(acceptor_data),
+            TlsAcceptorLayer::new(tls_server_config),
         )
             .into_layer(http_service);
 

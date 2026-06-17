@@ -26,11 +26,14 @@ use rama::{
     net::{
         address::ProxyAddress,
         tls::ApplicationProtocol,
-        tls::{client::TlsAlpn, server::SelfSignedData},
+        tls::{
+            KeyLogIntent, TlsAlpn,
+            server::{SelfSignedData, TlsServerConfig},
+        },
     },
     rt::Executor,
     tcp::server::TcpListener,
-    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
     utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},
 };
 
@@ -115,15 +118,13 @@ async fn test_http_mitm_relay_proxy() {
             .unwrap();
     });
 
-    let data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("Example Server Acceptor".to_owned()),
-        ..Default::default()
-    })
-    .expect("self signed acceptor data")
-    .with_alpn_protocols_http_auto()
-    .try_with_env_key_logger()
-    .expect("with env key logger")
-    .build();
+    let data = TlsServerConfig::new()
+        .with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .with_alpn_http_auto()
+        .with_keylog(KeyLogIntent::Environment);
 
     let executor = Executor::default();
 
@@ -149,14 +150,12 @@ async fn test_http_mitm_relay_proxy() {
             .await;
     });
 
-    let data_http1_no_alpn = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("Example h1 Server Acceptor".to_owned()),
-        ..Default::default()
-    })
-    .expect("self signed acceptor data")
-    .try_with_env_key_logger()
-    .expect("with env key logger")
-    .build();
+    let data_http1_no_alpn = TlsServerConfig::new()
+        .with_self_signed(SelfSignedData {
+            organisation_name: Some("Example h1 Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .with_keylog(KeyLogIntent::Environment);
 
     let http_1_over_tls_server = HttpServer::new_http1(Executor::default());
     let http_1_over_tls_server_tcp = TlsAcceptorLayer::new(data_http1_no_alpn).into_layer(

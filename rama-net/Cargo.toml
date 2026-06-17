@@ -69,6 +69,7 @@ pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
+rama-crypto = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

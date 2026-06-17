@@ -13,6 +13,7 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::{
     address::{Domain, HostWithPort},
     tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData},
@@ -582,7 +583,7 @@ where
                 source_cert: X509,
                 session_protocol_version: Option<rama_boring::ssl::SslVersion>,
                 alpn_proto: Option<ApplicationProtocol>,
-                peer_cert_chain: Option<rama_net::tls::DataEncoding>,
+                peer_cert_chain: Option<Vec<CertificateDer<'static>>>,
                 version_for_log: &'static str,
                 has_alpn: bool,
             }

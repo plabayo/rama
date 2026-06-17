@@ -108,12 +108,8 @@ use rama::{
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         proxy::IoForwardService,
         tls::{
-            ApplicationProtocol,
             client::{ServerVerifyMode, TlsClientConfig},
-            server::{
-                ServerAuth, ServerCertIssuerData, ServerConfig, SniPrefixedIo, SniRequest,
-                SniRouter,
-            },
+            server::{SniPrefixedIo, SniRequest, SniRouter, TlsServerConfig},
         },
     },
     rt::Executor,
@@ -123,7 +119,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::TlsAcceptorLayer,
+    tls::boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
 };
 
 use std::{sync::Arc, time::Duration};
@@ -152,16 +148,9 @@ async fn main() -> Result<(), BoxError> {
         //
         // this being an example however we keep things simple.
         // Just know you are only limited by your own imagination.
-        let tls_server_config = ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-            ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData::default()))
-        };
-        tls_server_config
-            .try_into()
-            .context("create tls server config")?
+        TlsServerConfig::new()
+            .with_cert_issuer(ServerCertIssuerData::default())
+            .with_alpn_http_auto()
     };
 
     const INTERFACE: SocketAddress = SocketAddress::local_ipv4(62045);

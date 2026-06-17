@@ -51,7 +51,10 @@ use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+use crate::tls::rustls::server::TlsAcceptorLayer;
+
+#[cfg(feature = "boring")]
+use crate::tls::boring::server::TlsAcceptorLayer;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
@@ -60,19 +63,9 @@ use crate::{
         SecureTransport,
         client::ClientHelloExtension,
         client::{ECHClientHello, NegotiatedTlsParameters},
+        server::TlsServerConfig,
     },
 };
-#[cfg(feature = "boring")]
-use crate::{
-    net::tls::server::ServerConfig,
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-};
-
-#[cfg(feature = "boring")]
-type TlsConfig = ServerConfig;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-type TlsConfig = TlsAcceptorData;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -84,7 +77,7 @@ pub struct EchoServiceBuilder<H> {
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_server_config: Option<TlsConfig>,
+    tls_server_config: Option<TlsServerConfig>,
 
     http_version: Option<Version>,
 
@@ -180,7 +173,7 @@ impl<H> EchoServiceBuilder<H> {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         /// define a tls server cert config to be used for tls terminaton
         /// by the echo service.
-        pub fn tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
+        pub fn tls_server_config(mut self, cfg: Option<TlsServerConfig>) -> Self {
             self.tls_server_config = cfg;
             self
         }
@@ -267,15 +260,6 @@ where
 
         let http_service = Arc::new(self.build_http(exec.clone()));
 
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let tls_cfg = self.tls_server_config;
-
-        #[cfg(feature = "boring")]
-        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config {
-            Some(cfg) => Some(cfg.try_into()?),
-            None => None,
-        };
-
         let tcp_service_builder = (
             ConsumeErrLayer::trace_as(tracing::Level::DEBUG),
             LimitLayer::new(if self.concurrent_limit > 0 {
@@ -291,7 +275,8 @@ where
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_cfg.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
+            self.tls_server_config
+                .map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
         );
 
         let http_transport_service = match self.http_version {

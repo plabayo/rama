@@ -2,10 +2,9 @@
 //!
 
 use std::borrow::Cow;
-use std::fmt;
 
 use rama_core::extensions::Extension;
-use rama_utils::str::NonEmptyStr;
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 
 mod enums;
 pub use enums::{
@@ -16,6 +15,45 @@ pub use enums::{
 pub mod client;
 pub mod keylog;
 pub mod server;
+
+/// ALPN protocols to offer.
+#[derive(Clone, Debug, Extension)]
+#[extension(tags(tls))]
+pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
+
+impl TlsAlpn {
+    /// Offer HTTP/2 and HTTP/1.1.
+    #[must_use]
+    pub fn http_auto() -> Self {
+        Self(smallvec![
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+        ])
+    }
+
+    /// Offer HTTP/1.1 only.
+    #[must_use]
+    pub fn http_1() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_11])
+    }
+
+    /// Offer HTTP/2 only.
+    #[must_use]
+    pub fn http_2() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_2])
+    }
+}
+
+/// Keylog intent (e.g. `SSLKEYLOGFILE`) for the connection.
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsKeyLog(pub KeyLogIntent);
+
+/// Supported protocol versions, as a list (backends derive min/max as needed,
+/// preserving any GREASE entries in the wire list).
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(tls))]
+pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -99,60 +137,6 @@ impl KeyLogIntent {
             Self::Disabled | Self::Custom(_) => None,
             Self::Environment => Self::env_file_path().map(Into::into),
             Self::File(keylog_filename) => Some(keylog_filename.into()),
-        }
-    }
-}
-
-// TODO move this to rama crypto and use native types
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Implementation agnostic encoding of common data such
-/// as certificates and keys.
-pub enum DataEncoding {
-    /// Distinguished Encoding Rules (DER) (binary)
-    Der(Vec<u8>),
-    /// Same as [`DataEncoding::Der`], but multiple
-    DerStack(Vec<Vec<u8>>),
-    /// Privacy Enhanced Mail (PEM) (plain text)
-    Pem(NonEmptyStr),
-}
-
-impl fmt::Debug for DataEncoding {
-    /// Renders the variant and payload size only — never the bytes. This
-    /// type also carries **private keys** (e.g. behind `ServerAuthData` /
-    /// `ClientAuthData`), so emitting the contents would leak key material
-    /// into logs; the raw DER/PEM bytes are noise in a debug line anyway.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Der(der) => write!(f, "Der({} bytes)", der.len()),
-            Self::DerStack(stack) => write!(f, "DerStack({} entries)", stack.len()),
-            Self::Pem(pem) => write!(f, "Pem({} bytes)", pem.len()),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn data_encoding_debug_does_not_leak_contents() {
-        // The payload of every variant can be private key material, so its
-        // bytes must never reach the Debug output — in text or byte form.
-        let secret = "TOP_SECRET_KEY_MATERIAL";
-        let byte_repr = format!("{:?}", secret.as_bytes());
-
-        let encodings = [
-            DataEncoding::Der(secret.as_bytes().to_vec()),
-            DataEncoding::DerStack(vec![secret.as_bytes().to_vec()]),
-            DataEncoding::Pem(
-                NonEmptyStr::try_from(format!("-----BEGIN PRIVATE KEY-----\n{secret}\n")).unwrap(),
-            ),
-        ];
-
-        for enc in encodings {
-            let out = format!("{enc:?}");
-            assert!(!out.contains(secret), "leaked key as text: {out}");
-            assert!(!out.contains(&byte_repr), "leaked key as bytes: {out}");
         }
     }
 }

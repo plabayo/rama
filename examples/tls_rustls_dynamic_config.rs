@@ -50,18 +50,22 @@
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
 
 #![expect(
-    clippy::unwrap_used,
     clippy::expect_used,
     reason = "example/test/bench: panic-on-error and print-for-output are the standard patterns for demos and harnesses"
 )]
 
 use rama::{
     Layer,
+    conversion::RamaTryFrom,
     crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _},
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
+    net::tls::{
+        KeyLogIntent,
+        server::{ServerAuthData, TlsServerConfig},
+    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -70,7 +74,10 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::server::{DynamicConfigProvider, TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::{
+        dep::rustls::ServerConfig,
+        server::{DynamicConfigProvider, RustlsServerConfigExt, TlsAcceptorLayer},
+    },
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -91,15 +98,16 @@ async fn main() {
 
     let shutdown = Shutdown::default();
     let dynamic_config_provider = Arc::new(DynamicConfig);
+    let tls_config = TlsServerConfig::new().with_dynamic_config(dynamic_config_provider);
 
     // create http server
-    shutdown.spawn_task_fn(async |guard| {
+    shutdown.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec.clone()).service(service_fn(http_service));
 
         let tcp_service = (
             ConsumeErrLayer::default(),
-            TlsAcceptorLayer::new(dynamic_config_provider.into()),
+            TlsAcceptorLayer::new(tls_config),
         )
             .into_layer(http_service);
 
@@ -124,7 +132,7 @@ impl DynamicConfigProvider for DynamicConfig {
         &self,
         client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
     ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, BoxError> {
-        let (cert_chain, key_der) = match client_hello.server_name() {
+        let (cert_chain, private_key) = match client_hello.server_name() {
             Some(name) => match name {
                 "example" => load_example_certificate().await,
                 "second.example" => load_second_example_certificate().await,
@@ -136,12 +144,18 @@ impl DynamicConfigProvider for DynamicConfig {
             )),
         }?;
 
-        let config = TlsAcceptorDataBuilder::new(cert_chain, key_der)
-            .unwrap()
-            .with_alpn_protocols_http_auto()
-            .try_with_env_key_logger()
-            .expect("with env key logger")
-            .into_rustls_config();
+        // Here we could build the native config directly, or we could still use the
+        // builders provided by rama to make this easier.
+        let config = TlsServerConfig::new()
+            .with_keylog(KeyLogIntent::Environment)
+            .with_alpn_http_auto()
+            .with_single_cert(ServerAuthData {
+                private_key,
+                cert_chain,
+                ocsp: None,
+            });
+        let config = ServerConfig::rama_try_from(config)
+            .context("build server config from rama tls config")?;
 
         Ok(Arc::new(config))
     }

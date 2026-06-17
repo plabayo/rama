@@ -1,12 +1,13 @@
 use rama_core::extensions::{Extension, Extensions};
-use rama_utils::{
-    collections::smallvec::{SmallVec, smallvec},
-    macros::generate_set_and_with,
-};
+use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use crate::{
     address::Host,
-    tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
+    tls::{
+        ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
+        TlsSupportedVersions,
+    },
 };
 
 /// A backend agnostic builder for the common TLS configs.
@@ -14,7 +15,7 @@ use crate::{
 /// It holds a set of fine grained config extensions (e.g. [`TlsAlpn`], [`TlsServerVerify`])
 /// and exposes typed setters for the settings both TLS backends support.
 /// Backend crates add setters for their backend-specific pieces via extension
-/// traits (`RustlsClientConfigExt`).
+/// traits (`RustlsClientConfigExt` or `BoringServerConfigExt`).
 #[derive(Debug, Default)]
 pub struct TlsClientConfig(Extensions);
 
@@ -152,34 +153,6 @@ impl Clone for TlsClientConfig {
 #[extension(tags(tls))]
 pub struct TlsServerName(pub Host);
 
-/// ALPN protocols to offer.
-#[derive(Clone, Debug, Extension)]
-#[extension(tags(tls))]
-pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
-
-impl TlsAlpn {
-    /// Offer HTTP/2 and HTTP/1.1.
-    #[must_use]
-    pub fn http_auto() -> Self {
-        Self(smallvec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ])
-    }
-
-    /// Offer HTTP/1.1 only.
-    #[must_use]
-    pub fn http_1() -> Self {
-        Self(smallvec![ApplicationProtocol::HTTP_11])
-    }
-
-    /// Offer HTTP/2 only.
-    #[must_use]
-    pub fn http_2() -> Self {
-        Self(smallvec![ApplicationProtocol::HTTP_2])
-    }
-}
-
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 /// How the server certificate is verified.
@@ -190,23 +163,12 @@ pub struct TlsServerVerify(pub ServerVerifyMode);
 #[extension(tags(tls))]
 pub struct TlsClientAuth(pub ClientAuth);
 
-/// Keylog intent (e.g. `SSLKEYLOGFILE`) for the connection.
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
-pub struct TlsKeyLog(pub KeyLogIntent);
-
 /// Whether to capture the peer certificate chain into `NegotiatedTlsParameters`.
 ///
 /// [`NegotiatedTlsParameters`]: crate::tls::client::NegotiatedTlsParameters
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsStoreServerCertChain(pub bool);
-
-/// Supported protocol versions, as a list (backends derive min/max as needed,
-/// preserving any GREASE entries in the wire list).
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
-pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
 #[derive(Debug, Clone)]
 /// The kind of client auth to be used.
@@ -217,13 +179,22 @@ pub enum ClientAuth {
     Single(ClientAuthData),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// Raw private key and certificate data to facilitate client authentication.
 pub struct ClientAuthData {
     /// private key used by client
-    pub private_key: DataEncoding,
+    pub private_key: PrivateKeyDer<'static>,
     /// certificate chain as a companion to the private key
-    pub cert_chain: DataEncoding,
+    pub cert_chain: Vec<CertificateDer<'static>>,
+}
+
+impl Clone for ClientAuthData {
+    fn clone(&self) -> Self {
+        Self {
+            private_key: self.private_key.clone_key(),
+            cert_chain: self.cert_chain.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -241,6 +212,7 @@ pub enum ServerVerifyMode {
 mod tests {
     use super::*;
     use rama_core::extensions::Extensions;
+    use rama_utils::collections::smallvec::smallvec;
 
     #[test]
     fn pieces_layer_newest_wins_per_type() {

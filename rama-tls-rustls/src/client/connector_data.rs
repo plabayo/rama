@@ -1,14 +1,15 @@
+use crate::RamaTlsRustlsCrateMarker;
 use crate::client::config::RustlsTlsConnectorConfig;
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::RamaKeyLog;
 use crate::verify::NoServerCertVerifier;
-use rama_core::conversion::RamaTryInto;
-use rama_core::error::{BoxError, ErrorContext};
-use rama_crypto::pki_types::pem::PemObject;
+use rama_core::conversion::{RamaTryFrom, RamaTryInto};
+use rama_core::error::BoxError;
+#[cfg(any(feature = "aws-lc", feature = "ring"))]
+use rama_core::error::ErrorContext;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
-use rama_net::tls::DataEncoding;
 use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
 use rama_net::tls::keylog::open_intent_sink;
 use std::sync::{Arc, LazyLock};
@@ -28,6 +29,44 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
     type Error = BoxError;
 
     fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            server_name: value.server_name.map(|sni| sni.0.clone()),
+            store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
+            client_config: Arc::new(value.try_into()?),
+        })
+    }
+}
+
+impl RamaTryFrom<rama_net::tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker>
+    for ClientConfig
+{
+    type Error = BoxError;
+
+    fn rama_try_from(value: rama_net::tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
+        Self::try_from(RustlsTlsConnectorConfig::from_extensions(
+            value.as_extensions(),
+        ))
+    }
+}
+
+impl RamaTryFrom<&rama_net::tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker>
+    for ClientConfig
+{
+    type Error = BoxError;
+
+    fn rama_try_from(value: &rama_net::tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
+        Self::try_from(RustlsTlsConnectorConfig::from_extensions(
+            value.as_extensions(),
+        ))
+    }
+}
+
+impl TryFrom<RustlsTlsConnectorConfig<'_>> for ClientConfig {
+    type Error = BoxError;
+
+    fn try_from(value: RustlsTlsConnectorConfig<'_>) -> Result<Self, Self::Error> {
+        crate::ensure_default_crypto_provider();
+
         // Map common protocol versions to rustls, rustls only models TLS 1.2/1.3,
         // anything else (incl. GREASE) is dropped. Empty = all supported versions.
         let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
@@ -40,9 +79,9 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
             .unwrap_or_default();
 
         let builder = if versions.is_empty() {
-            ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            Self::builder_with_protocol_versions(ALL_VERSIONS)
         } else {
-            ClientConfig::builder_with_protocol_versions(&versions)
+            Self::builder_with_protocol_versions(&versions)
         };
 
         let builder = builder.with_root_certificates(client_root_certs());
@@ -86,11 +125,7 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
             client_config = modify.apply(client_config)?;
         }
 
-        Ok(Self {
-            client_config: Arc::new(client_config),
-            server_name: value.server_name.map(|sni| sni.0.clone()),
-            store_server_certificate_chain: value.store_chain.is_some_and(|flag| flag.0),
-        })
+        Ok(client_config)
     }
 }
 
@@ -106,25 +141,8 @@ fn rustls_client_auth(
         ClientAuth::Single(data) => data,
     };
 
-    let cert_chain = match &data.cert_chain {
-        DataEncoding::Der(raw) => vec![CertificateDer::from(raw.clone())],
-        DataEncoding::DerStack(list) => list.iter().cloned().map(CertificateDer::from).collect(),
-        DataEncoding::Pem(raw) => CertificateDer::pem_slice_iter(raw.as_bytes())
-            .collect::<Result<Vec<_>, _>>()
-            .context("parse PEM certificate chain")?,
-    };
-
-    let private_key = match &data.private_key {
-        DataEncoding::Der(raw) => PrivateKeyDer::try_from(raw.clone())?,
-        DataEncoding::DerStack(list) => PrivateKeyDer::try_from(
-            list.first()
-                .context("rustls client auth: empty DER stack for private key")?
-                .clone(),
-        )?,
-        DataEncoding::Pem(raw) => {
-            PrivateKeyDer::from_pem_slice(raw.as_bytes()).context("parse PEM private key")?
-        }
-    };
+    let cert_chain = data.cert_chain.clone();
+    let private_key = data.private_key.clone_key();
 
     Ok((cert_chain, private_key))
 }
@@ -190,7 +208,10 @@ pub fn self_signed_client_auth()
 mod tests {
     use super::*;
     use rama_core::{error::BoxErrorExt, extensions::Extensions};
-    use rama_net::tls::client::{TlsAlpn, TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain};
+    use rama_net::tls::{
+        TlsAlpn,
+        client::{TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain},
+    };
 
     #[test]
     fn build_from_pieces_sets_alpn_and_flags() {
@@ -232,41 +253,12 @@ mod tests {
         let (cert_chain, private_key) = self_signed_client_auth().unwrap();
         let ext = Extensions::new();
         ext.insert(TlsClientAuth(ClientAuth::Single(ClientAuthData {
-            cert_chain: DataEncoding::DerStack(
-                cert_chain.iter().map(|c| c.as_ref().to_vec()).collect(),
-            ),
-            private_key: DataEncoding::Der(private_key.secret_der().to_vec()),
+            cert_chain,
+            private_key,
         })));
 
         let config = RustlsTlsConnectorConfig::from_extensions(&ext);
         let data = TlsConnectorData::try_from(config).unwrap();
-
-        assert!(data.client_config.client_auth_cert_resolver.has_certs());
-    }
-
-    #[test]
-    fn build_applies_client_auth_from_pem() {
-        use rama_net::tls::client::ClientAuthData;
-        use rama_utils::str::NonEmptyStr;
-
-        crate::ensure_default_crypto_provider();
-
-        let key_pair = rcgen::KeyPair::generate().unwrap();
-        let cert = rcgen::CertificateParams::new(vec![])
-            .unwrap()
-            .self_signed(&key_pair)
-            .unwrap();
-
-        let ext = Extensions::new();
-        ext.insert(TlsClientAuth(ClientAuth::Single(ClientAuthData {
-            cert_chain: DataEncoding::Pem(NonEmptyStr::try_from(cert.pem()).unwrap()),
-            private_key: DataEncoding::Pem(
-                NonEmptyStr::try_from(key_pair.serialize_pem()).unwrap(),
-            ),
-        })));
-
-        let data =
-            TlsConnectorData::try_from(RustlsTlsConnectorConfig::from_extensions(&ext)).unwrap();
 
         assert!(data.client_config.client_auth_cert_resolver.has_certs());
     }

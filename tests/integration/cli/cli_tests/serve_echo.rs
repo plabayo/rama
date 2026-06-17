@@ -486,6 +486,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{
         Layer as _,
+        crypto::pki_types::{CertificateDer, PrivateKeyDer},
         error::{BoxError, ErrorContext as _},
         http::{
             headers::StrictTransportSecurity,
@@ -503,10 +504,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
         },
         net::{
             address::Domain,
-            tls::{
-                ApplicationProtocol, DataEncoding,
-                server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
-            },
+            tls::server::{SelfSignedData, ServerAuthData, TlsServerConfig},
         },
         proxy::haproxy::server::HaProxyLayer,
         rt::Executor,
@@ -542,22 +540,18 @@ async fn test_https_with_remote_tls_cert_issuer() {
 
     let rama_remote_tls_ca = ca_issuer_cert.to_pem().unwrap();
 
-    let tls_acceptor_data = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-            private_key: DataEncoding::Der(issuer_server_key.private_key_to_der().unwrap()),
-            cert_chain: DataEncoding::DerStack(vec![
-                issuer_server_cert.to_der().unwrap(),
-                ca_issuer_cert.to_der().unwrap(),
-            ]),
+    let tls_acceptor_data = TlsServerConfig::new()
+        .with_single_cert(ServerAuthData {
+            private_key: PrivateKeyDer::try_from(issuer_server_key.private_key_to_der().unwrap())
+                .unwrap(),
+            cert_chain: vec![
+                CertificateDer::from(issuer_server_cert.to_der().unwrap()),
+                CertificateDer::from(ca_issuer_cert.to_der().unwrap()),
+            ],
+
             ocsp: None,
-        }))
-    }
-    .try_into()
-    .unwrap();
+        })
+        .with_alpn_http_auto();
 
     #[derive(Debug, Clone)]
     struct CaInfo {

@@ -29,7 +29,6 @@
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
@@ -48,9 +47,9 @@ use rama::{
     layer::ConsumeErrLayer,
     net::{
         tls::{
-            ApplicationProtocol, SecureTransport,
+            SecureTransport,
             client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+            server::{SelfSignedData, TlsPeekRouter, TlsServerConfig},
         },
         user::credentials::basic,
     },
@@ -62,10 +61,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{
-        client::BoringClientConfigExt,
-        server::{TlsAcceptorData, TlsAcceptorLayer},
-    },
+    tls::boring::{client::BoringClientConfigExt, server::TlsAcceptorLayer},
 };
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -81,8 +77,7 @@ async fn main() {
         )
         .init();
 
-    let mitm_tls_service_data =
-        try_new_mitm_tls_service_data().expect("generate self-signed mitm tls cert");
+    let mitm_tls_service_data = new_mitm_tls_service_data();
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -201,18 +196,11 @@ impl Service<Request> for HttpMitmProxy {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+fn new_mitm_tls_service_data() -> TlsServerConfig {
+    TlsServerConfig::new()
+        .with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
-        }))
-    };
-    tls_server_config
-        .try_into()
-        .context("create tls server config")
+        })
+        .with_alpn_http_auto()
 }

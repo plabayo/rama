@@ -3,9 +3,8 @@
 mod config;
 #[doc(inline)]
 pub use config::{
-    CacheKind, ClientVerifyMode, DynamicCertIssuer, DynamicIssuer, SelfSignedData,
-    SelfSignedKeyKind, ServerAuth, ServerAuthData, ServerCertIssuerData, ServerCertIssuerKind,
-    ServerConfig,
+    ClientVerifyMode, DynamicCertIssuer, SelfSignedData, SelfSignedKeyKind, ServerAuth,
+    ServerAuthData, TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain,
 };
 
 mod peek;

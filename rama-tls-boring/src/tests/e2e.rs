@@ -6,7 +6,7 @@ use rama_net::{
     tls::{
         SupportedGroup,
         client::{ServerVerifyMode, TlsClientConfig},
-        server::{SelfSignedData, ServerAuth, ServerConfig},
+        server::{SelfSignedData, TlsServerConfig},
     },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
@@ -20,14 +20,8 @@ use crate::{
 #[tracing_test::traced_test]
 async fn test_assumed_default_group_id_support() {
     let server = Arc::new(
-        TlsAcceptorLayer::new({
-            let tls_server_config =
-                ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-            tls_server_config
-                .try_into()
-                .expect("create tls server config")
-        })
-        .into_layer(EchoService::new()),
+        TlsAcceptorLayer::new(TlsServerConfig::new().with_self_signed(SelfSignedData::default()))
+            .into_layer(EchoService::new()),
     );
 
     for group in [
