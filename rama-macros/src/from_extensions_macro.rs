@@ -470,3 +470,210 @@ fn index_tuple(ty: &Type) -> Option<(&Type, &Type)> {
 fn is_usize(ty: &Type) -> bool {
     matches!(ty, Type::Path(p) if p.path.is_ident("usize"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::{DeriveInput, parse_quote};
+
+    fn expand_err(input: DeriveInput) -> String {
+        expand(input)
+            .expect_err("expected expansion to fail")
+            .to_string()
+    }
+
+    fn expand_ok(input: DeriveInput) -> String {
+        expand(input)
+            .expect("expected expansion to succeed")
+            .to_string()
+    }
+
+    #[test]
+    fn rejects_type_parameters() {
+        let e = expand_err(parse_quote! {
+            struct Bad<T> { x: Option<T> }
+        });
+        assert!(e.contains("type parameters"), "{e}");
+    }
+
+    #[test]
+    fn rejects_const_parameters() {
+        let e = expand_err(parse_quote! {
+            struct Bad<const N: usize> { x: Option<&'static u8> }
+        });
+        assert!(e.contains("const parameters"), "{e}");
+    }
+
+    #[test]
+    fn rejects_multiple_lifetimes() {
+        let e = expand_err(parse_quote! {
+            struct Bad<'a, 'b> { x: Option<&'a u8>, y: Option<&'b u8> }
+        });
+        assert!(e.contains("at most one lifetime"), "{e}");
+    }
+
+    #[test]
+    fn rejects_union() {
+        let e = expand_err(parse_quote! {
+            union Bad { x: u8 }
+        });
+        assert!(e.contains("structs and enums"), "{e}");
+    }
+
+    #[test]
+    fn rejects_tuple_struct() {
+        let e = expand_err(parse_quote! {
+            struct Bad(u8);
+        });
+        assert!(e.contains("named fields"), "{e}");
+    }
+
+    #[test]
+    fn rejects_empty_struct() {
+        let e = expand_err(parse_quote! {
+            struct Bad {}
+        });
+        assert!(e.contains("at least one field"), "{e}");
+    }
+
+    #[test]
+    fn rejects_field_without_option() {
+        let e = expand_err(parse_quote! {
+            struct Bad<'a> { x: &'a u8 }
+        });
+        assert!(e.contains("piece must be"), "{e}");
+    }
+
+    #[test]
+    fn rejects_mut_reference() {
+        let e = expand_err(parse_quote! {
+            struct Bad<'a> { x: Option<&'a mut u8> }
+        });
+        assert!(e.contains("shared references"), "{e}");
+    }
+
+    #[test]
+    fn rejects_arc_with_allocator() {
+        let e = expand_err(parse_quote! {
+            struct Bad { x: Option<Arc<u8, MyAlloc>> }
+        });
+        assert!(e.contains("no custom allocator"), "{e}");
+    }
+
+    #[test]
+    fn rejects_index_tuple_with_non_usize() {
+        let e = expand_err(parse_quote! {
+            struct Bad<'a> { x: Option<(&'a u8, u32)> }
+        });
+        assert!(e.contains("must be `usize`"), "{e}");
+    }
+
+    #[test]
+    fn rejects_empty_enum() {
+        let e = expand_err(parse_quote! {
+            enum Bad {}
+        });
+        assert!(e.contains("at least one variant"), "{e}");
+    }
+
+    #[test]
+    fn rejects_struct_variant() {
+        let e = expand_err(parse_quote! {
+            enum Bad<'a> { V { x: &'a u8 } }
+        });
+        assert!(e.contains("tuple variant"), "{e}");
+    }
+
+    #[test]
+    fn rejects_unit_variant() {
+        let e = expand_err(parse_quote! {
+            enum Bad { V }
+        });
+        assert!(e.contains("tuple variant"), "{e}");
+    }
+
+    #[test]
+    fn rejects_variant_with_two_fields() {
+        let e = expand_err(parse_quote! {
+            enum Bad<'a> { V(&'a u8, &'a u16) }
+        });
+        assert!(e.contains("exactly one value"), "{e}");
+    }
+
+    #[test]
+    fn rejects_unsupported_struct_field_type() {
+        let e = expand_err(parse_quote! {
+            struct Bad { x: Option<[u8; 4]> }
+        });
+        assert!(e.contains("piece must be"), "{e}");
+    }
+
+    #[test]
+    fn rejects_enum_variant_bare_value_type() {
+        let e = expand_err(parse_quote! {
+            enum Bad { V(u8) }
+        });
+        assert!(e.contains("piece must be"), "{e}");
+    }
+
+    #[test]
+    fn rejects_enum_variant_array_value() {
+        let e = expand_err(parse_quote! {
+            enum Bad { V([u8; 2]) }
+        });
+        assert!(e.contains("piece must be"), "{e}");
+    }
+
+    #[test]
+    fn struct_ref_arc_and_indexed_expand() {
+        let out = expand_ok(parse_quote! {
+            struct View<'a> {
+                a: Option<&'a A>,
+                b: Option<Arc<B>>,
+                c: Option<(&'a C, usize)>,
+            }
+        });
+        assert!(out.contains("fn from_extensions"), "{out}");
+        assert!(out.contains("get_many_erased"), "{out}");
+        assert!(out.contains("downcast_ref"), "{out}");
+        assert!(out.contains("cloned_downcast"), "{out}");
+    }
+
+    #[test]
+    fn all_arc_struct_needs_no_lifetime() {
+        // No declared lifetime so we create one
+        let out = expand_ok(parse_quote! {
+            struct View { a: Option<Arc<A>> }
+        });
+        assert!(out.contains("'__from_ext"), "{out}");
+    }
+
+    #[test]
+    fn enum_expands_group_impl_and_inherent() {
+        let out = expand_ok(parse_quote! {
+            enum Auth<'a> { A(&'a Server), B(&'a Verifier) }
+        });
+        assert!(out.contains("FromExtensionsGroup"), "{out}");
+        assert!(out.contains("from_ext_targets"), "{out}");
+        assert!(out.contains("from_ext_slots"), "{out}");
+        assert!(out.contains("min_by_key"), "{out}");
+        assert!(out.contains("fn from_extensions"), "{out}");
+    }
+
+    #[test]
+    fn struct_nested_group_folds_into_single_pass() {
+        let out = expand_ok(parse_quote! {
+            struct Cfg<'a> {
+                toggle: Option<&'a T>,
+                either: Option<Either<'a>>,
+            }
+        });
+        // the nested group is gathered through the trait (one shared pass),
+        // not by calling its own `from_extensions`.
+        assert!(out.contains("from_ext_targets"), "{out}");
+        assert!(out.contains("from_ext_slots"), "{out}");
+        assert!(out.contains("get_many_erased"), "{out}");
+        // its width is read via the anonymous lifetime for the const buffer size.
+        assert!(out.contains("'_"), "{out}");
+    }
+}
