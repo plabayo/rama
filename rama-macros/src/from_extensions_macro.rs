@@ -15,7 +15,7 @@ enum FieldShape<'a> {
     Nested(&'a Type),
 }
 
-/// An extension piece and if its indexed
+/// An extension piece and whether it's indexed
 struct FieldSpec<'a> {
     kind: FieldKind,
     inner: &'a Type,
@@ -237,7 +237,7 @@ fn expand_enum(
     let (fn_generics, lt) = fn_lifetime(lifetime);
 
     // Trait impl header: the group lifetime is the enum's own lifetime, or a
-    // new one introduced on the impl if only arc's are used
+    // new one introduced on the impl if only `Arc`s are used
     let (group_impl_generics, group_lt, self_ty) = if let Some(lt) = lifetime {
         (quote!(<#lt>), quote!(#lt), quote!(#ident<#lt>))
     } else {
@@ -456,7 +456,7 @@ fn option_inner(ty: &Type) -> Option<&Type> {
     Some(inner)
 }
 
-/// Match a two size tuple
+/// Match a 2-element tuple
 fn index_tuple(ty: &Type) -> Option<(&Type, &Type)> {
     let Type::Tuple(tuple) = ty else {
         return None;

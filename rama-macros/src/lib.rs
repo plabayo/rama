@@ -232,7 +232,7 @@ pub fn derive_extension(item: TokenStream) -> TokenStream {
 /// Self`, where each field uses the same lookup as `Extensions::get_ref` but the
 /// store is traversed only once.
 ///
-/// On an*enum, each variant is a one-field tuple variant naming a candidate
+/// On an enum, each variant is a one-field tuple variant naming a candidate
 /// type (`Variant(&'a T)` or `Variant(Arc<T>)`, optionally `Variant((&'a T,
 /// usize))`). Generates `fn from_extensions(ext: &Extensions) -> Option<Self>`
 /// which returns the candidate inserted most recently (newest-wins by traversal
