@@ -177,6 +177,9 @@ impl Body {
     /// a [`Future`] with as output an option of a result of a headermap.
     /// This method is a shortcut of that function.
     pub fn with_trailer_headers(self, headers: crate::HeaderMap) -> Self {
+        // `http-body-util` trailers are still the hyperium `http::HeaderMap`
+        // until that crate is forked; bridge at the boundary for now.
+        let headers = crate::hyperium_bridge::headers_to_hyperium(headers);
         Self::new(self.0.with_trailers(std::future::ready(Some(Ok(headers)))))
     }
 

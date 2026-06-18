@@ -30,6 +30,8 @@ pub use ::rama_http_headers as headers;
 
 pub mod body;
 
+pub(crate) mod hyperium_compat;
+
 pub mod convert;
 
 pub mod matcher;

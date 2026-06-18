@@ -27,7 +27,15 @@ pub use body::{
 pub mod request;
 pub mod response;
 
+#[macro_use]
+mod convert;
+mod byte_str;
 mod hyperium_bridge;
+// TEMPORARY (Phase 3): hyperium `http::HeaderMap` trailer-boundary bridges,
+// used by rama-http/grpc/http-core until `http-body` is forked. Relocates to
+// `rama-http-hyperium`.
+#[doc(hidden)]
+pub use hyperium_bridge::{headers_from_hyperium, headers_to_hyperium};
 pub mod method;
 pub mod status;
 
@@ -101,83 +109,7 @@ pub mod conn;
 
 pub mod proxy;
 
-pub mod header {
-    //! HTTP header types
-
-    #[doc(inline)]
-    pub use crate::dep::hyperium::http::header::*;
-
-    macro_rules! static_header {
-        ($($name_bytes:literal),+ $(,)?) => {
-            $(
-                rama_macros::paste! {
-                    #[doc = concat!("header name constant for `", $name_bytes, "`.")]
-                    pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
-                }
-            )+
-        };
-    }
-
-    // non-std conventional
-    static_header![
-        "x-forwarded-host",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "x-robots-tag",
-        "x-clacks-overhead",
-    ];
-
-    // new standard sec-headers
-    static_header!["sec-gpc"];
-
-    // fetch metadata request headers (W3C Fetch Metadata Request Headers)
-    static_header!["sec-fetch-site"];
-
-    // additional W3C / Fetch / HTML standard security headers
-    // not yet covered by hyperium/http's name table
-    static_header![
-        "permissions-policy",
-        "cross-origin-embedder-policy",
-        "cross-origin-embedder-policy-report-only",
-        "cross-origin-opener-policy",
-        "cross-origin-opener-policy-report-only",
-        "cross-origin-resource-policy",
-    ];
-
-    // standard
-    static_header!["keep-alive", "proxy-connection", "last-event-id"];
-
-    // non-std client ip forward headers
-    static_header![
-        "cf-connecting-ip",
-        "true-client-ip",
-        "client-ip",
-        "x-client-ip",
-        "x-real-ip",
-    ];
-
-    // extra access control headers
-    static_header![
-        "access-control-allow-private-network",
-        "access-control-request-private-network",
-    ];
-
-    // client hint headers with typed value parsers in rama-http-headers
-    static_header![
-        "sec-ch-save-data",
-        "sec-ch-ect",
-        "sec-ch-rtt",
-        "sec-ch-downlink",
-    ];
-
-    // client hint negotiation response headers (advertised by servers)
-    static_header!["accept-ch", "critical-ch"];
-
-    /// Static Header Value that is can be used as `User-Agent` or `Server` header.
-    pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
-        const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
-    );
-}
+pub mod header;
 
 pub mod mime {
     //! Re-export of the [`mime`] crate.

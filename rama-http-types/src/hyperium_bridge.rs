@@ -9,7 +9,7 @@
 //! detail.
 
 use crate::dep::hyperium::http;
-use crate::{Method, StatusCode, Version};
+use crate::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
 
 /// Convert a vendored [`Method`] into the hyperium `http::Method`.
 ///
@@ -32,6 +32,66 @@ pub(crate) fn status_to_hyperium(s: StatusCode) -> http::StatusCode {
 /// Convert a hyperium `http::StatusCode` into the vendored [`StatusCode`].
 pub(crate) fn status_from_hyperium(s: http::StatusCode) -> StatusCode {
     StatusCode::from_u16(s.as_u16()).unwrap_or(StatusCode::OK)
+}
+
+/// Convert a vendored [`HeaderMap`] into the hyperium `http::HeaderMap`.
+///
+/// Both are byte-identical forks; this round-trips each name/value through its
+/// bytes, preserving multi-value ordering and the sensitivity flag.
+///
+/// Temporarily `pub` (doc-hidden, re-exported at the crate root) so the
+/// `http-body`/`multer` trailer boundaries in rama-http/grpc/http-core can
+/// bridge until `http-body` is forked.
+pub fn headers_to_hyperium(headers: HeaderMap) -> http::HeaderMap {
+    let mut out = http::HeaderMap::with_capacity(headers.len());
+    let mut last: Option<http::header::HeaderName> = None;
+    for (name, value) in headers {
+        let mut hv = http::header::HeaderValue::from_bytes(value.as_bytes())
+            .unwrap_or_else(|_| http::header::HeaderValue::from_static(""));
+        hv.set_sensitive(value.is_sensitive());
+        match name {
+            Some(name) => {
+                let name = http::header::HeaderName::from_bytes(name.as_str().as_bytes())
+                    .expect("vendored header name is valid");
+                out.append(name.clone(), hv);
+                last = Some(name);
+            }
+            // `None` name repeats the previous name (multi-value).
+            None => {
+                if let Some(name) = &last {
+                    out.append(name.clone(), hv);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Convert a hyperium `http::HeaderMap` into the vendored [`HeaderMap`].
+///
+/// See [`headers_to_hyperium`] — temporary trailer-boundary bridge.
+pub fn headers_from_hyperium(headers: http::HeaderMap) -> HeaderMap {
+    let mut out = HeaderMap::with_capacity(headers.len());
+    let mut last: Option<HeaderName> = None;
+    for (name, value) in headers {
+        let mut hv = HeaderValue::from_bytes(value.as_bytes())
+            .unwrap_or_else(|_| HeaderValue::from_static(""));
+        hv.set_sensitive(value.is_sensitive());
+        match name {
+            Some(name) => {
+                let name = HeaderName::from_bytes(name.as_str().as_bytes())
+                    .expect("hyperium header name is valid");
+                out.append(name.clone(), hv);
+                last = Some(name);
+            }
+            None => {
+                if let Some(name) = &last {
+                    out.append(name.clone(), hv);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Convert a native [`Version`] into the hyperium `http::Version`.

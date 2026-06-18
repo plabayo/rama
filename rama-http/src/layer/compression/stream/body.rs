@@ -1,6 +1,7 @@
-use crate::HeaderMap;
+// `http-body` Frame trailers are `http::HeaderMap` until that crate is forked.
 use crate::layer::compression::pin_project_cfg::pin_project_cfg;
 use crate::layer::util::compression::CompressionLevel;
+use http::HeaderMap;
 
 use compression_codecs::{
     BrotliEncoder, EncodeV2, GzipEncoder, ZlibEncoder, ZstdEncoder,

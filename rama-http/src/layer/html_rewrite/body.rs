@@ -9,10 +9,11 @@ use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::futures::ready;
 
-use crate::HeaderMap;
+// `http-body` Frame trailers are `http::HeaderMap` until that crate is forked.
 use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::protocols::html::rewrite::{ElementContentHandler, HtmlRewriter};
 use crate::protocols::html::selector::Selector;
+use http::HeaderMap;
 
 /// Completion hook, handed the finalized handler once the rewrite ends.
 /// `Send + Sync` so the body keeps satisfying [`Body::new`](crate::Body::new).

@@ -128,7 +128,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
         *request.method_mut() = crate::hyperium_bridge::method_to_hyperium(&parts.method);
         *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(&parts.uri);
         *request.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
-        *request.headers_mut() = parts.headers;
+        *request.headers_mut() = crate::hyperium_bridge::headers_to_hyperium(parts.headers);
         *request.extensions_mut() = hyper_extensions;
 
         request
@@ -161,7 +161,7 @@ impl From<HyperiumParts> for Parts {
 
         Self {
             extensions: rama_extensions,
-            headers: value.headers,
+            headers: crate::hyperium_bridge::headers_from_hyperium(value.headers),
             method: crate::hyperium_bridge::method_from_hyperium(&value.method),
             uri: crate::hyperium_bridge::uri_from_hyperium(&value.uri),
             version: crate::hyperium_bridge::version_from_hyperium(value.version),

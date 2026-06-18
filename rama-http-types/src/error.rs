@@ -8,9 +8,8 @@ use std::error;
 use std::fmt;
 use std::result;
 
-use crate::dep::hyperium::http::header;
-use crate::dep::hyperium::http::header::MaxSizeReached;
-use crate::{method, status};
+use crate::header::MaxSizeReached;
+use crate::{header, method, status};
 
 /// A generic "error" for HTTP connections.
 ///

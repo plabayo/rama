@@ -235,9 +235,11 @@ impl Field<'_> {
     }
 
     /// Header map of this field.
+    ///
+    /// Converted from the underlying `multer` field's hyperium `http::HeaderMap`.
     #[must_use]
-    pub fn headers(&self) -> &HeaderMap {
-        self.inner.headers()
+    pub fn headers(&self) -> HeaderMap {
+        crate::hyperium_compat::rama_headers_from_http(self.inner.headers())
     }
 
     /// Index of this field within the multipart stream (0-based).
