@@ -700,7 +700,7 @@ mod tests {
     // Compressing an absent body would produce a spurious Content-Encoding header.
     #[tokio::test]
     async fn does_not_compress_head_response() {
-        use http::Method;
+        use rama_http_types::Method;
         let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
         let req = Request::builder()
             .method(Method::HEAD)
@@ -717,7 +717,7 @@ mod tests {
     // RFC 9110 §9.3.6: CONNECT tunnels have no HTTP message body phase.
     #[tokio::test]
     async fn does_not_compress_connect_response() {
-        use http::Method;
+        use rama_http_types::Method;
         let svc = Compression::new(service_fn(handle)).with_compress_predicate(Always);
         let req = Request::builder()
             .method(Method::CONNECT)

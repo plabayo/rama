@@ -142,7 +142,7 @@ impl<T> From<Response<T>> for HyperiumResponse<T> {
         hyper_extensions.insert(parts.extensions);
 
         let mut response = Self::new(body);
-        *response.status_mut() = parts.status;
+        *response.status_mut() = crate::hyperium_bridge::status_to_hyperium(parts.status);
         *response.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
         *response.headers_mut() = parts.headers;
         *response.extensions_mut() = hyper_extensions;
@@ -180,7 +180,7 @@ impl From<HyperiumParts> for Parts {
             extensions: rama_extensions,
             headers: value.headers,
             version: crate::hyperium_bridge::version_from_hyperium(value.version),
-            status: value.status,
+            status: crate::hyperium_bridge::status_from_hyperium(value.status),
         }
     }
 }

@@ -14,11 +14,11 @@ use crate::headers::encoding::{
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, StatusCode, header};
-use http::Method;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_http_headers::specifier::{Quality, QualityValue};
 use rama_http_types::HeaderValue;
+use rama_http_types::Method;
 use rama_http_types::StreamingBody;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
@@ -328,7 +328,7 @@ fn negotiate_response_encoding(
 }
 
 /// Appends `Vary: accept-encoding` unless an equivalent value is already present.
-fn ensure_vary_accept_encoding(headers: &mut http::HeaderMap) {
+fn ensure_vary_accept_encoding(headers: &mut rama_http_types::HeaderMap) {
     if !headers.get_all(header::VARY).iter().any(|value| {
         submatch_ignore_ascii_case(
             value.as_bytes(),

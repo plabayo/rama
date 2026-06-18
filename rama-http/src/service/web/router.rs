@@ -5,7 +5,6 @@
 
 use std::{convert::Infallible, error::Error, fmt, sync::Arc};
 
-use http::Method;
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
@@ -16,6 +15,7 @@ use rama_core::{
     service::{BoxService, Service},
     telemetry::tracing,
 };
+use rama_http_types::Method;
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };

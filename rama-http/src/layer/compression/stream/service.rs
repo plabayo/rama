@@ -14,13 +14,13 @@ use crate::headers::encoding::{
 use crate::layer::compression::predicate::{DefaultStreamPredicate, Predicate, PreferredEncoding};
 use crate::layer::remove_header::remove_payload_metadata_headers;
 use crate::{Request, Response, StatusCode, header};
-use http::Method;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::TransferEncoding;
 use rama_http_headers::specifier::{Quality, QualityValue};
+use rama_http_types::Method;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;

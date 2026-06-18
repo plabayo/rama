@@ -28,8 +28,8 @@ pub mod request;
 pub mod response;
 
 mod hyperium_bridge;
-pub use crate::dep::hyperium::http::method;
-pub use crate::dep::hyperium::http::status;
+pub mod method;
+pub mod status;
 
 mod error;
 #[doc(inline)]
@@ -207,7 +207,7 @@ pub mod dep {
             //! [`http`]: https://docs.rs/http
 
             #[doc(inline)]
-            pub use http::*;
+            pub(crate) use http::*;
         }
 
         pub(crate) mod http_body {

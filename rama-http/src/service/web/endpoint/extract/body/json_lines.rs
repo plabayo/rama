@@ -39,8 +39,8 @@ mod tests {
     use crate::service::{client::HttpClientExt as _, web::Router};
 
     use super::JsonLines;
-    use http::StatusCode;
     use rama_core::stream::StreamExt as _;
+    use rama_http_types::StatusCode;
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]

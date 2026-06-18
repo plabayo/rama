@@ -8,8 +8,31 @@
 //! compiling after the URI/Version flip. They are an internal implementation
 //! detail.
 
-use crate::Version;
 use crate::dep::hyperium::http;
+use crate::{Method, StatusCode, Version};
+
+/// Convert a vendored [`Method`] into the hyperium `http::Method`.
+///
+/// Both are byte-identical forks, so this round-trips losslessly through the
+/// method bytes (standard methods hit the fast path; extension methods copy).
+pub(crate) fn method_to_hyperium(m: &Method) -> http::Method {
+    http::Method::from_bytes(m.as_str().as_bytes()).unwrap_or(http::Method::GET)
+}
+
+/// Convert a hyperium `http::Method` into the vendored [`Method`].
+pub(crate) fn method_from_hyperium(m: &http::Method) -> Method {
+    Method::from_bytes(m.as_str().as_bytes()).unwrap_or(Method::GET)
+}
+
+/// Convert a vendored [`StatusCode`] into the hyperium `http::StatusCode`.
+pub(crate) fn status_to_hyperium(s: StatusCode) -> http::StatusCode {
+    http::StatusCode::from_u16(s.as_u16()).unwrap_or(http::StatusCode::OK)
+}
+
+/// Convert a hyperium `http::StatusCode` into the vendored [`StatusCode`].
+pub(crate) fn status_from_hyperium(s: http::StatusCode) -> StatusCode {
+    StatusCode::from_u16(s.as_u16()).unwrap_or(StatusCode::OK)
+}
 
 /// Convert a native [`Version`] into the hyperium `http::Version`.
 pub(crate) fn version_to_hyperium(v: Version) -> http::Version {

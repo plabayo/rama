@@ -125,7 +125,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
         hyper_extensions.insert(parts.extensions);
 
         let mut request = Self::new(body);
-        *request.method_mut() = parts.method;
+        *request.method_mut() = crate::hyperium_bridge::method_to_hyperium(&parts.method);
         *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(&parts.uri);
         *request.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
         *request.headers_mut() = parts.headers;
@@ -162,7 +162,7 @@ impl From<HyperiumParts> for Parts {
         Self {
             extensions: rama_extensions,
             headers: value.headers,
-            method: value.method,
+            method: crate::hyperium_bridge::method_from_hyperium(&value.method),
             uri: crate::hyperium_bridge::uri_from_hyperium(&value.uri),
             version: crate::hyperium_bridge::version_from_hyperium(value.version),
         }
@@ -1284,7 +1284,7 @@ mod tests {
             hyper_request.version(),
             crate::hyperium_bridge::version_to_hyperium(version)
         );
-        assert_eq!(hyper_request.method(), method);
+        assert_eq!(hyper_request.method().as_str(), method.as_str());
         assert_eq!(*hyper_request.body(), body);
         assert_eq!(
             hyper_request.headers().get(header_key).unwrap(),
