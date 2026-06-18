@@ -222,12 +222,21 @@ pub fn derive_extension(item: TokenStream) -> TokenStream {
 /// Derive a `from_extensions` constructor that gathers extension pieces from a
 /// `rama_core::extensions::Extensions` store in a single pass.
 ///
-/// Fields must be `Option<&'a T>` (borrowed) or `Option<Arc<T>>` (owned Arc
-/// clone), the two may be mixed. A borrowed field requires the struct to carry
-/// the matching lifetime (`struct View<'a>`) and an all-`Arc` struct needs no
-/// lifetime. Generates `fn from_extensions(ext: &Extensions) -> Self`, where
-/// each field uses the same lookup as `Extensions::get_ref` but the store is
-/// traversed only once.
+/// On a struct, each named field must be `Option<&'a T>` (borrowed) or
+/// `Option<Arc<T>>` (owned Arc clone), and the two may be mixed. A field may
+/// also be `Option<(&'a T, usize)>` / `Option<(Arc<T>, usize)>` to additionally
+/// capture the entry's traversal rank (`0` is the newest value seen, growing for
+/// older ones, so ranks order fields by recency). A borrowed field requires the
+/// struct to carry the matching lifetime (`struct View<'a>`); an all-`Arc`
+/// struct needs no lifetime. Generates `fn from_extensions(ext: &Extensions) ->
+/// Self`, where each field uses the same lookup as `Extensions::get_ref` but the
+/// store is traversed only once.
+///
+/// On an*enum, each variant is a one-field tuple variant naming a candidate
+/// type (`Variant(&'a T)` or `Variant(Arc<T>)`, optionally `Variant((&'a T,
+/// usize))`). Generates `fn from_extensions(ext: &Extensions) -> Option<Self>`
+/// which returns the candidate inserted most recently (newest-wins by traversal
+/// rank), or `None` if none are present.
 #[proc_macro_derive(FromExtensions)]
 pub fn derive_from_extensions(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, from_extensions_macro::expand)
