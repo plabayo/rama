@@ -8,9 +8,6 @@ use rama_core::extensions::Extension;
 use std::fmt;
 use std::net::IpAddr;
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
-
 mod obfuscated;
 #[doc(inline)]
 use obfuscated::{ObfNode, ObfPort};
@@ -189,28 +186,6 @@ impl TryFrom<&str> for Forwarded {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
-        Ok(Self { first, others })
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<HeaderValue> for Forwarded {
-    type Error = BoxError;
-
-    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
-        let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
-        Ok(Self { first, others })
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<&HeaderValue> for Forwarded {
-    type Error = BoxError;
-
-    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
-        let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
         Ok(Self { first, others })
     }
 }

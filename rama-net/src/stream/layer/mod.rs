@@ -9,10 +9,6 @@ pub use tracker::{
     OutgoingBytesTrackerLayer, OutgoingBytesTrackerService,
 };
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-pub mod http;
-
 #[cfg(feature = "opentelemetry")]
 #[cfg_attr(docsrs, doc(cfg(feature = "opentelemetry")))]
 pub mod opentelemetry;

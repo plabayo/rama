@@ -7,9 +7,6 @@ use rama_core::extensions::Extension;
 use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_utils::str::smol_str::SmolStr;
 
-#[cfg(feature = "http")]
-use rama_http_types::Scheme;
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 #[extension(tags(net))]
 /// Web protocols that are relevant to Rama.
@@ -319,35 +316,6 @@ impl FromStr for Protocol {
     }
 }
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl From<Scheme> for Protocol {
-    #[inline]
-    fn from(s: Scheme) -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
-        )]
-        s.as_str()
-            .try_into()
-            .expect("http crate Scheme is pre-validated by promise")
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl From<&Scheme> for Protocol {
-    fn from(s: &Scheme) -> Self {
-        #[expect(
-            clippy::expect_used,
-            reason = "http crate Scheme is pre-validated; in future rama version we will no longer use ::http::Scheme and this can be removed"
-        )]
-        s.as_str()
-            .try_into()
-            .expect("http crate Scheme is pre-validated by promise")
-    }
-}
-
 impl PartialEq<str> for Protocol {
     fn eq(&self, other: &str) -> bool {
         match &self.0 {
@@ -549,16 +517,6 @@ mod tests {
         // Also exercise the parser path that the fuzzer hit.
         let uri: crate::uri::Uri = format!("{long}:/aq").parse().unwrap();
         assert_eq!(uri.scheme().unwrap().as_str(), long);
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn test_from_http_scheme() {
-        for s in ["http", "https", "ws", "wss", "socks5", "socks5h", "custom"].iter() {
-            let uri =
-                rama_http_types::Uri::from_str(format!("{s}://example.com").as_str()).unwrap();
-            assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);
-        }
     }
 
     #[test]

@@ -48,13 +48,9 @@ pub mod http;
 #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub mod tls;
 
-#[cfg(any(feature = "tls", feature = "http"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "tls", feature = "http"))))]
+#[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub mod fingerprint;
-
-#[cfg(all(feature = "tls", feature = "http"))]
-#[cfg_attr(docsrs, doc(cfg(all(feature = "tls", feature = "http"))))]
-pub mod https;
 
 pub mod socket;
 

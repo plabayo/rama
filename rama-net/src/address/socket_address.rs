@@ -11,9 +11,6 @@ use crate::address::ip::{
 };
 use crate::address::parse_utils::try_to_parse_str_to_ip;
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
-
 /// An [`IpAddr`] with an associated port (u16)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SocketAddress {
@@ -348,26 +345,6 @@ impl TryFrom<&str> for SocketAddress {
             )),
             _ => Ok(Self { ip_addr, port }),
         }
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<HeaderValue> for SocketAddress {
-    type Error = BoxError;
-
-    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
-        Self::try_from(&header)
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<&HeaderValue> for SocketAddress {
-    type Error = BoxError;
-
-    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
-        header.to_str().context("convert header to str")?.try_into()
     }
 }
 

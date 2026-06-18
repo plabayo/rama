@@ -37,31 +37,12 @@ pub fn client_ip(ext: &impl ExtensionsRef) -> Option<IpAddr> {
 /// Deliberately has no [`ExtensionsRef`] bound and no blanket impl: a blanket
 /// would force one behaviour onto every extensions-carrying type (including
 /// IO/service wrappers) and block custom impls. Implement it explicitly per
-/// type instead — the [`Request`] impl below simply delegates to
-/// [`client_ip`], but other inputs may resolve their client IP differently.
-///
-/// [`Request`]: rama_http_types::Request
+/// type instead — e.g. the http `Request`/`Parts` impls in `rama-http-types`
+/// delegate to [`client_ip`], but other inputs may resolve their client IP
+/// differently.
 pub trait ClientIp {
     /// Best-effort client IP — see [`client_ip`] for the common resolution.
     fn client_ip(&self) -> Option<IpAddr>;
-}
-
-// NOTE: these http-specific impls relocate to rama-http-types once the
-// rama-net <-> rama-http-types dependency is inverted (plan phase 1).
-#[cfg(feature = "http")]
-impl<B> ClientIp for rama_http_types::Request<B> {
-    #[inline]
-    fn client_ip(&self) -> Option<IpAddr> {
-        client_ip(self)
-    }
-}
-
-#[cfg(feature = "http")]
-impl ClientIp for rama_http_types::request::Parts {
-    #[inline]
-    fn client_ip(&self) -> Option<IpAddr> {
-        client_ip(self)
-    }
 }
 
 #[cfg(test)]

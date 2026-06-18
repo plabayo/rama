@@ -4,9 +4,6 @@ pub use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
 use rama_core::extensions::Extensions;
 
-#[cfg(feature = "http")]
-use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
-
 #[derive(Debug, Clone)]
 /// Matcher based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
 ///
@@ -39,16 +36,6 @@ impl IpNetMatcher {
             net: net.into_ip_net(),
             optional: true,
         }
-    }
-}
-
-#[cfg(feature = "http")]
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
-    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        req.extensions()
-            .get_ref::<SocketInfo>()
-            .map(|info| self.net.contains(&IpNet::from(info.peer_addr().ip_addr)))
-            .unwrap_or(self.optional)
     }
 }
 
@@ -158,91 +145,6 @@ mod test {
         } else {
             let ip_addr: std::net::IpAddr = s.parse().unwrap();
             SocketAddress::new(ip_addr, 60000)
-        }
-    }
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn test_ip_net_matcher_http() {
-        use rama_core::extensions::ExtensionsRef;
-
-        let matcher = IpNetMatcher::new([127, 0, 0, 1]);
-
-        let create_request = || {
-            Request::builder()
-                .method("GET")
-                .uri("/hello")
-                .body(())
-                .unwrap()
-        };
-
-        // test #1: no match: test with no socket info registered
-        let req = create_request();
-        assert!(!matcher.matches(None, &req));
-
-        // test #2: no match: test with different socket info (ip addr difference)
-        let req = create_request();
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!matcher.matches(None, &req));
-
-        // test #3: match: test with correct address
-        let req = create_request();
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &req));
-
-        // test #4: match: test with missing socket info, but it's seen as optional
-        let matcher = IpNetMatcher::optional([127, 0, 0, 1]);
-        let req = create_request();
-        assert!(matcher.matches(None, &req));
-
-        // test #5: match: valid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
-        for subnet in SUBNET_IPV4_VALID_CASES.iter() {
-            let req = create_request();
-            let addr = socket_addr_from_case(subnet);
-            req.extensions().insert(SocketInfo::new(None, addr));
-            assert!(
-                matcher.matches(None, &req),
-                "valid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
-            );
-        }
-
-        // test #6: match: valid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
-        for subnet in SUBNET_IPV6_VALID_CASES.iter() {
-            let req = create_request();
-            let addr = socket_addr_from_case(subnet);
-            req.extensions().insert(SocketInfo::new(None, addr));
-            assert!(
-                matcher.matches(None, &req),
-                "valid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
-            );
-        }
-
-        // test #7: match: invalid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
-        for subnet in SUBNET_IPV4_INVALID_CASES.iter() {
-            let req = create_request();
-            let addr = socket_addr_from_case(subnet);
-            req.extensions().insert(SocketInfo::new(None, addr));
-            assert!(
-                !matcher.matches(None, &req),
-                "invalid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
-            );
-        }
-
-        // test #8: match: invalid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
-        for subnet in SUBNET_IPV6_INVALID_CASES.iter() {
-            let req = create_request();
-            let addr = socket_addr_from_case(subnet);
-            req.extensions().insert(SocketInfo::new(None, addr));
-            assert!(
-                !matcher.matches(None, &req),
-                "invalid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
-            );
         }
     }
 

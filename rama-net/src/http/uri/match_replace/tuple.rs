@@ -1,5 +1,5 @@
 use super::{UriMatchError, UriMatchReplace};
-use rama_http_types::Uri;
+use crate::uri::Uri;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::borrow::Cow;
 
@@ -39,7 +39,7 @@ all_the_tuples_no_last_special_case!(impl_uri_match_replace_on_tuple);
 mod tests {
     use std::borrow::Cow;
 
-    use rama_http_types::Uri;
+    use crate::uri::Uri;
 
     use crate::http::uri::{
         UriMatchError, UriMatchReplace as _, UriMatchReplaceScheme,
@@ -59,7 +59,7 @@ mod tests {
         let uri = input
             .match_replace_uri(Cow::Owned(Uri::from_static("http://example.com")))
             .unwrap();
-        assert_eq!("https://example.com/", uri.to_string());
+        assert_eq!("https://example.com", uri.to_string());
 
         match input.match_replace_uri(Cow::Owned(Uri::from_static("ftp://example.com"))) {
             Ok(found) => panic!("unexpected match found: {found}"),

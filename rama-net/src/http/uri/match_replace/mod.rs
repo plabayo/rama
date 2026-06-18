@@ -2,8 +2,8 @@
 
 use std::{borrow::Cow, sync::Arc};
 
+use crate::uri::Uri;
 use rama_core::error::BoxError;
-use rama_http_types::Uri;
 use rama_utils::collections::smallvec::SmallVec;
 use rama_utils::thirdparty::wildcard::Wildcard;
 
@@ -78,7 +78,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// ```rust
 /// # use std::str::FromStr;
 /// # use std::borrow::Cow;
-/// # use rama_http_types::Uri;
+/// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
@@ -92,7 +92,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// ```rust
 /// # use std::str::FromStr;
 /// # use std::borrow::Cow;
-/// # use rama_http_types::Uri;
+/// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule, UriMatchReplaceScheme, UriMatchReplaceFallthrough};
 /// let rules = UriMatchReplaceFallthrough((
 ///     UriMatchReplaceScheme::http_to_https(),

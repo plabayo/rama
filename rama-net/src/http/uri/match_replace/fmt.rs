@@ -2,7 +2,7 @@ use rama_core::error::BoxErrorExt as _;
 use std::{borrow::Cow, fmt};
 
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
-use rama_http_types::Uri;
+use crate::uri::Uri;
 
 #[derive(Clone)]
 pub(super) struct UriFormatter {
@@ -534,9 +534,10 @@ mod tests_fmt_uri {
 
     #[test]
     fn invalid_uri_bytes_result_in_error() {
-        // raw space is typically invalid in URIs, expect parse error propagated
+        // raw control bytes are always rejected (even by the native graceful
+        // parser, unlike a bare space), so the parse error is propagated.
         let fmt = mk("/bad/$1");
-        let err = render(&fmt, &[b"has space"]).unwrap_err();
+        let err = render(&fmt, &[b"has\nbreak"]).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("parse formatted bytes as Uri")

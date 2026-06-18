@@ -4,10 +4,6 @@
 
 use crate::Protocol;
 use crate::address::{HostWithOptPort, HostWithPort};
-use crate::http::RequestContext;
-use rama_core::error::BoxError;
-use rama_http_types::request::Parts;
-use rama_http_types::{Request, Version};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context as relevant to the transport layer,
@@ -18,9 +14,6 @@ pub struct TransportContext {
 
     /// The [`Protocol`] of the application layer, if known.
     pub app_protocol: Option<Protocol>,
-
-    /// The [`Version`] if the application layer is http.
-    pub http_version: Option<Version>,
 
     /// The authority of the target,
     /// from where this comes depends on the kind of
@@ -35,12 +28,7 @@ impl TransportContext {
             .authority
             .port
             .as_u16()
-            .or_else(|| self.app_protocol.as_ref().and_then(|p| p.default_port()))
-            .or_else(|| {
-                self.http_version
-                    .is_some()
-                    .then_some(Protocol::HTTP_DEFAULT_PORT)
-            })?;
+            .or_else(|| self.app_protocol.as_ref().and_then(|p| p.default_port()))?;
         let host = self.authority.host.clone();
         Some(HostWithPort { host, port })
     }
@@ -68,22 +56,4 @@ pub trait TryRefIntoTransportContext {
 
     /// Try to turn the reference to self within the given context into the TransportContext.
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error>;
-}
-
-impl TryFrom<&Parts> for TransportContext {
-    type Error = BoxError;
-
-    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
-        let req_ctx = RequestContext::try_from(parts)?;
-        Ok(req_ctx.into())
-    }
-}
-
-impl<Body> TryFrom<&Request<Body>> for TransportContext {
-    type Error = BoxError;
-
-    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
-        let req_ctx = RequestContext::try_from(req)?;
-        Ok(req_ctx.into())
-    }
 }

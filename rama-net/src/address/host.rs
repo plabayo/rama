@@ -10,9 +10,6 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
-
 /// Either a [`Domain`], an [`IpAddr`], or [`UninterpretedHost`] bytes
 /// preserved verbatim from a URI authority.
 ///
@@ -844,26 +841,6 @@ fn try_from_host_str(s: &str) -> Result<Host, BoxError> {
     // with the URI parser's host shape.
     let host = UninterpretedHost::try_from_reg_name_str(s).context("parse host as reg-name")?;
     Ok(Host::Uninterpreted(host))
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<HeaderValue> for Host {
-    type Error = BoxError;
-
-    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
-        Self::try_from(&header)
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<&HeaderValue> for Host {
-    type Error = BoxError;
-
-    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
-        header.to_str().context("convert header to str")?.try_into()
-    }
 }
 
 impl TryFrom<Vec<u8>> for Host {
