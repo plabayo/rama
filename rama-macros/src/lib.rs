@@ -232,6 +232,9 @@ pub fn derive_extension(item: TokenStream) -> TokenStream {
 /// Self`, where each field uses the same lookup as `Extensions::get_ref` but the
 /// store is traversed only once.
 ///
+/// A rank is a completely opaque type and should only be used to compare positions,
+/// it does not tell anything about the absolute position.
+///
 /// On an enum, each variant is a one-field tuple variant naming a candidate
 /// type (`Variant(&'a T)` or `Variant(Arc<T>)`, optionally `Variant((&'a T,
 /// usize))`). Generates `fn from_extensions(ext: &Extensions) -> Option<Self>`

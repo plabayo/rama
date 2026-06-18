@@ -322,6 +322,9 @@ impl Extensions {
     /// visited is rank `0` and the count grows by one for every entry walked
     /// back (across wrappers and the parent chain). Comparing the ranks of two
     /// filled slots tells you which value was inserted more recently (0 = newest).
+    ///
+    /// A rank is a completely opaque type and should only be used to compare positions,
+    /// it does not tell anything about the absolute position.
     #[doc(hidden)]
     pub fn get_many_erased<'a, const N: usize>(
         &'a self,
