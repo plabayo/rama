@@ -164,23 +164,9 @@ pub(super) async fn http_request_to_fastcgi(
         .context("fastcgi: build SERVER_PROTOCOL from HTTP version")?;
 
     let method = parts.method.as_str().to_owned();
-    let path = parts
-        .uri
-        .path()
-        .map(|p| p.as_raw_str())
-        .unwrap_or("/")
-        .to_owned();
-    let query = parts
-        .uri
-        .query()
-        .map(|q| q.as_raw_str())
-        .unwrap_or("")
-        .to_owned();
-    let request_uri = if query.is_empty() {
-        path.clone()
-    } else {
-        format!("{path}?{query}")
-    };
+    let path = parts.uri.path_or_root().to_owned();
+    let query = parts.uri.query_or_empty().to_owned();
+    let request_uri = parts.uri.request_target().into_owned();
 
     let server = derive_server_info(req_ctx.as_ref());
     let scheme = if server.is_https {

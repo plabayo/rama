@@ -63,17 +63,15 @@ impl UriMatcher {
                 _ = write!(
                     &mut buffer,
                     "{}://{authority}{}",
-                    uri.scheme().map(|s| s.as_str()).unwrap_or("http"),
-                    uri.path().map(|p| p.as_raw_str()).unwrap_or("/")
+                    uri.scheme_str().unwrap_or("http"),
+                    uri.path_or_root()
                 );
                 while buffer.last() == Some(&b'/') {
                     _ = buffer.pop();
                 }
                 self.engine.is_match_bytes(&buffer)
             }
-            None => self
-                .engine
-                .is_match(uri.path().map(|p| p.as_raw_str()).unwrap_or("/")),
+            None => self.engine.is_match(uri.path_or_root()),
         }
     }
 }

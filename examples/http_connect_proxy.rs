@@ -141,7 +141,7 @@ async fn main() {
                             HttpMatcher::get("/*") => async move |req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
-                                    "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
+                                    "path": req.uri().path_or_root(),
                                     "username_labels": req.extensions().get_ref::<UsernameLabels>().map(|labels| &labels.0),
                                     "user_priority": req.extensions().get_ref::<Priority>().map(|p| match p {
                                         Priority::High => "high",

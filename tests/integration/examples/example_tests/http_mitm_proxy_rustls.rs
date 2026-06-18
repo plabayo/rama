@@ -24,7 +24,7 @@ async fn test_http_mitm_proxy() {
                 service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
-                        "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
+                        "path": req.uri().path_or_root(),
                     })))
                 }),
             )
@@ -48,7 +48,7 @@ async fn test_http_mitm_proxy() {
         service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),
-                "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
+                "path": req.uri().path_or_root(),
             })))
         }),
     ));

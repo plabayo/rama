@@ -1846,24 +1846,23 @@ impl proto::Peer for Peer {
 
         let uri = match path.as_deref() {
             // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
-            // scheme/authority context (a bare `*` when there is none).
-            Some("*") => match &authority {
+            // scheme/authority context from the typed components (a bare `*`
+            // when there is none).
+            Some("*") => match authority {
                 Some(authority) => {
-                    let scheme = scheme
-                        .as_ref()
-                        .map(rama_net::Protocol::as_str)
-                        .unwrap_or("http");
-                    match uri::Uri::parse(format!("{scheme}://{authority}")) {
-                        Ok(uri) => uri,
-                        Err(why) => malformed!("malformed headers: malformed uri: {}", why),
+                    let mut uri = uri::Uri::default().without_path();
+                    uri.set_authority(authority);
+                    if let Some(scheme) = scheme {
+                        uri.set_scheme(scheme);
                     }
+                    uri
                 }
                 None => uri::Uri::from_static("*"),
             },
             // origin-/absolute-form: parse the path, then graft the authority
             // (and scheme, which is only meaningful with an authority).
             Some(path) => {
-                let mut uri = match uri::Uri::parse(path.to_owned()) {
+                let mut uri = match uri::Uri::parse(path) {
                     Ok(uri) => uri,
                     Err(why) => {
                         malformed!("malformed headers: malformed path ({:?}): {}", path, why)

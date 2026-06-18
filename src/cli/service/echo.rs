@@ -756,7 +756,7 @@ impl Service<Request> for EchoService {
                 "scheme": scheme,
                 "method": format!("{:?}", parts.method),
                 "authority": authority,
-                "path": parts.uri.path().map(|p| p.as_raw_str()).unwrap_or("/").to_owned(),
+                "path": parts.uri.path_or_root().to_owned(),
                 "query": parts.uri.query().map(|q| q.as_raw_str().to_owned()),
                 "h2": h2,
                 "headers": headers,

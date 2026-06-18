@@ -1,7 +1,7 @@
 //! `Uri::path_mut()` — RAII guard for incremental path mutation.
 
 use super::parse_graceful;
-use crate::uri::Uri;
+use crate::uri::{PathMatchOptions, Uri};
 
 // ----------------------------------------------------------------------
 // push_segment — basic shapes
@@ -267,7 +267,7 @@ fn strip_prefix_shapes() {
     for (start, prefix, want_stripped, want_path) in [
         ("/foo/bar", "foo", true, "/bar"),
         ("/foo/bar", "/foo/", true, "/bar"), // slashes on prefix ignored
-        ("/foo/bar", "foo/b", true, "/ar"),  // match may land mid-segment
+        ("/foo/bar", "foo/b", false, "/foo/bar"), // mid-segment rejected (boundary)
         ("/foo/bar", "foo/bar", true, "/"),
         ("/foo", "foo", true, "/"),
         ("/foo/bar", "bar", false, "/foo/bar"), // no match: unchanged
@@ -307,7 +307,11 @@ fn strip_prefix_ignore_ascii_case_matches_mixed_case() {
         ("/foo/bar", "baz", false, "/foo/bar"),
     ] {
         let mut uri: Uri = parse_graceful(start).unwrap();
-        let stripped = uri.path_mut().strip_prefix_ignore_ascii_case(prefix);
+        let opts = PathMatchOptions {
+            ignore_ascii_case: true,
+            ..Default::default()
+        };
+        let stripped = uri.path_mut().strip_prefix_with_opts(prefix, opts);
         assert_eq!(stripped, want_stripped, "start={start:?} prefix={prefix:?}");
         assert_eq!(
             uri.path().unwrap().as_raw_str(),

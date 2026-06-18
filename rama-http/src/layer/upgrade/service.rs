@@ -125,9 +125,9 @@ where
                         otel.kind = "server",
                         http.request.method = %request.method().as_str(),
                         url.full = %request.uri(),
-                        url.path = %request.uri().path().map(|p| p.as_raw_str()).unwrap_or_default(),
-                        url.query = request.uri().query().map(|q| q.as_raw_str()).unwrap_or_default(),
-                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        url.path = %request.uri().path_or_root(),
+                        url.query = request.uri().query_or_empty(),
+                        url.scheme = %request.uri().scheme_str().unwrap_or_default(),
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),
                     );

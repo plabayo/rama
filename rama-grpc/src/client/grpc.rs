@@ -281,15 +281,9 @@ impl GrpcConfig {
         let mut uri = self.origin.clone();
 
         // The gRPC origin carries scheme + authority (and optionally a base
-        // path); it has no query. Compute the full path as base-path + the
-        // fixed origin-form method path (e.g. `/package.Service/Method`).
-        let base_path = uri.path().map(|p| p.as_raw_str()).unwrap_or_default();
-        let full_path = if base_path.is_empty() || base_path == "/" {
-            path.to_owned()
-        } else {
-            format!("{base_path}{path}")
-        };
-        uri.set_path(full_path);
+        // path); it has no query. Append the fixed origin-form method path
+        // (e.g. `/package.Service/Method`) onto that base path.
+        uri.path_mut().push_segments(path);
 
         let mut request = request.into_http(
             uri,

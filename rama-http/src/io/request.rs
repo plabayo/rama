@@ -19,19 +19,9 @@ where
     if write_headers {
         w.write_all(
             format!(
-                "{} {}{} {:?}\r\n",
+                "{} {} {:?}\r\n",
                 parts.method,
-                parts
-                    .uri
-                    .path()
-                    .map(|p| p.as_raw_str())
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or("/"),
-                parts
-                    .uri
-                    .query()
-                    .map(|q| format!("?{}", q.as_raw_str()))
-                    .unwrap_or_default(),
+                parts.uri.request_target(),
                 parts.version
             )
             .as_bytes(),
@@ -50,7 +40,7 @@ where
                             format!(
                                 "[{}: {}]\r\n",
                                 header,
-                                parts.uri.scheme().map(|s| s.as_str()).unwrap_or("?")
+                                parts.uri.scheme_str().unwrap_or("?")
                             )
                             .as_bytes(),
                         )
@@ -73,17 +63,7 @@ where
                     }
                     PseudoHeader::Path => {
                         w.write_all(
-                            format!(
-                                "[{}: {}]\r\n",
-                                header,
-                                parts
-                                    .uri
-                                    .path()
-                                    .map(|p| p.as_raw_str())
-                                    .filter(|p| !p.is_empty())
-                                    .unwrap_or("/")
-                            )
-                            .as_bytes(),
+                            format!("[{}: {}]\r\n", header, parts.uri.path_or_root()).as_bytes(),
                         )
                         .await?;
                     }

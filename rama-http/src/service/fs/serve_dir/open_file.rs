@@ -556,7 +556,7 @@ async fn maybe_serve_directory(
     html_as_default_extension: bool,
     source: &DirSource,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
-    let uri_path = uri.path().map(|p| p.as_raw_str()).unwrap_or("/");
+    let uri_path = uri.path_or_root();
 
     // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
     let is_directory: Option<bool> = match source {
@@ -648,10 +648,6 @@ async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> Option<bool> {
 /// Append a trailing slash to a URI path for directory redirection.
 fn append_slash_on_path(mut uri: Uri) -> Result<Uri, OpenFileOutput> {
     // Scheme, authority and query are preserved; only the path gains a `/`.
-    let new_path = format!(
-        "{}/",
-        uri.path().map(|p| p.as_raw_str()).unwrap_or_default()
-    );
-    uri.set_path(new_path);
+    uri.ensure_path_trailing_slash();
     Ok(uri)
 }

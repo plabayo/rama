@@ -215,3 +215,208 @@ fn as_authority_form_projects_full_uri() {
     );
     assert!(Uri::parse("*").unwrap().as_authority_form().is_none());
 }
+
+#[test]
+fn ergonomic_accessors() {
+    let u = Uri::parse("https://example.com:8443/api/v2/users?q=1").unwrap();
+    assert_eq!(u.path_or_root(), "/api/v2/users");
+    assert_eq!(u.query_or_empty(), "q=1");
+    assert_eq!(u.scheme_str(), Some("https"));
+    assert_eq!(u.host_str().as_deref(), Some("example.com"));
+    assert_eq!(u.request_target(), "/api/v2/users?q=1");
+    assert!(u.has_path_prefix("/api"));
+    assert!(u.has_path_suffix("/users"));
+    assert_eq!(u.path_segment(0).map(|s| s.as_raw_str()), Some("api"));
+    assert_eq!(u.path_segment(2).map(|s| s.as_raw_str()), Some("users"));
+    assert!(u.path_segment(3).is_none());
+
+    // empty / absent path defaults
+    let u = Uri::parse("http://example.com").unwrap();
+    assert_eq!(u.path_or_root(), "/");
+    assert_eq!(u.query_or_empty(), "");
+    assert_eq!(u.request_target(), "/");
+    assert!(!u.has_path_suffix("/x"));
+
+    // origin-form
+    let u = Uri::parse("/foo/bar").unwrap();
+    assert_eq!(u.request_target(), "/foo/bar");
+    assert_eq!(u.scheme_str(), None);
+    assert_eq!(u.host_str(), None);
+}
+
+#[test]
+fn ensure_path_trailing_slash_works() {
+    let mut u = Uri::parse("http://example.com/dir").unwrap();
+    u.ensure_path_trailing_slash();
+    assert_eq!(u.path_or_root(), "/dir/");
+    // idempotent
+    u.ensure_path_trailing_slash();
+    assert_eq!(u.path_or_root(), "/dir/");
+    // query preserved
+    let mut u = Uri::parse("http://example.com/dir?x=1").unwrap();
+    u.ensure_path_trailing_slash();
+    assert_eq!(u.request_target(), "/dir/?x=1");
+}
+
+#[cfg(test)]
+mod path_match {
+    use crate::uri::{PathMatchOptions, Uri};
+
+    fn uri(s: &str) -> Uri {
+        Uri::parse(s).unwrap()
+    }
+
+    #[test]
+    fn has_prefix_boundary_default() {
+        let u = uri("https://example.com/api/v2/users");
+        assert!(u.has_path_prefix("/api"));
+        assert!(u.has_path_prefix("api")); // leading slash optional
+        assert!(u.has_path_prefix("/api/v2"));
+        assert!(u.has_path_prefix("")); // empty matches
+        assert!(u.has_path_prefix("/api/v2/users")); // whole path
+        // mid-segment rejected at boundary
+        assert!(!u.has_path_prefix("/ap"));
+        assert!(!u.has_path_prefix("/api/v")); // partial last segment
+        assert!(!uri("https://example.com/apixyz").has_path_prefix("/api"));
+    }
+
+    #[test]
+    fn has_prefix_partial() {
+        let opts = PathMatchOptions {
+            partial: true,
+            ..Default::default()
+        };
+        let u = uri("https://example.com/apixyz/v2");
+        assert!(u.has_path_prefix_with_opts("/api", opts));
+        assert!(u.has_path_prefix_with_opts("/apixyz/v", opts));
+        assert!(!u.has_path_prefix_with_opts("/xyz", opts));
+    }
+
+    #[test]
+    fn has_suffix_boundary_and_partial() {
+        let u = uri("https://example.com/api/style.css");
+        // boundary: whole last segment
+        assert!(u.has_path_suffix("style.css"));
+        assert!(u.has_path_suffix("api/style.css"));
+        assert!(!u.has_path_suffix(".css")); // mid-segment rejected
+        assert!(!u.has_path_suffix("le.css"));
+        // partial: byte suffix
+        let partial = PathMatchOptions {
+            partial: true,
+            ..Default::default()
+        };
+        assert!(u.has_path_suffix_with_opts(".css", partial));
+        assert!(u.has_path_suffix_with_opts("le.css", partial));
+        assert!(!u.has_path_suffix_with_opts(".png", partial));
+    }
+
+    #[test]
+    fn percent_decode_default_on() {
+        let u = uri("https://example.com/foo%20bar/baz");
+        // normalized: decoded "foo bar" matches both decoded and encoded patterns
+        assert!(u.has_path_prefix("/foo bar"));
+        assert!(u.has_path_prefix("/foo%20bar"));
+        // opt out of decoding → only the raw byte form matches
+        let raw = PathMatchOptions {
+            percent_decode: false,
+            ..Default::default()
+        };
+        assert!(!u.has_path_prefix_with_opts("/foo bar", raw));
+        assert!(u.has_path_prefix_with_opts("/foo%20bar", raw));
+        // encoded slash stays in-segment (no phantom separator)
+        assert!(!uri("https://example.com/a%2Fb/c").has_path_prefix("/a/b"));
+    }
+
+    #[test]
+    fn ignore_ascii_case_opt() {
+        let u = uri("https://example.com/API/v2");
+        assert!(!u.has_path_prefix("/api"));
+        let ci = PathMatchOptions {
+            ignore_ascii_case: true,
+            ..Default::default()
+        };
+        assert!(u.has_path_prefix_with_opts("/api", ci));
+        assert!(u.has_path_prefix_with_opts("/API", ci));
+    }
+
+    #[test]
+    fn strip_prefix_boundary_and_partial() {
+        let mut u = uri("https://example.com/api/v2/x");
+        assert!(u.path_mut().strip_prefix("/api"));
+        assert_eq!(u, "https://example.com/v2/x");
+
+        // boundary rejects mid-segment
+        let mut u = uri("https://example.com/api/v2");
+        assert!(!u.path_mut().strip_prefix("/ap"));
+        assert_eq!(u, "https://example.com/api/v2"); // unchanged
+
+        // partial allows mid-segment
+        let mut u = uri("https://example.com/api/v2");
+        let partial = PathMatchOptions {
+            partial: true,
+            ..Default::default()
+        };
+        assert!(u.path_mut().strip_prefix_with_opts("/ap", partial));
+        assert_eq!(u, "https://example.com/i/v2");
+    }
+
+    #[test]
+    fn strip_suffix_works() {
+        let mut u = uri("https://example.com/a/b/c");
+        assert!(u.path_mut().strip_suffix("c"));
+        assert_eq!(u, "https://example.com/a/b");
+
+        let mut u = uri("https://example.com/a/b/c");
+        assert!(u.path_mut().strip_suffix("b/c"));
+        assert_eq!(u, "https://example.com/a");
+
+        // boundary rejects mid-segment suffix
+        let mut u = uri("https://example.com/a/bc");
+        assert!(!u.path_mut().strip_suffix("c"));
+        assert_eq!(u, "https://example.com/a/bc");
+
+        // partial allows it
+        let mut u = uri("https://example.com/a/bc");
+        let partial = PathMatchOptions {
+            partial: true,
+            ..Default::default()
+        };
+        assert!(u.path_mut().strip_suffix_with_opts("c", partial));
+        assert_eq!(u, "https://example.com/a/b");
+    }
+
+    #[test]
+    fn has_and_strip_agree() {
+        // The check and the strip must use identical matching.
+        let cases = ["/api/v2", "/apixyz", "/a/b/c", "/", "/foo%20bar/x"];
+        let patterns = ["/api", "api", "/a/b", "ap", "/foo bar"];
+        for opts in [
+            PathMatchOptions::default(),
+            PathMatchOptions {
+                partial: true,
+                ..Default::default()
+            },
+            PathMatchOptions {
+                ignore_ascii_case: true,
+                ..Default::default()
+            },
+            PathMatchOptions {
+                percent_decode: false,
+                ..Default::default()
+            },
+        ] {
+            for path in cases {
+                for pat in patterns {
+                    let u = uri(&format!("http://h{path}"));
+                    let has = u.has_path_prefix_with_opts(pat, opts);
+                    let mut s = u.clone();
+                    let stripped = s.path_mut().strip_prefix_with_opts(pat, opts);
+                    assert_eq!(
+                        has, stripped,
+                        "disagree for path={path:?} pat={pat:?} opts={opts:?}"
+                    );
+                }
+            }
+        }
+    }
+}

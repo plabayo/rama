@@ -25,10 +25,11 @@ pub fn try_to_strip_path_prefix_from_uri(
     prefix: impl AsRef<str>,
 ) -> Result<Uri, BoxError> {
     let mut uri = uri.clone();
-    if uri
-        .path_mut()
-        .strip_prefix_ignore_ascii_case(prefix.as_ref())
-    {
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..Default::default()
+    };
+    if uri.path_mut().strip_prefix_with_opts(prefix.as_ref(), opts) {
         Ok(uri)
     } else {
         Err(BoxError::from_static_str(
@@ -80,11 +81,9 @@ mod tests {
                 Some("https://example.com/BAR"),
             ),
             ("https://example.com/foo/bar", "bar", None),
-            (
-                "https://example.com/foo/bar",
-                "foo/b",
-                Some("https://example.com/ar"),
-            ),
+            // mid-segment prefix is rejected: matching is segment-boundary by
+            // default (`foo/b` is not a `/`-aligned prefix of `/foo/bar`).
+            ("https://example.com/foo/bar", "foo/b", None),
         ] {
             let input_uri: Uri = input_uri_str.parse().unwrap();
             match (

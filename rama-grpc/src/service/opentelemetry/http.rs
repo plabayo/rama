@@ -171,12 +171,9 @@ where
 }
 
 fn append_signal_path(mut base: Uri, signal_path: &str) -> Result<Uri, OtelExporterConfigError> {
-    // Join the per-signal path onto the base endpoint's path, dropping any
-    // trailing `/` so we never produce a `//`. `set_path` preserves the query.
-    let base_path = base.path().map(|p| p.as_raw_str()).unwrap_or("/");
-    let mut joined_path = base_path.trim_end_matches('/').to_owned();
-    joined_path.push_str(signal_path);
-    base.set_path(joined_path);
+    // Append the per-signal path segments onto the base endpoint's path
+    // (segment-aware, so no `//` is produced; the query is preserved).
+    base.path_mut().push_segments(signal_path);
     Ok(base)
 }
 

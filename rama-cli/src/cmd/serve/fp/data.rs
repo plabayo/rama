@@ -212,12 +212,7 @@ pub(super) async fn get_request_info(
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: req
-            .uri()
-            .path()
-            .map(|p| p.as_raw_str())
-            .unwrap_or("/")
-            .to_owned(),
+        path: req.uri().path_or_root().to_owned(),
         uri: req.uri().to_string(),
         peer_addr: req
             .extensions()

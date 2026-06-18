@@ -294,17 +294,13 @@ pub(super) fn uri_to_small_vec_with_buffer(
 
     output.clear();
 
-    let path = uri
-        .path()
-        .map(|p| p.as_raw_str())
-        .unwrap_or_default()
-        .trim_matches('/');
+    let path = uri.path_or_root().trim_matches('/');
 
     if let Some(authority) = uri.authority() {
         _ = write!(
             output,
             "{}://{authority}{}{path}{}{query}",
-            uri.scheme().map(|s| s.as_str()).unwrap_or("http"),
+            uri.scheme_str().unwrap_or("http"),
             if path.is_empty() { "" } else { "/" },
             if query.is_empty() { "" } else { "?" },
         );

@@ -1361,10 +1361,7 @@ async fn request_without_authority() {
     let srv = async move {
         let mut srv = server::handshake(io).await.expect("handshake");
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
-        assert_eq!(
-            req.uri().path().map(|p| p.as_raw_str()),
-            Some("/just-a-path")
-        );
+        assert_eq!(req.uri().path_or_root(), "/just-a-path");
 
         let rsp = Response::new(());
         stream.send_response(rsp, true).unwrap();

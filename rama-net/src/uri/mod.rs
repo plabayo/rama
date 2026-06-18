@@ -78,7 +78,7 @@ pub use input::IntoUriInput;
 
 mod path;
 #[doc(inline)]
-pub use path::{PathRef, PathSegment, PathSegments};
+pub use path::{PathMatchOptions, PathRef, PathSegment, PathSegments};
 
 mod path_mut;
 #[doc(inline)]
@@ -518,6 +518,114 @@ impl Uri {
                 ))
             }
         }
+    }
+
+    /// The raw path as a `&str`, defaulting to `"/"` when the path is
+    /// absent or empty (the effective origin-form path). Shortcut for
+    /// `uri.path().map(|p| p.as_raw_str()).filter(|p| !p.is_empty()).unwrap_or("/")`.
+    #[must_use]
+    pub fn path_or_root(&self) -> &str {
+        match self.path() {
+            Some(p) if !p.as_raw_str().is_empty() => p.as_raw_str(),
+            _ => "/",
+        }
+    }
+
+    /// The raw query as a `&str`, defaulting to `""` when absent. Shortcut
+    /// for `uri.query().map(|q| q.as_raw_str()).unwrap_or_default()`.
+    #[must_use]
+    pub fn query_or_empty(&self) -> &str {
+        self.query().map_or("", |q| q.as_raw_str())
+    }
+
+    /// The scheme as a `&str`, or `None`. Shortcut for
+    /// `uri.scheme().map(|p| p.as_str())`.
+    #[must_use]
+    pub fn scheme_str(&self) -> Option<&str> {
+        self.scheme().map(crate::Protocol::as_str)
+    }
+
+    /// The host rendered as a string, or `None`. Shortcut for
+    /// `uri.host().map(|h| h.to_str())`.
+    #[must_use]
+    pub fn host_str(&self) -> Option<Cow<'_, str>> {
+        self.host().map(|h| h.to_str())
+    }
+
+    /// The HTTP origin-form request-target: [`path_or_root`](Self::path_or_root)
+    /// followed by `?` + query when a query is present. Borrows when there
+    /// is no query (zero-alloc), otherwise allocates the joined string.
+    #[must_use]
+    pub fn request_target(&self) -> Cow<'_, str> {
+        match self.query() {
+            Some(q) => Cow::Owned(format!("{}?{}", self.path_or_root(), q.as_raw_str())),
+            None => Cow::Borrowed(self.path_or_root()),
+        }
+    }
+
+    /// `true` when the path begins with `prefix` — matched at `/` segment
+    /// boundaries with percent-decoded comparison (default [`PathMatchOptions`]).
+    /// See [`has_path_prefix_with_opts`](Self::has_path_prefix_with_opts) for
+    /// partial / raw / case-insensitive matching, and [`PathMut::strip_prefix`]
+    /// to remove it.
+    #[must_use]
+    pub fn has_path_prefix(&self, prefix: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.has_prefix(prefix))
+    }
+
+    /// [`has_path_prefix`](Self::has_path_prefix) with explicit [`PathMatchOptions`].
+    #[must_use]
+    pub fn has_path_prefix_with_opts(
+        &self,
+        prefix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.has_prefix_with_opts(prefix, opts))
+    }
+
+    /// `true` when the path ends with `suffix` — matched at `/` segment
+    /// boundaries with percent-decoded comparison (default [`PathMatchOptions`]).
+    #[must_use]
+    pub fn has_path_suffix(&self, suffix: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.has_suffix(suffix))
+    }
+
+    /// [`has_path_suffix`](Self::has_path_suffix) with explicit [`PathMatchOptions`].
+    #[must_use]
+    pub fn has_path_suffix_with_opts(
+        &self,
+        suffix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.has_suffix_with_opts(suffix, opts))
+    }
+
+    /// The `n`-th path segment (0-indexed, `/`-delimited, leading `/`
+    /// ignored), or `None`. Shortcut for `uri.path()?.segments().nth(n)`.
+    #[must_use]
+    pub fn path_segment(&self, n: usize) -> Option<PathSegment<'_>> {
+        self.path().and_then(|p| p.segments().nth(n))
+    }
+
+    /// Deserialize the query string into `T` via `serde` (an absent query
+    /// deserializes as empty). Shortcut over [`Uri::query`] +
+    /// [`QueryRef::deserialize`].
+    pub fn query_params<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
+    where
+        T: serde::de::Deserialize<'de>,
+    {
+        let query = self.query().unwrap_or_else(|| QueryRef::new(b""));
+        query.deserialize()
+    }
+
+    /// Ensure the path ends with exactly one trailing `/` (appended when
+    /// missing; an empty path becomes `/`). Scheme, authority and query
+    /// are preserved.
+    pub fn ensure_path_trailing_slash(&mut self) -> &mut Self {
+        self.path_mut().ensure_trailing_slash();
+        self
     }
 
     /// Internal constructor for the asterisk variant.

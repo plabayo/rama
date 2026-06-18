@@ -160,9 +160,7 @@ impl OriginOrNull {
         let scheme = uri.scheme()?.clone();
         let auth = uri.authority()?.into_owned();
 
-        let path_ok = uri
-            .path()
-            .is_none_or(|p| p.as_bytes().is_empty() || p.as_bytes() == b"/");
+        let path_ok = uri.path_or_root() == "/";
         if !path_ok || uri.query().is_some() || uri.fragment().is_some() {
             return None;
         }

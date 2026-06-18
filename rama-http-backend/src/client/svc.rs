@@ -179,12 +179,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 //
                 // NOTE: once we fork hyper we can just handle it there, as there
                 // is no valid reason for that encoding every to be empty... *sigh*
-                if parts
-                    .uri
-                    .path()
-                    .map(|p| p.as_raw_str().is_empty())
-                    .unwrap_or(true)
-                {
+                if parts.uri.path().is_none_or(|p| p.as_bytes().is_empty()) {
                     parts.uri.set_path("/");
                 }
 
@@ -337,10 +332,7 @@ mod tests {
         let (parts, _) = req.into_parts();
 
         assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTPS));
-        assert_eq!(
-            parts.uri.host().map(|h| h.to_string()),
-            Some("example.com".to_owned())
-        );
+        assert_eq!(parts.uri.host_str().as_deref(), Some("example.com"));
     }
 
     #[test]
@@ -360,10 +352,7 @@ mod tests {
         let (parts, _) = req.into_parts();
 
         assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTP));
-        assert_eq!(
-            parts.uri.host().map(|h| h.to_string()),
-            Some("example.com".to_owned())
-        );
+        assert_eq!(parts.uri.host_str().as_deref(), Some("example.com"));
     }
 
     #[test]

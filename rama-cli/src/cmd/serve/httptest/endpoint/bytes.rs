@@ -21,10 +21,17 @@ const MAX_DELAY_MS: u64 = 60_000;
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     MapResponseBodyLayer::new_boxed_streaming_body().into_layer(service_fn(async |req: Request| {
-        let params = match parse_params(req.uri().query().map(|q| q.as_raw_str())) {
+        let params: BytesParams = match req.uri().query_params() {
             Ok(p) => p,
-            Err(err) => return Ok::<_, Infallible>((StatusCode::BAD_REQUEST, err).into_response()),
+            Err(_) => {
+                return Ok::<_, Infallible>(
+                    (StatusCode::BAD_REQUEST, "invalid query parameters").into_response(),
+                );
+            }
         };
+        if let Err(err) = params.validate() {
+            return Ok::<_, Infallible>((StatusCode::BAD_REQUEST, err).into_response());
+        }
 
         let delay = Duration::from_millis(params.delay_ms);
         let chunk_size = params.chunk;
@@ -52,69 +59,38 @@ pub(in crate::cmd::serve::httptest) fn service()
     }))
 }
 
+#[derive(Debug, serde::Deserialize)]
 struct BytesParams {
+    #[serde(default = "default_bytes")]
     size: u64,
+    #[serde(default = "default_chunk")]
     chunk: usize,
+    #[serde(default)]
     delay_ms: u64,
 }
 
-fn parse_params(query: Option<&str>) -> Result<BytesParams, &'static str> {
-    let mut size = None::<u64>;
-    let mut chunk = None::<usize>;
-    let mut delay_ms = None::<u64>;
+fn default_bytes() -> u64 {
+    DEFAULT_BYTES
+}
 
-    if let Some(query) = query {
-        for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                match key {
-                    "size" => {
-                        size = Some(
-                            value
-                                .parse::<u64>()
-                                .map_err(|_e| "invalid size query parameter")?,
-                        );
-                    }
-                    "chunk" => {
-                        chunk = Some(
-                            value
-                                .parse::<usize>()
-                                .map_err(|_e| "invalid chunk query parameter")?,
-                        );
-                    }
-                    "delay_ms" => {
-                        delay_ms = Some(
-                            value
-                                .parse::<u64>()
-                                .map_err(|_e| "invalid delay_ms query parameter")?,
-                        );
-                    }
-                    _ => {}
-                }
-            }
+fn default_chunk() -> usize {
+    DEFAULT_CHUNK
+}
+
+impl BytesParams {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.size > MAX_BYTES {
+            return Err("size exceeds maximum allowed payload");
         }
+        if self.chunk == 0 {
+            return Err("chunk must be greater than zero");
+        }
+        if self.chunk > MAX_CHUNK {
+            return Err("chunk exceeds maximum allowed chunk size");
+        }
+        if self.delay_ms > MAX_DELAY_MS {
+            return Err("delay_ms exceeds maximum allowed delay");
+        }
+        Ok(())
     }
-
-    let size = size.unwrap_or(DEFAULT_BYTES);
-    if size > MAX_BYTES {
-        return Err("size exceeds maximum allowed payload");
-    }
-
-    let chunk = chunk.unwrap_or(DEFAULT_CHUNK);
-    if chunk == 0 {
-        return Err("chunk must be greater than zero");
-    }
-    if chunk > MAX_CHUNK {
-        return Err("chunk exceeds maximum allowed chunk size");
-    }
-
-    let delay_ms = delay_ms.unwrap_or(0);
-    if delay_ms > MAX_DELAY_MS {
-        return Err("delay_ms exceeds maximum allowed delay");
-    }
-
-    Ok(BytesParams {
-        size,
-        chunk,
-        delay_ms,
-    })
 }

@@ -117,6 +117,26 @@ impl_integer!(
     i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
 );
 
+impl sealed::Sealed for super::path::PathRef<'_> {
+    fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self.as_bytes())
+    }
+    fn into_uri_component_bytes_mut(self) -> BytesMut {
+        BytesMut::from(self.as_bytes())
+    }
+}
+impl IntoUriComponent for super::path::PathRef<'_> {}
+
+impl sealed::Sealed for super::path::PathSegment<'_> {
+    fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self.as_bytes())
+    }
+    fn into_uri_component_bytes_mut(self) -> BytesMut {
+        BytesMut::from(self.as_bytes())
+    }
+}
+impl IntoUriComponent for super::path::PathSegment<'_> {}
+
 impl sealed::Sealed for bool {
     fn as_uri_component_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Borrowed(if *self { b"true" } else { b"false" })

@@ -9,6 +9,7 @@ use rama_core::bytes::BytesMut;
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
+use super::path::{PathMatchOptions, match_prefix_in_body, match_suffix_in_body};
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
 ///
@@ -83,6 +84,15 @@ impl<'a> PathMut<'a> {
         self
     }
 
+    /// Ensure the path ends with exactly one trailing `/`: appended when
+    /// missing, left alone when already present. An empty path becomes `/`.
+    pub fn ensure_trailing_slash(&mut self) -> &mut Self {
+        if !self.owned.path.ends_with(b"/") {
+            self.owned.path.extend_from_slice(b"/");
+        }
+        self
+    }
+
     /// Append multiple `/`-delimited segments at once.
     ///
     /// Splits the input on `/` and pushes each piece via
@@ -119,56 +129,36 @@ impl<'a> PathMut<'a> {
         removed
     }
 
-    /// Strip a leading prefix from the path, re-rooting the remainder
-    /// with a single leading `/`. Matching is **case-sensitive** (RFC
-    /// 3986 paths are case-sensitive); see
-    /// [`strip_prefix_ignore_ascii_case`](Self::strip_prefix_ignore_ascii_case)
-    /// for the case-insensitive variant.
+    /// Strip a leading `prefix` from the path, re-rooting the remainder with
+    /// a single leading `/`. Matching uses the default [`PathMatchOptions`]
+    /// (segment-boundary, percent-decoded, case-sensitive); see
+    /// [`strip_prefix_with_opts`](Self::strip_prefix_with_opts) to allow
+    /// partial / raw / case-insensitive matching.
     ///
-    /// The comparison is on the raw (percent-encoded) bytes. The path's
-    /// leading `/` and any leading/trailing `/` on `prefix` are ignored,
-    /// and the match may land mid-segment: `/foo/bar` with prefix `foo`
-    /// (or `/foo/`) becomes `/bar`, and prefix `foo/b` becomes `/ar`.
-    ///
-    /// Returns `true` when the prefix matched and was removed; on no
-    /// match the path is left unchanged and `false` is returned.
+    /// Returns `true` when the prefix matched and was removed; otherwise the
+    /// path is left unchanged and `false` is returned.
     pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
-        self.strip_prefix_inner(prefix, false)
+        self.strip_prefix_with_opts(prefix, PathMatchOptions::default())
     }
 
-    /// Like [`strip_prefix`](Self::strip_prefix) but compares the prefix
-    /// case-insensitively for ASCII bytes (`A-Z` ≡ `a-z`), e.g.
-    /// `/FOO/bar` with prefix `foo` becomes `/bar`. Non-ASCII bytes
-    /// still compare exactly.
-    ///
-    /// Returns `true` when the prefix matched and was removed.
-    pub fn strip_prefix_ignore_ascii_case(&mut self, prefix: impl IntoUriComponent) -> bool {
-        self.strip_prefix_inner(prefix, true)
-    }
-
+    /// [`strip_prefix`](Self::strip_prefix) with explicit [`PathMatchOptions`].
     #[expect(
         clippy::needless_pass_by_value,
         reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
     )]
-    fn strip_prefix_inner(
+    pub fn strip_prefix_with_opts(
         &mut self,
         prefix: impl IntoUriComponent,
-        ignore_ascii_case: bool,
+        opts: PathMatchOptions,
     ) -> bool {
-        let prefix_bytes = prefix.as_uri_component_bytes();
-        let prefix = trim_ascii_slashes(&prefix_bytes);
+        let prefix = prefix.as_uri_component_bytes();
         let new = {
             let path: &[u8] = &self.owned.path;
             let body = path.strip_prefix(b"/").unwrap_or(path);
-            let matches = if ignore_ascii_case {
-                body.len() >= prefix.len() && body[..prefix.len()].eq_ignore_ascii_case(prefix)
-            } else {
-                body.starts_with(prefix)
-            };
-            if !matches {
+            let Some(offset) = match_prefix_in_body(body, &prefix, opts) else {
                 return false;
-            }
-            let mut rest = &body[prefix.len()..];
+            };
+            let mut rest = &body[offset..];
             while let Some(stripped) = rest.strip_prefix(b"/") {
                 rest = stripped;
             }
@@ -180,17 +170,42 @@ impl<'a> PathMut<'a> {
         self.owned.path = new;
         true
     }
-}
 
-/// Trim all leading and trailing `/` bytes from a slice.
-fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
-    while let Some(rest) = bytes.strip_prefix(b"/") {
-        bytes = rest;
+    /// Strip a trailing `suffix` from the path, keeping a single leading `/`.
+    /// Matching uses the default [`PathMatchOptions`]; see
+    /// [`strip_suffix_with_opts`](Self::strip_suffix_with_opts) for the rest.
+    ///
+    /// Returns `true` when the suffix matched and was removed.
+    pub fn strip_suffix(&mut self, suffix: impl IntoUriComponent) -> bool {
+        self.strip_suffix_with_opts(suffix, PathMatchOptions::default())
     }
-    while let Some(rest) = bytes.strip_suffix(b"/") {
-        bytes = rest;
+
+    /// [`strip_suffix`](Self::strip_suffix) with explicit [`PathMatchOptions`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
+    )]
+    pub fn strip_suffix_with_opts(
+        &mut self,
+        suffix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let suffix = suffix.as_uri_component_bytes();
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let body = path.strip_prefix(b"/").unwrap_or(path);
+            let Some(keep) = match_suffix_in_body(body, &suffix, opts) else {
+                return false;
+            };
+            let kept = &body[..keep];
+            let mut new = BytesMut::with_capacity(kept.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(kept);
+            new
+        };
+        self.owned.path = new;
+        true
     }
-    bytes
 }
 
 impl std::fmt::Debug for PathMut<'_> {

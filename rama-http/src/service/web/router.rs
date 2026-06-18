@@ -647,13 +647,7 @@ where
     type Error = E;
 
     async fn serve(&self, req: Request) -> Result<Self::Output, Self::Error> {
-        let path = req
-            .uri()
-            .path()
-            .map(|p| p.as_raw_str())
-            .filter(|p| !p.is_empty())
-            .unwrap_or("/")
-            .to_lowercase_smolstr();
+        let path = req.uri().path_or_root().to_lowercase_smolstr();
 
         // Collect allowed methods when a path matches but no method matches.
         // Initialised here so it is visible after the if-let block and after
@@ -696,10 +690,7 @@ where
         if let Some(trie) = self.sub_services.as_ref() {
             let norm_path = parts
                 .uri
-                .path()
-                .map(|p| p.as_raw_str())
-                .filter(|p| !p.is_empty())
-                .unwrap_or("/")
+                .path_or_root()
                 .trim_matches('/')
                 .to_lowercase_smolstr();
             if let Some((prefix, sub_svc)) = trie
@@ -710,13 +701,7 @@ where
                     let fragment_count = matcher.fragment_count();
                     let mut pos = 0;
                     let mut fragment_index = 0;
-                    let path = parts
-                        .uri
-                        .path()
-                        .map(|p| p.as_raw_str())
-                        .filter(|p| !p.is_empty())
-                        .unwrap_or("/")
-                        .trim_matches('/');
+                    let path = parts.uri.path_or_root().trim_matches('/');
 
                     let offset = prefix.len().min(path.len());
                     let path = &path[offset..].trim_matches('/');

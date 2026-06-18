@@ -166,7 +166,7 @@ where
 }
 
 fn trim_trailing_slash(uri: &mut Uri) {
-    let path = uri.path().map(|p| p.as_raw_str()).unwrap_or_default();
+    let path = uri.path_or_root();
     if !path.ends_with('/') && !path.starts_with("//") {
         return;
     }
@@ -177,7 +177,7 @@ fn trim_trailing_slash(uri: &mut Uri) {
 }
 
 fn append_trailing_slash(uri: &mut Uri) {
-    let path = uri.path().map(|p| p.as_raw_str()).unwrap_or_default();
+    let path = uri.path_or_root();
     if path.ends_with('/') && !path.ends_with("//") {
         return;
     }

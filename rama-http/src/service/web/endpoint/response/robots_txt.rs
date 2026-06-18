@@ -561,7 +561,7 @@ fn user_agent_tokens(user_agent: &str) -> impl Iterator<Item = &str> {
 }
 
 fn uri_path_and_query(uri: &Uri) -> String {
-    let mut s = uri.path().map(|p| p.as_raw_str()).unwrap_or("/").to_owned();
+    let mut s = uri.path_or_root().to_owned();
     if let Some(query) = uri.query() {
         s.push('?');
         s.push_str(query.as_raw_str());

@@ -139,7 +139,7 @@ async fn main() {
                 ])),
             )
                 .into_layer(service_fn(async |req: Request| {
-                    let path = req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/");
+                    let path = req.uri().path_or_root();
                     if path.ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
