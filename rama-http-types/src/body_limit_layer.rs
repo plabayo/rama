@@ -1,5 +1,5 @@
 use rama_core::{Layer, Service, extensions::ExtensionsRef, io::Io};
-use rama_http_types::BodyLimit;
+use crate::BodyLimit;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 

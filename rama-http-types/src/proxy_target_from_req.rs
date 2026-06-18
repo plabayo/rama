@@ -2,7 +2,8 @@ use std::fmt;
 
 use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
 
-use crate::{http::RequestContext, proxy::ProxyTarget};
+use crate::request_context::RequestContext;
+use rama_net::proxy::ProxyTarget;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

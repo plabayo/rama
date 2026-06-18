@@ -3881,7 +3881,9 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "itertools 0.14.0",
  "itoa",
+ "md5",
  "memchr",
  "mime",
  "mime_guess",
@@ -3895,6 +3897,7 @@ dependencies = [
  "rand 0.10.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sync_wrapper",
  "tokio",
 ]

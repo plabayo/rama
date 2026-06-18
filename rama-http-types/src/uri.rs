@@ -5,6 +5,7 @@
 //! re-export.
 
 use rama_core::error::BoxError;
+use rama_core::error::BoxErrorExt as _;
 
 #[doc(inline)]
 pub use rama_net::uri::*;

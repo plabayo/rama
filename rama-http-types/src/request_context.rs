@@ -1,25 +1,22 @@
-use crate::address::{HostWithOptPort, HostWithPort};
-use crate::forwarded::Forwarded;
-use crate::proxy::ProxyTarget;
-use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
-use crate::{
-    Protocol,
-    address::{Domain, Host},
-};
+use rama_net::address::{Domain, Host, HostWithOptPort, HostWithPort};
+use rama_net::forwarded::Forwarded;
+use rama_net::proxy::ProxyTarget;
+use rama_net::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
+use rama_net::Protocol;
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
-use rama_http_types::request::Parts;
-use rama_http_types::{HttpRequestParts, Request};
-use rama_http_types::{Uri, Version};
+use crate::request::Parts;
+use crate::{HttpRequestParts, Request};
+use crate::{Uri, Version};
 
 #[cfg(feature = "tls")]
-use crate::tls::SecureTransport;
+use rama_net::tls::SecureTransport;
 
 #[cfg(feature = "tls")]
 fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
-    use crate::tls::client::ClientHelloExtension;
+    use rama_net::tls::client::ClientHelloExtension;
 
     t.client_hello().and_then(|h| {
         h.extensions().iter().find_map(|e| match e {
@@ -102,10 +99,11 @@ pub fn try_request_ctx_from_http_parts(
 
     let authority = uri
         .host()
-        .and_then(|h| Host::try_from(h).ok().map(|h| {
+        .map(|h| {
+            let h: Host = h.into_owned();
             tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
             (h, default_port).into()
-        }))
+        })
         .or_else(|| {
             parts
                 .extensions()
@@ -144,7 +142,7 @@ pub fn try_request_ctx_from_http_parts(
         })
         .or_else(|| {
             parts.headers()
-                .get(rama_http_types::header::HOST)
+                .get(crate::header::HOST)
                 .and_then(|host_header_value| {
                     HostWithOptPort::try_from(host_header_value.as_bytes()).ok()
                 })
@@ -160,11 +158,11 @@ pub fn try_request_ctx_from_http_parts(
         .get_ref::<Forwarded>()
         .and_then(|f| {
             f.client_version().map(|v| match v {
-                crate::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
-                crate::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
-                crate::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
-                crate::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
-                crate::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
+                rama_net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
+                rama_net::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
+                rama_net::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
+                rama_net::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
+                rama_net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
             })
         })
         .unwrap_or_else(|| parts.version());
@@ -178,7 +176,7 @@ pub fn try_request_ctx_from_http_parts(
 }
 
 fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
-    uri.scheme().map(Protocol::from).or_else(|| {
+    uri.scheme().cloned().or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
         // This is especially useful for marking a HTTPS server as HTTPS,
         // despite it not showing up anywhere due to a non-default port
@@ -220,7 +218,6 @@ impl From<RequestContext> for TransportContext {
                 TransportProtocol::Tcp
             },
             app_protocol: Some(value.protocol),
-            http_version: Some(value.http_version),
             authority: value.authority,
         }
     }
@@ -235,13 +232,30 @@ impl From<&RequestContext> for TransportContext {
                 TransportProtocol::Tcp
             },
             app_protocol: Some(value.protocol.clone()),
-            http_version: Some(value.http_version),
             authority: value.authority.clone(),
         }
     }
 }
 
-impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
+impl TryFrom<&Parts> for TransportContext {
+    type Error = BoxError;
+
+    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
+        let req_ctx = RequestContext::try_from(parts)?;
+        Ok(req_ctx.into())
+    }
+}
+
+impl<Body> TryFrom<&Request<Body>> for TransportContext {
+    type Error = BoxError;
+
+    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
+        let req_ctx = RequestContext::try_from(req)?;
+        Ok(req_ctx.into())
+    }
+}
+
+impl<Body> TryRefIntoTransportContext for crate::Request<Body> {
     type Error = BoxError;
 
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
@@ -249,7 +263,7 @@ impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
     }
 }
 
-impl TryRefIntoTransportContext for rama_http_types::request::Parts {
+impl TryRefIntoTransportContext for crate::request::Parts {
     type Error = BoxError;
 
     fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
@@ -260,9 +274,9 @@ impl TryRefIntoTransportContext for rama_http_types::request::Parts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
+    use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
     use rama_core::extensions::ExtensionsRef;
-    use rama_http_types::{Request, header::FORWARDED};
+    use crate::{Request, header::FORWARDED};
 
     #[test]
     fn test_request_context_from_request() {

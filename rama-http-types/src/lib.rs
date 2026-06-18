@@ -26,9 +26,10 @@ pub use body::{
 
 pub mod request;
 pub mod response;
+
+mod hyperium_bridge;
 pub use crate::dep::hyperium::http::method;
 pub use crate::dep::hyperium::http::status;
-pub use crate::dep::hyperium::http::version;
 
 #[doc(inline)]
 pub use crate::dep::hyperium::http::{Error, Result};
@@ -43,7 +44,42 @@ pub use crate::response::Response;
 #[doc(inline)]
 pub use crate::status::StatusCode;
 #[doc(inline)]
-pub use crate::version::Version;
+pub use rama_net::http::Version;
+
+pub mod version {
+    //! HTTP version type, owned by `rama-net`.
+
+    #[doc(inline)]
+    pub use rama_net::http::Version;
+}
+
+pub mod request_context;
+#[doc(inline)]
+pub use request_context::{RequestContext, try_request_ctx_from_http_parts};
+
+pub mod proxy_target_from_req;
+#[doc(inline)]
+pub use proxy_target_from_req::{
+    ProxyTargetFromRequestContext, ProxyTargetFromRequestContextLayer,
+};
+
+pub mod fingerprint;
+
+mod body_limit_layer;
+#[doc(inline)]
+pub use body_limit_layer::{BodyLimitLayer, BodyLimitService};
+
+pub mod stream {
+    //! Stream-oriented utilities layered on top of the HTTP request type.
+
+    pub mod matcher;
+}
+
+pub mod client {
+    //! Client-oriented utilities layered on top of the HTTP request type.
+
+    pub mod pool;
+}
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]

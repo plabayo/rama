@@ -125,8 +125,8 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
 
         let mut request = Self::new(body);
         *request.method_mut() = parts.method;
-        *request.uri_mut() = parts.uri;
-        *request.version_mut() = parts.version;
+        *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(parts.uri);
+        *request.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
         *request.headers_mut() = parts.headers;
         *request.extensions_mut() = hyper_extensions;
 
@@ -162,8 +162,8 @@ impl From<HyperiumParts> for Parts {
             extensions: rama_extensions,
             headers: value.headers,
             method: value.method,
-            uri: value.uri,
-            version: value.version,
+            uri: crate::hyperium_bridge::uri_from_hyperium(value.uri),
+            version: crate::hyperium_bridge::version_from_hyperium(value.version),
         }
     }
 }
@@ -707,7 +707,7 @@ impl Parts {
     fn new() -> Self {
         Self {
             method: Method::default(),
-            uri: Uri::default(),
+            uri: Uri::from_static("/"),
             version: Version::default(),
             headers: HeaderMap::default(),
             extensions: Extensions::default(),
@@ -752,7 +752,7 @@ impl Builder {
         Self {
             inner: Ok(Parts {
                 method: Method::default(),
-                uri: Uri::default(),
+                uri: Uri::from_static("/"),
                 version: Version::default(),
                 headers: HeaderMap::default(),
                 extensions: ext,

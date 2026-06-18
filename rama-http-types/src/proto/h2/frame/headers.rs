@@ -661,15 +661,22 @@ impl Continuation {
 
 impl Pseudo {
     pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
-        let parts = uri::Parts::from(uri);
+        // Helper: serialize a `BytesMut` writer closure into a `BytesStr`.
+        // Native `Uri` wire writers stream into a `BytesMut`; the pseudo
+        // fields hold `BytesStr`.
+        fn bytes_str_from(buf: BytesMut) -> BytesStr {
+            BytesStr::try_from(buf.freeze()).unwrap_or_else(|_| BytesStr::from_static(""))
+        }
 
         let (scheme, path) = if method == Method::CONNECT && protocol.is_none() {
+            // CONNECT (non-extended): no `:scheme`/`:path`.
             (None, None)
         } else {
-            let path = parts
-                .path_and_query
-                .map(|v| BytesStr::from(v.as_str()))
-                .unwrap_or(BytesStr::from_static(""));
+            // `:path` mirrors origin-form (empty path → `/`), except
+            // asterisk-form carries `*` (handled by `write_h2_path`).
+            let mut path_buf = BytesMut::new();
+            uri.write_h2_path(&mut path_buf);
+            let path = bytes_str_from(path_buf);
 
             let path = if !path.is_empty() {
                 path
@@ -679,12 +686,21 @@ impl Pseudo {
                 BytesStr::from_static("/")
             };
 
-            (parts.scheme, Some(path))
+            // `:scheme` is only present when the URI carries one.
+            let scheme = {
+                let mut scheme_buf = BytesMut::new();
+                match uri.write_h2_scheme(&mut scheme_buf) {
+                    Ok(()) => Some(bytes_str_from(scheme_buf)),
+                    Err(_) => None,
+                }
+            };
+
+            (scheme, Some(path))
         };
 
         let mut pseudo = Self {
             method: Some(method),
-            scheme: None,
+            scheme,
             authority: None,
             path,
             protocol,
@@ -692,15 +708,11 @@ impl Pseudo {
             order: PseudoHeaderOrder::default(),
         };
 
-        // If the URI includes a scheme component, add it to the pseudo headers
-        if let Some(ref scheme) = scheme {
-            pseudo.set_scheme(scheme);
-        }
-
         // If the URI includes an authority component, add it to the pseudo
-        // headers
-        if let Some(authority) = parts.authority {
-            pseudo.set_authority(BytesStr::from(authority.as_str()));
+        // headers.
+        let mut authority_buf = BytesMut::new();
+        if uri.write_h2_authority(&mut authority_buf).is_ok() {
+            pseudo.set_authority(bytes_str_from(authority_buf));
         }
 
         pseudo
