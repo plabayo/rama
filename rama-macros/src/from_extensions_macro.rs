@@ -262,6 +262,9 @@ fn expand_enum(
                 __offset: usize,
             ) -> ::core::option::Option<Self> {
                 let __candidates: [::core::option::Option<(Self, usize)>; #n] = [ #( #builders ),* ];
+                // `min_by_key` keeps the first of equal keys, so on a rank tie
+                // (only possible when two variants name the same type and thus
+                // resolve to the same entry) the earlier-declared variant wins.
                 ::core::iter::IntoIterator::into_iter(__candidates)
                     .flatten()
                     .min_by_key(|(_, __rank)| *__rank)
@@ -277,7 +280,10 @@ fn expand_enum(
             /// candidate type, lookup uses the same rule as `Extensions::get_ref`
             /// (newest-wins, walks wrappers and the parent chain). When several
             /// candidates are present the one with the lowest traversal rank
-            /// (newest) wins, returns `None` if none are present.
+            /// (newest) wins, returns `None` if none are present. If two variants
+            /// name the same type they resolve to the same entry (equal rank), the
+            /// tie is broken deterministically in favour of the earlier-declared
+            /// variant.
             pub fn from_extensions #fn_generics (
                 ext: & #lt #root::extensions::Extensions,
             ) -> ::core::option::Option<Self> {

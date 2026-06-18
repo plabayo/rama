@@ -1740,6 +1740,25 @@ mod tests {
         either: Option<AnyOf<'a>>,
     }
 
+    #[derive(Debug, PartialEq, Eq, FromExtensions)]
+    enum SameType<'a> {
+        First(&'a RequestId),
+        Second(&'a RequestId),
+    }
+
+    #[test]
+    fn derive_from_extensions_enum_same_type_ties_to_earlier_variant() {
+        // Both variants name `RequestId`, so they resolve to the same entry
+        // (equal rank), the tie breaks deterministically toward the earlier
+        // variant, `First`.
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        assert_eq!(
+            SameType::from_extensions(&ext),
+            Some(SameType::First(&RequestId(7)))
+        );
+    }
+
     #[test]
     fn derive_from_extensions_nested_group_field() {
         let ext = Extensions::new();

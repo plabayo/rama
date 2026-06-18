@@ -239,7 +239,8 @@ pub fn derive_extension(item: TokenStream) -> TokenStream {
 /// type (`Variant(&'a T)` or `Variant(Arc<T>)`, optionally `Variant((&'a T,
 /// usize))`). Generates `fn from_extensions(ext: &Extensions) -> Option<Self>`
 /// which returns the candidate inserted most recently (newest-wins by traversal
-/// rank), or `None` if none are present.
+/// rank), or `None` if none are present. If two variants name the same type the
+/// tie is broken deterministically in favour of the earlier declared variant.
 #[proc_macro_derive(FromExtensions)]
 pub fn derive_from_extensions(item: TokenStream) -> TokenStream {
     from_ref_macro::expand_with(item, from_extensions_macro::expand)
