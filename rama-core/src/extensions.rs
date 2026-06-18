@@ -315,12 +315,31 @@ impl Extensions {
     /// For each requested [`TypeId`] in `targets`, fill the matching slot in
     /// `out` with the newest matching entry, walking wrappers and the parent
     /// chain like [`Self::get_ref`]. Slots already `Some` are left untouched, so
-    /// callers may pre-fill or reuse the buffer. `targets[i]` fills `out[i]`
+    /// callers may pre-fill or reuse the buffer. `targets[i]` fills `out[i]`.
+    ///
+    /// Alongside the entry, each filled slot records its rank: the position of
+    /// the entry in this single newest to oldest traversal. The newest entry
+    /// visited is rank `0` and the count grows by one for every entry walked
+    /// back (across wrappers and the parent chain). Comparing the ranks of two
+    /// filled slots tells you which value was inserted more recently (0 = newest).
+    ///
+    /// A rank is a completely opaque type and should only be used to compare positions,
+    /// it does not tell anything about the absolute position.
     #[doc(hidden)]
     pub fn get_many_erased<'a, const N: usize>(
         &'a self,
         targets: &[TypeId; N],
-        out: &mut [Option<&'a TypeErasedExtension>; N],
+        out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
+    ) {
+        let mut rank = 0;
+        self.get_many_erased_ranked(targets, out, &mut rank);
+    }
+
+    fn get_many_erased_ranked<'a, const N: usize>(
+        &'a self,
+        targets: &[TypeId; N],
+        out: &mut [Option<(&'a TypeErasedExtension, usize)>; N],
+        rank: &mut usize,
     ) {
         let egress_id = TypeId::of::<Egress<Self>>();
         let ingress_id = TypeId::of::<Ingress<Self>>();
@@ -329,9 +348,11 @@ impl Extensions {
             return;
         }
         for ext in self.extensions.iter().rev() {
+            let current = *rank;
+            *rank += 1;
             for (i, &tid) in targets.iter().enumerate() {
                 if out[i].is_none() && ext.type_id == tid {
-                    out[i] = Some(ext);
+                    out[i] = Some((ext, current));
                     remaining -= 1;
 
                     if remaining == 0 {
@@ -343,7 +364,7 @@ impl Extensions {
             if ext.type_id == egress_id
                 && let Some(eg) = ext.downcast_ref::<Egress<Self>>()
             {
-                eg.0.get_many_erased(targets, out);
+                eg.0.get_many_erased_ranked(targets, out, rank);
                 remaining = out.iter().filter(|slot| slot.is_none()).count();
                 if remaining == 0 {
                     return;
@@ -351,7 +372,7 @@ impl Extensions {
             } else if ext.type_id == ingress_id
                 && let Some(ig) = ext.downcast_ref::<Ingress<Self>>()
             {
-                ig.0.get_many_erased(targets, out);
+                ig.0.get_many_erased_ranked(targets, out, rank);
                 remaining = out.iter().filter(|slot| slot.is_none()).count();
                 if remaining == 0 {
                     return;
@@ -361,7 +382,7 @@ impl Extensions {
         if remaining != 0
             && let Some(parent) = self.parent()
         {
-            parent.get_many_erased(targets, out);
+            parent.get_many_erased_ranked(targets, out, rank);
         }
     }
 
@@ -633,6 +654,29 @@ impl Extensions {
     }
 }
 
+/// Macro-support trait that lets a `#[derive(FromExtensions)]` group (e.g. an
+/// any-of enum) be folded into a parent's single pass instead of running its own
+/// traversal. Implemented by the derive, hidden and not part of the public API.
+///
+/// A group occupies [`Self::TARGETS`] consecutive slots in the shared buffers:
+/// [`Self::from_ext_targets`] writes its candidate [`TypeId`]s at `offset`, and
+/// after one [`Extensions::get_many_erased`] pass [`Self::from_ext_slots`] reads
+/// the same window back. Because ranks are global across the pass, newest-wins
+/// selection still holds across the whole struct.
+#[doc(hidden)]
+pub trait FromExtensionsGroup<'a>: Sized {
+    /// Number of slots this group occupies in the shared single pass.
+    const TARGETS: usize;
+    /// Write the group's candidate `TypeId`s into `targets[offset..offset + TARGETS]`.
+    fn from_ext_targets(targets: &mut [TypeId], offset: usize);
+    /// Build the group value from the filled slots `out[offset..offset + TARGETS]`,
+    /// or `None` if no candidate is present.
+    fn from_ext_slots(
+        out: &[Option<(&'a TypeErasedExtension, usize)>],
+        offset: usize,
+    ) -> Option<Self>;
+}
+
 /// Helper trait powering [`Extensions::get_many_ref`]: implemented for tuples of
 /// [`Extension`] types (up to arity 12).
 pub trait GetManyRef<'a>: Sized {
@@ -665,9 +709,9 @@ macro_rules! impl_get_many {
             const SEALED: seal::Seal = seal::Seal;
             fn get_many_ref(ext: &'a Extensions) -> Self::Output {
                 let targets = [$(TypeId::of::<$T>()),+];
-                let mut out: [Option<&'a TypeErasedExtension>; $n] = [None; $n];
+                let mut out: [Option<(&'a TypeErasedExtension, usize)>; $n] = [None; $n];
                 ext.get_many_erased(&targets, &mut out);
-                ($(out[$idx].and_then(TypeErasedExtension::downcast_ref::<$T>),)+)
+                ($(out[$idx].and_then(|(e, _)| e.downcast_ref::<$T>()),)+)
             }
         }
 
@@ -677,9 +721,9 @@ macro_rules! impl_get_many {
             const SEALED: seal::Seal = seal::Seal;
             fn get_many_arc(ext: &Extensions) -> Self::Output {
                 let targets = [$(TypeId::of::<$T>()),+];
-                let mut out: [Option<&TypeErasedExtension>; $n] = [None; $n];
+                let mut out: [Option<(&TypeErasedExtension, usize)>; $n] = [None; $n];
                 ext.get_many_erased(&targets, &mut out);
-                ($(out[$idx].and_then(TypeErasedExtension::cloned_downcast::<$T>),)+)
+                ($(out[$idx].and_then(|(e, _)| e.cloned_downcast::<$T>()),)+)
             }
         }
     };
@@ -1613,5 +1657,146 @@ mod tests {
         let view = AllArc::from_extensions(&ext);
         assert_eq!(view.id_ref.as_deref(), Some(&RequestId(7)));
         assert_eq!(view.sock_arc.as_deref(), Some(&ConnSocketInfo("a")));
+    }
+
+    #[derive(FromExtensions)]
+    struct RankedView<'a> {
+        id: Option<(&'a RequestId, usize)>,
+        sock: Option<(&'a ConnSocketInfo, usize)>,
+        toggle: Option<(&'a FeatureToggle, usize)>,
+    }
+
+    #[test]
+    fn derive_from_extensions_captures_rank() {
+        let ext = Extensions::new();
+        ext.insert(RequestId(7)); // oldest
+        ext.insert(ConnSocketInfo("a")); // newest
+
+        let view = RankedView::from_extensions(&ext);
+
+        assert_eq!(view.sock, Some((&ConnSocketInfo("a"), 0)));
+        assert_eq!(view.id, Some((&RequestId(7), 1)));
+        assert_eq!(view.toggle, None);
+
+        assert!(view.sock.unwrap().1 < view.id.unwrap().1);
+    }
+
+    #[test]
+    fn derive_from_extensions_rank_arc_variant() {
+        #[derive(FromExtensions)]
+        struct RankedArc {
+            id: Option<(Arc<RequestId>, usize)>,
+        }
+
+        let ext = Extensions::new();
+        ext.insert(ConnSocketInfo("a"));
+        ext.insert(RequestId(7));
+
+        let view = RankedArc::from_extensions(&ext);
+        let (id, rank) = view.id.expect("present");
+        assert_eq!(&*id, &RequestId(7));
+        assert_eq!(rank, 0);
+    }
+
+    #[derive(Debug, PartialEq, Eq, FromExtensions)]
+    enum AnyOf<'a> {
+        Req(&'a RequestId),
+        Sock(&'a ConnSocketInfo),
+    }
+
+    #[test]
+    fn derive_from_extensions_enum_newest_wins() {
+        let ext = Extensions::new();
+        ext.insert(ConnSocketInfo("a"));
+        ext.insert(RequestId(7));
+        assert_eq!(
+            AnyOf::from_extensions(&ext),
+            Some(AnyOf::Req(&RequestId(7)))
+        );
+
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+        assert_eq!(
+            AnyOf::from_extensions(&ext),
+            Some(AnyOf::Sock(&ConnSocketInfo("a")))
+        );
+
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        assert_eq!(
+            AnyOf::from_extensions(&ext),
+            Some(AnyOf::Req(&RequestId(7)))
+        );
+
+        let ext = Extensions::new();
+        ext.insert(FeatureToggle(true));
+        assert_eq!(AnyOf::from_extensions(&ext), None);
+    }
+
+    #[derive(FromExtensions)]
+    struct ConfigView<'a> {
+        toggle: Option<&'a FeatureToggle>,
+        either: Option<AnyOf<'a>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, FromExtensions)]
+    enum SameType<'a> {
+        First(&'a RequestId),
+        Second(&'a RequestId),
+    }
+
+    #[test]
+    fn derive_from_extensions_enum_same_type_ties_to_earlier_variant() {
+        // Both variants name `RequestId`, so they resolve to the same entry
+        // (equal rank), the tie breaks deterministically toward the earlier
+        // variant, `First`.
+        let ext = Extensions::new();
+        ext.insert(RequestId(7));
+        assert_eq!(
+            SameType::from_extensions(&ext),
+            Some(SameType::First(&RequestId(7)))
+        );
+    }
+
+    #[test]
+    fn derive_from_extensions_nested_group_field() {
+        let ext = Extensions::new();
+        ext.insert(FeatureToggle(true));
+        ext.insert(RequestId(7));
+        ext.insert(ConnSocketInfo("a"));
+
+        let view = ConfigView::from_extensions(&ext);
+        assert_eq!(view.toggle, Some(&FeatureToggle(true)));
+        assert_eq!(view.either, Some(AnyOf::Sock(&ConnSocketInfo("a"))));
+
+        let ext = Extensions::new();
+        ext.insert(FeatureToggle(false));
+        let view = ConfigView::from_extensions(&ext);
+        assert_eq!(view.toggle, Some(&FeatureToggle(false)));
+        assert_eq!(view.either, None);
+    }
+
+    #[test]
+    fn derive_from_extensions_enum_newest_wins_across_parent() {
+        let parent = Extensions::new();
+        parent.insert(RequestId(7));
+        let child = parent.fork();
+        child.insert(ConnSocketInfo("a"));
+
+        assert_eq!(
+            AnyOf::from_extensions(&child),
+            Some(AnyOf::Sock(&ConnSocketInfo("a")))
+        );
+
+        let parent = Extensions::new();
+        parent.insert(ConnSocketInfo("a"));
+        let child = parent.fork();
+        child.insert(RequestId(7));
+
+        assert_eq!(
+            AnyOf::from_extensions(&child),
+            Some(AnyOf::Req(&RequestId(7)))
+        );
     }
 }
