@@ -22,6 +22,7 @@ pub mod client_ip;
 pub mod conn;
 pub mod extensions;
 pub mod forwarded;
+pub mod input_ext;
 pub mod mode;
 pub mod proxy;
 pub mod stream;
@@ -33,6 +34,10 @@ pub(crate) mod byte_sets;
 pub(crate) mod proto;
 #[doc(inline)]
 pub use client_ip::ClientIp;
+#[doc(inline)]
+pub use input_ext::{
+    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
+};
 #[doc(inline)]
 pub use proto::Protocol;
 

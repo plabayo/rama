@@ -3,13 +3,16 @@ use crate::{HttpRequestParts, Request};
 use crate::{Uri, Version};
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
-use rama_core::extensions::{Extension, Extensions};
+use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_net::Protocol;
 use rama_net::address::{Domain, Host, HostWithOptPort, HostWithPort};
 use rama_net::forwarded::Forwarded;
 use rama_net::proxy::ProxyTarget;
 use rama_net::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
+use rama_net::{
+    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
+};
 
 #[cfg(feature = "tls")]
 use rama_net::tls::SecureTransport;
@@ -153,7 +156,19 @@ pub fn try_request_ctx_from_http_parts(
 
     tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
-    let http_version = parts
+    let http_version = http_version_from_http_parts(&parts);
+
+    Ok(RequestContext {
+        http_version,
+        protocol,
+        authority,
+    })
+}
+
+/// Resolve the HTTP [`Version`] from `parts`: the `Forwarded` client version
+/// when present, otherwise the request's own version.
+pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Version {
+    parts
         .extensions()
         .get_ref::<Forwarded>()
         .and_then(|f| {
@@ -165,14 +180,7 @@ pub fn try_request_ctx_from_http_parts(
                 rama_net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
             })
         })
-        .unwrap_or_else(|| parts.version());
-    tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
-
-    Ok(RequestContext {
-        http_version,
-        protocol,
-        authority,
-    })
+        .unwrap_or_else(|| parts.version())
 }
 
 fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
@@ -271,6 +279,74 @@ impl TryRefIntoTransportContext for crate::request::Parts {
     }
 }
 
+// --- per-concern accessor traits (replacing RequestContext field reads) ---
+
+impl<Body> AuthorityInputExt for Request<Body> {
+    fn authority(&self) -> Option<HostWithOptPort> {
+        try_request_ctx_from_http_parts(self)
+            .ok()
+            .map(|ctx| ctx.authority)
+    }
+}
+
+impl AuthorityInputExt for Parts {
+    fn authority(&self) -> Option<HostWithOptPort> {
+        try_request_ctx_from_http_parts(self)
+            .ok()
+            .map(|ctx| ctx.authority)
+    }
+}
+
+impl<Body> ProtocolInputExt for Request<Body> {
+    fn protocol(&self) -> Option<Protocol> {
+        Some(protocol_from_uri_or_extensions(
+            self.extensions(),
+            self.uri(),
+        ))
+    }
+}
+
+impl ProtocolInputExt for Parts {
+    fn protocol(&self) -> Option<Protocol> {
+        Some(protocol_from_uri_or_extensions(
+            self.extensions(),
+            self.uri(),
+        ))
+    }
+}
+
+impl<Body> HttpVersionInputExt for Request<Body> {
+    fn http_version(&self) -> Option<Version> {
+        Some(http_version_from_http_parts(self))
+    }
+}
+
+impl HttpVersionInputExt for Parts {
+    fn http_version(&self) -> Option<Version> {
+        Some(http_version_from_http_parts(self))
+    }
+}
+
+/// HTTP/3 rides on UDP; every other HTTP version on TCP.
+fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
+    match version {
+        Version::HTTP_3 => TransportProtocol::Udp,
+        _ => TransportProtocol::Tcp,
+    }
+}
+
+impl<Body> TransportProtocolInputExt for Request<Body> {
+    fn transport_protocol(&self) -> TransportProtocol {
+        transport_protocol_for_http_version(self.version())
+    }
+}
+
+impl TransportProtocolInputExt for Parts {
+    fn transport_protocol(&self) -> TransportProtocol {
+        transport_protocol_for_http_version(self.version())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,6 +367,26 @@ mod tests {
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
         assert_eq!(req_ctx.authority.to_string(), "example.com:8080");
+    }
+
+    #[test]
+    fn input_ext_accessors_match_request_context() {
+        let req = Request::builder()
+            .uri("https://example.com:8443")
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap();
+        let ctx = RequestContext::try_from(&req).unwrap();
+        assert_eq!(req.authority(), Some(ctx.authority));
+        assert_eq!(req.protocol(), Some(ctx.protocol));
+        assert_eq!(req.http_version(), Some(ctx.http_version));
+
+        // origin-form with no resolvable authority -> None, but protocol and
+        // version still resolve (they don't depend on the authority).
+        let req = Request::builder().uri("/path").body(()).unwrap();
+        assert_eq!(req.authority(), None);
+        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        assert_eq!(req.http_version(), Some(Version::HTTP_11));
     }
 
     #[test]
