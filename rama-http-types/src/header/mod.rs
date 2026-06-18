@@ -58,7 +58,14 @@
     clippy::unreachable,
     clippy::get_unwrap,
     clippy::assertions_on_result_states,
-    clippy::str_to_string
+    clippy::str_to_string,
+    clippy::let_underscore_must_use,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::unnecessary_safety_comment,
+    clippy::map_err_ignore,
+    dead_code,
+    mismatched_lifetime_syntaxes,
+    unsafe_op_in_unsafe_fn
 )]
 
 mod map;

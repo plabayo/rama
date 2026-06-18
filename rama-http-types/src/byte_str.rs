@@ -8,7 +8,17 @@
     clippy::perf,
     clippy::suspicious,
     clippy::pedantic,
-    clippy::nursery
+    clippy::nursery,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::get_unwrap,
+    clippy::let_underscore_must_use,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::unnecessary_safety_comment,
+    dead_code,
+    unsafe_op_in_unsafe_fn
 )]
 
 use bytes::Bytes;

@@ -1287,8 +1287,8 @@ mod tests {
         assert_eq!(hyper_request.method().as_str(), method.as_str());
         assert_eq!(*hyper_request.body(), body);
         assert_eq!(
-            hyper_request.headers().get(header_key).unwrap(),
-            header_value
+            hyper_request.headers().get(header_key).unwrap().as_bytes(),
+            header_value.as_bytes()
         );
 
         // Rama extensions are wrapped into RamaExtensions so we can restore them later,

@@ -121,6 +121,7 @@ flume = "0.12"
 fnv = "1.0"
 futures = "0.3"
 futures-channel = "0.3"
+futures-core = { version = "0.3", default-features = false }
 futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }

@@ -46,13 +46,16 @@ pub fn headers_to_hyperium(headers: HeaderMap) -> http::HeaderMap {
     let mut out = http::HeaderMap::with_capacity(headers.len());
     let mut last: Option<http::header::HeaderName> = None;
     for (name, value) in headers {
-        let mut hv = http::header::HeaderValue::from_bytes(value.as_bytes())
-            .unwrap_or_else(|_| http::header::HeaderValue::from_static(""));
+        let Ok(mut hv) = http::header::HeaderValue::from_bytes(value.as_bytes()) else {
+            continue;
+        };
         hv.set_sensitive(value.is_sensitive());
         match name {
             Some(name) => {
-                let name = http::header::HeaderName::from_bytes(name.as_str().as_bytes())
-                    .expect("vendored header name is valid");
+                let Ok(name) = http::header::HeaderName::from_bytes(name.as_str().as_bytes())
+                else {
+                    continue;
+                };
                 out.append(name.clone(), hv);
                 last = Some(name);
             }
@@ -74,13 +77,15 @@ pub fn headers_from_hyperium(headers: http::HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::with_capacity(headers.len());
     let mut last: Option<HeaderName> = None;
     for (name, value) in headers {
-        let mut hv = HeaderValue::from_bytes(value.as_bytes())
-            .unwrap_or_else(|_| HeaderValue::from_static(""));
+        let Ok(mut hv) = HeaderValue::from_bytes(value.as_bytes()) else {
+            continue;
+        };
         hv.set_sensitive(value.is_sensitive());
         match name {
             Some(name) => {
-                let name = HeaderName::from_bytes(name.as_str().as_bytes())
-                    .expect("hyperium header name is valid");
+                let Ok(name) = HeaderName::from_bytes(name.as_str().as_bytes()) else {
+                    continue;
+                };
                 out.append(name.clone(), hv);
                 last = Some(name);
             }

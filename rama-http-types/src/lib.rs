@@ -30,6 +30,8 @@ pub mod response;
 #[macro_use]
 mod convert;
 mod byte_str;
+pub mod http_body;
+pub mod http_body_util;
 mod hyperium_bridge;
 // TEMPORARY (Phase 3): hyperium `http::HeaderMap` trailer-boundary bridges,
 // used by rama-http/grpc/http-core until `http-body` is forked. Relocates to
@@ -140,29 +142,6 @@ pub mod dep {
 
             #[doc(inline)]
             pub(crate) use http::*;
-        }
-
-        pub(crate) mod http_body {
-            //! Re-export of the [`http-body`] crate incase we need to convert.
-            //!
-            //! Asynchronous HTTP request or response body
-            //!
-            //! [`http-body`]: https://docs.rs/http-body
-
-            #[doc(inline)]
-            pub use http_body::*;
-        }
-
-        pub(crate) mod http_body_util {
-            //! Re-export of the [`http-body-util`] crate incase we need to convert.
-            //!
-            //! Utilities for working with [`http-body`] types.
-            //!
-            //! [`http-body`]: https://docs.rs/http-body
-            //! [`http-body-util`]: https://docs.rs/http-body-util
-
-            #[doc(inline)]
-            pub use http_body_util::*;
         }
     }
 }

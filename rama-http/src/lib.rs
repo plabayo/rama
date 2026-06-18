@@ -30,6 +30,9 @@ pub use ::rama_http_headers as headers;
 
 pub mod body;
 
+// Only the multipart extractor (external `multer` → `http::HeaderMap`) still
+// needs a hyperium HeaderMap bridge now that http-body is forked.
+#[cfg(feature = "multipart")]
 pub(crate) mod hyperium_compat;
 
 pub mod convert;

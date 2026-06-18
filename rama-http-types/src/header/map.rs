@@ -1995,7 +1995,7 @@ impl<T> IntoIterator for HeaderMap<T> {
     /// Basic usage.
     ///
     /// ```
-    /// # use http::header;
+    /// # use rama_http_types::header;
     /// # use rama_http_types::header::*;
     /// let mut map = HeaderMap::new();
     /// map.insert(header::CONTENT_LENGTH, "123".parse().unwrap());
@@ -2010,7 +2010,7 @@ impl<T> IntoIterator for HeaderMap<T> {
     /// Multiple values per key.
     ///
     /// ```
-    /// # use http::header;
+    /// # use rama_http_types::header;
     /// # use rama_http_types::header::*;
     /// let mut map = HeaderMap::new();
     ///

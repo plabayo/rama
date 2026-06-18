@@ -16,14 +16,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
-// Things from http-body crate
-pub use crate::dep::hyperium::http_body::Body as StreamingBody;
-pub use crate::dep::hyperium::http_body::Frame;
-pub use crate::dep::hyperium::http_body::SizeHint;
+// Things from the forked http-body (vendored at `crate::http_body`)
+pub use crate::http_body::Body as StreamingBody;
+pub use crate::http_body::Frame;
+pub use crate::http_body::SizeHint;
 
-// Things from http-body-util crate
+// Things from the forked http-body-util (vendored at `crate::http_body_util`)
 pub mod util {
-    pub use crate::dep::hyperium::http_body_util::*;
+    pub use crate::http_body_util::*;
 }
 
 mod limit;
@@ -177,9 +177,6 @@ impl Body {
     /// a [`Future`] with as output an option of a result of a headermap.
     /// This method is a shortcut of that function.
     pub fn with_trailer_headers(self, headers: crate::HeaderMap) -> Self {
-        // `http-body-util` trailers are still the hyperium `http::HeaderMap`
-        // until that crate is forked; bridge at the boundary for now.
-        let headers = crate::hyperium_bridge::headers_to_hyperium(headers);
         Self::new(self.0.with_trailers(std::future::ready(Some(Ok(headers)))))
     }
 

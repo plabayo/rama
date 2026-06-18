@@ -62,19 +62,14 @@ where
 
                 let frame = match frame.into_trailers() {
                     Ok(trailers) => {
-                        // `http-body` Frame trailers are `http::HeaderMap` until that
-                        // crate is forked; classifiers take the vendored `HeaderMap`.
-                        let rama_trailers =
-                            crate::hyperium_compat::rama_headers_from_http(&trailers);
                         if let Some((classify_eos, on_failure)) =
                             this.classify_eos.take().zip(this.on_failure.take())
-                            && let Err(failure_class) =
-                                classify_eos.classify_eos(Some(&rama_trailers))
+                            && let Err(failure_class) = classify_eos.classify_eos(Some(&trailers))
                         {
                             on_failure.on_failure(failure_class, latency, this.span);
                         }
                         if let Some((on_eos, stream_start)) = this.on_eos.take() {
-                            on_eos.on_eos(Some(&rama_trailers), stream_start.elapsed(), this.span);
+                            on_eos.on_eos(Some(&trailers), stream_start.elapsed(), this.span);
                         }
                         Frame::trailers(trailers)
                     }
