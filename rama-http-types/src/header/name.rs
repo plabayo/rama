@@ -1,5 +1,5 @@
-use crate::byte_str::ByteStr;
 use bytes::{Bytes, BytesMut};
+use rama_core::bytes::ByteStr;
 
 use std::borrow::Borrow;
 use std::convert::TryFrom;
@@ -987,6 +987,96 @@ standard_headers! {
     /// inline JavaScript ('unsafe-inline'), they can still provide protections
     /// for users of older web browsers that don't yet support CSP.
     (XXssProtection, X_XSS_PROTECTION, b"x-xss-protection");
+
+    // Conventional / non-IANA-registered header names (de-facto standards,
+    // vendor headers, drafts) — first-class standard headers all the same.
+
+    /// `X-Forwarded-Host` — de-facto proxy host forwarding header.
+    (XForwardedHost, X_FORWARDED_HOST, b"x-forwarded-host");
+
+    /// `X-Forwarded-For` — de-facto client-IP forwarding header.
+    (XForwardedFor, X_FORWARDED_FOR, b"x-forwarded-for");
+
+    /// `X-Forwarded-Proto` — de-facto proxy scheme forwarding header.
+    (XForwardedProto, X_FORWARDED_PROTO, b"x-forwarded-proto");
+
+    /// `X-Robots-Tag` — robots indexing directives.
+    (XRobotsTag, X_ROBOTS_TAG, b"x-robots-tag");
+
+    /// `X-Clacks-Overhead` — GNU Terry Pratchett.
+    (XClacksOverhead, X_CLACKS_OVERHEAD, b"x-clacks-overhead");
+
+    /// `Sec-GPC` — Global Privacy Control.
+    (SecGpc, SEC_GPC, b"sec-gpc");
+
+    /// `Sec-Fetch-Site` — Fetch Metadata request header.
+    (SecFetchSite, SEC_FETCH_SITE, b"sec-fetch-site");
+
+    /// `Permissions-Policy`.
+    (PermissionsPolicy, PERMISSIONS_POLICY, b"permissions-policy");
+
+    /// `Cross-Origin-Embedder-Policy`.
+    (CrossOriginEmbedderPolicy, CROSS_ORIGIN_EMBEDDER_POLICY, b"cross-origin-embedder-policy");
+
+    /// `Cross-Origin-Embedder-Policy-Report-Only`.
+    (CrossOriginEmbedderPolicyReportOnly, CROSS_ORIGIN_EMBEDDER_POLICY_REPORT_ONLY, b"cross-origin-embedder-policy-report-only");
+
+    /// `Cross-Origin-Opener-Policy`.
+    (CrossOriginOpenerPolicy, CROSS_ORIGIN_OPENER_POLICY, b"cross-origin-opener-policy");
+
+    /// `Cross-Origin-Opener-Policy-Report-Only`.
+    (CrossOriginOpenerPolicyReportOnly, CROSS_ORIGIN_OPENER_POLICY_REPORT_ONLY, b"cross-origin-opener-policy-report-only");
+
+    /// `Cross-Origin-Resource-Policy`.
+    (CrossOriginResourcePolicy, CROSS_ORIGIN_RESOURCE_POLICY, b"cross-origin-resource-policy");
+
+    /// `Keep-Alive` — HTTP/1.1 connection keep-alive parameters.
+    (KeepAlive, KEEP_ALIVE, b"keep-alive");
+
+    /// `Proxy-Connection` — legacy hop-by-hop connection header.
+    (ProxyConnection, PROXY_CONNECTION, b"proxy-connection");
+
+    /// `Last-Event-ID` — Server-Sent Events resumption id.
+    (LastEventId, LAST_EVENT_ID, b"last-event-id");
+
+    /// `CF-Connecting-IP` — Cloudflare client IP.
+    (CfConnectingIp, CF_CONNECTING_IP, b"cf-connecting-ip");
+
+    /// `True-Client-IP` — client-IP forwarding header.
+    (TrueClientIp, TRUE_CLIENT_IP, b"true-client-ip");
+
+    /// `Client-IP` — client-IP forwarding header.
+    (ClientIp, CLIENT_IP, b"client-ip");
+
+    /// `X-Client-IP` — client-IP forwarding header.
+    (XClientIp, X_CLIENT_IP, b"x-client-ip");
+
+    /// `X-Real-IP` — client-IP forwarding header.
+    (XRealIp, X_REAL_IP, b"x-real-ip");
+
+    /// `Access-Control-Allow-Private-Network` — Private Network Access (CORS).
+    (AccessControlAllowPrivateNetwork, ACCESS_CONTROL_ALLOW_PRIVATE_NETWORK, b"access-control-allow-private-network");
+
+    /// `Access-Control-Request-Private-Network` — Private Network Access (CORS).
+    (AccessControlRequestPrivateNetwork, ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK, b"access-control-request-private-network");
+
+    /// `Sec-CH-Save-Data` — client hint.
+    (SecChSaveData, SEC_CH_SAVE_DATA, b"sec-ch-save-data");
+
+    /// `Sec-CH-ECT` — effective connection type client hint.
+    (SecChEct, SEC_CH_ECT, b"sec-ch-ect");
+
+    /// `Sec-CH-RTT` — round-trip-time client hint.
+    (SecChRtt, SEC_CH_RTT, b"sec-ch-rtt");
+
+    /// `Sec-CH-Downlink` — downlink-speed client hint.
+    (SecChDownlink, SEC_CH_DOWNLINK, b"sec-ch-downlink");
+
+    /// `Accept-CH` — client-hint negotiation (server-advertised).
+    (AcceptCh, ACCEPT_CH, b"accept-ch");
+
+    /// `Critical-CH` — critical client-hint negotiation.
+    (CriticalCh, CRITICAL_CH, b"critical-ch");
 }
 
 /// Valid header name characters

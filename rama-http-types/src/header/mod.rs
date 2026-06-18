@@ -164,6 +164,35 @@ pub use self::name::{
     X_DNS_PREFETCH_CONTROL,
     X_FRAME_OPTIONS,
     X_XSS_PROTECTION,
+    X_FORWARDED_HOST,
+    X_FORWARDED_FOR,
+    X_FORWARDED_PROTO,
+    X_ROBOTS_TAG,
+    X_CLACKS_OVERHEAD,
+    SEC_GPC,
+    SEC_FETCH_SITE,
+    PERMISSIONS_POLICY,
+    CROSS_ORIGIN_EMBEDDER_POLICY,
+    CROSS_ORIGIN_EMBEDDER_POLICY_REPORT_ONLY,
+    CROSS_ORIGIN_OPENER_POLICY,
+    CROSS_ORIGIN_OPENER_POLICY_REPORT_ONLY,
+    CROSS_ORIGIN_RESOURCE_POLICY,
+    KEEP_ALIVE,
+    PROXY_CONNECTION,
+    LAST_EVENT_ID,
+    CF_CONNECTING_IP,
+    TRUE_CLIENT_IP,
+    CLIENT_IP,
+    X_CLIENT_IP,
+    X_REAL_IP,
+    ACCESS_CONTROL_ALLOW_PRIVATE_NETWORK,
+    ACCESS_CONTROL_REQUEST_PRIVATE_NETWORK,
+    SEC_CH_SAVE_DATA,
+    SEC_CH_ECT,
+    SEC_CH_RTT,
+    SEC_CH_DOWNLINK,
+    ACCEPT_CH,
+    CRITICAL_CH,
 };
 
 /// Maximum length of a header name
@@ -172,77 +201,6 @@ pub use self::name::{
 /// in practice. Restricting it to this size enables using `u16` values to
 /// represent offsets when dealing with header names.
 const MAX_HEADER_NAME_LEN: usize = (1 << 16) - 1;
-
-// ---------------------------------------------------------------------------
-// rama additions: header-name constants not in upstream's table + a default
-// User-Agent/Server value. (Relocated here from the crate root.)
-// ---------------------------------------------------------------------------
-
-macro_rules! static_header {
-    ($($name_bytes:literal),+ $(,)?) => {
-        $(
-            rama_macros::paste! {
-                #[doc = concat!("header name constant for `", $name_bytes, "`.")]
-                pub static [<$name_bytes:snake:upper>]: HeaderName = HeaderName::from_static($name_bytes);
-            }
-        )+
-    };
-}
-
-// non-std conventional
-static_header![
-    "x-forwarded-host",
-    "x-forwarded-for",
-    "x-forwarded-proto",
-    "x-robots-tag",
-    "x-clacks-overhead",
-];
-
-// new standard sec-headers
-static_header!["sec-gpc"];
-
-// fetch metadata request headers (W3C Fetch Metadata Request Headers)
-static_header!["sec-fetch-site"];
-
-// additional W3C / Fetch / HTML standard security headers
-// not yet covered by hyperium/http's name table
-static_header![
-    "permissions-policy",
-    "cross-origin-embedder-policy",
-    "cross-origin-embedder-policy-report-only",
-    "cross-origin-opener-policy",
-    "cross-origin-opener-policy-report-only",
-    "cross-origin-resource-policy",
-];
-
-// standard
-static_header!["keep-alive", "proxy-connection", "last-event-id"];
-
-// non-std client ip forward headers
-static_header![
-    "cf-connecting-ip",
-    "true-client-ip",
-    "client-ip",
-    "x-client-ip",
-    "x-real-ip",
-];
-
-// extra access control headers
-static_header![
-    "access-control-allow-private-network",
-    "access-control-request-private-network",
-];
-
-// client hint headers with typed value parsers in rama-http-headers
-static_header![
-    "sec-ch-save-data",
-    "sec-ch-ect",
-    "sec-ch-rtt",
-    "sec-ch-downlink",
-];
-
-// client hint negotiation response headers (advertised by servers)
-static_header!["accept-ch", "critical-ch"];
 
 /// Static Header Value that is can be used as `User-Agent` or `Server` header.
 pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(const_format::formatcp!(

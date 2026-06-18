@@ -1,5 +1,8 @@
-//! Forked verbatim from the `http` crate (v1.4.0, MIT). See
-//! `docs/thirdparty/fork/README.md`.
+//! [`ByteStr`]: a cheaply-cloneable, UTF-8 [`Bytes`] string slice.
+//!
+//! Forked verbatim from the `http` crate (v1.4.0, MIT) — generally useful on
+//! top of the [`bytes`](crate::bytes) re-export, so it lives in rama-core.
+//! See `docs/thirdparty/fork/README.md`.
 #![allow(
     unreachable_pub,
     clippy::allow_attributes,
@@ -26,7 +29,7 @@ use bytes::Bytes;
 use std::{ops, str};
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub(crate) struct ByteStr {
+pub struct ByteStr {
     // Invariant: bytes contains valid UTF-8
     bytes: Bytes,
 }
@@ -69,7 +72,7 @@ impl ByteStr {
         ByteStr { bytes }
     }
 
-    pub(crate) fn from_utf8(bytes: Bytes) -> Result<ByteStr, std::str::Utf8Error> {
+    pub fn from_utf8(bytes: Bytes) -> Result<ByteStr, std::str::Utf8Error> {
         str::from_utf8(&bytes)?;
         // Invariant: just checked is utf8
         Ok(ByteStr { bytes })

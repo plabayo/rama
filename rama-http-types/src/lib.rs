@@ -29,7 +29,6 @@ pub mod response;
 
 #[macro_use]
 mod convert;
-mod byte_str;
 pub mod http_body;
 pub mod http_body_util;
 mod hyperium_bridge;
