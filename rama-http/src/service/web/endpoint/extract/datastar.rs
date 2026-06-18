@@ -26,9 +26,10 @@ where
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         let json = match *req.method() {
             Method::GET => {
-                let query =
-                    Query::<DatastarParam>::parse_query_str(req.uri().query().unwrap_or(""))
-                        .map_err(IntoResponse::into_response)?;
+                let query = Query::<DatastarParam>::parse_query_str(
+                    req.uri().query().map(|q| q.as_raw_str()).unwrap_or(""),
+                )
+                .map_err(IntoResponse::into_response)?;
 
                 let signals = query.0.datastar.as_str().ok_or_else(|| {
                     tracing::debug!("failed to get datastar query value from GET request");

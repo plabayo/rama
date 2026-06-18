@@ -44,7 +44,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
     http::{
-        HeaderValue, Request, Response, StatusCode,
+        BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             compression::CompressionLayer,
@@ -67,7 +67,6 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
-        stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
             client::{ServerVerifyMode, TlsClientConfig},

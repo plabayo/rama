@@ -2,7 +2,7 @@ use crate::Request;
 use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::telemetry::tracing::{self, Level, Span};
-use rama_net::http::RequestContext;
+use rama_http_types::RequestContext;
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 use super::DEFAULT_MESSAGE_LEVEL;
@@ -115,6 +115,11 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
         let found_domain_cow_str = found_domain.as_ref().map(|d| d.to_str());
         let found_domain_str = found_domain_cow_str.as_deref();
 
+        // Native `Uri` returns typed component refs; render the raw forms as
+        // `&str` so they satisfy the `tracing` value bound.
+        let url_path = request.uri().path().map(|p| p.as_raw_str());
+        let url_query = request.uri().query().map(|q| q.as_raw_str());
+
         // This ugly macro is needed, unfortunately, because `tracing::span!`
         // required the level argument to be static. Meaning we can't just pass
         // `self.level`.
@@ -129,8 +134,8 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         url.full = %request.uri(),
                         url.domain = found_domain_str,
                         url.port = found_port,
-                        url.path = request.uri().path(),
-                        url.query = request.uri().query(),
+                        url.path = url_path,
+                        url.query = url_query,
                         url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),
@@ -146,8 +151,8 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         url.full = %request.uri(),
                         url.domain = found_domain_str,
                         url.port = found_port,
-                        url.path = request.uri().path(),
-                        url.query = request.uri().query(),
+                        url.path = url_path,
+                        url.query = url_query,
                         url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),

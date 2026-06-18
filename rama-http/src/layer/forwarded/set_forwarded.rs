@@ -7,9 +7,9 @@ use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
+use rama_http_types::RequestContext;
 use rama_net::address::Domain;
 use rama_net::forwarded::{ForwardedElement, NodeId};
-use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use std::fmt;
 use std::marker::PhantomData;
@@ -79,7 +79,7 @@ use std::marker::PhantomData;
 /// let service = SetForwardedHeaderLayer::<XRealIp>::new()
 ///     .into_layer(service_fn(svc));
 ///
-/// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
+/// # let mut req = Request::builder().uri("http://example.com").body(()).unwrap();
 /// # req.extensions().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
 /// service.serve(req).await.unwrap();
 /// # }
@@ -399,7 +399,10 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let req = Request::builder().uri("example.com").body(()).unwrap();
+        let req = Request::builder()
+            .uri("http://example.com")
+            .body(())
+            .unwrap();
         service.serve(req).await.unwrap();
     }
 

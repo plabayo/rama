@@ -180,8 +180,21 @@ impl Http1Transaction for Server {
         let slice = buf.split_to(len).freeze();
         let uri = {
             let uri_bytes = slice.slice_ref(&slice[path_range]);
-            // TODO(lucab): switch to `Uri::from_shared()` once public.
-            rama_http_types::Uri::from_maybe_shared(uri_bytes)?
+            // Zero-copy parse of the request-target. `CONNECT` carries an
+            // authority-form target (`host:port`); every other method carries
+            // origin-/absolute-/asterisk-form, all handled by `parse`.
+            if method == Method::CONNECT {
+                rama_http_types::Uri::parse_authority_form(uri_bytes)?
+            } else {
+                let uri = rama_http_types::Uri::parse(uri_bytes)?;
+                // A scheme without an authority (opaque `scheme:path`, e.g.
+                // `htt:p//`) is not a valid HTTP request-target — only origin-,
+                // absolute-, and asterisk-form are.
+                if uri.scheme().is_some() && uri.authority().is_none() {
+                    return Err(Parse::Uri);
+                }
+                uri
+            }
         };
         subject = RequestLine(method, uri);
 

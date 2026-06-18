@@ -113,7 +113,7 @@
 //!         .on_request(|request: &Request, _span: &Span| {
 //!             tracing::debug!(
 //!                 http.method = %request.method(),
-//!                 url.path = %request.uri().path(),
+//!                 url.path = request.uri().path().map(|p| p.as_raw_str()).unwrap_or_default(),
 //!                 "started request",
 //!             )
 //!         })

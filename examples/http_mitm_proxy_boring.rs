@@ -63,7 +63,7 @@ use rama::{
     extensions::{Extension, Extensions, ExtensionsRef},
     futures::SinkExt,
     http::{
-        Body, Request, Response, StatusCode, Version,
+        Body, BodyLimitLayer, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         conn::TargetHttpVersion,
         headers::{
@@ -95,7 +95,6 @@ use rama::{
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     matcher::Matcher,
     net::{
-        stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
             client::{ServerVerifyMode, TlsClientConfig},

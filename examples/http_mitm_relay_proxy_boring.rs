@@ -35,7 +35,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        HeaderName, HeaderValue,
+        BodyLimitLayer, HeaderName, HeaderValue,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -53,7 +53,6 @@ use rama::{
     net::{
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
-        stream::layer::http::BodyLimitLayer,
         tls::server::{PeekTlsClientHelloService, SelfSignedData},
         user::credentials::basic,
     },

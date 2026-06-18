@@ -58,18 +58,23 @@ where
                                 req.method().to_string()
                             }
                             PseudoHeader::Scheme => {
-                                req.uri().scheme_str().unwrap_or("?").to_owned()
+                                req.uri()
+                                    .scheme()
+                                    .map(|p| p.as_str().to_owned())
+                                    .unwrap_or_else(|| "?".to_owned())
                             }
                             PseudoHeader::Authority => {
                                 req.uri()
                                     .authority()
-                                    .map(|a| a.as_str())
-                                    .unwrap_or("?")
-                                    .to_owned()
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| "?".to_owned())
                             }
-                            PseudoHeader::Path => {
-                                req.uri().path().to_owned()
-                            }
+                            PseudoHeader::Path => req
+                                .uri()
+                                .path()
+                                .map(|p| p.as_raw_str())
+                                .unwrap_or("/")
+                                .to_owned(),
                             PseudoHeader::Status => "<???>".to_owned(),
                             PseudoHeader::Protocol => {
                                 if let Some(proto) = req.extensions().get_ref::<h2::ext::Protocol>()
@@ -87,10 +92,10 @@ where
             eprintln!(
                 "> {} {}{} {:?}",
                 req.method(),
-                req.uri().path(),
+                req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
                 req.uri()
                     .query()
-                    .map(|q| format!("?{q}"))
+                    .map(|q| format!("?{}", q.as_raw_str()))
                     .unwrap_or_default(),
                 req.version()
             );

@@ -8,11 +8,10 @@ use rama_core::{
 use rama_http::{StreamingBody, header::SEC_WEBSOCKET_KEY};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
-    Method, Request, Response, Version,
+    Method, Request, RequestContext, Response, Version,
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
-    uri::PathAndQuery,
 };
-use rama_net::{address::ProxyAddress, conn::ConnectionHealthWatcher, http::RequestContext};
+use rama_net::{address::ProxyAddress, conn::ConnectionHealthWatcher};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -165,9 +164,10 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
                 let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = None;
-                uri_parts.authority = None;
+                // strip scheme + authority down to origin-form (`/path?query`),
+                // preserving path + query + fragment exactly as received.
+                parts.uri.unset_scheme();
+                parts.uri.unset_authority();
 
                 // NOTE: in case the requested resource was the root ("/") it is possible
                 // that the path is now empty. Hyper (currently used) has h1 built-in and
@@ -179,8 +179,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 //
                 // NOTE: once we fork hyper we can just handle it there, as there
                 // is no valid reason for that encoding every to be empty... *sigh*
-                if uri_parts.path_and_query.as_ref().map(|pq| pq.as_str()) == Some("/") {
-                    uri_parts.path_and_query = Some(PathAndQuery::from_static("/"));
+                if parts
+                    .uri
+                    .path()
+                    .map(|p| p.as_raw_str().is_empty())
+                    .unwrap_or(true)
+                {
+                    parts.uri.set_path("/");
                 }
 
                 // add required host header if not defined
@@ -196,7 +201,6 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     }
                 }
 
-                parts.uri = rama_http_types::Uri::from_parts(uri_parts)?;
                 Request::from_parts(parts, body)
             } else if !req.headers().contains_key(HOST) {
                 let mut req = req;
@@ -237,35 +241,19 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     "defining authority and scheme to non-connect direct http request"
                 );
 
+                let has_default_port = request_ctx.authority_has_default_port();
+
                 let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = Some(
-                    request_ctx
-                        .protocol
-                        .as_str()
-                        .try_into()
-                        .context("use RequestContext.protocol as http scheme")?,
-                );
-                // NOTE: in a green future we might not need to stringify
-                // this entire thing first... maybe something someone at some
-                // point can take a look at this mess
+                parts.uri.set_scheme(request_ctx.protocol);
 
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
-                let authority = if request_ctx.authority_has_default_port() {
-                    request_ctx.authority.host.to_string()
+                parts.uri.set_host(request_ctx.authority.host);
+                if has_default_port {
+                    parts.uri.set_port(None::<u16>);
                 } else {
-                    request_ctx.authority.to_string()
-                };
-
-                uri_parts.authority = Some(
-                    authority
-                        .try_into()
-                        .context("use RequestContext.authority as http authority")?,
-                );
-
-                parts.uri = rama_http_types::Uri::from_parts(uri_parts)
-                    .context("create http uri from parts")?;
+                    parts.uri.set_port(request_ctx.authority.port);
+                }
 
                 Request::from_parts(parts, body)
             } else {
@@ -299,21 +287,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
             );
             req
         }
-        _ => {
-            tracing::debug!(
-                url.full = %req.uri(),
-                http.method = ?req.method(),
-                "request with unknown version detected, sanitize_client_req_header cannot support this",
-            );
-            req
-        }
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Scheme, Uri, uri::Authority};
+    use rama_http::Uri;
     use rama_net::Protocol;
 
     #[test]
@@ -330,32 +310,22 @@ mod tests {
         ]
         .into_iter()
         {
-            let uri = Uri::builder()
-                .authority("example.com")
-                .scheme(Scheme::HTTPS)
-                .path_and_query("/test")
-                .build()
-                .unwrap();
+            let uri = Uri::from_static("https://example.com/test");
 
             let req = Request::builder().uri(uri).method(method).body(()).unwrap();
             let req = sanitize_client_req_header(req).unwrap();
 
             let (parts, _) = req.into_parts();
-            let uri = parts.uri.into_parts();
 
-            assert_eq!(uri.scheme, None);
-            assert_eq!(uri.authority, None);
+            assert_eq!(parts.uri.scheme(), None);
+            assert_eq!(parts.uri.authority(), None);
+            assert_eq!(parts.uri, "/test");
         }
     }
 
     #[test]
     fn should_not_sanitize_http1_connect() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme("https")
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("https://example.com/test");
 
         let req = Request::builder()
             .method(Method::CONNECT)
@@ -365,20 +335,17 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, Some(Scheme::HTTPS));
-        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+        assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTPS));
+        assert_eq!(
+            parts.uri.host().map(|h| h.to_string()),
+            Some("example.com".to_owned())
+        );
     }
 
     #[test]
     fn should_not_sanitize_insecure_http1_request_over_http_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTP)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("http://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -391,20 +358,17 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, Some(Scheme::HTTP));
-        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+        assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTP));
+        assert_eq!(
+            parts.uri.host().map(|h| h.to_string()),
+            Some("example.com".to_owned())
+        );
     }
 
     #[test]
     fn should_sanitize_secure_http1_request_over_http_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTPS)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("https://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -417,20 +381,15 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, None);
-        assert_eq!(uri.authority, None);
+        assert_eq!(parts.uri.scheme(), None);
+        assert_eq!(parts.uri.authority(), None);
+        assert_eq!(parts.uri, "/test");
     }
 
     #[test]
     fn should_sanitize_insecure_http1_request_over_socks_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTP)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("http://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -443,9 +402,9 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, None);
-        assert_eq!(uri.authority, None);
+        assert_eq!(parts.uri.scheme(), None);
+        assert_eq!(parts.uri.authority(), None);
+        assert_eq!(parts.uri, "/test");
     }
 }

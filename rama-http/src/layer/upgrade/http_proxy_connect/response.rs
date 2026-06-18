@@ -3,7 +3,8 @@ use crate::{
     service::web::response::IntoResponse as _,
 };
 use rama_core::{Service, extensions::Extensions, telemetry::tracing};
-use rama_net::{http::RequestContext, proxy::ProxyTarget};
+use rama_http_types::RequestContext;
+use rama_net::proxy::ProxyTarget;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::convert::TryFrom;
 use std::fmt;
 
@@ -5,7 +6,8 @@ use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
-use rama_http_types::uri::{self, Authority, Scheme, Uri};
+use rama_http_types::uri::{Scheme, Uri};
+use rama_net::address::Authority;
 
 use crate::Error;
 use crate::util::{IterExt, TryFromValues};
@@ -83,10 +85,10 @@ impl Origin {
 
     /// Get the "hostname" part of this origin.
     #[inline]
-    pub fn hostname(&self) -> &str {
+    pub fn hostname(&self) -> Cow<'_, str> {
         match self.0 {
-            OriginOrNull::Origin(_, ref auth) => auth.host(),
-            OriginOrNull::Null => "",
+            OriginOrNull::Origin(_, ref auth) => auth.address.host.to_str(),
+            OriginOrNull::Null => Cow::Borrowed(""),
         }
     }
 
@@ -94,7 +96,7 @@ impl Origin {
     #[inline]
     pub fn port(&self) -> Option<u16> {
         match self.0 {
-            OriginOrNull::Origin(_, ref auth) => auth.port_u16(),
+            OriginOrNull::Origin(_, ref auth) => auth.address.port_u16(),
             OriginOrNull::Null => None,
         }
     }
@@ -152,23 +154,18 @@ impl OriginOrNull {
 
         let uri = Uri::try_from(value.as_bytes()).ok()?;
 
-        let (scheme, auth) = match uri.into_parts() {
-            uri::Parts {
-                scheme: Some(scheme),
-                authority: Some(auth),
-                path_and_query: None,
-                ..
-            } => (scheme, auth),
-            uri::Parts {
-                scheme: Some(ref scheme),
-                authority: Some(ref auth),
-                path_and_query: Some(ref p),
-                ..
-            } if p == "/" => (scheme.clone(), auth.clone()),
-            _ => {
-                return None;
-            }
-        };
+        // An origin is `scheme://authority` with no query/fragment and at most
+        // a bare root path (`/`), e.g. `http://example.com` or
+        // `http://example.com/`.
+        let scheme = uri.scheme()?.clone();
+        let auth = uri.authority()?.into_owned();
+
+        let path_ok = uri
+            .path()
+            .is_none_or(|p| p.as_bytes().is_empty() || p.as_bytes() == b"/");
+        if !path_ok || uri.query().is_some() || uri.fragment().is_some() {
+            return None;
+        }
 
         Some(Self::Origin(scheme, auth))
     }

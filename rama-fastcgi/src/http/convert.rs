@@ -13,11 +13,11 @@ use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::TryStreamExt;
 use rama_core::telemetry::tracing;
+use rama_http_types::RequestContext;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
 };
 use rama_net::Protocol;
-use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use tokio_util::io::{ReaderStream, StreamReader};
 
@@ -164,8 +164,18 @@ pub(super) async fn http_request_to_fastcgi(
         .context("fastcgi: build SERVER_PROTOCOL from HTTP version")?;
 
     let method = parts.method.as_str().to_owned();
-    let path = parts.uri.path().to_owned();
-    let query = parts.uri.query().unwrap_or("").to_owned();
+    let path = parts
+        .uri
+        .path()
+        .map(|p| p.as_raw_str())
+        .unwrap_or("/")
+        .to_owned();
+    let query = parts
+        .uri
+        .query()
+        .map(|q| q.as_raw_str())
+        .unwrap_or("")
+        .to_owned();
     let request_uri = if query.is_empty() {
         path.clone()
     } else {

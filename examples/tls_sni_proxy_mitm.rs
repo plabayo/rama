@@ -91,7 +91,7 @@ use rama::{
     extensions::{Extension, ExtensionsRef},
     graceful::Shutdown,
     http::{
-        HeaderValue, Request, Response,
+        HeaderValue, Request, RequestContext, Response,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -106,7 +106,6 @@ use rama::{
         Protocol,
         address::{Domain, HostWithPort, SocketAddress},
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
-        http::RequestContext,
         proxy::IoForwardService,
         tls::{
             ApplicationProtocol,

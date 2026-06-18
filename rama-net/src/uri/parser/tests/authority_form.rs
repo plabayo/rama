@@ -186,3 +186,32 @@ fn strict_keeps_path_query_fragment_rejection() {
     Uri::parse_authority_form_strict("example.com:443?q").unwrap_err();
     Uri::parse_authority_form_strict("example.com:443#f").unwrap_err();
 }
+
+#[test]
+fn as_authority_form_projects_full_uri() {
+    // Drops scheme/path/query/fragment, keeps host[:port].
+    let u = Uri::parse("https://example.com:8443/some/path?q=1#frag").unwrap();
+    let auth = u.as_authority_form().unwrap();
+    assert!(auth.scheme().is_none());
+    assert_eq!(auth.host().unwrap().to_str(), "example.com");
+    assert_eq!(auth.port_u16(), Some(8443));
+    assert_eq!(auth.path().map(|p| p.as_raw_str()), Some(""));
+    assert_eq!(auth, "example.com:8443");
+
+    // No explicit port → bare host.
+    let u = Uri::parse("http://example.com/a").unwrap();
+    assert_eq!(u.as_authority_form().unwrap(), "example.com");
+
+    // Already authority-form → idempotent.
+    let u = Uri::parse_authority_form("example.com:443").unwrap();
+    assert_eq!(u.as_authority_form().unwrap(), "example.com:443");
+
+    // No authority (origin-form / asterisk) → None.
+    assert!(
+        Uri::parse("/just/a/path")
+            .unwrap()
+            .as_authority_form()
+            .is_none()
+    );
+    assert!(Uri::parse("*").unwrap().as_authority_form().is_none());
+}

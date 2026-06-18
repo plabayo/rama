@@ -27,9 +27,9 @@ pub(crate) fn version_from_hyperium(v: http::Version) -> Version {
     match v {
         http::Version::HTTP_09 => Version::HTTP_09,
         http::Version::HTTP_10 => Version::HTTP_10,
-        http::Version::HTTP_11 => Version::HTTP_11,
         http::Version::HTTP_2 => Version::HTTP_2,
         http::Version::HTTP_3 => Version::HTTP_3,
+        // HTTP/1.1 plus any future/unknown hyperium version.
         _ => Version::HTTP_11,
     }
 }
@@ -40,7 +40,7 @@ pub(crate) fn version_from_hyperium(v: http::Version) -> Version {
 /// valid RFC-3986 URI, so the reparse only fails for the HTTP asterisk-form
 /// (`*`), which has no `http::Uri` representation other than `*` itself —
 /// handled explicitly.
-pub(crate) fn uri_to_hyperium(uri: crate::Uri) -> http::Uri {
+pub(crate) fn uri_to_hyperium(uri: &crate::Uri) -> http::Uri {
     if uri.is_asterisk() {
         return http::Uri::from_static("*");
     }
@@ -52,8 +52,8 @@ pub(crate) fn uri_to_hyperium(uri: crate::Uri) -> http::Uri {
 ///
 /// Round-trips through the string form. Falls back to the root path (`/`) if
 /// the (already-valid) hyperium URI somehow fails native parsing.
-pub(crate) fn uri_from_hyperium(uri: http::Uri) -> crate::Uri {
-    if uri == http::Uri::from_static("*") {
+pub(crate) fn uri_from_hyperium(uri: &http::Uri) -> crate::Uri {
+    if *uri == http::Uri::from_static("*") {
         return crate::Uri::from_static("*");
     }
     let s = uri.to_string();

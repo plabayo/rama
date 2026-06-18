@@ -8,15 +8,15 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
     http::{
-        self, HeaderMap, HeaderName, Request,
+        self, HeaderMap, HeaderName, Request, RequestContext,
         core::h2::frame::EarlyFrameCapture,
+        fingerprint::{AkamaiH2, Ja4H},
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
     },
     net::{
         address::ip::geo::{IpGeoDb, IpGeoInfo},
-        fingerprint::{AkamaiH2, Ja3, Ja4, Ja4H, PeetPrint},
+        fingerprint::{Ja3, Ja4, PeetPrint},
         forwarded::Forwarded,
-        http::RequestContext,
         stream::SocketInfo,
         tls::{
             SecureTransport,
@@ -212,7 +212,12 @@ pub(super) async fn get_request_info(
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: req.uri().path().to_owned(),
+        path: req
+            .uri()
+            .path()
+            .map(|p| p.as_raw_str())
+            .unwrap_or("/")
+            .to_owned(),
         uri: req.uri().to_string(),
         peer_addr: req
             .extensions()

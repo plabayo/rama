@@ -60,8 +60,8 @@ where
         }
 
         if req.method() == Method::GET {
-            let query = req.uri().query().unwrap_or_default();
-            let value = match serde_html_form::from_bytes(query.as_bytes()) {
+            let query = req.uri().query().map(|q| q.as_bytes()).unwrap_or_default();
+            let value = match serde_html_form::from_bytes(query) {
                 Ok(value) => value,
                 Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
             };

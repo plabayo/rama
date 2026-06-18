@@ -1,15 +1,15 @@
-use rama_net::address::{Domain, Host, HostWithOptPort, HostWithPort};
-use rama_net::forwarded::Forwarded;
-use rama_net::proxy::ProxyTarget;
-use rama_net::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
-use rama_net::Protocol;
+use crate::request::Parts;
+use crate::{HttpRequestParts, Request};
+use crate::{Uri, Version};
 use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::{Extension, Extensions};
 use rama_core::telemetry::tracing;
-use crate::request::Parts;
-use crate::{HttpRequestParts, Request};
-use crate::{Uri, Version};
+use rama_net::Protocol;
+use rama_net::address::{Domain, Host, HostWithOptPort, HostWithPort};
+use rama_net::forwarded::Forwarded;
+use rama_net::proxy::ProxyTarget;
+use rama_net::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 
 #[cfg(feature = "tls")]
 use rama_net::tls::SecureTransport;
@@ -274,9 +274,9 @@ impl TryRefIntoTransportContext for crate::request::Parts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
-    use rama_core::extensions::ExtensionsRef;
     use crate::{Request, header::FORWARDED};
+    use rama_core::extensions::ExtensionsRef;
+    use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
 
     #[test]
     fn test_request_context_from_request() {
@@ -371,7 +371,13 @@ mod tests {
 
             let req = req_builder.body(()).unwrap();
 
-            let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
+            let forwarded: Forwarded = req
+                .headers()
+                .get(FORWARDED)
+                .unwrap()
+                .as_bytes()
+                .try_into()
+                .unwrap();
             req.extensions().insert(forwarded);
 
             let req_ctx = RequestContext::try_from(&req).unwrap();

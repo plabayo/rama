@@ -8,7 +8,6 @@
 //! - P = PRIORITY frames (stream_id:exclusive:depends_on:weight, comma-separated, or "0" if not present)
 //! - PS = Pseudo-header order (m=method, p=path, a=authority, s=scheme, comma-separated)
 
-use rama_core::extensions::Extensions;
 use crate::proto::h2::{
     PseudoHeader, PseudoHeaderOrder,
     frame::{
@@ -20,6 +19,7 @@ use crate::proto::h2::{
         StreamId,
     },
 };
+use rama_core::extensions::Extensions;
 use std::{fmt, io};
 
 #[derive(Clone)]

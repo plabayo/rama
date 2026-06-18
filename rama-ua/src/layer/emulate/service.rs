@@ -7,6 +7,7 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
+use rama_http::RequestContext;
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
@@ -25,7 +26,6 @@ use rama_net::{
     Protocol,
     address::{Host, HostWithOptPort},
     client::{ConnectorService, EstablishedClientConnection},
-    http::RequestContext,
 };
 use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 
@@ -346,6 +346,11 @@ fn emulate_http_connect_settings<Body>(req: &Request<Body>, profile: &HttpProfil
         Version::HTTP_3 => tracing::debug!(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
         ),
+        // defensive forward-compat arm; native Version is currently exhaustive
+        #[expect(
+            unreachable_patterns,
+            reason = "forward-compat fallback for future Version variants"
+        )]
         _ => tracing::debug!(
             http.version = ?req.version(),
             "UA emulation not supported for unknown http version: not applying anything version-specific",
@@ -730,27 +735,29 @@ fn compute_sec_fetch_site_value(
                 .to_str()
                 .context("turn referer into str")
                 .and_then(|s| {
-                    s.parse::<Uri>()
+                    // Referer is usually a full URL; fall back to authority-form
+                    // so a bare/degenerate host is still treated as an origin.
+                    Uri::parse(s)
+                        .or_else(|_| Uri::parse_authority_form(s))
                         .context("turn referer header value str into http Uri")
                 }) {
                 Ok(uri) => {
-                    let referer_protocol = uri.scheme().map(Protocol::from);
+                    let referer_protocol = uri.scheme().cloned();
 
                     let default_port = uri
                         .port_u16()
                         .or_else(|| referer_protocol.as_ref().and_then(|p| p.default_port()));
 
-                    let maybe_authority = uri
-                        .host()
-                        .and_then(|h| Host::try_from(h).ok().map(|h| {
-                            if let Some(default_port) = default_port {
-                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
-                                HostWithOptPort::new_with_port(h, default_port)
-                            } else {
-                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no (default) port available");
-                                HostWithOptPort::new(h)
-                            }
-                        }));
+                    let maybe_authority = uri.host().map(|h| {
+                        let h = h.into_owned();
+                        if let Some(default_port) = default_port {
+                            tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
+                            HostWithOptPort::new_with_port(h, default_port)
+                        } else {
+                            tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no (default) port available");
+                            HostWithOptPort::new(h)
+                        }
+                    });
 
                     if let Some(authority) = maybe_authority {
                         if referer_protocol.as_ref() == protocol {

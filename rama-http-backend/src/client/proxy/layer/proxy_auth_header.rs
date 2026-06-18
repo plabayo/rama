@@ -2,8 +2,8 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
-use rama_http_types::Request;
-use rama_net::{address::ProxyAddress, http::RequestContext, user::ProxyCredential};
+use rama_http_types::{Request, RequestContext};
+use rama_net::{address::ProxyAddress, user::ProxyCredential};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

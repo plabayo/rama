@@ -1,5 +1,5 @@
-use rama_core::{error::BoxError, telemetry::tracing};
 use crate::uri::Uri;
+use rama_core::{error::BoxError, telemetry::tracing};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
 

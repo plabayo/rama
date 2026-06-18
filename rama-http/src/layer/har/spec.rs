@@ -83,6 +83,12 @@ impl From<RamaHttpVersion> for HttpVersion {
             RamaHttpVersion::HTTP_11 => Self::Http11,
             RamaHttpVersion::HTTP_2 => Self::Http2,
             RamaHttpVersion::HTTP_3 => Self::Http3,
+            // Defensive: native `Version` is currently a closed enum, but keep
+            // the fallback for forward-compatibility with new versions.
+            #[expect(
+                unreachable_patterns,
+                reason = "forward-compat fallback for future Version variants"
+            )]
             other => Self::Unknown(format!("{other:?}").into()),
         }
     }
@@ -104,11 +110,11 @@ impl TryFrom<HttpVersion> for RamaHttpVersion {
 }
 
 fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
-    let Some(query_str) = parts.uri.query() else {
+    let Some(query) = parts.uri.query() else {
         return Vec::default();
     };
 
-    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(query_str) {
+    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(query.as_raw_str()) {
         Ok(Query(v)) => v
             .into_iter()
             .map(|(name, value)| QueryStringPair {

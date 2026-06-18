@@ -154,7 +154,7 @@ impl RobotsTxt {
     #[must_use]
     pub fn is_url_allowed(&self, user_agent: &str, uri: &Uri) -> bool {
         self.rules_for(user_agent)
-            .is_allowed(uri_path_and_query(uri))
+            .is_allowed(&uri_path_and_query(uri))
     }
 }
 
@@ -560,10 +560,13 @@ fn user_agent_tokens(user_agent: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.is_empty())
 }
 
-fn uri_path_and_query(uri: &Uri) -> &str {
-    uri.path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or(uri.path())
+fn uri_path_and_query(uri: &Uri) -> String {
+    let mut s = uri.path().map(|p| p.as_raw_str()).unwrap_or("/").to_owned();
+    if let Some(query) = uri.query() {
+        s.push('?');
+        s.push_str(query.as_raw_str());
+    }
+    s
 }
 
 fn wildcard_match(pattern: &[u8], text: &[u8], anchored: bool) -> bool {

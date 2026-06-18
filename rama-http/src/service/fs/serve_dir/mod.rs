@@ -313,10 +313,10 @@ impl<F> ServeDir<F> {
             (fallback, fallback_req)
         });
 
-        let Some(path_to_file) = self
-            .variant
-            .build_and_validate_path(&self.base, req.uri().path())
-        else {
+        let Some(path_to_file) = self.variant.build_and_validate_path(
+            &self.base,
+            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
+        ) else {
             return if let Some((fallback, request)) = fallback_and_request {
                 future::serve_fallback(fallback, request).await
             } else {

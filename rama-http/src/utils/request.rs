@@ -1,6 +1,6 @@
 use crate::{Request, Uri};
 use rama_core::{combinators::Either, telemetry::tracing};
-use rama_net::http::RequestContext;
+use rama_http_types::RequestContext;
 use rama_utils::collections::smallvec::SmallVec;
 use std::borrow::Cow;
 use std::io::Write as _;
@@ -29,17 +29,20 @@ pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
         let mut buffer = SmallVec::<[u8; 128]>::new();
         _ = write!(
             &mut buffer,
-            "{}://{}{}",
+            "{}://{}",
             req_ctx.protocol,
             if req_ctx.authority_has_default_port() {
                 Either::A(req_ctx.authority.host)
             } else {
                 Either::B(req_ctx.authority)
             },
-            uri.path_and_query()
-                .map(|paq| paq.as_str())
-                .unwrap_or_default(),
         );
+        if let Some(path) = uri.path() {
+            _ = write!(&mut buffer, "{}", path.as_raw_str());
+        }
+        if let Some(query) = uri.query() {
+            _ = write!(&mut buffer, "?{}", query.as_raw_str());
+        }
         Uri::try_from(buffer.as_slice())
             .map(Cow::Owned)
             .inspect_err(|err| {
@@ -98,8 +101,12 @@ mod tests {
                 "https://example.com/foo",
             ),
             (
-                Request::builder().uri("WwW.ExamplE.COM").body(()).unwrap(),
-                "http://WwW.ExamplE.COM/",
+                Request::builder()
+                    .uri(Uri::parse_authority_form("WwW.ExamplE.COM").unwrap())
+                    .body(())
+                    .unwrap(),
+                // native Uri preserves the empty path (no forced trailing `/`)
+                "http://WwW.ExamplE.COM",
             ),
         ] {
             let uri = request_uri(&request);

@@ -25,10 +25,15 @@ pub fn try_to_strip_path_prefix_from_uri(
     prefix: impl AsRef<str>,
 ) -> Result<Uri, BoxError> {
     let mut uri = uri.clone();
-    if uri.path_mut().strip_prefix_ignore_ascii_case(prefix.as_ref()) {
+    if uri
+        .path_mut()
+        .strip_prefix_ignore_ascii_case(prefix.as_ref())
+    {
         Ok(uri)
     } else {
-        Err(BoxError::from_static_str("URI's path does NOT contain prefix"))
+        Err(BoxError::from_static_str(
+            "URI's path does NOT contain prefix",
+        ))
     }
 }
 
@@ -44,9 +49,21 @@ mod tests {
             ("https://example.com/", "", Some("https://example.com/")),
             ("https://example.com/", "/", Some("https://example.com/")),
             ("https://example.com/", "/foo", None),
-            ("https://example.com/foo", "/", Some("https://example.com/foo")),
-            ("https://example.com/foo", "/foo", Some("https://example.com/")),
-            ("https://example.com/foo", "foo", Some("https://example.com/")),
+            (
+                "https://example.com/foo",
+                "/",
+                Some("https://example.com/foo"),
+            ),
+            (
+                "https://example.com/foo",
+                "/foo",
+                Some("https://example.com/"),
+            ),
+            (
+                "https://example.com/foo",
+                "foo",
+                Some("https://example.com/"),
+            ),
             (
                 "https://example.com/foo/bar",
                 "foo",

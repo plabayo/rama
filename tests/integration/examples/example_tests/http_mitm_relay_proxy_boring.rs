@@ -50,7 +50,7 @@ async fn test_http_mitm_relay_proxy() {
                     async |req: Request| {
                         Json(json!({
                             "method": req.method().as_str(),
-                            "path": req.uri().path(),
+                            "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
                         }))
                     },
                 )),
@@ -135,7 +135,7 @@ async fn test_http_mitm_relay_proxy() {
             async |req: Request| {
                 Json(json!({
                     "method": req.method().as_str(),
-                    "path": req.uri().path(),
+                    "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
                 }))
             },
         )),

@@ -980,7 +980,7 @@ async fn test_with_fallback_svc(svc: ServeDir) {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/")
         ))))
     }
 
@@ -1047,7 +1047,7 @@ async fn calling_fallback_on_not_allowed() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/")
         ))))
     }
 
@@ -1088,7 +1088,7 @@ async fn with_fallback_svc_and_not_append_index_html_on_directories() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/")
         ))))
     }
 
@@ -1313,7 +1313,7 @@ async fn file_requested_with_trailing_slash_with_fallback() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/")
         ))))
     }
 

@@ -9,7 +9,7 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::ShutdownGuard,
     http::{
-        HeaderName, HeaderValue, Request,
+        BodyLimitLayer, HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
             AcceptCh, ClientHint, Cookie, CriticalCh, HeaderMapExt, SecWebSocketProtocol, Vary,
@@ -35,7 +35,7 @@ use rama::{
         ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,

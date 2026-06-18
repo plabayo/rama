@@ -8,9 +8,9 @@ use crate::headers::HeaderMapExt;
 use crate::headers::forwarded::ForwardHeader;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::{Layer, Service, extensions::ExtensionsRef};
+use rama_http_types::RequestContext;
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
-use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::fmt;
@@ -241,7 +241,10 @@ mod tests {
             SetForwardedHeadersService::<_, (rama_http_headers::forwarded::Forwarded,)>::new(
                 service_fn(svc),
             );
-        let req = Request::builder().uri("example.com").body(()).unwrap();
+        let req = Request::builder()
+            .uri("http://example.com")
+            .body(())
+            .unwrap();
         service.serve(req).await.unwrap();
     }
 }

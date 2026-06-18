@@ -340,7 +340,6 @@ mod tests {
             Ok(TransportContext {
                 protocol: TransportProtocol::Tcp,
                 app_protocol: Some(Protocol::HTTPS),
-                http_version: None,
                 authority: authority.into(),
             })
         }

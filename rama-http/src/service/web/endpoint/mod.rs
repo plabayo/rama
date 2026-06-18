@@ -292,7 +292,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res, "http://example.com/")
+        // native Uri preserves the empty path (no forced trailing `/`)
+        assert_eq!(res, "http://example.com")
     }
 
     #[tokio::test]

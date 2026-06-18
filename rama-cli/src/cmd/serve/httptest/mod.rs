@@ -6,7 +6,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::{
-        HeaderName, HeaderValue, Request,
+        BodyLimitLayer, HeaderName, HeaderValue, Request,
         headers::exotic::XClacksOverhead,
         layer::{
             catch_panic::CatchPanicLayer, error_handling::ErrorHandlerLayer,
@@ -21,7 +21,7 @@ use rama::{
         ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,

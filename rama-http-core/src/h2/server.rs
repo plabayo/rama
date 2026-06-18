@@ -1710,7 +1710,7 @@ impl Peer {
             _,
         ) = request.into_parts();
 
-        let mut pseudo = Pseudo::request(method, uri, None);
+        let mut pseudo = Pseudo::request(method, &uri, None);
 
         // reuse order if defined
         if let Some(order) = extensions.get_ref::<PseudoHeaderOrder>().cloned()
@@ -1789,65 +1789,105 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: :status field on request");
         }
 
-        // Convert the URI
-        let mut parts = uri::Parts::default();
+        // Convert the URI from the validated pseudo-headers — the inverse of
+        // the `write_h2_*` writers.
 
         // A request translated from HTTP/1 must not include the :authority
-        // header
-        if let Some(authority) = pseudo.authority {
-            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone());
-            parts.authority = Some(maybe_authority.or_else(|why| {
-                malformed!(
+        // header.
+        let authority = if let Some(authority) = pseudo.authority {
+            match rama_net::address::Authority::try_from(&*authority) {
+                Ok(authority) => Some(authority),
+                Err(why) => malformed!(
                     "malformed headers: malformed authority ({:?}): {}",
                     authority,
                     why,
-                )
-            })?);
-        }
+                ),
+            }
+        } else {
+            None
+        };
 
         // A :scheme is required, except CONNECT.
-        if let Some(scheme) = pseudo.scheme {
+        let scheme = if let Some(scheme) = pseudo.scheme {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :scheme in CONNECT");
             }
-            let maybe_scheme = scheme.parse();
-            let scheme = maybe_scheme.or_else(|why| {
-                malformed!(
+            match scheme.parse::<rama_net::Protocol>() {
+                // It's not possible to build a URI from a scheme and no
+                // authority, so — after validating it — the scheme is dropped
+                // when there is no :authority (mirrors the original behavior).
+                Ok(scheme) => authority.is_some().then_some(scheme),
+                Err(why) => malformed!(
                     "malformed headers: malformed scheme ({:?}): {}",
                     scheme,
                     why,
-                )
-            })?;
-
-            // It's not possible to build an `Uri` from a scheme and path. So,
-            // after validating is was a valid scheme, we just have to drop it
-            // if there isn't an :authority.
-            if parts.authority.is_some() {
-                parts.scheme = Some(scheme);
+                ),
             }
         } else if !is_connect || has_protocol {
             malformed!("malformed headers: missing scheme");
-        }
+        } else {
+            None
+        };
 
-        if let Some(path) = pseudo.path {
+        let path = if let Some(path) = pseudo.path {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :path in CONNECT");
             }
-
             // This cannot be empty
             if path.is_empty() {
                 malformed!("malformed headers: missing path");
             }
-
-            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone());
-            parts.path_and_query = Some(maybe_path.or_else(|why| {
-                malformed!("malformed headers: malformed path ({:?}): {}", path, why,)
-            })?);
+            Some(path)
         } else if is_connect && has_protocol {
             malformed!("malformed headers: missing path in extended CONNECT");
-        }
+        } else {
+            None
+        };
 
-        b = b.uri(parts);
+        let uri = match path.as_deref() {
+            // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
+            // scheme/authority context (a bare `*` when there is none).
+            Some("*") => match &authority {
+                Some(authority) => {
+                    let scheme = scheme
+                        .as_ref()
+                        .map(rama_net::Protocol::as_str)
+                        .unwrap_or("http");
+                    match uri::Uri::parse(format!("{scheme}://{authority}")) {
+                        Ok(uri) => uri,
+                        Err(why) => malformed!("malformed headers: malformed uri: {}", why),
+                    }
+                }
+                None => uri::Uri::from_static("*"),
+            },
+            // origin-/absolute-form: parse the path, then graft the authority
+            // (and scheme, which is only meaningful with an authority).
+            Some(path) => {
+                let mut uri = match uri::Uri::parse(path.to_owned()) {
+                    Ok(uri) => uri,
+                    Err(why) => {
+                        malformed!("malformed headers: malformed path ({:?}): {}", path, why)
+                    }
+                };
+                if let Some(authority) = authority {
+                    uri.set_authority(authority);
+                    if let Some(scheme) = scheme {
+                        uri.set_scheme(scheme);
+                    }
+                }
+                uri
+            }
+            // authority-form (CONNECT).
+            None => match authority {
+                Some(authority) => match uri::Uri::parse_authority_form(authority.to_string()) {
+                    Ok(uri) => uri,
+                    Err(why) => malformed!("malformed headers: malformed authority: {}", why),
+                },
+                None => uri::Uri::default(),
+            },
+        };
+
+        b = b.uri(uri);
 
         let mut request = match b.body(()) {
             Ok(request) => request,

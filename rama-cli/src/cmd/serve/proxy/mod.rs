@@ -7,7 +7,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::{
-        Request, Response, StatusCode,
+        BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -22,7 +22,7 @@ use rama::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, proxy::IoForwardService, stream::layer::http::BodyLimitLayer},
+    net::{address::SocketAddress, proxy::IoForwardService},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},

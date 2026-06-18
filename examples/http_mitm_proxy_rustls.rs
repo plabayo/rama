@@ -49,7 +49,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
     http::{
-        Body, Request, Response, StatusCode, Version,
+        Body, BodyLimitLayer, Request, Response, StatusCode, Version,
         client::EasyHttpWebClient,
         layer::{
             compression::{CompressionLayer, MirrorDecompressed},
@@ -65,9 +65,7 @@ use rama::{
         server::HttpServer,
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
-    net::{
-        stream::layer::http::BodyLimitLayer, tls::server::SelfSignedData, user::credentials::basic,
-    },
+    net::{tls::server::SelfSignedData, user::credentials::basic},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,

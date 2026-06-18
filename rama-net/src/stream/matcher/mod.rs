@@ -26,6 +26,7 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
+use rama_core::matcher::Matcher as _;
 use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
 
@@ -488,6 +489,93 @@ where
 {
     fn matches(&self, ext: Option<&Extensions>, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, stream);
+        if self.negate { !result } else { result }
+    }
+}
+
+impl<S> SocketMatcherKind<S> {
+    /// Match against a value of the matcher's own input type `S` (rather than a
+    /// [`Socket`](crate::stream::Socket)), given that each socket-address leaf
+    /// matcher also implements [`Matcher<S>`](rama_core::matcher::Matcher).
+    ///
+    /// This lets crates whose input `S` is not a `Socket` — e.g. an HTTP
+    /// `Request`, matched through its `SocketInfo` extension — reuse the
+    /// composite `All`/`Any`/`Custom` logic without exposing the private
+    /// matcher kinds. The `Socket`-based [`Matcher`] impl is unaffected.
+    ///
+    /// [`Matcher`]: rama_core::matcher::Matcher
+    fn matches_input(&self, ext: Option<&Extensions>, target: &S) -> bool
+    where
+        S: 'static,
+        SocketAddressMatcher: rama_core::matcher::Matcher<S>,
+        LoopbackMatcher: rama_core::matcher::Matcher<S>,
+        PrivateIpNetMatcher: rama_core::matcher::Matcher<S>,
+        PortMatcher: rama_core::matcher::Matcher<S>,
+        IpNetMatcher: rama_core::matcher::Matcher<S>,
+    {
+        match self {
+            Self::SocketAddress(matcher) => matcher.matches(ext, target),
+            Self::IpNet(matcher) => matcher.matches(ext, target),
+            Self::Loopback(matcher) => matcher.matches(ext, target),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, target),
+            Self::Port(matcher) => matcher.matches(ext, target),
+            // `All`/`Any` replicate the ext-merging semantics of
+            // `matches_and`/`matches_or` (which require `Matcher<S>` on the
+            // nested matcher, unavailable for a non-`Socket` `S`).
+            Self::All(matchers) => match ext {
+                None => matchers.iter().all(|m| m.matches_input(None, target)),
+                Some(ext) => {
+                    let inner = Extensions::new();
+                    if matchers
+                        .iter()
+                        .all(|m| m.matches_input(Some(&inner), target))
+                    {
+                        ext.extend(&inner);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            },
+            Self::Any(matchers) => {
+                if matchers.is_empty() {
+                    return true;
+                }
+                match ext {
+                    None => matchers.iter().any(|m| m.matches_input(None, target)),
+                    Some(ext) => {
+                        for m in matchers {
+                            let inner = Extensions::new();
+                            if m.matches_input(Some(&inner), target) {
+                                ext.extend(&inner);
+                                return true;
+                            }
+                        }
+                        false
+                    }
+                }
+            }
+            Self::Custom(matcher) => matcher.matches(ext, target),
+        }
+    }
+}
+
+impl<S> SocketMatcher<S> {
+    /// Match against a value of the matcher's own input type `S` via the
+    /// socket-address leaves' [`Matcher<S>`](rama_core::matcher::Matcher)
+    /// impls, applying this matcher's negation on top.
+    ///
+    /// See [`SocketMatcherKind::matches_input`].
+    pub fn matches_input(&self, ext: Option<&Extensions>, target: &S) -> bool
+    where
+        S: 'static,
+        SocketAddressMatcher: rama_core::matcher::Matcher<S>,
+        LoopbackMatcher: rama_core::matcher::Matcher<S>,
+        PrivateIpNetMatcher: rama_core::matcher::Matcher<S>,
+        PortMatcher: rama_core::matcher::Matcher<S>,
+        IpNetMatcher: rama_core::matcher::Matcher<S>,
+    {
+        let result = self.kind.matches_input(ext, target);
         if self.negate { !result } else { result }
     }
 }

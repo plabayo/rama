@@ -14,7 +14,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_headers::Host;
-use rama_net::http::RequestContext;
+use rama_http_types::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 

@@ -368,7 +368,12 @@ async fn async_test(cfg: __TestConfig) {
             let service = RamaHttpService::new(service_fn(move |req: Request| {
                 let (sreq, sres) = serve_handles.lock().remove(0);
 
-                assert_eq!(req.uri().path(), sreq.uri, "client path");
+                // empty / absent request path is the implicit origin-form `/`
+                let req_path = match req.uri().path().map(|p| p.as_raw_str()) {
+                    None | Some("") => "/",
+                    Some(p) => p,
+                };
+                assert_eq!(req_path, sreq.uri, "client path");
                 assert_eq!(req.method(), &sreq.method, "client method");
                 assert_eq!(req.version(), version, "client version");
                 for func in &sreq.headers {
@@ -530,9 +535,13 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                 let service = RamaHttpService::new(service_fn(move |mut req: Request| {
                     async move {
-                        let uri = format!("http://{}{}", dst_addr, req.uri().path())
-                            .parse()
-                            .expect("proxy new uri parse");
+                        let uri = format!(
+                            "http://{}{}",
+                            dst_addr,
+                            req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/")
+                        )
+                        .parse()
+                        .expect("proxy new uri parse");
                         *req.uri_mut() = uri;
 
                         // Make the client request

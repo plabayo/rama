@@ -63,15 +63,17 @@ impl UriMatcher {
                 _ = write!(
                     &mut buffer,
                     "{}://{authority}{}",
-                    uri.scheme_str().unwrap_or("http"),
-                    uri.path()
+                    uri.scheme().map(|s| s.as_str()).unwrap_or("http"),
+                    uri.path().map(|p| p.as_raw_str()).unwrap_or("/")
                 );
                 while buffer.last() == Some(&b'/') {
                     _ = buffer.pop();
                 }
                 self.engine.is_match_bytes(&buffer)
             }
-            None => self.engine.is_match(uri.path()),
+            None => self
+                .engine
+                .is_match(uri.path().map(|p| p.as_raw_str()).unwrap_or("/")),
         }
     }
 }
@@ -173,8 +175,13 @@ mod test {
             (r"*.png", "http://www.example.com/style.css"),
         ] {
             let matcher = UriMatcher::wildcard(Wildcard::new(matcher.as_bytes()).unwrap());
+            // accept both absolute and bare authority-form test targets
+            let uri_parsed = uri
+                .parse::<Uri>()
+                .or_else(|_| Uri::parse_authority_form(uri))
+                .unwrap();
             assert!(
-                !matcher.matches_uri(&(uri.parse().unwrap())),
+                !matcher.matches_uri(&uri_parsed),
                 "!({matcher:?}).matches_uri({uri})",
             );
         }
@@ -185,7 +192,10 @@ mod test {
         for (matcher, req) in [
             (
                 r"(?i)http://www\.example\.com",
-                Request::builder().uri("WwW.ExamplE.COM").body(()).unwrap(),
+                Request::builder()
+                    .uri(Uri::parse_authority_form("WwW.ExamplE.COM").unwrap())
+                    .body(())
+                    .unwrap(),
             ),
             (
                 r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)",
@@ -220,7 +230,10 @@ mod test {
         for (matcher, req) in [
             (
                 r"*://www.example.com",
-                Request::builder().uri("www.example.com").body(()).unwrap(),
+                Request::builder()
+                    .uri(Uri::parse_authority_form("www.example.com").unwrap())
+                    .body(())
+                    .unwrap(),
             ),
             (
                 r"*/*.css",

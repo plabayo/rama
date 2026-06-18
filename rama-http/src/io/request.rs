@@ -21,11 +21,16 @@ where
             format!(
                 "{} {}{} {:?}\r\n",
                 parts.method,
-                parts.uri.path(),
+                parts
+                    .uri
+                    .path()
+                    .map(|p| p.as_raw_str())
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or("/"),
                 parts
                     .uri
                     .query()
-                    .map(|q| format!("?{q}"))
+                    .map(|q| format!("?{}", q.as_raw_str()))
                     .unwrap_or_default(),
                 parts.version
             )
@@ -45,7 +50,7 @@ where
                             format!(
                                 "[{}: {}]\r\n",
                                 header,
-                                parts.uri.scheme_str().unwrap_or("?")
+                                parts.uri.scheme().map(|s| s.as_str()).unwrap_or("?")
                             )
                             .as_bytes(),
                         )
@@ -56,15 +61,31 @@ where
                             format!(
                                 "[{}: {}]\r\n",
                                 header,
-                                parts.uri.authority().map(|a| a.as_str()).unwrap_or("?")
+                                parts
+                                    .uri
+                                    .authority()
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| "?".to_owned())
                             )
                             .as_bytes(),
                         )
                         .await?;
                     }
                     PseudoHeader::Path => {
-                        w.write_all(format!("[{}: {}]\r\n", header, parts.uri.path()).as_bytes())
-                            .await?;
+                        w.write_all(
+                            format!(
+                                "[{}: {}]\r\n",
+                                header,
+                                parts
+                                    .uri
+                                    .path()
+                                    .map(|p| p.as_raw_str())
+                                    .filter(|p| !p.is_empty())
+                                    .unwrap_or("/")
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
                     }
                     PseudoHeader::Protocol | PseudoHeader::Status => (), // not expected in request
                 }

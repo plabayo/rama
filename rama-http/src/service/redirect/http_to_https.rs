@@ -1,12 +1,12 @@
 use crate::{
-    Request, Response, Scheme, StatusCode, Uri,
+    Request, Response, Scheme, StatusCode,
     headers::Location,
     service::web::response::{Headers, IntoResponse},
     utils::request_uri,
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
-use rama_utils::{macros::generate_set_and_with, str::smol_str::format_smolstr};
+use rama_utils::macros::generate_set_and_with;
 use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
@@ -131,70 +131,35 @@ where
             }
         };
 
-        let mut uri_parts = full_uri.into_owned().into_parts();
+        let mut uri = full_uri.into_owned();
 
-        uri_parts.scheme = Some(Scheme::HTTPS);
+        uri.set_scheme(Scheme::HTTPS);
 
-        let Some(authority) = uri_parts.authority.as_mut() else {
+        if uri.authority().is_none() {
             tracing::debug!("failed to get authority from full Uri (report bug)");
             return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-        };
+        }
 
-        match (authority.port_u16(), self.overwrite_port) {
+        match (uri.port_u16(), self.overwrite_port) {
             // use port to overwrite
-            (_, Some(port)) => match format_smolstr!("{}:{port}", authority.host()).parse() {
-                Ok(new_authority) => *authority = new_authority,
-                Err(err) => {
-                    tracing::debug!(
-                        "failed to overwrite authority using custom port: {err} (bug??)"
-                    );
-                    return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                }
-            },
+            (_, Some(port)) => {
+                uri.set_port(port);
+            }
             // drop port
-            (Some(_), _) => {
-                *authority = match authority.host().parse() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        tracing::debug!(
-                            "failed to overwrite authority with (parsed) host value: {err} (bug??)"
-                        );
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    }
-                }
+            (Some(_), None) => {
+                uri.set_port(None::<u16>);
             }
             (None, None) => (), // nothing to do
         }
 
-        if self.drop_query
-            && let Some(path_and_query) = uri_parts.path_and_query.take()
-        {
-            if path_and_query.query().is_some() {
-                // TOOD: open issue in http to perhaps more easily drop query??
-                uri_parts.path_and_query = Some(match path_and_query.path().parse() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        tracing::debug!(
-                            "failed to overwrite path-and-query with (parsed) path value: {err} (bug??)"
-                        );
-                        return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
-                    }
-                });
-            } else {
-                uri_parts.path_and_query = Some(path_and_query);
-            }
+        if self.drop_query {
+            uri.unset_query();
         }
 
-        match Uri::from_parts(uri_parts) {
-            Ok(uri) => match Location::try_from(uri) {
-                Ok(loc) => Ok((Headers::single(loc), self.status_code).into_response()),
-                Err(err) => {
-                    tracing::debug!("failed to parse uri as header value: {err}");
-                    Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
-                }
-            },
+        match Location::try_from(uri) {
+            Ok(loc) => Ok((Headers::single(loc), self.status_code).into_response()),
             Err(err) => {
-                tracing::debug!("failed to re-create Uri using modified parts: {err} (bug??)");
+                tracing::debug!("failed to parse uri as header value: {err}");
                 Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
             }
         }

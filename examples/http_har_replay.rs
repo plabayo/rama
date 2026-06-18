@@ -24,7 +24,7 @@ use rama::{
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{
-        Request, Response, Uri,
+        Request, Response,
         body::util::BodyExt,
         client::EasyHttpWebClient,
         layer::{
@@ -39,7 +39,7 @@ use rama::{
         server::HttpServer,
     },
     layer::{Abortable, abort::AbortController},
-    net::address::SocketAddress,
+    net::{Protocol, address::Authority, address::SocketAddress},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -148,21 +148,10 @@ async fn main() {
 }
 
 fn rewrite_request_uri_to_local_server(req: &mut Request, addr: SocketAddress) {
-    let original = req.uri().clone();
-
-    let path_and_query = original
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-
-    let new_uri = Uri::builder()
-        .scheme("http")
-        .authority(addr.to_string())
-        .path_and_query(path_and_query)
-        .build()
-        .expect("build uri");
-
-    *req.uri_mut() = new_uri;
+    // point the request at the local server while preserving path + query
+    let uri = req.uri_mut();
+    uri.set_scheme(Protocol::HTTP);
+    uri.set_authority(Authority::from(addr));
 }
 
 fn setup_tracing() {

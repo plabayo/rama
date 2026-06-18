@@ -1361,7 +1361,10 @@ async fn request_without_authority() {
     let srv = async move {
         let mut srv = server::handshake(io).await.expect("handshake");
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
-        assert_eq!(req.uri().path(), "/just-a-path");
+        assert_eq!(
+            req.uri().path().map(|p| p.as_raw_str()),
+            Some("/just-a-path")
+        );
 
         let rsp = Response::new(());
         stream.send_response(rsp, true).unwrap();
@@ -1504,7 +1507,7 @@ async fn extended_connect_protocol_disabled_by_default() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::CONNECT,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Protocol::from_static("the-bread-protocol").into(),
             )))
             .await;
@@ -1541,7 +1544,7 @@ async fn extended_connect_protocol_enabled_during_handshake() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::CONNECT,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Protocol::from_static("the-bread-protocol").into(),
             )))
             .await;
@@ -1595,7 +1598,7 @@ async fn reject_pseudo_protocol_on_non_connect_request() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::GET,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Some(Protocol::from_static("the-bread-protocol")),
             )))
             .await;

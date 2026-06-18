@@ -19,6 +19,7 @@ use rama_core::matcher::Matcher;
 use rama_net::address::SocketAddress;
 use rama_net::stream::matcher::{
     IpNetMatcher, LoopbackMatcher, PortMatcher, PrivateIpNetMatcher, SocketAddressMatcher,
+    SocketMatcher,
 };
 use rama_net::stream::{Socket, SocketInfo};
 
@@ -61,3 +62,12 @@ impl_request_matcher!(IpNetMatcher);
 impl_request_matcher!(LoopbackMatcher);
 impl_request_matcher!(PortMatcher);
 impl_request_matcher!(PrivateIpNetMatcher);
+
+/// The composite [`SocketMatcher`] delegates to the leaf impls above (and any
+/// custom/nested matchers) through its public `matches_input` helper, so its
+/// `All`/`Any`/`Custom`/negation logic applies to an HTTP `Request` too.
+impl<Body: 'static> Matcher<Request<Body>> for SocketMatcher<Request<Body>> {
+    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
+        self.matches_input(ext, req)
+    }
+}

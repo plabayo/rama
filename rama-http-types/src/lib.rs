@@ -31,8 +31,7 @@ mod hyperium_bridge;
 pub use crate::dep::hyperium::http::method;
 pub use crate::dep::hyperium::http::status;
 
-#[doc(inline)]
-pub use crate::dep::hyperium::http::{Error, Result};
+mod error;
 #[doc(inline)]
 pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
 #[doc(inline)]
@@ -43,6 +42,8 @@ pub use crate::request::{HttpRequestParts, HttpRequestPartsMut, Request};
 pub use crate::response::Response;
 #[doc(inline)]
 pub use crate::status::StatusCode;
+#[doc(inline)]
+pub use error::{Error, Result};
 #[doc(inline)]
 pub use rama_net::http::Version;
 

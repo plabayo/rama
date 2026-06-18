@@ -21,7 +21,7 @@ const MAX_DELAY_MS: u64 = 60_000;
 pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     MapResponseBodyLayer::new_boxed_streaming_body().into_layer(service_fn(async |req: Request| {
-        let params = match parse_params(req.uri().query()) {
+        let params = match parse_params(req.uri().query().map(|q| q.as_raw_str())) {
             Ok(p) => p,
             Err(err) => return Ok::<_, Infallible>((StatusCode::BAD_REQUEST, err).into_response()),
         };

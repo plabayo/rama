@@ -83,7 +83,6 @@ impl UriMatchReplaceDomain {
             self
         }
     }
-
 }
 
 impl UriMatchReplace for UriMatchReplaceDomain {

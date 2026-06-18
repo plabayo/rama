@@ -72,7 +72,6 @@ impl From<&Request> for TransportContext {
         Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
-            http_version: value.http_version,
             authority: value.authority.clone().into(),
         }
     }
@@ -83,7 +82,6 @@ impl From<Request> for TransportContext {
         Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
-            http_version: value.http_version,
             authority: value.authority.into(),
         }
     }

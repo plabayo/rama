@@ -21,7 +21,7 @@ use rama_core::telemetry::opentelemetry::{
     semantic_conventions,
 };
 use rama_core::{Layer, Service};
-use rama_net::http::RequestContext;
+use rama_http_types::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::atomic::{self, AtomicUsize};
 use std::{borrow::Cow, fmt, sync::Arc};
@@ -249,13 +249,12 @@ impl<S, F> RequestMetricsService<S, F> {
         }
 
         attributes.push(KeyValue::new(HTTP_REQUEST_METHOD, req.method().to_string()));
-        if let Some(http_version) = request_ctx.as_ref().and_then(|rc| match rc.http_version {
-            rama_http_types::Version::HTTP_09 => Some("0.9"),
-            rama_http_types::Version::HTTP_10 => Some("1.0"),
-            rama_http_types::Version::HTTP_11 => Some("1.1"),
-            rama_http_types::Version::HTTP_2 => Some("2"),
-            rama_http_types::Version::HTTP_3 => Some("3"),
-            _ => None,
+        if let Some(http_version) = request_ctx.as_ref().map(|rc| match rc.http_version {
+            rama_http_types::Version::HTTP_09 => "0.9",
+            rama_http_types::Version::HTTP_10 => "1.0",
+            rama_http_types::Version::HTTP_11 => "1.1",
+            rama_http_types::Version::HTTP_2 => "2",
+            rama_http_types::Version::HTTP_3 => "3",
         }) {
             attributes.push(KeyValue::new(NETWORK_PROTOCOL_VERSION, http_version));
         }

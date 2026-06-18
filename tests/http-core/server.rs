@@ -1963,7 +1963,9 @@ async fn h2_connect() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect("localhost").body(()).unwrap();
+        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            .body(())
+            .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -2033,9 +2035,11 @@ async fn h2_connect_multiplex() {
     tokio::spawn(async move {
         let mut streams = vec![];
         for i in 0..80 {
-            let request = Request::connect(format!("localhost_{}", i % 4))
-                .body(())
-                .unwrap();
+            let request = Request::connect(
+                Uri::parse_authority_form(format!("localhost_{}", i % 4)).unwrap(),
+            )
+            .body(())
+            .unwrap();
             let (response, send_stream) = h2.send_request(request, false).unwrap();
             streams.push((i, response, send_stream));
         }
@@ -2143,7 +2147,9 @@ async fn h2_connect_large_body() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect("localhost").body(()).unwrap();
+        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            .body(())
+            .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -2215,7 +2221,9 @@ async fn h2_connect_empty_frames() {
     async fn connect_and_recv_bread(
         h2: &mut SendRequest<Bytes>,
     ) -> (RecvStream, SendStream<Bytes>) {
-        let request = Request::connect("localhost").body(()).unwrap();
+        let request = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            .body(())
+            .unwrap();
         let (response, send_stream) = h2.send_request(request, false).unwrap();
         let response = response.await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);

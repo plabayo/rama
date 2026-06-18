@@ -5,6 +5,7 @@ use crate::{
     cli::ForwardKind,
     combinators::{Either, Either3},
     error::{BoxError, BoxErrorExt, ErrorExt},
+    http::BodyLimitLayer,
     http::{
         Request, Response, Version,
         headers::exotic::XClacksOverhead,
@@ -21,7 +22,6 @@ use crate::{
     },
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::StaticOutput,

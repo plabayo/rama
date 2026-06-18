@@ -660,7 +660,7 @@ impl Continuation {
 // ===== impl Pseudo =====
 
 impl Pseudo {
-    pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
+    pub fn request(method: Method, uri: &Uri, protocol: Option<Protocol>) -> Self {
         // Helper: serialize a `BytesMut` writer closure into a `BytesStr`.
         // Native `Uri` wire writers stream into a `BytesMut`; the pseudo
         // fields hold `BytesStr`.
@@ -678,12 +678,17 @@ impl Pseudo {
             uri.write_h2_path(&mut path_buf);
             let path = bytes_str_from(path_buf);
 
-            let path = if !path.is_empty() {
-                path
-            } else if method == Method::OPTIONS {
+            // RFC 9113 §8.3.1: an OPTIONS request whose target has no path
+            // component is the "OPTIONS *" form and MUST carry `:path = *`.
+            // The origin-form writer normalises an absent path to `/`, so the
+            // absent path is detected via the typed accessor instead.
+            let path = if method == Method::OPTIONS
+                && !uri.is_asterisk()
+                && uri.path().is_none_or(|p| p.as_bytes().is_empty())
+            {
                 BytesStr::from_static("*")
             } else {
-                BytesStr::from_static("/")
+                path
             };
 
             // `:scheme` is only present when the URI carries one.
@@ -1188,7 +1193,7 @@ mod test {
         assert_eq!(
             Pseudo::request(
                 Method::CONNECT,
-                Uri::from_static("https://example.com:8443"),
+                &Uri::from_static("https://example.com:8443"),
                 None
             ),
             Pseudo {
@@ -1201,7 +1206,7 @@ mod test {
         assert_eq!(
             Pseudo::request(
                 Method::CONNECT,
-                Uri::from_static("https://example.com/test"),
+                &Uri::from_static("https://example.com/test"),
                 None
             ),
             Pseudo {
@@ -1212,7 +1217,11 @@ mod test {
         );
 
         assert_eq!(
-            Pseudo::request(Method::CONNECT, Uri::from_static("example.com:8443"), None),
+            Pseudo::request(
+                Method::CONNECT,
+                &Uri::parse_authority_form("example.com:8443").unwrap(),
+                None
+            ),
             Pseudo {
                 method: Method::CONNECT.into(),
                 authority: BytesStr::from_static("example.com:8443").into(),
@@ -1231,7 +1240,7 @@ mod test {
         assert_eq!(
             Pseudo::request(
                 Method::CONNECT,
-                Uri::from_static("https://example.com:8443"),
+                &Uri::from_static("https://example.com:8443"),
                 Protocol::from_static("the-bread-protocol").into()
             ),
             Pseudo {
@@ -1247,7 +1256,7 @@ mod test {
         assert_eq!(
             Pseudo::request(
                 Method::CONNECT,
-                Uri::from_static("https://example.com:8443/test"),
+                &Uri::from_static("https://example.com:8443/test"),
                 Protocol::from_static("the-bread-protocol").into()
             ),
             Pseudo {
@@ -1263,7 +1272,7 @@ mod test {
         assert_eq!(
             Pseudo::request(
                 Method::CONNECT,
-                Uri::from_static("http://example.com/a/b/c"),
+                &Uri::from_static("http://example.com/a/b/c"),
                 Protocol::from_static("the-bread-protocol").into()
             ),
             Pseudo {
@@ -1283,7 +1292,11 @@ mod test {
         // these MUST include a ":path" pseudo-header field with a value of '*' (see Section 7.1 of [HTTP]).
         // See: https://datatracker.ietf.org/doc/html/rfc9113#section-8.3.1
         assert_eq!(
-            Pseudo::request(Method::OPTIONS, Uri::from_static("example.com:8080"), None,),
+            Pseudo::request(
+                Method::OPTIONS,
+                &Uri::parse_authority_form("example.com:8080").unwrap(),
+                None,
+            ),
             Pseudo {
                 method: Method::OPTIONS.into(),
                 authority: BytesStr::from_static("example.com:8080").into(),
@@ -1309,7 +1322,7 @@ mod test {
             assert_eq!(
                 Pseudo::request(
                     method.clone(),
-                    Uri::from_static("http://example.com:8080"),
+                    &Uri::from_static("http://example.com:8080"),
                     None,
                 ),
                 Pseudo {
@@ -1323,7 +1336,7 @@ mod test {
             assert_eq!(
                 Pseudo::request(
                     method.clone(),
-                    Uri::from_static("https://example.com/a/b/c"),
+                    &Uri::from_static("https://example.com/a/b/c"),
                     None,
                 ),
                 Pseudo {

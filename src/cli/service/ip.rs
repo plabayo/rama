@@ -14,6 +14,7 @@ use crate::{
     combinators::Either7,
     error::{BoxError, BoxErrorExt, ErrorExt as _},
     extensions::ExtensionsRef,
+    http::BodyLimitLayer,
     http::{
         Request, Response, StatusCode,
         headers::exotic::XClacksOverhead,
@@ -32,7 +33,7 @@ use crate::{
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::address::ip::geo::{GeoLocation, IpGeoDb, IpGeoInfo},
     net::forwarded::Forwarded,
-    net::stream::{SocketInfo, layer::http::BodyLimitLayer},
+    net::stream::SocketInfo,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::TcpStream,

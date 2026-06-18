@@ -42,7 +42,6 @@ pub(super) enum OpenFileOutput {
         etag: Option<ETag>,
         last_modified: Option<LastModified>,
     },
-    InvalidRedirectUri,
     InvalidFilename,
 }
 
@@ -557,7 +556,7 @@ async fn maybe_serve_directory(
     html_as_default_extension: bool,
     source: &DirSource,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
-    let uri_path = uri.path();
+    let uri_path = uri.path().map(|p| p.as_raw_str()).unwrap_or("/");
 
     // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
     let is_directory: Option<bool> = match source {
@@ -586,7 +585,7 @@ async fn maybe_serve_directory(
 
     match mode {
         DirectoryServeMode::AppendIndexHtml => {
-            if uri.path().ends_with('/') {
+            if uri_path.ends_with('/') {
                 path_to_file.push("index.html");
                 Ok(None)
             } else {
@@ -647,36 +646,12 @@ async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> Option<bool> {
 }
 
 /// Append a trailing slash to a URI path for directory redirection.
-fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
-    let rama_http_types::uri::Parts {
-        scheme,
-        authority,
-        path_and_query,
-        ..
-    } = uri.into_parts();
-
-    let mut uri_builder = Uri::builder();
-
-    if let Some(scheme) = scheme {
-        uri_builder = uri_builder.scheme(scheme);
-    }
-
-    if let Some(authority) = authority {
-        uri_builder = uri_builder.authority(authority);
-    }
-
-    let uri_builder = if let Some(path_and_query) = path_and_query {
-        if let Some(query) = path_and_query.query() {
-            uri_builder.path_and_query(format!("{}/?{}", path_and_query.path(), query))
-        } else {
-            uri_builder.path_and_query(format!("{}/", path_and_query.path()))
-        }
-    } else {
-        uri_builder.path_and_query("/")
-    };
-
-    uri_builder.build().map_err(|err| {
-        tracing::error!("redirect uri failed to build: {err:?}");
-        OpenFileOutput::InvalidRedirectUri
-    })
+fn append_slash_on_path(mut uri: Uri) -> Result<Uri, OpenFileOutput> {
+    // Scheme, authority and query are preserved; only the path gains a `/`.
+    let new_path = format!(
+        "{}/",
+        uri.path().map(|p| p.as_raw_str()).unwrap_or_default()
+    );
+    uri.set_path(new_path);
+    Ok(uri)
 }

@@ -1,8 +1,8 @@
 use rama_core::error::BoxErrorExt as _;
 use std::{borrow::Cow, fmt};
 
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 use crate::uri::Uri;
+use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
 
 #[derive(Clone)]
 pub(super) struct UriFormatter {

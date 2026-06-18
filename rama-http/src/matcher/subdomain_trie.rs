@@ -1,8 +1,8 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
 use rama_core::{extensions::Extensions, matcher::Matcher};
+use rama_http_types::RequestContext;
 use rama_net::address::{AsDomainRef, DomainTrie};
-use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
 /// A matcher that matches subdomains.
@@ -87,6 +87,7 @@ where
 #[cfg(test)]
 mod subdomain_trie_tests {
     use super::*;
+    use crate::Uri;
 
     #[test]
     fn test_trie_matching() {
@@ -107,7 +108,10 @@ mod subdomain_trie_tests {
 
         let path = "sub.example.com";
 
-        let request = Request::builder().uri(path).body(()).unwrap();
+        let request = Request::builder()
+            .uri(Uri::parse_authority_form(path).unwrap())
+            .body(())
+            .unwrap();
         assert!(matcher.matches(None, &request));
     }
 
@@ -118,7 +122,10 @@ mod subdomain_trie_tests {
 
         let path = "nonmatching.com";
 
-        let request = Request::builder().uri(path).body(()).unwrap();
+        let request = Request::builder()
+            .uri(Uri::parse_authority_form(path).unwrap())
+            .body(())
+            .unwrap();
         assert!(!matcher.matches(None, &request));
     }
 

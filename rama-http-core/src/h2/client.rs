@@ -1867,7 +1867,7 @@ impl Peer {
 
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
-        let mut pseudo = Pseudo::request(method, uri, protocol);
+        let mut pseudo = Pseudo::request(method, &uri, protocol);
 
         // reuse order if defined
         if let Some(order) = extensions

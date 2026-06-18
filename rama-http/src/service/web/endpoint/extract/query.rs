@@ -27,7 +27,7 @@ where
     /// Attempts to construct a [`Query`] from a reference to a [`Uri`].
     #[inline(always)]
     pub fn try_from_uri(value: &Uri) -> Result<Self, FailedToDeserializeQueryString> {
-        let query = value.query().unwrap_or_default();
+        let query = value.query().map(|q| q.as_raw_str()).unwrap_or_default();
         Self::parse_query_str(query)
     }
 
@@ -52,7 +52,11 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
-        let query = parts.uri.query().unwrap_or_default();
+        let query = parts
+            .uri
+            .query()
+            .map(|q| q.as_raw_str())
+            .unwrap_or_default();
         Self::parse_query_str(query)
     }
 }
@@ -70,7 +74,7 @@ where
     ) -> Result<Option<Self>, Self::Rejection> {
         match parts.uri.query() {
             Some(query) => {
-                let params = serde_html_form::from_str(query)
+                let params = serde_html_form::from_str(query.as_raw_str())
                     .map_err(FailedToDeserializeQueryString::from_err)?;
                 Ok(Some(Self(params)))
             }

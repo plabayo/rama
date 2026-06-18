@@ -5,6 +5,7 @@ use crate::dep::hyperium::http::Extensions as HttpExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
 
 #[derive(Clone, Debug, Extension)]
@@ -47,9 +48,9 @@ struct HyperExtensions(HttpExtensions);
 /// Inspecting a request to see what was sent.
 ///
 /// ```
-/// use rama_http_types::{Request, Response, StatusCode};
+/// use rama_http_types::{Request, Response, Result, StatusCode};
 ///
-/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+/// fn respond_to(req: Request<()>) -> Result<Response<()>> {
 ///     if req.uri() != "/awesome-url" {
 ///         return Response::builder()
 ///             .status(StatusCode::NOT_FOUND)
@@ -125,7 +126,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
 
         let mut request = Self::new(body);
         *request.method_mut() = parts.method;
-        *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(parts.uri);
+        *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(&parts.uri);
         *request.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
         *request.headers_mut() = parts.headers;
         *request.extensions_mut() = hyper_extensions;
@@ -162,7 +163,7 @@ impl From<HyperiumParts> for Parts {
             extensions: rama_extensions,
             headers: value.headers,
             method: value.method,
-            uri: crate::hyperium_bridge::uri_from_hyperium(value.uri),
+            uri: crate::hyperium_bridge::uri_from_hyperium(&value.uri),
             version: crate::hyperium_bridge::version_from_hyperium(value.version),
         }
     }
@@ -181,6 +182,12 @@ impl From<Parts> for HyperiumParts {
 impl ExtensionsRef for Parts {
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl ClientIp for Parts {
+    fn client_ip(&self) -> Option<std::net::IpAddr> {
+        rama_net::client_ip::client_ip(self)
     }
 }
 
@@ -699,6 +706,12 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
 impl<B> ExtensionsRef for Request<B> {
     fn extensions(&self) -> &Extensions {
         &self.head.extensions
+    }
+}
+
+impl<B> ClientIp for Request<B> {
+    fn client_ip(&self) -> Option<std::net::IpAddr> {
+        rama_net::client_ip::client_ip(self)
     }
 }
 
@@ -1241,7 +1254,9 @@ mod tests {
 
     #[test]
     fn it_can_convert_between_rama_and_hyper() {
-        let uri = "https://example.com";
+        // Trailing slash: a round-trip through `http::Uri` normalises an empty
+        // path to `/`, so use the already-normalised form for exact equality.
+        let uri = "https://example.com/";
         let version = Version::HTTP_2;
         let method = Method::POST;
         let body = "some string";
@@ -1265,7 +1280,10 @@ mod tests {
         let mut hyper_request = HyperiumRequest::from(rama_request);
 
         assert_eq!(hyper_request.uri(), uri);
-        assert_eq!(hyper_request.version(), version);
+        assert_eq!(
+            hyper_request.version(),
+            crate::hyperium_bridge::version_to_hyperium(version)
+        );
         assert_eq!(hyper_request.method(), method);
         assert_eq!(*hyper_request.body(), body);
         assert_eq!(

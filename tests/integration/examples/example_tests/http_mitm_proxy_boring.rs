@@ -59,7 +59,7 @@ async fn test_http_mitm_proxy() {
                         .with_get("/{*any}", async |req: Request| {
                             Json(json!({
                                 "method": req.method().as_str(),
-                                "path": req.uri().path(),
+                                "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
                             }))
                         }),
                 ),
@@ -152,7 +152,7 @@ async fn test_http_mitm_proxy() {
                     .with_get("/{*any}", async |req: Request| {
                         Json(json!({
                             "method": req.method().as_str(),
-                            "path": req.uri().path(),
+                            "path": req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"),
                         }))
                     }),
             ),

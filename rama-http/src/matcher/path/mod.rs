@@ -434,7 +434,7 @@ impl PathMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
     fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        self.matches_path(ext, req.uri().path())
+        self.matches_path(ext, req.uri().path().map(|p| p.as_raw_str()).unwrap_or("/"))
     }
 }
 

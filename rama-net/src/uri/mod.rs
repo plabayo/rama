@@ -288,6 +288,24 @@ impl Uri {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
     }
 
+    /// Project this URI to HTTP **authority-form** (`[userinfo@]host[:port]`),
+    /// the CONNECT request-target shape — keeping only the authority and
+    /// dropping the scheme, path, query and fragment.
+    ///
+    /// Returns `None` when there is no authority component (e.g. an
+    /// origin-form `/path` or the asterisk-form `*`). This is the companion
+    /// to [`parse_authority_form`](Self::parse_authority_form) for an
+    /// already-parsed URI, so callers need not round-trip through a manual
+    /// `host:port` string.
+    #[must_use]
+    pub fn as_authority_form(&self) -> Option<Self> {
+        // The authority already renders to canonical `[userinfo@]host[:port]`,
+        // which is exactly authority-form; reparsing it yields the dedicated
+        // authority-form representation. A valid authority always reparses.
+        let authority = self.authority()?;
+        Self::parse_authority_form(authority.to_string()).ok()
+    }
+
     /// View this [`Uri`] as a str.
     ///
     /// This method may allocate, and can also contain
@@ -1190,6 +1208,32 @@ impl PartialEq for Uri {
 }
 
 impl Eq for Uri {}
+
+/// `Uri::default()` is the implicit origin-form `/`, matching `http::Uri`.
+impl Default for Uri {
+    fn default() -> Self {
+        Self::from_static("/")
+    }
+}
+
+// String equality compares the canonical (`Display`/`as_str`) form. A native
+// `Uri` round-trips its source faithfully, so this is a plain string compare
+// (allocation-free on the borrowed path).
+impl PartialEq<str> for Uri {
+    fn eq(&self, other: &str) -> bool {
+        *self.as_str() == *other
+    }
+}
+impl PartialEq<&str> for Uri {
+    fn eq(&self, other: &&str) -> bool {
+        *self.as_str() == **other
+    }
+}
+impl PartialEq<String> for Uri {
+    fn eq(&self, other: &String) -> bool {
+        *self.as_str() == **other
+    }
+}
 
 impl Ord for Uri {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {

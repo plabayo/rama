@@ -1018,15 +1018,9 @@ async fn request_options_with_star() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
-    // Note the lack of trailing slash.
-    let uri = uri::Uri::from_parts({
-        let mut parts = uri::Parts::default();
-        parts.scheme = Some(uri::Scheme::HTTP);
-        parts.authority = Some(uri::Authority::from_static("example.com"));
-        parts.path_and_query = Some(uri::PathAndQuery::from_static("*"));
-        parts
-    })
-    .unwrap();
+    // Note the lack of trailing slash: an OPTIONS target with no path is the
+    // "OPTIONS *" form, so the request peer derives `:path = *`.
+    let uri = uri::Uri::parse("http://example.com").unwrap();
 
     let uri_clone = uri.clone();
     let srv = async move {
