@@ -6,9 +6,11 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
+    address::Domain,
     proxy::ProxyTarget,
     tls::{
-        client::{ServerVerifyMode, TlsClientConfig},
+        KeyLogIntent,
+        client::{ClientHello, ServerVerifyMode, TlsClientConfig},
         server::InputWithClientHello,
     },
 };
@@ -18,6 +20,33 @@ use crate::{
     client::{BoringClientConfigExt, BoringTlsConnectorConfig, TlsConnectorData},
     proxy::{TlsMitmRelay, TlsMitmRelayError},
 };
+
+/// Build the egress [`TlsClientConfig`] for the MITM relay from the peeked
+/// ingress [`ClientHello`] (or boring defaults when none is available).
+///
+/// `new_from_client_hello` deliberately strips the SNI: regular connectors
+/// re-derive it per-request from the transport authority. The relay reaches
+/// the upstream through [`tls_connect`], which has no such fallback, so the
+/// peeked SNI is re-attached here — otherwise egress ships an SNI-less
+/// ClientHello and the upstream serves the wrong cert (or rejects the hello).
+///
+/// [`tls_connect`]: crate::client::tls_connect
+fn egress_tls_client_config(
+    client_hello: Option<&ClientHello>,
+    sni: Option<Domain>,
+    keylog: KeyLogIntent,
+) -> TlsClientConfig {
+    let config = match client_hello {
+        Some(hello) => TlsClientConfig::new_from_client_hello(hello),
+        None => TlsClientConfig::new(),
+    }
+    .with_server_verify(ServerVerifyMode::Disable)
+    .with_keylog(keylog);
+    match sni {
+        Some(sni) => config.with_server_name(sni.into()),
+        None => config,
+    }
+}
 
 #[derive(Debug, Clone)]
 /// A utility that can be used by MITM services such as transparent proxies,
@@ -109,24 +138,22 @@ where
         // TODO: in future have flow that works for SNI
         // as well as ECH target data??? If not already...
         let maybe_sni = client_hello.ext_server_name().cloned();
+        let keylog = self.relay.keylog_intent_ref().clone();
         // Split the mirror+default fallback so we can surface which
         // CHs trip it. `try_from` failure here is the silent route to
         // a default builder; that builder is what produces the
         // ~133-byte SNI-less ClientHello seen on the wire.
-        let config = TlsClientConfig::new_from_client_hello(&client_hello)
-            .with_server_verify(ServerVerifyMode::Disable)
-            .with_keylog(self.relay.keylog_intent_ref().clone());
+        let config =
+            egress_tls_client_config(Some(&client_hello), maybe_sni.clone(), keylog.clone());
 
         let maybe_connector_data = TlsConnectorData::try_from(&config)
             .or_else(|err| {
                 tracing::warn!(
                     ?maybe_sni,
                     %err,
-                    "tls mitm relay: build TlsConnectorData from ClientHello failed; falling back to default (no SNI / ALPN)"
+                    "tls mitm relay: build TlsConnectorData from ClientHello failed; falling back to default (no ALPN)"
                 );
-                let config = TlsClientConfig::new()
-                    .with_server_verify(ServerVerifyMode::Disable)
-                    .with_keylog(self.relay.keylog_intent_ref().clone());
+                let config = egress_tls_client_config(None, maybe_sni.clone(), keylog);
                 TlsConnectorData::try_from(&config)
             })
             .inspect_err(|err| {
@@ -152,5 +179,43 @@ where
             .serve(tls_input)
             .await
             .map_err(TlsMitmRelayError::tls_serve)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_net::tls::{ProtocolVersion, client::ClientHelloExtension};
+
+    fn hello_with_sni(sni: &Domain) -> ClientHello {
+        ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::ServerName(Some(sni.clone()))],
+        )
+    }
+
+    // Regression (boring extensions refactor): `new_from_client_hello`
+    // strips the SNI and the relay's `tls_connect` path can't re-derive it
+    // from a transport authority, so the egress config MUST carry the peeked
+    // SNI or the upstream gets an SNI-less hello (wrong cert / handshake
+    // failure). Pin that the egress connector data keeps the ingress SNI.
+    #[test]
+    fn egress_config_carries_ingress_sni() {
+        let sni = Domain::from_static("example.com");
+        let hello = hello_with_sni(&sni);
+
+        let config =
+            egress_tls_client_config(Some(&hello), Some(sni.clone()), KeyLogIntent::Disabled);
+        let data = TlsConnectorData::try_from(&config).expect("build egress connector data");
+        assert_eq!(data.server_name.as_ref(), Some(&sni));
+
+        // Guard the contract the re-attach compensates for: the config taken
+        // straight from the hello carries no SNI on its own.
+        let stripped = TlsClientConfig::new_from_client_hello(&hello);
+        let stripped_data =
+            TlsConnectorData::try_from(&stripped).expect("build stripped connector data");
+        assert_eq!(stripped_data.server_name, None);
     }
 }
