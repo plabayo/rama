@@ -1,0 +1,38 @@
+[package]
+name = "rama-http-hyperium"
+description = "conversions between rama-http-types and the hyperium `http` crate (ecosystem interop)"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["http", "hyperium", "interop", "rama"]
+categories = ["web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = ["http"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
+
+[features]
+default = []
+
+[dependencies]
+http = { workspace = true }
+rama-core = { workspace = true }
+rama-http-types = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

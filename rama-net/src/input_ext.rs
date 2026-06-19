@@ -147,10 +147,10 @@ mod private {
 /// [`authority`](AuthorityInputExt::authority) with the application
 /// [`protocol`](ProtocolInputExt::protocol)'s default port as the port fallback.
 ///
-/// Auto-implemented (and [sealed](private::Sealed)) for every input that is both
-/// an [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it is the typed
-/// replacement for the `host:port` that `TransportContext` used to resolve for
-/// connectors, and is never implemented by hand.
+/// Auto-implemented (and sealed) for every input that is both an
+/// [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it is the typed replacement
+/// for the `host:port` that `TransportContext` used to resolve for connectors,
+/// and is never implemented by hand.
 pub trait TransportAddressInputExt: AuthorityInputExt + ProtocolInputExt + private::Sealed {
     /// The `host:port` to connect to: the authority's port if set, else the
     /// protocol's default port. `None` when no host (or no port) resolves.

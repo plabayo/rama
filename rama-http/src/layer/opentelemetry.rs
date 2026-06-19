@@ -206,7 +206,7 @@ impl<S, F: Clone> Layer<S> for RequestMetricsLayer<F> {
     }
 }
 
-/// A [`Service`] that records [http] server metrics using OpenTelemetry.
+/// A [`Service`] that records HTTP server metrics using OpenTelemetry.
 #[derive(Debug, Clone)]
 pub struct RequestMetricsService<S, F = ()> {
     inner: S,

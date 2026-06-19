@@ -35,7 +35,6 @@ const_format = { workspace = true }
 fnv = { workspace = true }
 futures-core = { workspace = true }
 hex = { workspace = true }
-http = { workspace = true }
 itertools = { workspace = true }
 itoa = { workspace = true }
 md5 = { workspace = true }

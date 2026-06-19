@@ -50,6 +50,7 @@ members = [
     "rama-http-core/tests/h2-fuzz",
     "rama-http-core/tests/h2-support",
     "rama-http-headers",
+    "rama-http-hyperium",
     "rama-http-macros",
     "rama-http-types",
     "rama-macros",
@@ -126,9 +127,7 @@ futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
-http = "=1.4.0" # 1.4.1 regressed authority-form CONNECT URIs (hyperium/http#826); pin until we drop the dep
-http-body = "1"
-http-body-util = "0.1"
+http = "=1.4.0" # interop-only (rama-http-hyperium); 1.4.1 regressed authority-form CONNECT URIs (hyperium/http#826)
 http-range-header = "0.4"
 httparse = "1.10"
 httpdate = "1.0"
@@ -188,6 +187,7 @@ rama-http = { version = "0.3.0-rc1", path = "./rama-http", default-features = fa
 rama-http-backend = { version = "0.3.0-rc1", path = "./rama-http-backend", default-features = false }
 rama-http-core = { version = "0.3.0-rc1", path = "./rama-http-core", default-features = false }
 rama-http-headers = { version = "0.3.0-rc1", path = "./rama-http-headers", default-features = false }
+rama-http-hyperium = { version = "0.3.0-rc1", path = "./rama-http-hyperium", default-features = false }
 rama-http-macros = { version = "0.3.0-rc1", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.3.0-rc1", path = "./rama-http-types", default-features = false }
 rama-macros = { version = "0.3.0-rc1", path = "./rama-macros", default-features = false }

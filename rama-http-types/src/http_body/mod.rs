@@ -150,56 +150,6 @@ impl<T: Body + Unpin + ?Sized> Body for Box<T> {
     }
 }
 
-impl<B: Body> Body for http::Request<B> {
-    type Data = B::Data;
-    type Error = B::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // SAFETY:
-        // A pin projection.
-        unsafe {
-            self.map_unchecked_mut(http::Request::body_mut)
-                .poll_frame(cx)
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.body().is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.body().size_hint()
-    }
-}
-
-impl<B: Body> Body for http::Response<B> {
-    type Data = B::Data;
-    type Error = B::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // SAFETY:
-        // A pin projection.
-        unsafe {
-            self.map_unchecked_mut(http::Response::body_mut)
-                .poll_frame(cx)
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.body().is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.body().size_hint()
-    }
-}
-
 impl Body for String {
     type Data = Bytes;
     type Error = Infallible;

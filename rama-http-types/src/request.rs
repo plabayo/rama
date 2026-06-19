@@ -1,15 +1,10 @@
 use std::fmt;
 
 use crate::Result;
-use crate::dep::hyperium::http::Extensions as HttpExtensions;
-use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
-
-#[derive(Clone, Debug, Extension)]
-struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP request.
 ///
@@ -104,37 +99,6 @@ pub struct Request<T = Body> {
     body: T,
 }
 
-impl<T> From<HyperiumRequest<T>> for Request<T> {
-    fn from(value: HyperiumRequest<T>) -> Self {
-        let (parts, body) = value.into_parts();
-        Self::from_parts(parts.into(), body)
-    }
-}
-
-impl<T> From<Request<T>> for HyperiumRequest<T> {
-    fn from(value: Request<T>) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let (parts, body) = value.into_parts();
-
-        let mut hyper_extensions = parts
-            .extensions
-            .get_ref::<HyperExtensions>()
-            .map(|ext| ext.0.clone())
-            .unwrap_or_default();
-
-        hyper_extensions.insert(parts.extensions);
-
-        let mut request = Self::new(body);
-        *request.method_mut() = crate::hyperium_bridge::method_to_hyperium(&parts.method);
-        *request.uri_mut() = crate::hyperium_bridge::uri_to_hyperium(&parts.uri);
-        *request.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
-        *request.headers_mut() = crate::hyperium_bridge::headers_to_hyperium(parts.headers);
-        *request.extensions_mut() = hyper_extensions;
-
-        request
-    }
-}
-
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct Parts {
@@ -152,31 +116,6 @@ pub struct Parts {
 
     /// The request's extensions
     pub extensions: Extensions,
-}
-
-impl From<HyperiumParts> for Parts {
-    fn from(mut value: HyperiumParts) -> Self {
-        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(HyperExtensions(value.extensions));
-
-        Self {
-            extensions: rama_extensions,
-            headers: crate::hyperium_bridge::headers_from_hyperium(value.headers),
-            method: crate::hyperium_bridge::method_from_hyperium(&value.method),
-            uri: crate::hyperium_bridge::uri_from_hyperium(&value.uri),
-            version: crate::hyperium_bridge::version_from_hyperium(value.version),
-        }
-    }
-}
-
-impl From<Parts> for HyperiumParts {
-    fn from(parts: Parts) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let request = Request::from_parts(parts, ());
-        let request = HyperiumRequest::from(request);
-        let (parts, _) = request.into_parts();
-        parts
-    }
 }
 
 impl ExtensionsRef for Parts {
@@ -1231,16 +1170,7 @@ impl HttpRequestPartsMut for Parts {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use rama_core::extensions::Extension;
-
-    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-    struct ConversionTraceLabel(String);
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-    struct HyperBoolFlag(bool);
 
     #[test]
     fn it_can_map_a_body_from_one_type_to_another() {
@@ -1250,98 +1180,5 @@ mod tests {
             123u32
         });
         assert_eq!(mapped_request.body(), &123u32);
-    }
-
-    #[test]
-    fn it_can_convert_between_rama_and_hyper() {
-        // Trailing slash: a round-trip through `http::Uri` normalises an empty
-        // path to `/`, so use the already-normalised form for exact equality.
-        let uri = "https://example.com/";
-        let version = Version::HTTP_2;
-        let method = Method::POST;
-        let body = "some string";
-
-        let mut rama_request = Request::builder()
-            .uri(uri)
-            .version(version)
-            .method(method.clone())
-            .body(body)
-            .unwrap();
-
-        let header_key = "test";
-        let header_value = HeaderValue::from_static("data");
-        rama_request
-            .headers_mut()
-            .insert(header_key, header_value.clone());
-
-        let extension = ConversionTraceLabel("test extensions".to_owned());
-        rama_request.extensions().insert(extension.clone());
-
-        let mut hyper_request = HyperiumRequest::from(rama_request);
-
-        assert_eq!(hyper_request.uri(), uri);
-        assert_eq!(
-            hyper_request.version(),
-            crate::hyperium_bridge::version_to_hyperium(version)
-        );
-        assert_eq!(hyper_request.method().as_str(), method.as_str());
-        assert_eq!(*hyper_request.body(), body);
-        assert_eq!(
-            hyper_request.headers().get(header_key).unwrap().as_bytes(),
-            header_value.as_bytes()
-        );
-
-        // Rama extensions are wrapped into RamaExtensions so we can restore them later,
-        // its also possible to access them directly by using this as a nested type map.
-
-        // TODO if there is a solution for https://github.com/hyperium/http/issues/780#issuecomment-3253476634
-        // we can removed this extra nesting and just transfer them as-is
-
-        hyper_request.extensions_mut().insert::<usize>(4);
-
-        let rama_wrapped_extensions = hyper_request
-            .extensions_mut()
-            .get_mut::<Extensions>()
-            .unwrap();
-        assert_eq!(
-            *rama_wrapped_extensions
-                .get_ref::<ConversionTraceLabel>()
-                .unwrap(),
-            extension
-        );
-        rama_wrapped_extensions.insert_arc(Arc::new(HyperBoolFlag(true)));
-
-        let rama_request = Request::from(hyper_request);
-
-        assert_eq!(rama_request.uri(), uri);
-        assert_eq!(rama_request.version(), version);
-        assert_eq!(rama_request.method(), method);
-        assert_eq!(*rama_request.body(), body);
-        assert_eq!(
-            rama_request.headers().get(header_key).unwrap(),
-            header_value
-        );
-        // Original rama extension
-        assert_eq!(
-            *rama_request
-                .extensions()
-                .get_ref::<ConversionTraceLabel>()
-                .unwrap(),
-            extension
-        );
-        // Hyper extension
-        let hyper_wrapper_extensions = rama_request
-            .extensions()
-            .get_ref::<HyperExtensions>()
-            .unwrap();
-        assert_eq!(*hyper_wrapper_extensions.0.get::<usize>().unwrap(), 4);
-        // Rama extension inserted into hyper request
-        assert_eq!(
-            *rama_request
-                .extensions()
-                .get_ref::<HyperBoolFlag>()
-                .unwrap(),
-            HyperBoolFlag(true)
-        );
     }
 }

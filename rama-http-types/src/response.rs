@@ -2,8 +2,6 @@ use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::{self, Display};
 
-use crate::dep::hyperium::http::Extensions as HttpExtensions;
-use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::proto::h1::ext::ReasonPhrase;
 use crate::status::StatusCode;
@@ -11,9 +9,6 @@ use crate::version::Version;
 use crate::{Body, Result};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_utils::macros::generate_set_and_with;
-
-#[derive(Clone, Debug, Extension)]
-struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP response
 ///
@@ -121,36 +116,6 @@ pub struct Response<T = Body> {
     body: T,
 }
 
-impl<T> From<HyperiumResponse<T>> for Response<T> {
-    fn from(value: HyperiumResponse<T>) -> Self {
-        let (parts, body) = value.into_parts();
-        Self::from_parts(parts.into(), body)
-    }
-}
-
-impl<T> From<Response<T>> for HyperiumResponse<T> {
-    fn from(value: Response<T>) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let (parts, body) = value.into_parts();
-
-        let mut hyper_extensions = parts
-            .extensions
-            .get_ref::<HyperExtensions>()
-            .map(|ext| ext.0.clone())
-            .unwrap_or_default();
-
-        hyper_extensions.insert(parts.extensions);
-
-        let mut response = Self::new(body);
-        *response.status_mut() = crate::hyperium_bridge::status_to_hyperium(parts.status);
-        *response.version_mut() = crate::hyperium_bridge::version_to_hyperium(parts.version);
-        *response.headers_mut() = crate::hyperium_bridge::headers_to_hyperium(parts.headers);
-        *response.extensions_mut() = hyper_extensions;
-
-        response
-    }
-}
-
 /// Component parts of an HTTP `Response`
 ///
 /// The HTTP response head consists of a status, version, and a set of
@@ -169,30 +134,6 @@ pub struct Parts {
 
     /// The response's extensions
     pub extensions: Extensions,
-}
-
-impl From<HyperiumParts> for Parts {
-    fn from(mut value: HyperiumParts) -> Self {
-        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(HyperExtensions(value.extensions));
-
-        Self {
-            extensions: rama_extensions,
-            headers: crate::hyperium_bridge::headers_from_hyperium(value.headers),
-            version: crate::hyperium_bridge::version_from_hyperium(value.version),
-            status: crate::hyperium_bridge::status_from_hyperium(value.status),
-        }
-    }
-}
-
-impl From<Parts> for HyperiumParts {
-    fn from(parts: Parts) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let request = Response::from_parts(parts, ());
-        let request = HyperiumResponse::from(request);
-        let (parts, _) = request.into_parts();
-        parts
-    }
 }
 
 impl ExtensionsRef for Parts {

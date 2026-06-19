@@ -31,12 +31,6 @@ pub mod response;
 mod convert;
 pub mod http_body;
 pub mod http_body_util;
-mod hyperium_bridge;
-// TEMPORARY (Phase 3): hyperium `http::HeaderMap` trailer-boundary bridges,
-// used by rama-http/grpc/http-core until `http-body` is forked. Relocates to
-// `rama-http-hyperium`.
-#[doc(hidden)]
-pub use hyperium_bridge::{headers_from_hyperium, headers_to_hyperium};
 pub mod method;
 pub mod status;
 
@@ -123,23 +117,4 @@ pub mod mime {
 
     #[doc(inline)]
     pub use mime_guess as guess;
-}
-
-pub mod dep {
-    //! Dependencies for rama http modules.
-    //!
-    //! Exported for your convenience.
-
-    pub(crate) mod hyperium {
-        pub(crate) mod http {
-            //! Re-export of the [`http`] crate incase we need to convert.
-            //!
-            //! A general purpose library of common HTTP types.
-            //!
-            //! [`http`]: https://docs.rs/http
-
-            #[doc(inline)]
-            pub(crate) use http::*;
-        }
-    }
 }

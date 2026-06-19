@@ -3731,7 +3731,6 @@ dependencies = [
  "const_format",
  "csv",
  "flate2",
- "http",
  "http-range-header",
  "httpdate",
  "iri-string",
@@ -3750,6 +3749,7 @@ dependencies = [
  "radix_trie 0.3.0",
  "rama-core",
  "rama-http-headers",
+ "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
  "rama-net",
@@ -3837,6 +3837,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-http-hyperium"
+version = "0.3.0-rc1"
+dependencies = [
+ "http",
+ "rama-core",
+ "rama-http-types",
+]
+
+[[package]]
 name = "rama-http-macros"
 version = "0.3.0-rc1"
 dependencies = [
@@ -3857,7 +3866,6 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hex",
- "http",
  "itertools 0.14.0",
  "itoa",
  "md5",
