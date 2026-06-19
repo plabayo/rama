@@ -2,12 +2,10 @@ use rama::{
     Layer, Service,
     dns::client::resolver::DnsAddresssResolverOverwrite,
     extensions::ExtensionsRef,
-    net::{address::DomainTrie, transport::TryRefIntoTransportContext},
-    telemetry::tracing,
+    net::{TransportAddressInputExt, address::DomainTrie},
 };
 
 use crate::cmd::send::arg::ResolveArg;
-use std::fmt;
 
 #[derive(Debug, Clone)]
 pub(in crate::cmd::send) struct OptDnsOverwriteLayer(Option<ResolveArg>);
@@ -44,7 +42,7 @@ pub(in crate::cmd::send) struct OptDnsOverwriteService<S> {
 
 impl<Input, S> Service<Input> for OptDnsOverwriteService<S>
 where
-    Input: TryRefIntoTransportContext<Error: fmt::Debug> + ExtensionsRef + Send + 'static,
+    Input: TransportAddressInputExt + ExtensionsRef + Send + 'static,
     S: Service<Input>,
 {
     type Output = S::Output;
@@ -57,12 +55,7 @@ where
 
         if info.port.is_none()
             || input
-                .try_ref_into_transport_ctx()
-                .inspect_err(|err| {
-                    tracing::error!("failed to fetch transport ctx for input: {err:?}")
-                })
-                .ok()
-                .and_then(|ctx| ctx.host_with_port())
+                .host_with_port()
                 .map(|hwp| info.port == Some(hwp.port))
                 .unwrap_or_default()
         {

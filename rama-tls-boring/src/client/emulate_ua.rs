@@ -4,8 +4,8 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
+use rama_net::ProtocolInputExt;
 use rama_net::tls::client::TlsClientConfig;
-use rama_net::transport::TryRefIntoTransportContext;
 use rama_ua::profile::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
 
@@ -36,7 +36,7 @@ impl<S> EmulateTlsProfileService<S> {
 
 impl<S, Input> Service<Input> for EmulateTlsProfileService<S>
 where
-    Input: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsRef + 'static,
+    Input: ProtocolInputExt + Send + ExtensionsRef + 'static,
     S: Service<Input, Error: Into<BoxError>>,
 {
     type Output = S::Output;
@@ -55,11 +55,8 @@ where
             }
 
             // WebSocket ALPN override (highest priority).
-            let transport_ctx = input
-                .try_ref_into_transport_ctx()
-                .context("UA TLS Emulator: compute transport context")?;
-            if transport_ctx
-                .app_protocol
+            if input
+                .protocol()
                 .as_ref()
                 .map(|p| p.is_ws())
                 .unwrap_or_default()

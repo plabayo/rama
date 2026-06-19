@@ -1,9 +1,7 @@
-use std::fmt;
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 
-use rama_core::{Layer, Service, extensions::ExtensionsRef, telemetry::tracing};
-
-use crate::request_context::RequestContext;
 use rama_net::proxy::ProxyTarget;
+use rama_net::{Protocol, TransportAddressInputExt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -42,20 +40,13 @@ pub struct ProxyTargetFromRequestContext<S>(S);
 impl<S, Input> Service<Input> for ProxyTargetFromRequestContext<S>
 where
     S: Service<Input>,
-    Input: ExtensionsRef + Send + 'static,
-    RequestContext: for<'a> TryFrom<&'a Input, Error: fmt::Debug>,
+    Input: ExtensionsRef + TransportAddressInputExt + Send + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let maybe_target = match RequestContext::try_from(&input) {
-            Ok(req_ctx) => Some(req_ctx.host_with_port()),
-            Err(err) => {
-                tracing::debug!("failed to create RequestContext from input: {err:?}");
-                None
-            }
-        };
+        let maybe_target = input.host_with_port_or(Protocol::HTTP_DEFAULT_PORT);
 
         if let Some(target) = maybe_target {
             input.extensions().insert(ProxyTarget(target));

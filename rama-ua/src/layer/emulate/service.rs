@@ -7,7 +7,6 @@ use rama_core::{
     extensions::ExtensionsRef,
     telemetry::tracing,
 };
-use rama_http::RequestContext;
 use rama_http::headers::{ClientHint, all_client_hints};
 use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
@@ -23,7 +22,7 @@ use rama_http::{
     },
 };
 use rama_net::{
-    Protocol,
+    AuthorityInputExt, Protocol, ProtocolInputExt,
     address::{Host, HostWithOptPort},
     client::{ConnectorService, EstablishedClientConnection},
 };
@@ -400,18 +399,8 @@ where
                         let preserve_ua_header =
                             req.extensions().contains::<PreserveHeaderUserAgent>();
 
-                        let (authority, protocol) = match RequestContext::try_from(&req) {
-                            Ok(ctx) => (
-                                Some(Cow::Owned(ctx.authority)),
-                                Some(Cow::Owned(ctx.protocol)),
-                            ),
-                            Err(err) => {
-                                tracing::debug!(
-                                    "failed to compute request's authority and protocol for UA Emulation purposes: {err:?}",
-                                );
-                                (None, None)
-                            }
-                        };
+                        let authority = req.authority().map(Cow::Owned);
+                        let protocol = req.protocol().map(Cow::Owned);
 
                         let output_headers = merge_http_headers(
                             base_http_headers,

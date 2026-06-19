@@ -63,9 +63,8 @@ pub mod version {
     pub use rama_net::http::Version;
 }
 
-pub mod request_context;
-#[doc(inline)]
-pub use request_context::{RequestContext, try_request_ctx_from_http_parts};
+/// Hosts the per-concern `*InputExt` accessor impls for http `Request`/`Parts`.
+mod request_context;
 
 pub mod proxy_target_from_req;
 #[doc(inline)]

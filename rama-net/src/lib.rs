@@ -36,7 +36,8 @@ pub(crate) mod proto;
 pub use client_ip::ClientIp;
 #[doc(inline)]
 pub use input_ext::{
-    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
+    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportAddressInputExt,
+    TransportProtocolInputExt, UriInputExt,
 };
 #[doc(inline)]
 pub use proto::Protocol;

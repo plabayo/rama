@@ -1,6 +1,6 @@
 use crate::{Request, Uri};
-use rama_core::{combinators::Either, telemetry::tracing};
-use rama_http_types::RequestContext;
+use rama_core::telemetry::tracing;
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_utils::collections::smallvec::SmallVec;
 use std::borrow::Cow;
 use std::io::Write as _;
@@ -25,18 +25,11 @@ use std::io::Write as _;
 /// Get the uri as complete as possible for the given request.
 pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
     let uri = req.uri();
-    if let Ok(req_ctx) = RequestContext::try_from(req) {
+    if let Some(authority) = req.authority() {
+        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
+        let authority = authority.without_default_port_for(Some(&protocol));
         let mut buffer = SmallVec::<[u8; 128]>::new();
-        _ = write!(
-            &mut buffer,
-            "{}://{}",
-            req_ctx.protocol,
-            if req_ctx.authority_has_default_port() {
-                Either::A(req_ctx.authority.host)
-            } else {
-                Either::B(req_ctx.authority)
-            },
-        );
+        _ = write!(&mut buffer, "{protocol}://{authority}");
         if let Some(path) = uri.path() {
             _ = write!(&mut buffer, "{}", path.as_raw_str());
         }

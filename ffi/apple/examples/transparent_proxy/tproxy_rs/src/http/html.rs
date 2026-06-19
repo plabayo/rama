@@ -20,7 +20,7 @@ use rama::{
         },
     },
     matcher::service::{ServiceMatch, ServiceMatcher},
-    net::{address::Domain, http::RequestContext, proxy::ProxyTarget},
+    net::{AuthorityInputExt, address::Domain, proxy::ProxyTarget},
     telemetry::tracing,
 };
 use std::{borrow::Cow, convert::Infallible};
@@ -317,11 +317,7 @@ fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> 
     {
         Some(domain)
     } else {
-        RequestContext::try_from(req)
-            .ok()
-            .map(|ctx| ctx.host_with_port())
-            .and_then(|v| v.host.try_into_domain().ok())
-            .map(Cow::Owned)
+        req.host_as_domain().map(Cow::Owned)
     }
 }
 

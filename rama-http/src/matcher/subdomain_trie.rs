@@ -1,7 +1,7 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
 use rama_core::{extensions::Extensions, matcher::Matcher};
-use rama_http_types::RequestContext;
+use rama_net::AuthorityInputExt;
 use rama_net::address::{AsDomainRef, DomainTrie};
 
 #[derive(Debug, Clone)]
@@ -42,25 +42,22 @@ impl SubdomainTrieMatcher {
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
     fn matches(&self, _: Option<&Extensions>, req: &Request<Body>) -> bool {
-        let req_ctx = match RequestContext::try_from(req) {
-            Ok(rc) => rc,
-            Err(err) => {
-                tracing::debug!("SubdomainTrieMatcher: failed to extract request context: {err:?}",);
-                return false;
-            }
+        let Some(authority) = req.authority() else {
+            tracing::debug!("SubdomainTrieMatcher: failed to resolve authority");
+            return false;
         };
 
         // IP-first: pct-encoded IP literals (`%31%32%37.0.0.1`) can
         // promote to both Domain and IpAddr (shallow Domain validator
         // accepts digits-and-dots). The Domain match would be wrong for
         // IP hosts. Filter them out first.
-        if req_ctx.authority.host.try_as_ip().is_ok() {
+        if authority.host.try_as_ip().is_ok() {
             tracing::trace!("SubdomainTrieMatcher: host is an IP — no match");
             return false;
         }
         // Pct-encoded reg-names that decode to a domain participate.
         // Non-promotable hosts (sub-delim, IPvFuture) don't.
-        let Ok(domain) = req_ctx.authority.host.try_as_domain() else {
+        let Ok(domain) = authority.host.try_as_domain() else {
             tracing::trace!("SubdomainTrieMatcher: host is not a domain — no match");
             return false;
         };

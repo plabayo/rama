@@ -8,12 +8,13 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
     http::{
-        self, HeaderMap, HeaderName, Request, RequestContext,
+        self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
         fingerprint::{AkamaiH2, Ja4H},
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
     },
     net::{
+        AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ip::geo::{IpGeoDb, IpGeoInfo},
         fingerprint::{Ja3, Ja4, PeetPrint},
         forwarded::Forwarded,
@@ -180,10 +181,11 @@ pub(super) async fn get_request_info(
     req: &Request,
     geo_db: Option<&IpGeoDb>,
 ) -> Result<RequestInfo, BoxError> {
-    let request_context = RequestContext::try_from(req).context("get or compose RequestContext")?;
-
-    let authority = request_context.authority.to_string();
-    let scheme = request_context.protocol.to_string();
+    let authority = req
+        .authority()
+        .context("get or compose request authority")?
+        .to_string();
+    let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
 
     // The forwarded client IP lives in the request's extensions, which must be
     // read from `req` — `req.into_parts()` yields the http `Parts` whose

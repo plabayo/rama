@@ -13,12 +13,11 @@ use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::TryStreamExt;
 use rama_core::telemetry::tracing;
-use rama_http_types::RequestContext;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version, header,
 };
-use rama_net::Protocol;
 use rama_net::stream::SocketInfo;
+use rama_net::{AuthorityInputExt as _, Protocol, ProtocolInputExt as _};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use crate::body::FastCgiBody;
@@ -86,12 +85,15 @@ struct ServerInfo {
     is_https: bool,
 }
 
-/// Derive server info via rama's `RequestContext` (which already does the
-/// heavy lifting of URI / Forwarded / SNI / ProxyTarget / Host-header
-/// resolution). Falls back to localhost only when *all* of those signals
-/// are unavailable.
-fn derive_server_info(req_ctx: Option<&RequestContext>) -> ServerInfo {
-    let is_https = req_ctx.map(|c| c.protocol.is_secure()).unwrap_or(false);
+/// Derive server info from the request's resolved authority and protocol
+/// (which already do the heavy lifting of URI / Forwarded / SNI / ProxyTarget /
+/// Host-header resolution). Falls back to localhost only when no authority can
+/// be resolved.
+fn derive_server_info(
+    authority: Option<&rama_net::address::HostWithOptPort>,
+    protocol: Option<&Protocol>,
+) -> ServerInfo {
+    let is_https = protocol.map(Protocol::is_secure).unwrap_or(false);
     let scheme = if is_https {
         Protocol::HTTPS
     } else {
@@ -99,18 +101,17 @@ fn derive_server_info(req_ctx: Option<&RequestContext>) -> ServerInfo {
     };
     let default_port = scheme.default_port().unwrap_or(80);
 
-    let (host, port) = if let Some(ctx) = req_ctx {
-        let host = ctx.authority.host.to_string();
-        let port = ctx
-            .authority
+    let (host, port) = if let Some(authority) = authority {
+        let host = authority.host.to_string();
+        let port = authority
             .port
             .as_u16()
-            .or_else(|| ctx.protocol.default_port())
+            .or_else(|| protocol.and_then(|p| p.default_port()))
             .unwrap_or(default_port);
         (host, port)
     } else {
         tracing::debug!(
-            "fastcgi: no RequestContext could be derived from the request, falling back to localhost"
+            "fastcgi: no authority could be derived from the request, falling back to localhost"
         );
         ("localhost".to_owned(), default_port)
     };
@@ -156,7 +157,8 @@ pub(super) async fn http_request_to_fastcgi(
         .get_ref::<FastCgiHttpEnv>()
         .cloned()
         .unwrap_or_default();
-    let req_ctx = RequestContext::try_from(&req).ok();
+    let authority = req.authority();
+    let app_protocol = req.protocol();
 
     let (parts, body) = req.into_parts();
 
@@ -168,7 +170,7 @@ pub(super) async fn http_request_to_fastcgi(
     let query = parts.uri.query_or_empty().to_owned();
     let request_uri = parts.uri.request_target().into_owned();
 
-    let server = derive_server_info(req_ctx.as_ref());
+    let server = derive_server_info(authority.as_ref(), app_protocol.as_ref());
     let scheme = if server.is_https {
         Protocol::HTTPS_SCHEME
     } else {

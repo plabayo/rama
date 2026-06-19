@@ -1,19 +1,19 @@
 use crate::Request;
-use crate::request_context::RequestContext;
 use rama_core::error::BoxError;
+use rama_core::error::BoxErrorExt as _;
 use rama_core::extensions::ExtensionsRef;
 use rama_net::client::pool::ReqToConnID;
 use rama_net::client::pool::http::{BasicHttpConId, BasicHttpConnIdentifier};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 
 impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     type ID = BasicHttpConId;
 
     fn id(&self, req: &Request<Body>) -> Result<Self::ID, BoxError> {
-        let RequestContext {
-            http_version: _,
-            protocol,
-            authority,
-        } = RequestContext::try_from(req)?;
+        let authority = req
+            .authority()
+            .ok_or_else(|| BoxError::from_static_str("no authority found in http request"))?;
+        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
 
         Ok(BasicHttpConId {
             protocol,

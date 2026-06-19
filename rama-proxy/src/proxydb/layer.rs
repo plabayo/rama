@@ -6,9 +6,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
 };
 use rama_net::{
-    Protocol,
-    address::ProxyAddress,
-    transport::{TransportProtocol, TryRefIntoTransportContext},
+    Protocol, TransportProtocolInputExt, address::ProxyAddress, transport::TransportProtocol,
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -135,10 +133,7 @@ where
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + ExtensionsRef
-        + Send
-        + 'static,
+    Input: TransportProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -178,11 +173,9 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = input
-                .try_ref_into_transport_ctx()
-                .context("proxydb: select proxy: get transport context")?;
-
-            let proxy_ctx = ProxyContext::from(transport_ctx);
+            let proxy_ctx = ProxyContext {
+                protocol: input.transport_protocol(),
+            };
 
             let transport_protocol = proxy_ctx.protocol;
 

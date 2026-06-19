@@ -12,13 +12,16 @@ use crate::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use crate::{Method, Uri, Version, request};
 
 use rama_core::bytes::Bytes;
-use rama_http_types::{HttpRequestParts, RequestContext, try_request_ctx_from_http_parts};
+use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::user::ProxyCredential;
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
-pub fn cmd_string_for_request_parts(parts: &impl HttpRequestParts) -> String {
+pub fn cmd_string_for_request_parts(
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
+) -> String {
     let mut cmd = "curl".to_owned();
     write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
@@ -32,7 +35,9 @@ pub fn cmd_string_for_request_parts_and_payload(parts: &request::Parts, payload:
 }
 
 /// Create a `curl` [`Command`] for the given [`HttpRequestParts`].
-pub fn cmd_for_request_parts(parts: &impl HttpRequestParts) -> Command {
+pub fn cmd_for_request_parts(
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
+) -> Command {
     let mut cmd = Command::new("curl");
     write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
@@ -122,7 +127,7 @@ impl CurlCommandWriter for String {
 
 fn write_curl_command_for_request_parts(
     writer: &mut impl CurlCommandWriter,
-    parts: &impl HttpRequestParts,
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
     payload: Option<&Bytes>,
 ) {
     let mut uri = parts.uri().clone();
@@ -130,35 +135,13 @@ fn write_curl_command_for_request_parts(
     // from the request context's authority (+ scheme). Requests that already
     // carry an authority (absolute- or authority-form) are rendered as-is.
     if uri.authority().is_none()
-        && let Some((authority, protocol)) = parts
-            .extensions()
-            .get_ref::<RequestContext>()
-            .map(|rc| {
-                (
-                    if rc.authority_has_default_port() {
-                        rc.authority.host.to_string()
-                    } else {
-                        rc.authority.to_string()
-                    },
-                    rc.protocol.clone(),
-                )
-            })
-            .or_else(|| {
-                try_request_ctx_from_http_parts(parts).ok().map(|rc| {
-                    (
-                        if rc.authority_has_default_port() {
-                            rc.authority.host.to_string()
-                        } else {
-                            rc.authority.to_string()
-                        },
-                        rc.protocol,
-                    )
-                })
-            })
-            .and_then(|(authority, protocol)| authority.parse().ok().map(|auth| (auth, protocol)))
+        && let Some(authority) = parts.authority()
     {
-        uri.set_authority(authority);
-        if uri.scheme().is_none() {
+        let protocol = parts.protocol();
+        uri.set_authority(authority.without_default_port_for(protocol.as_ref()).into());
+        if uri.scheme().is_none()
+            && let Some(protocol) = protocol
+        {
             uri.set_scheme(protocol);
         }
     }

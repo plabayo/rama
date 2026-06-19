@@ -2,8 +2,8 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
-use rama_http_types::{Request, RequestContext};
-use rama_net::{address::ProxyAddress, user::ProxyCredential};
+use rama_http_types::Request;
+use rama_net::{ProtocolInputExt, address::ProxyAddress, user::ProxyCredential};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -62,12 +62,7 @@ where
         {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    let maybe_request_ctx = RequestContext::try_from(&req).ok();
-
-                    if !maybe_request_ctx
-                        .map(|ctx| ctx.protocol.is_secure())
-                        .unwrap_or_default()
-                    {
+                    if !req.protocol().map(|p| p.is_secure()).unwrap_or_default() {
                         tracing::trace!("inserted proxy Basic credentials into (http) request");
                         req.headers_mut().typed_insert(ProxyAuthorization(basic))
                     }

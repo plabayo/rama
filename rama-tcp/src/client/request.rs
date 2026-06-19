@@ -1,11 +1,10 @@
 use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::Version;
 use rama_net::{
-    Protocol,
-    address::HostWithPort,
-    transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
+    AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TransportProtocolInputExt,
+    address::{HostWithOptPort, HostWithPort},
+    transport::TransportProtocol,
 };
-use std::convert::Infallible;
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -67,30 +66,26 @@ impl ExtensionsRef for Request {
     }
 }
 
-impl From<&Request> for TransportContext {
-    fn from(value: &Request) -> Self {
-        Self {
-            protocol: TransportProtocol::Tcp,
-            app_protocol: value.protocol.clone(),
-            authority: value.authority.clone().into(),
-        }
+impl AuthorityInputExt for Request {
+    fn authority(&self) -> Option<HostWithOptPort> {
+        Some(self.authority.clone().into())
     }
 }
 
-impl From<Request> for TransportContext {
-    fn from(value: Request) -> Self {
-        Self {
-            protocol: TransportProtocol::Tcp,
-            app_protocol: value.protocol,
-            authority: value.authority.into(),
-        }
+impl ProtocolInputExt for Request {
+    fn protocol(&self) -> Option<Protocol> {
+        self.protocol.clone()
     }
 }
 
-impl TryRefIntoTransportContext for Request {
-    type Error = Infallible;
+impl HttpVersionInputExt for Request {
+    fn http_version(&self) -> Option<Version> {
+        self.http_version
+    }
+}
 
-    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
-        Ok(self.into())
+impl TransportProtocolInputExt for Request {
+    fn transport_protocol(&self) -> TransportProtocol {
+        TransportProtocol::Tcp
     }
 }

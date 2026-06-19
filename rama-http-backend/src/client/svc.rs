@@ -8,10 +8,13 @@ use rama_core::{
 use rama_http::{StreamingBody, header::SEC_WEBSOCKET_KEY};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
-    Method, Request, RequestContext, Response, Version,
+    Method, Request, Response, Version,
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::{address::ProxyAddress, conn::ConnectionHealthWatcher};
+use rama_net::{
+    AuthorityInputExt, Protocol, ProtocolInputExt, address::ProxyAddress,
+    conn::ConnectionHealthWatcher,
+};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -146,9 +149,11 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
 
-    let request_ctx = RequestContext::try_from(&req).context("fetch request context")?;
+    let authority = req.authority().context("fetch request authority")?;
+    let protocol = req.protocol();
 
-    let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
+    let is_insecure_request_over_http_proxy =
+        !protocol.as_ref().map(|p| p.is_secure()).unwrap_or_default() && uses_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
@@ -185,39 +190,21 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
-                    if request_ctx.authority_has_default_port() {
-                        let host = request_ctx.authority.host;
-                        tracing::trace!("add missing host {host} from authority as host header");
-                        parts.headers.typed_insert(Host::from(host));
-                    } else {
-                        let authority = request_ctx.authority;
-                        tracing::trace!("add missing authority {authority} as host header");
-                        parts.headers.typed_insert(Host::from(authority));
-                    }
+                    let authority = authority.without_default_port_for(protocol.as_ref());
+                    tracing::trace!("add missing authority {authority} as host header");
+                    parts.headers.typed_insert(Host::from(authority));
                 }
 
                 Request::from_parts(parts, body)
             } else if !req.headers().contains_key(HOST) {
                 let mut req = req;
-
-                if request_ctx.authority_has_default_port() {
-                    let authority = request_ctx.authority;
-                    tracing::trace!(
-                        url.full = %req.uri(),
-                        server.address = %authority.host,
-                        server.port = authority.port_u16(),
-                        "add host from authority as HOST header to req (was missing it)",
-                    );
-                    req.headers_mut().typed_insert(Host::from(authority));
-                } else {
-                    let host = request_ctx.authority.host;
-                    tracing::trace!(
-                        url.full = %req.uri(),
-                        "add {host} as HOST header to req (was missing it)",
-                    );
-                    req.headers_mut().typed_insert(Host::from(host));
-                }
-
+                let authority = authority.without_default_port_for(protocol.as_ref());
+                tracing::trace!(
+                    url.full = %req.uri(),
+                    server.address = %authority,
+                    "add host from authority as HOST header to req (was missing it)",
+                );
+                req.headers_mut().typed_insert(Host::from(authority));
                 req
             } else {
                 req
@@ -227,8 +214,10 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
             // set scheme/host if not defined as otherwise pseudo
             // headers won't be possible to be set in the h2 crate
             let mut req = if req.uri().host().is_none() {
-                let request_ctx = RequestContext::try_from(&req)
-                    .context("[h2+] add scheme/host: missing RequestCtx")?;
+                let authority = req
+                    .authority()
+                    .context("[h2+] add scheme/host: missing authority")?;
+                let protocol = req.protocol();
 
                 tracing::trace!(
                     network.protocol.name = "http",
@@ -236,19 +225,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     "defining authority and scheme to non-connect direct http request"
                 );
 
-                let has_default_port = request_ctx.authority_has_default_port();
-
-                let (mut parts, body) = req.into_parts();
-                parts.uri.set_scheme(request_ctx.protocol);
-
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
-                parts.uri.set_host(request_ctx.authority.host);
-                if has_default_port {
-                    parts.uri.set_port(None::<u16>);
-                } else {
-                    parts.uri.set_port(request_ctx.authority.port);
-                }
+                let authority = authority.without_default_port_for(protocol.as_ref());
+                let (mut parts, body) = req.into_parts();
+                parts.uri.set_scheme(protocol.unwrap_or(Protocol::HTTP));
+                parts.uri.set_host(authority.host);
+                parts.uri.set_port(authority.port);
 
                 Request::from_parts(parts, body)
             } else {

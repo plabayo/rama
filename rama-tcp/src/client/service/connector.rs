@@ -8,10 +8,11 @@ use rama_core::{
 };
 use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
+    TransportAddressInputExt, TransportProtocolInputExt,
     address::ProxyAddress,
     client::{ConnectorTarget, EstablishedClientConnection},
     stream::{Socket, SocketInfo},
-    transport::{TransportProtocol, TryRefIntoTransportContext},
+    transport::TransportProtocol,
 };
 
 use crate::TcpStream;
@@ -90,8 +91,7 @@ impl Default for TcpConnector {
 
 impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
 where
-    Input: TryRefIntoTransportContext + Send + ExtensionsRef + 'static,
-    Input::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TransportAddressInputExt + TransportProtocolInputExt + Send + ExtensionsRef + 'static,
     Dns: DnsAddressResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
@@ -164,11 +164,7 @@ where
             return Ok(EstablishedClientConnection { input, conn });
         }
 
-        let transport_ctx = input
-            .try_ref_into_transport_ctx()
-            .context("tcp connecter: compute transport context to get authority")?;
-
-        match transport_ctx.protocol {
+        match input.transport_protocol() {
             TransportProtocol::Tcp => (), // a-ok :)
             TransportProtocol::Udp => {
                 // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
@@ -178,9 +174,9 @@ where
             }
         }
 
-        let authority = transport_ctx
+        let authority = input
             .host_with_port()
-            .context("get host:port from transport ctx")?;
+            .context("get host:port from input authority")?;
         let (conn, addr) = crate::client::tcp_connect(
             input.extensions(),
             authority,

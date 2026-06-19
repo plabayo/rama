@@ -12,7 +12,7 @@ use crate::{
     error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        BodyLimitLayer, Request, RequestContext, Response, Version,
+        BodyLimitLayer, Request, Response, Version,
         body::util::BodyExt,
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
@@ -35,6 +35,7 @@ use crate::{
     net::address::ip::geo::IpGeoDb,
     net::forwarded::Forwarded,
     net::stream::SocketInfo,
+    net::{AuthorityInputExt, Protocol, ProtocolInputExt},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::TcpStream,
@@ -397,10 +398,11 @@ impl Service<Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context = RequestContext::try_from(&req)?;
-
-        let authority = request_context.authority.to_string();
-        let scheme = request_context.protocol.to_string();
+        let authority = req
+            .authority()
+            .context("echo: resolve request authority")?
+            .to_string();
+        let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
 
         let ua_str = req
             .headers()

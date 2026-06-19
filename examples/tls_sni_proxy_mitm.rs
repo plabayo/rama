@@ -91,7 +91,7 @@ use rama::{
     extensions::{Extension, ExtensionsRef},
     graceful::Shutdown,
     http::{
-        HeaderValue, Request, RequestContext, Response,
+        HeaderValue, Request, Response,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -103,7 +103,7 @@ use rama::{
     io::Io,
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     net::{
-        Protocol,
+        AuthorityInputExt, Protocol,
         address::{Domain, HostWithPort, SocketAddress},
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         proxy::IoForwardService,
@@ -327,14 +327,7 @@ where
             .extensions()
             .get_ref::<IngressSNI>()
             .map(|sni| sni.0.clone())
-            .or_else(|| {
-                RequestContext::try_from(&req)
-                    .inspect_err(|err| {
-                        tracing::error!("failed to fetch request context for http req: {err}");
-                    })
-                    .ok()
-                    .and_then(|ctx| ctx.authority.host.try_into_domain().ok())
-            })
+            .or_else(|| req.host_as_domain())
         else {
             // In a production proxy you might go a bit more advanced here,
             // with more granular control on what exactly you wish to do with this unknown traffic...

@@ -1,17 +1,18 @@
 use crate::request::Parts;
 use crate::{HttpRequestParts, Request};
 use crate::{Uri, Version};
-use rama_core::error::BoxError;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+#[cfg(not(feature = "tls"))]
+use rama_core::extensions::Extension;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_net::Protocol;
-use rama_net::address::{Domain, Host, HostWithOptPort, HostWithPort};
+use rama_net::address::{Domain, Host, HostWithOptPort};
 use rama_net::forwarded::Forwarded;
 use rama_net::proxy::ProxyTarget;
-use rama_net::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
+use rama_net::transport::TransportProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
+    UriInputExt,
 };
 
 #[cfg(feature = "tls")]
@@ -40,68 +41,18 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Extension)]
-#[extension(tags(http))]
-/// The context of the [`Request`].
-pub struct RequestContext {
-    /// The HTTP Version.
-    pub http_version: Version,
-    /// The [`Protocol`] of the [`Request`].
-    pub protocol: Protocol,
-    /// The authority of the [`Request`].
-    ///
-    /// In http/1.1 this is typically defined by the `Host` header,
-    /// whereas for h2 and h3 this is found in the pseudo `:authority` header.
-    ///
-    /// This can be also manually set in case there is support for
-    /// forward headers (e.g. `Forwarded`, or `X-Forwarded-Host`)
-    /// or forward protocols (e.g. `HaProxy`).
-    pub authority: HostWithOptPort,
-}
-
-impl RequestContext {
-    /// Check if the authority is using the default port for the [`Protocol`] set in this [`RequestContext`]
-    #[must_use]
-    pub fn authority_has_default_port(&self) -> bool {
-        self.protocol.default_port() == self.authority.port.as_u16()
-    }
-}
-
-impl TryFrom<&Parts> for RequestContext {
-    type Error = BoxError;
-
-    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
-        try_request_ctx_from_http_parts(parts)
-    }
-}
-
-impl<Body> TryFrom<&Request<Body>> for RequestContext {
-    type Error = BoxError;
-
-    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
-        try_request_ctx_from_http_parts(req)
-    }
-}
-
-pub fn try_request_ctx_from_http_parts(
-    parts: impl HttpRequestParts,
-) -> Result<RequestContext, BoxError> {
+/// Resolve the routing authority of `parts`, walking the
+/// uri → `ProxyTarget` → TLS SNI → `Forwarded` → `Host`-header fallback chain.
+/// `None` when none of them yields a host.
+pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     let uri = parts.uri();
 
     let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
-    tracing::trace!(
-        url.full = %uri,
-        "request context: detected protocol: {protocol} (scheme: {:?}",
-        uri.scheme(),
-    );
-
     let default_port = uri
         .port_u16()
         .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
-    tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
 
-    let authority = uri
-        .host()
+    uri.host()
         .map(|h| {
             let h: Host = h.into_owned();
             tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
@@ -144,25 +95,13 @@ pub fn try_request_ctx_from_http_parts(
             })
         })
         .or_else(|| {
-            parts.headers()
+            parts
+                .headers()
                 .get(crate::header::HOST)
                 .and_then(|host_header_value| {
                     HostWithOptPort::try_from(host_header_value.as_bytes()).ok()
                 })
         })
-        .ok_or_else(|| {
-            BoxError::from_static_str("RequestContext: no authourity found in http::Request")
-        })?;
-
-    tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
-
-    let http_version = http_version_from_http_parts(&parts);
-
-    Ok(RequestContext {
-        http_version,
-        protocol,
-        authority,
-    })
 }
 
 /// Resolve the HTTP [`Version`] from `parts`: the `Forwarded` client version
@@ -203,97 +142,15 @@ fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
     })
 }
 
-impl RequestContext {
-    #[must_use]
-    pub fn host_with_port(&self) -> HostWithPort {
-        let port = self
-            .authority
-            .port
-            .as_u16()
-            .or_else(|| self.protocol.default_port())
-            .unwrap_or(Protocol::HTTP_DEFAULT_PORT);
-        let host = self.authority.host.clone();
-        HostWithPort { host, port }
-    }
-}
-
-impl From<RequestContext> for TransportContext {
-    fn from(value: RequestContext) -> Self {
-        Self {
-            protocol: if value.http_version == Version::HTTP_3 {
-                TransportProtocol::Udp
-            } else {
-                TransportProtocol::Tcp
-            },
-            app_protocol: Some(value.protocol),
-            authority: value.authority,
-        }
-    }
-}
-
-impl From<&RequestContext> for TransportContext {
-    fn from(value: &RequestContext) -> Self {
-        Self {
-            protocol: if value.http_version == Version::HTTP_3 {
-                TransportProtocol::Udp
-            } else {
-                TransportProtocol::Tcp
-            },
-            app_protocol: Some(value.protocol.clone()),
-            authority: value.authority.clone(),
-        }
-    }
-}
-
-impl TryFrom<&Parts> for TransportContext {
-    type Error = BoxError;
-
-    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
-        let req_ctx = RequestContext::try_from(parts)?;
-        Ok(req_ctx.into())
-    }
-}
-
-impl<Body> TryFrom<&Request<Body>> for TransportContext {
-    type Error = BoxError;
-
-    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
-        let req_ctx = RequestContext::try_from(req)?;
-        Ok(req_ctx.into())
-    }
-}
-
-impl<Body> TryRefIntoTransportContext for crate::Request<Body> {
-    type Error = BoxError;
-
-    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
-        self.try_into()
-    }
-}
-
-impl TryRefIntoTransportContext for crate::request::Parts {
-    type Error = BoxError;
-
-    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
-        self.try_into()
-    }
-}
-
-// --- per-concern accessor traits (replacing RequestContext field reads) ---
-
 impl<Body> AuthorityInputExt for Request<Body> {
     fn authority(&self) -> Option<HostWithOptPort> {
-        try_request_ctx_from_http_parts(self)
-            .ok()
-            .map(|ctx| ctx.authority)
+        authority_from_http_parts(self)
     }
 }
 
 impl AuthorityInputExt for Parts {
     fn authority(&self) -> Option<HostWithOptPort> {
-        try_request_ctx_from_http_parts(self)
-            .ok()
-            .map(|ctx| ctx.authority)
+        authority_from_http_parts(self)
     }
 }
 
@@ -310,7 +167,7 @@ impl ProtocolInputExt for Parts {
     fn protocol(&self) -> Option<Protocol> {
         Some(protocol_from_uri_or_extensions(
             self.extensions(),
-            self.uri(),
+            HttpRequestParts::uri(self),
         ))
     }
 }
@@ -347,6 +204,18 @@ impl TransportProtocolInputExt for Parts {
     }
 }
 
+impl<Body> UriInputExt for Request<Body> {
+    fn uri(&self) -> &Uri {
+        HttpRequestParts::uri(self)
+    }
+}
+
+impl UriInputExt for Parts {
+    fn uri(&self) -> &Uri {
+        HttpRequestParts::uri(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,31 +224,28 @@ mod tests {
     use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
 
     #[test]
-    fn test_request_context_from_request() {
+    fn accessors_from_request() {
         let req = Request::builder()
             .uri("http://example.com:8080")
             .version(Version::HTTP_11)
             .body(())
             .unwrap();
 
-        let req_ctx = RequestContext::try_from(&req).unwrap();
-
-        assert_eq!(req_ctx.http_version, Version::HTTP_11);
-        assert_eq!(req_ctx.protocol, Protocol::HTTP);
-        assert_eq!(req_ctx.authority.to_string(), "example.com:8080");
+        assert_eq!(req.http_version(), Some(Version::HTTP_11));
+        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        assert_eq!(req.authority().unwrap().to_string(), "example.com:8080");
     }
 
     #[test]
-    fn input_ext_accessors_match_request_context() {
+    fn accessors_resolve() {
         let req = Request::builder()
             .uri("https://example.com:8443")
             .version(Version::HTTP_2)
             .body(())
             .unwrap();
-        let ctx = RequestContext::try_from(&req).unwrap();
-        assert_eq!(req.authority(), Some(ctx.authority));
-        assert_eq!(req.protocol(), Some(ctx.protocol));
-        assert_eq!(req.http_version(), Some(ctx.http_version));
+        assert_eq!(req.authority().unwrap().to_string(), "example.com:8443");
+        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+        assert_eq!(req.http_version(), Some(Version::HTTP_2));
 
         // origin-form with no resolvable authority -> None, but protocol and
         // version still resolve (they don't depend on the authority).
@@ -390,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_request_context_from_parts() {
+    fn accessors_from_parts() {
         let req = Request::builder()
             .uri("http://example.com:8080")
             .version(Version::HTTP_11)
@@ -399,66 +265,31 @@ mod tests {
 
         let (parts, _) = req.into_parts();
 
-        let req_ctx = RequestContext::try_from(&parts).unwrap();
-
-        assert_eq!(req_ctx.http_version, Version::HTTP_11);
-        assert_eq!(req_ctx.protocol, Protocol::HTTP);
+        assert_eq!(parts.http_version(), Some(Version::HTTP_11));
+        assert_eq!(parts.protocol(), Some(Protocol::HTTP));
         assert_eq!(
-            req_ctx.authority,
+            parts.authority().unwrap(),
             HostWithOptPort::try_from("example.com:8080").unwrap()
         );
     }
 
     #[test]
-    fn test_request_context_authority() {
-        let ctx = RequestContext {
-            http_version: Version::HTTP_11,
-            protocol: Protocol::HTTP,
-            authority: "example.com:8080".try_into().unwrap(),
-        };
-
-        assert_eq!(ctx.authority.to_string(), "example.com:8080");
-    }
-
-    #[test]
     fn forwarded_parsing() {
-        for (forwarded_str_vec, expected) in [
+        for (forwarded_str_vec, expected_authority) in [
             // base
             (
                 vec!["host=192.0.2.60;proto=http;by=203.0.113.43"],
-                RequestContext {
-                    http_version: Version::HTTP_11,
-                    protocol: Protocol::HTTP,
-                    authority: "192.0.2.60:80".parse().unwrap(),
-                },
+                "192.0.2.60:80",
             ),
             // ipv6
             (
                 vec!["host=\"[2001:db8:cafe::17]:4711\""],
-                RequestContext {
-                    http_version: Version::HTTP_11,
-                    protocol: Protocol::HTTP,
-                    authority: "[2001:db8:cafe::17]:4711".parse().unwrap(),
-                },
+                "[2001:db8:cafe::17]:4711",
             ),
             // multiple values in one header
-            (
-                vec!["host=192.0.2.60, host=127.0.0.1"],
-                RequestContext {
-                    http_version: Version::HTTP_11,
-                    protocol: Protocol::HTTP,
-                    authority: "192.0.2.60:80".parse().unwrap(),
-                },
-            ),
+            (vec!["host=192.0.2.60, host=127.0.0.1"], "192.0.2.60:80"),
             // multiple header values
-            (
-                vec!["host=192.0.2.60", "host=127.0.0.1"],
-                RequestContext {
-                    http_version: Version::HTTP_11,
-                    protocol: Protocol::HTTP,
-                    authority: "192.0.2.60:80".parse().unwrap(),
-                },
-            ),
+            (vec!["host=192.0.2.60", "host=127.0.0.1"], "192.0.2.60:80"),
         ] {
             let mut req_builder = Request::builder();
             for header in forwarded_str_vec.clone() {
@@ -476,14 +307,26 @@ mod tests {
                 .unwrap();
             req.extensions().insert(forwarded);
 
-            let req_ctx = RequestContext::try_from(&req).unwrap();
-
-            assert_eq!(req_ctx, expected, "Failed for {forwarded_str_vec:?}");
+            assert_eq!(
+                req.authority().map(|a| a.to_string()).as_deref(),
+                Some(expected_authority),
+                "Failed for {forwarded_str_vec:?}"
+            );
+            assert_eq!(
+                req.protocol(),
+                Some(Protocol::HTTP),
+                "Failed for {forwarded_str_vec:?}"
+            );
+            assert_eq!(
+                req.http_version(),
+                Some(Version::HTTP_11),
+                "Failed for {forwarded_str_vec:?}"
+            );
         }
     }
 
     #[test]
-    fn test_request_ctx_https_request_behind_haproxy_plain() {
+    fn https_request_behind_haproxy_plain() {
         let req = Request::builder()
             .uri("/en/reservation/roomdetails")
             .version(Version::HTTP_11)
@@ -498,13 +341,15 @@ mod tests {
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));
 
-        let req_ctx = RequestContext::try_from(&req).unwrap();
-
-        assert_eq!(req_ctx.http_version, Version::HTTP_11);
-        assert_eq!(req_ctx.protocol, "http");
-        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org");
+        assert_eq!(req.http_version(), Some(Version::HTTP_11));
+        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        let authority = req.authority().unwrap();
+        assert_eq!(authority.to_string(), "echo.ramaproxy.org");
+        let default_port = req
+            .protocol_default_port()
+            .unwrap_or(Protocol::HTTP_DEFAULT_PORT);
         assert_eq!(
-            req_ctx.host_with_port().to_string(),
+            authority.into_host_with_port_or(default_port).to_string(),
             "echo.ramaproxy.org:80"
         );
     }

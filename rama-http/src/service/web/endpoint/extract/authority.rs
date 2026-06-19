@@ -2,9 +2,9 @@
 
 use super::FromPartsStateRefPair;
 use crate::utils::macros::define_http_rejection;
-use rama_http_types::RequestContext;
 use rama_http_types::request::Parts;
 use rama_net::address;
+use rama_net::input_ext::AuthorityInputExt;
 use rama_utils::macros::impl_deref;
 
 /// Extractor that resolves the authority of the request.
@@ -31,11 +31,7 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            RequestContext::try_from(parts)
-                .map_err(|_e| MissingAuthority)?
-                .authority,
-        ))
+        Ok(Self(parts.authority().ok_or(MissingAuthority)?))
     }
 }
 
