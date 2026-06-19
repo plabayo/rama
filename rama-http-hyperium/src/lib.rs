@@ -38,6 +38,9 @@ use rama_http_types::{
     request, response,
 };
 
+mod body;
+pub use body::{HyperiumBody, HyperiumBodyError, RamaBody, RamaBodyError};
+
 mod private {
     /// Seals [`TryIntoHyperiumHttp`](super::TryIntoHyperiumHttp) and
     /// [`TryIntoRamaHttp`](super::TryIntoRamaHttp): the conversions are a closed

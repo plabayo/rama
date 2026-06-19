@@ -1797,6 +1797,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-body"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
+dependencies = [
+ "bytes",
+ "http",
+]
+
+[[package]]
 name = "http-range-header"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3841,6 +3851,8 @@ name = "rama-http-hyperium"
 version = "0.3.0-rc1"
 dependencies = [
  "http",
+ "http-body",
+ "pin-project-lite",
  "rama-core",
  "rama-http-types",
 ]
@@ -4100,7 +4112,11 @@ dependencies = [
 name = "rama-tower"
 version = "0.3.0-rc1"
 dependencies = [
+ "http",
+ "http-body",
  "rama-core",
+ "rama-http-hyperium",
+ "rama-http-types",
  "tokio",
  "tower-layer",
  "tower-service",
