@@ -347,6 +347,17 @@ where
             .get_ref::<SocketInfo>()
             .map(|info| info.peer_addr().ip_addr);
 
+        if client_address.ip_addr.is_unspecified()
+            && self.unspecified_client_udp_address_policy
+                == UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp
+            && tcp_peer_ip.is_none()
+        {
+            tracing::warn!(
+                "socks5 udp associate: PinToTcpPeerIp cannot enforce IP filtering \
+                 (no SocketInfo / TCP peer IP available); degrading to first-packet pinning",
+            );
+        }
+
         let socket_north = match self
             .binder
             .bind_socket_with_address(self.bind_north_address)

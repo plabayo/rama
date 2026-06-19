@@ -390,16 +390,70 @@ where
     }
 }
 
+/// Controls whether [`ServeDir`]/[`ServeFile`](super::ServeFile) follow filesystem
+/// symlinks when resolving a requested path.
+///
+/// The policy governs the **request-supplied** path components below the
+/// configured root: those are the path-traversal escape vector. The configured
+/// root (or single-file target) is operator-trusted and is served even if it is
+/// itself a symlink (e.g. a blue-green `current -> releases/N` deploy).
+///
+/// # Security caveat
+///
+/// Symlink rejection is **best-effort**: it is enforced by stat-ing each path
+/// component and then opening the file, which is two separate resolutions
+/// (a TOCTOU window). If the served tree is writable by untrusted parties a
+/// component could be swapped for a symlink between the check and the open.
+/// `RejectAll` is therefore not a substitute for serving from a root that is
+/// not writable by untrusted parties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServeDirSymlinkPolicy {
     #[default]
-    /// Reject symlinks in the configured root and in every requested path component.
+    /// Reject any requested path component that is a symlink (final or intermediate).
     RejectAll,
     /// Allow the final requested path component to be a symlink, but reject symlinked
-    /// roots and intermediate directory components.
+    /// intermediate directory components.
     AllowFinalComponent,
     /// Allow filesystem symlinks. This restores the historical follow-symlinks behavior.
     AllowAll,
+}
+
+impl fmt::Display for ServeDirSymlinkPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::RejectAll => "reject-all",
+                Self::AllowFinalComponent => "allow-final-component",
+                Self::AllowAll => "allow-all",
+            }
+        )
+    }
+}
+
+impl FromStr for ServeDirSymlinkPolicy {
+    type Err = BoxError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        rama_utils::macros::match_ignore_ascii_case_str! {
+            match(s) {
+                "reject-all" | "reject_all" => Ok(Self::RejectAll),
+                "allow-final-component" | "allow_final_component" => Ok(Self::AllowFinalComponent),
+                "allow-all" | "allow_all" => Ok(Self::AllowAll),
+                _ => Err(BoxError::from_static_str("invalid ServeDirSymlinkPolicy str")),
+            }
+        }
+    }
+}
+
+impl TryFrom<&str> for ServeDirSymlinkPolicy {
+    type Error = BoxError;
+
+    #[inline]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

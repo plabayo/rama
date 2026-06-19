@@ -604,8 +604,12 @@ async fn filesystem_metadata_from_root(
             .unwrap_or_else(|| Path::new("."))
     };
 
-    reject_symlink(root).await?;
-
+    // The configured root (or single-file target) is operator-trusted and may
+    // legitimately be a symlink — e.g. a blue-green `current -> releases/N`
+    // deploy, or `ServeFile` pointed at `latest.log -> 2026-06-19.log`. The
+    // policy therefore governs only the *request-supplied* components below the
+    // root, which are the path-traversal escape vector; the root itself is not
+    // policed.
     if let Ok(relative_path) = path.strip_prefix(root) {
         let mut current_path = root.to_path_buf();
         let mut components = relative_path.components().peekable();
@@ -619,6 +623,8 @@ async fn filesystem_metadata_from_root(
             reject_symlink(&current_path).await?;
         }
     } else {
+        // Path is not under the configured root (unexpected); police it
+        // defensively rather than trusting it.
         reject_symlink(path).await?;
     }
 
@@ -627,7 +633,7 @@ async fn filesystem_metadata_from_root(
 
 async fn reject_symlink(path: &Path) -> io::Result<()> {
     let meta = tokio::fs::symlink_metadata(path).await?;
-    if meta.file_type().is_symlink() {
+    if is_symlink_like(&meta) {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "symlink paths are not served",
@@ -635,6 +641,28 @@ async fn reject_symlink(path: &Path) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Whether `meta` describes a symlink-like entry that should be rejected.
+///
+/// Beyond POSIX symlinks this also catches Windows reparse points (directory
+/// junctions, mount points, ...), which [`std::fs::FileType::is_symlink`] does
+/// *not* report yet redirect outside the served tree just like a symlink.
+fn is_symlink_like(meta: &Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Handle directory requests based on the configured directory serve mode.

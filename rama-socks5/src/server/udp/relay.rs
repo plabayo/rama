@@ -42,6 +42,12 @@ pub enum UnspecifiedClientUdpAddressPolicy {
     #[default]
     /// Accept the first UDP packet only when it matches the TCP peer IP, if known,
     /// then pin to that packet's full UDP source address.
+    ///
+    /// The IP match is canonicalized, so a v4-mapped IPv6 TCP peer matches the
+    /// equivalent plain IPv4 UDP source. When the TCP peer IP is unknown (no
+    /// [`SocketInfo`] in the extensions) this degrades to [`Self::PinToFirstPacket`].
+    ///
+    /// [`SocketInfo`]: rama_net::stream::SocketInfo
     PinToTcpPeerIp,
     /// Accept the first UDP packet from any source, then pin to that packet's full
     /// UDP source address.
@@ -395,8 +401,11 @@ impl UdpSocketRelay {
 
         match self.unspecified_client_address_policy {
             UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp => {
+                // Compare canonical forms so a v4-mapped IPv6 TCP peer
+                // (`::ffff:a.b.c.d`, e.g. an IPv4 client on a dual-stack TCP
+                // listener) matches the plain IPv4 source the UDP socket reports.
                 if let Some(tcp_peer_ip) = self.tcp_peer_ip
-                    && src.ip_addr != tcp_peer_ip
+                    && src.ip_addr.to_canonical() != tcp_peer_ip.to_canonical()
                 {
                     return false;
                 }
@@ -675,5 +684,68 @@ mod tests {
             );
 
         assert!(!relay.accept_north_source(SocketAddress::local_ipv4(12345)));
+    }
+
+    #[tokio::test]
+    async fn test_unspecified_client_addr_tcp_peer_ip_policy_accepts_and_pins_matching_ip() {
+        let client_addr = SocketAddress::default_ipv4(0);
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+            .with_unspecified_client_address_policy(
+                UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp,
+                Some(std::net::IpAddr::from([127, 0, 0, 1])),
+            );
+
+        // First packet from the matching TCP peer IP is accepted and pins the
+        // full (ip, port) source.
+        assert!(relay.accept_north_source(SocketAddress::local_ipv4(40000)));
+        // A later packet from the same IP but a different port is rejected.
+        assert!(!relay.accept_north_source(SocketAddress::local_ipv4(40001)));
+        // North-bound replies now target the pinned source.
+        assert_eq!(
+            relay.north_send_address(),
+            Some(SocketAddress::local_ipv4(40000))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unspecified_client_addr_tcp_peer_ip_policy_canonicalizes_v4_mapped() {
+        let client_addr = SocketAddress::default_ipv4(0);
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        // A v4-mapped IPv6 TCP peer (as a dual-stack listener reports an IPv4
+        // client) must match the plain IPv4 UDP source.
+        let v4_mapped = std::net::Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped();
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+            .with_unspecified_client_address_policy(
+                UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp,
+                Some(std::net::IpAddr::V6(v4_mapped)),
+            );
+
+        assert!(relay.accept_north_source(SocketAddress::local_ipv4(40000)));
+    }
+
+    #[tokio::test]
+    async fn test_send_to_north_dropped_when_unspecified_client_not_yet_pinned() {
+        let client_addr = SocketAddress::default_ipv4(0);
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096);
+
+        // No north packet has pinned the client yet, so the reply target is unknown.
+        assert_eq!(relay.north_send_address(), None);
+        // Sending north in that state is a silent no-op (dropped), not an error.
+        relay
+            .send_to_north(
+                Some(Bytes::from_static(b"data")),
+                SocketAddress::local_ipv4(9999),
+            )
+            .await
+            .unwrap();
+        assert_eq!(relay.north_send_address(), None);
     }
 }

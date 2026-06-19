@@ -23,6 +23,11 @@ pub enum ProtocolError {
     /// Message is bigger than the maximum allowed size.
     MessageTooLong {
         /// The size of the message.
+        ///
+        /// For permessage-deflate messages rejected mid-inflation this is a
+        /// lower-bound sentinel (`max_size + 1`) rather than the exact decoded
+        /// length: inflation is aborted once the cap is exceeded, so the true
+        /// size is never computed.
         size: usize,
         /// The maximum allowed message size.
         max_size: usize,

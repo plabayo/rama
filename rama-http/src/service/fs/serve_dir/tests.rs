@@ -1,7 +1,9 @@
 use crate::body::util::BodyExt;
 use crate::header::ALLOW;
+#[cfg(unix)]
+use crate::service::fs::ServeDirSymlinkPolicy;
 use crate::service::fs::serve_dir::DirSource;
-use crate::service::fs::{DirectoryServeMode, ServeDir, ServeDirSymlinkPolicy, ServeFile};
+use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
 use crate::{Body, Request, StatusCode, StreamingBody};
 use crate::{Method, Response, header};
 use brotli::BrotliDecompress;
@@ -641,6 +643,49 @@ async fn symlink_file_is_not_served() {
     let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_root_is_served() {
+    // The configured root may itself be a symlink (e.g. a blue-green
+    // `current -> releases/N` deploy); the default RejectAll must still serve
+    // content beneath it — only request-supplied components are policed.
+    let real_root = tempfile::tempdir().unwrap();
+    std::fs::write(real_root.path().join("file.txt"), "hello").unwrap();
+    let link_parent = tempfile::tempdir().unwrap();
+    let symlinked_root = link_parent.path().join("root-link");
+    std::os::unix::fs::symlink(real_root.path(), &symlinked_root).unwrap();
+
+    let svc = ServeDir::new(&symlinked_root);
+    let req = Request::builder()
+        .uri("/file.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_into_text(res.into_body()).await, "hello");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn servefile_symlinked_target_is_served() {
+    // ServeFile points at an operator-chosen file; serving it is correct even
+    // under the default RejectAll if that file is a symlink (e.g.
+    // `latest.log -> 2026-06-19.log`), since there is no request-driven traversal.
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("2026-06-19.log");
+    std::fs::write(&target, "log-line").unwrap();
+    let link = dir.path().join("latest.log");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let svc = ServeFile::new(link);
+    let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(body_into_text(res.into_body()).await, "log-line");
 }
 
 #[cfg(unix)]

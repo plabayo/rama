@@ -715,4 +715,24 @@ mod tests {
             ),
         );
     }
+
+    #[test]
+    fn test_cmd_string_for_request_shell_escapes_uri() {
+        // A single quote is a valid RFC 3986 sub-delim and reaches the URI
+        // writer verbatim, so it must be shell-escaped like any other value.
+        let (parts, _) = crate::Request::builder()
+            .uri("http://example.com/a'b?x=y'z")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        let s = cmd_string_for_request_parts(&&parts);
+        assert_eq!(
+            s,
+            format!(
+                r##"curl 'http://example.com/a'\''b?x=y'\''z' \{NL}  --http1.1"##,
+                NL = rama_utils::str::NATIVE_NEWLINE
+            ),
+        );
+    }
 }

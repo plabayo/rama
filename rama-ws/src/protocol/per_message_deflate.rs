@@ -380,4 +380,41 @@ mod tests {
         let decoded = decoder.decode(&compressed, Some(payload.len())).unwrap();
         assert_eq!(decoded, payload);
     }
+
+    #[test]
+    fn deflate_decoder_unbounded_limit_inflates_correctly() {
+        // No size limit (the `max_message_size = None` path => usize::MAX): the
+        // decoder must still inflate the full payload across multiple buffer
+        // grow cycles without spuriously rejecting it.
+        for len in [0usize, 1, 200, 5000, 100_000] {
+            let payload = vec![b'a'; len];
+            let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+            let compressed = encoder.encode(&payload).unwrap();
+
+            let mut decoder = DeflateDecoder::new(15, false);
+            let decoded = decoder.decode(&compressed, None).unwrap();
+            assert_eq!(decoded, payload, "unbounded decode mismatch for len={len}");
+        }
+    }
+
+    #[test]
+    fn deflate_decoder_boundary_accepts_n_rejects_n_minus_one() {
+        // For a payload larger than the initial buffer capacity (so several
+        // grow cycles run), `Some(n)` accepts exactly and `Some(n - 1)` rejects.
+        let payload = vec![b'a'; 4096];
+        let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+        let compressed = encoder.encode(&payload).unwrap();
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        assert_eq!(
+            decoder.decode(&compressed, Some(payload.len())).unwrap(),
+            payload,
+        );
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        assert!(matches!(
+            decoder.decode(&compressed, Some(payload.len() - 1)),
+            Err(ProtocolError::MessageTooLong { max_size, .. }) if max_size == payload.len() - 1,
+        ));
+    }
 }

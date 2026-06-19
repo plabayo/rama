@@ -94,7 +94,6 @@ pub(super) async fn new(
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }
         },
-        SetProxyAuthHttpHeaderLayer::default(),
         cfg.user
             .as_deref()
             .map(|auth| {
@@ -120,6 +119,10 @@ pub(super) async fn new(
                     .with_remove_blocklisted(!cfg.location_trusted),
             ),
         ),
+        // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
+        // to the (same) proxy, so they must be re-applied on every redirect rather
+        // than stripped by FilterCredentials' cross-origin rule like origin creds.
+        SetProxyAuthHttpHeaderLayer::default(),
         AddRequiredRequestHeadersLayer::default(),
         HijackLayer::new(cfg.curl, curl_writer::CurlWriter { writer }),
         MapErrLayer::into_box_error(),
@@ -133,14 +136,20 @@ pub(super) async fn new(
 }
 
 fn redirect_limit(cfg: &SendCommand) -> usize {
-    if !(cfg.location || cfg.location_trusted) {
+    compute_redirect_limit(cfg.location, cfg.location_trusted, cfg.max_redirs)
+}
+
+fn compute_redirect_limit(location: bool, location_trusted: bool, max_redirs: isize) -> usize {
+    // Redirects only follow when --location or --location-trusted is set.
+    if !(location || location_trusted) {
         return 0;
     }
 
-    if cfg.max_redirs < 0 {
+    // curl semantics: --max-redirs -1 means unlimited.
+    if max_redirs < 0 {
         usize::MAX
     } else {
-        cfg.max_redirs as usize
+        max_redirs as usize
     }
 }
 
@@ -237,5 +246,34 @@ where
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),
         Err(err) => Err(err.into_opaque_error()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_redirect_limit;
+
+    #[test]
+    fn redirect_limit_disabled_without_location() {
+        // No redirects unless --location or --location-trusted is set.
+        assert_eq!(compute_redirect_limit(false, false, 50), 0);
+        assert_eq!(compute_redirect_limit(false, false, -1), 0);
+    }
+
+    #[test]
+    fn redirect_limit_location_trusted_alone_enables_redirects() {
+        assert_eq!(compute_redirect_limit(false, true, 50), 50);
+    }
+
+    #[test]
+    fn redirect_limit_respects_max_redirs() {
+        assert_eq!(compute_redirect_limit(true, false, 0), 0);
+        assert_eq!(compute_redirect_limit(true, false, 7), 7);
+    }
+
+    #[test]
+    fn redirect_limit_negative_is_unlimited() {
+        assert_eq!(compute_redirect_limit(true, false, -1), usize::MAX);
+        assert_eq!(compute_redirect_limit(false, true, -1), usize::MAX);
     }
 }
