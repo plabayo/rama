@@ -3,7 +3,7 @@ use rama::{
     error::{BoxError, BoxErrorExt, ErrorContext, ErrorExt, extra::OpaqueError},
     extensions::Extension,
     http::{
-        Request, Response, StreamingBody,
+        Body, Request, Response, StreamingBody,
         client::{
             EasyHttpWebClient, ProxyConnectorLayer,
             proxy::layer::{
@@ -12,7 +12,10 @@ use rama::{
         },
         layer::{
             auth::AddAuthorizationLayer,
-            follow_redirect::{FollowRedirectLayer, policy::Limited},
+            follow_redirect::{
+                FollowRedirectLayer,
+                policy::{FilterCredentials, Limited, PolicyExt},
+            },
             required_header::AddRequiredRequestHeadersLayer,
         },
     },
@@ -81,12 +84,17 @@ pub(super) async fn new(
                 ))
             })
             .transpose()?,
-        FollowRedirectLayer::with_policy(Limited::new(if cfg.location && cfg.max_redirs > 0 {
-            cfg.max_redirs as usize
-        } else {
-            0
-        })),
         OptDnsOverwriteLayer::new(cfg.resolve.clone()),
+        match cfg.proxy.clone() {
+            None => HttpProxyAddressLayer::try_from_env_default()?,
+            Some(mut proxy_address) => {
+                if let Some(credentials) = cfg.proxy_user.clone() {
+                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
+                }
+                HttpProxyAddressLayer::maybe(Some(proxy_address))
+            }
+        },
+        SetProxyAuthHttpHeaderLayer::default(),
         cfg.user
             .as_deref()
             .map(|auth| {
@@ -105,17 +113,14 @@ pub(super) async fn new(
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
+        FollowRedirectLayer::with_policy(
+            Limited::new(redirect_limit(cfg)).and::<_, Body, OpaqueError>(
+                FilterCredentials::new()
+                    .with_block_cross_origin(!cfg.location_trusted)
+                    .with_remove_blocklisted(!cfg.location_trusted),
+            ),
+        ),
         AddRequiredRequestHeadersLayer::default(),
-        match cfg.proxy.clone() {
-            None => HttpProxyAddressLayer::try_from_env_default()?,
-            Some(mut proxy_address) => {
-                if let Some(credentials) = cfg.proxy_user.clone() {
-                    proxy_address.credential = Some(ProxyCredential::Basic(credentials));
-                }
-                HttpProxyAddressLayer::maybe(Some(proxy_address))
-            }
-        },
-        SetProxyAuthHttpHeaderLayer::default(),
         HijackLayer::new(cfg.curl, curl_writer::CurlWriter { writer }),
         MapErrLayer::into_box_error(),
         layer_fn(move |svc| logger_headers_res::ResponseHeaderLogger {
@@ -125,6 +130,18 @@ pub(super) async fn new(
     );
 
     Ok(client_builder.into_layer(inner_client))
+}
+
+fn redirect_limit(cfg: &SendCommand) -> usize {
+    if !(cfg.location || cfg.location_trusted) {
+        return 0;
+    }
+
+    if cfg.max_redirs < 0 {
+        usize::MAX
+    } else {
+        cfg.max_redirs as usize
+    }
 }
 
 fn new_inner_client(

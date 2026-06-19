@@ -254,13 +254,17 @@ fn deflate_bomb_single_frame_rejected() {
         ..Default::default()
     };
     let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
-    assert!(matches!(
-        socket.read(),
+    match socket.read() {
         Err(ProtocolError::MessageTooLong {
-            size: PLAIN_LEN,
-            max_size: _,
-        })
-    ));
+            size,
+            max_size: reported_max,
+        }) => {
+            assert_eq!(reported_max, max_size);
+            assert!(size > reported_max);
+            assert!(size < PLAIN_LEN);
+        }
+        result => panic!("expected compressed payload to exceed decoded size limit: {result:?}"),
+    }
 }
 
 #[cfg(feature = "compression")]
@@ -295,11 +299,15 @@ fn deflate_bomb_fragmented_rejected() {
         ..Default::default()
     };
     let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
-    assert!(matches!(
-        socket.read(),
+    match socket.read() {
         Err(ProtocolError::MessageTooLong {
-            size: PLAIN_LEN,
-            max_size: _,
-        })
-    ));
+            size,
+            max_size: reported_max,
+        }) => {
+            assert_eq!(reported_max, max_size);
+            assert!(size > reported_max);
+            assert!(size < PLAIN_LEN);
+        }
+        result => panic!("expected compressed payload to exceed decoded size limit: {result:?}"),
+    }
 }

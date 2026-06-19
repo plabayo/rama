@@ -40,7 +40,8 @@ pub struct CertOrderOutput {
 /// An http client used to fetch certs dynamically ([`DynamicCertIssuer`]).
 ///
 /// There is no server implementation in Rama.
-/// It is up to the user of this client to provide their own server.
+/// It is up to the user of this client to provide their own server, including
+/// authentication and authorization for every certificate order.
 pub struct CertIssuerHttpClient {
     endpoint: Uri,
     // Trie value `None` means an exact entry; `Some(wildcard)` is a subtree
@@ -148,7 +149,8 @@ impl CertIssuerHttpClient {
         /// Only allow fetching certs for the given domain.
         ///
         /// By default, if none of the `allow_*` setters are called
-        /// the client will fetch for any client.
+        /// the client will fetch for any client. This is a local pre-filter;
+        /// the remote issuer remains responsible for authorizing each order.
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
             // The trie's smart insert handles "*.x" -> subtree at x and bare
             // "x" -> exact at x. The stored value is just the wildcard form
@@ -165,7 +167,8 @@ impl CertIssuerHttpClient {
         /// Only allow fetching certs for the given domains.
         ///
         /// By default, if none of the `allow_*` setters are called
-        /// the client will fetch for any client.
+        /// the client will fetch for any client. This is a local pre-filter;
+        /// the remote issuer remains responsible for authorizing each order.
         pub fn allow_domains(mut self, domains: impl IntoIterator<Item: AsDomainRef>) -> Self {
             for domain in domains {
                 self.set_allow_domain(domain);

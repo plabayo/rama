@@ -7,6 +7,7 @@ use rama_core::{
 use rama_net::{
     address::{HostWithPort, SocketAddress},
     socket::SocketService,
+    stream::SocketInfo,
 };
 use rama_udp::{UdpSocket, bind_udp_with_address};
 use rama_utils::macros::generate_set_and_with;
@@ -24,6 +25,7 @@ pub use inspect::{
 };
 
 mod relay;
+pub use relay::UnspecifiedClientUdpAddressPolicy;
 
 /// Types which can be used as socks5 [`Command::UdpAssociate`] drivers on the server side.
 ///
@@ -118,6 +120,8 @@ pub struct UdpRelay<B, I> {
     south_buffer_size: usize,
 
     relay_timeout: Option<Duration>,
+
+    unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
 }
 
 impl<B> UdpRelay<B, DirectUdpRelay> {
@@ -132,6 +136,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             north_buffer_size: 4096,
             south_buffer_size: 4096,
             relay_timeout: None,
+            unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
         }
     }
 
@@ -147,6 +152,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
+            unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
         }
     }
 
@@ -162,6 +168,7 @@ impl<B> UdpRelay<B, DirectUdpRelay> {
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
+            unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
         }
     }
 }
@@ -180,6 +187,7 @@ impl<B, I> UdpRelay<B, I> {
             north_buffer_size: self.north_buffer_size,
             south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
+            unspecified_client_udp_address_policy: self.unspecified_client_udp_address_policy,
         }
     }
 
@@ -244,6 +252,19 @@ impl<B, I> UdpRelay<B, I> {
         /// Define the relay timeout for this socks5 UDP server.
         pub fn relay_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.relay_timeout = timeout;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set how a UDP ASSOCIATE relay handles an all-zero client UDP address.
+        ///
+        /// Defaults to [`UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp`].
+        pub fn unspecified_client_udp_address_policy(
+            mut self,
+            policy: UnspecifiedClientUdpAddressPolicy,
+        ) -> Self {
+            self.unspecified_client_udp_address_policy = policy;
             self
         }
     }
@@ -322,6 +343,9 @@ where
             return Err(Error::aborted("udp relay failed").with_context(reply_kind));
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
+        let tcp_peer_ip = extensions
+            .get_ref::<SocketInfo>()
+            .map(|info| info.peer_addr().ip_addr);
 
         let socket_north = match self
             .binder
@@ -414,6 +438,8 @@ where
             socket_south,
             self.south_buffer_size,
             self.dns_resolver.clone(),
+            self.unspecified_client_udp_address_policy,
+            tcp_peer_ip,
         );
 
         tokio::select! {

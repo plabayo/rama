@@ -50,6 +50,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 pub struct ServeDir<F = DefaultServeDirFallback> {
     base: DirSource,
     buf_chunk_size: usize,
+    symlink_policy: ServeDirSymlinkPolicy,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
     // single files
@@ -81,6 +82,7 @@ impl ServeDir<DefaultServeDirFallback> {
         Self {
             base,
             buf_chunk_size: DEFAULT_CAPACITY,
+            symlink_policy: ServeDirSymlinkPolicy::default(),
             precompressed_variants: None,
             variant: ServeVariant::Directory {
                 serve_mode: Default::default(),
@@ -99,6 +101,7 @@ impl ServeDir<DefaultServeDirFallback> {
         Self {
             base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
+            symlink_policy: ServeDirSymlinkPolicy::default(),
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
             fallback: None,
@@ -146,6 +149,18 @@ impl<F> ServeDir<F> {
         /// The default capacity is 64kb.
         pub fn buf_chunk_size(mut self, chunk_size: usize) -> Self {
             self.buf_chunk_size = chunk_size;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the filesystem symlink policy.
+        ///
+        /// Defaults to [`ServeDirSymlinkPolicy::RejectAll`].
+        /// This only applies to filesystem-backed services; embedded services
+        /// do not resolve filesystem symlinks.
+        pub fn symlink_policy(mut self, policy: ServeDirSymlinkPolicy) -> Self {
+            self.symlink_policy = policy;
             self
         }
     }
@@ -236,6 +251,7 @@ impl<F> ServeDir<F> {
         ServeDir {
             base: self.base,
             buf_chunk_size: self.buf_chunk_size,
+            symlink_policy: self.symlink_policy,
             precompressed_variants: self.precompressed_variants,
             variant: self.variant,
             fallback: Some(new_fallback),
@@ -348,6 +364,7 @@ impl<F> ServeDir<F> {
             buf_chunk_size,
             &self.base,
             precompression_configured,
+            self.symlink_policy,
         )
         .await;
 
@@ -371,6 +388,18 @@ where
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServeDirSymlinkPolicy {
+    #[default]
+    /// Reject symlinks in the configured root and in every requested path component.
+    RejectAll,
+    /// Allow the final requested path component to be a symlink, but reject symlinked
+    /// roots and intermediate directory components.
+    AllowFinalComponent,
+    /// Allow filesystem symlinks. This restores the historical follow-symlinks behavior.
+    AllowAll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

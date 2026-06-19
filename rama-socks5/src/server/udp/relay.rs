@@ -18,6 +18,9 @@ use ::{
 #[derive(Debug)]
 pub(super) struct UdpSocketRelay {
     client_address: SocketAddress,
+    pinned_client_address: Option<SocketAddress>,
+    unspecified_client_address_policy: UnspecifiedClientUdpAddressPolicy,
+    tcp_peer_ip: Option<IpAddr>,
 
     north: UdpSocket,
     north_max_size: usize,
@@ -31,6 +34,21 @@ pub(super) struct UdpSocketRelay {
 
     dns_resolve_mode: DnsResolveIpMode,
     dns_resolver: Option<BoxDnsAddressResolver>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum UnspecifiedClientUdpAddressPolicy {
+    #[default]
+    /// Accept the first UDP packet only when it matches the TCP peer IP, if known,
+    /// then pin to that packet's full UDP source address.
+    PinToTcpPeerIp,
+    /// Accept the first UDP packet from any source, then pin to that packet's full
+    /// UDP source address.
+    PinToFirstPacket,
+    /// Accept UDP packets from any source. Replies are sent to the most recent
+    /// accepted source address.
+    AnySource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -49,6 +67,9 @@ impl UdpSocketRelay {
     ) -> Self {
         Self {
             client_address,
+            pinned_client_address: None,
+            unspecified_client_address_policy: UnspecifiedClientUdpAddressPolicy::default(),
+            tcp_peer_ip: None,
 
             north,
             north_max_size: south_read_buf_size,
@@ -70,6 +91,16 @@ impl UdpSocketRelay {
             dns_resolve_mode: DnsResolveIpMode::default(),
             dns_resolver: None,
         }
+    }
+
+    pub(super) fn with_unspecified_client_address_policy(
+        mut self,
+        policy: UnspecifiedClientUdpAddressPolicy,
+        tcp_peer_ip: Option<IpAddr>,
+    ) -> Self {
+        self.unspecified_client_address_policy = policy;
+        self.tcp_peer_ip = tcp_peer_ip;
+        self
     }
 
     pub(super) fn north_read_buf_slice(&self) -> &[u8] {
@@ -95,12 +126,7 @@ impl UdpSocketRelay {
                             "north socket: received packet (len = {len}; src = {src})",
                         );
 
-                        // Per RFC 1928 §7 the client MAY send all-zeros when it does not
-                        // know its own address/port yet; in that case we skip source
-                        // filtering and accept packets from any sender.
-                        if !self.client_address.ip_addr.is_unspecified()
-                            && !self.client_address.eq(&src)
-                        {
+                        if !self.accept_north_source(src.into()) {
                             tracing::debug!(
                                 network.peer.address = %self.client_address.ip_addr,
                                 network.peer.port = %self.client_address.port,
@@ -267,6 +293,17 @@ impl UdpSocketRelay {
         data: Option<Bytes>,
         server_address: SocketAddress,
     ) -> Result<(), BoxError> {
+        let Some(client_address) = self.north_send_address() else {
+            tracing::trace!(
+                network.peer.address = %self.client_address.ip_addr,
+                network.peer.port = %self.client_address.port,
+                server.address = %server_address.ip_addr,
+                server.port = %server_address.port,
+                "drop packet north: client UDP address is not known yet",
+            );
+            return Ok(());
+        };
+
         let header = UdpHeader {
             fragment_number: 0,
             destination: server_address.into(),
@@ -314,7 +351,7 @@ impl UdpSocketRelay {
 
         match self
             .north
-            .send_to(&self.north_write_buf, self.client_address.into_std())
+            .send_to(&self.north_write_buf, client_address.into_std())
             .await
         {
             Ok(len) => {
@@ -346,6 +383,49 @@ impl UdpSocketRelay {
                     Err(err.context("north socket fatal unknown write error"))
                 }
             },
+        }
+    }
+}
+
+impl UdpSocketRelay {
+    fn accept_north_source(&mut self, src: SocketAddress) -> bool {
+        if !self.client_address.ip_addr.is_unspecified() {
+            return self.client_address.eq(&src);
+        }
+
+        match self.unspecified_client_address_policy {
+            UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp => {
+                if let Some(tcp_peer_ip) = self.tcp_peer_ip
+                    && src.ip_addr != tcp_peer_ip
+                {
+                    return false;
+                }
+                self.pin_or_match_client_source(src)
+            }
+            UnspecifiedClientUdpAddressPolicy::PinToFirstPacket => {
+                self.pin_or_match_client_source(src)
+            }
+            UnspecifiedClientUdpAddressPolicy::AnySource => {
+                self.pinned_client_address = Some(src);
+                true
+            }
+        }
+    }
+
+    fn pin_or_match_client_source(&mut self, src: SocketAddress) -> bool {
+        if let Some(address) = self.pinned_client_address {
+            address == src
+        } else {
+            self.pinned_client_address = Some(src);
+            true
+        }
+    }
+
+    fn north_send_address(&self) -> Option<SocketAddress> {
+        if self.client_address.ip_addr.is_unspecified() {
+            self.pinned_client_address
+        } else {
+            Some(self.client_address)
         }
     }
 }
@@ -494,9 +574,10 @@ mod tests {
 
     // Regression for Bug 3: when the client sends 0.0.0.0:0 in the UDP ASSOCIATE
     // request (RFC 1928 §7 allows this when the client doesn't know its address),
-    // the relay was dropping ALL north packets because no source ever matches 0.0.0.0.
+    // the relay accepts and pins the first valid UDP source instead of dropping
+    // everything or accepting every later source.
     #[tokio::test]
-    async fn test_recv_north_unspecified_client_addr_accepts_any_source() {
+    async fn test_recv_north_unspecified_client_addr_pins_first_source() {
         // client_address = 0.0.0.0:0 — the RFC 1928 §7 all-zeros sentinel
         let client_addr = SocketAddress::default_ipv4(0);
 
@@ -522,11 +603,77 @@ mod tests {
             .await
             .expect("timed out")
             .unwrap()
-            .expect("packet must not be dropped when client_address is 0.0.0.0:0");
+            .expect("first packet must not be dropped when client_address is 0.0.0.0:0");
 
         assert!(
             matches!(state, UdpRelayState::ReadNorth(_)),
-            "RFC 1928 §7: packets from any source must be accepted when client_address is 0.0.0.0:0"
+            "RFC 1928 §7: the first packet selects the client UDP source when client_address is 0.0.0.0:0"
         );
+
+        let second_sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        second_sender.send_to(&packet, north_addr).await.unwrap();
+        let state = tokio::time::timeout(std::time::Duration::from_millis(500), relay.recv())
+            .await
+            .expect("timed out")
+            .unwrap();
+
+        assert!(
+            state.is_none(),
+            "packets from a different UDP source must be dropped after the first source is pinned"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recv_north_unspecified_client_addr_any_source_policy() {
+        let client_addr = SocketAddress::default_ipv4(0);
+
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let north_addr = north.local_addr().unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+            .with_unspecified_client_address_policy(
+                UnspecifiedClientUdpAddressPolicy::AnySource,
+                None,
+            );
+
+        let target: SocketAddress = SocketAddress::local_ipv4(9999);
+        let header = UdpHeader {
+            fragment_number: 0,
+            destination: target.into(),
+        };
+        let mut packet = BytesMut::new();
+        header.write_to_buf(&mut packet).unwrap();
+        packet.extend_from_slice(b"data");
+
+        for _ in 0..2 {
+            let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            sender.send_to(&packet, north_addr).await.unwrap();
+
+            let state = tokio::time::timeout(std::time::Duration::from_millis(500), relay.recv())
+                .await
+                .expect("timed out")
+                .unwrap();
+
+            assert!(
+                matches!(state, Some(UdpRelayState::ReadNorth(_))),
+                "AnySource policy must preserve the historical accept-any-source behavior"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unspecified_client_addr_tcp_peer_ip_policy_rejects_other_ip() {
+        let client_addr = SocketAddress::default_ipv4(0);
+        let north = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let south = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let mut relay = UdpSocketRelay::new(client_addr, north, 4096, south, 4096)
+            .with_unspecified_client_address_policy(
+                UnspecifiedClientUdpAddressPolicy::PinToTcpPeerIp,
+                Some(std::net::IpAddr::from([127, 0, 0, 2])),
+            );
+
+        assert!(!relay.accept_north_source(SocketAddress::local_ipv4(12345)));
     }
 }

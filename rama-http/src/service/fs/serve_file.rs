@@ -1,6 +1,6 @@
 //! Service that serves a file.
 
-use super::ServeDir;
+use super::{ServeDir, ServeDirSymlinkPolicy};
 use crate::mime::{Mime, guess as mime_guess};
 use crate::{Request, Response};
 use rama_core::Service;
@@ -108,6 +108,16 @@ impl ServeFile {
         /// The default capacity is 64kb.
         pub fn buf_chunk_size(mut self, chunk_size: usize) -> Self {
             self.0.set_buf_chunk_size(chunk_size);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the filesystem symlink policy.
+        ///
+        /// Defaults to [`ServeDirSymlinkPolicy::RejectAll`].
+        pub fn symlink_policy(mut self, policy: ServeDirSymlinkPolicy) -> Self {
+            self.0.set_symlink_policy(policy);
             self
         }
     }
