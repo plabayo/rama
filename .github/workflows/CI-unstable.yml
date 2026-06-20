@@ -136,9 +136,9 @@ jobs:
             --title "ci: clippy --fix auto-fixes (${today})" \
             --body "${pr_body}"
 
-  test-ffi-apple-example-transparent-proxy-e2e-asan:
+  test-ffi-apple-example-transparent-proxy-e2e-sanitizers:
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
       # ASan needs nightly for `-Z sanitizer=address` and a matching
@@ -149,12 +149,29 @@ jobs:
           components: rust-src
       - uses: ./.github/actions/rust-cache
         with:
-          key: macos-latest-nightly-apple-transparent-proxy-e2e-asan
+          key: macos-latest-nightly-apple-transparent-proxy-e2e-sanitizers
       - name: Install just
         run: brew install just
-      - name: Run transparent proxy FFI stress tests under AddressSanitizer
+      - name: Run transparent proxy FFI stress tests under ASan and Swift TSan
         working-directory: ./ffi/apple/examples/transparent_proxy
-        run: just test-e2e-asan
+        run: just test-e2e-sanitizers
+
+  test-ffi-apple-ne-miri:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
+        with:
+          toolchain: nightly
+          components: miri, rust-src
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: macos-latest-nightly-apple-ne-miri
+      - name: Install just
+        run: brew install just
+      - name: Run targeted Apple NetworkExtension Miri checks
+        run: just miri-apple-ne-ffi
 
   fuzz-rust:
     runs-on: ubuntu-latest

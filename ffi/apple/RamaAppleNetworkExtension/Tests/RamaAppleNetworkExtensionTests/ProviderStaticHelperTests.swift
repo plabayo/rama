@@ -66,6 +66,30 @@ final class ProviderStaticHelperTests: XCTestCase {
             24, "explicit prefix wins over text-inferred")
     }
 
+    func testResolvedPrefixRejectsOutOfRangeIPv4Prefix() {
+        let ep = NWHostEndpoint(hostname: "10.0.0.0", port: "0")
+        XCTAssertNil(
+            RamaTransparentProxyProvider.resolvedPrefix(
+                endpoint: ep, networkText: "10.0.0.0", explicitPrefix: 33),
+            "IPv4 prefixes must be <= 32")
+    }
+
+    func testResolvedPrefixRejectsOutOfRangeIPv6Prefix() {
+        let ep = NWHostEndpoint(hostname: "2001:db8::", port: "0")
+        XCTAssertNil(
+            RamaTransparentProxyProvider.resolvedPrefix(
+                endpoint: ep, networkText: "2001:db8::", explicitPrefix: 129),
+            "IPv6 prefixes must be <= 128")
+    }
+
+    func testResolvedPrefixRejectsExplicitPrefixForHostname() {
+        let ep = NWHostEndpoint(hostname: "example.com", port: "0")
+        XCTAssertNil(
+            RamaTransparentProxyProvider.resolvedPrefix(
+                endpoint: ep, networkText: "example.com", explicitPrefix: 24),
+            "CIDR prefixes only make sense for IP literals")
+    }
+
     // MARK: - endpointHostPort
 
     func testEndpointHostPortReturnsNilForNil() {
@@ -175,6 +199,18 @@ final class ProviderStaticHelperTests: XCTestCase {
         let rule = tcpRule(remoteNetwork: "10.0.0.0", remotePrefix: 8)
         let built = RamaTransparentProxyProvider.makeNetworkRules(rule)
         XCTAssertEqual(built.count, 1)
+    }
+
+    func testMakeNetworkRulesSkipsInvalidIPv4Prefix() {
+        let rule = tcpRule(remoteNetwork: "10.0.0.0", remotePrefix: 40)
+        let built = RamaTransparentProxyProvider.makeNetworkRules(rule)
+        XCTAssertEqual(built.count, 0)
+    }
+
+    func testMakeNetworkRulesSkipsHostnameWithExplicitPrefix() {
+        let rule = tcpRule(remoteNetwork: "example.com", remotePrefix: 24)
+        let built = RamaTransparentProxyProvider.makeNetworkRules(rule)
+        XCTAssertEqual(built.count, 0)
     }
 
     func testMakeNetworkRulesUnresolvableReturnsEmpty() {

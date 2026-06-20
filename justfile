@@ -287,6 +287,22 @@ vet:
 miri:
     cargo +nightly miri test
 
+# Narrow Miri pass for the Apple NetworkExtension crate's pure Rust FFI
+# ownership/conversion tests. Keep this separate from `miri`: the full
+# workspace pass is broader, while this target is intended as the fast
+# preflight for Apple bridge hardening work.
+miri-apple-ne-ffi:
+    cargo +nightly miri test -p rama-net-apple-networkextension ffi::bytes --lib
+    cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_enum_decoders_fail_safe_on_bad_byte --lib
+    cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_struct_layout_matches_c_header_on_64_bit_targets --lib
+
+# Targeted mutation pass for the Apple NetworkExtension FFI/config boundary.
+# This intentionally avoids the full Apple e2e surface so cargo-mutants can
+# produce useful signal without spending most of its time in system-extension
+# setup. Install with: cargo install cargo-mutants --locked
+mutants-apple-ne-ffi:
+    cargo mutants --package rama-net-apple-networkextension --file rama-net-apple-networkextension/src/ffi/bytes.rs --file rama-net-apple-networkextension/src/ffi/tproxy.rs --file rama-net-apple-networkextension/src/tproxy/types.rs --timeout 120
+
 detect-unused-deps:
     @cargo install cargo-machete
     cargo machete --skip-target-dir --with-metadata
