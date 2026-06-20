@@ -110,7 +110,7 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
-use lazy::LazyUriRef;
+use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
 
@@ -288,6 +288,56 @@ impl Uri {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
     }
 
+    /// Build an HTTP **authority-form** URI (`[userinfo@]host[:port]`, the
+    /// CONNECT request-target shape) directly from an already-parsed
+    /// [`Authority`](crate::address::Authority).
+    ///
+    /// Unlike [`parse_authority_form`](Self::parse_authority_form) this skips
+    /// re-parsing and re-validating a `host:port` string: the host/port are
+    /// moved in as values and only the canonical bytes are rendered (needed for
+    /// the lazy representation). Use it whenever you already hold an
+    /// [`Authority`](crate::address::Authority) instead of round-tripping
+    /// through `Authority::to_string()` + `parse_authority_form`.
+    #[must_use]
+    pub fn from_authority_form(authority: crate::address::Authority) -> Self {
+        use std::fmt::Write as _;
+
+        let crate::address::Authority { user_info, address } = authority;
+
+        // Render the canonical authority bytes once, tracking the userinfo span
+        // as we write it — the lazy form needs the raw bytes, but the host/port
+        // are carried as already-parsed values so nothing is re-scanned.
+        let mut s = String::new();
+        let userinfo_range = match &user_info {
+            Some(ui) => {
+                _ = write!(s, "{ui}");
+                let end = u16::try_from(s.len()).unwrap_or(u16::MAX);
+                s.push('@');
+                Some((0, end))
+            }
+            None => None,
+        };
+        _ = write!(s, "{address}");
+        let crate::address::HostWithOptPort { host, port } = address;
+
+        let bytes = rama_core::bytes::Bytes::from(s);
+        // Empty path anchored at the end, matching `parse_authority_form`.
+        let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+
+        Self::from_lazy(LazyUriRef {
+            scheme: None,
+            authority: Some(LazyAuthority {
+                userinfo_range,
+                host,
+                port,
+            }),
+            path: (len, len),
+            query: None,
+            fragment: None,
+            bytes,
+        })
+    }
+
     /// Project this URI to HTTP **authority-form** (`[userinfo@]host[:port]`),
     /// the CONNECT request-target shape — keeping only the authority and
     /// dropping the scheme, path, query and fragment.
@@ -299,11 +349,7 @@ impl Uri {
     /// `host:port` string.
     #[must_use]
     pub fn as_authority_form(&self) -> Option<Self> {
-        // The authority already renders to canonical `[userinfo@]host[:port]`,
-        // which is exactly authority-form; reparsing it yields the dedicated
-        // authority-form representation. A valid authority always reparses.
-        let authority = self.authority()?;
-        Self::parse_authority_form(authority.to_string()).ok()
+        Some(Self::from_authority_form(self.authority()?.into_owned()))
     }
 
     /// View this [`Uri`] as a str.
@@ -1585,5 +1631,48 @@ mod request_target_fix_tests {
     fn origin_form_request_target_unchanged() {
         assert_eq!(Uri::parse("/a?b=c").unwrap().request_target(), "/a?b=c");
         assert_eq!(Uri::parse("/a").unwrap().request_target(), "/a");
+    }
+}
+
+#[cfg(test)]
+mod from_authority_form_tests {
+    use super::*;
+    use crate::address::Authority;
+
+    /// `from_authority_form(auth)` must produce exactly what
+    /// `parse_authority_form(auth.to_string())` would — same wire form, same
+    /// decomposed components — but without re-parsing.
+    #[test]
+    fn matches_parse_authority_form() {
+        for s in [
+            "example.com:443",
+            "example.com",
+            "user:pass@example.com:8080",
+            "user@host.example",
+            "[::1]:443",
+            "[2001:db8::1]",
+            "127.0.0.1:80",
+        ] {
+            let auth = Authority::try_from(s).unwrap();
+            let canonical = auth.to_string();
+            let from_ctor = Uri::from_authority_form(auth);
+            let from_parse = Uri::parse_authority_form(canonical.as_str()).unwrap();
+
+            assert_eq!(
+                from_ctor.to_string(),
+                from_parse.to_string(),
+                "wire form: {s}"
+            );
+            // authority-form, never network-path — no `//` prefix.
+            assert!(!from_ctor.to_string().starts_with("//"), "no `//`: {s}");
+            assert_eq!(from_ctor.host(), from_parse.host(), "host: {s}");
+            assert_eq!(from_ctor.port(), from_parse.port(), "port: {s}");
+            assert_eq!(
+                from_ctor.userinfo().map(|u| u.to_string()),
+                from_parse.userinfo().map(|u| u.to_string()),
+                "userinfo: {s}"
+            );
+            assert!(from_ctor.scheme().is_none(), "no scheme: {s}");
+        }
     }
 }

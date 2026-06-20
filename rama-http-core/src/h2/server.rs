@@ -1889,10 +1889,9 @@ impl proto::Peer for Peer {
             }
             // authority-form (CONNECT).
             None => match authority {
-                Some(authority) => match uri::Uri::parse_authority_form(authority.to_string()) {
-                    Ok(uri) => uri,
-                    Err(why) => malformed!("malformed headers: malformed authority: {}", why),
-                },
+                // The authority is already parsed; build the authority-form URI
+                // directly instead of re-serializing and re-parsing it.
+                Some(authority) => uri::Uri::from_authority_form(authority),
                 None => uri::Uri::default(),
             },
         };
