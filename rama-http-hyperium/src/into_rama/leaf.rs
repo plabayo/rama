@@ -43,6 +43,14 @@ impl TryIntoRamaHttp for http::Uri {
         if self == Self::from_static("*") {
             return Ok(Uri::from_static("*"));
         }
+        // Authority-form (a CONNECT target like `example.com:443`): no scheme,
+        // an authority, and no path/query. The graceful parser would read it as
+        // `scheme:path` and silently drop the host, so route it through the
+        // authority-form parser instead.
+        if self.scheme().is_none() && self.authority().is_some() && self.path_and_query().is_none()
+        {
+            return Ok(Uri::parse_authority_form(self.to_string())?);
+        }
         Ok(Uri::parse(self.to_string().as_str())?)
     }
 }

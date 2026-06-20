@@ -141,4 +141,21 @@ mod tests {
         assert_eq!(back.status(), 404);
         assert_eq!(back.headers().get("x-y").unwrap(), "z");
     }
+
+    #[test]
+    fn http_uri_authority_form_preserves_host() {
+        // A CONNECT-style authority-form http::Uri must keep its host when
+        // converted to rama (it must not be misread as `scheme:path`).
+        let mut parts = http::uri::Parts::default();
+        parts.authority = Some("example.com:443".parse().unwrap());
+        let hyper_uri = http::Uri::from_parts(parts).unwrap();
+        assert!(hyper_uri.scheme().is_none() && hyper_uri.authority().is_some());
+
+        let rama_uri: Uri = hyper_uri.try_into_rama_http().unwrap();
+        assert_eq!(
+            rama_uri.host().map(|h| h.to_string()).as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(rama_uri.port_u16(), Some(443));
+    }
 }

@@ -1859,8 +1859,8 @@ impl proto::Peer for Peer {
                 }
                 None => uri::Uri::from_static("*"),
             },
-            // origin-/absolute-form: parse the path, then graft the authority
-            // (and scheme, which is only meaningful with an authority).
+            // origin-form: parse the path/query, then graft the typed
+            // authority (and scheme, which is only meaningful with one).
             Some(path) => {
                 let mut uri = match uri::Uri::parse(path) {
                     Ok(uri) => uri,
@@ -1868,6 +1868,17 @@ impl proto::Peer for Peer {
                         malformed!("malformed headers: malformed path ({:?}): {}", path, why)
                     }
                 };
+                // RFC 9113 §8.3.1: `:path` carries only the path/query of the
+                // target — the scheme and authority have their own pseudo-headers
+                // and MUST NOT appear here. Reject absolute-form values such as
+                // `https://evil/x`, which would otherwise inject an
+                // attacker-chosen authority when `:authority` is absent.
+                if uri.scheme().is_some() || uri.authority().is_some() {
+                    malformed!(
+                        "malformed headers: :path must be origin-form, not absolute-form ({:?})",
+                        path
+                    );
+                }
                 if let Some(authority) = authority {
                     uri.set_authority(authority);
                     if let Some(scheme) = scheme {
@@ -1927,5 +1938,60 @@ where
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),
         }
+    }
+}
+
+#[cfg(test)]
+mod path_form_tests {
+    use super::*;
+    use rama_http_types::proto::h2::hpack::BytesStr;
+
+    fn bs(s: &'static str) -> BytesStr {
+        BytesStr::try_from(rama_core::bytes::Bytes::from_static(s.as_bytes())).unwrap()
+    }
+
+    fn decode(pseudo: Pseudo) -> Result<Request<()>, Error> {
+        <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            HeaderMap::new(),
+            OriginalHttp1Headers::default(),
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
+    }
+
+    // RFC 9113 §8.3.1: an absolute-form `:path` (carrying scheme/authority) must
+    // be rejected — otherwise, with `:authority` absent, the embedded host would
+    // be injected into the request URI.
+    #[test]
+    fn h2_rejects_absolute_form_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: None,
+            path: Some(bs("https://evil.example/x")),
+            ..Default::default()
+        };
+        assert!(
+            decode(pseudo).is_err(),
+            "absolute-form :path must be rejected"
+        );
+    }
+
+    #[test]
+    fn h2_accepts_origin_form_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("real.example")),
+            path: Some(bs("/x?y=1")),
+            ..Default::default()
+        };
+        let req = decode(pseudo).expect("origin-form :path is valid");
+        assert_eq!(
+            req.uri().host().map(|h| h.to_string()).as_deref(),
+            Some("real.example"),
+        );
     }
 }
