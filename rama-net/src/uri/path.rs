@@ -406,3 +406,39 @@ mod segment_eq_fix_tests {
         assert!(segment_eq(b"abc", b"abc", opts));
     }
 }
+
+#[cfg(test)]
+mod partial_ignore_case_boundary_tests {
+    use super::*;
+
+    // Pin the length-guard + slice arithmetic in the `partial && ignore_ascii_case`
+    // branch of the prefix/suffix matchers — these were the only mutation-surviving
+    // paths and they govern (case-insensitive) routing prefix/suffix matches.
+    const OPTS: PathMatchOptions = PathMatchOptions {
+        partial: true,
+        ignore_ascii_case: true,
+        percent_decode: true,
+    };
+
+    #[test]
+    fn prefix_partial_ignore_case_length_and_match() {
+        // Long-enough body + case-insensitive match must succeed (guards `>=`).
+        assert_eq!(match_prefix_in_body(b"abc", b"AB", OPTS), Some(2));
+        // Long-enough body but mismatched bytes must NOT match (guards the `&&`,
+        // which an `||` mutant would short-circuit to a false positive).
+        assert_eq!(match_prefix_in_body(b"abc", b"xy", OPTS), None);
+        // Body shorter than the pattern must not match (and must not panic).
+        assert_eq!(match_prefix_in_body(b"a", b"AB", OPTS), None);
+    }
+
+    #[test]
+    fn suffix_partial_ignore_case_length_and_offset() {
+        // Body longer than the pattern: the kept-offset is `body.len() - pat.len()`,
+        // distinguishing `-` from `+` (panic) and `/` (wrong slice) mutants.
+        assert_eq!(match_suffix_in_body(b"abcde", b"DE", OPTS), Some(3));
+        // Mismatched suffix of sufficient length must NOT match (guards `&&`).
+        assert_eq!(match_suffix_in_body(b"abc", b"xy", OPTS), None);
+        // Body shorter than the pattern must not match (and must not panic).
+        assert_eq!(match_suffix_in_body(b"a", b"DE", OPTS), None);
+    }
+}
