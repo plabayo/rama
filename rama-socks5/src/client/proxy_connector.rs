@@ -364,7 +364,12 @@ where
             }
         }
 
-        let Some(connect_authority) = input.host_with_port() else {
+        // Reuse the authority already resolved above instead of re-resolving via
+        // `input.host_with_port()` (which would call `input.authority()` again).
+        let Some(connect_authority) = authority
+            .clone()
+            .into_host_with_port(input.protocol_default_port())
+        else {
             return Err(Box::new(Socks5ProxyError::Handshake(
                 HandshakeError::other(BoxError::from_static_str(
                     "failed to get port from transport context",

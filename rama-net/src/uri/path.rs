@@ -275,8 +275,11 @@ fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
 /// Compare a single path segment against a pattern segment under `opts`.
 fn segment_eq(seg: &[u8], pat: &[u8], opts: PathMatchOptions) -> bool {
     if opts.percent_decode {
-        let seg = percent_decode(seg).decode_utf8_lossy();
-        let pat = percent_decode(pat).decode_utf8_lossy();
+        // Compare decoded BYTES, not a lossy-UTF-8 rendering: lossy decoding
+        // collapses every distinct invalid-UTF-8 byte to U+FFFD, which would
+        // make unrelated segments (e.g. `%ff` vs `%fe`) compare equal.
+        let seg: std::borrow::Cow<'_, [u8]> = percent_decode(seg).into();
+        let pat: std::borrow::Cow<'_, [u8]> = percent_decode(pat).into();
         if opts.ignore_ascii_case {
             seg.eq_ignore_ascii_case(&pat)
         } else {
@@ -385,5 +388,21 @@ pub(super) fn match_suffix_in_body(
         }
         be = bstart - 1;
         pe = pstart - 1;
+    }
+}
+
+#[cfg(test)]
+mod segment_eq_fix_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_invalid_utf8_segments_do_not_coalesce() {
+        let opts = PathMatchOptions::default(); // percent_decode = true
+        // `%ff` and `%fe` decode to distinct invalid-UTF-8 bytes; lossy decoding
+        // would map both to U+FFFD and (wrongly) match them.
+        assert!(!segment_eq(b"%ff", b"%fe", opts));
+        // valid + %-hex-case-insensitive decoding still matches.
+        assert!(segment_eq(b"%2f", b"%2F", opts));
+        assert!(segment_eq(b"abc", b"abc", opts));
     }
 }

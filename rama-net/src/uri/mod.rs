@@ -557,6 +557,11 @@ impl Uri {
     /// is no query (zero-alloc), otherwise allocates the joined string.
     #[must_use]
     pub fn request_target(&self) -> Cow<'_, str> {
+        // OPTIONS `*` is its own request-target form (not origin-form); without
+        // this, `path_or_root()` would render it as `/`.
+        if self.is_asterisk() {
+            return Cow::Borrowed("*");
+        }
         match self.query() {
             Some(q) => Cow::Owned(format!("{}?{}", self.path_or_root(), q.as_raw_str())),
             None => Cow::Borrowed(self.path_or_root()),
@@ -1562,5 +1567,23 @@ impl Uri {
             fragment: self.fragment(),
             is_asterisk: self.is_asterisk(),
         }
+    }
+}
+
+#[cfg(test)]
+mod request_target_fix_tests {
+    use super::*;
+
+    #[test]
+    fn asterisk_request_target_is_star_not_root() {
+        let uri = Uri::parse("*").unwrap();
+        assert!(uri.is_asterisk());
+        assert_eq!(uri.request_target(), "*");
+    }
+
+    #[test]
+    fn origin_form_request_target_unchanged() {
+        assert_eq!(Uri::parse("/a?b=c").unwrap().request_target(), "/a?b=c");
+        assert_eq!(Uri::parse("/a").unwrap().request_target(), "/a");
     }
 }
