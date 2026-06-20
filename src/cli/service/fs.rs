@@ -16,7 +16,7 @@ use crate::{
         },
         server::HttpServer,
         service::{
-            fs::{DirectoryServeMode, ServeDir, ServeFile},
+            fs::{DirectoryServeMode, ServeDir, ServeDirSymlinkPolicy, ServeFile},
             web::response::{Html, IntoResponse},
         },
     },
@@ -67,6 +67,7 @@ pub struct FsServiceBuilder<H> {
     content_path: Option<PathBuf>,
     dir_serve_mode: DirectoryServeMode,
     html_as_default_extension: bool,
+    symlink_policy: ServeDirSymlinkPolicy,
 }
 
 impl Default for FsServiceBuilder<()> {
@@ -87,6 +88,7 @@ impl Default for FsServiceBuilder<()> {
             content_path: None,
             dir_serve_mode: DirectoryServeMode::HtmlFileList,
             html_as_default_extension: false,
+            symlink_policy: ServeDirSymlinkPolicy::default(),
         }
     }
 }
@@ -183,6 +185,7 @@ impl<H> FsServiceBuilder<H> {
             content_path: self.content_path,
             dir_serve_mode: self.dir_serve_mode,
             html_as_default_extension: self.html_as_default_extension,
+            symlink_policy: self.symlink_policy,
         }
     }
 
@@ -231,6 +234,16 @@ impl<H> FsServiceBuilder<H> {
         /// Defaults to `false`.
         pub fn html_as_default_extension(mut self, html_as_default_extension: bool) -> Self {
             self.html_as_default_extension = html_as_default_extension;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`ServeDirSymlinkPolicy`] used when serving a file or directory.
+        ///
+        /// Defaults to [`ServeDirSymlinkPolicy::RejectAll`].
+        pub fn symlink_policy(mut self, policy: ServeDirSymlinkPolicy) -> Self {
+            self.symlink_policy = policy;
             self
         }
     }
@@ -310,11 +323,14 @@ where
             None => Either3::A(IntoResponseService::new(StaticOutput::new(Html(
                 include_str!("../../../docs/index.html"),
             )))),
-            Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
+            Some(path) if path.is_file() => {
+                Either3::B(ServeFile::new(path.clone()).with_symlink_policy(self.symlink_policy))
+            }
             Some(path) if path.is_dir() => Either3::C(
                 ServeDir::new(path)
                     .with_directory_serve_mode(self.dir_serve_mode)
-                    .with_html_as_default_extension(self.html_as_default_extension),
+                    .with_html_as_default_extension(self.html_as_default_extension)
+                    .with_symlink_policy(self.symlink_policy),
             ),
             Some(path) => {
                 return Err(

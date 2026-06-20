@@ -246,6 +246,21 @@ typedef struct {
     size_t app_group_dir_utf8_len;
 } RamaTransparentProxyInitConfig;
 
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(sizeof(RamaBytesView) == 16, "RamaBytesView ABI drift");
+_Static_assert(sizeof(RamaBytesOwned) == 24, "RamaBytesOwned ABI drift");
+_Static_assert(sizeof(RamaBytesOwnedView) == 32, "RamaBytesOwnedView ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyFlowEndpoint) == 24, "RamaTransparentProxyFlowEndpoint ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyFlowMeta) == 112, "RamaTransparentProxyFlowMeta ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, remote_endpoint) == 8, "RamaTransparentProxyFlowMeta.remote_endpoint offset drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, source_app_pid) == 104, "RamaTransparentProxyFlowMeta.source_app_pid offset drift");
+_Static_assert(sizeof(RamaTransparentProxyNetworkRule) == 56, "RamaTransparentProxyNetworkRule ABI drift");
+_Static_assert(offsetof(RamaTransparentProxyNetworkRule, local_network_utf8) == 24, "RamaTransparentProxyNetworkRule.local_network_utf8 offset drift");
+_Static_assert(offsetof(RamaTransparentProxyNetworkRule, protocol) == 44, "RamaTransparentProxyNetworkRule.protocol offset drift");
+_Static_assert(sizeof(RamaTransparentProxyConfig) == 40, "RamaTransparentProxyConfig ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyInitConfig) == 32, "RamaTransparentProxyInitConfig ABI drift");
+#endif
+
 /// Outcome of `rama_transparent_proxy_tcp_session_on_client_bytes` /
 /// `rama_transparent_proxy_tcp_session_on_egress_bytes`.
 ///
@@ -267,6 +282,8 @@ typedef enum : uint8_t {
     /// Per-flow channel is closed (session teardown); stop reading.
     RAMA_TCP_DELIVER_CLOSED = 2,
 } RamaTcpDeliverStatus;
+
+_Static_assert(sizeof(RamaTcpDeliverStatus) == 1, "RamaTcpDeliverStatus ABI drift");
 
 /// Returns a `RamaTcpDeliverStatus` so the Rust bridge can pause when Swift's
 /// `TcpClientWritePump` is full. Swift MUST call

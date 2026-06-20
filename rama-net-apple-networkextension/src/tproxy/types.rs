@@ -11,6 +11,15 @@ use rama_utils::{
 
 use crate::process::AuditToken;
 
+/// Smallest accepted TCP write-pump cap. `0` would make Swift pause
+/// after every queued chunk and is almost always a configuration bug.
+const MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = 1;
+
+/// Largest accepted TCP write-pump cap, per pump. Two TCP pumps can
+/// exist per flow, so this caps worst-case write-side buffering at
+/// 16 MiB per flow while still leaving room for bursty protocols.
+const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = kib(8192);
+
 /// Monotonic per-process counter used to generate [`TransparentProxyFlowMeta`]
 /// `flow_id` values. Starts at 1; 0 is reserved as "unset / unknown."
 ///
@@ -600,9 +609,15 @@ impl TransparentProxyConfig {
     generate_set_and_with! {
         /// Set the per-flow TCP write-pump back-pressure cap.
         ///
-        /// See [`Self::tcp_write_pump_max_pending_bytes`] for the contract.
+        /// Values below the minimum (`1`) or above the maximum (`8 MiB`) are
+        /// clamped. The fluent
+        /// builder stays infallible, but degenerate values never cross the
+        /// FFI boundary into Swift.
         pub fn tcp_write_pump_max_pending_bytes(mut self, bytes: usize) -> Self {
-            self.tcp_write_pump_max_pending_bytes = bytes;
+            self.tcp_write_pump_max_pending_bytes = bytes.clamp(
+                MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
+                MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
+            );
             self
         }
     }
@@ -634,13 +649,29 @@ mod transparent_proxy_config_tests {
         );
     }
 
-    /// The setter must round-trip whatever bytes value the caller chose,
-    /// including small ones — there is no "0 means unset" sentinel any
-    /// more; the value the engine returns is the value the pump uses.
+    /// The setter must round-trip valid values; there is no "0 means unset"
+    /// sentinel any more.
     #[test]
     fn tcp_write_pump_max_pending_bytes_round_trips() {
         let cfg = TransparentProxyConfig::new().with_tcp_write_pump_max_pending_bytes(17);
         assert_eq!(cfg.tcp_write_pump_max_pending_bytes(), 17);
+    }
+
+    #[test]
+    fn tcp_write_pump_max_pending_bytes_clamps_zero_and_huge_values() {
+        let zero = TransparentProxyConfig::new().with_tcp_write_pump_max_pending_bytes(0);
+        assert_eq!(
+            zero.tcp_write_pump_max_pending_bytes(),
+            MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
+            "zero would make the Swift write pump pause after every queued chunk"
+        );
+
+        let huge = TransparentProxyConfig::new().with_tcp_write_pump_max_pending_bytes(usize::MAX);
+        assert_eq!(
+            huge.tcp_write_pump_max_pending_bytes(),
+            MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
+            "unbounded per-flow buffering must not cross the FFI boundary"
+        );
     }
 
     /// Pin the default for the `exclude` flag — flipping the

@@ -1,4 +1,4 @@
-use super::relay::{UdpRelayState, UdpSocketRelay};
+use super::relay::{UdpRelayState, UdpSocketRelay, UnspecifiedClientUdpAddressPolicy};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
 use rama_core::error::ErrorContext as _;
@@ -7,6 +7,7 @@ use rama_core::telemetry::tracing;
 use rama_core::{Service, error::BoxError};
 use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
+use std::net::IpAddr;
 
 use ::rama_dns::client::resolver::BoxDnsAddressResolver;
 
@@ -22,6 +23,8 @@ pub(super) trait UdpPacketProxy: Send + Sync + 'static {
         south: UdpSocket,
         south_read_buf_size: usize,
         dns_resolver: Option<BoxDnsAddressResolver>,
+        unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
+        tcp_peer_ip: Option<IpAddr>,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
@@ -40,6 +43,8 @@ impl UdpPacketProxy for DirectUdpRelay {
         south: UdpSocket,
         south_read_buf_size: usize,
         dns_resolver: Option<BoxDnsAddressResolver>,
+        unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
+        tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -47,7 +52,8 @@ impl UdpPacketProxy for DirectUdpRelay {
             north_read_buf_size,
             south,
             south_read_buf_size,
-        );
+        )
+        .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
@@ -134,6 +140,8 @@ where
         south: UdpSocket,
         south_read_buf_size: usize,
         dns_resolver: Option<BoxDnsAddressResolver>,
+        unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
+        tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -141,7 +149,8 @@ where
             north_read_buf_size,
             south,
             south_read_buf_size,
-        );
+        )
+        .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
@@ -305,6 +314,8 @@ where
         south: UdpSocket,
         south_read_buf_size: usize,
         dns_resolver: Option<BoxDnsAddressResolver>,
+        unspecified_client_udp_address_policy: UnspecifiedClientUdpAddressPolicy,
+        tcp_peer_ip: Option<IpAddr>,
     ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -312,7 +323,8 @@ where
             north_read_buf_size,
             south,
             south_read_buf_size,
-        );
+        )
+        .with_unspecified_client_address_policy(unspecified_client_udp_address_policy, tcp_peer_ip);
 
         let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
@@ -465,6 +477,8 @@ mod tests {
             4096,
             south,
             4096,
+            None,
+            UnspecifiedClientUdpAddressPolicy::default(),
             None,
         );
 

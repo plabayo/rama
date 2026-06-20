@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     future::Future,
     sync::{
         Arc,
@@ -346,7 +347,7 @@ where
         // for backward-compat.
         let deadline = self.app_message_deadline.unwrap_or(self.decision_deadline);
         let message_len = message.len();
-        block_on_async_task(&self.rt, async move {
+        match try_block_on_async_task(&self.rt, async move {
             if let Ok(reply) =
                 tokio::time::timeout(deadline, handler.handle_app_message(exec, message)).await
             {
@@ -359,7 +360,18 @@ where
                 );
                 None
             }
-        })
+        }) {
+            Ok(reply) => reply,
+            Err(panic) => {
+                tracing::error!(
+                    target: "rama_apple_ne::tproxy",
+                    message_len,
+                    panic_message = %panic_payload_message(panic.as_ref()),
+                    "transparent proxy app message handler panicked; dropping message",
+                );
+                None
+            }
+        }
     }
 
     pub fn new_tcp_session<OnBytes, OnDemand, OnClosed>(
@@ -388,10 +400,12 @@ where
         let tcp_paused_drain_max_wait = self.tcp_paused_drain_max_wait;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
+        let flow_id = meta.flow_id;
+        let protocol = meta.protocol;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
-        block_on_async_task(
+        match try_block_on_async_task(
             &self.rt,
             new_tcp_session_flow_action(
                 guard,
@@ -408,7 +422,20 @@ where
                 on_server_closed,
                 handler,
             ),
-        )
+        ) {
+            Ok(action) => action,
+            Err(panic) => {
+                tracing::error!(
+                    target: "rama_apple_ne::tproxy",
+                    %protocol,
+                    flow_id,
+                    panic_message = %panic_payload_message(panic.as_ref()),
+                    action = %decision_deadline_action,
+                    "transparent proxy tcp flow handler panicked; applying fail-safe decision action",
+                );
+                session_action_from_decision_action(decision_deadline_action)
+            }
+        }
     }
 
     pub fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
@@ -436,10 +463,12 @@ where
         let udp_idle_timeout = self.udp_idle_timeout;
         let decision_deadline = self.decision_deadline;
         let decision_deadline_action = self.decision_deadline_action;
+        let flow_id = meta.flow_id;
+        let protocol = meta.protocol;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
 
-        block_on_async_task(
+        match try_block_on_async_task(
             &self.rt,
             new_udp_session_flow_action(
                 guard,
@@ -455,7 +484,20 @@ where
                 on_server_closed,
                 handler,
             ),
-        )
+        ) {
+            Ok(action) => action,
+            Err(panic) => {
+                tracing::error!(
+                    target: "rama_apple_ne::tproxy",
+                    %protocol,
+                    flow_id,
+                    panic_message = %panic_payload_message(panic.as_ref()),
+                    action = %decision_deadline_action,
+                    "transparent proxy udp flow handler panicked; applying fail-safe decision action",
+                );
+                session_action_from_decision_action(decision_deadline_action)
+            }
+        }
     }
 
     pub fn stop(mut self, reason: i32) {
@@ -1752,7 +1794,10 @@ where
 /// separate from the engine's. FFI consumers from Swift / a C bridge
 /// don't have an outer Tokio runtime to begin with, so the typical
 /// case is the bottom `_ => inner.block_on` arm and is safe.
-fn block_on_async_task<F>(rt: &TransparentProxyAsyncRuntime, future: F) -> F::Output
+fn try_block_on_async_task<F>(
+    rt: &TransparentProxyAsyncRuntime,
+    future: F,
+) -> Result<F::Output, Box<dyn Any + Send + 'static>>
 where
     F: Future<Output: Send> + Send,
 {
@@ -1762,17 +1807,11 @@ where
     // on these short-lived FFI futures is sacrificed; worker-thread
     // events still fire.
     //
-    // catch_unwind logs handler-future panics before the extern "C"
-    // boundary forces abort.
-    //
-    // NOTE (fail-fast vs isolate): we deliberately resume_unwind →
-    // abort the whole sysext rather than swallow the panic and return
-    // a fail-safe decision (`Block`). Loud + no poisoned-state class,
-    // but blast radius = every flow. If a single panicking flow taking
-    // the tunnel down ever proves worse than the recovery risk,
-    // reconsider isolating just the decision path here.
+    // Callers decide how to handle a panic. Flow decisions and app
+    // messages convert it to a fail-safe local outcome; shutdown still
+    // uses `block_on_async_task`, which logs and resumes the unwind.
     let inner = rt.tokio_runtime();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         match tokio::runtime::Handle::try_current() {
             Ok(handle)
                 if matches!(
@@ -1798,24 +1837,40 @@ where
             }
             _ => inner.block_on(future),
         }
-    }));
-    match result {
+    }))
+}
+
+fn block_on_async_task<F>(rt: &TransparentProxyAsyncRuntime, future: F) -> F::Output
+where
+    F: Future<Output: Send> + Send,
+{
+    match try_block_on_async_task(rt, future) {
         Ok(output) => output,
         Err(panic) => {
-            let msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
-                (*s).to_owned()
-            } else if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "<non-string panic payload>".to_owned()
-            };
             tracing::error!(
                 target: "rama_apple_ne::tproxy",
-                panic_message = %msg,
+                panic_message = %panic_payload_message(panic.as_ref()),
                 "tproxy FFI: handler future panicked; resuming unwind (extern \"C\" boundary aborts the process)",
             );
             std::panic::resume_unwind(panic);
         }
+    }
+}
+
+fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
+    if let Some(s) = panic.downcast_ref::<&'static str>() {
+        (*s).to_owned()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+fn session_action_from_decision_action<S>(action: DecisionDeadlineAction) -> SessionFlowAction<S> {
+    match action {
+        DecisionDeadlineAction::Block => SessionFlowAction::Blocked,
+        DecisionDeadlineAction::Passthrough => SessionFlowAction::Passthrough,
     }
 }
 

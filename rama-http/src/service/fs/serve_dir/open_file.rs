@@ -1,5 +1,5 @@
 use super::{
-    DirSource, DirectoryServeMode, ServeVariant,
+    DirSource, DirectoryServeMode, ServeDirSymlinkPolicy, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified, etag_from_metadata},
 };
 use crate::headers::{ETag, HeaderMapExt as _, IfMatch, IfNoneMatch};
@@ -133,6 +133,7 @@ pub(super) async fn open_file(
     buf_chunk_size: usize,
     source: &DirSource,
     precompression_configured: bool,
+    symlink_policy: ServeDirSymlinkPolicy,
 ) -> io::Result<OpenFileOutput> {
     let mime = match variant {
         ServeVariant::Directory {
@@ -148,6 +149,7 @@ pub(super) async fn open_file(
                 serve_mode,
                 html_as_default_extension,
                 source,
+                symlink_policy,
             )
             .await?
             {
@@ -165,8 +167,13 @@ pub(super) async fn open_file(
     if req.method() == Method::HEAD {
         match source {
             DirSource::Filesystem(_) => {
-                let (meta, maybe_encoding) =
-                    file_metadata_with_fallback(path_to_file, negotiated_encodings).await?;
+                let (meta, maybe_encoding) = file_metadata_with_fallback(
+                    source,
+                    path_to_file,
+                    negotiated_encodings,
+                    symlink_policy,
+                )
+                .await?;
 
                 let last_modified = meta.modified().ok().map(LastModified::from);
                 let etag = meta
@@ -227,14 +234,20 @@ pub(super) async fn open_file(
     } else {
         match source {
             DirSource::Filesystem(_) => {
-                let (mut file, maybe_encoding) =
-                    match open_file_with_fallback(path_to_file, negotiated_encodings).await {
-                        Ok(result) => result,
-                        Err(err) if is_invalid_filename_error(&err) => {
-                            return Ok(OpenFileOutput::InvalidFilename);
-                        }
-                        Err(err) => return Err(err),
-                    };
+                let (mut file, maybe_encoding) = match open_file_with_fallback(
+                    source,
+                    path_to_file,
+                    negotiated_encodings,
+                    symlink_policy,
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(err) if is_invalid_filename_error(&err) => {
+                        return Ok(OpenFileOutput::InvalidFilename);
+                    }
+                    Err(err) => return Err(err),
+                };
                 let meta = file.metadata().await?;
                 let last_modified = meta.modified().ok().map(LastModified::from);
                 let etag = meta
@@ -459,14 +472,19 @@ fn preferred_encoding(
 /// Attempt to open a file with any of the negotiated encodings in preferred order.
 /// Falls back to uncompressed file if no precompressed variants are found.
 async fn open_file_with_fallback(
+    source: &DirSource,
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
+    symlink_policy: ServeDirSymlinkPolicy,
 ) -> io::Result<(File, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (File::open(&path).await, encoding) {
-            (Ok(file), maybe_encoding) => break (file, maybe_encoding),
+        match (
+            filesystem_metadata(source, &path, symlink_policy).await,
+            encoding,
+        ) {
+            (Ok(_), maybe_encoding) => break (File::open(&path).await?, maybe_encoding),
             // Identity has no file extension to strip, so falling through to
             // the strip-and-retry path would clobber the originally requested
             // extension (e.g. `/foo.foobar` would become `/foo`). Only strip
@@ -523,13 +541,18 @@ fn open_embedded_file_with_fallback(
 // file the uncompressed file is used as a fallback.
 /// Get file metadata with fallback for different encodings.
 async fn file_metadata_with_fallback(
+    source: &DirSource,
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
+    symlink_policy: ServeDirSymlinkPolicy,
 ) -> io::Result<(Metadata, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
-        match (tokio::fs::metadata(&path).await, encoding) {
+        match (
+            filesystem_metadata(source, &path, symlink_policy).await,
+            encoding,
+        ) {
             (Ok(file), maybe_encoding) => break (file, maybe_encoding),
             // See `open_file_with_fallback` for why Identity is skipped here.
             (Err(err), Some(encoding))
@@ -547,6 +570,100 @@ async fn file_metadata_with_fallback(
     Ok((file, encoding))
 }
 
+async fn filesystem_metadata(
+    source: &DirSource,
+    path: &Path,
+    symlink_policy: ServeDirSymlinkPolicy,
+) -> io::Result<Metadata> {
+    match source {
+        DirSource::Filesystem(root) => {
+            filesystem_metadata_from_root(root, path, symlink_policy).await
+        }
+        DirSource::Embedded(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "embedded sources do not use filesystem metadata",
+        )),
+    }
+}
+
+async fn filesystem_metadata_from_root(
+    root: &Path,
+    path: &Path,
+    symlink_policy: ServeDirSymlinkPolicy,
+) -> io::Result<Metadata> {
+    if symlink_policy == ServeDirSymlinkPolicy::AllowAll {
+        return tokio::fs::metadata(path).await;
+    }
+
+    let root = if path.strip_prefix(root).is_ok() {
+        root
+    } else {
+        root.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+    };
+
+    // The configured root (or single-file target) is operator-trusted and may
+    // legitimately be a symlink — e.g. a blue-green `current -> releases/N`
+    // deploy, or `ServeFile` pointed at `latest.log -> 2026-06-19.log`. The
+    // policy therefore governs only the *request-supplied* components below the
+    // root, which are the path-traversal escape vector; the root itself is not
+    // policed.
+    if let Ok(relative_path) = path.strip_prefix(root) {
+        let mut current_path = root.to_path_buf();
+        let mut components = relative_path.components().peekable();
+        while let Some(component) = components.next() {
+            current_path.push(component);
+            if symlink_policy == ServeDirSymlinkPolicy::AllowFinalComponent
+                && components.peek().is_none()
+            {
+                break;
+            }
+            reject_symlink(&current_path).await?;
+        }
+    } else {
+        // Path is not under the configured root (unexpected); police it
+        // defensively rather than trusting it.
+        reject_symlink(path).await?;
+    }
+
+    tokio::fs::metadata(path).await
+}
+
+async fn reject_symlink(path: &Path) -> io::Result<()> {
+    let meta = tokio::fs::symlink_metadata(path).await?;
+    if is_symlink_like(&meta) {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "symlink paths are not served",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether `meta` describes a symlink-like entry that should be rejected.
+///
+/// Beyond POSIX symlinks this also catches Windows reparse points (directory
+/// junctions, mount points, ...), which [`std::fs::FileType::is_symlink`] does
+/// *not* report yet redirect outside the served tree just like a symlink.
+fn is_symlink_like(meta: &Metadata) -> bool {
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Handle directory requests based on the configured directory serve mode.
 /// Can append index.html, return 404, or generate HTML file listing.
 async fn maybe_serve_directory(
@@ -555,12 +672,13 @@ async fn maybe_serve_directory(
     mode: DirectoryServeMode,
     html_as_default_extension: bool,
     source: &DirSource,
+    symlink_policy: ServeDirSymlinkPolicy,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
     let uri_path = uri.path_or_root();
 
     // `Some(true)` => directory, `Some(false)` => file, `None` => does not exist.
     let is_directory: Option<bool> = match source {
-        DirSource::Filesystem(_) => is_dir(path_to_file).await,
+        DirSource::Filesystem(_) => is_dir(source, path_to_file, symlink_policy).await,
         DirSource::Embedded(base) => is_dir_embedded(path_to_file, base).await,
     };
 
@@ -624,8 +742,12 @@ fn try_parse_range(
 /// not a directory (i.e. file). `None` => does not exist. Distinguishing
 /// "missing" from "is a file" is what lets us decide whether to apply
 /// `html_as_default_extension` or reject a trailing slash as a 404.
-async fn is_dir(path_to_file: &Path) -> Option<bool> {
-    tokio::fs::metadata(path_to_file)
+async fn is_dir(
+    source: &DirSource,
+    path_to_file: &Path,
+    symlink_policy: ServeDirSymlinkPolicy,
+) -> Option<bool> {
+    filesystem_metadata(source, path_to_file, symlink_policy)
         .await
         .ok()
         .map(|meta_data| meta_data.is_dir())

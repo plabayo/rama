@@ -192,8 +192,16 @@ impl DeflateDecoder {
         }
     }
 
-    pub(super) fn decode(&mut self, compressed_data: &[u8]) -> Result<Vec<u8>, BoxError> {
-        let mut buf = Vec::with_capacity((compressed_data.len() + DEFLATE_TRAILER.len()) * 2);
+    pub(super) fn decode(
+        &mut self,
+        compressed_data: &[u8],
+        size_limit: Option<usize>,
+    ) -> Result<Vec<u8>, ProtocolError> {
+        let max_size = size_limit.unwrap_or_else(usize::max_value);
+        let initial_capacity = (compressed_data.len() + DEFLATE_TRAILER.len())
+            .saturating_mul(2)
+            .min(max_size);
+        let mut buf = Vec::with_capacity(initial_capacity);
 
         for payload in [compressed_data, &DEFLATE_TRAILER] {
             let before_in = self.decompress.total_in();
@@ -202,13 +210,15 @@ impl DeflateDecoder {
                 let i = self.decompress.total_in() as usize - before_in as usize;
                 match self
                     .decompress
-                    .buf_decompress(&payload[i..], &mut buf, FlushDecompress::Sync)
-                    .context("flate2 decode next chunk")?
+                    .buf_decompress(&payload[i..], &mut buf, FlushDecompress::Sync, max_size)
+                    .context("flate2 decode next chunk")
+                    .map_err(ProtocolError::DeflateError)?
                 {
-                    Status::BufError => buf.reserve((buf.len() as f64 * 1.5) as usize),
+                    Status::BufError => grow_inflate_buffer(&mut buf, max_size)?,
                     Status::Ok => (),
                     Status::StreamEnd => break,
                 }
+                check_decode_size(buf.len(), max_size)?;
             }
         }
 
@@ -218,6 +228,29 @@ impl DeflateDecoder {
 
         Ok(buf)
     }
+}
+
+fn grow_inflate_buffer(buf: &mut Vec<u8>, max_size: usize) -> Result<(), ProtocolError> {
+    if buf.capacity() >= max_size {
+        return Err(ProtocolError::MessageTooLong {
+            size: max_size.saturating_add(1),
+            max_size,
+        });
+    }
+
+    let next_capacity = buf
+        .capacity()
+        .saturating_add((buf.capacity() / 2).max(1))
+        .min(max_size);
+    buf.reserve(next_capacity - buf.capacity());
+    Ok(())
+}
+
+fn check_decode_size(size: usize, max_size: usize) -> Result<(), ProtocolError> {
+    if size > max_size {
+        return Err(ProtocolError::MessageTooLong { size, max_size });
+    }
+    Ok(())
 }
 
 trait BufCompress {
@@ -235,6 +268,7 @@ trait BufDecompress {
         input: &[u8],
         output: &mut Vec<u8>,
         flush: FlushDecompress,
+        max_size: usize,
     ) -> Result<Status, DecompressError>;
 }
 
@@ -258,8 +292,9 @@ impl BufDecompress for Decompress {
         input: &[u8],
         output: &mut Vec<u8>,
         flush: FlushDecompress,
+        max_size: usize,
     ) -> Result<Status, DecompressError> {
-        op_buf(input, output, self.total_out(), |input, out| {
+        op_buf_limited(input, output, self.total_out(), max_size, |input, out| {
             let ret = self.decompress(input, out, flush);
             (ret, self.total_out())
         })
@@ -285,5 +320,101 @@ where
         let (ret, total_out) = op(input, out);
         output.set_len((total_out - before) as usize + len);
         ret
+    }
+}
+
+fn op_buf_limited<Fn, E>(
+    input: &[u8],
+    output: &mut Vec<u8>,
+    before: u64,
+    max_size: usize,
+    op: Fn,
+) -> Result<Status, E>
+where
+    Fn: FnOnce(&[u8], &mut [u8]) -> (Result<Status, E>, u64),
+{
+    let cap = output.capacity().min(max_size);
+    let len = output.len();
+
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "single uninitialized-tail write sequence: ptr.add → from_raw_parts_mut → set_len; splitting them harms readability without changing the safety contract"
+    )]
+    unsafe {
+        let ptr = output.as_mut_ptr().add(len);
+        let out = slice::from_raw_parts_mut(ptr, cap - len);
+        let (ret, total_out) = op(input, out);
+        output.set_len((total_out - before) as usize + len);
+        ret
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deflate_decoder_rejects_output_past_size_limit() {
+        let payload = vec![b'a'; 1024];
+        let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+        let compressed = encoder.encode(&payload).unwrap();
+        assert!(compressed.len() < payload.len());
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        assert!(matches!(
+            decoder.decode(&compressed, Some(128)),
+            Err(ProtocolError::MessageTooLong {
+                size: 129,
+                max_size: 128
+            })
+        ));
+    }
+
+    #[test]
+    fn deflate_decoder_allows_output_at_size_limit() {
+        let payload = vec![b'a'; 128];
+        let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+        let compressed = encoder.encode(&payload).unwrap();
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        let decoded = decoder.decode(&compressed, Some(payload.len())).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn deflate_decoder_unbounded_limit_inflates_correctly() {
+        // No size limit (the `max_message_size = None` path => usize::MAX): the
+        // decoder must still inflate the full payload across multiple buffer
+        // grow cycles without spuriously rejecting it.
+        for len in [0usize, 1, 200, 5000, 100_000] {
+            let payload = vec![b'a'; len];
+            let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+            let compressed = encoder.encode(&payload).unwrap();
+
+            let mut decoder = DeflateDecoder::new(15, false);
+            let decoded = decoder.decode(&compressed, None).unwrap();
+            assert_eq!(decoded, payload, "unbounded decode mismatch for len={len}");
+        }
+    }
+
+    #[test]
+    fn deflate_decoder_boundary_accepts_n_rejects_n_minus_one() {
+        // For a payload larger than the initial buffer capacity (so several
+        // grow cycles run), `Some(n)` accepts exactly and `Some(n - 1)` rejects.
+        let payload = vec![b'a'; 4096];
+        let mut encoder = DeflateEncoder::new(Compression::default(), 15, false);
+        let compressed = encoder.encode(&payload).unwrap();
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        assert_eq!(
+            decoder.decode(&compressed, Some(payload.len())).unwrap(),
+            payload,
+        );
+
+        let mut decoder = DeflateDecoder::new(15, false);
+        assert!(matches!(
+            decoder.decode(&compressed, Some(payload.len() - 1)),
+            Err(ProtocolError::MessageTooLong { max_size, .. }) if max_size == payload.len() - 1,
+        ));
     }
 }

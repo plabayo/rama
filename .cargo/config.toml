@@ -12,3 +12,11 @@
 # don't intentionally opt into it.
 [build]
 rustflags = ["--cfg", "tokio_unstable"]
+
+# Resilient crates.io fetches for fragile environments like CI.
+[net]
+retry = 10
+
+[http]
+multiplexing = false
+timeout = 60

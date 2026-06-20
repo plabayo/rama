@@ -1030,9 +1030,28 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         explicitPrefix: UInt8?
     ) -> Int? {
         guard endpoint != nil else { return 0 }
-        if let explicitPrefix { return Int(explicitPrefix) }
+        if let explicitPrefix {
+            guard
+                let maxPrefix = maxPrefixLength(endpoint: endpoint, networkText: networkText),
+                Int(explicitPrefix) <= maxPrefix
+            else {
+                return nil
+            }
+            return Int(explicitPrefix)
+        }
         guard let networkText else { return nil }
         return inferredHostPrefix(networkText)
+    }
+
+    private static func maxPrefixLength(
+        endpoint: NWHostEndpoint?,
+        networkText: String?
+    ) -> Int? {
+        if let networkText, let prefix = inferredHostPrefix(networkText) {
+            return prefix
+        }
+        guard let endpoint else { return nil }
+        return inferredHostPrefix(endpoint.hostname)
     }
 
     internal static func networkEndpoint(from network: String?, port: UInt16?) -> NWHostEndpoint? {
