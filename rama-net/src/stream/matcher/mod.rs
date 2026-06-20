@@ -564,8 +564,6 @@ impl<S> SocketMatcher<S> {
     /// Match against a value of the matcher's own input type `S` via the
     /// socket-address leaves' [`Matcher<S>`](rama_core::matcher::Matcher)
     /// impls, applying this matcher's negation on top.
-    ///
-    /// See [`SocketMatcherKind::matches_input`].
     pub fn matches_input(&self, ext: Option<&Extensions>, target: &S) -> bool
     where
         S: 'static,
