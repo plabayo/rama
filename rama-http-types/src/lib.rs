@@ -58,13 +58,7 @@ pub mod version {
 }
 
 /// Hosts the per-concern `*InputExt` accessor impls for http `Request`/`Parts`.
-mod request_context;
-
-pub mod proxy_target_from_req;
-#[doc(inline)]
-pub use proxy_target_from_req::{
-    ProxyTargetFromRequestContext, ProxyTargetFromRequestContextLayer,
-};
+mod input_ext;
 
 pub mod fingerprint;
 

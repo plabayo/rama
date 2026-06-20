@@ -75,7 +75,7 @@ mod tests {
 
     fn req_with_host(host_header: &str) -> Request<()> {
         // Build with a path-only URI and set the Host header — that's
-        // the lane `RequestContext` uses for authority lookup, and
+        // the lane authority resolution uses for the lookup, and
         // unlike `http::Uri` it accepts pct-encoded reg-names there.
         Request::builder()
             .uri("/")

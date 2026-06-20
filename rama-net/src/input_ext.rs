@@ -1,9 +1,9 @@
 //! Small, single-concern accessor traits for reading routing/transport
 //! properties off a service input (an http request, a connect target, …).
 //!
-//! These replace the monolithic `RequestContext`/`TransportContext`: instead of
-//! a fallible build that resolves protocol + authority + version up front, each
-//! concern is its own trait and most callers want exactly one piece.
+//! Each concern (authority, protocol, http version, transport) is its own small
+//! trait, so a caller reads exactly the piece it needs instead of building a
+//! combined context up front.
 //!
 //! Design (matching [`ClientIp`](crate::ClientIp)): each *resolution* trait has
 //! no [`ExtensionsRef`](rama_core::extensions::ExtensionsRef) bound and is never
@@ -148,9 +148,8 @@ mod private {
 /// [`protocol`](ProtocolInputExt::protocol)'s default port as the port fallback.
 ///
 /// Auto-implemented (and sealed) for every input that is both an
-/// [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it is the typed replacement
-/// for the `host:port` that `TransportContext` used to resolve for connectors,
-/// and is never implemented by hand.
+/// [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it yields the typed
+/// `host:port` a connector needs, and is never implemented by hand.
 pub trait TransportAddressInputExt: AuthorityInputExt + ProtocolInputExt + private::Sealed {
     /// The `host:port` to connect to: the authority's port if set, else the
     /// protocol's default port. `None` when no host (or no port) resolves.
