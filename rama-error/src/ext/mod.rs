@@ -252,6 +252,28 @@ impl<T, E: Into<BoxError>> ErrorContext for Result<T, E> {
     }
 }
 
+/// Generates the [`ErrorContext`] methods for [`Option<T>`], which all share the
+/// same shape: forward to the matching [`BoxError`] method, tagging the missing
+/// value with its type name.
+macro_rules! forward_none_context {
+    ($(
+        fn $name:ident < $($gen:ident : [$($bound:tt)*]),+ > ( $($arg:ident : $argty:ty),* ) => ( $($carg:expr),* );
+    )+) => {
+        $(
+            fn $name < $($gen),+ > (self, $($arg : $argty),*) -> Self::Context
+            where $($gen : $($bound)*),+
+            {
+                match self {
+                    Some(value) => Ok(value),
+                    None => Err(BoxError::from_static_str("Option is None")
+                        .context_debug_field("type", core::any::type_name::<Self>())
+                        .$name($($carg),*)),
+                }
+            }
+        )+
+    };
+}
+
 impl<T> ErrorContext for Option<T> {
     type Context = Result<T, BoxError>;
     type OpaqueContext = Result<T, OpaqueError>;
@@ -269,179 +291,21 @@ impl<T> ErrorContext for Option<T> {
         self.into_box_error().into_opaque_error()
     }
 
-    fn context<M>(self, value: M) -> Self::Context
-    where
-        M: fmt::Debug + fmt::Display + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context(value)),
-        }
-    }
-
-    fn context_hex<M>(self, value: M) -> Self::Context
-    where
-        M: fmt::Debug + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_hex(value)),
-        }
-    }
-
-    fn context_debug<M>(self, value: M) -> Self::Context
-    where
-        M: fmt::Debug + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_debug(value)),
-        }
-    }
-
-    fn context_field<M>(self, key: &'static str, value: M) -> Self::Context
-    where
-        M: fmt::Debug + fmt::Display + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_field(key, value)),
-        }
-    }
-
-    fn context_str_field<M>(self, key: &'static str, value: M) -> Self::Context
-    where
-        M: Into<String>,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_str_field(key, value)),
-        }
-    }
-
-    fn context_hex_field<M>(self, key: &'static str, value: M) -> Self::Context
-    where
-        M: fmt::Debug + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_hex_field(key, value)),
-        }
-    }
-
-    fn context_debug_field<M>(self, key: &'static str, value: M) -> Self::Context
-    where
-        M: fmt::Debug + Send + Sync + 'static,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .context_debug_field(key, value)),
-        }
-    }
-
-    fn with_context<C, F>(self, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + fmt::Display + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context(cb)),
-        }
-    }
-
-    fn with_context_hex<C, F>(self, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_hex(cb)),
-        }
-    }
-
-    fn with_context_debug<C, F>(self, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_debug(cb)),
-        }
-    }
-
-    fn with_context_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + fmt::Display + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_field(key, cb)),
-        }
-    }
-
-    fn with_context_str_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
-    where
-        C: Into<String>,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_str_field(key, cb)),
-        }
-    }
-
-    fn with_context_hex_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_hex_field(key, cb)),
-        }
-    }
-
-    fn with_context_debug_field<C, F>(self, key: &'static str, cb: F) -> Self::Context
-    where
-        C: fmt::Debug + Send + Sync + 'static,
-        F: FnOnce() -> C,
-    {
-        match self {
-            Some(value) => Ok(value),
-            None => Err(BoxError::from_static_str("Option is None")
-                .context_debug_field("type", core::any::type_name::<Self>())
-                .with_context_debug_field(key, cb)),
-        }
+    forward_none_context! {
+        fn context<M: [fmt::Debug + fmt::Display + Send + Sync + 'static]>(value: M) => (value);
+        fn context_hex<M: [fmt::Debug + Send + Sync + 'static]>(value: M) => (value);
+        fn context_debug<M: [fmt::Debug + Send + Sync + 'static]>(value: M) => (value);
+        fn context_field<M: [fmt::Debug + fmt::Display + Send + Sync + 'static]>(key: &'static str, value: M) => (key, value);
+        fn context_str_field<M: [Into<String>]>(key: &'static str, value: M) => (key, value);
+        fn context_hex_field<M: [fmt::Debug + Send + Sync + 'static]>(key: &'static str, value: M) => (key, value);
+        fn context_debug_field<M: [fmt::Debug + Send + Sync + 'static]>(key: &'static str, value: M) => (key, value);
+        fn with_context<C: [fmt::Debug + fmt::Display + Send + Sync + 'static], F: [FnOnce() -> C]>(cb: F) => (cb);
+        fn with_context_hex<C: [fmt::Debug + Send + Sync + 'static], F: [FnOnce() -> C]>(cb: F) => (cb);
+        fn with_context_debug<C: [fmt::Debug + Send + Sync + 'static], F: [FnOnce() -> C]>(cb: F) => (cb);
+        fn with_context_field<C: [fmt::Debug + fmt::Display + Send + Sync + 'static], F: [FnOnce() -> C]>(key: &'static str, cb: F) => (key, cb);
+        fn with_context_str_field<C: [Into<String>], F: [FnOnce() -> C]>(key: &'static str, cb: F) => (key, cb);
+        fn with_context_hex_field<C: [fmt::Debug + Send + Sync + 'static], F: [FnOnce() -> C]>(key: &'static str, cb: F) => (key, cb);
+        fn with_context_debug_field<C: [fmt::Debug + Send + Sync + 'static], F: [FnOnce() -> C]>(key: &'static str, cb: F) => (key, cb);
     }
 }
 
