@@ -26,6 +26,101 @@ pub struct RamaTlsRustlsCrateMarker;
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
 pub mod dial9;
 
+/// Generates the rustls `TlsStream<IO>` newtype wrapper and its trait
+/// delegations (`AsyncRead`/`AsyncWrite`/`ExtensionsRef`/`From`).
+///
+/// Client and server only differ in which rustls stream they wrap, supplied as
+/// `$rustls` (an identifier that must already be in scope at the call site).
+macro_rules! rama_rustls_tls_stream {
+    ($rustls:ident) => {
+        ::pin_project_lite::pin_project! {
+            #[derive(Debug)]
+            pub struct TlsStream<IO> {
+                #[pin]
+                pub(super) stream: $rustls<IO>,
+            }
+        }
+
+        impl<IO: ::rama_core::extensions::ExtensionsRef> TlsStream<IO> {
+            pub fn new(stream: $rustls<IO>) -> Self {
+                Self { stream }
+            }
+        }
+
+        impl<IO: ::rama_core::extensions::ExtensionsRef> From<$rustls<IO>> for TlsStream<IO> {
+            fn from(value: $rustls<IO>) -> Self {
+                Self::new(value)
+            }
+        }
+
+        impl<IO> From<TlsStream<IO>> for $rustls<IO> {
+            fn from(value: TlsStream<IO>) -> Self {
+                value.stream
+            }
+        }
+
+        impl<IO: ::rama_core::extensions::ExtensionsRef> ::rama_core::extensions::ExtensionsRef
+            for TlsStream<IO>
+        {
+            fn extensions(&self) -> &::rama_core::extensions::Extensions {
+                self.stream.get_ref().0.extensions()
+            }
+        }
+
+        #[warn(clippy::missing_trait_methods)]
+        impl<IO: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin> ::tokio::io::AsyncRead
+            for TlsStream<IO>
+        {
+            fn poll_read(
+                self: ::std::pin::Pin<&mut Self>,
+                cx: &mut ::std::task::Context<'_>,
+                buf: &mut ::tokio::io::ReadBuf<'_>,
+            ) -> ::std::task::Poll<::std::io::Result<()>> {
+                self.project().stream.poll_read(cx, buf)
+            }
+        }
+
+        #[warn(clippy::missing_trait_methods)]
+        impl<IO: ::tokio::io::AsyncRead + ::tokio::io::AsyncWrite + Unpin> ::tokio::io::AsyncWrite
+            for TlsStream<IO>
+        {
+            fn poll_write(
+                self: ::std::pin::Pin<&mut Self>,
+                cx: &mut ::std::task::Context<'_>,
+                buf: &[u8],
+            ) -> ::std::task::Poll<::std::io::Result<usize>> {
+                self.project().stream.poll_write(cx, buf)
+            }
+
+            fn poll_write_vectored(
+                self: ::std::pin::Pin<&mut Self>,
+                cx: &mut ::std::task::Context<'_>,
+                bufs: &[::std::io::IoSlice<'_>],
+            ) -> ::std::task::Poll<::std::io::Result<usize>> {
+                self.project().stream.poll_write_vectored(cx, bufs)
+            }
+
+            fn poll_flush(
+                self: ::std::pin::Pin<&mut Self>,
+                cx: &mut ::std::task::Context<'_>,
+            ) -> ::std::task::Poll<::std::io::Result<()>> {
+                self.project().stream.poll_flush(cx)
+            }
+
+            fn poll_shutdown(
+                self: ::std::pin::Pin<&mut Self>,
+                cx: &mut ::std::task::Context<'_>,
+            ) -> ::std::task::Poll<::std::io::Result<()>> {
+                self.project().stream.poll_shutdown(cx)
+            }
+
+            fn is_write_vectored(&self) -> bool {
+                self.stream.is_write_vectored()
+            }
+        }
+    };
+}
+
 pub mod client;
 pub mod server;
 pub mod verify;
