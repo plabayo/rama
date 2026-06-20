@@ -1,7 +1,7 @@
 use crate::protobuf::prost::{DecodeError, Message, types::Any};
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{FromAny, IntoAny, pb};
+use super::super::{IntoAny, pb};
 
 /// Used to encode/decode the `RequestInfo` standard error message described
 /// in [error_details.proto]. Contains metadata about the request that
@@ -47,13 +47,6 @@ impl IntoAny for RequestInfo {
             type_url: Self::TYPE_URL.to_owned(),
             value: detail_data.encode_to_vec(),
         }
-    }
-}
-
-impl FromAny for RequestInfo {
-    #[inline]
-    fn from_any(any: Any) -> Result<Self, DecodeError> {
-        FromAnyRef::from_any_ref(&any)
     }
 }
 
