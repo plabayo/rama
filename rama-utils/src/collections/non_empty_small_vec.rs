@@ -514,12 +514,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
         T: Ord,
     {
         self.tail.sort();
-        let index = self.tail.partition_point(|x| x < &self.head);
-        if index != 0 {
-            let new_head = self.tail.remove(0);
-            let head = mem::replace(&mut self.head, new_head);
-            self.tail.insert(index - 1, head);
-        }
+        place_sorted_head!(self, self.tail.partition_point(|x| x < &self.head));
     }
 
     /// Sorts the [`NonEmptySmallVec`] with a comparator function.
@@ -534,14 +529,11 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
     {
         self.tail.sort_by(&mut compare);
 
-        let index = self
-            .tail
-            .partition_point(|x| compare(x, &self.head) == Ordering::Less);
-        if index != 0 {
-            let new_head = self.tail.remove(0);
-            let head = mem::replace(&mut self.head, new_head);
-            self.tail.insert(index - 1, head);
-        }
+        place_sorted_head!(
+            self,
+            self.tail
+                .partition_point(|x| compare(x, &self.head) == Ordering::Less)
+        );
     }
 
     /// Sorts the [`NonEmptySmallVec`] with a key extraction function.
@@ -553,12 +545,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
         self.tail.sort_by_key(&mut f);
 
         let head_key = f(&self.head);
-        let index = self.tail.partition_point(|x| f(x) < head_key);
-        if index != 0 {
-            let new_head = self.tail.remove(0);
-            let head = mem::replace(&mut self.head, new_head);
-            self.tail.insert(index - 1, head);
-        }
+        place_sorted_head!(self, self.tail.partition_point(|x| f(x) < head_key));
     }
 
     /// Sorts the [`NonEmptySmallVec`] with a key extraction function, caching the keys.
@@ -573,13 +560,7 @@ impl<const N: usize, T> NonEmptySmallVec<N, T> {
         self.tail.sort_by_cached_key(&mut f);
 
         let head_key = f(&self.head);
-        let index = self.tail.partition_point(|x| f(x) < head_key);
-
-        if index != 0 {
-            let new_head = self.tail.remove(0);
-            let head = mem::replace(&mut self.head, new_head);
-            self.tail.insert(index - 1, head);
-        }
+        place_sorted_head!(self, self.tail.partition_point(|x| f(x) < head_key));
     }
 }
 
