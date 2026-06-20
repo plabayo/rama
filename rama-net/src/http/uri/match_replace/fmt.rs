@@ -85,13 +85,10 @@ impl UriFormatter {
                         }
                         include_query = true;
                     } else {
-                        // assume it is fine, uri format will fail otherwise on runtime,
-                        // but that's a user issue for now, as it can be a bit tricky
-                        // given we would also need to consider escaped (%) and other
-                        // such stateful rules...
-                        //
-                        // TODO: once uri is part of rama-net we could look if this can be more exhaustive...
-                        // for example by allowing such state machine to be reused here
+                        // Literal byte: accepted as-is. The formatted output is
+                        // validated when parsed as a `Uri` at runtime; validating
+                        // the template here is impractical because captures (`$N`)
+                        // can split percent-escapes and other stateful URI grammar.
                     }
                     index += 1;
                 }
