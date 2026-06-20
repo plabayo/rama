@@ -6,6 +6,7 @@ use crate::tproxy::engine::*;
 use crate::tproxy::{
     TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
 };
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::io::BridgeIo;
 use rama_core::rt::Executor;
@@ -74,6 +75,97 @@ fn udp_session_can_be_blocked() {
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Blocked));
+}
+
+#[test]
+fn app_message_panic_drops_message_without_aborting_engine() {
+    let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|_| panic!("boom app message")),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    });
+
+    let reply = engine.handle_app_message(Bytes::from_static(b"ping"));
+    assert!(reply.is_none());
+
+    let decision = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(matches!(decision, SessionFlowAction::Passthrough));
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_decision_panic_blocks_by_default() {
+    let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| panic!("boom tcp decision")),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    });
+
+    let decision = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(matches!(decision, SessionFlowAction::Blocked));
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_decision_panic_honors_passthrough_action() {
+    let engine = build_engine_with_decision_deadline(
+        TestHandler {
+            app_message_handler: Arc::new(|_| None),
+            tcp_matcher: Arc::new(|_| panic!("boom tcp decision")),
+            udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+            tcp_egress_options: None,
+            on_sleep: None,
+            on_wake: None,
+        },
+        Duration::from_secs(2),
+        super::super::DecisionDeadlineAction::Passthrough,
+    );
+
+    let decision = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        || {},
+    );
+    assert!(matches!(decision, SessionFlowAction::Passthrough));
+    engine.stop(0);
+}
+
+#[test]
+fn udp_decision_panic_blocks_by_default() {
+    let engine = build_engine(TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|_| panic!("boom udp decision")),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    });
+
+    let decision = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    );
+    assert!(matches!(decision, SessionFlowAction::Blocked));
+    engine.stop(0);
 }
 
 #[derive(Clone)]

@@ -655,8 +655,10 @@ unsafe fn opt_audit_token(ptr: *const u8, len: usize) -> Option<AuditToken> {
 
 #[cfg(test)]
 mod tests {
+    use std::mem::{align_of, offset_of, size_of};
     use std::ptr;
 
+    use crate::ffi::{BytesOwned, BytesOwnedView, BytesView};
     use crate::tproxy::{
         self, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
         TransparentProxyRuleProtocol,
@@ -664,7 +666,8 @@ mod tests {
 
     use super::{
         NwEgressParameters, PromoteConfirmStatus, TransparentFlowEndpoint, TransparentProxyConfig,
-        TransparentProxyFlowMeta,
+        TransparentProxyFlowMeta, TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
+        TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule,
     };
 
     #[test]
@@ -743,6 +746,63 @@ mod tests {
         // SAFETY: `ffi` was just created by `from_rust_type` and not
         // freed yet.
         unsafe { ffi.free() };
+    }
+
+    #[test]
+    fn ffi_struct_layout_matches_c_header_on_64_bit_targets() {
+        if size_of::<usize>() != 8 {
+            return;
+        }
+
+        assert_eq!(size_of::<BytesView>(), 16);
+        assert_eq!(align_of::<BytesView>(), 8);
+        assert_eq!(size_of::<BytesOwned>(), 24);
+        assert_eq!(align_of::<BytesOwned>(), 8);
+        assert_eq!(size_of::<BytesOwnedView>(), 32);
+        assert_eq!(align_of::<BytesOwnedView>(), 8);
+
+        assert_eq!(size_of::<TransparentFlowEndpoint>(), 24);
+        assert_eq!(offset_of!(TransparentFlowEndpoint, host_utf8), 0);
+        assert_eq!(offset_of!(TransparentFlowEndpoint, host_utf8_len), 8);
+        assert_eq!(offset_of!(TransparentFlowEndpoint, port), 16);
+
+        assert_eq!(size_of::<TransparentProxyFlowMeta>(), 112);
+        assert_eq!(offset_of!(TransparentProxyFlowMeta, protocol), 0);
+        assert_eq!(offset_of!(TransparentProxyFlowMeta, remote_endpoint), 8);
+        assert_eq!(offset_of!(TransparentProxyFlowMeta, source_app_pid), 104);
+        assert_eq!(
+            offset_of!(TransparentProxyFlowMeta, source_app_pid_is_set),
+            108
+        );
+
+        assert_eq!(size_of::<FfiTransparentProxyNetworkRule>(), 56);
+        assert_eq!(
+            offset_of!(FfiTransparentProxyNetworkRule, remote_network_utf8),
+            0
+        );
+        assert_eq!(
+            offset_of!(FfiTransparentProxyNetworkRule, remote_prefix),
+            16
+        );
+        assert_eq!(
+            offset_of!(FfiTransparentProxyNetworkRule, local_network_utf8),
+            24
+        );
+        assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, protocol), 44);
+        assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, exclude), 48);
+
+        assert_eq!(size_of::<TransparentProxyConfig>(), 40);
+        assert_eq!(offset_of!(TransparentProxyConfig, rules), 16);
+        assert_eq!(
+            offset_of!(TransparentProxyConfig, tcp_write_pump_max_pending_bytes),
+            32
+        );
+
+        assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 32);
+        assert_eq!(
+            offset_of!(FfiTransparentProxyInitConfig, app_group_dir_utf8),
+            16
+        );
     }
 
     /// Verify the `exclude` field round-trips through the FFI
