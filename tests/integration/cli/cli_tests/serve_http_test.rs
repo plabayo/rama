@@ -128,6 +128,26 @@ async fn run_http_test_endpoint_request_compression(
         assert_eq!(6, content_length);
         assert_eq!("Hello?", resp.try_into_string().await.unwrap());
     }
+
+    // Decompression bomb: a small gzip payload that inflates past the endpoint's
+    // 8 MiB body limit must be rejected. The limit is applied *after*
+    // decompression, so a tiny compressed body cannot smuggle a huge one through.
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&vec![0u8; 9 * 1024 * 1024]).unwrap();
+    let bomb = encoder.finish().unwrap();
+    let req = Request::builder()
+        .uri(format!("{base_uri}/request-compression"))
+        .version(http_version)
+        .method(Method::POST)
+        .header(CONTENT_ENCODING, "gzip")
+        .body(Body::from(bomb))
+        .unwrap();
+    let resp = client.serve(req).await.unwrap();
+    assert!(
+        resp.status().is_client_error(),
+        "decompression bomb must be rejected, got status {}",
+        resp.status(),
+    );
 }
 
 async fn run_http_test_endpoint_response_compression(

@@ -57,6 +57,10 @@ pub struct SendCommand {
     /// Limit the amount of redirects to follow by using the --max-redirs option.
     location: bool,
 
+    #[arg(long, default_value_t = false)]
+    /// (HTTP) Like --location, but allows credentials to be forwarded to redirected hosts.
+    location_trusted: bool,
+
     #[arg(long, default_value_t = 50)]
     /// (HTTP) the maximum number of redirects to follow (set to -1 to put no limit)
     max_redirs: isize,

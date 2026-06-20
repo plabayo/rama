@@ -4,7 +4,7 @@ use rama::{
     cli::{ForwardKind, service::fs::FsServiceBuilder},
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
-    http::service::fs::DirectoryServeMode,
+    http::service::fs::{DirectoryServeMode, ServeDirSymlinkPolicy},
     net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
@@ -76,6 +76,16 @@ pub struct CliCommandFs {
     ///
     /// only applies when serving a directory
     html_as_default_extension: bool,
+
+    #[arg(long, default_value_t = ServeDirSymlinkPolicy::default())]
+    /// how to handle filesystem symlinks in requested paths
+    ///
+    /// 'reject-all': reject any symlinked request path component (default)
+    ///
+    /// 'allow-final-component': allow only the final requested component to be a symlink
+    ///
+    /// 'allow-all': follow all symlinks (historical behavior)
+    symlink_policy: ServeDirSymlinkPolicy,
 }
 
 /// run the rama serve service
@@ -102,6 +112,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandFs) -> Result<(), BoxEr
         .maybe_with_content_path(cfg.path)
         .with_directory_serve_mode(cfg.dir_serve)
         .with_html_as_default_extension(cfg.html_as_default_extension)
+        .with_symlink_policy(cfg.symlink_policy)
         .build(exec.clone())
         .context("build serve service")?;
 

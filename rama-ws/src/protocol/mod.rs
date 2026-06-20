@@ -996,23 +996,19 @@ impl WebSocketContext {
                                         frame.into_payload(),
                                         self.config.max_message_size,
                                     )?;
-                                return match deflate_state.decoder.decode(compressed_data.as_ref())
+                                return match deflate_state
+                                    .decoder
+                                    .decode(compressed_data.as_ref(), self.config.max_message_size)
                                 {
-                                    Ok(raw_data) => {
-                                        check_max_size(
-                                            raw_data.len(),
-                                            self.config.max_message_size,
-                                        )?;
-                                        match msg_type {
-                                            IncompleteMessageType::Text => Ok(Some(Message::Text(
-                                                Utf8Bytes::try_from(raw_data)?,
-                                            ))),
-                                            IncompleteMessageType::Binary => {
-                                                Ok(Some(Message::Binary(raw_data.into())))
-                                            }
+                                    Ok(raw_data) => match msg_type {
+                                        IncompleteMessageType::Text => {
+                                            Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
                                         }
-                                    }
-                                    Err(err) => Err(ProtocolError::DeflateError(err)),
+                                        IncompleteMessageType::Binary => {
+                                            Ok(Some(Message::Binary(raw_data.into())))
+                                        }
+                                    },
+                                    Err(err) => Err(err),
                                 };
                             }
 
@@ -1065,9 +1061,7 @@ impl WebSocketContext {
                                 let compressed_data = payload;
                                 let raw_data = deflate_state
                                     .decoder
-                                    .decode(&compressed_data)
-                                    .map_err(ProtocolError::DeflateError)?;
-                                check_max_size(raw_data.len(), self.config.max_message_size)?;
+                                    .decode(&compressed_data, self.config.max_message_size)?;
                                 match t {
                                     IncompleteMessageType::Text => {
                                         Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))

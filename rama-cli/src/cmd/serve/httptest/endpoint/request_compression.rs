@@ -19,8 +19,8 @@ pub(in crate::cmd::serve::httptest) fn service()
 -> impl Service<Request, Output = Response, Error = Infallible> {
     (
         ConsumeErrLayer::trace_as_debug(),
-        BodyLimitLayer::new(mib(8)), // EMS 3.2 4life
         RequestDecompressionLayer::new(),
+        BodyLimitLayer::new(mib(8)), // EMS 3.2 4life
         MapRequestBodyLayer::new_boxed_streaming_body(),
     )
         .into_layer(service_fn(async |req: Request| {

@@ -175,4 +175,42 @@ mod tests {
         Policy::<(), ()>::on_request(&mut policy, &mut request);
         assert!(!request.headers().contains_key(header::COOKIE));
     }
+
+    #[test]
+    fn strips_all_blocklisted_headers_cross_origin() {
+        let mut policy = FilterCredentials::default();
+
+        let initial = Uri::from_static("http://example.com/old");
+        let cross_origin = Uri::from_static("http://other.example.com/new");
+
+        let attempt = Attempt {
+            status: Default::default(),
+            method: &Method::GET,
+            location: &cross_origin,
+            previous_method: &Method::GET,
+            previous: &initial,
+        };
+        assert!(
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
+                .unwrap()
+                .is_follow()
+        );
+
+        let mut request = Request::builder()
+            .uri(cross_origin)
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .header(header::COOKIE, "session=42")
+            .header(header::PROXY_AUTHORIZATION, "Basic proxy")
+            .header(header::ACCEPT, "text/plain")
+            .body(())
+            .unwrap();
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
+
+        // Every blocklisted credential header is stripped on a cross-origin hop.
+        assert!(!request.headers().contains_key(header::AUTHORIZATION));
+        assert!(!request.headers().contains_key(header::COOKIE));
+        assert!(!request.headers().contains_key(header::PROXY_AUTHORIZATION));
+        // Non-blocklisted headers are preserved.
+        assert!(request.headers().contains_key(header::ACCEPT));
+    }
 }
