@@ -226,7 +226,7 @@ fn ergonomic_accessors() {
     assert_eq!(u.request_target(), "/api/v2/users?q=1");
     assert!(u.has_path_prefix("/api"));
     assert!(u.has_path_suffix("/users"));
-    assert_eq!(u.path_segment(0).map(|s| s.as_raw_str()), Some("api"));
+    assert_eq!(u.first_path_segment().map(|s| s.as_raw_str()), Some("api"));
     assert_eq!(u.path_segment(2).map(|s| s.as_raw_str()), Some("users"));
     assert!(u.path_segment(3).is_none());
 

@@ -680,6 +680,13 @@ impl Uri {
         self.path().and_then(|p| p.segments().nth(n))
     }
 
+    /// The first segment Shortcut for `uri.path_segment(0)`.
+    #[must_use]
+    #[inline(always)]
+    pub fn first_path_segment(&self) -> Option<PathSegment<'_>> {
+        self.path_segment(0)
+    }
+
     /// Deserialize the query string into `T` via `serde` (an absent query
     /// deserializes as empty). Shortcut over [`Uri::query`] +
     /// [`QueryRef::deserialize`].
