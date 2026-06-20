@@ -59,8 +59,12 @@ trait CurlCommandWriter {
 }
 
 impl CurlCommandWriter for Command {
+    // `Command::arg` passes each value as a distinct argv element straight to
+    // the curl process (no shell), so values must NOT be quoted: any surrounding
+    // quotes would become literal bytes of the argument. This is the dual of the
+    // `String` writer below, which builds shell text and therefore must quote.
     fn write_uri(&mut self, uri: Uri) -> &mut Self {
-        self.arg(format!("'{uri}'"))
+        self.arg(uri.to_string())
     }
 
     fn write_single(&mut self, one: impl fmt::Display) -> &mut Self {
@@ -71,17 +75,14 @@ impl CurlCommandWriter for Command {
         &mut self,
         one: impl fmt::Display,
         two: impl fmt::Display,
-        quote_value: bool,
+        _quote_value: bool,
     ) -> &mut Self {
-        self.arg(one.to_string()).arg(if quote_value {
-            format!("'{two}'")
-        } else {
-            two.to_string()
-        })
+        // `quote_value` only governs shell-text quoting; argv needs none.
+        self.arg(one.to_string()).arg(two.to_string())
     }
 
     fn write_header(&mut self, key: Http1HeaderName, value: Cow<'_, str>) -> &mut Self {
-        self.arg("-H").arg(format!("'{key}: {value}'"))
+        self.arg("-H").arg(format!("{key}: {value}"))
     }
 }
 
@@ -733,6 +734,47 @@ mod tests {
                 r##"curl 'http://example.com/a'\''b?x=y'\''z' \{NL}  --http1.1"##,
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
+        );
+    }
+
+    #[test]
+    fn test_cmd_for_request_passes_unquoted_argv() {
+        // The `Command` path executes curl directly (no shell), so values must
+        // be passed as bare argv elements: surrounding shell quotes would become
+        // literal bytes of the argument and break curl.
+        let (parts, _) = crate::Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/path?q=a'b")
+            .header("x-test", "a'b")
+            .body(())
+            .unwrap()
+            .into_parts();
+
+        let cmd = cmd_for_request_parts_and_payload(&parts, &Bytes::from_static(b"source='web'"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        // URI, header value and --data-raw payload are all unquoted argv elements.
+        assert!(
+            args.contains(&"https://example.com/path?q=a'b".to_owned()),
+            "uri must be a bare argv element, got {args:?}",
+        );
+        assert!(
+            args.contains(&"x-test: a'b".to_owned()),
+            "header must be a bare argv element, got {args:?}",
+        );
+        assert!(
+            args.contains(&"source='web'".to_owned()),
+            "payload must be a bare argv element, got {args:?}",
+        );
+        // No argv element should be wrapped in literal shell quotes.
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with('\'') && a.ends_with('\'')),
+            "no argv element may be shell-quoted, got {args:?}",
         );
     }
 }
