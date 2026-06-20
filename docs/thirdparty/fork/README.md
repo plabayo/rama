@@ -185,6 +185,16 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/include_dir](./licenses/include_dir)
+- <https://github.com/misalcedo/ppp/tree/28c5db92fda7337fc1ef36e6f19db96d511cd319>
+  - PROXY protocol v1/v2 parser, adapted+scoped for rama use (rama error types
+    + a streaming-friendly `ParseError::Partial`); originally by Miguel D. Salcedo
+  - reviewed against upstream `main` (`4564452`, 2026-04-29): nothing further to
+    port — the only code change since the fork (the v1 partial-newline fix) is
+    already covered, more strictly, by rama's `Partial` handling
+  - License:
+    - Original: <https://github.com/misalcedo/ppp/blob/28c5db92fda7337fc1ef36e6f19db96d511cd319/LICENSE>
+    - Type: Apache 2.0
+    - Copy: [./licenses/ppp](./licenses/ppp)
 
 ## Small Lib Forks
 
