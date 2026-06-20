@@ -1,6 +1,6 @@
-//! Forked from the `http` crate (v1.4.0, MIT) — vendored so rama owns its HTTP
-//! header types. See `docs/thirdparty/fork/README.md`. The fork-style lint
-//! allows below also cover the `name`/`value`/`map` child modules.
+//! Forked from the `http` crate — vendored so rama owns its HTTP header types.
+//! See `docs/thirdparty/fork/README.md`. The fork-style lint allows below also
+//! cover the `name`/`value`/`map` child modules.
 //!
 //! HTTP header types
 //!

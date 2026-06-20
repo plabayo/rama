@@ -1,5 +1,5 @@
-// Forked from the `http-body` crate (v1.0.1, MIT) — vendored so its `Frame`
-// trailers use rama's `HeaderMap`. See `docs/thirdparty/fork/README.md`.
+// Forked from the `http-body` crate — vendored so its `Frame` trailers use
+// rama's `HeaderMap`. See `docs/thirdparty/fork/README.md`.
 // Fork-style lint allows (also cover the `frame`/`size_hint` child modules).
 #![allow(
     unreachable_pub,

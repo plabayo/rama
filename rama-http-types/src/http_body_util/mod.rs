@@ -1,6 +1,6 @@
-// Forked from the `http-body-util` crate (v0.1.3, MIT) — vendored alongside the
-// forked `http-body`. See `docs/thirdparty/fork/README.md`. Fork-style lint
-// allows (also cover the child combinator modules).
+// Forked from the `http-body-util` crate — vendored alongside the forked
+// `http-body`. See `docs/thirdparty/fork/README.md`. Fork-style lint allows
+// (also cover the child combinator modules).
 #![allow(
     unreachable_pub,
     clippy::allow_attributes,

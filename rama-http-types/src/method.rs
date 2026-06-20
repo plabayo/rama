@@ -1,5 +1,5 @@
-//! Forked from the `http` crate (v1.4.0, MIT) — vendored so rama owns its HTTP
-//! leaf types. See `docs/thirdparty/fork/README.md`.
+//! Forked from the `http` crate — vendored so rama owns its HTTP leaf types.
+//! See `docs/thirdparty/fork/README.md`.
 //!
 //! The HTTP request method
 //!
