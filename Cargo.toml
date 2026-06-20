@@ -127,7 +127,7 @@ futures-util = { version = "0.3", default-features = false }
 hex = "0.4"
 hickory-resolver = { version = "0.26.1", default-features = false, features = ["tokio", "system-config", "serde"] }
 honggfuzz = "0.5"
-http = "=1.4.0" # interop-only (rama-http-hyperium); 1.4.1 regressed authority-form CONNECT URIs (hyperium/http#826)
+http = "1" # interop-only (rama-http-hyperium / rama-tower); native rama Uri handles CONNECT, so no version pin needed
 http-body = "1" # interop-only (rama-http-hyperium body bridge)
 http-range-header = "0.4"
 httparse = "1.10"
