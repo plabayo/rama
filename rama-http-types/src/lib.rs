@@ -18,7 +18,6 @@
 
 pub mod body;
 use rama_core::extensions::Extension;
-use std::sync::Arc;
 
 pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
@@ -81,13 +80,11 @@ pub mod client {
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
-pub struct OriginalRouterUri(pub Arc<Uri>);
+pub struct OriginalRouterUri(pub Uri);
 
 pub mod uri;
 #[doc(inline)]
-pub use uri::{Scheme, Uri, try_to_strip_path_prefix_from_uri};
-
-// TODO: move URI to rama-net :) Somehow...
+pub use uri::{Uri, try_to_strip_path_prefix_from_uri};
 
 pub mod proto;
 

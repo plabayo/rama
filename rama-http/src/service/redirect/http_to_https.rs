@@ -1,10 +1,11 @@
 use crate::{
-    Request, Response, Scheme, StatusCode,
+    Request, Response, StatusCode,
     headers::Location,
     service::web::response::{Headers, IntoResponse},
     utils::request_uri,
 };
 use rama_core::{Service, telemetry::tracing};
+use rama_net::Protocol;
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
 use rama_utils::macros::generate_set_and_with;
 use std::convert::Infallible;
@@ -133,7 +134,7 @@ where
 
         let mut uri = full_uri.into_owned();
 
-        uri.set_scheme(Scheme::HTTPS);
+        uri.set_scheme(Protocol::HTTPS);
 
         if uri.authority().is_none() {
             tracing::debug!("failed to get authority from full Uri (report bug)");

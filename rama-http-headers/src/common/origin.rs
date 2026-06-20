@@ -6,7 +6,8 @@ use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_http_types::HeaderValue;
-use rama_http_types::uri::{Scheme, Uri};
+use rama_http_types::uri::Uri;
+use rama_net::Protocol;
 use rama_net::address::Authority;
 
 use crate::Error;
@@ -60,7 +61,7 @@ impl crate::HeaderEncode for Origin {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum OriginOrNull {
-    Origin(Scheme, Authority),
+    Origin(Protocol, Authority),
     Null,
 }
 

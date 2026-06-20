@@ -3,7 +3,7 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{convert::Infallible, error::Error, fmt, sync::Arc};
+use std::{convert::Infallible, error::Error, fmt};
 
 use matchit::Router as MatchitRouter;
 use radix_trie::{Trie, TrieCommon as _};
@@ -735,9 +735,7 @@ where
                         };
 
                         parts.extensions.extend(&ext);
-                        parts
-                            .extensions
-                            .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                        parts.extensions.insert(OriginalRouterUri(parts.uri));
                         parts.uri = modified_uri;
 
                         tracing::trace!(
@@ -755,9 +753,7 @@ where
                     match try_to_strip_path_prefix_from_uri(&parts.uri, prefix) {
                         Ok(modified_uri) => {
                             if !parts.extensions.contains::<OriginalRouterUri>() {
-                                parts
-                                    .extensions
-                                    .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                                parts.extensions.insert(OriginalRouterUri(parts.uri));
                             }
                             parts.uri = modified_uri;
                         }

@@ -10,11 +10,6 @@ use rama_core::error::BoxErrorExt as _;
 #[doc(inline)]
 pub use rama_net::uri::*;
 
-/// Scheme alias kept for source compatibility: a URI scheme is a
-/// [`rama_net::Protocol`].
-#[doc(inline)]
-pub use rama_net::Protocol as Scheme;
-
 /// Strip `prefix` from the path of `uri`, returning a new [`Uri`] with the
 /// prefix removed (re-rooted at `/`). Matching is ASCII-case-insensitive on the
 /// raw path bytes, mirroring nested-router prefix stripping.

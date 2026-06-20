@@ -7,7 +7,6 @@ use crate::proto::h1::Http1HeaderMap;
 use crate::proto::h1::headers::Http1HeaderMapIntoIter;
 use crate::proto::h1::headers::original::OriginalHttp1Headers;
 use crate::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
-use crate::uri;
 use crate::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -754,7 +753,7 @@ impl Pseudo {
         self.status = Some(value);
     }
 
-    pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
+    pub fn set_scheme(&mut self, scheme: &rama_net::Protocol) {
         let bytes_str = match scheme.as_str() {
             "http" => BytesStr::from_static("http"),
             "https" => BytesStr::from_static("https"),
