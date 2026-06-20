@@ -34,16 +34,17 @@ pub(crate) mod byte_sets;
 pub(crate) mod proto;
 #[doc(inline)]
 pub use client_ip::ClientIp;
+#[cfg(feature = "http")]
+#[doc(inline)]
+pub use input_ext::HttpVersionInputExt;
 #[doc(inline)]
 pub use input_ext::{
-    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportAddressInputExt,
-    TransportProtocolInputExt, UriInputExt,
+    AuthorityInputExt, ProtocolInputExt, TransportAddressInputExt, TransportProtocolInputExt,
+    UriInputExt,
 };
 #[doc(inline)]
 pub use proto::Protocol;
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod transport;
 
 #[cfg(feature = "http")]

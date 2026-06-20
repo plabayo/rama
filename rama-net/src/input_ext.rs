@@ -25,6 +25,7 @@
 
 use crate::Protocol;
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
+#[cfg(feature = "http")]
 use crate::http::Version;
 use crate::transport::TransportProtocol;
 use crate::uri::Uri;
@@ -108,11 +109,13 @@ impl<T: ProtocolInputExt + ?Sized> ProtocolInputExt for &T {
 ///
 /// Explicitly HTTP-named: it is `None` for non-HTTP inputs (e.g. a raw
 /// transport target).
+#[cfg(feature = "http")]
 pub trait HttpVersionInputExt {
     /// The HTTP version, or `None` for non-HTTP inputs.
     fn http_version(&self) -> Option<Version>;
 }
 
+#[cfg(feature = "http")]
 impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
     fn http_version(&self) -> Option<Version> {
         (**self).http_version()
