@@ -102,7 +102,7 @@ impl<S, T> Csrf<S, T> {
         // header.
         if let Some(origin) = csrf_origin.as_ref() {
             let matched = if let Some(authority) = req.uri().authority() {
-                origin.matches_host(authority.host().to_str().as_ref(), req.uri().port_u16())
+                origin.matches_host(authority.host().to_str().as_ref(), authority.port_u16())
             } else if let Some(host) = req.headers().typed_get::<Host>() {
                 origin.matches_host(&host.0.host.to_string(), host.0.port.into())
             } else {

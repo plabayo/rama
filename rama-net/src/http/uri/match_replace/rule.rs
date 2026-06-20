@@ -286,11 +286,11 @@ pub(super) fn uri_to_small_vec_with_buffer(
     include_query: bool,
     output: &mut super::SmallUriStr,
 ) {
-    let query = include_query
-        .then(|| uri.query())
-        .flatten()
-        .map(|q| q.as_raw_str())
-        .unwrap_or_default();
+    let query = if include_query {
+        uri.query_or_empty()
+    } else {
+        ""
+    };
 
     output.clear();
 

@@ -31,7 +31,7 @@ where
         parts: &Parts,
         _state: &State,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(parts.authority().ok_or(MissingHost)?.host))
+        Ok(Self(parts.host().ok_or(MissingHost)?))
     }
 }
 
