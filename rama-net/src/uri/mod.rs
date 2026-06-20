@@ -374,6 +374,26 @@ impl Uri {
         }
     }
 
+    /// Append this URI's canonical wire bytes to `buf`, without going
+    /// through [`std::fmt`].
+    ///
+    /// Parsed (lazy) and asterisk URIs copy their stored bytes in directly
+    /// (no re-render); the mutated (owned) form — rare on an encode path,
+    /// which normally carries a parsed request-target — falls back to
+    /// [`Display`](std::fmt::Display).
+    ///
+    /// This writes the wire-faithful **full** form (matching `Display`),
+    /// so it does not strip userinfo/fragment. To project a richer URI to
+    /// a specific HTTP request-target form, use the dedicated
+    /// [`write_http_origin_form`](Self::write_http_origin_form) family.
+    pub fn encode_to(&self, buf: &mut Vec<u8>) {
+        match &self.inner {
+            UriInner::Asterisk => buf.push(b'*'),
+            UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
+            UriInner::Owned(_) => buf.extend_from_slice(self.to_string().as_bytes()),
+        }
+    }
+
     /// Returns `true` if this is the OPTIONS-`*` request-target.
     #[must_use]
     pub fn is_asterisk(&self) -> bool {
@@ -1674,5 +1694,38 @@ mod from_authority_form_tests {
             );
             assert!(from_ctor.scheme().is_none(), "no scheme: {s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod encode_to_tests {
+    use super::*;
+
+    /// `encode_to` writes the wire-faithful full form, so its output must
+    /// equal `Display` for every URI shape and representation.
+    #[test]
+    fn encode_to_matches_display() {
+        let lazy = [
+            Uri::parse("/path?q=1").unwrap(),
+            Uri::parse("https://user@example.com:8443/a/b?c#frag").unwrap(),
+            Uri::from_authority_form(
+                crate::address::Authority::try_from("example.com:443").unwrap(),
+            ),
+            Uri::parse("*").unwrap(),
+            Uri::from_static("http://example.com/"),
+        ];
+        for uri in lazy {
+            let mut buf = Vec::new();
+            uri.encode_to(&mut buf);
+            assert_eq!(buf, uri.to_string().as_bytes(), "uri: {uri}");
+        }
+
+        // Mutated (Owned) representation still round-trips.
+        let owned = Uri::parse("http://example.com/p?x#f")
+            .unwrap()
+            .with_port(8080u16);
+        let mut buf = Vec::new();
+        owned.encode_to(&mut buf);
+        assert_eq!(buf, owned.to_string().as_bytes());
     }
 }

@@ -1,7 +1,5 @@
 use std::mem::MaybeUninit;
 
-use std::fmt::{self, Write as _};
-
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
@@ -1072,8 +1070,8 @@ impl Http1Transaction for Client {
 
         extend(dst, msg.head.subject.0.as_str().as_bytes());
         extend(dst, b" ");
-        //TODO: add API to http::Uri to encode without std::fmt
-        _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
+        msg.head.subject.1.encode_to(dst);
+        extend(dst, b" ");
 
         match msg.head.version {
             Version::HTTP_10 => extend(dst, b"HTTP/1.0"),
@@ -1493,21 +1491,6 @@ fn write_h1_headers(
         out_h1_headers.append(name, value);
     }
     out_h1_headers
-}
-
-struct FastWrite<'a>(&'a mut Vec<u8>);
-
-impl fmt::Write for FastWrite<'_> {
-    #[inline]
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        extend(self.0, s.as_bytes());
-        Ok(())
-    }
-
-    #[inline]
-    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
-        fmt::write(self, args)
-    }
 }
 
 #[inline]
