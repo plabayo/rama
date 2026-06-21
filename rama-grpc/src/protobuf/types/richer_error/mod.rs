@@ -47,6 +47,13 @@ trait FromAnyRef {
         Self: Sized;
 }
 
+impl<T: FromAnyRef> FromAny for T {
+    #[inline]
+    fn from_any(any: Any) -> Result<Self, DecodeError> {
+        FromAnyRef::from_any_ref(&any)
+    }
+}
+
 fn gen_details_bytes(code: Code, message: &str, details: Vec<Any>) -> Result<Bytes, EncodeError> {
     let status = pb::Status {
         code: code as i32,

@@ -2,7 +2,7 @@ use crate::protobuf::prost::{DecodeError, Message, types::Any};
 
 use crate::protobuf::types::richer_error::FromAnyRef;
 
-use super::super::{FromAny, IntoAny, pb};
+use super::super::{IntoAny, pb};
 
 /// Used at the `links` field of the [`Help`] struct. Describes a URL link.
 #[derive(Clone, Debug)]
@@ -103,13 +103,6 @@ impl IntoAny for Help {
             type_url: Self::TYPE_URL.to_owned(),
             value: detail_data.encode_to_vec(),
         }
-    }
-}
-
-impl FromAny for Help {
-    #[inline]
-    fn from_any(any: Any) -> Result<Self, DecodeError> {
-        FromAnyRef::from_any_ref(&any)
     }
 }
 

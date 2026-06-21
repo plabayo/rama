@@ -5,6 +5,21 @@ pub mod append_only_vec;
 #[doc(inline)]
 pub use append_only_vec::AppendOnlyVec;
 
+/// Re-inserts the head of a non-empty collection into its already-sorted tail at
+/// `index`, keeping the whole list sorted. Shared by the `sort*` methods of
+/// [`NonEmptyVec`] and [`NonEmptySmallVec`], which compute `index` differently
+/// but rotate the head into place identically.
+macro_rules! place_sorted_head {
+    ($self:ident, $index:expr) => {{
+        let index = $index;
+        if index != 0 {
+            let new_head = $self.tail.remove(0);
+            let head = ::core::mem::replace(&mut $self.head, new_head);
+            $self.tail.insert(index - 1, head);
+        }
+    }};
+}
+
 mod non_empty_vec;
 #[doc(inline)]
 pub use non_empty_vec::{NonEmptyVec, NonEmptyVecEmptyError, NonEmptyVecIter};
