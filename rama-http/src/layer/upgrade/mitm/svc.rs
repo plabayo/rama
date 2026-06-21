@@ -79,7 +79,7 @@ where
                 "upgrade::mitm_relay::serve",
                 otel.kind = "server",
                 http.request.method = %req.method().as_str(),
-                url.full = %req.uri(),
+                url.full = %req.request_uri(),
                 url.path = %req.uri().path_or_root(),
                 url.query = req.uri().query_or_empty(),
                 url.scheme = %req.uri().scheme_str().unwrap_or_default(),

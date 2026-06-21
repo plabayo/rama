@@ -124,7 +124,7 @@ where
                         "upgrade::serve",
                         otel.kind = "server",
                         http.request.method = %request.method().as_str(),
-                        url.full = %request.uri(),
+                        url.full = %request.request_uri(),
                         url.path = %request.uri().path_or_root(),
                         url.query = request.uri().query_or_empty(),
                         url.scheme = %request.uri().scheme_str().unwrap_or_default(),

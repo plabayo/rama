@@ -200,7 +200,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 let mut req = req;
                 let authority = authority.without_default_port_for(protocol.as_ref());
                 tracing::trace!(
-                    url.full = %req.uri(),
+                    url.full = %req.request_uri(),
                     server.address = %authority,
                     "add host from authority as HOST header to req (was missing it)",
                 );
@@ -260,7 +260,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         }
         Version::HTTP_3 => {
             tracing::debug!(
-                url.full = %req.uri(),
+                url.full = %req.request_uri(),
                 "h3 request detected, but sanitize_client_req_header does not yet support this",
             );
             req

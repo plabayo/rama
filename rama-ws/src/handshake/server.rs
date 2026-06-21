@@ -706,7 +706,7 @@ where
                 let span = tracing::trace_root_span!(
                     "ws::serve",
                     otel.kind = "server",
-                    url.full = %req.uri(),
+                    url.full = %req.request_uri(),
                     url.path = %req.uri().path_or_root(),
                     url.query = req.uri().query_or_empty(),
                     url.scheme = %req.uri().scheme_str().unwrap_or_default(),
