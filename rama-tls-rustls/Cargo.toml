@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
+http = ["rama-net/http"]
 aws-lc = [
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
@@ -47,8 +47,7 @@ dial9-trace-format = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, features = ["native-certs"] }
-rama-http-types = { workspace = true, optional = true }
-rama-net = { workspace = true, features = ["tls", "http"] }
+rama-net = { workspace = true, features = ["tls"] }
 rama-utils = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }

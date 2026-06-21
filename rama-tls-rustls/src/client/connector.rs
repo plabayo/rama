@@ -23,7 +23,7 @@ use ::{
         error::{BoxErrorExt, ErrorExt},
         extensions::Extensions,
     },
-    rama_http_types::{Version, conn::TargetHttpVersion},
+    rama_net::http::{TargetHttpVersion, Version},
     rama_net::tls::client::TlsAlpn,
 };
 
@@ -531,7 +531,7 @@ mod tests {
     mod http_alpn_resolution {
         use super::*;
         use rama_core::extensions::Extensions;
-        use rama_http_types::{Version, conn::TargetHttpVersion};
+        use rama_net::http::{TargetHttpVersion, Version};
         use rama_net::tls::ApplicationProtocol;
 
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {

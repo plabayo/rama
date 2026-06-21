@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use crate::Version;
 use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture, frame::Settings};
 use rama_core::extensions::Extension;
 
@@ -63,14 +62,7 @@ pub struct H2ClientContextParams {
     pub adaptive_window: Option<bool>,
 }
 
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
-#[extension(tags(http))]
-/// Target http version
-///
-/// This can be set manually to enforce a specific version,
-/// otherwise this will be set automatically by things such
-/// tls alpn
-pub struct TargetHttpVersion(pub Version);
+pub use rama_net::http::TargetHttpVersion;
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]

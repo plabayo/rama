@@ -51,7 +51,7 @@ pub mod version {
     //! HTTP version type, owned by `rama-net`.
 
     #[doc(inline)]
-    pub use rama_net::http::Version;
+    pub use rama_net::http::{InvalidVersion, Version};
 }
 
 /// Hosts the per-concern `*InputExt` accessor impls for http `Request`/`Parts`.
