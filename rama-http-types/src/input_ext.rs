@@ -353,4 +353,24 @@ mod tests {
             "echo.ramaproxy.org:80"
         );
     }
+
+    // An origin-form request (no scheme) carrying a TLS `SecureTransport` marker
+    // — the shape of a request read off a terminated TLS connection — must
+    // resolve its protocol as HTTPS; the marker is the only secure signal here.
+    // This guards the `SecureTransport` fallback in `protocol_from_uri_or_extensions`
+    // against the real type being swapped for the tls-off dummy. See the matching
+    // cross-crate regression in rama-http-backend's `svc` tests, which catches the
+    // feature wiring (`rama-http-types/tls` must follow `rama-net/tls`).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn secure_transport_marks_origin_form_request_https() {
+        let req = Request::builder()
+            .uri("/ping")
+            .header("host", "example.com")
+            .body(())
+            .unwrap();
+        req.extensions().insert(SecureTransport::default());
+
+        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+    }
 }

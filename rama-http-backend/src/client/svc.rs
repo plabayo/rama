@@ -379,4 +379,28 @@ mod tests {
         assert_eq!(parts.uri.authority(), None);
         assert_eq!(parts.uri, "/test");
     }
+
+    // Regression: a forwarded request received over a terminated TLS connection
+    // (e.g. a MITM proxy upstream hop) arrives in origin-form with no scheme in
+    // the URI. Its protocol MUST resolve to HTTPS via the `SecureTransport`
+    // extension so the auto TLS connector secures the upstream hop. This
+    // silently regressed to HTTP whenever `rama-http-types/tls` was not enabled
+    // alongside `rama-net/tls`: `input_ext` then matched against a dummy
+    // `SecureTransport` type instead of the real one inserted by the TLS
+    // acceptor, so the connector went plaintext to a TLS upstream and the
+    // upstream's TLS alert surfaced as `Parse(Version)` (http_mitm_proxy_boring).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn origin_form_request_over_terminated_tls_resolves_https() {
+        use rama_net::tls::SecureTransport;
+
+        let req = Request::builder()
+            .uri("/ping")
+            .header(HOST, "example.com:8443")
+            .body(())
+            .unwrap();
+        req.extensions().insert(SecureTransport::default());
+
+        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+    }
 }

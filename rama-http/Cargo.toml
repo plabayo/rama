@@ -40,7 +40,10 @@ compression = [
 multipart = ["dep:multer", "dep:mime_guess", "dep:rama-http-hyperium"]
 html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
-tls = ["rama-net/tls"]
+# `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
+# real `rama_net::tls::SecureTransport` (not its tls-off dummy); otherwise an
+# origin-form request over a terminated TLS conn resolves to http instead of https.
+tls = ["rama-net/tls", "rama-http-types/tls"]
 
 [dependencies]
 ahash = { workspace = true }
