@@ -14,7 +14,7 @@ use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
 use rama_http_headers::{HeaderEncode, HeaderMapExt, Host, HttpRequestBuilderExt, UserAgent};
 use rama_http_types::Response;
-use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
+use rama_http_types::{Body, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, Version};
 use rama_net::address::HostWithOptPort;
 
 #[derive(Debug)]
@@ -31,12 +31,13 @@ impl InnerHttpProxyConnector {
         authority: HostWithOptPort,
         req_extensions: Extensions,
     ) -> Result<Self, BoxError> {
-        let uri = authority.to_string();
-
         let req = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_11)
-            .uri(uri)
+            // CONNECT request-target is authority-form (`host:port`); build it as
+            // such. `.uri(string)` would parse it as `scheme:path` and reject the
+            // host (e.g. `127.0.0.1`) as an invalid scheme.
+            .uri(Uri::from_authority_form(authority.clone().into()))
             .typed_header(Host::from(authority))
             .typed_header(UserAgent::rama())
             .body(Body::empty())
