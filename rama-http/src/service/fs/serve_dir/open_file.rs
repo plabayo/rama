@@ -517,14 +517,14 @@ fn open_embedded_file_with_fallback(
         let encoding = preferred_encoding(&mut path, &negotiated_encoding);
         match (base.get_file(&path), encoding) {
             (Some(file), maybe_encoding) => break (file, maybe_encoding),
-            (None, Some(encoding)) => {
+            (None, Some(encoding)) if encoding != Encoding::Identity => {
                 // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
                 // to reset the path before the next iteration.
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
             }
-            (None, None) => {
+            (None, Some(_) | None) => {
                 return Err(io::Error::new(io::ErrorKind::NotFound, "file not found"));
             }
         };
