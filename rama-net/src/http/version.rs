@@ -6,9 +6,20 @@
 
 use std::{error::Error, fmt};
 
+use rama_macros::Extension;
+
 /// Represents a version of the HTTP spec.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Version(Http);
+
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Extension)]
+#[extension(tags(http))]
+/// Target http version
+///
+/// This can be set manually to enforce a specific version,
+/// otherwise this will be set automatically by things such
+/// tls alpn
+pub struct TargetHttpVersion(pub Version);
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
 enum Http {

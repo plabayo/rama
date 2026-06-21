@@ -813,11 +813,11 @@ where
         if let Some(negotiated_params) = maybe_negotiated_params {
             #[cfg(feature = "http")]
             if let Some(proto) = negotiated_params.application_layer_protocol.as_ref()
-                && let Ok(neg_version) = rama_http_types::Version::try_from(proto)
+                && let Ok(neg_version) = rama_net::http::Version::try_from(proto)
             {
                 egress_tls_stream
                     .extensions()
-                    .insert(rama_http_types::conn::TargetHttpVersion(neg_version));
+                    .insert(rama_net::http::TargetHttpVersion(neg_version));
             }
 
             egress_tls_stream.extensions().insert(negotiated_params);

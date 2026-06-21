@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
+http = ["rama-net/http"]
 compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
 # Optional [dial9] runtime telemetry support.
@@ -47,8 +47,7 @@ rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, features = ["native-certs"] }
-rama-http-types = { workspace = true, optional = true }
-rama-net = { workspace = true, features = ["tls", "http"] }
+rama-net = { workspace = true, features = ["tls"] }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }

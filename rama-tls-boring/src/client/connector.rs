@@ -24,7 +24,7 @@ use crate::{TlsStream, types::TlsTunnel};
 use rama_net::tls::client::TlsAlpn;
 
 #[cfg(feature = "http")]
-use rama_http_types::{Version, conn::TargetHttpVersion};
+use rama_net::http::{TargetHttpVersion, Version};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
