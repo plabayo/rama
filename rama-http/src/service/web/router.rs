@@ -350,6 +350,32 @@ where
         self.set_match_route(path, matcher, service)
     }
 
+    /// add a QUERY route to the router.
+    ///
+    /// QUERY ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)) is a safe,
+    /// idempotent method whose request content defines the query.
+    #[must_use]
+    #[inline]
+    pub fn with_query<I, T>(self, path: impl AsRef<str>, service: I) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let matcher = HttpMatcher::method_query();
+        self.with_match_route(path, matcher, service)
+    }
+
+    /// add a QUERY route to the router.
+    #[inline]
+    pub fn set_query<I, T>(&mut self, path: impl AsRef<str>, service: I) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let matcher = HttpMatcher::method_query();
+        self.set_match_route(path, matcher, service)
+    }
+
     /// register a nested router under a prefix (path).
     ///
     /// The prefix is used to match the request path and strip it from the request URI.
@@ -885,6 +911,20 @@ mod tests {
         })
     }
 
+    // Echoes the request content back, proving the QUERY body (the query) reaches the handler.
+    fn query_echo_service() -> impl Service<Request, Output = Response, Error = Infallible> {
+        service_fn(|req: Request| async move {
+            let body = req.into_body().collect().await.unwrap().to_bytes();
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from(format!(
+                    "query: {}",
+                    String::from_utf8_lossy(&body)
+                )))
+                .unwrap())
+        })
+    }
+
     #[tokio::test]
     async fn test_router() {
         let cases = vec![
@@ -964,6 +1004,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_router_query_method() {
+        let router = Router::new()
+            .with_query("/search", query_echo_service())
+            .with_get("/search", get_users_service())
+            .with_not_found(not_found_service());
+
+        let router = ErrorHandlerLayer::new().layer(router);
+
+        // QUERY with a body is routed to the QUERY handler and the body reaches it.
+        let req = Request::query("/search")
+            .header(header::CONTENT_TYPE, "application/sql")
+            .body(Body::from("SELECT 1"))
+            .unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "query: SELECT 1");
+
+        // GET on the same path is distinct from QUERY and hits the GET handler.
+        let req = Request::get("/search").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "List Users");
+
+        // A method registered on neither route → 405 listing GET and QUERY in the Allow header.
+        let req = Request::post("/search").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            res.headers()
+                .get(header::ALLOW)
+                .expect("Allow header must be present on 405")
+                .to_str()
+                .unwrap(),
+            "GET, QUERY"
+        );
     }
 
     #[tokio::test]

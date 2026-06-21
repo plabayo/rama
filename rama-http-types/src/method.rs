@@ -42,8 +42,10 @@ use std::{fmt, str};
 /// as GET, POST, etc.
 ///
 /// Currently includes 8 variants representing the 8 methods defined in
-/// [RFC 7230](https://tools.ietf.org/html/rfc7231#section-4.1), plus PATCH,
-/// and an Extension variant for all extensions.
+/// [RFC 7230](https://tools.ietf.org/html/rfc7231#section-4.1), plus PATCH
+/// ([RFC 5789](https://tools.ietf.org/html/rfc5789)) and QUERY
+/// ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)), and an Extension
+/// variant for all extensions.
 ///
 /// # Examples
 ///
@@ -73,6 +75,7 @@ enum Inner {
     Trace,
     Connect,
     Patch,
+    Query,
     // If the extension is short enough, store it inline
     ExtensionInline(InlineExtension),
     // Otherwise, allocate it
@@ -107,6 +110,12 @@ impl Method {
     /// TRACE
     pub const TRACE: Method = Method(Trace);
 
+    /// QUERY
+    ///
+    /// A safe, idempotent, and cacheable method whose request content defines
+    /// the query, as specified in [RFC 10008](https://www.rfc-editor.org/rfc/rfc10008).
+    pub const QUERY: Method = Method(Query);
+
     /// Converts a slice of bytes to an HTTP method.
     pub fn from_bytes(src: &[u8]) -> Result<Method, InvalidMethod> {
         match src.len() {
@@ -124,6 +133,7 @@ impl Method {
             5 => match src {
                 b"PATCH" => Ok(Method(Patch)),
                 b"TRACE" => Ok(Method(Trace)),
+                b"QUERY" => Ok(Method(Query)),
                 _ => Method::extension_inline(src),
             },
             6 => match src {
@@ -159,7 +169,9 @@ impl Method {
     /// See [the spec](https://tools.ietf.org/html/rfc7231#section-4.2.1)
     /// for more words.
     pub fn is_safe(&self) -> bool {
-        matches!(self.0, Get | Head | Options | Trace)
+        // QUERY is safe and idempotent per RFC 10008 §2.1: the request content
+        // defines a query the target processes without changing its state.
+        matches!(self.0, Get | Head | Options | Trace | Query)
     }
 
     /// Whether a method is considered "idempotent", meaning the request has
@@ -187,6 +199,7 @@ impl Method {
             Trace => "TRACE",
             Connect => "CONNECT",
             Patch => "PATCH",
+            Query => "QUERY",
             ExtensionInline(ref inline) => inline.as_str(),
             ExtensionAllocated(ref allocated) => allocated.as_str(),
         }
@@ -465,10 +478,37 @@ mod test {
         assert!(Method::DELETE.is_idempotent());
         assert!(Method::HEAD.is_idempotent());
         assert!(Method::TRACE.is_idempotent());
+        assert!(Method::QUERY.is_idempotent());
 
         assert!(!Method::POST.is_idempotent());
         assert!(!Method::CONNECT.is_idempotent());
         assert!(!Method::PATCH.is_idempotent());
+    }
+
+    #[test]
+    fn test_is_safe() {
+        // RFC 10008 §2.1: QUERY is safe.
+        assert!(Method::QUERY.is_safe());
+
+        assert!(Method::GET.is_safe());
+        assert!(Method::HEAD.is_safe());
+        assert!(Method::OPTIONS.is_safe());
+        assert!(Method::TRACE.is_safe());
+
+        assert!(!Method::POST.is_safe());
+        assert!(!Method::PUT.is_safe());
+        assert!(!Method::DELETE.is_safe());
+        assert!(!Method::CONNECT.is_safe());
+        assert!(!Method::PATCH.is_safe());
+    }
+
+    #[test]
+    fn test_query_method() {
+        // QUERY must parse to the dedicated variant, not an extension method.
+        assert_eq!(Method::from_bytes(b"QUERY").unwrap(), Method::QUERY);
+        assert_eq!(Method::from_str("QUERY").unwrap(), Method::QUERY);
+        assert_eq!(Method::QUERY.as_str(), "QUERY");
+        assert_eq!(Method::QUERY, "QUERY");
     }
 
     #[test]

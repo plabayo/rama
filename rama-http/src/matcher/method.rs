@@ -26,8 +26,10 @@ impl MethodMatcher {
     pub const POST: Self = Self::from_bits(0b0_0100_0000);
     /// Match `PUT` requests.
     pub const PUT: Self = Self::from_bits(0b0_1000_0000);
+    /// Match `QUERY` requests.
+    pub const QUERY: Self = Self::from_bits(0b1_0000_0000);
     /// Match `TRACE` requests.
-    pub const TRACE: Self = Self::from_bits(0b1_0000_0000);
+    pub const TRACE: Self = Self::from_bits(0b10_0000_0000);
 
     const fn bits(self) -> u16 {
         let bits = self;
@@ -48,6 +50,7 @@ impl MethodMatcher {
         .or_method(Self::PATCH)
         .or_method(Self::POST)
         .or_method(Self::PUT)
+        .or_method(Self::QUERY)
         .or_method(Self::TRACE);
 
     /// Returns `true` if `self` contains all bits set in `other`.
@@ -80,7 +83,7 @@ impl MethodMatcher {
     /// Returns an iterator over the [`Method`] variants represented by this matcher.
     ///
     /// Yields methods in declaration order (CONNECT, DELETE, GET, HEAD, OPTIONS,
-    /// PATCH, POST, PUT, TRACE) for only the bits that are set.
+    /// PATCH, POST, PUT, QUERY, TRACE) for only the bits that are set.
     pub fn iter(self) -> impl Iterator<Item = Method> {
         [
             (Self::CONNECT, Method::CONNECT),
@@ -91,6 +94,7 @@ impl MethodMatcher {
             (Self::PATCH, Method::PATCH),
             (Self::POST, Method::POST),
             (Self::PUT, Method::PUT),
+            (Self::QUERY, Method::QUERY),
             (Self::TRACE, Method::TRACE),
         ]
         .into_iter()
@@ -142,6 +146,7 @@ impl TryFrom<&Method> for MethodMatcher {
             &Method::PATCH => Ok(Self::PATCH),
             &Method::POST => Ok(Self::POST),
             &Method::PUT => Ok(Self::PUT),
+            &Method::QUERY => Ok(Self::QUERY),
             &Method::TRACE => Ok(Self::TRACE),
             other => Err(Self::Error {
                 method: other.clone(),
@@ -197,8 +202,23 @@ mod tests {
         );
 
         assert_eq!(
+            MethodMatcher::try_from(&Method::QUERY).unwrap(),
+            MethodMatcher::QUERY
+        );
+
+        assert_eq!(
             MethodMatcher::try_from(&Method::TRACE).unwrap(),
             MethodMatcher::TRACE
         );
+    }
+
+    #[test]
+    fn query_is_a_known_method() {
+        // QUERY (RFC 10008) must participate in ALL_KNOWN so it round-trips
+        // through `iter()` and shows up in `Allow` headers / 405 responses.
+        assert!(MethodMatcher::ALL_KNOWN.contains(MethodMatcher::QUERY));
+        let methods: Vec<_> = MethodMatcher::QUERY.iter().collect();
+        assert_eq!(methods, vec![Method::QUERY]);
+        assert!(MethodMatcher::ALL_KNOWN.iter().any(|m| m == Method::QUERY));
     }
 }

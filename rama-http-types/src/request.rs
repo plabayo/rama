@@ -366,6 +366,32 @@ impl Request<()> {
     {
         Builder::new().method(Method::TRACE).uri(uri)
     }
+
+    /// Creates a new `Builder` initialized with a QUERY method and the given URI.
+    ///
+    /// QUERY ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008)) is a safe,
+    /// idempotent method whose request content defines the query; remember to
+    /// set a `Content-Type` for the body.
+    ///
+    /// This method returns an instance of `Builder` which can be used to
+    /// create a `Request`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama_http_types::*;
+    ///
+    /// let request = Request::query("https://www.rust-lang.org/")
+    ///     .body(())
+    ///     .unwrap();
+    /// ```
+    pub fn query<T>(uri: T) -> Builder
+    where
+        T: TryInto<Uri>,
+        <T as TryInto<Uri>>::Error: Into<crate::Error>,
+    {
+        Builder::new().method(Method::QUERY).uri(uri)
+    }
 }
 
 impl<T> Request<T> {

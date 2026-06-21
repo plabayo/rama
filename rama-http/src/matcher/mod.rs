@@ -178,7 +178,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::DELETE`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -206,7 +206,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::GET`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -234,7 +234,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::HEAD`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -262,7 +262,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::OPTIONS`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -290,7 +290,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::PATCH`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -318,7 +318,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::POST`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -346,12 +346,40 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::PUT`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
     pub fn or_method_put(self) -> Self {
         self.or(Self::method_put())
+    }
+
+    /// Create a new matcher that matches [`MethodMatcher::QUERY`] requests.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    #[must_use]
+    pub fn method_query() -> Self {
+        Self {
+            kind: HttpMatcherKind::Method(MethodMatcher::QUERY),
+            negate: false,
+        }
+    }
+
+    /// Add a new matcher that also matches [`MethodMatcher::QUERY`] on top of the existing [`HttpMatcher`] matchers.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    #[must_use]
+    pub fn and_method_query(self) -> Self {
+        self.and(Self::method_query())
+    }
+
+    /// Add a new matcher that can also match [`MethodMatcher::QUERY`]
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    #[must_use]
+    pub fn or_method_query(self) -> Self {
+        self.or(Self::method_query())
     }
 
     /// Create a new matcher that matches [`MethodMatcher::TRACE`] requests.
@@ -374,7 +402,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::TRACE`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -402,7 +430,7 @@ impl<Body> HttpMatcher<Body> {
     }
 
     /// Add a new matcher that can also match [`MethodMatcher::CONNECT`]
-    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    /// as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     #[must_use]
@@ -833,6 +861,12 @@ impl<Body> HttpMatcher<Body> {
     #[must_use]
     pub fn connect(path: impl AsRef<str>) -> Self {
         Self::method_connect().and_path(path)
+    }
+
+    /// Create a [`PathMatcher`] matcher to match for a QUERY request.
+    #[must_use]
+    pub fn query(path: impl AsRef<str>) -> Self {
+        Self::method_query().and_path(path)
     }
 
     /// Add a [`HttpMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
