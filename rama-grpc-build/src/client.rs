@@ -212,7 +212,7 @@ fn generate_unary<T: Service>(
             use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
-            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
+            let path = #path;
             let req = request.into_request();
             req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.unary(req, path, codec).await
@@ -243,7 +243,7 @@ fn generate_server_streaming<T: Service>(
             use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
-            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
+            let path = #path;
             let req = request.into_request();
             req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.server_streaming(req, path, codec).await
@@ -274,7 +274,7 @@ fn generate_client_streaming<T: Service>(
             use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
-            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
+            let path = #path;
             let req = request.into_streaming_request();
             req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name, #method_name));
             self.inner.client_streaming(req, path, codec).await
@@ -305,7 +305,7 @@ fn generate_streaming<T: Service>(
             use #root_crate_name::codegen::ExtensionsRef as _;
 
             let codec = #codec_name::default();
-            let path = #root_crate_name::codegen::http::uri::PathAndQuery::from_static(#path);
+            let path = #path;
             let req = request.into_streaming_request();
             req.extensions().insert(#root_crate_name::GrpcMethod::new(#service_name,#method_name));
             self.inner.streaming(req, path, codec).await

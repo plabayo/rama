@@ -10,7 +10,7 @@ use crate::{
 };
 use prost::Message;
 use rama_core::{error::BoxError, telemetry::opentelemetry::sdk::error::OTelSdkError};
-use rama_http::{Body, StreamingBody, uri::PathAndQuery};
+use rama_http::{Body, StreamingBody};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, str::FromStr};
 
@@ -156,11 +156,7 @@ where
                 request.try_set_timeout(timeout).map_err(internal_failure)?;
             }
 
-            let rpc = grpc.unary(
-                request,
-                PathAndQuery::from_static(path),
-                ProstCodec::<Req, Resp>::new(),
-            );
+            let rpc = grpc.unary(request, path, ProstCodec::<Req, Resp>::new());
 
             let response = await_with_optional_timeout(timeout, rpc)
                 .await?

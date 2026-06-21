@@ -1045,19 +1045,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-body-util"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
-dependencies = [
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "pin-project-lite",
-]
-
-[[package]]
 name = "http-range-header"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2135,6 +2122,7 @@ dependencies = [
  "rama-tcp",
  "rama-tls-boring",
  "rama-tls-rustls",
+ "rama-tower",
  "rama-ua",
  "rama-udp",
  "rama-unix",
@@ -2317,7 +2305,6 @@ dependencies = [
  "const_format",
  "csv",
  "flate2",
- "http",
  "http-range-header",
  "httpdate",
  "iri-string",
@@ -2333,6 +2320,7 @@ dependencies = [
  "radix_trie 0.3.0",
  "rama-core",
  "rama-http-headers",
+ "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
  "rama-net",
@@ -2408,6 +2396,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-http-hyperium"
+version = "0.3.0-rc1"
+dependencies = [
+ "http",
+ "http-body",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+]
+
+[[package]]
 name = "rama-http-macros"
 version = "0.3.0-rc1"
 dependencies = [
@@ -2425,10 +2425,11 @@ dependencies = [
  "bytes",
  "const_format",
  "fnv",
- "http",
- "http-body",
- "http-body-util",
+ "futures-core",
+ "hex",
+ "itertools 0.14.0",
  "itoa",
+ "md5",
  "memchr",
  "mime",
  "mime_guess",
@@ -2436,10 +2437,12 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-macros",
+ "rama-net",
  "rama-utils",
  "rand 0.10.1",
  "serde",
  "serde_json",
+ "sha2",
  "sync_wrapper",
  "tokio",
 ]
@@ -2460,6 +2463,7 @@ version = "0.3.0-rc1"
 dependencies = [
  "ahash",
  "const_format",
+ "csv",
  "dial9-tokio-telemetry",
  "dial9-trace-format",
  "flume",
@@ -2479,7 +2483,6 @@ dependencies = [
  "psl",
  "radix_trie 0.3.0",
  "rama-core",
- "rama-http-types",
  "rama-macros",
  "rama-utils",
  "serde",
@@ -2594,11 +2597,24 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rustls",
- "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "webpki-roots",
  "x509-parser",
+]
+
+[[package]]
+name = "rama-tower"
+version = "0.3.0-rc1"
+dependencies = [
+ "http",
+ "http-body",
+ "rama-core",
+ "rama-http-hyperium",
+ "rama-http-types",
+ "tokio",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
@@ -2624,6 +2640,7 @@ dependencies = [
  "rama-core",
  "rama-dns",
  "rama-net",
+ "rama-utils",
  "tokio",
  "tokio-util",
 ]
@@ -2636,6 +2653,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
+ "rama-utils",
  "tokio",
 ]
 
@@ -3392,6 +3410,18 @@ checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "tower-layer"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
+
+[[package]]
+name = "tower-service"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "tracing"

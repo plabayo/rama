@@ -66,7 +66,7 @@ use rama::{
     Layer, Service,
     extensions::{Extension, Extensions, ExtensionsRef},
     http::{
-        Body, Request, Response, StatusCode,
+        Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -79,11 +79,7 @@ use rama::{
         service::web::{extract::Path, match_service, response::Json},
     },
     layer::{ConsumeErrLayer, HijackLayer},
-    net::{
-        proxy::IoForwardService,
-        stream::{SocketInfo, layer::http::BodyLimitLayer},
-        user::credentials::basic,
-    },
+    net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -145,7 +141,7 @@ async fn main() {
                             HttpMatcher::get("/*") => async move |req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
-                                    "path": req.uri().path(),
+                                    "path": req.uri().path_or_root(),
                                     "username_labels": req.extensions().get_ref::<UsernameLabels>().map(|labels| &labels.0),
                                     "user_priority": req.extensions().get_ref::<Priority>().map(|p| match p {
                                         Priority::High => "high",

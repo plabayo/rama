@@ -512,9 +512,7 @@ where
         match try_to_strip_path_prefix_from_uri(&parts.uri, &self.prefix) {
             Ok(modified_uri) => {
                 if !parts.extensions.contains::<OriginalRouterUri>() {
-                    parts
-                        .extensions
-                        .insert(OriginalRouterUri(Arc::new(parts.uri)));
+                    parts.extensions.insert(OriginalRouterUri(parts.uri));
                 }
                 parts.uri = modified_uri;
             }

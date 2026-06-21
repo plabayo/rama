@@ -1,12 +1,13 @@
 use rama::extensions::{Egress, Extension, Extensions, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnectorLayer;
+use rama::http::fingerprint::Ja4H;
 use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
-use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
+use rama::net::fingerprint::{Ja3, Ja4};
 use rama::net::tls::ApplicationProtocol;
 use rama::net::tls::client::parse_client_hello;
 use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};

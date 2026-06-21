@@ -7,9 +7,6 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 use std::net::{Ipv6Addr, SocketAddr};
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
-
 mod parser;
 #[doc(inline)]
 pub(crate) use parser::{parse_one_plus_forwarded_elements, parse_single_forwarded_element};
@@ -397,26 +394,6 @@ impl TryFrom<&str> for ForwardedElement {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         parse_single_forwarded_element(s.as_bytes())
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<HeaderValue> for ForwardedElement {
-    type Error = BoxError;
-
-    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
-        parse_single_forwarded_element(header.as_bytes())
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl TryFrom<&HeaderValue> for ForwardedElement {
-    type Error = BoxError;
-
-    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
-        parse_single_forwarded_element(header.as_bytes())
     }
 }
 

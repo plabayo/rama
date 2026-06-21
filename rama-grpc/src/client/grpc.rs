@@ -9,7 +9,7 @@ use rama_http::{
     Body, StreamingBody,
     header::CONTENT_TYPE,
     headers::{HeaderMapExt, Te},
-    uri::{PathAndQuery, Uri},
+    uri::Uri,
 };
 
 use crate::{
@@ -27,7 +27,7 @@ use crate::{
 /// This will wrap some inner [`GrpcService`] and will encode/decode
 /// messages via the provided codec.
 ///
-/// Each request method takes a [`Request`], a [`PathAndQuery`], and a
+/// Each request method takes a [`Request`], a method path (`&str`), and a
 /// [`Codec`]. The request contains the message to send via the
 /// [`Codec::encoder`]. The path determines the fully qualified path
 /// that will be append to the outgoing uri. The path must follow
@@ -115,7 +115,7 @@ impl<T> Grpc<T> {
     pub async fn unary<M1, M2, C>(
         &self,
         request: Request<M1>,
-        path: PathAndQuery,
+        path: &str,
         codec: C,
     ) -> Result<Response<M2>, Status>
     where
@@ -133,7 +133,7 @@ impl<T> Grpc<T> {
     pub async fn client_streaming<S, M1, M2, C>(
         &self,
         request: Request<S>,
-        path: PathAndQuery,
+        path: &str,
         codec: C,
     ) -> Result<Response<M2>, Status>
     where
@@ -169,7 +169,7 @@ impl<T> Grpc<T> {
     pub async fn server_streaming<M1, M2, C>(
         &self,
         request: Request<M1>,
-        path: PathAndQuery,
+        path: &str,
         codec: C,
     ) -> Result<Response<Streaming<M2>>, Status>
     where
@@ -187,7 +187,7 @@ impl<T> Grpc<T> {
     pub async fn streaming<S, M1, M2, C>(
         &self,
         request: Request<S>,
-        path: PathAndQuery,
+        path: &str,
         mut codec: C,
     ) -> Result<Response<Streaming<M2>>, Status>
     where
@@ -276,25 +276,14 @@ impl GrpcConfig {
     fn prepare_request(
         &self,
         request: Request<Body>,
-        path: PathAndQuery,
+        path: &str,
     ) -> Result<rama_http_types::Request<Body>, Status> {
-        let mut parts = self.origin.clone().into_parts();
+        let mut uri = self.origin.clone();
 
-        match &parts.path_and_query {
-            Some(pnq) if pnq != "/" => {
-                let Ok(paq) = format!("{}{}", pnq.path(), path).parse() else {
-                    return Err(Status::internal("new Path/Query combo is invalid"));
-                };
-                parts.path_and_query = Some(paq);
-            }
-            _ => {
-                parts.path_and_query = Some(path);
-            }
-        }
-
-        let Ok(uri) = Uri::from_parts(parts) else {
-            return Err(Status::internal("uri with Path/Query combo is invalid"));
-        };
+        // The gRPC origin carries scheme + authority (and optionally a base
+        // path); it has no query. Append the fixed origin-form method path
+        // (e.g. `/package.Service/Method`) onto that base path.
+        uri.path_mut().push_segments(path);
 
         let mut request = request.into_http(
             uri,

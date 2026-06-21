@@ -17,7 +17,8 @@ pub use self::{
     redirect_fn::{RedirectFn, redirect_fn},
     same_origin::SameOrigin,
 };
-use crate::{Method, Request, Scheme, StatusCode, Uri};
+use crate::{Method, Request, StatusCode, Uri};
+use rama_net::Protocol;
 
 /// Trait for the policy on handling redirection responses.
 ///
@@ -272,9 +273,9 @@ where
 fn eq_origin(lhs: &Uri, rhs: &Uri) -> bool {
     let default_port = match (lhs.scheme(), rhs.scheme()) {
         (Some(l), Some(r)) if l == r => {
-            if l == &Scheme::HTTP {
+            if l == &Protocol::HTTP {
                 80
-            } else if l == &Scheme::HTTPS {
+            } else if l == &Protocol::HTTPS {
                 443
             } else {
                 return false;

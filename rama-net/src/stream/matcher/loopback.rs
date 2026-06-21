@@ -1,8 +1,5 @@
 use rama_core::extensions::Extensions;
 
-#[cfg(feature = "http")]
-use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
-
 #[derive(Debug, Clone)]
 /// Matcher based on the ip part of the [`SocketAddr`] of the peer,
 /// matching only if the ip is a loopback address.
@@ -46,16 +43,6 @@ impl Default for LoopbackMatcher {
     }
 }
 
-#[cfg(feature = "http")]
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for LoopbackMatcher {
-    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        req.extensions()
-            .get_ref::<SocketInfo>()
-            .map(|info| info.peer_addr().ip_addr.is_loopback())
-            .unwrap_or(self.optional)
-    }
-}
-
 impl<Socket> rama_core::matcher::Matcher<Socket> for LoopbackMatcher
 where
     Socket: crate::stream::Socket,
@@ -74,65 +61,6 @@ mod test {
 
     use super::*;
     use rama_core::matcher::Matcher;
-
-    #[cfg(feature = "http")]
-    #[test]
-    fn test_loopback_matcher_http() {
-        use rama_core::extensions::ExtensionsRef;
-
-        let matcher = LoopbackMatcher::new();
-
-        let create_request = || {
-            Request::builder()
-                .method("GET")
-                .uri("/hello")
-                .body(())
-                .unwrap()
-        };
-
-        // test #1: no match: test with no socket info registered
-        let req = create_request();
-        assert!(!matcher.matches(None, &req));
-
-        // test #2: no match: test with network address (ipv4)
-        let req = create_request();
-        req.extensions()
-            .insert(SocketInfo::new(None, ([192, 168, 0, 1], 8080).into()));
-        assert!(!matcher.matches(None, &req));
-
-        // test #3: no match: test with network address (ipv6)
-        let req = create_request();
-        req.extensions().insert(SocketInfo::new(
-            None,
-            ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
-        ));
-        assert!(!matcher.matches(None, &req));
-
-        // test #4: match: test with loopback address (ipv4)
-        let req = create_request();
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &req));
-
-        // test #5: match: test with another loopback address (ipv4)
-        let req = create_request();
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 3, 2, 1], 8080).into()));
-        assert!(matcher.matches(None, &req));
-
-        // test #6: match: test with loopback address (ipv6)
-        let req = create_request();
-        req.extensions().insert(SocketInfo::new(
-            None,
-            ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
-        ));
-        assert!(matcher.matches(None, &req));
-
-        // test #7: match: test with missing socket info, but it's seen as optional
-        let matcher = LoopbackMatcher::optional();
-        let req = create_request();
-        assert!(matcher.matches(None, &req));
-    }
 
     #[test]
     fn test_loopback_matcher_socket_trait() {

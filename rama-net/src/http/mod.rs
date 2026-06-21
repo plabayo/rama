@@ -4,16 +4,10 @@
 //! http support. In this module lives only the stuff
 //! directly connected to `rama-net` types.
 
-mod request_context;
-#[doc(inline)]
-pub use request_context::{RequestContext, try_request_ctx_from_http_parts};
-
 pub mod server;
 
 pub mod uri;
 
-mod proxy_target_from_req;
+mod version;
 #[doc(inline)]
-pub use proxy_target_from_req::{
-    ProxyTargetFromRequestContext, ProxyTargetFromRequestContextLayer,
-};
+pub use version::{InvalidVersion, Version};

@@ -1,14 +1,10 @@
 use std::fmt;
 
 use crate::Result;
-use crate::dep::hyperium::http::Extensions as HttpExtensions;
-use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
+use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
-
-#[derive(Clone, Debug, Extension)]
-struct HyperExtensions(HttpExtensions);
 
 /// Represents an HTTP request.
 ///
@@ -47,9 +43,9 @@ struct HyperExtensions(HttpExtensions);
 /// Inspecting a request to see what was sent.
 ///
 /// ```
-/// use rama_http_types::{Request, Response, StatusCode};
+/// use rama_http_types::{Request, Response, Result, StatusCode};
 ///
-/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+/// fn respond_to(req: Request<()>) -> Result<Response<()>> {
 ///     if req.uri() != "/awesome-url" {
 ///         return Response::builder()
 ///             .status(StatusCode::NOT_FOUND)
@@ -103,37 +99,6 @@ pub struct Request<T = Body> {
     body: T,
 }
 
-impl<T> From<HyperiumRequest<T>> for Request<T> {
-    fn from(value: HyperiumRequest<T>) -> Self {
-        let (parts, body) = value.into_parts();
-        Self::from_parts(parts.into(), body)
-    }
-}
-
-impl<T> From<Request<T>> for HyperiumRequest<T> {
-    fn from(value: Request<T>) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let (parts, body) = value.into_parts();
-
-        let mut hyper_extensions = parts
-            .extensions
-            .get_ref::<HyperExtensions>()
-            .map(|ext| ext.0.clone())
-            .unwrap_or_default();
-
-        hyper_extensions.insert(parts.extensions);
-
-        let mut request = Self::new(body);
-        *request.method_mut() = parts.method;
-        *request.uri_mut() = parts.uri;
-        *request.version_mut() = parts.version;
-        *request.headers_mut() = parts.headers;
-        *request.extensions_mut() = hyper_extensions;
-
-        request
-    }
-}
-
 #[non_exhaustive]
 #[derive(Clone)]
 pub struct Parts {
@@ -153,34 +118,15 @@ pub struct Parts {
     pub extensions: Extensions,
 }
 
-impl From<HyperiumParts> for Parts {
-    fn from(mut value: HyperiumParts) -> Self {
-        let rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
-        rama_extensions.insert(HyperExtensions(value.extensions));
-
-        Self {
-            extensions: rama_extensions,
-            headers: value.headers,
-            method: value.method,
-            uri: value.uri,
-            version: value.version,
-        }
-    }
-}
-
-impl From<Parts> for HyperiumParts {
-    fn from(parts: Parts) -> Self {
-        // We can't create hyper parts directly so we have to be slightly creative
-        let request = Request::from_parts(parts, ());
-        let request = HyperiumRequest::from(request);
-        let (parts, _) = request.into_parts();
-        parts
-    }
-}
-
 impl ExtensionsRef for Parts {
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl ClientIp for Parts {
+    fn client_ip(&self) -> Option<std::net::IpAddr> {
+        rama_net::client_ip::client_ip(self)
     }
 }
 
@@ -505,6 +451,27 @@ impl<T> Request<T> {
         &self.head.uri
     }
 
+    /// Get the URI as complete as possible for this request.
+    ///
+    /// Where [`uri`](Self::uri) returns the URI exactly as received (often
+    /// origin-form `/path` for HTTP/1.1), this fills in the scheme and
+    /// authority from the request's effective protocol and authority (URI →
+    /// `ProxyTarget` → TLS SNI → `Forwarded` → `Host` header) — a derivation
+    /// callers can treat as a technical detail.
+    #[must_use]
+    pub fn request_uri(&self) -> Uri {
+        use rama_net::{AuthorityInputExt as _, ProtocolInputExt as _};
+
+        let mut uri = self.uri().clone();
+        if let Some(authority) = self.authority() {
+            let protocol = self.protocol().unwrap_or(rama_net::Protocol::HTTP);
+            let rama_net::address::HostWithOptPort { host, port } =
+                authority.without_default_port_for(Some(&protocol));
+            uri.set_scheme(protocol).set_host(host).set_port(port);
+        }
+        uri
+    }
+
     /// Returns a mutable reference to the associated URI.
     ///
     /// # Examples
@@ -702,12 +669,18 @@ impl<B> ExtensionsRef for Request<B> {
     }
 }
 
+impl<B> ClientIp for Request<B> {
+    fn client_ip(&self) -> Option<std::net::IpAddr> {
+        rama_net::client_ip::client_ip(self)
+    }
+}
+
 impl Parts {
     /// Creates a new default instance of `Parts`
     fn new() -> Self {
         Self {
             method: Method::default(),
-            uri: Uri::default(),
+            uri: Uri::from_static("/"),
             version: Version::default(),
             headers: HeaderMap::default(),
             extensions: Extensions::default(),
@@ -752,7 +725,7 @@ impl Builder {
         Self {
             inner: Ok(Parts {
                 method: Method::default(),
-                uri: Uri::default(),
+                uri: Uri::from_static("/"),
                 version: Version::default(),
                 headers: HeaderMap::default(),
                 extensions: ext,
@@ -1218,16 +1191,7 @@ impl HttpRequestPartsMut for Parts {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use rama_core::extensions::Extension;
-
-    #[derive(Debug, Clone, PartialEq, Eq, Extension)]
-    struct ConversionTraceLabel(String);
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
-    struct HyperBoolFlag(bool);
 
     #[test]
     fn it_can_map_a_body_from_one_type_to_another() {
@@ -1240,90 +1204,58 @@ mod tests {
     }
 
     #[test]
-    fn it_can_convert_between_rama_and_hyper() {
-        let uri = "https://example.com";
-        let version = Version::HTTP_2;
-        let method = Method::POST;
-        let body = "some string";
+    fn test_request_uri() {
+        use crate::header::HOST;
+        use rama_net::{
+            address::Domain,
+            forwarded::{Forwarded, ForwardedElement},
+        };
 
-        let mut rama_request = Request::builder()
-            .uri(uri)
-            .version(version)
-            .method(method.clone())
-            .body(body)
-            .unwrap();
-
-        let header_key = "test";
-        let header_value = HeaderValue::from_static("data");
-        rama_request
-            .headers_mut()
-            .insert(header_key, header_value.clone());
-
-        let extension = ConversionTraceLabel("test extensions".to_owned());
-        rama_request.extensions().insert(extension.clone());
-
-        let mut hyper_request = HyperiumRequest::from(rama_request);
-
-        assert_eq!(hyper_request.uri(), uri);
-        assert_eq!(hyper_request.version(), version);
-        assert_eq!(hyper_request.method(), method);
-        assert_eq!(*hyper_request.body(), body);
-        assert_eq!(
-            hyper_request.headers().get(header_key).unwrap(),
-            header_value
-        );
-
-        // Rama extensions are wrapped into RamaExtensions so we can restore them later,
-        // its also possible to access them directly by using this as a nested type map.
-
-        // TODO if there is a solution for https://github.com/hyperium/http/issues/780#issuecomment-3253476634
-        // we can removed this extra nesting and just transfer them as-is
-
-        hyper_request.extensions_mut().insert::<usize>(4);
-
-        let rama_wrapped_extensions = hyper_request
-            .extensions_mut()
-            .get_mut::<Extensions>()
-            .unwrap();
-        assert_eq!(
-            *rama_wrapped_extensions
-                .get_ref::<ConversionTraceLabel>()
-                .unwrap(),
-            extension
-        );
-        rama_wrapped_extensions.insert_arc(Arc::new(HyperBoolFlag(true)));
-
-        let rama_request = Request::from(hyper_request);
-
-        assert_eq!(rama_request.uri(), uri);
-        assert_eq!(rama_request.version(), version);
-        assert_eq!(rama_request.method(), method);
-        assert_eq!(*rama_request.body(), body);
-        assert_eq!(
-            rama_request.headers().get(header_key).unwrap(),
-            header_value
-        );
-        // Original rama extension
-        assert_eq!(
-            *rama_request
-                .extensions()
-                .get_ref::<ConversionTraceLabel>()
-                .unwrap(),
-            extension
-        );
-        // Hyper extension
-        let hyper_wrapper_extensions = rama_request
-            .extensions()
-            .get_ref::<HyperExtensions>()
-            .unwrap();
-        assert_eq!(*hyper_wrapper_extensions.0.get::<usize>().unwrap(), 4);
-        // Rama extension inserted into hyper request
-        assert_eq!(
-            *rama_request
-                .extensions()
-                .get_ref::<HyperBoolFlag>()
-                .unwrap(),
-            HyperBoolFlag(true)
-        );
+        for (request, expected_uri_str) in [
+            (Request::builder().uri("/foo").body(()).unwrap(), "/foo"),
+            (
+                Request::builder()
+                    .uri("/foo")
+                    .header(HOST, "example.com")
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("/foo")
+                    .extension(Forwarded::new(ForwardedElement::new_forwarded_host(
+                        Domain::from_static("example.com"),
+                    )))
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("http://example.com/foo")
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("https://example.com/foo")
+                    .body(())
+                    .unwrap(),
+                "https://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri(Uri::parse_authority_form("WwW.ExamplE.COM").unwrap())
+                    .body(())
+                    .unwrap(),
+                // native Uri preserves the empty path (no forced trailing `/`)
+                "http://WwW.ExamplE.COM",
+            ),
+        ] {
+            let s = request.request_uri().to_string();
+            assert_eq!(s, expected_uri_str, "request: {request:?}");
+        }
     }
 }

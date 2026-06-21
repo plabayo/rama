@@ -14,12 +14,14 @@ use crate::{Method, Uri, Version, request};
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
-use rama_net::http::{RequestContext, try_request_ctx_from_http_parts};
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use rama_net::user::ProxyCredential;
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
-pub fn cmd_string_for_request_parts(parts: &impl HttpRequestParts) -> String {
+pub fn cmd_string_for_request_parts(
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
+) -> String {
     let mut cmd = "curl".to_owned();
     write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
@@ -33,7 +35,9 @@ pub fn cmd_string_for_request_parts_and_payload(parts: &request::Parts, payload:
 }
 
 /// Create a `curl` [`Command`] for the given [`HttpRequestParts`].
-pub fn cmd_for_request_parts(parts: &impl HttpRequestParts) -> Command {
+pub fn cmd_for_request_parts(
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
+) -> Command {
     let mut cmd = Command::new("curl");
     write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
@@ -145,43 +149,25 @@ fn write_shell_single_quoted(out: &mut String, value: impl fmt::Display) {
 
 fn write_curl_command_for_request_parts(
     writer: &mut impl CurlCommandWriter,
-    parts: &impl HttpRequestParts,
+    parts: &(impl HttpRequestParts + AuthorityInputExt + ProtocolInputExt),
     payload: Option<&Bytes>,
 ) {
-    let mut uri_parts = parts.uri().clone().into_parts();
-    if let Some((authority, protocol)) = parts
-        .extensions()
-        .get_ref::<RequestContext>()
-        .map(|rc| {
-            (
-                if rc.authority_has_default_port() {
-                    rc.authority.host.to_string()
-                } else {
-                    rc.authority.to_string()
-                },
-                rc.protocol.clone(),
-            )
-        })
-        .or_else(|| {
-            try_request_ctx_from_http_parts(parts).ok().map(|rc| {
-                (
-                    if rc.authority_has_default_port() {
-                        rc.authority.host.to_string()
-                    } else {
-                        rc.authority.to_string()
-                    },
-                    rc.protocol,
-                )
-            })
-        })
-        .and_then(|(authority, protocol)| authority.parse().ok().map(|auth| (auth, protocol)))
+    let mut uri = parts.uri().clone();
+    // Origin-form requests carry only a path; reconstruct the full URL for curl
+    // from the request context's authority (+ scheme). Requests that already
+    // carry an authority (absolute- or authority-form) are rendered as-is.
+    if uri.authority().is_none()
+        && let Some(authority) = parts.authority()
     {
-        uri_parts.authority = Some(authority);
-        if uri_parts.scheme.is_none() {
-            uri_parts.scheme = Some(protocol.as_str().try_into().unwrap_or(crate::Scheme::HTTP));
+        let protocol = parts.protocol();
+        uri.set_authority(authority.without_default_port_for(protocol.as_ref()).into());
+        if uri.scheme().is_none()
+            && let Some(protocol) = protocol
+        {
+            uri.set_scheme(protocol);
         }
     }
-    writer.write_uri(Uri::from_parts(uri_parts).unwrap_or_else(|_| parts.uri().clone()));
+    writer.write_uri(uri);
 
     if parts.headers().contains_key(ACCEPT_ENCODING) {
         writer.write_single("--compressed");
@@ -207,7 +193,6 @@ fn write_curl_command_for_request_parts(
         Version::HTTP_3 => {
             writer.write_single("--http3");
         }
-        _ => (), // ignore
     }
 
     if let Some(proxy_addr) = parts
@@ -537,7 +522,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_no_auth() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -561,7 +546,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_ipv4_preference() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -581,7 +566,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_ipv6_preference() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -601,7 +586,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic_only_username() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -625,7 +610,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_basic() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -649,7 +634,7 @@ mod tests {
     #[test]
     fn test_cmd_string_for_request_with_http_proxy_with_auth_bearer() {
         let (parts, _) = crate::Request::builder()
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();
@@ -674,7 +659,7 @@ mod tests {
     fn test_cmd_string_for_request_with_socks5_proxy() {
         let (parts, _) = crate::Request::builder()
             .version(Version::HTTP_3)
-            .uri("example.com")
+            .uri(Uri::parse_authority_form("example.com").unwrap())
             .body(())
             .unwrap()
             .into_parts();

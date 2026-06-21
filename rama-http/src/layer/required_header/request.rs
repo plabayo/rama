@@ -14,7 +14,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_headers::Host;
-use rama_net::http::RequestContext;
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -144,25 +144,16 @@ where
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx = RequestContext::try_from(&req).context(
-                "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
-            )?;
-            if request_ctx.authority_has_default_port() {
-                let host = request_ctx.authority.host;
-                tracing::trace!(
-                    server.address = %host,
-                    "add missing host from authority as host header",
-                );
-                req.headers_mut().typed_insert(Host::from(host));
-            } else {
-                let authority = request_ctx.authority;
-                tracing::trace!(
-                    server.address = %authority.host,
-                    server.port = authority.port_u16(),
-                    "add missing authority as host header"
-                );
-                req.headers_mut().typed_insert(Host::from(authority));
-            }
+            let authority = req
+                .authority()
+                .context("AddRequiredRequestHeaders: resolve authority")?;
+            let protocol = req.protocol();
+            let authority = authority.without_default_port_for(protocol.as_ref());
+            tracing::trace!(
+                server.address = %authority,
+                "add missing authority as host header",
+            );
+            req.headers_mut().typed_insert(Host::from(authority));
         }
 
         if self.overwrite {

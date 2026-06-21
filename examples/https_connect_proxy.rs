@@ -33,7 +33,7 @@ use rama::{
     Layer, Service,
     graceful::Shutdown,
     http::{
-        Body, Request, Response, StatusCode,
+        Body, BodyLimitLayer, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -44,10 +44,7 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::{
-        proxy::IoForwardService, stream::layer::http::BodyLimitLayer, tls::server::SelfSignedData,
-        user::credentials::basic,
-    },
+    net::{proxy::IoForwardService, tls::server::SelfSignedData, user::credentials::basic},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},

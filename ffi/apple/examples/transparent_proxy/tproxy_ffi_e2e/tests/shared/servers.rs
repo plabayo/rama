@@ -83,8 +83,8 @@ fn http_app(
                     async move {
                         record_http_observation(observations, &req).await;
                         Json(json!({
-                            "path": req.uri().path(),
-                            "query": req.uri().query(),
+                            "path": req.uri().path_or_root(),
+                            "query": req.uri().query().map(|q| q.as_raw_str()),
                             "observed": req.headers().get(OBSERVED_HEADER).is_some(),
                             "version": format!("{:?}", req.version()),
                         }))
@@ -136,7 +136,11 @@ fn http_app(
                         let size_kb = req
                             .uri()
                             .query()
-                            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("kb=")))
+                            .and_then(|q| {
+                                q.as_raw_str()
+                                    .split('&')
+                                    .find_map(|kv| kv.strip_prefix("kb="))
+                            })
                             .and_then(|v| v.parse::<usize>().ok())
                             .unwrap_or(4096)
                             .min(64 * 1024); // cap at 64 MiB to keep test runtime sane
@@ -295,7 +299,7 @@ async fn spawn_https_server_inner(
 
 async fn record_http_observation(observations: SharedObservations, req: &Request) {
     observations.lock().await.push(HttpObservation {
-        uri: req.uri().path().to_owned(),
+        uri: req.uri().path_or_root().to_owned(),
         observed_header: req
             .headers()
             .get(OBSERVED_HEADER)

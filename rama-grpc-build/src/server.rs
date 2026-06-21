@@ -154,7 +154,8 @@ pub(crate) fn generate_internal<T: Service>(
 
                 async fn serve(&self, req: #root_crate_name::codegen::http::Request<B>)
                     -> std::result::Result<Self::Output, Self::Error> {
-                    match req.uri().path() {
+                    let path = req.uri().path_or_root();
+                    match path {
                         #methods
 
                         _ => {

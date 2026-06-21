@@ -9,6 +9,7 @@ use rama_core::bytes::BytesMut;
 use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
+use super::path::{PathMatchOptions, match_prefix_in_body, match_suffix_in_body};
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
 ///
@@ -81,6 +82,129 @@ impl<'a> PathMut<'a> {
     pub fn clear(&mut self) -> &mut Self {
         self.owned.path.clear();
         self
+    }
+
+    /// Ensure the path ends with exactly one trailing `/`: appended when
+    /// missing, left alone when already present. An empty path becomes `/`.
+    pub fn ensure_trailing_slash(&mut self) -> &mut Self {
+        if !self.owned.path.ends_with(b"/") {
+            self.owned.path.extend_from_slice(b"/");
+        }
+        self
+    }
+
+    /// Append multiple `/`-delimited segments at once.
+    ///
+    /// Splits the input on `/` and pushes each piece via
+    /// [`push_segment`](Self::push_segment), so every piece is
+    /// percent-encoded under the path-segment policy (a literal `/`
+    /// inside the input is the separator, not encoded). The normal
+    /// slash-insertion rule applies, so `"a/b"` and `"/a/b"` both append
+    /// `/a/b`, internal `//` collapses to a single separator, and a
+    /// trailing `/` yields a trailing empty segment.
+    ///
+    /// `"/api"` + `push_segments("v2/users")` → `/api/v2/users`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows because percent_encode can't consume its input"
+    )]
+    pub fn push_segments(&mut self, segments: impl IntoUriComponent) -> &mut Self {
+        let bytes = segments.as_uri_component_bytes();
+        for piece in bytes.split(|&b| b == b'/') {
+            self.push_segment(piece);
+        }
+        self
+    }
+
+    /// Remove up to `n` trailing segments, returning the number actually
+    /// removed (fewer than `n` if the path runs out first).
+    ///
+    /// Equivalent to calling [`pop_segment`](Self::pop_segment) `n`
+    /// times, stopping early at an empty path.
+    pub fn pop_segments(&mut self, n: usize) -> usize {
+        let mut removed = 0;
+        while removed < n && self.pop_segment().is_some() {
+            removed += 1;
+        }
+        removed
+    }
+
+    /// Strip a leading `prefix` from the path, re-rooting the remainder with
+    /// a single leading `/`. Matching uses the default [`PathMatchOptions`]
+    /// (segment-boundary, percent-decoded, case-sensitive); see
+    /// [`strip_prefix_with_opts`](Self::strip_prefix_with_opts) to allow
+    /// partial / raw / case-insensitive matching.
+    ///
+    /// Returns `true` when the prefix matched and was removed; otherwise the
+    /// path is left unchanged and `false` is returned.
+    pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
+        self.strip_prefix_with_opts(prefix, PathMatchOptions::default())
+    }
+
+    /// [`strip_prefix`](Self::strip_prefix) with explicit [`PathMatchOptions`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
+    )]
+    pub fn strip_prefix_with_opts(
+        &mut self,
+        prefix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let prefix = prefix.as_uri_component_bytes();
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let body = path.strip_prefix(b"/").unwrap_or(path);
+            let Some(offset) = match_prefix_in_body(body, &prefix, opts) else {
+                return false;
+            };
+            let mut rest = &body[offset..];
+            while let Some(stripped) = rest.strip_prefix(b"/") {
+                rest = stripped;
+            }
+            let mut new = BytesMut::with_capacity(rest.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(rest);
+            new
+        };
+        self.owned.path = new;
+        true
+    }
+
+    /// Strip a trailing `suffix` from the path, keeping a single leading `/`.
+    /// Matching uses the default [`PathMatchOptions`]; see
+    /// [`strip_suffix_with_opts`](Self::strip_suffix_with_opts) for the rest.
+    ///
+    /// Returns `true` when the suffix matched and was removed.
+    pub fn strip_suffix(&mut self, suffix: impl IntoUriComponent) -> bool {
+        self.strip_suffix_with_opts(suffix, PathMatchOptions::default())
+    }
+
+    /// [`strip_suffix`](Self::strip_suffix) with explicit [`PathMatchOptions`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows the input"
+    )]
+    pub fn strip_suffix_with_opts(
+        &mut self,
+        suffix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let suffix = suffix.as_uri_component_bytes();
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let body = path.strip_prefix(b"/").unwrap_or(path);
+            let Some(keep) = match_suffix_in_body(body, &suffix, opts) else {
+                return false;
+            };
+            let kept = &body[..keep];
+            let mut new = BytesMut::with_capacity(kept.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(kept);
+            new
+        };
+        self.owned.path = new;
+        true
     }
 }
 

@@ -1,7 +1,7 @@
 //! [🚀 Datastar](https://data-star.dev/) support extractor for rama.
 
 use crate::service::web::{
-    extract::{FromRequest, OptionalFromRequest, Query},
+    extract::{FromRequest, OptionalFromRequest},
     response::IntoResponse,
 };
 use rama_core::telemetry::tracing;
@@ -26,11 +26,14 @@ where
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         let json = match *req.method() {
             Method::GET => {
-                let query =
-                    Query::<DatastarParam>::parse_query_str(req.uri().query().unwrap_or(""))
-                        .map_err(IntoResponse::into_response)?;
+                let param = req.uri().query_params::<DatastarParam>().map_err(|err| {
+                    tracing::debug!(
+                        "failed to parse datastar query params from GET request: {err:?}"
+                    );
+                    (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+                })?;
 
-                let signals = query.0.datastar.as_str().ok_or_else(|| {
+                let signals = param.datastar.as_str().ok_or_else(|| {
                     tracing::debug!("failed to get datastar query value from GET request");
                     (StatusCode::BAD_REQUEST, "Failed to parse JSON").into_response()
                 })?;

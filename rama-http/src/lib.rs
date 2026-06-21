@@ -18,10 +18,10 @@
 
 #[doc(inline)]
 pub use ::rama_http_types::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, HeaderMap, HeaderName,
-    HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult, Scheme,
-    StatusCode, StreamingBody, Uri, Version, conn, header, method, mime, opentelemetry, proto,
-    request, response, sse, status, uri, version,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, BodyLimitLayer, BodyLimitService,
+    Error as HttpError, HeaderMap, HeaderName, HeaderValue, InfiniteReader, Method, Request,
+    Response, Result as HttpResult, StatusCode, StreamingBody, Uri, Version, conn, fingerprint,
+    header, method, mime, opentelemetry, proto, request, response, sse, status, uri, version,
 };
 
 #[doc(inline)]

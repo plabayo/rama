@@ -1,45 +1,36 @@
+//! HTTP URI types — re-exported from the native [`rama_net::uri`] implementation.
+//!
+//! `rama_http_types::Uri` IS `rama_net::uri::Uri`: a single, RFC-3986-complete
+//! URI type shared across the whole stack, replacing the previous `http` crate
+//! re-export.
+
+use rama_core::error::BoxError;
 use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext as _};
-use rama_utils::str::{smol_str::format_smolstr, starts_with_ignore_ascii_case};
 
-pub use crate::dep::hyperium::http::uri::*;
+#[doc(inline)]
+pub use rama_net::uri::*;
 
+/// Strip `prefix` from the path of `uri`, returning a new [`Uri`] with the
+/// prefix removed (re-rooted at `/`). Matching is ASCII-case-insensitive on the
+/// raw path bytes, mirroring nested-router prefix stripping.
+///
+/// Returns an error when the path does not start with `prefix`.
 pub fn try_to_strip_path_prefix_from_uri(
     uri: &Uri,
     prefix: impl AsRef<str>,
 ) -> Result<Uri, BoxError> {
-    let prefix = prefix.as_ref().trim_matches('/');
-    let og_path = uri.path().trim_start_matches('/');
-
-    if !starts_with_ignore_ascii_case(og_path, prefix) {
-        return Err(BoxError::from_static_str(
+    let mut uri = uri.clone();
+    let opts = PathMatchOptions {
+        ignore_ascii_case: true,
+        ..Default::default()
+    };
+    if uri.path_mut().strip_prefix_with_opts(prefix.as_ref(), opts) {
+        Ok(uri)
+    } else {
+        Err(BoxError::from_static_str(
             "URI's path does NOT contain prefix",
-        ));
+        ))
     }
-
-    // Bounds: the `starts_with_ignore_ascii_case` check above guarantees
-    // `og_path.len() >= prefix.len()`, so this slice cannot panic.
-    let stripped_path = std::str::from_utf8(&og_path.as_bytes()[prefix.len()..])
-        .context("interpret stripped path as utf-8 slice")?
-        .trim_start_matches('/');
-
-    let mut uri_parts = uri.clone().into_parts();
-
-    uri_parts.path_and_query = Some(
-        if let Some(query) = uri_parts
-            .path_and_query
-            .as_ref()
-            .and_then(|paq| paq.query())
-        {
-            format_smolstr!("/{stripped_path}?{query}")
-        } else {
-            format_smolstr!("/{stripped_path}")
-        }
-        .parse()
-        .context("parse raw str as path and query (containing stripped path)")?,
-    );
-
-    Uri::from_parts(uri_parts).context("re-create uri with stripped path from mod parts")
 }
 
 #[cfg(test)]
@@ -85,11 +76,9 @@ mod tests {
                 Some("https://example.com/BAR"),
             ),
             ("https://example.com/foo/bar", "bar", None),
-            (
-                "https://example.com/foo/bar",
-                "foo/b",
-                Some("https://example.com/ar"),
-            ),
+            // mid-segment prefix is rejected: matching is segment-boundary by
+            // default (`foo/b` is not a `/`-aligned prefix of `/foo/bar`).
+            ("https://example.com/foo/bar", "foo/b", None),
         ] {
             let input_uri: Uri = input_uri_str.parse().unwrap();
             match (
@@ -98,9 +87,8 @@ mod tests {
             ) {
                 (Err(_), None) => (),
                 (Ok(mod_uri), Some(expected_output_uri_str)) => {
-                    let mod_uri_str = mod_uri.to_string();
                     assert_eq!(
-                        mod_uri_str,
+                        mod_uri.to_string(),
                         expected_output_uri_str,
                         "input: {:?}",
                         (input_uri_str, prefix, maybe_output_uri_str)

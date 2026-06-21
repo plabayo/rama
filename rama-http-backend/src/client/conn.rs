@@ -171,7 +171,7 @@ where
     let server_address: Cow<'_, str> = req
         .uri()
         .host()
-        .map(Into::into)
+        .map(|h| h.to_str())
         .or_else(|| {
             req.headers()
                 .get(HOST)
@@ -182,7 +182,7 @@ where
 
     match req.version() {
         Version::HTTP_2 => {
-            tracing::trace!(url.full = %req.uri(), "create h2 client executor");
+            tracing::trace!(url.full = %req.request_uri(), "create h2 client executor");
 
             let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());
 
@@ -199,10 +199,10 @@ where
                 "h2::conn::serve",
                 otel.kind = "client",
                 http.request.method = %req.method().as_str(),
-                url.full = %req.uri(),
-                url.path = %req.uri().path(),
-                url.query = req.uri().query().unwrap_or_default(),
-                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                url.full = %req.request_uri(),
+                url.path = %req.uri().path_or_root(),
+                url.query = req.uri().query_or_empty(),
+                url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                 network.protocol.name = "http",
                 network.protocol.version = version_as_protocol_version(req.version()),
                 user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
@@ -230,7 +230,7 @@ where
             })
         }
         Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-            tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
+            tracing::trace!(url.full = %req.request_uri(), "create ~h1 client executor");
             let mut builder = rama_http_core::client::conn::http1::Builder::new();
             if let Some(params) = req.extensions().get_ref::<Http1ClientContextParams>() {
                 builder.set_title_case_headers(params.title_header_case);
@@ -242,10 +242,10 @@ where
                 "h1::conn::serve",
                 otel.kind = "client",
                 http.request.method = %req.method().as_str(),
-                url.full = %req.uri(),
-                url.path = %req.uri().path(),
-                url.query = req.uri().query().unwrap_or_default(),
-                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                url.full = %req.request_uri(),
+                url.path = %req.uri().path_or_root(),
+                url.query = req.uri().query_or_empty(),
+                url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                 network.protocol.name = "http",
                 network.protocol.version = version_as_protocol_version(req.version()),
                 user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),

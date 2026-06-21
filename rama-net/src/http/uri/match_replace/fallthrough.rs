@@ -1,5 +1,5 @@
 use crate::http::uri::{UriMatchError, UriMatchReplace};
-use rama_http_types::Uri;
+use crate::uri::Uri;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::borrow::Cow;
 
@@ -103,19 +103,19 @@ mod tests {
         let uri = UriMatchReplaceFallthrough(input.as_slice())
             .match_replace_uri(Cow::Owned(Uri::from_static("http://example.com")))
             .unwrap();
-        assert_eq!("baz://example.com/", uri.to_string());
+        assert_eq!("baz://example.com", uri.to_string());
 
         // vec
         let uri = UriMatchReplaceFallthrough(input.to_vec())
             .match_replace_uri(Cow::Owned(Uri::from_static("http://example.com")))
             .unwrap();
-        assert_eq!("baz://example.com/", uri.to_string());
+        assert_eq!("baz://example.com", uri.to_string());
 
         // arr
         let uri = UriMatchReplaceFallthrough(input.clone())
             .match_replace_uri(Cow::Owned(Uri::from_static("http://example.com")))
             .unwrap();
-        assert_eq!("baz://example.com/", uri.to_string());
+        assert_eq!("baz://example.com", uri.to_string());
 
         // 1 no-error test w/ arr
         match input.match_replace_uri(Cow::Owned(Uri::from_static("gopher://example.com"))) {
@@ -138,7 +138,7 @@ mod tests {
         let uri = UriMatchReplaceFallthrough(input.clone())
             .match_replace_uri(Cow::Owned(Uri::from_static("http://example.com")))
             .unwrap();
-        assert_eq!("baz://example.com/", uri.to_string());
+        assert_eq!("baz://example.com", uri.to_string());
 
         // 1 no-error test w/ arr
         match input.match_replace_uri(Cow::Owned(Uri::from_static("gopher://example.com"))) {

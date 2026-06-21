@@ -2,7 +2,7 @@ use crate::Request;
 use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::telemetry::tracing::{self, Level, Span};
-use rama_net::http::RequestContext;
+use rama_net::{Protocol, ProtocolInputExt, TransportAddressInputExt};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 use super::DEFAULT_MESSAGE_LEVEL;
@@ -97,23 +97,21 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
         // to ensure that we always log authority even if not included in full protocol
         // TODO: in near future this will be slightly more elegant with input extensions,
         // it is blocking on the url rework that has to be done first
-        let req_ctx = RequestContext::try_from(request);
-        let (found_domain, found_port, found_scheme) = match &req_ctx {
-            Ok(req_ctx) => {
-                // according to OTEL spec domain can be domain or IP, so host is fine
-                let authority = req_ctx.host_with_port();
-                let scheme = req_ctx.protocol.as_str();
-
-                (Some(authority.host), Some(authority.port), Some(scheme))
-            }
-            Err(err) => {
-                tracing::debug!("error extracting request context: {err:?}");
+        let protocol = request.protocol().unwrap_or(Protocol::HTTP);
+        // according to OTEL spec domain can be domain or IP, so host is fine
+        let (found_domain, found_port, found_scheme) =
+            if let Some(hwp) = request.host_with_port_or(Protocol::HTTP_DEFAULT_PORT) {
+                (Some(hwp.host), Some(hwp.port), Some(protocol.as_str()))
+            } else {
+                tracing::debug!("no authority could be resolved for request");
                 (None, None, None)
-            }
-        };
+            };
 
         let found_domain_cow_str = found_domain.as_ref().map(|d| d.to_str());
         let found_domain_str = found_domain_cow_str.as_deref();
+
+        let url_path = request.uri().path_or_root();
+        let url_query = request.uri().query_or_empty();
 
         // This ugly macro is needed, unfortunately, because `tracing::span!`
         // required the level argument to be static. Meaning we can't just pass
@@ -126,11 +124,11 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         "request",
                         otel.name = self.otel_name.as_str(),
                         http.request.method = %request.method(),
-                        url.full = %request.uri(),
+                        url.full = %request.request_uri(),
                         url.domain = found_domain_str,
                         url.port = found_port,
-                        url.path = request.uri().path(),
-                        url.query = request.uri().query(),
+                        url.path = url_path,
+                        url.query = url_query,
                         url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),
@@ -143,11 +141,11 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                         "request",
                         otel.name = self.otel_name.as_str(),
                         http.request.method = %request.method(),
-                        url.full = %request.uri(),
+                        url.full = %request.request_uri(),
                         url.domain = found_domain_str,
                         url.port = found_port,
-                        url.path = request.uri().path(),
-                        url.query = request.uri().query(),
+                        url.path = url_path,
+                        url.query = url_query,
                         url.scheme = found_scheme,
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(request.version()),

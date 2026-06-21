@@ -21,7 +21,7 @@ use rama_core::telemetry::opentelemetry::{
     semantic_conventions,
 };
 use rama_core::{Layer, Service};
-use rama_net::http::RequestContext;
+use rama_net::{AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::atomic::{self, AtomicUsize};
 use std::{borrow::Cow, fmt, sync::Arc};
@@ -206,7 +206,7 @@ impl<S, F: Clone> Layer<S> for RequestMetricsLayer<F> {
     }
 }
 
-/// A [`Service`] that records [http] server metrics using OpenTelemetry.
+/// A [`Service`] that records HTTP server metrics using OpenTelemetry.
 #[derive(Debug, Clone)]
 pub struct RequestMetricsService<S, F = ()> {
     inner: S,
@@ -235,8 +235,11 @@ impl<S, F> RequestMetricsService<S, F> {
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
-        let request_ctx = RequestContext::try_from(req).ok();
-        if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
+        let authority = req.authority();
+        let protocol = req.protocol();
+        let http_version = req.http_version();
+
+        if let Some(authority) = authority.as_ref() {
             attributes.push(KeyValue::new(HTTP_REQUEST_HOST, authority.host.to_string()));
             if let Some(port) = authority.port.as_u16() {
                 attributes.push(KeyValue::new(SERVER_PORT, port as i64));
@@ -244,18 +247,17 @@ impl<S, F> RequestMetricsService<S, F> {
         }
 
         // Request Info
-        if let Some(protocol) = request_ctx.as_ref().map(|rc| &rc.protocol) {
+        if let Some(protocol) = protocol.as_ref() {
             attributes.push(KeyValue::new(URL_SCHEME, protocol.to_string()));
         }
 
         attributes.push(KeyValue::new(HTTP_REQUEST_METHOD, req.method().to_string()));
-        if let Some(http_version) = request_ctx.as_ref().and_then(|rc| match rc.http_version {
-            rama_http_types::Version::HTTP_09 => Some("0.9"),
-            rama_http_types::Version::HTTP_10 => Some("1.0"),
-            rama_http_types::Version::HTTP_11 => Some("1.1"),
-            rama_http_types::Version::HTTP_2 => Some("2"),
-            rama_http_types::Version::HTTP_3 => Some("3"),
-            _ => None,
+        if let Some(http_version) = http_version.map(|v| match v {
+            rama_http_types::Version::HTTP_09 => "0.9",
+            rama_http_types::Version::HTTP_10 => "1.0",
+            rama_http_types::Version::HTTP_11 => "1.1",
+            rama_http_types::Version::HTTP_2 => "2",
+            rama_http_types::Version::HTTP_3 => "3",
         }) {
             attributes.push(KeyValue::new(NETWORK_PROTOCOL_VERSION, http_version));
         }

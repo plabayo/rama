@@ -54,6 +54,8 @@ pub mod conversion;
 pub mod svc_input;
 pub use svc_input::ServiceInput;
 
+mod byte_str;
+
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.
     //!
@@ -61,6 +63,9 @@ pub mod bytes {
 
     #[doc(inline)]
     pub use ::bytes::*;
+
+    #[doc(inline)]
+    pub use crate::byte_str::ByteStr;
 }
 
 pub mod futures;

@@ -12,10 +12,11 @@ use crate::{
     error::{BoxError, BoxErrorExt, ErrorContext},
     extensions::ExtensionsRef,
     http::{
-        Request, Response, Version,
+        BodyLimitLayer, Request, Response, Version,
         body::util::BodyExt,
         convert::curl,
         core::h2::frame::EarlyFrameCapture,
+        fingerprint::{AkamaiH2, Ja4H},
         header::USER_AGENT,
         headers::exotic::XClacksOverhead,
         layer::set_header::SetResponseHeaderLayer,
@@ -32,10 +33,9 @@ use crate::{
     layer::limit::policy::UnlimitedPolicy,
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::address::ip::geo::IpGeoDb,
-    net::fingerprint::{AkamaiH2, Ja4H},
     net::forwarded::Forwarded,
-    net::http::RequestContext,
-    net::stream::{SocketInfo, layer::http::BodyLimitLayer},
+    net::stream::SocketInfo,
+    net::{AuthorityInputExt, Protocol, ProtocolInputExt},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::TcpStream,
@@ -398,10 +398,11 @@ impl Service<Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context = RequestContext::try_from(&req)?;
-
-        let authority = request_context.authority.to_string();
-        let scheme = request_context.protocol.to_string();
+        let authority = req
+            .authority()
+            .context("echo: resolve request authority")?
+            .to_string();
+        let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
 
         let ua_str = req
             .headers()
@@ -757,8 +758,8 @@ impl Service<Request> for EchoService {
                 "scheme": scheme,
                 "method": format!("{:?}", parts.method),
                 "authority": authority,
-                "path": parts.uri.path().to_owned(),
-                "query": parts.uri.query().map(str::to_owned),
+                "path": parts.uri.path_or_root().to_owned(),
+                "query": parts.uri.query().map(|q| q.as_raw_str().to_owned()),
                 "h2": h2,
                 "headers": headers,
                 "payload": body,

@@ -7,10 +7,9 @@ use crate::{
     },
     io::Io,
     net::{
-        Protocol,
+        AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
-        transport::TryRefIntoTransportContext,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
     telemetry::tracing,
@@ -79,10 +78,7 @@ impl<S: Clone> ProxyConnector<S> {
 impl<Input, S> Service<Input> for ProxyConnector<S>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + Send
-        + ExtensionsRef
-        + 'static,
+    Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;

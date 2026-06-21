@@ -72,10 +72,6 @@ where
             Ok(res)
         }
 
-        Ok(OpenFileOutput::InvalidRedirectUri) => {
-            Ok(response_with_status(StatusCode::INTERNAL_SERVER_ERROR))
-        }
-
         Err(err) => {
             #[cfg(target_family = "unix")]
             // 20 = libc::ENOTDIR => "not a directory

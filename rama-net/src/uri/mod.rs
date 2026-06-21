@@ -78,7 +78,7 @@ pub use input::IntoUriInput;
 
 mod path;
 #[doc(inline)]
-pub use path::{PathRef, PathSegment, PathSegments};
+pub use path::{PathMatchOptions, PathRef, PathSegment, PathSegments};
 
 mod path_mut;
 #[doc(inline)]
@@ -110,7 +110,7 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
-use lazy::LazyUriRef;
+use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
 
@@ -288,6 +288,70 @@ impl Uri {
         parser::parse_authority_form(input::into_uri_input(input), ParserMode::Strict)
     }
 
+    /// Build an HTTP **authority-form** URI (`[userinfo@]host[:port]`, the
+    /// CONNECT request-target shape) directly from an already-parsed
+    /// [`Authority`](crate::address::Authority).
+    ///
+    /// Unlike [`parse_authority_form`](Self::parse_authority_form) this skips
+    /// re-parsing and re-validating a `host:port` string: the host/port are
+    /// moved in as values and only the canonical bytes are rendered (needed for
+    /// the lazy representation). Use it whenever you already hold an
+    /// [`Authority`](crate::address::Authority) instead of round-tripping
+    /// through `Authority::to_string()` + `parse_authority_form`.
+    #[must_use]
+    pub fn from_authority_form(authority: crate::address::Authority) -> Self {
+        use std::fmt::Write as _;
+
+        let crate::address::Authority { user_info, address } = authority;
+
+        // Render the canonical authority bytes once, tracking the userinfo span
+        // as we write it — the lazy form needs the raw bytes, but the host/port
+        // are carried as already-parsed values so nothing is re-scanned.
+        let mut s = String::new();
+        let userinfo_range = match &user_info {
+            Some(ui) => {
+                _ = write!(s, "{ui}");
+                let end = u16::try_from(s.len()).unwrap_or(u16::MAX);
+                s.push('@');
+                Some((0, end))
+            }
+            None => None,
+        };
+        _ = write!(s, "{address}");
+        let crate::address::HostWithOptPort { host, port } = address;
+
+        let bytes = rama_core::bytes::Bytes::from(s);
+        // Empty path anchored at the end, matching `parse_authority_form`.
+        let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+
+        Self::from_lazy(LazyUriRef {
+            scheme: None,
+            authority: Some(LazyAuthority {
+                userinfo_range,
+                host,
+                port,
+            }),
+            path: (len, len),
+            query: None,
+            fragment: None,
+            bytes,
+        })
+    }
+
+    /// Project this URI to HTTP **authority-form** (`[userinfo@]host[:port]`),
+    /// the CONNECT request-target shape — keeping only the authority and
+    /// dropping the scheme, path, query and fragment.
+    ///
+    /// Returns `None` when there is no authority component (e.g. an
+    /// origin-form `/path` or the asterisk-form `*`). This is the companion
+    /// to [`parse_authority_form`](Self::parse_authority_form) for an
+    /// already-parsed URI, so callers need not round-trip through a manual
+    /// `host:port` string.
+    #[must_use]
+    pub fn as_authority_form(&self) -> Option<Self> {
+        Some(Self::from_authority_form(self.authority()?.into_owned()))
+    }
+
     /// View this [`Uri`] as a str.
     ///
     /// This method may allocate, and can also contain
@@ -307,6 +371,26 @@ impl Uri {
                 Cow::Borrowed(s)
             }
             UriInner::Owned(_) => Cow::Owned(self.to_string()),
+        }
+    }
+
+    /// Append this URI's canonical wire bytes to `buf`, without going
+    /// through [`std::fmt`].
+    ///
+    /// Parsed (lazy) and asterisk URIs copy their stored bytes in directly
+    /// (no re-render); the mutated (owned) form — rare on an encode path,
+    /// which normally carries a parsed request-target — falls back to
+    /// [`Display`](std::fmt::Display).
+    ///
+    /// This writes the wire-faithful **full** form (matching `Display`),
+    /// so it does not strip userinfo/fragment. To project a richer URI to
+    /// a specific HTTP request-target form, use the dedicated
+    /// [`write_http_origin_form`](Self::write_http_origin_form) family.
+    pub fn encode_to(&self, buf: &mut Vec<u8>) {
+        match &self.inner {
+            UriInner::Asterisk => buf.push(b'*'),
+            UriInner::Lazy(lazy) => buf.extend_from_slice(&lazy.bytes),
+            UriInner::Owned(_) => buf.extend_from_slice(self.to_string().as_bytes()),
         }
     }
 
@@ -500,6 +584,126 @@ impl Uri {
                 ))
             }
         }
+    }
+
+    /// The raw path as a `&str`, defaulting to `"/"` when the path is
+    /// absent or empty (the effective origin-form path). Shortcut for
+    /// `uri.path().map(|p| p.as_raw_str()).filter(|p| !p.is_empty()).unwrap_or("/")`.
+    #[must_use]
+    pub fn path_or_root(&self) -> &str {
+        match self.path() {
+            Some(p) if !p.as_raw_str().is_empty() => p.as_raw_str(),
+            _ => "/",
+        }
+    }
+
+    /// The raw query as a `&str`, defaulting to `""` when absent. Shortcut
+    /// for `uri.query().map(|q| q.as_raw_str()).unwrap_or_default()`.
+    #[must_use]
+    pub fn query_or_empty(&self) -> &str {
+        self.query().map_or("", |q| q.as_raw_str())
+    }
+
+    /// The scheme as a `&str`, or `None`. Shortcut for
+    /// `uri.scheme().map(|p| p.as_str())`.
+    #[must_use]
+    pub fn scheme_str(&self) -> Option<&str> {
+        self.scheme().map(crate::Protocol::as_str)
+    }
+
+    /// The host rendered as a string, or `None`. Shortcut for
+    /// `uri.host().map(|h| h.to_str())`.
+    #[must_use]
+    pub fn host_str(&self) -> Option<Cow<'_, str>> {
+        self.host().map(|h| h.to_str())
+    }
+
+    /// The HTTP origin-form request-target: [`path_or_root`](Self::path_or_root)
+    /// followed by `?` + query when a query is present. Borrows when there
+    /// is no query (zero-alloc), otherwise allocates the joined string.
+    #[must_use]
+    pub fn request_target(&self) -> Cow<'_, str> {
+        // OPTIONS `*` is its own request-target form (not origin-form); without
+        // this, `path_or_root()` would render it as `/`.
+        if self.is_asterisk() {
+            return Cow::Borrowed("*");
+        }
+        match self.query() {
+            Some(q) => Cow::Owned(format!("{}?{}", self.path_or_root(), q.as_raw_str())),
+            None => Cow::Borrowed(self.path_or_root()),
+        }
+    }
+
+    /// `true` when the path begins with `prefix` — matched at `/` segment
+    /// boundaries with percent-decoded comparison (default [`PathMatchOptions`]).
+    /// See [`has_path_prefix_with_opts`](Self::has_path_prefix_with_opts) for
+    /// partial / raw / case-insensitive matching, and [`PathMut::strip_prefix`]
+    /// to remove it.
+    #[must_use]
+    pub fn has_path_prefix(&self, prefix: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.has_prefix(prefix))
+    }
+
+    /// [`has_path_prefix`](Self::has_path_prefix) with explicit [`PathMatchOptions`].
+    #[must_use]
+    pub fn has_path_prefix_with_opts(
+        &self,
+        prefix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.has_prefix_with_opts(prefix, opts))
+    }
+
+    /// `true` when the path ends with `suffix` — matched at `/` segment
+    /// boundaries with percent-decoded comparison (default [`PathMatchOptions`]).
+    #[must_use]
+    pub fn has_path_suffix(&self, suffix: impl IntoUriComponent) -> bool {
+        self.path().is_some_and(|p| p.has_suffix(suffix))
+    }
+
+    /// [`has_path_suffix`](Self::has_path_suffix) with explicit [`PathMatchOptions`].
+    #[must_use]
+    pub fn has_path_suffix_with_opts(
+        &self,
+        suffix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        self.path()
+            .is_some_and(|p| p.has_suffix_with_opts(suffix, opts))
+    }
+
+    /// The `n`-th path segment (0-indexed, `/`-delimited, leading `/`
+    /// ignored), or `None`. Shortcut for `uri.path()?.segments().nth(n)`.
+    #[must_use]
+    pub fn path_segment(&self, n: usize) -> Option<PathSegment<'_>> {
+        self.path().and_then(|p| p.segments().nth(n))
+    }
+
+    /// The first segment Shortcut for `uri.path_segment(0)`.
+    #[must_use]
+    #[inline(always)]
+    pub fn first_path_segment(&self) -> Option<PathSegment<'_>> {
+        self.path_segment(0)
+    }
+
+    /// Deserialize the query string into `T` via `serde` (an absent query
+    /// deserializes as empty). Shortcut over [`Uri::query`] +
+    /// [`QueryRef::deserialize`].
+    pub fn query_params<'de, T>(&'de self) -> Result<T, QueryDeserializeError>
+    where
+        T: serde::de::Deserialize<'de>,
+    {
+        let query = self.query().unwrap_or_else(|| QueryRef::new(b""));
+        query.deserialize()
+    }
+
+    /// Ensure the path ends with exactly one trailing `/` (appended when
+    /// missing; an empty path becomes `/`). Scheme, authority and query
+    /// are preserved.
+    pub fn ensure_path_trailing_slash(&mut self) -> &mut Self {
+        self.path_mut().ensure_trailing_slash();
+        self
     }
 
     /// Internal constructor for the asterisk variant.
@@ -1191,6 +1395,32 @@ impl PartialEq for Uri {
 
 impl Eq for Uri {}
 
+/// `Uri::default()` is the implicit origin-form `/`, matching `http::Uri`.
+impl Default for Uri {
+    fn default() -> Self {
+        Self::from_static("/")
+    }
+}
+
+// String equality compares the canonical (`Display`/`as_str`) form. A native
+// `Uri` round-trips its source faithfully, so this is a plain string compare
+// (allocation-free on the borrowed path).
+impl PartialEq<str> for Uri {
+    fn eq(&self, other: &str) -> bool {
+        *self.as_str() == *other
+    }
+}
+impl PartialEq<&str> for Uri {
+    fn eq(&self, other: &&str) -> bool {
+        *self.as_str() == **other
+    }
+}
+impl PartialEq<String> for Uri {
+    fn eq(&self, other: &String) -> bool {
+        *self.as_str() == **other
+    }
+}
+
 impl Ord for Uri {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
@@ -1410,5 +1640,99 @@ impl Uri {
             fragment: self.fragment(),
             is_asterisk: self.is_asterisk(),
         }
+    }
+}
+
+#[cfg(test)]
+mod request_target_fix_tests {
+    use super::*;
+
+    #[test]
+    fn asterisk_request_target_is_star_not_root() {
+        let uri = Uri::parse("*").unwrap();
+        assert!(uri.is_asterisk());
+        assert_eq!(uri.request_target(), "*");
+    }
+
+    #[test]
+    fn origin_form_request_target_unchanged() {
+        assert_eq!(Uri::parse("/a?b=c").unwrap().request_target(), "/a?b=c");
+        assert_eq!(Uri::parse("/a").unwrap().request_target(), "/a");
+    }
+}
+
+#[cfg(test)]
+mod from_authority_form_tests {
+    use super::*;
+    use crate::address::Authority;
+
+    /// `from_authority_form(auth)` must produce exactly what
+    /// `parse_authority_form(auth.to_string())` would — same wire form, same
+    /// decomposed components — but without re-parsing.
+    #[test]
+    fn matches_parse_authority_form() {
+        for s in [
+            "example.com:443",
+            "example.com",
+            "user:pass@example.com:8080",
+            "user@host.example",
+            "[::1]:443",
+            "[2001:db8::1]",
+            "127.0.0.1:80",
+        ] {
+            let auth = Authority::try_from(s).unwrap();
+            let canonical = auth.to_string();
+            let from_ctor = Uri::from_authority_form(auth);
+            let from_parse = Uri::parse_authority_form(canonical.as_str()).unwrap();
+
+            assert_eq!(
+                from_ctor.to_string(),
+                from_parse.to_string(),
+                "wire form: {s}"
+            );
+            // authority-form, never network-path — no `//` prefix.
+            assert!(!from_ctor.to_string().starts_with("//"), "no `//`: {s}");
+            assert_eq!(from_ctor.host(), from_parse.host(), "host: {s}");
+            assert_eq!(from_ctor.port(), from_parse.port(), "port: {s}");
+            assert_eq!(
+                from_ctor.userinfo().map(|u| u.to_string()),
+                from_parse.userinfo().map(|u| u.to_string()),
+                "userinfo: {s}"
+            );
+            assert!(from_ctor.scheme().is_none(), "no scheme: {s}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod encode_to_tests {
+    use super::*;
+
+    /// `encode_to` writes the wire-faithful full form, so its output must
+    /// equal `Display` for every URI shape and representation.
+    #[test]
+    fn encode_to_matches_display() {
+        let lazy = [
+            Uri::parse("/path?q=1").unwrap(),
+            Uri::parse("https://user@example.com:8443/a/b?c#frag").unwrap(),
+            Uri::from_authority_form(
+                crate::address::Authority::try_from("example.com:443").unwrap(),
+            ),
+            Uri::parse("*").unwrap(),
+            Uri::from_static("http://example.com/"),
+        ];
+        for uri in lazy {
+            let mut buf = Vec::new();
+            uri.encode_to(&mut buf);
+            assert_eq!(buf, uri.to_string().as_bytes(), "uri: {uri}");
+        }
+
+        // Mutated (Owned) representation still round-trips.
+        let owned = Uri::parse("http://example.com/p?x#f")
+            .unwrap()
+            .with_port(8080u16);
+        let mut buf = Vec::new();
+        owned.encode_to(&mut buf);
+        assert_eq!(buf, owned.to_string().as_bytes());
     }
 }

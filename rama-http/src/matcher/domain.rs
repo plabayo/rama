@@ -1,10 +1,8 @@
 use crate::Request;
 
 use rama_core::{extensions::Extensions, telemetry::tracing};
-use rama_net::{
-    address::{Domain, IntoDomain},
-    http::RequestContext,
-};
+use rama_net::AuthorityInputExt;
+use rama_net::address::{Domain, IntoDomain};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.
@@ -39,16 +37,11 @@ impl DomainMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
     fn matches(&self, _: Option<&Extensions>, req: &Request<Body>) -> bool {
-        let host = {
-            let req_ctx = match RequestContext::try_from(req) {
-                Ok(req_ctx) => req_ctx,
-                Err(err) => {
-                    tracing::error!("DomainMatcher: failed to lazy-make the request ctx: {err:?}");
-                    return false;
-                }
-            };
-            req_ctx.authority.host
+        let Some(authority) = req.authority() else {
+            tracing::error!("DomainMatcher: failed to resolve authority");
+            return false;
         };
+        let host = authority.host;
 
         // IP-first: pct-encoded IP literals (`%31%32%37.0.0.1`) promote
         // to both Domain (the digits-and-dots form passes the shallow
@@ -82,7 +75,7 @@ mod tests {
 
     fn req_with_host(host_header: &str) -> Request<()> {
         // Build with a path-only URI and set the Host header — that's
-        // the lane `RequestContext` uses for authority lookup, and
+        // the lane authority resolution uses for the lookup, and
         // unlike `http::Uri` it accepts pct-encoded reg-names there.
         Request::builder()
             .uri("/")

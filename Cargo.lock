@@ -1788,9 +1788,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.0"
+version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
+checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
 dependencies = [
  "bytes",
  "itoa",
@@ -1804,19 +1804,6 @@ checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
 dependencies = [
  "bytes",
  "http",
-]
-
-[[package]]
-name = "http-body-util"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
-dependencies = [
- "bytes",
- "futures-core",
- "http",
- "http-body",
- "pin-project-lite",
 ]
 
 [[package]]
@@ -3754,7 +3741,6 @@ dependencies = [
  "const_format",
  "csv",
  "flate2",
- "http",
  "http-range-header",
  "httpdate",
  "iri-string",
@@ -3773,6 +3759,7 @@ dependencies = [
  "radix_trie 0.3.0",
  "rama-core",
  "rama-http-headers",
+ "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
  "rama-net",
@@ -3860,6 +3847,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-http-hyperium"
+version = "0.3.0-rc1"
+dependencies = [
+ "http",
+ "http-body",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+]
+
+[[package]]
 name = "rama-http-macros"
 version = "0.3.0-rc1"
 dependencies = [
@@ -3877,11 +3876,12 @@ dependencies = [
  "bytes",
  "const_format",
  "fnv",
+ "futures-core",
+ "futures-util",
  "hex",
- "http",
- "http-body",
- "http-body-util",
+ "itertools 0.14.0",
  "itoa",
+ "md5",
  "memchr",
  "mime",
  "mime_guess",
@@ -3890,10 +3890,12 @@ dependencies = [
  "quickcheck",
  "rama-core",
  "rama-macros",
+ "rama-net",
  "rama-utils",
  "rand 0.10.1",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sync_wrapper",
  "tokio",
 ]
@@ -3940,7 +3942,6 @@ dependencies = [
  "quickcheck_macros",
  "radix_trie 0.3.0",
  "rama-core",
- "rama-http-types",
  "rama-macros",
  "rama-utils",
  "serde",
@@ -4112,7 +4113,11 @@ dependencies = [
 name = "rama-tower"
 version = "0.3.0-rc1"
 dependencies = [
+ "http",
+ "http-body",
  "rama-core",
+ "rama-http-hyperium",
+ "rama-http-types",
  "tokio",
  "tower-layer",
  "tower-service",

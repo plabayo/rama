@@ -18,7 +18,6 @@
 
 pub mod body;
 use rama_core::extensions::Extension;
-use std::sync::Arc;
 
 pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
@@ -26,12 +25,13 @@ pub use body::{
 
 pub mod request;
 pub mod response;
-pub use crate::dep::hyperium::http::method;
-pub use crate::dep::hyperium::http::status;
-pub use crate::dep::hyperium::http::version;
 
-#[doc(inline)]
-pub use crate::dep::hyperium::http::{Error, Result};
+#[macro_use]
+mod convert;
+pub mod method;
+pub mod status;
+
+mod error;
 #[doc(inline)]
 pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
 #[doc(inline)]
@@ -43,18 +43,46 @@ pub use crate::response::Response;
 #[doc(inline)]
 pub use crate::status::StatusCode;
 #[doc(inline)]
-pub use crate::version::Version;
+pub use error::{Error, Result};
+#[doc(inline)]
+pub use rama_net::http::Version;
+
+pub mod version {
+    //! HTTP version type, owned by `rama-net`.
+
+    #[doc(inline)]
+    pub use rama_net::http::Version;
+}
+
+/// Hosts the per-concern `*InputExt` accessor impls for http `Request`/`Parts`.
+mod input_ext;
+
+pub mod fingerprint;
+
+mod body_limit_layer;
+#[doc(inline)]
+pub use body_limit_layer::{BodyLimitLayer, BodyLimitService};
+
+pub mod stream {
+    //! Stream-oriented utilities layered on top of the HTTP request type.
+
+    pub mod matcher;
+}
+
+pub mod client {
+    //! Client-oriented utilities layered on top of the HTTP request type.
+
+    pub mod pool;
+}
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(http))]
 /// Extension type that can be inserted in case a Uri is modified as part of nested routers
-pub struct OriginalRouterUri(pub Arc<Uri>);
+pub struct OriginalRouterUri(pub Uri);
 
 pub mod uri;
 #[doc(inline)]
-pub use uri::{Scheme, Uri, try_to_strip_path_prefix_from_uri};
-
-// TODO: move URI to rama-net :) Somehow...
+pub use uri::{Uri, try_to_strip_path_prefix_from_uri};
 
 pub mod proto;
 
@@ -64,83 +92,7 @@ pub mod conn;
 
 pub mod proxy;
 
-pub mod header {
-    //! HTTP header types
-
-    #[doc(inline)]
-    pub use crate::dep::hyperium::http::header::*;
-
-    macro_rules! static_header {
-        ($($name_bytes:literal),+ $(,)?) => {
-            $(
-                rama_macros::paste! {
-                    #[doc = concat!("header name constant for `", $name_bytes, "`.")]
-                    pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
-                }
-            )+
-        };
-    }
-
-    // non-std conventional
-    static_header![
-        "x-forwarded-host",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "x-robots-tag",
-        "x-clacks-overhead",
-    ];
-
-    // new standard sec-headers
-    static_header!["sec-gpc"];
-
-    // fetch metadata request headers (W3C Fetch Metadata Request Headers)
-    static_header!["sec-fetch-site"];
-
-    // additional W3C / Fetch / HTML standard security headers
-    // not yet covered by hyperium/http's name table
-    static_header![
-        "permissions-policy",
-        "cross-origin-embedder-policy",
-        "cross-origin-embedder-policy-report-only",
-        "cross-origin-opener-policy",
-        "cross-origin-opener-policy-report-only",
-        "cross-origin-resource-policy",
-    ];
-
-    // standard
-    static_header!["keep-alive", "proxy-connection", "last-event-id"];
-
-    // non-std client ip forward headers
-    static_header![
-        "cf-connecting-ip",
-        "true-client-ip",
-        "client-ip",
-        "x-client-ip",
-        "x-real-ip",
-    ];
-
-    // extra access control headers
-    static_header![
-        "access-control-allow-private-network",
-        "access-control-request-private-network",
-    ];
-
-    // client hint headers with typed value parsers in rama-http-headers
-    static_header![
-        "sec-ch-save-data",
-        "sec-ch-ect",
-        "sec-ch-rtt",
-        "sec-ch-downlink",
-    ];
-
-    // client hint negotiation response headers (advertised by servers)
-    static_header!["accept-ch", "critical-ch"];
-
-    /// Static Header Value that is can be used as `User-Agent` or `Server` header.
-    pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
-        const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
-    );
-}
+pub mod header;
 
 pub mod mime {
     //! Re-export of the [`mime`] crate.
@@ -154,46 +106,4 @@ pub mod mime {
 
     #[doc(inline)]
     pub use mime_guess as guess;
-}
-
-pub mod dep {
-    //! Dependencies for rama http modules.
-    //!
-    //! Exported for your convenience.
-
-    pub(crate) mod hyperium {
-        pub(crate) mod http {
-            //! Re-export of the [`http`] crate incase we need to convert.
-            //!
-            //! A general purpose library of common HTTP types.
-            //!
-            //! [`http`]: https://docs.rs/http
-
-            #[doc(inline)]
-            pub use http::*;
-        }
-
-        pub(crate) mod http_body {
-            //! Re-export of the [`http-body`] crate incase we need to convert.
-            //!
-            //! Asynchronous HTTP request or response body
-            //!
-            //! [`http-body`]: https://docs.rs/http-body
-
-            #[doc(inline)]
-            pub use http_body::*;
-        }
-
-        pub(crate) mod http_body_util {
-            //! Re-export of the [`http-body-util`] crate incase we need to convert.
-            //!
-            //! Utilities for working with [`http-body`] types.
-            //!
-            //! [`http-body`]: https://docs.rs/http-body
-            //! [`http-body-util`]: https://docs.rs/http-body-util
-
-            #[doc(inline)]
-            pub use http_body_util::*;
-        }
-    }
 }

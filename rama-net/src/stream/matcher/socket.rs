@@ -2,9 +2,6 @@ use rama_core::extensions::Extensions;
 
 use crate::address::SocketAddress;
 
-#[cfg(feature = "http")]
-use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
-
 #[derive(Debug, Clone)]
 /// Matcher based on the [`SocketAddress`] of the peer.
 pub struct SocketAddressMatcher {
@@ -38,16 +35,6 @@ impl SocketAddressMatcher {
     }
 }
 
-#[cfg(feature = "http")]
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
-    fn matches(&self, _ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        req.extensions()
-            .get_ref::<SocketInfo>()
-            .map(|info| info.peer_addr() == self.addr)
-            .unwrap_or(self.optional)
-    }
-}
-
 impl<Socket> rama_core::matcher::Matcher<Socket> for SocketAddressMatcher
 where
     Socket: crate::stream::Socket,
@@ -60,46 +47,11 @@ where
     }
 }
 
-#[cfg(feature = "http")]
 #[cfg(test)]
 mod test {
-    use rama_core::{extensions::ExtensionsRef, matcher::Matcher};
-    use rama_http_types::Body;
+    use rama_core::matcher::Matcher;
 
     use super::*;
-
-    #[test]
-    fn test_socket_matcher_http() {
-        let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
-
-        let req = Request::builder()
-            .method("GET")
-            .uri("/hello")
-            .body(Body::empty())
-            .unwrap();
-
-        // test #1: no match: test with no socket info registered
-        assert!(!matcher.matches(None, &req));
-
-        // test #2: no match: test with different socket info (port difference)
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
-        assert!(!matcher.matches(None, &req));
-
-        // test #3: no match: test with different socket info (ip addr difference)
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!matcher.matches(None, &req));
-
-        // test #4: match: test with correct address
-        req.extensions()
-            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &req));
-
-        // test #5: match: test with missing socket info, but it's seen as optional
-        let matcher = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
-        assert!(matcher.matches(None, &req));
-    }
 
     #[test]
     fn test_socket_matcher_socket_trait() {

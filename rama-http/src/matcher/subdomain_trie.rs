@@ -1,8 +1,8 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
 use rama_core::{extensions::Extensions, matcher::Matcher};
+use rama_net::AuthorityInputExt;
 use rama_net::address::{AsDomainRef, DomainTrie};
-use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
 /// A matcher that matches subdomains.
@@ -42,25 +42,22 @@ impl SubdomainTrieMatcher {
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
     fn matches(&self, _: Option<&Extensions>, req: &Request<Body>) -> bool {
-        let req_ctx = match RequestContext::try_from(req) {
-            Ok(rc) => rc,
-            Err(err) => {
-                tracing::debug!("SubdomainTrieMatcher: failed to extract request context: {err:?}",);
-                return false;
-            }
+        let Some(authority) = req.authority() else {
+            tracing::debug!("SubdomainTrieMatcher: failed to resolve authority");
+            return false;
         };
 
         // IP-first: pct-encoded IP literals (`%31%32%37.0.0.1`) can
         // promote to both Domain and IpAddr (shallow Domain validator
         // accepts digits-and-dots). The Domain match would be wrong for
         // IP hosts. Filter them out first.
-        if req_ctx.authority.host.try_as_ip().is_ok() {
+        if authority.host.try_as_ip().is_ok() {
             tracing::trace!("SubdomainTrieMatcher: host is an IP — no match");
             return false;
         }
         // Pct-encoded reg-names that decode to a domain participate.
         // Non-promotable hosts (sub-delim, IPvFuture) don't.
-        let Ok(domain) = req_ctx.authority.host.try_as_domain() else {
+        let Ok(domain) = authority.host.try_as_domain() else {
             tracing::trace!("SubdomainTrieMatcher: host is not a domain — no match");
             return false;
         };
@@ -87,6 +84,7 @@ where
 #[cfg(test)]
 mod subdomain_trie_tests {
     use super::*;
+    use crate::Uri;
 
     #[test]
     fn test_trie_matching() {
@@ -107,7 +105,10 @@ mod subdomain_trie_tests {
 
         let path = "sub.example.com";
 
-        let request = Request::builder().uri(path).body(()).unwrap();
+        let request = Request::builder()
+            .uri(Uri::parse_authority_form(path).unwrap())
+            .body(())
+            .unwrap();
         assert!(matcher.matches(None, &request));
     }
 
@@ -118,7 +119,10 @@ mod subdomain_trie_tests {
 
         let path = "nonmatching.com";
 
-        let request = Request::builder().uri(path).body(()).unwrap();
+        let request = Request::builder()
+            .uri(Uri::parse_authority_form(path).unwrap())
+            .body(())
+            .unwrap();
         assert!(!matcher.matches(None, &request));
     }
 

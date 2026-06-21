@@ -19,14 +19,9 @@ where
     if write_headers {
         w.write_all(
             format!(
-                "{} {}{} {:?}\r\n",
+                "{} {} {:?}\r\n",
                 parts.method,
-                parts.uri.path(),
-                parts
-                    .uri
-                    .query()
-                    .map(|q| format!("?{q}"))
-                    .unwrap_or_default(),
+                parts.uri.request_target(),
                 parts.version
             )
             .as_bytes(),
@@ -56,15 +51,21 @@ where
                             format!(
                                 "[{}: {}]\r\n",
                                 header,
-                                parts.uri.authority().map(|a| a.as_str()).unwrap_or("?")
+                                parts
+                                    .uri
+                                    .authority()
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| "?".to_owned())
                             )
                             .as_bytes(),
                         )
                         .await?;
                     }
                     PseudoHeader::Path => {
-                        w.write_all(format!("[{}: {}]\r\n", header, parts.uri.path()).as_bytes())
-                            .await?;
+                        w.write_all(
+                            format!("[{}: {}]\r\n", header, parts.uri.path_or_root()).as_bytes(),
+                        )
+                        .await?;
                     }
                     PseudoHeader::Protocol | PseudoHeader::Status => (), // not expected in request
                 }

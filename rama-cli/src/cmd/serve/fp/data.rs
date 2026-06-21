@@ -10,13 +10,14 @@ use rama::{
     http::{
         self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
+        fingerprint::{AkamaiH2, Ja4H},
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
     },
     net::{
+        AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ip::geo::{IpGeoDb, IpGeoInfo},
-        fingerprint::{AkamaiH2, Ja3, Ja4, Ja4H, PeetPrint},
+        fingerprint::{Ja3, Ja4, PeetPrint},
         forwarded::Forwarded,
-        http::RequestContext,
         stream::SocketInfo,
         tls::{
             SecureTransport,
@@ -180,10 +181,11 @@ pub(super) async fn get_request_info(
     req: &Request,
     geo_db: Option<&IpGeoDb>,
 ) -> Result<RequestInfo, BoxError> {
-    let request_context = RequestContext::try_from(req).context("get or compose RequestContext")?;
-
-    let authority = request_context.authority.to_string();
-    let scheme = request_context.protocol.to_string();
+    let authority = req
+        .authority()
+        .context("get or compose request authority")?
+        .to_string();
+    let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
 
     // The forwarded client IP lives in the request's extensions, which must be
     // read from `req` — `req.into_parts()` yields the http `Parts` whose
@@ -212,7 +214,7 @@ pub(super) async fn get_request_info(
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: req.uri().path().to_owned(),
+        path: req.uri().path_or_root().to_owned(),
         uri: req.uri().to_string(),
         peer_addr: req
             .extensions()

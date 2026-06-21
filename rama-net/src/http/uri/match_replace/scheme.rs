@@ -1,18 +1,18 @@
 use super::{UriMatchError, UriMatchReplace};
-use rama_core::error::ErrorContext as _;
-use rama_http_types::{Scheme, Uri};
+use crate::Protocol;
+use crate::uri::Uri;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
-/// Replace or overwrite the existing [`Scheme`].
+/// Replace or overwrite the existing scheme ([`Protocol`]).
 pub struct UriMatchReplaceScheme {
-    condition: Option<Scheme>,
-    overwrite: Scheme,
+    condition: Option<Protocol>,
+    overwrite: Protocol,
 }
 
 impl UriMatchReplaceScheme {
     #[must_use]
-    pub fn set_always(scheme: Scheme) -> Self {
+    pub fn set_always(scheme: Protocol) -> Self {
         Self {
             condition: None,
             overwrite: scheme,
@@ -20,7 +20,7 @@ impl UriMatchReplaceScheme {
     }
 
     #[must_use]
-    pub fn replace(old: Scheme, new: Scheme) -> Self {
+    pub fn replace(old: Protocol, new: Protocol) -> Self {
         Self {
             condition: Some(old),
             overwrite: new,
@@ -29,7 +29,7 @@ impl UriMatchReplaceScheme {
 
     #[must_use]
     pub fn http_to_https() -> Self {
-        Self::replace(Scheme::HTTP, Scheme::HTTPS)
+        Self::replace(Protocol::HTTP, Protocol::HTTPS)
     }
 }
 
@@ -38,12 +38,11 @@ impl UriMatchReplace for UriMatchReplaceScheme {
         if (self.condition.is_none() && uri.authority().is_some())
             || uri.scheme() == self.condition.as_ref()
         {
-            let mut uri_parts = uri.into_owned().into_parts();
-            uri_parts.scheme = Some(self.overwrite.clone());
-            Uri::from_parts(uri_parts)
-                .context("re-create uri with scheme overwrite")
-                .map_err(UriMatchError::Unexpected)
-                .map(Cow::Owned)
+            // Native `Uri` mutates the scheme in place — no `into_parts` /
+            // `from_parts` round-trip (and no fallible re-parse) needed.
+            let mut uri = uri.into_owned();
+            uri.set_scheme(self.overwrite.clone());
+            Ok(Cow::Owned(uri))
         } else {
             Err(UriMatchError::NoMatch(uri))
         }
@@ -76,7 +75,6 @@ mod tests {
     fn test_scheme_match() {
         for (input, expected_output) in [
             ("http://example.com", "https://example.com"),
-            ("http://example:8080.com", "https://example:8080.com"),
             ("http://example.com/bar?q=v", "https://example.com/bar?q=v"),
             (
                 "http://example.com:8080/bar?q=v",

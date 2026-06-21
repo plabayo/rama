@@ -20,10 +20,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
+    TransportAddressInputExt,
     address::{Host, HostWithPort, ProxyAddress},
     client::ConnectorTarget,
     mode::DnsResolveIpMode,
-    transport::TryRefIntoTransportContext,
 };
 use rama_utils::collections::NonEmptyVec;
 use tokio::time::Instant;
@@ -215,10 +215,7 @@ impl<S, R, P, Input> Service<Input> for DnsLoadBalancer<S, R, P>
 where
     S: Service<Input>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + Sync + 'static>
-        + ExtensionsRef
-        + Send
-        + 'static,
+    Input: TransportAddressInputExt + ExtensionsRef + Send + 'static,
     R: DnsAddressResolver + Clone,
     P: DnsIpPicker,
 {
@@ -239,11 +236,7 @@ where
             return self.inner.serve(input).await.map_err(Into::into);
         }
 
-        let ctx = input
-            .try_ref_into_transport_ctx()
-            .context("dns lb: extract transport context")?;
-
-        let Some(authority) = ctx.host_with_port() else {
+        let Some(authority) = input.host_with_port() else {
             tracing::trace!("dns lb: no authority/port resolvable, skipping");
             return self.inner.serve(input).await.map_err(Into::into);
         };
@@ -286,9 +279,9 @@ mod tests {
         futures::{Stream, stream},
     };
     use rama_net::{
-        Protocol,
-        address::Domain,
-        transport::{TransportContext, TransportProtocol},
+        AuthorityInputExt, Protocol, ProtocolInputExt, TransportProtocolInputExt,
+        address::{Domain, HostWithOptPort},
+        transport::TransportProtocol,
     };
     use std::{
         convert::Infallible,
@@ -330,19 +323,21 @@ mod tests {
         }
     }
 
-    impl TryRefIntoTransportContext for FakeRequest {
-        type Error = BoxError;
+    impl AuthorityInputExt for FakeRequest {
+        fn authority(&self) -> Option<HostWithOptPort> {
+            self.authority.clone().map(Into::into)
+        }
+    }
 
-        fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
-            let Some(authority) = self.authority.clone() else {
-                return Err("no authority".into());
-            };
-            Ok(TransportContext {
-                protocol: TransportProtocol::Tcp,
-                app_protocol: Some(Protocol::HTTPS),
-                http_version: None,
-                authority: authority.into(),
-            })
+    impl ProtocolInputExt for FakeRequest {
+        fn protocol(&self) -> Option<Protocol> {
+            Some(Protocol::HTTPS)
+        }
+    }
+
+    impl TransportProtocolInputExt for FakeRequest {
+        fn transport_protocol(&self) -> TransportProtocol {
+            TransportProtocol::Tcp
         }
     }
 

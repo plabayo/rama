@@ -11,10 +11,8 @@ use rama_core::{
     Service, bytes::BytesMut, error::BoxError, telemetry::opentelemetry::sdk::error::OTelSdkError,
 };
 use rama_http::{
-    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response,
-    body::util::BodyExt as _,
-    header::CONTENT_TYPE,
-    uri::{PathAndQuery, Uri},
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, body::util::BodyExt as _,
+    header::CONTENT_TYPE, uri::Uri,
 };
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::kib;
@@ -172,43 +170,11 @@ where
     }
 }
 
-fn append_signal_path(base: Uri, signal_path: &str) -> Result<Uri, OtelExporterConfigError> {
-    // TODO: this manual `Uri::into_parts` / `PathAndQuery` surgery is only here because
-    // Rama does not yet expose a nicer native URI composition API for this use case.
-    // Once that lands in rama-net, revisit this path-joining logic and simplify it.
-    // See: https://github.com/plabayo/rama/issues/724
-    let base_str = base.to_string();
-    let mut parts = base.into_parts();
-    let path_and_query = parts
-        .path_and_query
-        .as_ref()
-        .map(PathAndQuery::as_str)
-        .unwrap_or("/");
-    let (path, query) = match path_and_query.split_once('?') {
-        Some((path, query)) => (path, Some(query)),
-        None => (path_and_query, None),
-    };
-
-    let mut joined_path = path.trim_end_matches('/').to_owned();
-    joined_path.push_str(signal_path);
-    let joined_path_and_query = match query {
-        Some(query) => format!("{joined_path}?{query}"),
-        None => joined_path,
-    };
-
-    parts.path_and_query = Some(
-        PathAndQuery::from_str(&joined_path_and_query).map_err(|err| {
-            OtelExporterConfigError::new(format!(
-                "invalid OTLP HTTP endpoint derived from {base_str:?}: {err}"
-            ))
-        })?,
-    );
-
-    Uri::from_parts(parts).map_err(|err| {
-        OtelExporterConfigError::new(format!(
-            "invalid OTLP HTTP endpoint derived from {base_str:?}: {err}"
-        ))
-    })
+fn append_signal_path(mut base: Uri, signal_path: &str) -> Result<Uri, OtelExporterConfigError> {
+    // Append the per-signal path segments onto the base endpoint's path
+    // (segment-aware, so no `//` is produced; the query is preserved).
+    base.path_mut().push_segments(signal_path);
+    Ok(base)
 }
 
 fn merge_headers(target: &mut HeaderMap, source: &HeaderMap) {

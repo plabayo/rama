@@ -16,14 +16,18 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
-// Things from http-body crate
-pub use crate::dep::hyperium::http_body::Body as StreamingBody;
-pub use crate::dep::hyperium::http_body::Frame;
-pub use crate::dep::hyperium::http_body::SizeHint;
+// Forked `http-body` / `http-body-util` (see fork README), relocated under
+// `body` so the module path matches the file layout.
+pub mod http_body;
+mod http_body_util;
 
-// Things from http-body-util crate
+pub use http_body::Body as StreamingBody;
+pub use http_body::Frame;
+pub use http_body::SizeHint;
+
+// `http_body_util` is private; its API is surfaced through this curated alias.
 pub mod util {
-    pub use crate::dep::hyperium::http_body_util::*;
+    pub use super::http_body_util::*;
 }
 
 mod limit;

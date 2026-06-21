@@ -1,5 +1,5 @@
 use super::{UriMatchError, UriMatchReplace, UriMatchReplaceRule};
-use rama_http_types::Uri;
+use crate::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

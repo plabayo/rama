@@ -247,7 +247,7 @@ mod private {
 
     impl IntoUrlSealed for Uri {
         fn into_url(self) -> Result<Uri, BoxError> {
-            let protocol: Option<Protocol> = self.scheme().map(Into::into);
+            let protocol: Option<Protocol> = self.scheme().cloned();
             match protocol {
                 Some(protocol) => {
                     if protocol.is_http() || protocol.is_ws() {

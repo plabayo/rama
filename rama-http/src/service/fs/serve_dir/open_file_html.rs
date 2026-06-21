@@ -173,7 +173,7 @@ fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
         tr,
     };
 
-    let uri_path = uri.path();
+    let uri_path = uri.path_or_root();
     let title_text = format!("Directory listing for .{uri_path}");
 
     #[expect(

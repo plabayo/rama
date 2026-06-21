@@ -26,11 +26,9 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
+use rama_core::matcher::Matcher as _;
 use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
-
-#[cfg(feature = "http")]
-use rama_http_types::Request;
 
 use crate::address::SocketAddress;
 
@@ -467,36 +465,6 @@ impl<Socket> SocketMatcher<Socket> {
     }
 }
 
-#[cfg(feature = "http")]
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcherKind<Request<Body>>
-where
-    Body: 'static,
-{
-    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        match self {
-            Self::SocketAddress(matcher) => matcher.matches(ext, req),
-            Self::IpNet(matcher) => matcher.matches(ext, req),
-            Self::Loopback(matcher) => matcher.matches(ext, req),
-            Self::PrivateIpNet(matcher) => matcher.matches(ext, req),
-            Self::All(matchers) => matchers.iter().matches_and(ext, req),
-            Self::Any(matchers) => matchers.iter().matches_or(ext, req),
-            Self::Port(matcher) => matcher.matches(ext, req),
-            Self::Custom(matcher) => matcher.matches(ext, req),
-        }
-    }
-}
-
-#[cfg(feature = "http")]
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcher<Request<Body>>
-where
-    Body: 'static,
-{
-    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        let result = self.kind.matches(ext, req);
-        if self.negate { !result } else { result }
-    }
-}
-
 impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcherKind<Socket>
 where
     Socket: crate::stream::Socket,
@@ -525,147 +493,87 @@ where
     }
 }
 
-#[cfg(all(test, feature = "http"))]
-mod test {
-    use itertools::Itertools;
-
-    use rama_core::matcher::Matcher;
-
-    use super::*;
-
-    struct BooleanMatcher(bool);
-
-    impl Matcher<Request<()>> for BooleanMatcher {
-        fn matches(&self, _ext: Option<&Extensions>, _req: &Request<()>) -> bool {
-            self.0
+impl<S> SocketMatcherKind<S> {
+    /// Match against a value of the matcher's own input type `S` (rather than a
+    /// [`Socket`](crate::stream::Socket)), given that each socket-address leaf
+    /// matcher also implements [`Matcher<S>`](rama_core::matcher::Matcher).
+    ///
+    /// This lets crates whose input `S` is not a `Socket` — e.g. an HTTP
+    /// `Request`, matched through its `SocketInfo` extension — reuse the
+    /// composite `All`/`Any`/`Custom` logic without exposing the private
+    /// matcher kinds. The `Socket`-based [`Matcher`] impl is unaffected.
+    ///
+    /// [`Matcher`]: rama_core::matcher::Matcher
+    fn matches_input(&self, ext: Option<&Extensions>, target: &S) -> bool
+    where
+        S: 'static,
+        SocketAddressMatcher: rama_core::matcher::Matcher<S>,
+        LoopbackMatcher: rama_core::matcher::Matcher<S>,
+        PrivateIpNetMatcher: rama_core::matcher::Matcher<S>,
+        PortMatcher: rama_core::matcher::Matcher<S>,
+        IpNetMatcher: rama_core::matcher::Matcher<S>,
+    {
+        match self {
+            Self::SocketAddress(matcher) => matcher.matches(ext, target),
+            Self::IpNet(matcher) => matcher.matches(ext, target),
+            Self::Loopback(matcher) => matcher.matches(ext, target),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, target),
+            Self::Port(matcher) => matcher.matches(ext, target),
+            // `All`/`Any` replicate the ext-merging semantics of
+            // `matches_and`/`matches_or` (which require `Matcher<S>` on the
+            // nested matcher, unavailable for a non-`Socket` `S`).
+            Self::All(matchers) => match ext {
+                None => matchers.iter().all(|m| m.matches_input(None, target)),
+                Some(ext) => {
+                    let inner = Extensions::new();
+                    if matchers
+                        .iter()
+                        .all(|m| m.matches_input(Some(&inner), target))
+                    {
+                        ext.extend(&inner);
+                        true
+                    } else {
+                        false
+                    }
+                }
+            },
+            Self::Any(matchers) => {
+                if matchers.is_empty() {
+                    return true;
+                }
+                match ext {
+                    None => matchers.iter().any(|m| m.matches_input(None, target)),
+                    Some(ext) => {
+                        for m in matchers {
+                            let inner = Extensions::new();
+                            if m.matches_input(Some(&inner), target) {
+                                ext.extend(&inner);
+                                return true;
+                            }
+                        }
+                        false
+                    }
+                }
+            }
+            Self::Custom(matcher) => matcher.matches(ext, target),
         }
     }
+}
 
-    #[test]
-    fn test_matcher_and_combination() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = v[0] && v[1] && v[2];
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.and(b).and(c);
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_negation_with_and_combination() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = !v[0] && v[1] && v[2];
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.negate().and(b).and(c);
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_and_combination_negated() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = !(v[0] && v[1] && v[2]);
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.and(b).and(c).negate();
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_ors_combination() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = v[0] || v[1] || v[2];
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.or(b).or(c);
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_negation_with_ors_combination() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = !v[0] || v[1] || v[2];
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.negate().or(b).or(c);
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_ors_combination_negated() {
-        for v in [true, false].into_iter().permutations(3) {
-            let expected = !(v[0] || v[1] || v[2]);
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-
-            let matcher = a.or(b).or(c).negate();
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_or_and_or_and_negation() {
-        for v in [true, false].into_iter().permutations(5) {
-            let expected = (v[0] || v[1]) && (v[2] || v[3]) && !v[4];
-            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
-            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
-            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
-            let d = SocketMatcher::custom(BooleanMatcher(v[3]));
-            let e = SocketMatcher::custom(BooleanMatcher(v[4]));
-
-            let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
-            let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &req),
-                expected,
-                "({matcher:#?}).matches({req:#?})",
-            );
-        }
+impl<S> SocketMatcher<S> {
+    /// Match against a value of the matcher's own input type `S` via the
+    /// socket-address leaves' [`Matcher<S>`](rama_core::matcher::Matcher)
+    /// impls, applying this matcher's negation on top.
+    pub fn matches_input(&self, ext: Option<&Extensions>, target: &S) -> bool
+    where
+        S: 'static,
+        SocketAddressMatcher: rama_core::matcher::Matcher<S>,
+        LoopbackMatcher: rama_core::matcher::Matcher<S>,
+        PrivateIpNetMatcher: rama_core::matcher::Matcher<S>,
+        PortMatcher: rama_core::matcher::Matcher<S>,
+        IpNetMatcher: rama_core::matcher::Matcher<S>,
+    {
+        let result = self.kind.matches_input(ext, target);
+        if self.negate { !result } else { result }
     }
 }
