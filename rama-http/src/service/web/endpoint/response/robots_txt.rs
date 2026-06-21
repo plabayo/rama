@@ -153,8 +153,7 @@ impl RobotsTxt {
     /// Returns `true` if the given URL is allowed for the user-agent.
     #[must_use]
     pub fn is_url_allowed(&self, user_agent: &str, uri: &Uri) -> bool {
-        self.rules_for(user_agent)
-            .is_allowed(&uri_path_and_query(uri))
+        self.rules_for(user_agent).is_allowed(&uri.request_target())
     }
 }
 
@@ -558,10 +557,6 @@ fn user_agent_tokens(user_agent: &str) -> impl Iterator<Item = &str> {
     user_agent
         .split(|c: char| !(c.is_ascii_alphabetic() || c == '-' || c == '_'))
         .filter(|token| !token.is_empty())
-}
-
-fn uri_path_and_query(uri: &Uri) -> String {
-    uri.request_target().into_owned()
 }
 
 fn wildcard_match(pattern: &[u8], text: &[u8], anchored: bool) -> bool {

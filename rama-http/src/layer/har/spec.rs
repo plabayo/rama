@@ -83,13 +83,6 @@ impl From<RamaHttpVersion> for HttpVersion {
             RamaHttpVersion::HTTP_11 => Self::Http11,
             RamaHttpVersion::HTTP_2 => Self::Http2,
             RamaHttpVersion::HTTP_3 => Self::Http3,
-            // Defensive: native `Version` is currently a closed enum, but keep
-            // the fallback for forward-compatibility with new versions.
-            #[expect(
-                unreachable_patterns,
-                reason = "forward-compat fallback for future Version variants"
-            )]
-            other => Self::Unknown(format!("{other:?}").into()),
         }
     }
 }
