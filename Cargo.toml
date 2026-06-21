@@ -136,10 +136,10 @@ idna = "1"
 indexmap = "2"
 ipnet = "2.12"
 iri-string = "0.7"
-itertools = "0.14"
+itertools = "0.15"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-jiff = { version = "0.2.28", features = ["serde"] }
+jiff = { version = "0.2.29", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
