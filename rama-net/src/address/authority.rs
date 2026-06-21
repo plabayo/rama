@@ -13,14 +13,11 @@ use std::{
 
 /// A [`Host`] with optionally a port and/or user-info ([`UserInfo`]).
 ///
-/// `user_info` is the raw RFC 3986 §3.2.1 view (opaque bytes). For HTTP
-/// Basic-Auth interop call [`UserInfo::to_basic`] on it.
-///
-/// **Planned migration**: in a follow-up PR after the URI work, when
-/// rama's [`Basic`](crate::user::Basic) is relaxed to allow empty
-/// usernames (per RFC 7617 §2), the intent is to replace
-/// `Option<UserInfo>` here with `Option<Basic>`. See the
-/// `user_info` module docs for the rationale.
+/// `user_info` is the raw RFC 3986 §3.2.1 view (opaque, possibly
+/// percent-encoded bytes — the *wire* layer). For an HTTP Basic-Auth
+/// credential (the *decoded, logical* layer) call [`UserInfo::to_basic`],
+/// which percent-decodes and validates; [`From<Basic>`](UserInfo) is the
+/// percent-encoding reverse. The two types are kept distinct on purpose.
 ///
 /// ## Examples
 ///
