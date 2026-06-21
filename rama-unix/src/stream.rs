@@ -39,4 +39,4 @@ impl ExtensionsRef for UnixStream {
     }
 }
 
-rama_net::rama_delegate_async_read_write!(UnixStream => stream);
+rama_net::stream::rama_delegate_async_read_write!(UnixStream => stream);

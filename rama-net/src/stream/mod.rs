@@ -19,7 +19,7 @@ pub use socket::{Socket, SocketInfo};
 /// which only differ in the inner stream they hold.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! rama_delegate_async_read_write {
+macro_rules! __rama_delegate_async_read_write {
     ($ty:ty => $field:ident) => {
         #[warn(clippy::missing_trait_methods)]
         impl ::tokio::io::AsyncRead for $ty {
@@ -70,6 +70,9 @@ macro_rules! rama_delegate_async_read_write {
         }
     };
 }
+
+#[doc(hidden)]
+pub use crate::__rama_delegate_async_read_write as rama_delegate_async_read_write;
 
 pub mod dep {
     //! Dependencies for rama stream modules.

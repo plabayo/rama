@@ -68,7 +68,7 @@ impl ExtensionsRef for TcpStream {
     }
 }
 
-rama_net::rama_delegate_async_read_write!(TcpStream => stream);
+rama_net::stream::rama_delegate_async_read_write!(TcpStream => stream);
 
 impl Socket for TcpStream {
     #[inline]
