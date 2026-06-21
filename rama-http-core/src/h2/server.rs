@@ -1840,8 +1840,13 @@ impl proto::Peer for Peer {
             Some(path)
         } else if is_connect && has_protocol {
             malformed!("malformed headers: missing path in extended CONNECT");
-        } else {
+        } else if is_connect {
+            // Non-extended CONNECT carries no `:path`; the target is the
+            // authority-form `:authority`.
             None
+        } else {
+            // RFC 9113 §8.3.1: every non-CONNECT request MUST carry `:path`.
+            malformed!("malformed headers: missing path");
         };
 
         let uri = match path.as_deref() {
@@ -1988,6 +1993,41 @@ mod path_form_tests {
             ..Default::default()
         };
         let req = decode(pseudo).expect("origin-form :path is valid");
+        assert_eq!(
+            req.uri().host().map(|h| h.to_string()).as_deref(),
+            Some("real.example"),
+        );
+    }
+
+    // RFC 9113 §8.3.1 (h2spec 8.1.2.3/4): a non-CONNECT request that omits
+    // `:path` is malformed and must be rejected (PROTOCOL_ERROR).
+    #[test]
+    fn h2_rejects_missing_path_non_connect() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("real.example")),
+            path: None,
+            ..Default::default()
+        };
+        assert!(
+            decode(pseudo).is_err(),
+            "non-CONNECT request without :path must be rejected"
+        );
+    }
+
+    // CONNECT carries no `:path`; its target is the authority-form `:authority`.
+    #[test]
+    fn h2_accepts_connect_without_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::CONNECT),
+            scheme: None,
+            authority: Some(bs("real.example:443")),
+            path: None,
+            ..Default::default()
+        };
+        let req = decode(pseudo).expect("CONNECT without :path is valid");
+        assert_eq!(req.method(), Method::CONNECT);
         assert_eq!(
             req.uri().host().map(|h| h.to_string()).as_deref(),
             Some("real.example"),
