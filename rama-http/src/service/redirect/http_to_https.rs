@@ -6,6 +6,7 @@ use crate::{
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::Protocol;
+use std::borrow::Cow;
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
 use rama_utils::macros::generate_set_and_with;
 use std::convert::Infallible;
@@ -118,7 +119,10 @@ where
     type Error = Infallible;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let full_uri = match self.rewrite_uri_rule.match_replace_uri(request_uri(&req)) {
+        let full_uri = match self
+            .rewrite_uri_rule
+            .match_replace_uri(Cow::Owned(request_uri(&req)))
+        {
             Ok(uri) => uri,
             Err(UriMatchError::NoMatch(uri)) => {
                 tracing::trace!("no uri match found for uri {uri}; do not rewrite");
@@ -128,7 +132,7 @@ where
                 tracing::debug!(
                     "an unexpected error ({err}happened while rewriting uri; re-compute og uri and use it preserved"
                 );
-                request_uri(&req)
+                Cow::Owned(request_uri(&req))
             }
         };
 

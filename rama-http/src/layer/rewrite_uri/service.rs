@@ -5,6 +5,7 @@ use crate::utils::request_uri;
 use rama_core::{Service, telemetry::tracing};
 use rama_net::http::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
+use std::borrow::Cow;
 
 // TODO: in future we can move this outside of rama-http
 // and make it work on any request that is identified
@@ -84,7 +85,7 @@ where
         let full_uri = request_uri(&req);
         if let Ok(uri) = self
             .match_replace
-            .match_replace_uri(full_uri)
+            .match_replace_uri(Cow::Owned(full_uri))
             .inspect_err(|err| match err {
                 UriMatchError::NoMatch(uri) => {
                     tracing::trace!("no match found for uri: {uri}; ignore")

@@ -451,6 +451,27 @@ impl<T> Request<T> {
         &self.head.uri
     }
 
+    /// Get the URI as complete as possible for this request.
+    ///
+    /// Where [`uri`](Self::uri) returns the URI exactly as received (often
+    /// origin-form `/path` for HTTP/1.1), this fills in the scheme and
+    /// authority from the request's effective protocol and authority (URI →
+    /// `ProxyTarget` → TLS SNI → `Forwarded` → `Host` header) — a derivation
+    /// callers can treat as a technical detail.
+    #[must_use]
+    pub fn request_uri(&self) -> Uri {
+        use rama_net::{AuthorityInputExt as _, ProtocolInputExt as _};
+
+        let mut uri = self.uri().clone();
+        if let Some(authority) = self.authority() {
+            let protocol = self.protocol().unwrap_or(rama_net::Protocol::HTTP);
+            let rama_net::address::HostWithOptPort { host, port } =
+                authority.without_default_port_for(Some(&protocol));
+            uri.set_scheme(protocol).set_host(host).set_port(port);
+        }
+        uri
+    }
+
     /// Returns a mutable reference to the associated URI.
     ///
     /// # Examples

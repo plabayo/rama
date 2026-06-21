@@ -1,14 +1,7 @@
 use crate::{Request, Uri};
-use rama_core::telemetry::tracing;
-use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
-use rama_utils::collections::smallvec::SmallVec;
-use std::borrow::Cow;
-use std::io::Write as _;
 
-// TODO: request_uri probably needs to be part of a trait which works
-// on any kind of "input" (request) which identifies its resources via an URI,
-// which certainly is not just HTTP... also the internals of `request_uri`
-// can be probably improved in several ways.
+// TODO: a protocol-independent version (any URI-carrying input, not just an
+// HTTP `Request`) could live behind an extension trait.
 
 // TODO: uri from `req` probably always has to return derived,
 // one where different, as to make it harder
@@ -23,28 +16,10 @@ use std::io::Write as _;
 // or other logic bugs
 
 /// Get the uri as complete as possible for the given request.
-pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
-    let uri = req.uri();
-    if let Some(authority) = req.authority() {
-        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
-        let authority = authority.without_default_port_for(Some(&protocol));
-        let mut buffer = SmallVec::<[u8; 128]>::new();
-        _ = write!(&mut buffer, "{protocol}://{authority}");
-        if let Some(path) = uri.path() {
-            _ = write!(&mut buffer, "{}", path.as_raw_str());
-        }
-        if let Some(query) = uri.query() {
-            _ = write!(&mut buffer, "?{}", query.as_raw_str());
-        }
-        Uri::try_from(buffer.as_slice())
-            .map(Cow::Owned)
-            .inspect_err(|err| {
-                tracing::debug!("failed to format request uri raw slice: {err}");
-            })
-            .unwrap_or(Cow::Borrowed(uri))
-    } else {
-        Cow::Borrowed(uri)
-    }
+///
+/// Convenience free-function wrapper around [`Request::request_uri`].
+pub fn request_uri<Body>(req: &Request<Body>) -> Uri {
+    req.request_uri()
 }
 
 #[cfg(test)]

@@ -97,7 +97,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for UriMatcher {
         let uri = crate::utils::request_uri(req);
         // TODO: in future we probably do not want to go via request_uri,
         // as this allocates an entire uri even though we do not want query etc...
-        self.matches_uri(uri.as_ref())
+        self.matches_uri(&uri)
     }
 }
 
