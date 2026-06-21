@@ -78,6 +78,7 @@ async fn run_http_test_endpoint_method(
         Method::TRACE,
         Method::DELETE,
         Method::PATCH,
+        Method::QUERY,
         Method::from_bytes(b"COFFEE").unwrap(),
     ] {
         let resp = client

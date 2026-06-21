@@ -493,6 +493,10 @@ impl PushPromise {
     fn safe_and_cacheable(method: &Method) -> bool {
         // Cacheable: https://httpwg.org/specs/rfc7231.html#cacheable.methods
         // Safe: https://httpwg.org/specs/rfc7231.html#safe.methods
+        //
+        // QUERY (RFC 10008) is safe and cacheable too, but it is deliberately
+        // excluded here: a promised request must not carry a body, and a QUERY
+        // without its body (which *is* the query) is meaningless to push.
         method == Method::GET || method == Method::HEAD
     }
 

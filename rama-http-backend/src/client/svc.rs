@@ -284,6 +284,7 @@ mod tests {
             Method::PATCH,
             Method::POST,
             Method::PUT,
+            Method::QUERY,
             Method::TRACE,
         ]
         .into_iter()

@@ -45,7 +45,10 @@ impl<S, T> Csrf<S, T> {
     /// Verify a request against the configured CSRF protection.
     pub(super) fn verify<Body>(&self, req: &Request<Body>) -> Result<(), ProtectionError> {
         // RFC 9110 §9.2.1 safe-ish set used by the reference: only GET/HEAD/OPTIONS are exempt
-        // (deliberately not `Method::is_safe`, which also exempts TRACE).
+        // (deliberately not `Method::is_safe`, which also exempts TRACE and QUERY). QUERY
+        // (RFC 10008) is safe yet intentionally left out: it is not CORS-safelisted, so browsers
+        // always preflight it and send `Origin`/`Sec-Fetch-Site`, letting the cross-origin checks
+        // below protect it like any body-bearing method instead of blanket-exempting it.
         if matches!(
             req.method(),
             &crate::Method::GET | &crate::Method::HEAD | &crate::Method::OPTIONS
