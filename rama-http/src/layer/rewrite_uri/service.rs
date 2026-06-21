@@ -1,7 +1,6 @@
 use std::fmt;
 
 use crate::Request;
-use crate::utils::request_uri;
 use rama_core::{Service, telemetry::tracing};
 use rama_net::http::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
@@ -82,7 +81,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let full_uri = request_uri(&req);
+        let full_uri = req.request_uri();
         if let Ok(uri) = self
             .match_replace
             .match_replace_uri(Cow::Owned(full_uri))

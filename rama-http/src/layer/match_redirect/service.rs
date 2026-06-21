@@ -1,5 +1,4 @@
 use crate::service::web::response::{Headers, IntoResponse};
-use crate::utils::request_uri;
 use crate::{Body, Request, Response, StatusCode, StreamingBody};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
@@ -111,7 +110,7 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let full_uri = request_uri(&req);
+        let full_uri = req.request_uri();
         if let Ok(uri) = self
             .match_replace
             .match_replace_uri(Cow::Owned(full_uri.clone()))

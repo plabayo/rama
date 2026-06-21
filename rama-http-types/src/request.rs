@@ -1202,4 +1202,60 @@ mod tests {
         });
         assert_eq!(mapped_request.body(), &123u32);
     }
+
+    #[test]
+    fn test_request_uri() {
+        use crate::header::HOST;
+        use rama_net::{
+            address::Domain,
+            forwarded::{Forwarded, ForwardedElement},
+        };
+
+        for (request, expected_uri_str) in [
+            (Request::builder().uri("/foo").body(()).unwrap(), "/foo"),
+            (
+                Request::builder()
+                    .uri("/foo")
+                    .header(HOST, "example.com")
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("/foo")
+                    .extension(Forwarded::new(ForwardedElement::new_forwarded_host(
+                        Domain::from_static("example.com"),
+                    )))
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("http://example.com/foo")
+                    .body(())
+                    .unwrap(),
+                "http://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri("https://example.com/foo")
+                    .body(())
+                    .unwrap(),
+                "https://example.com/foo",
+            ),
+            (
+                Request::builder()
+                    .uri(Uri::parse_authority_form("WwW.ExamplE.COM").unwrap())
+                    .body(())
+                    .unwrap(),
+                // native Uri preserves the empty path (no forced trailing `/`)
+                "http://WwW.ExamplE.COM",
+            ),
+        ] {
+            let s = request.request_uri().to_string();
+            assert_eq!(s, expected_uri_str, "request: {request:?}");
+        }
+    }
 }

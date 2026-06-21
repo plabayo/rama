@@ -27,7 +27,9 @@ where
         let json = match *req.method() {
             Method::GET => {
                 let param = req.uri().query_params::<DatastarParam>().map_err(|err| {
-                    tracing::debug!("failed to parse datastar query params from GET request: {err:?}");
+                    tracing::debug!(
+                        "failed to parse datastar query params from GET request: {err:?}"
+                    );
                     (StatusCode::BAD_REQUEST, err.to_string()).into_response()
                 })?;
 

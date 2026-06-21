@@ -2,13 +2,12 @@ use crate::{
     Request, Response, StatusCode,
     headers::Location,
     service::web::response::{Headers, IntoResponse},
-    utils::request_uri,
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::Protocol;
-use std::borrow::Cow;
 use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
 use rama_utils::macros::generate_set_and_with;
+use std::borrow::Cow;
 use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
@@ -121,7 +120,7 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let full_uri = match self
             .rewrite_uri_rule
-            .match_replace_uri(Cow::Owned(request_uri(&req)))
+            .match_replace_uri(Cow::Owned(req.request_uri()))
         {
             Ok(uri) => uri,
             Err(UriMatchError::NoMatch(uri)) => {
@@ -132,7 +131,7 @@ where
                 tracing::debug!(
                     "an unexpected error ({err}happened while rewriting uri; re-compute og uri and use it preserved"
                 );
-                Cow::Owned(request_uri(&req))
+                Cow::Owned(req.request_uri())
             }
         };
 
