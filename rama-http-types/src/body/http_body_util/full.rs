@@ -1,4 +1,4 @@
-use crate::http_body::{Body, Frame, SizeHint};
+use crate::body::http_body::{Body, Frame, SizeHint};
 use bytes::{Buf, Bytes};
 use pin_project_lite::pin_project;
 use std::borrow::Cow;
@@ -126,7 +126,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_body_util::BodyExt;
+    use crate::body::http_body_util::BodyExt;
 
     #[tokio::test]
     async fn full_returns_some() {

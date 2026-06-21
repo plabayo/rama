@@ -1,4 +1,4 @@
-use crate::http_body::{Body, Frame};
+use crate::body::http_body::{Body, Frame};
 use bytes::Buf;
 use futures_core::{ready, stream::Stream};
 use pin_project_lite::pin_project;
@@ -139,8 +139,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::http_body::Frame;
-    use crate::http_body_util::{BodyExt, BodyStream, StreamBody};
+    use crate::body::http_body::Frame;
+    use crate::body::http_body_util::{BodyExt, BodyStream, StreamBody};
     use bytes::Bytes;
     use futures_util::StreamExt;
     use std::convert::Infallible;

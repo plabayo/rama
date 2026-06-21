@@ -28,8 +28,6 @@ pub mod response;
 
 #[macro_use]
 mod convert;
-pub mod http_body;
-pub mod http_body_util;
 pub mod method;
 pub mod status;
 

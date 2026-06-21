@@ -25,7 +25,7 @@
     unsafe_op_in_unsafe_fn
 )]
 
-//! Utilities for [`crate::http_body::Body`].
+//! Utilities for [`crate::body::http_body::Body`].
 //!
 //! [`BodyExt`] adds extensions to the common trait.
 //!
@@ -50,8 +50,8 @@ pub use self::full::Full;
 pub use self::limited::{LengthLimitError, Limited};
 pub use self::stream::{BodyDataStream, BodyStream, StreamBody};
 
-/// An extension trait for [`crate::http_body::Body`] adding various combinators and adapters
-pub trait BodyExt: crate::http_body::Body {
+/// An extension trait for [`crate::body::http_body::Body`] adding various combinators and adapters
+pub trait BodyExt: crate::body::http_body::Body {
     /// Returns a future that resolves to the next [`Frame`], if any.
     ///
     /// [`Frame`]: combinators::Frame
@@ -66,7 +66,7 @@ pub trait BodyExt: crate::http_body::Body {
     fn map_frame<F, B>(self, f: F) -> MapFrame<Self, F>
     where
         Self: Sized,
-        F: FnMut(crate::http_body::Frame<Self::Data>) -> crate::http_body::Frame<B>,
+        F: FnMut(crate::body::http_body::Frame<Self::Data>) -> crate::body::http_body::Frame<B>,
         B: bytes::Buf,
     {
         MapFrame::new(self, f)
@@ -105,7 +105,7 @@ pub trait BodyExt: crate::http_body::Body {
     {
         combinators::Collect {
             body: self,
-            collected: Some(crate::http_body_util::Collected::default()),
+            collected: Some(crate::body::http_body_util::Collected::default()),
         }
     }
 
@@ -162,4 +162,4 @@ pub trait BodyExt: crate::http_body::Body {
     }
 }
 
-impl<T: ?Sized> BodyExt for T where T: crate::http_body::Body {}
+impl<T: ?Sized> BodyExt for T where T: crate::body::http_body::Body {}

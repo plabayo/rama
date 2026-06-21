@@ -7,13 +7,13 @@
 //!
 //! [`tower::Service`]: tower_service::Service
 //! [`Service`]: rama_core::Service
-//! [`Body`]: rama_http_types::http_body::Body
+//! [`Body`]: rama_http_types::body::http_body::Body
 
 use std::fmt;
 
 use rama_core::error::BoxError;
 use rama_http_hyperium::{HyperiumBody, RamaBody, TryIntoHyperiumHttp as _, TryIntoRamaHttp as _};
-use rama_http_types::http_body::Body;
+use rama_http_types::body::http_body::Body;
 use rama_http_types::{Request, Response};
 
 use crate::core::Service as TowerService;

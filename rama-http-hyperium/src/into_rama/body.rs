@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
-use rama_http_types::http_body as rama_body;
+use rama_http_types::body::http_body as rama_body;
 
 use super::TryIntoRamaHttp as _;
 

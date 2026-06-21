@@ -1,4 +1,4 @@
-use crate::http_body::{Body, Frame};
+use crate::body::http_body::{Body, Frame};
 use bytes::Buf;
 use pin_project_lite::pin_project;
 use std::{
@@ -11,7 +11,7 @@ use std::{
 pin_project! {
     /// Body returned by the [`map_frame`] combinator.
     ///
-    /// [`map_frame`]: crate::http_body_util::BodyExt::map_frame
+    /// [`map_frame`]: crate::body::http_body_util::BodyExt::map_frame
     #[derive(Clone, Copy)]
     pub struct MapFrame<B, F> {
         #[pin]

@@ -1,4 +1,4 @@
-use crate::http_body::{Body, Frame, SizeHint};
+use crate::body::http_body::{Body, Frame, SizeHint};
 use pin_project_lite::pin_project;
 use std::{
     any::type_name,
@@ -10,7 +10,7 @@ use std::{
 pin_project! {
     /// Body returned by the [`map_err`] combinator.
     ///
-    /// [`map_err`]: crate::http_body_util::BodyExt::map_err
+    /// [`map_err`]: crate::body::http_body_util::BodyExt::map_err
     #[derive(Clone, Copy)]
     pub struct MapErr<B, F> {
         #[pin]

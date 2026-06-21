@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::HeaderMap;
-use crate::http_body::{Body, Frame};
+use crate::body::http_body::{Body, Frame};
 use futures_core::ready;
 use pin_project_lite::pin_project;
 
@@ -110,7 +110,7 @@ where
     }
 
     #[inline]
-    fn size_hint(&self) -> crate::http_body::SizeHint {
+    fn size_hint(&self) -> crate::body::http_body::SizeHint {
         match &self.state {
             State::PollBody { body, .. } => body.size_hint(),
             State::PollTrailers { .. } | State::Done => Default::default(),
@@ -125,7 +125,7 @@ mod tests {
     use crate::{HeaderName, HeaderValue};
     use bytes::Bytes;
 
-    use crate::http_body_util::{BodyExt, Empty, Full};
+    use crate::body::http_body_util::{BodyExt, Empty, Full};
 
     #[allow(unused_imports)]
     use super::*;

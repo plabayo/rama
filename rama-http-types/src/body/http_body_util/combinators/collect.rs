@@ -4,27 +4,27 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::http_body::Body;
+use crate::body::http_body::Body;
 use futures_core::ready;
 use pin_project_lite::pin_project;
 
 pin_project! {
     /// Future that resolves into a [`Collected`].
     ///
-    /// [`Collected`]: crate::http_body_util::Collected
+    /// [`Collected`]: crate::body::http_body_util::Collected
     pub struct Collect<T>
     where
         T: Body,
         T: ?Sized,
     {
-        pub(crate) collected: Option<crate::http_body_util::Collected<T::Data>>,
+        pub(crate) collected: Option<crate::body::http_body_util::Collected<T::Data>>,
         #[pin]
         pub(crate) body: T,
     }
 }
 
 impl<T: Body + ?Sized> Future for Collect<T> {
-    type Output = Result<crate::http_body_util::Collected<T::Data>, T::Error>;
+    type Output = Result<crate::body::http_body_util::Collected<T::Data>, T::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
         let mut me = self.project();

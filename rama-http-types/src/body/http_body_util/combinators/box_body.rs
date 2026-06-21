@@ -1,6 +1,6 @@
-use crate::http_body_util::BodyExt as _;
+use crate::body::http_body_util::BodyExt as _;
 
-use crate::http_body::{Body, Frame, SizeHint};
+use crate::body::http_body::{Body, Frame, SizeHint};
 use bytes::Buf;
 use std::{
     fmt,
@@ -65,7 +65,7 @@ where
     D: Buf + 'static,
 {
     fn default() -> Self {
-        BoxBody::new(crate::http_body_util::Empty::new().map_err(|err| match err {}))
+        BoxBody::new(crate::body::http_body_util::Empty::new().map_err(|err| match err {}))
     }
 }
 
@@ -117,6 +117,6 @@ where
     D: Buf + 'static,
 {
     fn default() -> Self {
-        UnsyncBoxBody::new(crate::http_body_util::Empty::new().map_err(|err| match err {}))
+        UnsyncBoxBody::new(crate::body::http_body_util::Empty::new().map_err(|err| match err {}))
     }
 }

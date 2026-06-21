@@ -1,4 +1,4 @@
-use crate::http_body::{Body, Frame, SizeHint};
+use crate::body::http_body::{Body, Frame, SizeHint};
 use bytes::Buf;
 use std::{
     convert::Infallible,

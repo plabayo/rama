@@ -14,7 +14,7 @@
 //! [`rama_http_types::Error`] the other) rather than silently coerced.
 //!
 //! Bodies are bridged (not copied) by [`HyperiumBody`] / [`RamaBody`], which
-//! wrap rama's [`Body`](rama_http_types::http_body::Body) ↔ the external
+//! wrap rama's [`Body`](rama_http_types::body::http_body::Body) ↔ the external
 //! [`http_body::Body`], converting only trailer frames.
 //!
 //! ```

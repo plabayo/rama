@@ -5,15 +5,15 @@ use std::{
 };
 
 use crate::HeaderMap;
-use crate::http_body::{Body, Frame};
+use crate::body::http_body::{Body, Frame};
 use bytes::{Buf, Bytes};
 
-use crate::http_body_util::util::BufList;
+use crate::body::http_body_util::util::BufList;
 
 /// A collected body produced by [`BodyExt::collect`] which collects all the DATA frames
 /// and trailers.
 ///
-/// [`BodyExt::collect`]: crate::http_body_util::BodyExt::collect
+/// [`BodyExt::collect`]: crate::body::http_body_util::BodyExt::collect
 #[derive(Debug)]
 pub struct Collected<B> {
     bufs: BufList<B>,
@@ -98,7 +98,7 @@ mod tests {
 
     use futures_util::stream;
 
-    use crate::http_body_util::{BodyExt, Full, StreamBody};
+    use crate::body::http_body_util::{BodyExt, Full, StreamBody};
 
     use super::*;
 
