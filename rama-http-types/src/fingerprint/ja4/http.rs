@@ -15,7 +15,7 @@
 use itertools::Itertools as _;
 use std::fmt::{self, Write};
 
-use rama_http_types::{
+use crate::{
     Method, Version,
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
 };
@@ -329,7 +329,7 @@ impl fmt::Display for HttpVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::{Request, proto::h1::Http1HeaderMap};
+    use crate::{Request, proto::h1::Http1HeaderMap};
 
     #[derive(Debug)]
     struct TestCase {
@@ -356,7 +356,7 @@ mod tests {
                 $(
                     map.try_append(
                         $header_name,
-                        rama_http_types::HeaderValue::from_str($header_value).unwrap()
+                        crate::HeaderValue::from_str($header_value).unwrap()
                     ).unwrap();
                 )+
 
@@ -366,7 +366,7 @@ mod tests {
                 let (mut parts, body) = Request::new(()).into_parts();
                 parts.method = $method;
                 parts.version = $version;
-                parts.uri = "/".parse::<rama_http_types::Uri>().unwrap();
+                parts.uri = "/".parse::<crate::Uri>().unwrap();
                 parts.headers = headers;
                 parts.extensions = extensions;
 

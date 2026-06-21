@@ -152,8 +152,8 @@ use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::proto::h2::frame::StreamDependency;
 use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
+use rama_http_types::request;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
-use rama_http_types::{request, uri};
 use rama_net::extensions::StreamTransformed;
 use std::fmt;
 use std::pin::Pin;
@@ -1867,7 +1867,7 @@ impl Peer {
 
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
-        let mut pseudo = Pseudo::request(method, uri, protocol);
+        let mut pseudo = Pseudo::request(method, &uri, protocol);
 
         // reuse order if defined
         if let Some(order) = extensions
@@ -1902,7 +1902,7 @@ impl Peer {
                     // HTTP/2 requires that a scheme is set. Since we are
                     // forwarding an HTTP 1.1 request, the scheme is set to
                     // "http".
-                    pseudo.set_scheme(&uri::Scheme::HTTP);
+                    pseudo.set_scheme(&rama_net::Protocol::HTTP);
                 }
             } else if !is_connect {
                 // TODO: Error

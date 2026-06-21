@@ -1,5 +1,5 @@
+use crate::uri::Uri;
 use rama_core::{error::BoxError, telemetry::tracing};
-use rama_http_types::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
 
@@ -53,7 +53,7 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriForma
 /// ```rust
 /// # use std::str::FromStr;
 /// # use std::borrow::Cow;
-/// # use rama_http_types::Uri;
+/// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
@@ -71,7 +71,7 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriForma
 /// ```rust
 /// # use std::str::FromStr;
 /// # use std::borrow::Cow;
-/// # use rama_http_types::Uri;
+/// # use rama_net::uri::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
 ///     "https://*/docs/*",
@@ -200,7 +200,7 @@ impl UriMatchReplaceRule {
     /// ```rust
     /// # use std::str::FromStr;
     /// # use std::borrow::Cow;
-    /// # use rama_http_types::Uri;
+    /// # use rama_net::uri::Uri;
     /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();
     /// let out = rule.match_replace_uri(Cow::Owned(Uri::from_static("http://a/b?x=1"))).unwrap();
@@ -286,14 +286,15 @@ pub(super) fn uri_to_small_vec_with_buffer(
     include_query: bool,
     output: &mut super::SmallUriStr,
 ) {
-    let query = include_query
-        .then(|| uri.query())
-        .flatten()
-        .unwrap_or_default();
+    let query = if include_query {
+        uri.query_or_empty()
+    } else {
+        ""
+    };
 
     output.clear();
 
-    let path = uri.path().trim_matches('/');
+    let path = uri.path_or_root().trim_matches('/');
 
     if let Some(authority) = uri.authority() {
         _ = write!(

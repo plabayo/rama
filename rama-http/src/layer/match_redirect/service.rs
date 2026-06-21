@@ -1,5 +1,4 @@
 use crate::service::web::response::{Headers, IntoResponse};
-use crate::utils::request_uri;
 use crate::{Body, Request, Response, StatusCode, StreamingBody};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
@@ -8,6 +7,7 @@ use rama_core::telemetry::tracing;
 use rama_http_headers::Location;
 use rama_net::http::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
+use std::borrow::Cow;
 
 /// Middleware to redirect a request using dynamic [`Uri`] derived
 /// from the input request or a static one.
@@ -110,10 +110,10 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        let full_uri = request_uri(&req);
+        let full_uri = req.request_uri();
         if let Ok(uri) = self
             .match_replace
-            .match_replace_uri(full_uri.clone())
+            .match_replace_uri(Cow::Owned(full_uri.clone()))
             .inspect_err(|err| match err {
                 UriMatchError::NoMatch(uri) => {
                     tracing::trace!("no match found for uri: {uri}; ignore")
@@ -122,7 +122,7 @@ where
                     tracing::trace!("unexpected error while trying to match uri: {err}; ignore")
                 }
             })
-            && uri != full_uri
+            && *uri != full_uri
         {
             return match Location::try_from(uri.as_ref()) {
                 Ok(loc) => {

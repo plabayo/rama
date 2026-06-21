@@ -92,6 +92,14 @@ mod service_ready;
 
 pub mod layer;
 
+#[cfg(feature = "http")]
+#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+pub mod http;
+
+#[cfg(feature = "http")]
+#[doc(inline)]
+pub use http::TowerHttpServiceAdapter;
+
 #[doc(inline)]
 pub use service::{ServiceAdapter, SharedServiceAdapter};
 

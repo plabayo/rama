@@ -3,14 +3,14 @@ use crate::headers::HeaderMapExt;
 use crate::headers::forwarded::{
     ForwardHeader, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::address::Domain;
 use rama_net::forwarded::{ForwardedElement, NodeId};
-use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -79,7 +79,7 @@ use std::marker::PhantomData;
 /// let service = SetForwardedHeaderLayer::<XRealIp>::new()
 ///     .into_layer(service_fn(svc));
 ///
-/// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
+/// # let mut req = Request::builder().uri("http://example.com").body(()).unwrap();
 /// # req.extensions().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
 /// service.serve(req).await.unwrap();
 /// # }
@@ -321,11 +321,14 @@ where
         {
             forwarded_element.set_forwarded_for(peer_addr);
         }
-        let request_ctx = RequestContext::try_from(&req)?;
+        let authority = req
+            .authority()
+            .ok_or_else(|| BoxError::from_static_str("set forwarded: no authority"))?;
 
-        forwarded_element.set_forwarded_host(request_ctx.authority.clone());
+        forwarded_element.set_forwarded_host(authority);
 
-        if let Ok(forwarded_proto) = (&request_ctx.protocol).try_into() {
+        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
+        if let Ok(forwarded_proto) = (&protocol).try_into() {
             forwarded_element.set_forwarded_proto(forwarded_proto);
         }
 
@@ -399,7 +402,10 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let req = Request::builder().uri("example.com").body(()).unwrap();
+        let req = Request::builder()
+            .uri("http://example.com")
+            .body(())
+            .unwrap();
         service.serve(req).await.unwrap();
     }
 

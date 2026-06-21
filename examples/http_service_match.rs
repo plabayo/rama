@@ -75,7 +75,7 @@ async fn main() {
                             PathMatcher::new("/echo") => |req: Request| async move {
                                 Json(json!({
                                     "method": req.method().as_str(),
-                                    "path": req.uri().path(),
+                                    "path": req.uri().path_or_root(),
                                 }))
                             },
                             _ => Redirect::temporary("/"),

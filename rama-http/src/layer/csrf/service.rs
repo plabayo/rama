@@ -45,7 +45,10 @@ impl<S, T> Csrf<S, T> {
     /// Verify a request against the configured CSRF protection.
     pub(super) fn verify<Body>(&self, req: &Request<Body>) -> Result<(), ProtectionError> {
         // RFC 9110 §9.2.1 safe-ish set used by the reference: only GET/HEAD/OPTIONS are exempt
-        // (deliberately not `Method::is_safe`, which also exempts TRACE).
+        // (deliberately not `Method::is_safe`, which also exempts TRACE and QUERY). QUERY
+        // (RFC 10008) is safe yet intentionally left out: it is not CORS-safelisted, so browsers
+        // always preflight it and send `Origin`/`Sec-Fetch-Site`, letting the cross-origin checks
+        // below protect it like any body-bearing method instead of blanket-exempting it.
         if matches!(
             req.method(),
             &crate::Method::GET | &crate::Method::HEAD | &crate::Method::OPTIONS
@@ -59,7 +62,7 @@ impl<S, T> Csrf<S, T> {
             .typed_get::<Origin>()
             .filter(|origin| !origin.is_null())
             .and_then(|origin| {
-                CsrfOrigin::from_parts(origin.scheme(), origin.hostname(), origin.port())
+                CsrfOrigin::from_parts(origin.scheme(), origin.hostname().as_ref(), origin.port())
             });
 
         let is_exempt = || {
@@ -102,7 +105,7 @@ impl<S, T> Csrf<S, T> {
         // header.
         if let Some(origin) = csrf_origin.as_ref() {
             let matched = if let Some(authority) = req.uri().authority() {
-                origin.matches_host(authority.host(), authority.port_u16())
+                origin.matches_host(authority.host().to_str().as_ref(), authority.port_u16())
             } else if let Some(host) = req.headers().typed_get::<Host>() {
                 origin.matches_host(&host.0.host.to_string(), host.0.port.into())
             } else {

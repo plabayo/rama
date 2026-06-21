@@ -83,7 +83,6 @@ impl TryFrom<Version> for VersionMatcher {
             Version::HTTP_11 => Ok(Self::HTTP_11),
             Version::HTTP_2 => Ok(Self::HTTP_2),
             Version::HTTP_3 => Ok(Self::HTTP_3),
-            other => Err(Self::Error { version: other }),
         }
     }
 }

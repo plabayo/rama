@@ -262,6 +262,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_partial_newline() {
+        // A trailing `\r` whose `\n` has not arrived yet is reported as a partial
+        // header (retry with more bytes) rather than a hard error: rama defers
+        // both the missing-newline and the prefix check until the line is
+        // complete. Upstream ppp later clamped this case to MissingNewLine /
+        // InvalidPrefix; rama's streaming `Partial` is intentional.
+        for text in [
+            "PROXY TCP4 255.255.255.255 255.255.255.255 65535 65535\r",
+            "abc\r",
+        ] {
+            assert_eq!(Header::try_from(text).unwrap_err(), ParseError::Partial);
+            assert_eq!(
+                Header::try_from(text.as_bytes()).unwrap_err(),
+                ParseError::Partial.into()
+            );
+        }
+    }
+
+    #[test]
     fn parse_tcp4_invalid() {
         let text = "PROXY TCP4 255.255.255.255 256.255.255.255 65535 65535\r\n";
 

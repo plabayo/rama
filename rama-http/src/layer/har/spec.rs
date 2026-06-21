@@ -83,7 +83,6 @@ impl From<RamaHttpVersion> for HttpVersion {
             RamaHttpVersion::HTTP_11 => Self::Http11,
             RamaHttpVersion::HTTP_2 => Self::Http2,
             RamaHttpVersion::HTTP_3 => Self::Http3,
-            other => Self::Unknown(format!("{other:?}").into()),
         }
     }
 }
@@ -104,11 +103,7 @@ impl TryFrom<HttpVersion> for RamaHttpVersion {
 }
 
 fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
-    let Some(query_str) = parts.uri.query() else {
-        return Vec::default();
-    };
-
-    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(query_str) {
+    match Query::<Vec<(ArcStr, ArcStr)>>::parse_query_str(parts.uri.query_or_empty()) {
         Ok(Query(v)) => v
             .into_iter()
             .map(|(name, value)| QueryStringPair {

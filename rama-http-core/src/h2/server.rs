@@ -1710,7 +1710,7 @@ impl Peer {
             _,
         ) = request.into_parts();
 
-        let mut pseudo = Pseudo::request(method, uri, None);
+        let mut pseudo = Pseudo::request(method, &uri, None);
 
         // reuse order if defined
         if let Some(order) = extensions.get_ref::<PseudoHeaderOrder>().cloned()
@@ -1789,65 +1789,119 @@ impl proto::Peer for Peer {
             malformed!("malformed headers: :status field on request");
         }
 
-        // Convert the URI
-        let mut parts = uri::Parts::default();
+        // Convert the URI from the validated pseudo-headers — the inverse of
+        // the `write_h2_*` writers.
 
         // A request translated from HTTP/1 must not include the :authority
-        // header
-        if let Some(authority) = pseudo.authority {
-            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone());
-            parts.authority = Some(maybe_authority.or_else(|why| {
-                malformed!(
+        // header.
+        let authority = if let Some(authority) = pseudo.authority {
+            match rama_net::address::Authority::try_from(&*authority) {
+                Ok(authority) => Some(authority),
+                Err(why) => malformed!(
                     "malformed headers: malformed authority ({:?}): {}",
                     authority,
                     why,
-                )
-            })?);
-        }
+                ),
+            }
+        } else {
+            None
+        };
 
         // A :scheme is required, except CONNECT.
-        if let Some(scheme) = pseudo.scheme {
+        let scheme = if let Some(scheme) = pseudo.scheme {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :scheme in CONNECT");
             }
-            let maybe_scheme = scheme.parse();
-            let scheme = maybe_scheme.or_else(|why| {
-                malformed!(
+            match scheme.parse::<rama_net::Protocol>() {
+                // It's not possible to build a URI from a scheme and no
+                // authority, so — after validating it — the scheme is dropped
+                // when there is no :authority (mirrors the original behavior).
+                Ok(scheme) => authority.is_some().then_some(scheme),
+                Err(why) => malformed!(
                     "malformed headers: malformed scheme ({:?}): {}",
                     scheme,
                     why,
-                )
-            })?;
-
-            // It's not possible to build an `Uri` from a scheme and path. So,
-            // after validating is was a valid scheme, we just have to drop it
-            // if there isn't an :authority.
-            if parts.authority.is_some() {
-                parts.scheme = Some(scheme);
+                ),
             }
         } else if !is_connect || has_protocol {
             malformed!("malformed headers: missing scheme");
-        }
+        } else {
+            None
+        };
 
-        if let Some(path) = pseudo.path {
+        let path = if let Some(path) = pseudo.path {
             if is_connect && !has_protocol {
                 malformed!("malformed headers: :path in CONNECT");
             }
-
             // This cannot be empty
             if path.is_empty() {
                 malformed!("malformed headers: missing path");
             }
-
-            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone());
-            parts.path_and_query = Some(maybe_path.or_else(|why| {
-                malformed!("malformed headers: malformed path ({:?}): {}", path, why,)
-            })?);
+            Some(path)
         } else if is_connect && has_protocol {
             malformed!("malformed headers: missing path in extended CONNECT");
-        }
+        } else if is_connect {
+            // Non-extended CONNECT carries no `:path`; the target is the
+            // authority-form `:authority`.
+            None
+        } else {
+            // RFC 9113 §8.3.1: every non-CONNECT request MUST carry `:path`.
+            malformed!("malformed headers: missing path");
+        };
 
-        b = b.uri(parts);
+        let uri = match path.as_deref() {
+            // OPTIONS-`*`: the wire `*` denotes "no path"; rebuild the
+            // scheme/authority context from the typed components (a bare `*`
+            // when there is none).
+            Some("*") => match authority {
+                Some(authority) => {
+                    let mut uri = uri::Uri::default().without_path();
+                    uri.set_authority(authority);
+                    if let Some(scheme) = scheme {
+                        uri.set_scheme(scheme);
+                    }
+                    uri
+                }
+                None => uri::Uri::from_static("*"),
+            },
+            // origin-form: parse the path/query, then graft the typed
+            // authority (and scheme, which is only meaningful with one).
+            Some(path) => {
+                let mut uri = match uri::Uri::parse(path) {
+                    Ok(uri) => uri,
+                    Err(why) => {
+                        malformed!("malformed headers: malformed path ({:?}): {}", path, why)
+                    }
+                };
+                // RFC 9113 §8.3.1: `:path` carries only the path/query of the
+                // target — the scheme and authority have their own pseudo-headers
+                // and MUST NOT appear here. Reject absolute-form values such as
+                // `https://evil/x`, which would otherwise inject an
+                // attacker-chosen authority when `:authority` is absent.
+                if uri.scheme().is_some() || uri.authority().is_some() {
+                    malformed!(
+                        "malformed headers: :path must be origin-form, not absolute-form ({:?})",
+                        path
+                    );
+                }
+                if let Some(authority) = authority {
+                    uri.set_authority(authority);
+                    if let Some(scheme) = scheme {
+                        uri.set_scheme(scheme);
+                    }
+                }
+                uri
+            }
+            // authority-form (CONNECT).
+            None => match authority {
+                // The authority is already parsed; build the authority-form URI
+                // directly instead of re-serializing and re-parsing it.
+                Some(authority) => uri::Uri::from_authority_form(authority),
+                None => uri::Uri::default(),
+            },
+        };
+
+        b = b.uri(uri);
 
         let mut request = match b.body(()) {
             Ok(request) => request,
@@ -1888,5 +1942,95 @@ where
             Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
             Self::Done => f.write_str("Done"),
         }
+    }
+}
+
+#[cfg(test)]
+mod path_form_tests {
+    use super::*;
+    use rama_http_types::proto::h2::hpack::BytesStr;
+
+    fn bs(s: &'static str) -> BytesStr {
+        BytesStr::try_from(rama_core::bytes::Bytes::from_static(s.as_bytes())).unwrap()
+    }
+
+    fn decode(pseudo: Pseudo) -> Result<Request<()>, Error> {
+        <Peer as proto::Peer>::convert_poll_message(
+            pseudo,
+            HeaderMap::new(),
+            OriginalHttp1Headers::default(),
+            0,
+            StreamId::from(1),
+            Extensions::new(),
+        )
+    }
+
+    // RFC 9113 §8.3.1: an absolute-form `:path` (carrying scheme/authority) must
+    // be rejected — otherwise, with `:authority` absent, the embedded host would
+    // be injected into the request URI.
+    #[test]
+    fn h2_rejects_absolute_form_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: None,
+            path: Some(bs("https://evil.example/x")),
+            ..Default::default()
+        };
+        assert!(
+            decode(pseudo).is_err(),
+            "absolute-form :path must be rejected"
+        );
+    }
+
+    #[test]
+    fn h2_accepts_origin_form_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("real.example")),
+            path: Some(bs("/x?y=1")),
+            ..Default::default()
+        };
+        let req = decode(pseudo).expect("origin-form :path is valid");
+        assert_eq!(
+            req.uri().host().map(|h| h.to_string()).as_deref(),
+            Some("real.example"),
+        );
+    }
+
+    // RFC 9113 §8.3.1 (h2spec 8.1.2.3/4): a non-CONNECT request that omits
+    // `:path` is malformed and must be rejected (PROTOCOL_ERROR).
+    #[test]
+    fn h2_rejects_missing_path_non_connect() {
+        let pseudo = Pseudo {
+            method: Some(Method::GET),
+            scheme: Some(bs("https")),
+            authority: Some(bs("real.example")),
+            path: None,
+            ..Default::default()
+        };
+        assert!(
+            decode(pseudo).is_err(),
+            "non-CONNECT request without :path must be rejected"
+        );
+    }
+
+    // CONNECT carries no `:path`; its target is the authority-form `:authority`.
+    #[test]
+    fn h2_accepts_connect_without_path() {
+        let pseudo = Pseudo {
+            method: Some(Method::CONNECT),
+            scheme: None,
+            authority: Some(bs("real.example:443")),
+            path: None,
+            ..Default::default()
+        };
+        let req = decode(pseudo).expect("CONNECT without :path is valid");
+        assert_eq!(req.method(), Method::CONNECT);
+        assert_eq!(
+            req.uri().host().map(|h| h.to_string()).as_deref(),
+            Some("real.example"),
+        );
     }
 }

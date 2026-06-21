@@ -26,9 +26,16 @@ targets = [
 
 [features]
 default = []
+# Adapt tower services that speak the hyperium `http::Request`/`http::Response`
+# into rama services, converting via `rama-http-hyperium`.
+http = ["dep:http", "dep:http-body", "dep:rama-http-types", "dep:rama-http-hyperium"]
 
 [dependencies]
+http = { workspace = true, optional = true }
+http-body = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-http-hyperium = { workspace = true, optional = true }
+rama-http-types = { workspace = true, optional = true }
 tokio = { workspace = true }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }

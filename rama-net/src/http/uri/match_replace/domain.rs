@@ -1,12 +1,8 @@
 use super::UriMatchReplace;
-use crate::{address::Domain, http::uri::match_replace::UriMatchError};
-use rama_core::{
-    error::{BoxError, ErrorContext as _},
-    telemetry::tracing,
-};
-use rama_http_types::{Uri, uri::Authority};
+use crate::address::{Domain, OptPort};
+use crate::http::uri::match_replace::UriMatchError;
+use crate::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
-use rama_utils::str::smol_str::format_smolstr;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
@@ -87,127 +83,56 @@ impl UriMatchReplaceDomain {
             self
         }
     }
-
-    fn write_new_uri(&self, domain: &Domain, og_port: Option<u16>) -> Result<Authority, BoxError> {
-        match self.port_mode {
-            PortMode::Preserve => {
-                if let Some(port) = og_port {
-                    format_smolstr!("{domain}:{port}")
-                        .parse()
-                        .context("write authority with new domain and with OG port preserved")
-                } else {
-                    domain.as_str().parse().context(
-                        "write authority with new domain and without an OG port to preserve",
-                    )
-                }
-            }
-            PortMode::Drop => domain
-                .as_str()
-                .parse()
-                .context("write authority with new domain and with OG port dropped (if any)"),
-            PortMode::Overwrite(port) => format_smolstr!("{domain}:{port}")
-                .parse()
-                .context("write authority with new domain but with port overwritten"),
-        }
-    }
 }
 
 impl UriMatchReplace for UriMatchReplaceDomain {
     fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
-        let new_authority = match &self.mode {
+        // Resolve the replacement domain (or no-match). Every mode needs an
+        // authority — there must be a host to inspect and/or replace.
+        let new_domain = match &self.mode {
             Mode::SetAlways(domain) => {
-                match self.write_new_uri(
-                    domain,
-                    uri.authority().and_then(|authority| authority.port_u16()),
-                ) {
-                    Ok(authority) => authority,
-                    Err(err) => {
-                        tracing::debug!(
-                            "failed to write new uri with hardcoded domain ({domain}); downgrade to no-match uri error: {err}; give someone else a shot"
-                        );
-                        return Err(UriMatchError::NoMatch(uri));
-                    }
-                }
-            }
-            Mode::ReplaceIfSub { root, new } => {
-                if let Some((domain, og_port)) = uri.authority().and_then(|authority| {
-                    authority
-                        .as_str()
-                        .parse::<Domain>()
-                        .ok()
-                        .map(|domain| (domain, authority.port_u16()))
-                }) && root.is_parent_of(&domain)
-                {
-                    match self.write_new_uri(new, og_port) {
-                        Ok(authority) => authority,
-                        Err(err) => {
-                            tracing::debug!(
-                                "failed to write new uri with subdomain match ({root}); downgrade to no-match uri error: {err}; give someone else a shot"
-                            );
-                            return Err(UriMatchError::NoMatch(uri));
-                        }
-                    }
-                } else {
+                if uri.authority().is_none() {
                     return Err(UriMatchError::NoMatch(uri));
                 }
+                domain.clone()
             }
-            Mode::ReplaceIfExact { old, new } => {
-                if let Some((domain, og_port)) = uri.authority().and_then(|authority| {
-                    authority
-                        .as_str()
-                        .parse::<Domain>()
-                        .ok()
-                        .map(|domain| (domain, authority.port_u16()))
-                }) && old.eq(&domain)
-                {
-                    match self.write_new_uri(new, og_port) {
-                        Ok(authority) => authority,
-                        Err(err) => {
-                            tracing::debug!(
-                                "failed to write new uri with exact match ({old}); downgrade to no-match uri error: {err}; give someone else a shot"
-                            );
-                            return Err(UriMatchError::NoMatch(uri));
-                        }
-                    }
-                } else {
-                    return Err(UriMatchError::NoMatch(uri));
-                }
-            }
-            Mode::DropPrefix(prefix) => {
-                if let Some((domain, og_port)) = uri.authority().and_then(|authority| {
-                    authority
-                        .as_str()
-                        .parse::<Domain>()
-                        .ok()
-                        .map(|domain| (domain, authority.port_u16()))
-                }) && let Some(new) = domain.strip_sub(prefix)
-                {
-                    match self.write_new_uri(&new, og_port) {
-                        Ok(authority) => authority,
-                        Err(err) => {
-                            tracing::debug!(
-                                "failed to write new uri with prefix dropped (prefix); downgrade to no-match uri error: {err}; give someone else a shot"
-                            );
-                            return Err(UriMatchError::NoMatch(uri));
-                        }
-                    }
-                } else {
-                    return Err(UriMatchError::NoMatch(uri));
-                }
-            }
+            Mode::ReplaceIfSub { root, new } => match uri_domain(&uri) {
+                Some(domain) if root.is_parent_of(&domain) => new.clone(),
+                _ => return Err(UriMatchError::NoMatch(uri)),
+            },
+            Mode::ReplaceIfExact { old, new } => match uri_domain(&uri) {
+                Some(domain) if old.eq(&domain) => new.clone(),
+                _ => return Err(UriMatchError::NoMatch(uri)),
+            },
+            Mode::DropPrefix(prefix) => match uri_domain(&uri).and_then(|d| d.strip_sub(prefix)) {
+                Some(new) => new,
+                None => return Err(UriMatchError::NoMatch(uri)),
+            },
         };
 
-        tracing::trace!(
-            "UriMatchReplaceDomain: match found and resulted in new authority: {new_authority}"
-        );
-
-        let mut uri_parts = uri.into_owned().into_parts();
-        uri_parts.authority = Some(new_authority);
-        Uri::from_parts(uri_parts)
-            .context("re-create uri with domain overwrite (always)")
-            .map_err(UriMatchError::Unexpected)
-            .map(Cow::Owned)
+        // Native `Uri` sets the host in place (port preserved) and adjusts the
+        // port directly — no `into_parts` / `from_parts` round-trip, and the
+        // host setter is infallible for a validated `Domain`.
+        let mut uri = uri.into_owned();
+        uri.set_host(new_domain);
+        match self.port_mode {
+            PortMode::Preserve => {}
+            PortMode::Drop => {
+                uri.set_port(OptPort::Unset);
+            }
+            PortMode::Overwrite(port) => {
+                uri.set_port(OptPort::Set(port));
+            }
+        }
+        Ok(Cow::Owned(uri))
     }
+}
+
+/// Extract the authority's host as an owned [`Domain`] when it is a domain
+/// name (bridging pct-encoded reg-names); `None` for IP hosts or when the
+/// URI has no authority.
+fn uri_domain(uri: &Uri) -> Option<Domain> {
+    uri.authority()?.host().try_as_domain().ok()
 }
 
 #[cfg(test)]

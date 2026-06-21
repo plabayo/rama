@@ -26,32 +26,35 @@ targets = [
 
 [features]
 default = []
+tls = ["rama-net/tls"]
 
 [dependencies]
 ahash = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }
-http = { workspace = true }
-http-body = { workspace = true }
-http-body-util = { workspace = true }
+futures-core = { workspace = true }
+hex = { workspace = true }
+itertools = { workspace = true }
 itoa = { workspace = true }
+md5 = { workspace = true }
 memchr = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 nom = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-macros = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 
 [dev-dependencies]
-hex = { workspace = true }
+futures-util = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

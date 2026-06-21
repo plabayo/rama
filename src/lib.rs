@@ -246,6 +246,7 @@
 //! - [`rama-http-macros`](https://crates.io/crates/rama-http-macros): proc-macros powering the type-safe HTML templating in `rama-http::protocols::html`
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+//! - [`rama-http-hyperium`](https://crates.io/crates/rama-http-hyperium): conversions between rama and the hyperium `http` crate (ecosystem interop)
 //! - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`
 //!
 //! `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):

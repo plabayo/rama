@@ -31,10 +31,9 @@ aws-lc = [
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
     "rcgen/aws_lc_rs",
-    "x509-parser/verify-aws",
     "rustls/prefer-post-quantum",
 ]
-ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "x509-parser/verify"]
+ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring"]
 # Optional [dial9] runtime telemetry support.
 #
 # Building with this feature requires `--cfg tokio_unstable`.
@@ -56,7 +55,6 @@ rustls = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
-x509-parser = { workspace = true }
 
 [dev-dependencies]
 

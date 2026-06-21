@@ -167,7 +167,17 @@ async fn serve_connect() {
         let settings = client.assert_server_handshake().await;
         assert_default_settings!(settings);
         client
-            .send_frame(frames::headers(1).request("CONNECT", "localhost").eos())
+            .send_frame(
+                frames::headers(1)
+                    // CONNECT targets are authority-form; native `Uri::parse`
+                    // (what `&str: TryInto<Uri>` uses) only reads absolute/
+                    // relative-ref URIs, so build the authority-form URI here.
+                    .request(
+                        "CONNECT",
+                        rama::http::Uri::parse_authority_form("localhost").unwrap(),
+                    )
+                    .eos(),
+            )
             .await;
         client
             .recv_frame(frames::headers(1).response(200).eos())
@@ -1361,7 +1371,7 @@ async fn request_without_authority() {
     let srv = async move {
         let mut srv = server::handshake(io).await.expect("handshake");
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
-        assert_eq!(req.uri().path(), "/just-a-path");
+        assert_eq!(req.uri().path_or_root(), "/just-a-path");
 
         let rsp = Response::new(());
         stream.send_response(rsp, true).unwrap();
@@ -1504,7 +1514,7 @@ async fn extended_connect_protocol_disabled_by_default() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::CONNECT,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Protocol::from_static("the-bread-protocol").into(),
             )))
             .await;
@@ -1541,7 +1551,7 @@ async fn extended_connect_protocol_enabled_during_handshake() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::CONNECT,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Protocol::from_static("the-bread-protocol").into(),
             )))
             .await;
@@ -1595,7 +1605,7 @@ async fn reject_pseudo_protocol_on_non_connect_request() {
         client
             .send_frame(frames::headers(1).pseudo(frame::Pseudo::request(
                 Method::GET,
-                uri::Uri::from_static("http://bread/baguette"),
+                &uri::Uri::from_static("http://bread/baguette"),
                 Some(Protocol::from_static("the-bread-protocol")),
             )))
             .await;

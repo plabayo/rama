@@ -1,7 +1,5 @@
 use std::mem::MaybeUninit;
 
-use std::fmt::{self, Write as _};
-
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
@@ -180,8 +178,21 @@ impl Http1Transaction for Server {
         let slice = buf.split_to(len).freeze();
         let uri = {
             let uri_bytes = slice.slice_ref(&slice[path_range]);
-            // TODO(lucab): switch to `Uri::from_shared()` once public.
-            rama_http_types::Uri::from_maybe_shared(uri_bytes)?
+            // Zero-copy parse of the request-target. `CONNECT` carries an
+            // authority-form target (`host:port`); every other method carries
+            // origin-/absolute-/asterisk-form, all handled by `parse`.
+            if method == Method::CONNECT {
+                rama_http_types::Uri::parse_authority_form(uri_bytes)?
+            } else {
+                let uri = rama_http_types::Uri::parse(uri_bytes)?;
+                // A scheme without an authority (opaque `scheme:path`, e.g.
+                // `htt:p//`) is not a valid HTTP request-target — only origin-,
+                // absolute-, and asterisk-form are.
+                if uri.scheme().is_some() && uri.authority().is_none() {
+                    return Err(Parse::Uri);
+                }
+                uri
+            }
         };
         subject = RequestLine(method, uri);
 
@@ -1059,8 +1070,8 @@ impl Http1Transaction for Client {
 
         extend(dst, msg.head.subject.0.as_str().as_bytes());
         extend(dst, b" ");
-        //TODO: add API to http::Uri to encode without std::fmt
-        _ = write!(FastWrite(dst), "{} ", msg.head.subject.1);
+        msg.head.subject.1.encode_to(dst);
+        extend(dst, b" ");
 
         match msg.head.version {
             Version::HTTP_10 => extend(dst, b"HTTP/1.0"),
@@ -1480,21 +1491,6 @@ fn write_h1_headers(
         out_h1_headers.append(name, value);
     }
     out_h1_headers
-}
-
-struct FastWrite<'a>(&'a mut Vec<u8>);
-
-impl fmt::Write for FastWrite<'_> {
-    #[inline]
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        extend(self.0, s.as_bytes());
-        Ok(())
-    }
-
-    #[inline]
-    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
-        fmt::write(self, args)
-    }
 }
 
 #[inline]

@@ -38,10 +38,8 @@
 //! ```
 
 use crate::{Request, Response, Uri};
-use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::borrow::Cow;
 
 /// Different modes of normalizing paths
 #[derive(Debug, Copy, Clone)]
@@ -168,79 +166,30 @@ where
 }
 
 fn trim_trailing_slash(uri: &mut Uri) {
-    if !uri.path().ends_with('/') && !uri.path().starts_with("//") {
+    let path = uri.path_or_root();
+    if !path.ends_with('/') && !path.starts_with("//") {
         return;
     }
 
-    let new_path = format!("/{}", uri.path().trim_matches('/'));
-
-    let mut parts = uri.clone().into_parts();
-
-    let new_path_and_query = if let Some(path_and_query) = &parts.path_and_query {
-        let new_path = if new_path.is_empty() {
-            "/"
-        } else {
-            new_path.as_str()
-        };
-
-        if let Some(query) = path_and_query.query() {
-            Cow::Owned(format!("{new_path}?{query}"))
-        } else {
-            new_path.into()
-        }
-        .parse()
-        .inspect_err(|err| {
-            tracing::debug!("failed to parse modified path-and-query: {err}");
-        })
-        .ok()
-    } else {
-        None
-    };
-
-    parts.path_and_query = new_path_and_query;
-    if let Ok(new_uri) = Uri::from_parts(parts) {
-        *uri = new_uri;
-    }
+    // Re-root the path; any query is preserved by `set_path`.
+    let new_path = format!("/{}", path.trim_matches('/'));
+    uri.set_path(new_path);
 }
 
 fn append_trailing_slash(uri: &mut Uri) {
-    if uri.path().ends_with("/") && !uri.path().ends_with("//") {
+    let path = uri.path_or_root();
+    if path.ends_with('/') && !path.ends_with("//") {
         return;
     }
 
-    let trimmed = uri.path().trim_matches('/');
+    let trimmed = path.trim_matches('/');
     let new_path = if trimmed.is_empty() {
         "/".to_owned()
     } else {
         format!("/{trimmed}/")
     };
-
-    let mut parts = uri.clone().into_parts();
-
-    let new_path_and_query = if let Some(path_and_query) = &parts.path_and_query {
-        if let Some(query) = path_and_query.query() {
-            Cow::Owned(format!("{new_path}?{query}"))
-        } else {
-            new_path.into()
-        }
-        .parse()
-        .inspect_err(|err| {
-            tracing::debug!("failed to parse modified path-and-query: {err}");
-        })
-        .ok()
-    } else {
-        new_path
-            .parse()
-            .inspect_err(|err| {
-                tracing::debug!("failed to parse modified path: {err}");
-            })
-            .ok()
-    };
-
-    parts.path_and_query = new_path_and_query;
-    if let Ok(new_uri) = Uri::from_parts(parts) {
-        *uri = new_uri;
-    }
+    // Any query is preserved by `set_path`.
+    uri.set_path(new_path);
 }
 
 #[cfg(test)]

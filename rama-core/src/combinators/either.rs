@@ -66,8 +66,12 @@ macro_rules! __define_either {
         impl<$($param),+> $id<$($param),+> {
             /// Convert `Pin<&mut Either<A, B>>` to `Either<Pin<&mut A>, Pin<&mut B>>`,
             /// pinned projections of the inner variants.
+            ///
+            /// This is the pin-projection used to implement pinned traits (e.g.
+            /// `Future`/`AsyncRead`) for `Either`; it is public so downstream
+            /// crates can implement their own pinned traits over `Either` too.
             #[allow(clippy::multiple_unsafe_ops_per_block, reason = "macro-generated pin projection: get_unchecked_mut + N×Pin::new_unchecked is one logical projection sequence; SAFETY comment below covers the entire block")]
-            fn as_pin_mut(self: Pin<&mut Self>) -> $id<$(Pin<&mut $param>),+> {
+            pub fn as_pin_mut(self: Pin<&mut Self>) -> $id<$(Pin<&mut $param>),+> {
                 // SAFETY: `get_unchecked_mut` is fine because we don't move anything.
                 // We can use `new_unchecked` because the `inner` parts are guaranteed
                 // to be pinned, as they come from `self` which is pinned, and we never

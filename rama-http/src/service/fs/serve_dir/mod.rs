@@ -331,7 +331,7 @@ impl<F> ServeDir<F> {
 
         let Some(path_to_file) = self
             .variant
-            .build_and_validate_path(&self.base, req.uri().path())
+            .build_and_validate_path(&self.base, req.uri().path_or_root())
         else {
             return if let Some((fallback, request)) = fallback_and_request {
                 future::serve_fallback(fallback, request).await

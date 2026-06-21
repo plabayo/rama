@@ -22,7 +22,7 @@ async fn test_http_record_har() {
                 service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
-                        "path": req.uri().path(),
+                        "path": req.uri().path_or_root(),
                     })))
                 }),
             )

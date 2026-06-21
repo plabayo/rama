@@ -18,7 +18,6 @@ use rama::{
             },
         },
         server::HttpServer,
-        uri::PathAndQuery,
     },
     rt::Executor,
     stream::StreamExt,
@@ -150,7 +149,7 @@ async fn health_server_via_router() {
                 Request::new(HealthCheckRequest {
                     service: "helloworld.Greeter".to_owned(),
                 }),
-                PathAndQuery::from_static(paq),
+                paq,
                 ProstCodec::default(),
             )
             .await

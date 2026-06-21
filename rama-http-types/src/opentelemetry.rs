@@ -13,6 +13,5 @@ pub fn version_as_protocol_version(version: Version) -> &'static str {
         Version::HTTP_11 => "1.1",
         Version::HTTP_2 => "2",
         Version::HTTP_3 => "3",
-        _ => "",
     }
 }

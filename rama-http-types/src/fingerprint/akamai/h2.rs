@@ -8,8 +8,7 @@
 //! - P = PRIORITY frames (stream_id:exclusive:depends_on:weight, comma-separated, or "0" if not present)
 //! - PS = Pseudo-header order (m=method, p=path, a=authority, s=scheme, comma-separated)
 
-use rama_core::extensions::Extensions;
-use rama_http_types::proto::h2::{
+use crate::proto::h2::{
     PseudoHeader, PseudoHeaderOrder,
     frame::{
         EarlyFrame, EarlyFrameCapture,
@@ -20,6 +19,7 @@ use rama_http_types::proto::h2::{
         StreamId,
     },
 };
+use rama_core::extensions::Extensions;
 use std::{fmt, io};
 
 #[derive(Clone)]
@@ -243,7 +243,7 @@ impl std::error::Error for AkamaiH2ComputeError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http_types::proto::h2::frame::{
+    use crate::proto::h2::frame::{
         Priority, SettingOrder, Settings, SettingsConfig, StreamDependency, WindowUpdate,
     };
 

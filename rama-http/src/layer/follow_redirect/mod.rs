@@ -400,7 +400,7 @@ where
     }
 }
 
-/// Response [`Extensions`][http::Extensions] value that represents the effective request URI of
+/// Response [`Extensions`] value that represents the effective request URI of
 /// a response returned by a [`FollowRedirect`] middleware.
 ///
 /// The value differs from the original request's effective URI if the middleware has followed
@@ -529,7 +529,7 @@ mod tests {
     /// A server with an endpoint `/{n}` which redirects to `/{n-1}` unless `n` equals zero,
     /// returning `n` as the response body.
     async fn handle<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let n: u64 = req.uri().path()[1..].parse().unwrap();
+        let n: u64 = req.uri().path_or_root()[1..].parse().unwrap();
         let mut res = Response::builder();
         if n > 0 {
             res = res
@@ -545,7 +545,7 @@ mod tests {
     /// Like [`handle`] but also copies a `Marker` request extension onto the response, so a test
     /// can observe whether it reached the (final, redirected) request.
     async fn handle_marker<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let n: u64 = req.uri().path()[1..].parse().unwrap();
+        let n: u64 = req.uri().path_or_root()[1..].parse().unwrap();
         let mut res = Response::builder();
         if n > 0 {
             res = res
@@ -590,7 +590,9 @@ mod tests {
     /// request still carried a `Cookie`:
     /// `a.example.com` → `b.example.com/second` (cross-origin) → `b.example.com/final` (same-origin).
     async fn handle_cookie_chain<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
-        let location = match (req.uri().host(), req.uri().path()) {
+        let host = req.uri().host().map(|h| h.to_string());
+        let path = req.uri().path_or_root();
+        let location = match (host.as_deref(), path) {
             (Some("a.example.com"), _) => Some("http://b.example.com/second"),
             (Some("b.example.com"), "/second") => Some("http://b.example.com/final"),
             _ => None,
@@ -856,7 +858,7 @@ mod tests {
 
     /// Returns different 3xx redirections based on the request's URI.
     async fn redirections<B>(req: Request<B>) -> Result<Response<String>, Infallible> {
-        let path = req.uri().path();
+        let path = req.uri().path_or_root();
         let mut res = Response::builder();
         let body_str;
         res = match path {

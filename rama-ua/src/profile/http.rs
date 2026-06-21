@@ -1,4 +1,5 @@
 use rama_core::extensions::Extension;
+use rama_http::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use rama_http::{
     HeaderName, Method, Version,
     proto::{
@@ -6,7 +7,6 @@ use rama_http::{
         h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
     },
 };
-use rama_net::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use serde::{Deserialize, Serialize};
 
 /// Marker header name for custom headers.

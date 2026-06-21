@@ -2,10 +2,7 @@ use super::stream::TcpStream;
 use rama::{Service, error::BoxError, extensions::ExtensionsRef, telemetry::tracing};
 use rama::{
     error::ErrorContext as _,
-    net::{
-        client::EstablishedClientConnection, stream::SocketInfo,
-        transport::TryRefIntoTransportContext,
-    },
+    net::{TransportAddressInputExt, client::EstablishedClientConnection, stream::SocketInfo},
 };
 
 /// A newtype for managing a `[turmoil::net::TcpStream]` 'connector' implementing `[rama::Service]`
@@ -14,15 +11,13 @@ pub struct TurmoilTcpConnector;
 
 impl<Input> Service<Input> for TurmoilTcpConnector
 where
-    Input: TryRefIntoTransportContext + Send + 'static,
-    Input::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: TransportAddressInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let transport_context = input.try_ref_into_transport_ctx().into_box_error()?;
-        let address = transport_context
+        let address = input
             .host_with_port()
             .context("convert to host with port")?
             .to_string();

@@ -15,6 +15,10 @@ mod idle;
 #[doc(inline)]
 pub use idle::IdleGuard;
 
+mod proxy_target_from_authority;
+#[doc(inline)]
+pub use proxy_target_from_authority::{ProxyTargetFromAuthority, ProxyTargetFromAuthorityLayer};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net, proxy))]
 /// Target [`HostWithPort`] for a proxy/forwarder service.

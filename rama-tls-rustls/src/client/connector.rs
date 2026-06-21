@@ -13,7 +13,7 @@ use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
-use rama_net::transport::TryRefIntoTransportContext;
+use rama_net::{AuthorityInputExt, ProtocolInputExt};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
@@ -178,10 +178,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindAuto>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + ExtensionsRef
-        + Send
-        + 'static,
+    Input: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + Send + 'static,
 {
     type Output = EstablishedClientConnection<AutoTlsStream<S::Connection>, Input>;
     type Error = BoxError;
@@ -190,19 +187,19 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input
-            .try_ref_into_transport_ctx()
-            .context("TlsConnector(auto): compute transport context")?;
+        let authority = input
+            .authority()
+            .context("TlsConnector(auto): resolve authority")?;
+        let app_protocol = input.protocol();
 
-        if !transport_ctx
-            .app_protocol
+        if !app_protocol
             .as_ref()
             .map(|p| p.is_secure())
             .unwrap_or_default()
         {
             tracing::trace!(
-                server.address = %transport_ctx.authority.host,
-                server.port = transport_ctx.authority.port_u16(),
+                server.address = %authority.host,
+                server.port = authority.port_u16(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
@@ -212,13 +209,13 @@ where
             });
         }
 
-        let server_host = &transport_ctx.authority.host;
+        let server_host = &authority.host;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port_u16(),
+            server.address = %authority.host,
+            server.port = authority.port_u16(),
             "TlsConnector(auto): attempt to secure inner connection w/ app protcol: {:?}",
-            transport_ctx.app_protocol,
+            app_protocol,
         );
 
         let connector_data = self.connector_data(&input)?;
@@ -228,10 +225,10 @@ where
             .await?;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port_u16(),
+            server.address = %authority.host,
+            server.port = authority.port_u16(),
             "TlsConnector(auto): protocol secure, established tls connection w/ app protcol: {:?}",
-            transport_ctx.app_protocol,
+            app_protocol,
         );
 
         let conn = AutoTlsStream::secure(stream);
@@ -249,10 +246,7 @@ where
 impl<S, Input> Service<Input> for TlsConnector<S, ConnectorKindSecure>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + Send
-        + ExtensionsRef
-        + 'static,
+    Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<TlsStream<S::Connection>, Input>;
     type Error = BoxError;
@@ -261,17 +255,17 @@ where
         let EstablishedClientConnection { input, conn } =
             self.inner.connect(input).await.into_box_error()?;
 
-        let transport_ctx = input
-            .try_ref_into_transport_ctx()
-            .context("TlsConnector(auto): compute transport context")?;
+        let authority = input
+            .authority()
+            .context("TlsConnector(secure): resolve authority")?;
         tracing::trace!(
-            server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port_u16(),
+            server.address = %authority.host,
+            server.port = authority.port_u16(),
             "TlsConnector(secure): attempt to secure inner connection w/ app protcol: {:?}",
-            transport_ctx.app_protocol,
+            input.protocol(),
         );
 
-        let server_host = &transport_ctx.authority.host;
+        let server_host = &authority.host;
 
         let connector_data = self.connector_data(&input)?;
 

@@ -10,9 +10,11 @@ use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
-    uri::PathAndQuery,
 };
-use rama_net::{address::ProxyAddress, conn::ConnectionHealthWatcher, http::RequestContext};
+use rama_net::{
+    AuthorityInputExt, Protocol, ProtocolInputExt, address::ProxyAddress,
+    conn::ConnectionHealthWatcher,
+};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -147,9 +149,11 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
 
-    let request_ctx = RequestContext::try_from(&req).context("fetch request context")?;
+    let authority = req.authority().context("fetch request authority")?;
+    let protocol = req.protocol();
 
-    let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
+    let is_insecure_request_over_http_proxy =
+        !protocol.as_ref().map(|p| p.is_secure()).unwrap_or_default() && uses_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
@@ -165,9 +169,10 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
                 let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = None;
-                uri_parts.authority = None;
+                // strip scheme + authority down to origin-form (`/path?query`),
+                // preserving path + query + fragment exactly as received.
+                parts.uri.unset_scheme();
+                parts.uri.unset_authority();
 
                 // NOTE: in case the requested resource was the root ("/") it is possible
                 // that the path is now empty. Hyper (currently used) has h1 built-in and
@@ -179,46 +184,27 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 //
                 // NOTE: once we fork hyper we can just handle it there, as there
                 // is no valid reason for that encoding every to be empty... *sigh*
-                if uri_parts.path_and_query.as_ref().map(|pq| pq.as_str()) == Some("/") {
-                    uri_parts.path_and_query = Some(PathAndQuery::from_static("/"));
+                if parts.uri.path().is_none_or(|p| p.as_bytes().is_empty()) {
+                    parts.uri.set_path("/");
                 }
 
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
-                    if request_ctx.authority_has_default_port() {
-                        let host = request_ctx.authority.host;
-                        tracing::trace!("add missing host {host} from authority as host header");
-                        parts.headers.typed_insert(Host::from(host));
-                    } else {
-                        let authority = request_ctx.authority;
-                        tracing::trace!("add missing authority {authority} as host header");
-                        parts.headers.typed_insert(Host::from(authority));
-                    }
+                    let authority = authority.without_default_port_for(protocol.as_ref());
+                    tracing::trace!("add missing authority {authority} as host header");
+                    parts.headers.typed_insert(Host::from(authority));
                 }
 
-                parts.uri = rama_http_types::Uri::from_parts(uri_parts)?;
                 Request::from_parts(parts, body)
             } else if !req.headers().contains_key(HOST) {
                 let mut req = req;
-
-                if request_ctx.authority_has_default_port() {
-                    let authority = request_ctx.authority;
-                    tracing::trace!(
-                        url.full = %req.uri(),
-                        server.address = %authority.host,
-                        server.port = authority.port_u16(),
-                        "add host from authority as HOST header to req (was missing it)",
-                    );
-                    req.headers_mut().typed_insert(Host::from(authority));
-                } else {
-                    let host = request_ctx.authority.host;
-                    tracing::trace!(
-                        url.full = %req.uri(),
-                        "add {host} as HOST header to req (was missing it)",
-                    );
-                    req.headers_mut().typed_insert(Host::from(host));
-                }
-
+                let authority = authority.without_default_port_for(protocol.as_ref());
+                tracing::trace!(
+                    url.full = %req.request_uri(),
+                    server.address = %authority,
+                    "add host from authority as HOST header to req (was missing it)",
+                );
+                req.headers_mut().typed_insert(Host::from(authority));
                 req
             } else {
                 req
@@ -228,8 +214,10 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
             // set scheme/host if not defined as otherwise pseudo
             // headers won't be possible to be set in the h2 crate
             let mut req = if req.uri().host().is_none() {
-                let request_ctx = RequestContext::try_from(&req)
-                    .context("[h2+] add scheme/host: missing RequestCtx")?;
+                let authority = req
+                    .authority()
+                    .context("[h2+] add scheme/host: missing authority")?;
+                let protocol = req.protocol();
 
                 tracing::trace!(
                     network.protocol.name = "http",
@@ -237,35 +225,13 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                     "defining authority and scheme to non-connect direct http request"
                 );
 
-                let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = Some(
-                    request_ctx
-                        .protocol
-                        .as_str()
-                        .try_into()
-                        .context("use RequestContext.protocol as http scheme")?,
-                );
-                // NOTE: in a green future we might not need to stringify
-                // this entire thing first... maybe something someone at some
-                // point can take a look at this mess
-
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
-                let authority = if request_ctx.authority_has_default_port() {
-                    request_ctx.authority.host.to_string()
-                } else {
-                    request_ctx.authority.to_string()
-                };
-
-                uri_parts.authority = Some(
-                    authority
-                        .try_into()
-                        .context("use RequestContext.authority as http authority")?,
-                );
-
-                parts.uri = rama_http_types::Uri::from_parts(uri_parts)
-                    .context("create http uri from parts")?;
+                let authority = authority.without_default_port_for(protocol.as_ref());
+                let (mut parts, body) = req.into_parts();
+                parts.uri.set_scheme(protocol.unwrap_or(Protocol::HTTP));
+                parts.uri.set_host(authority.host);
+                parts.uri.set_port(authority.port);
 
                 Request::from_parts(parts, body)
             } else {
@@ -294,16 +260,8 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         }
         Version::HTTP_3 => {
             tracing::debug!(
-                url.full = %req.uri(),
+                url.full = %req.request_uri(),
                 "h3 request detected, but sanitize_client_req_header does not yet support this",
-            );
-            req
-        }
-        _ => {
-            tracing::debug!(
-                url.full = %req.uri(),
-                http.method = ?req.method(),
-                "request with unknown version detected, sanitize_client_req_header cannot support this",
             );
             req
         }
@@ -313,7 +271,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Scheme, Uri, uri::Authority};
+    use rama_http::Uri;
     use rama_net::Protocol;
 
     #[test]
@@ -326,36 +284,27 @@ mod tests {
             Method::PATCH,
             Method::POST,
             Method::PUT,
+            Method::QUERY,
             Method::TRACE,
         ]
         .into_iter()
         {
-            let uri = Uri::builder()
-                .authority("example.com")
-                .scheme(Scheme::HTTPS)
-                .path_and_query("/test")
-                .build()
-                .unwrap();
+            let uri = Uri::from_static("https://example.com/test");
 
             let req = Request::builder().uri(uri).method(method).body(()).unwrap();
             let req = sanitize_client_req_header(req).unwrap();
 
             let (parts, _) = req.into_parts();
-            let uri = parts.uri.into_parts();
 
-            assert_eq!(uri.scheme, None);
-            assert_eq!(uri.authority, None);
+            assert_eq!(parts.uri.scheme(), None);
+            assert_eq!(parts.uri.authority(), None);
+            assert_eq!(parts.uri, "/test");
         }
     }
 
     #[test]
     fn should_not_sanitize_http1_connect() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme("https")
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("https://example.com/test");
 
         let req = Request::builder()
             .method(Method::CONNECT)
@@ -365,20 +314,14 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, Some(Scheme::HTTPS));
-        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+        assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTPS));
+        assert_eq!(parts.uri.host_str().as_deref(), Some("example.com"));
     }
 
     #[test]
     fn should_not_sanitize_insecure_http1_request_over_http_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTP)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("http://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -391,20 +334,14 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, Some(Scheme::HTTP));
-        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+        assert_eq!(parts.uri.scheme(), Some(&Protocol::HTTP));
+        assert_eq!(parts.uri.host_str().as_deref(), Some("example.com"));
     }
 
     #[test]
     fn should_sanitize_secure_http1_request_over_http_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTPS)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("https://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -417,20 +354,15 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, None);
-        assert_eq!(uri.authority, None);
+        assert_eq!(parts.uri.scheme(), None);
+        assert_eq!(parts.uri.authority(), None);
+        assert_eq!(parts.uri, "/test");
     }
 
     #[test]
     fn should_sanitize_insecure_http1_request_over_socks_proxy() {
-        let uri = Uri::builder()
-            .authority("example.com")
-            .scheme(Scheme::HTTP)
-            .path_and_query("/test")
-            .build()
-            .unwrap();
+        let uri = Uri::from_static("http://example.com/test");
 
         let req = Request::builder().uri(uri).body(()).unwrap();
 
@@ -443,9 +375,33 @@ mod tests {
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
-        let uri = parts.uri.into_parts();
 
-        assert_eq!(uri.scheme, None);
-        assert_eq!(uri.authority, None);
+        assert_eq!(parts.uri.scheme(), None);
+        assert_eq!(parts.uri.authority(), None);
+        assert_eq!(parts.uri, "/test");
+    }
+
+    // Regression: a forwarded request received over a terminated TLS connection
+    // (e.g. a MITM proxy upstream hop) arrives in origin-form with no scheme in
+    // the URI. Its protocol MUST resolve to HTTPS via the `SecureTransport`
+    // extension so the auto TLS connector secures the upstream hop. This
+    // silently regressed to HTTP whenever `rama-http-types/tls` was not enabled
+    // alongside `rama-net/tls`: `input_ext` then matched against a dummy
+    // `SecureTransport` type instead of the real one inserted by the TLS
+    // acceptor, so the connector went plaintext to a TLS upstream and the
+    // upstream's TLS alert surfaced as `Parse(Version)` (http_mitm_proxy_boring).
+    #[cfg(feature = "tls")]
+    #[test]
+    fn origin_form_request_over_terminated_tls_resolves_https() {
+        use rama_net::tls::SecureTransport;
+
+        let req = Request::builder()
+            .uri("/ping")
+            .header(HOST, "example.com:8443")
+            .body(())
+            .unwrap();
+        req.extensions().insert(SecureTransport::default());
+
+        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
     }
 }

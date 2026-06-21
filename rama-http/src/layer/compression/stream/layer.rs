@@ -285,7 +285,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_compress_head_response() {
         use crate::header::CONTENT_ENCODING;
-        use http::Method;
+        use rama_http_types::Method;
         let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
         let req = Request::builder()
             .method(Method::HEAD)
@@ -303,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn does_not_compress_connect_response() {
         use crate::header::CONTENT_ENCODING;
-        use http::Method;
+        use rama_http_types::Method;
         let service = StreamCompressionLayer::new().into_layer(service_fn(handle));
         let req = Request::builder()
             .method(Method::CONNECT)

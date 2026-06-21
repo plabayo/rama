@@ -9,7 +9,9 @@ use std::fmt;
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Header<T = HeaderName> {
     Field { name: T, value: HeaderValue },
-    // TODO: Change these types to `http::uri` types.
+    // Authority/Scheme/Path stay as raw `BytesStr`: HPACK needs the exact wire
+    // bytes for dynamic-table sizing, re-encoding and equality. Typed parsing
+    // (into `rama_net` URI components) happens at the h2 request-decode layer.
     Authority(BytesStr),
     Method(Method),
     Scheme(BytesStr),

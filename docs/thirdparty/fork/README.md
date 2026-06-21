@@ -34,6 +34,24 @@ as a distant relative.
     - Original: <https://github.com/hyperium/tonic/blob/a88b919bd872f20e29d40aa05a88b19574037358/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tonic](./licenses/tonic)
+- http: <https://github.com/hyperium/http/tree/v1.4.0>
+  - leaf HTTP types (`Method`, `StatusCode`, the `header` module) vendored into `rama-http-types`
+  - License:
+    - Original: <https://github.com/hyperium/http/blob/v1.4.0/LICENSE-MIT>
+    - Type: MIT
+    - Copy: [./licenses/http](./licenses/http)
+- http-body: <https://github.com/hyperium/http-body/tree/v1.0.1>
+  - forked into `rama-http-types` (`http_body`) so `Frame` trailers use rama's `HeaderMap`
+  - License:
+    - Original: <https://github.com/hyperium/http-body/blob/v1.0.1/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/http-body](./licenses/http-body)
+- http-body-util: <https://github.com/hyperium/http-body/tree/http-body-util-v0.1.3>
+  - forked into `rama-http-types` (`http_body_util`) alongside the forked `http-body`
+  - License:
+    - Original: <https://github.com/hyperium/http-body/blob/http-body-util-v0.1.3/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
 ### tower-rs
 
@@ -167,6 +185,16 @@ not be kept in sync with upstream — they are now part of `rama`.
     - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
     - Type: MIT
     - Copy: [./licenses/include_dir](./licenses/include_dir)
+- <https://github.com/misalcedo/ppp/tree/28c5db92fda7337fc1ef36e6f19db96d511cd319>
+  - PROXY protocol v1/v2 parser, adapted+scoped for rama use (rama error types
+    + a streaming-friendly `ParseError::Partial`); originally by Miguel D. Salcedo
+  - reviewed against upstream `main` (`4564452`, 2026-04-29): nothing further to
+    port — the only code change since the fork (the v1 partial-newline fix) is
+    already covered, more strictly, by rama's `Partial` handling
+  - License:
+    - Original: <https://github.com/misalcedo/ppp/blob/28c5db92fda7337fc1ef36e6f19db96d511cd319/LICENSE>
+    - Type: Apache 2.0
+    - Copy: [./licenses/ppp](./licenses/ppp)
 
 ## Small Lib Forks
 

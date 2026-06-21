@@ -57,6 +57,46 @@ impl HostWithOptPort {
         self.port.as_u16()
     }
 
+    /// Resolve into a [`HostWithPort`], falling back to `default_port` when no
+    /// explicit port is set.
+    #[must_use]
+    pub fn into_host_with_port_or(self, default_port: u16) -> HostWithPort {
+        let port = self.port.as_u16().unwrap_or(default_port);
+        HostWithPort {
+            host: self.host,
+            port,
+        }
+    }
+
+    /// Resolve into a [`HostWithPort`] when a port is known — the explicit port
+    /// if set, otherwise `fallback`. `None` if neither yields a port.
+    #[must_use]
+    pub fn into_host_with_port(self, fallback: Option<u16>) -> Option<HostWithPort> {
+        let port = self.port.as_u16().or(fallback)?;
+        Some(HostWithPort {
+            host: self.host,
+            port,
+        })
+    }
+
+    /// Whether this authority's explicit port equals the default port of
+    /// `protocol`. Used to decide whether a port needs to be rendered.
+    #[must_use]
+    pub fn has_default_port_for(&self, protocol: Option<&Protocol>) -> bool {
+        protocol.and_then(Protocol::default_port) == self.port.as_u16()
+    }
+
+    /// Drop the port when it is `protocol`'s default, so rendering yields a bare
+    /// host (e.g. `example.com` instead of `example.com:443` for HTTPS).
+    #[must_use]
+    pub fn without_default_port_for(self, protocol: Option<&Protocol>) -> Self {
+        if self.has_default_port_for(protocol) {
+            Self::new(self.host)
+        } else {
+            self
+        }
+    }
+
     /// creates a new local ipv4 [`HostWithOptPort`] without a port.
     ///
     /// # Example

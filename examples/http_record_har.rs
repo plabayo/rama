@@ -44,7 +44,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     extensions::{Extension, ExtensionsRef},
     http::{
-        HeaderValue, Request, Response, StatusCode,
+        BodyLimitLayer, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             compression::CompressionLayer,
@@ -67,7 +67,6 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
-        stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
             client::{ServerVerifyMode, TlsClientConfig},
@@ -212,17 +211,6 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
-    // In the past we deleted the request context here, as such:
-    // ```
-    // ctx.remove::<RequestContext>();
-    // ```
-    // This is however not correct, as the request context remains true.
-    // The user proxies here with a target as aim. This target, incoming version
-    // and so on does not change. This initial context remains true
-    // and should be preserved. This is especially important,
-    // as we otherwise might not be able to define the scheme/authority
-    // for upstream http requests.
-
     let state = upgraded.extensions().get_ref::<State>().unwrap();
     let http_service = Arc::new(new_http_mitm_proxy(state));
 

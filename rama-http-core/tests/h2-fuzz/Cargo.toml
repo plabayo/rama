@@ -9,7 +9,6 @@ edition = "2024"
 rama-core = { workspace = true }
 rama-http-core = { workspace = true }
 rama-http-types = { workspace = true }
-time = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 

@@ -124,7 +124,7 @@ async fn main() {
                             </body>
                         </html>"##,
                         socket_info.peer_addr(),
-                        uri.path(),
+                        uri.path_or_root(),
                         tracker.read(),
                         tracker.written(),
                     )))

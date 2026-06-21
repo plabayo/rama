@@ -1124,7 +1124,7 @@ async fn test_with_fallback_svc(svc: ServeDir) {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path_or_root()
         ))))
     }
 
@@ -1191,7 +1191,7 @@ async fn calling_fallback_on_not_allowed() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path_or_root()
         ))))
     }
 
@@ -1232,7 +1232,7 @@ async fn with_fallback_svc_and_not_append_index_html_on_directories() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path_or_root()
         ))))
     }
 
@@ -1323,24 +1323,33 @@ async fn calls_fallback_on_null() {
 #[tokio::test]
 async fn identity_encoding_does_not_strip_extension() {
     let svc = ServeDir::new("../test-files");
+    test_identity_encoding_does_not_strip_extension(svc, Method::GET).await;
+}
 
-    let req = Request::builder()
-        .uri("/missing.foobar")
-        .header("Accept-Encoding", "identity")
-        .body(Body::empty())
-        .unwrap();
-    let res = svc.serve(req).await.unwrap();
-
-    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+#[tokio::test]
+async fn identity_encoding_does_not_strip_extension_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_identity_encoding_does_not_strip_extension(svc, Method::GET).await;
 }
 
 #[tokio::test]
 async fn identity_encoding_does_not_strip_extension_head_request() {
     let svc = ServeDir::new("../test-files");
+    test_identity_encoding_does_not_strip_extension(svc, Method::HEAD).await;
+}
 
+#[tokio::test]
+async fn identity_encoding_does_not_strip_extension_head_request_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_identity_encoding_does_not_strip_extension(svc, Method::HEAD).await;
+}
+
+async fn test_identity_encoding_does_not_strip_extension(svc: ServeDir, method: Method) {
     let req = Request::builder()
-        .uri("/missing.foobar")
-        .method(Method::HEAD)
+        .method(method)
+        .uri("/hello.txt.foobar")
         .header("Accept-Encoding", "identity")
         .body(Body::empty())
         .unwrap();
@@ -1457,7 +1466,7 @@ async fn file_requested_with_trailing_slash_with_fallback() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
-            req.uri().path()
+            req.uri().path_or_root()
         ))))
     }
 

@@ -1,5 +1,5 @@
 use super::{UriMatchError, UriMatchReplace};
-use rama_http_types::Uri;
+use crate::uri::Uri;
 use std::borrow::Cow;
 
 macro_rules! impl_uri_match_replace_on_slice {

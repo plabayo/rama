@@ -19,10 +19,9 @@ use rama_http::{
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
-    Protocol,
+    AuthorityInputExt, Protocol, ProtocolInputExt,
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
-    transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -105,10 +104,7 @@ impl<S> HttpProxyConnector<S> {
 impl<S, Input> Service<Input> for HttpProxyConnector<S>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
-        + Send
-        + ExtensionsRef
-        + 'static,
+    Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
 {
     type Output = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Input>;
     type Error = BoxError;
@@ -126,9 +122,10 @@ where
             ));
         }
 
-        let transport_ctx = input
-            .try_ref_into_transport_ctx()
-            .context("http proxy connector: get transport context")?;
+        let authority = input
+            .authority()
+            .context("http proxy connector: resolve authority")?;
+        let app_protocol = input.protocol();
 
         #[cfg(feature = "tls")]
         let input = input;
@@ -185,18 +182,15 @@ where
         let EstablishedClientConnection { input, conn } = established_conn;
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port_u16(),
+            server.address = %authority.host,
+            server.port = authority.port_u16(),
             "http proxy connector: connected to proxy",
         );
 
-        if !transport_ctx
-            .app_protocol
+        if !app_protocol
             .map(|p| p.is_secure())
             // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
-            .unwrap_or_else(|| {
-                transport_ctx.authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT)
-            })
+            .unwrap_or_else(|| authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT))
         {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
@@ -207,10 +201,8 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(
-            transport_ctx.authority.clone(),
-            input.extensions().clone(),
-        )?;
+        let mut connector =
+            InnerHttpProxyConnector::new(authority.clone(), input.extensions().clone())?;
 
         if let Some(version) = self.version {
             connector.set_version(version);
@@ -250,8 +242,8 @@ where
             .insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
-            server.address = %transport_ctx.authority.host,
-            server.port = transport_ctx.authority.port_u16(),
+            server.address = %authority.host,
+            server.port = authority.port_u16(),
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection { input, conn })

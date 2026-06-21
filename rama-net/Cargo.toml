@@ -13,6 +13,9 @@ rust-version = { workspace = true }
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
+[package.metadata.cargo-machete]
+ignored = ["quickcheck"]
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
@@ -26,7 +29,7 @@ targets = [
 
 [features]
 default = []
-http = ["dep:rama-http-types", "dep:sha2", "dep:hex", "dep:md5"]
+http = []
 # IDNA (internationalized domain names) support.
 #
 # Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.
@@ -66,7 +69,6 @@ pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
-rama-http-types = { workspace = true, optional = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

@@ -14,7 +14,6 @@ use rama::extensions::{Extension, ExtensionsRef};
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
 use rama::net::stream::Socket;
 use rama_net::address::SocketAddress;
@@ -350,13 +349,14 @@ macro_rules! test {
                 }
             });
 
-            let mut builder = Uri::builder();
-            if req.method() == Method::CONNECT {
-                builder = builder.authority(format!("{}:{}", req.uri().host().unwrap(), req.uri().port_u16().unwrap()));
+            let new_uri = if req.method() == Method::CONNECT {
+                // authority-form (host:port) request-target for CONNECT
+                req.uri().as_authority_form().unwrap()
             } else {
-                builder = builder.path_and_query(req.uri().path_and_query().cloned().unwrap_or(PathAndQuery::from_static("/")));
-            }
-            *req.uri_mut() = builder.build().unwrap();
+                // origin-form (path + query only) request-target
+                req.uri().clone().without_scheme().without_authority().without_fragment()
+            };
+            *req.uri_mut() = new_uri;
 
             let resp = sender.send_request(req).await?;
 
@@ -425,7 +425,13 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, url: $url:expr) => {{
-        $req_builder = $req_builder.uri(format!($url, addr = $addr));
+        let url = format!($url, addr = $addr);
+        // authority-form (`host:port`, used by CONNECT request-targets) is not
+        // accepted by `Uri::parse`, so fall back to the authority-form parser.
+        let uri = Uri::parse(url.clone())
+            .or_else(|_| Uri::parse_authority_form(url))
+            .expect("parse request url");
+        $req_builder = $req_builder.uri(uri);
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body: $body_e:expr) => {{
@@ -1591,7 +1597,7 @@ mod conn {
     use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::{Method, Request, Response, StatusCode};
+    use rama::http::{Method, Request, Response, StatusCode, Uri};
     use rama::rt::Executor;
 
     use super::{FutureExpectMsgExt, concat, s, support, tcp_connect};
@@ -2142,7 +2148,8 @@ mod conn {
 
             let req = Request::builder()
                 .method("CONNECT")
-                .uri(addr.to_string())
+                // CONNECT request-target is authority-form (`host:port`)
+                .uri(Uri::parse_authority_form(addr.to_string()).unwrap())
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             let res = client
@@ -2519,7 +2526,8 @@ mod conn {
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
-                .uri(format!("{addr}"))
+                // CONNECT request-target is authority-form (`host:port`)
+                .uri(Uri::parse_authority_form(format!("{addr}")).unwrap())
                 .body(Empty::<Bytes>::new())
                 .expect("request builder");
 
@@ -2865,7 +2873,7 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect("localhost")
+        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
@@ -2915,7 +2923,9 @@ mod conn {
             conn.await.expect("client conn shouldn't error");
         });
 
-        let req = Request::connect("localhost").body(Empty::new()).unwrap();
+        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            .body(Empty::new())
+            .unwrap();
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 

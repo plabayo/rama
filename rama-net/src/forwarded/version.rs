@@ -1,6 +1,3 @@
-#[cfg(feature = "http")]
-use rama_http_types::Version;
-
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
 /// Version of the forwarded protocol.
 pub struct ForwardedVersion(VersionKind);
@@ -29,22 +26,6 @@ impl ForwardedVersion {
 
     /// `HTTP/3.0`
     pub const HTTP_3: Self = Self(VersionKind::H3);
-}
-
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-impl ForwardedVersion {
-    /// Returns this [`ForwardedVersion`] as a [`Version`] if it is defined as http.
-    #[must_use]
-    pub fn as_http(&self) -> Option<Version> {
-        Some(match self.0 {
-            VersionKind::Http09 => Version::HTTP_09,
-            VersionKind::Http10 => Version::HTTP_10,
-            VersionKind::Http11 => Version::HTTP_11,
-            VersionKind::H2 => Version::HTTP_2,
-            VersionKind::H3 => Version::HTTP_3,
-        })
-    }
 }
 
 rama_utils::macros::error::static_str_error! {

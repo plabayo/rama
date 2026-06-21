@@ -139,13 +139,14 @@ async fn main() {
                 ])),
             )
                 .into_layer(service_fn(async |req: Request| {
-                    if req.uri().path().ends_with("/slow") {
+                    let path = req.uri().path_or_root();
+                    if path.ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                     Ok::<_, Infallible>(
                         Json(json!({
                             "method": req.method().as_str(),
-                            "path": req.uri().path(),
+                            "path": path,
                         }))
                         .into_response(),
                     )

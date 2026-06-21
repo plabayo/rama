@@ -1,8 +1,8 @@
 use rama_core::error::BoxErrorExt as _;
 use std::{borrow::Cow, fmt};
 
+use crate::uri::Uri;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt};
-use rama_http_types::Uri;
 
 #[derive(Clone)]
 pub(super) struct UriFormatter {
@@ -85,13 +85,10 @@ impl UriFormatter {
                         }
                         include_query = true;
                     } else {
-                        // assume it is fine, uri format will fail otherwise on runtime,
-                        // but that's a user issue for now, as it can be a bit tricky
-                        // given we would also need to consider escaped (%) and other
-                        // such stateful rules...
-                        //
-                        // TODO: once uri is part of rama-net we could look if this can be more exhaustive...
-                        // for example by allowing such state machine to be reused here
+                        // Literal byte: accepted as-is. The formatted output is
+                        // validated when parsed as a `Uri` at runtime; validating
+                        // the template here is impractical because captures (`$N`)
+                        // can split percent-escapes and other stateful URI grammar.
                     }
                     index += 1;
                 }
@@ -534,9 +531,10 @@ mod tests_fmt_uri {
 
     #[test]
     fn invalid_uri_bytes_result_in_error() {
-        // raw space is typically invalid in URIs, expect parse error propagated
+        // raw control bytes are always rejected (even by the native graceful
+        // parser, unlike a bare space), so the parse error is propagated.
         let fmt = mk("/bad/$1");
-        let err = render(&fmt, &[b"has space"]).unwrap_err();
+        let err = render(&fmt, &[b"has\nbreak"]).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("parse formatted bytes as Uri")
