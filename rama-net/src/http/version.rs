@@ -4,6 +4,8 @@
 //! standard `HTTP_09..HTTP_3` constants) so it is a drop-in replacement for
 //! `rama_http_types::Version`, which re-exports this type.
 
+use std::{error::Error, fmt};
+
 /// Represents a version of the HTTP spec.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Version(Http);
@@ -56,6 +58,27 @@ impl std::fmt::Debug for Version {
         f.write_str(self.as_str())
     }
 }
+
+/// A possible error value when converting `Version` from bytes
+/// or a related type.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct InvalidVersion;
+
+impl InvalidVersion {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl fmt::Display for InvalidVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid HTTP version")
+    }
+}
+
+impl Error for InvalidVersion {}
 
 // `ApplicationProtocol` (ALPN) <-> `Version`, only meaningful when both the
 // `tls` (ApplicationProtocol) and `http` (this module) features are enabled.

@@ -153,8 +153,8 @@ mod tests {
 
         let rama_uri: Uri = hyper_uri.try_into_rama_http().unwrap();
         assert_eq!(
-            rama_uri.host().map(|h| h.to_string()).as_deref(),
-            Some("example.com")
+            rama_uri.host(),
+            Some(rama_net::address::Host::EXAMPLE_NAME.view())
         );
         assert_eq!(rama_uri.port_u16(), Some(443));
     }

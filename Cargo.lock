@@ -3855,6 +3855,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-http-types",
+ "rama-net",
 ]
 
 [[package]]

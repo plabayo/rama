@@ -9,6 +9,7 @@ use crate::HyperExtensions;
 impl<T> TryIntoRamaHttp for http::Request<T> {
     type Output = Request<T>;
     type Error = rama_http_types::Error;
+
     fn try_into_rama_http(self) -> Result<Request<T>, rama_http_types::Error> {
         let (mut parts, body) = self.into_parts();
         // Pull any previously-stashed rama extensions back out; stash the
@@ -29,6 +30,7 @@ impl<T> TryIntoRamaHttp for http::Request<T> {
 impl<T> TryIntoRamaHttp for http::Response<T> {
     type Output = Response<T>;
     type Error = rama_http_types::Error;
+
     fn try_into_rama_http(self) -> Result<Response<T>, rama_http_types::Error> {
         let (mut parts, body) = self.into_parts();
         let rama_extensions = parts.extensions.remove::<Extensions>().unwrap_or_default();
@@ -46,6 +48,7 @@ impl<T> TryIntoRamaHttp for http::Response<T> {
 impl TryIntoRamaHttp for http::request::Parts {
     type Output = request::Parts;
     type Error = rama_http_types::Error;
+
     fn try_into_rama_http(self) -> Result<request::Parts, rama_http_types::Error> {
         // `request::Parts::new` is private + non-exhaustive, so route through a
         // `Request<()>` and split it back out.
@@ -59,6 +62,7 @@ impl TryIntoRamaHttp for http::request::Parts {
 impl TryIntoRamaHttp for http::response::Parts {
     type Output = response::Parts;
     type Error = rama_http_types::Error;
+
     fn try_into_rama_http(self) -> Result<response::Parts, rama_http_types::Error> {
         Ok(http::Response::from_parts(self, ())
             .try_into_rama_http()?

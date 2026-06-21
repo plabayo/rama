@@ -7,6 +7,7 @@ use super::TryIntoHyperiumHttp;
 impl TryIntoHyperiumHttp for Method {
     type Output = http::Method;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::Method, http::Error> {
         // Both are byte-identical forks; round-trip through the method bytes.
         Ok(http::Method::from_bytes(self.as_str().as_bytes())?)
@@ -16,6 +17,7 @@ impl TryIntoHyperiumHttp for Method {
 impl TryIntoHyperiumHttp for StatusCode {
     type Output = http::StatusCode;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::StatusCode, http::Error> {
         Ok(http::StatusCode::from_u16(self.as_u16())?)
     }
@@ -24,6 +26,7 @@ impl TryIntoHyperiumHttp for StatusCode {
 impl TryIntoHyperiumHttp for Version {
     type Output = http::Version;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::Version, http::Error> {
         // Total: rama and hyperium expose the same five versions.
         Ok(match self {
@@ -39,6 +42,7 @@ impl TryIntoHyperiumHttp for Version {
 impl TryIntoHyperiumHttp for Uri {
     type Output = http::Uri;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::Uri, http::Error> {
         // The HTTP asterisk-form has no `http::Uri` representation beyond `*`.
         if self.is_asterisk() {
@@ -51,6 +55,7 @@ impl TryIntoHyperiumHttp for Uri {
 impl TryIntoHyperiumHttp for HeaderMap {
     type Output = http::HeaderMap;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::HeaderMap, http::Error> {
         // Both are byte-identical forks; round-trip each name/value through its
         // bytes, preserving multi-value ordering and the sensitivity flag.

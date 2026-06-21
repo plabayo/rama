@@ -8,6 +8,7 @@ use crate::HyperExtensions;
 impl<T> TryIntoHyperiumHttp for Request<T> {
     type Output = http::Request<T>;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::Request<T>, http::Error> {
         let (parts, body) = self.into_parts();
 
@@ -31,6 +32,7 @@ impl<T> TryIntoHyperiumHttp for Request<T> {
 impl<T> TryIntoHyperiumHttp for Response<T> {
     type Output = http::Response<T>;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::Response<T>, http::Error> {
         let (parts, body) = self.into_parts();
 
@@ -53,6 +55,7 @@ impl<T> TryIntoHyperiumHttp for Response<T> {
 impl TryIntoHyperiumHttp for request::Parts {
     type Output = http::request::Parts;
     type Error = http::Error;
+
     fn try_into_hyperium_http(self) -> Result<http::request::Parts, http::Error> {
         // `http::request::Parts` can't be built directly, so route through a
         // `Request<()>` and split it back out.

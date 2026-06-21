@@ -27,6 +27,7 @@ pub type Result<T> = result::Result<T, Error>;
 enum ErrorKind {
     StatusCode(status::InvalidStatusCode),
     Method(method::InvalidMethod),
+    Version(rama_net::http::InvalidVersion),
     Uri(rama_net::uri::ParseError),
     HeaderName(header::InvalidHeaderName),
     HeaderValue(header::InvalidHeaderValue),
@@ -59,6 +60,7 @@ impl Error {
         match self.inner {
             ErrorKind::StatusCode(ref e) => e,
             ErrorKind::Method(ref e) => e,
+            ErrorKind::Version(ref e) => e,
             ErrorKind::Uri(ref e) => e,
             ErrorKind::HeaderName(ref e) => e,
             ErrorKind::HeaderValue(ref e) => e,
@@ -87,6 +89,14 @@ impl From<method::InvalidMethod> for Error {
     fn from(err: method::InvalidMethod) -> Self {
         Self {
             inner: ErrorKind::Method(err),
+        }
+    }
+}
+
+impl From<rama_net::http::InvalidVersion> for Error {
+    fn from(err: rama_net::http::InvalidVersion) -> Self {
+        Self {
+            inner: ErrorKind::Version(err),
         }
     }
 }
