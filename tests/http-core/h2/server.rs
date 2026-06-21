@@ -167,7 +167,17 @@ async fn serve_connect() {
         let settings = client.assert_server_handshake().await;
         assert_default_settings!(settings);
         client
-            .send_frame(frames::headers(1).request("CONNECT", "localhost").eos())
+            .send_frame(
+                frames::headers(1)
+                    // CONNECT targets are authority-form; native `Uri::parse`
+                    // (what `&str: TryInto<Uri>` uses) only reads absolute/
+                    // relative-ref URIs, so build the authority-form URI here.
+                    .request(
+                        "CONNECT",
+                        rama::http::Uri::parse_authority_form("localhost").unwrap(),
+                    )
+                    .eos(),
+            )
             .await;
         client
             .recv_frame(frames::headers(1).response(200).eos())
