@@ -8,24 +8,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::{ProtocolError, ProtocolStatus, RecordType, Role, error::ProtocolError as PE};
 
-/// Generates the shared fixed 8-byte `write_to` for a FastCGI record body:
-/// serialise into a stack buffer via `write_to_buf`, then write it in full.
-macro_rules! impl_write_to_fixed8 {
-    ($ty:ty, $doc:literal) => {
-        impl $ty {
-            #[doc = $doc]
-            pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
-            where
-                W: AsyncWrite + Unpin,
-            {
-                let mut buf = [0u8; 8];
-                self.write_to_buf(&mut buf.as_mut_slice());
-                w.write_all(&buf).await
-            }
-        }
-    };
-}
-
 /// The 8-byte header that precedes every FastCGI record.
 ///
 /// ```plain
@@ -121,6 +103,18 @@ impl RecordHeader {
         })
     }
 
+    /// Write this [`RecordHeader`] to the writer.
+    ///
+    /// Reference: FastCGI Specification §3.3
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = [0u8; 8];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf).await
+    }
+
     /// Write this [`RecordHeader`] into the buffer.
     ///
     /// Reference: FastCGI Specification §3.3
@@ -133,11 +127,6 @@ impl RecordHeader {
         buf.put_u8(0); // reserved
     }
 }
-
-impl_write_to_fixed8!(
-    RecordHeader,
-    "Write this [`RecordHeader`] to the writer.\n\nReference: FastCGI Specification §3.3"
-);
 
 /// Body of a `FCGI_BEGIN_REQUEST` record (8 bytes).
 ///
@@ -181,6 +170,18 @@ impl BeginRequestBody {
         Ok(Self { role, keep_conn })
     }
 
+    /// Write this [`BeginRequestBody`] (8 bytes) to the writer.
+    ///
+    /// Reference: FastCGI Specification §5.1
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = [0u8; 8];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf).await
+    }
+
     /// Write this [`BeginRequestBody`] into the buffer.
     ///
     /// Reference: FastCGI Specification §5.1
@@ -191,11 +192,6 @@ impl BeginRequestBody {
         buf.put_bytes(0, 5); // reserved
     }
 }
-
-impl_write_to_fixed8!(
-    BeginRequestBody,
-    "Write this [`BeginRequestBody`] (8 bytes) to the writer.\n\nReference: FastCGI Specification §5.1"
-);
 
 /// Body of a `FCGI_END_REQUEST` record (8 bytes).
 ///
@@ -273,6 +269,18 @@ impl EndRequestBody {
         })
     }
 
+    /// Write this [`EndRequestBody`] (8 bytes) to the writer.
+    ///
+    /// Reference: FastCGI Specification §5.5
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = [0u8; 8];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf).await
+    }
+
     /// Write this [`EndRequestBody`] into the buffer.
     ///
     /// Reference: FastCGI Specification §5.5
@@ -282,11 +290,6 @@ impl EndRequestBody {
         buf.put_bytes(0, 3); // reserved
     }
 }
-
-impl_write_to_fixed8!(
-    EndRequestBody,
-    "Write this [`EndRequestBody`] (8 bytes) to the writer.\n\nReference: FastCGI Specification §5.5"
-);
 
 /// Body of a `FCGI_UNKNOWN_TYPE` management record (8 bytes).
 ///
@@ -322,17 +325,24 @@ impl UnknownTypeBody {
         })
     }
 
+    /// Write this [`UnknownTypeBody`] (8 bytes) to the writer.
+    ///
+    /// Reference: FastCGI Specification §4.2
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = [0u8; 8];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf).await
+    }
+
     /// Write this [`UnknownTypeBody`] into the buffer.
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(self.unknown_type);
         buf.put_bytes(0, 7); // reserved
     }
 }
-
-impl_write_to_fixed8!(
-    UnknownTypeBody,
-    "Write this [`UnknownTypeBody`] (8 bytes) to the writer.\n\nReference: FastCGI Specification §4.2"
-);
 
 #[cfg(test)]
 mod tests {
