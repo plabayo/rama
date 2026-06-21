@@ -4,15 +4,64 @@
 //!
 //! Conventionally `user[:password]` but the grammar allows any
 //! pchar-without-`@` byte sequence (and pct-encoded `@`). The raw on-wire
-//! bytes are preserved verbatim; convert to typed forms via
-//! [`UserInfo::split_user_password`] for the conventional split or
-//! [`UserInfo::to_basic`] for HTTP Basic-Auth interop.
+//! bytes are preserved verbatim; read the percent-decoded logical view
+//! via [`UserInfo::as_decoded_str`] / [`UserInfo::username_decoded`] /
+//! [`UserInfo::password_decoded`], split on the raw `:` via
+//! [`UserInfo::split_user_password`], or cross into HTTP Basic-Auth (which
+//! decodes + validates) via [`UserInfo::to_basic`]. The reverse —
+//! [`From<Basic>`](UserInfo) — percent-encodes back into wire form.
 
+use std::borrow::Cow;
+
+use percent_encoding::{AsciiSet, CONTROLS, percent_decode, utf8_percent_encode};
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxErrorExt as _;
+use rama_utils::str::NonEmptyStr;
 
 use crate::user::Basic;
 use rama_core::error::{BoxError, ErrorContext};
+
+/// Bytes percent-encoded inside a userinfo **password** component when
+/// serializing a [`Basic`] back to wire form. Pass-through mirrors the
+/// allow-set in [`crate::byte_sets`] (`unreserved / sub-delims / ":"`);
+/// `%` is encoded so raw content round-trips (a literal `%` → `%25`).
+const USERINFO_PASSWORD_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+/// Same as [`USERINFO_PASSWORD_ENCODE_SET`] but also escapes `:`, so a `:`
+/// inside a username can't be mistaken for the user/password separator on
+/// the way back in.
+const USERINFO_USERNAME_ENCODE_SET: &AsciiSet = &USERINFO_PASSWORD_ENCODE_SET.add(b':');
+
+/// Reject a percent-decoded userinfo component that contains a control
+/// byte. Decoding is what makes this necessary: the graceful authority
+/// parser screens only *raw* control bytes, so a userinfo like `a%0Db`
+/// reaches [`UserInfoRef::to_basic`]; decoding it into a credential that
+/// round-trips into an `Authorization` header would be CRLF injection.
+fn reject_decoded_control(s: &str) -> Result<(), BoxError> {
+    if s.as_bytes().iter().any(|&b| b < 0x20 || b == 0x7F) {
+        return Err(BoxError::from_static_str(
+            "decoded userinfo component contains a control character",
+        ));
+    }
+    Ok(())
+}
 
 /// Raw RFC 3986 userinfo bytes. Cheap to clone.
 ///
@@ -88,12 +137,36 @@ impl UserInfo {
         self.view().split_user_password()
     }
 
+    /// Percent-decoded view of the full userinfo. `Cow::Borrowed` when no
+    /// `%XX` escapes are present; UTF-8 errors fall back to U+FFFD.
+    ///
+    /// **Lossy for re-splitting**: a `%3A` in the user part decodes to a
+    /// literal `:`. Use [`UserInfo::username_decoded`] /
+    /// [`UserInfo::password_decoded`] to decode the components separately.
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'_, str> {
+        self.view().as_decoded_str()
+    }
+
+    /// Percent-decoded user component (everything before the first raw `:`).
+    #[must_use]
+    pub fn username_decoded(&self) -> Cow<'_, str> {
+        self.view().username_decoded()
+    }
+
+    /// Percent-decoded password component (everything after the first raw
+    /// `:`), or `None` if no `:` is present.
+    #[must_use]
+    pub fn password_decoded(&self) -> Option<Cow<'_, str>> {
+        self.view().password_decoded()
+    }
+
     /// Convenience: convert this userinfo into a [`Basic`] HTTP
-    /// Basic-Auth credential. Fails if the user portion is empty
-    /// (`Basic` requires a non-empty username) or if either part is
-    /// not valid UTF-8.
+    /// Basic-Auth credential. The components are **percent-decoded** first
+    /// (so `user%40host` becomes `user@host`), then validated. See
+    /// [`UserInfoRef::to_basic`] for the failure modes.
     pub fn to_basic(&self) -> Result<Basic, BoxError> {
-        Basic::try_from(self.as_str()).context("convert UserInfo to Basic")
+        self.view().to_basic()
     }
 }
 
@@ -250,33 +323,38 @@ const fn validate_userinfo_static(bytes: &[u8]) {
     }
 }
 
-/// Construct a [`UserInfo`] from a [`Basic`] credential.
+/// Construct a [`UserInfo`] from a [`Basic`] credential by
+/// **percent-encoding** each component into the RFC 3986 §3.2.1 userinfo
+/// wire form. The username escapes `:` (so the first literal `:` is
+/// unambiguously the user/password separator); the password keeps `:`
+/// literal. `@`, space, and every other non-userinfo byte become `%XX`,
+/// so the result re-parses cleanly through [`UserInfo::try_from`] and
+/// decodes back to the original credential via [`UserInfo::to_basic`].
 ///
-/// # Spec divergence
+/// # Round-trip invariant
 ///
-/// [`Basic`] only rejects raw `\r` / `\n` / NUL bytes in its validation,
-/// while [`UserInfo`]'s own `TryFrom` enforces the full RFC 3986 §3.2.1
-/// userinfo grammar (rejects raw `@`, space, gen-delims, malformed pct,
-/// pct-decoded control bytes). So this `From` impl can produce a
-/// [`UserInfo`] containing bytes that [`UserInfo::try_from`] would
-/// reject — `Basic::new("user@host", "pw")?` round-tripped through
-/// this conversion will emit `user@host:pw` and serialize into a URI
-/// authority that the parser then refuses to re-read.
-///
-/// This is deliberate (the conversion is infallible by trait
-/// signature), and the planned follow-up is to drop [`UserInfo`] in
-/// favour of a relaxed [`Basic`] altogether (see the type-level docs
-/// for the migration plan). For now, callers that need the round-trip
-/// guarantee should validate through [`UserInfo::try_from`] first.
+/// Encoding always yields grammar-valid userinfo. The `Basic` →
+/// `UserInfo` → [`UserInfo::try_from`] round-trip holds for exactly the
+/// `Basic` values whose components are free of control bytes
+/// (`0x00`–`0x1F` / `0x7F`): any control byte encodes to a `%XX` escape
+/// that strict parsing then refuses as a pct-decoded-control smuggling
+/// vector. [`Basic::try_from`] pre-rejects `\r` / `\n` / NUL, but the
+/// typed constructors (`Basic::new`, the `with_`/`set_` setters,
+/// `clone_with_*`) do not validate, so any control byte can reach this
+/// obscure residual regardless of which entry point built the `Basic`.
 impl From<Basic> for UserInfo {
     fn from(basic: Basic) -> Self {
-        // Format as the canonical `user:password` or `user` string.
-        let serialized = match basic.password() {
-            Some(p) => format!("{}:{}", basic.username(), p),
-            None => basic.username().to_owned(),
-        };
+        let mut s = String::new();
+        s.extend(utf8_percent_encode(
+            basic.username(),
+            USERINFO_USERNAME_ENCODE_SET,
+        ));
+        if let Some(password) = basic.password() {
+            s.push(':');
+            s.extend(utf8_percent_encode(password, USERINFO_PASSWORD_ENCODE_SET));
+        }
         Self {
-            bytes: Bytes::from(serialized),
+            bytes: Bytes::from(s),
         }
     }
 }
@@ -354,10 +432,58 @@ impl<'a> UserInfoRef<'a> {
         }
     }
 
-    /// Convenience: convert to a [`Basic`] HTTP credential.
-    /// See [`UserInfo::to_basic`] for the same semantics.
+    /// Percent-decoded view of the full userinfo. See
+    /// [`UserInfo::as_decoded_str`] (incl. the re-splitting caveat).
+    #[must_use]
+    pub fn as_decoded_str(&self) -> Cow<'a, str> {
+        percent_decode(self.bytes).decode_utf8_lossy()
+    }
+
+    /// Percent-decoded user component (before the first raw `:`).
+    #[must_use]
+    pub fn username_decoded(&self) -> Cow<'a, str> {
+        let (user, _) = self.split_user_password();
+        percent_decode(user).decode_utf8_lossy()
+    }
+
+    /// Percent-decoded password component (after the first raw `:`), or
+    /// `None` if no `:` is present.
+    #[must_use]
+    pub fn password_decoded(&self) -> Option<Cow<'a, str>> {
+        let (_, password) = self.split_user_password();
+        password.map(|p| percent_decode(p).decode_utf8_lossy())
+    }
+
+    /// Convert to a [`Basic`] HTTP credential. The components are
+    /// **percent-decoded** then validated.
+    ///
+    /// Fails if the decoded user is empty (`Basic` requires a non-empty
+    /// username) or if a decoded component contains a control byte. The
+    /// latter is load-bearing: the graceful authority parser screens only
+    /// *raw* control bytes, so a userinfo like `a%0Db` can reach here, and
+    /// decoding it into a credential that round-trips into an
+    /// `Authorization` header would be CRLF injection.
     pub fn to_basic(&self) -> Result<Basic, BoxError> {
-        Basic::try_from(self.as_str()).context("convert UserInfoRef to Basic")
+        let user = self.username_decoded();
+        reject_decoded_control(&user)?;
+        let username =
+            NonEmptyStr::try_from(user.as_ref()).context("create username from userinfo")?;
+        let password = match self.password_decoded() {
+            Some(p) => {
+                reject_decoded_control(&p)?;
+                // An empty present password (`user:`) collapses to "no
+                // password", matching `Basic::try_from`'s own semantics.
+                (!p.is_empty())
+                    .then(|| NonEmptyStr::try_from(p.as_ref()))
+                    .transpose()
+                    .context("create password from userinfo")?
+            }
+            None => None,
+        };
+        Ok(match password {
+            Some(password) => Basic::new(username, password),
+            None => Basic::new_insecure(username),
+        })
     }
 }
 
@@ -695,28 +821,132 @@ mod tests {
         Basic::try_from(&u).unwrap_err();
     }
 
-    // ---- `From<Basic>` divergence regression -------
-    //
-    // `Basic` validates only CR/LF/NUL; `UserInfo::try_from` enforces the
-    // full RFC 3986 §3.2.1 grammar (no raw `@`, no space, no gen-delims,
-    // …). So `From<Basic> for UserInfo` is **deliberately infallible**
-    // even though it can produce bytes the parser would reject. The
-    // type-level doc warns about this and the planned follow-up is to
-    // drop `UserInfo` for a relaxed `Basic`. Until that lands, pin the
-    // current state so we notice if either side's validation drifts.
+    // ---- decoded accessors + encode/decode round-trip -------
 
     #[test]
-    fn from_basic_emits_userinfo_that_try_from_rejects() {
-        // `user@host:pw` — `Basic::try_from(&str)` accepts (no CR/LF/NUL),
-        // but `@` is a userinfo gen-delim that `UserInfo::try_from`
-        // refuses. The `From<Basic>` conversion is documented as
-        // deliberately infallible even though it can produce bytes the
-        // parser would reject; this test pins the divergence so a future
-        // tightening of `Basic` (or loosening of `UserInfo::try_from`)
-        // closes the gap visibly.
-        let basic = Basic::try_from("user@host:pw").unwrap();
+    fn decoded_accessors() {
+        let ui = UserInfo::from_static("us%20er:p%40ss");
+        assert_eq!(&*ui.as_decoded_str(), "us er:p@ss");
+        assert_eq!(&*ui.username_decoded(), "us er");
+        assert_eq!(ui.password_decoded().as_deref(), Some("p@ss"));
+
+        // the borrowed view agrees with the owned type
+        let r = ui.view();
+        assert_eq!(&*r.as_decoded_str(), "us er:p@ss");
+        assert_eq!(&*r.username_decoded(), "us er");
+        assert_eq!(r.password_decoded().as_deref(), Some("p@ss"));
+
+        // no password component
+        let ui = UserInfo::from_static("alice");
+        assert_eq!(&*ui.username_decoded(), "alice");
+        assert!(ui.password_decoded().is_none());
+    }
+
+    #[test]
+    fn to_basic_percent_decodes_components() {
+        let ui = UserInfo::from_static("user%40host:p%40ss");
+        let b = ui.to_basic().unwrap();
+        assert_eq!(b.username(), "user@host");
+        assert_eq!(b.password(), Some("p@ss"));
+    }
+
+    #[test]
+    fn to_basic_username_with_encoded_colon() {
+        // `%3A` decodes to ':' inside the username, but the user/password
+        // split happens on the *raw* ':' separator, so the password is
+        // still parsed correctly.
+        let ui = UserInfo::from_static("a%3Ab:pw");
+        let b = ui.to_basic().unwrap();
+        assert_eq!(b.username(), "a:b");
+        assert_eq!(b.password(), Some("pw"));
+    }
+
+    #[test]
+    fn to_basic_rejects_pct_decoded_control() {
+        // The graceful authority parser screens only RAW control bytes, so
+        // a userinfo whose pct-escape *decodes* to CR/LF/NUL can exist.
+        // Decoding it into an `Authorization`-bound credential would be
+        // CRLF injection, so `to_basic` must reject it. (`from_static`
+        // would reject at compile time, so build via the unchecked ctor.)
+        for raw in [b"a%0Db".as_slice(), b"a%0Ab", b"a%00b", b"user:p%0Dw"] {
+            let ui = UserInfo::from_bytes_unchecked(Bytes::copy_from_slice(raw));
+            ui.to_basic().unwrap_err();
+        }
+    }
+
+    // ---- `From<Basic>` now percent-encodes -------
+
+    #[test]
+    fn from_basic_percent_encodes_and_roundtrips() {
+        // `@` in both components: `Basic::try_from` accepts it (only
+        // CR/LF/NUL are rejected), and the encoder now emits valid wire
+        // form that strict `UserInfo::try_from` accepts — the old
+        // divergence is gone — and decodes back to the original credential.
+        let basic = Basic::try_from("user@host:p@ss").unwrap();
+        let ui: UserInfo = basic.clone().into();
+        assert_eq!(ui.as_str(), "user%40host:p%40ss");
+        UserInfo::try_from(ui.as_str()).expect("encoded userinfo must re-parse");
+        let back = ui.to_basic().unwrap();
+        assert_eq!(back, basic);
+        assert_eq!(back.username(), "user@host");
+        assert_eq!(back.password(), Some("p@ss"));
+    }
+
+    #[test]
+    fn from_basic_escapes_colon_in_username() {
+        // A `:` inside the username must be escaped so it isn't read as
+        // the user/password separator on the way back in.
+        let basic = Basic::new(
+            NonEmptyStr::try_from("a:b").unwrap(),
+            NonEmptyStr::try_from("pw").unwrap(),
+        );
         let ui: UserInfo = basic.into();
-        assert_eq!(ui.as_str(), "user@host:pw");
+        assert_eq!(ui.as_str(), "a%3Ab:pw");
+        let back = ui.to_basic().unwrap();
+        assert_eq!(back.username(), "a:b");
+        assert_eq!(back.password(), Some("pw"));
+    }
+
+    #[test]
+    fn from_basic_control_byte_is_the_residual_divergence() {
+        // Documented residual: `Basic::try_from` allows a tab (only
+        // CR/LF/NUL are rejected), so it encodes to `%09`, which strict
+        // `UserInfo::try_from` still refuses as a pct-decoded control byte.
+        let basic = Basic::try_from("a\tb:pw").unwrap();
+        let ui: UserInfo = basic.into();
+        assert_eq!(ui.as_str(), "a%09b:pw");
         UserInfo::try_from(ui.as_str()).unwrap_err();
+    }
+
+    #[test]
+    fn userinfo_encode_set_matches_validator_allow_set() {
+        // `AsciiSet::contains` is crate-private, so probe each set by
+        // encoding a one-byte string and checking whether it changed.
+        let escapes = |set: &'static AsciiSet, b: u8| {
+            let buf = [b];
+            let s = std::str::from_utf8(&buf).unwrap();
+            utf8_percent_encode(s, set).to_string().as_str() != s
+        };
+        for b in 0u8..=127 {
+            // `%` is the one intentional difference: the validator allows
+            // it as the pct-escape lead, but the encoder escapes a raw `%`.
+            if b == b'%' {
+                continue;
+            }
+            // The password set keeps ':' literal, so a byte is escaped by
+            // it iff it's outside the userinfo allow-set.
+            let pw_escaped = escapes(USERINFO_PASSWORD_ENCODE_SET, b);
+            assert_eq!(
+                crate::byte_sets::is_userinfo_byte(b),
+                !pw_escaped,
+                "password set disagrees on byte {b:#04x}",
+            );
+            // The username set differs only by also escaping ':'.
+            assert_eq!(
+                escapes(USERINFO_USERNAME_ENCODE_SET, b),
+                pw_escaped || b == b':',
+                "username set disagrees on byte {b:#04x}",
+            );
+        }
     }
 }
