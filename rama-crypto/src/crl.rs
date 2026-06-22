@@ -144,6 +144,31 @@ pub fn build_crl(
     }))
 }
 
+/// DER of a `CRLDistributionPoints` extension value with a single
+/// `fullName` URI distribution point, for embedding as the `2.5.29.31`
+/// extension on a re-signed leaf.
+#[must_use]
+pub fn crl_distribution_point_der(uri: &str) -> Vec<u8> {
+    yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_sequence(|w| {
+                // distributionPoint [0] EXPLICIT DistributionPointName
+                w.next().write_tagged(Tag::context(0), |w| {
+                    // fullName [0] IMPLICIT GeneralNames
+                    w.write_tagged_implicit(Tag::context(0), |w| {
+                        w.write_sequence(|w| {
+                            // uniformResourceIdentifier [6] IA5String
+                            w.next().write_tagged_implicit(Tag::context(6), |w| {
+                                w.write_bytes(uri.as_bytes());
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    })
+}
+
 fn write_alg(w: yasna::DERWriter<'_>, alg: CrlSignatureAlgorithm) {
     w.write_sequence(|w| match alg {
         CrlSignatureAlgorithm::EcdsaSha256 => {
@@ -285,5 +310,22 @@ mod tests {
         .expect("parse tbsCertList");
 
         assert_eq!(serials, vec![vec![0x12, 0x34, 0x56]]);
+    }
+
+    #[test]
+    fn crl_distribution_point_is_a_sequence_carrying_the_uri() {
+        let uri = "http://127.0.0.1:9999/abc.crl";
+        let der = crl_distribution_point_der(uri);
+        yasna::parse_der(&der, |r| {
+            r.read_sequence(|r| {
+                let _dp = r.next().read_der()?;
+                Ok(())
+            })
+        })
+        .expect("CRLDistributionPoints is a SEQUENCE");
+        assert!(
+            der.windows(uri.len()).any(|w| w == uri.as_bytes()),
+            "URI present in the distribution point"
+        );
     }
 }

@@ -23,7 +23,8 @@ use rama_boring::{
 };
 use rama_core::error::{BoxError, ErrorContext};
 use rama_crypto::ocsp::{
-    OcspCertId, OcspSignatureAlgorithm, build_ocsp_response, sha1_hash_algorithm_der,
+    OcspCertId, OcspCertStatus, OcspSignatureAlgorithm, build_ocsp_response, parse_ocsp_request,
+    sha1_hash_algorithm_der,
 };
 
 #[doc(inline)]
@@ -83,6 +84,49 @@ pub fn build_mitm_leaf_ocsp_response(
     build_ocsp_response(&cert, status, produced_at, validity, None, |tbs| {
         sign_tbs(issuer_key, tbs)
     })
+}
+
+/// Answer an OCSP `request_der` for a leaf issued by `issuer`, returning a
+/// signed `good` response with the request's `CertID` and nonce echoed so the
+/// client binds it to the request. Only the first requested `CertID` is
+/// answered (TLS clients query a single leaf).
+pub fn answer_ocsp_request(
+    issuer: &X509Ref,
+    issuer_key: &PKeyRef<Private>,
+    request_der: &[u8],
+    validity: Duration,
+) -> Result<Vec<u8>, BoxError> {
+    let info = parse_ocsp_request(request_der).context("ocsp: parse request")?;
+    let req = info
+        .certs
+        .first()
+        .ok_or_else(|| BoxError::from("ocsp: request carried no CertID"))?;
+
+    let issuer_name_der = issuer
+        .subject_name()
+        .to_der()
+        .context("ocsp: issuer subject name to DER")?;
+
+    let cert = OcspCertId {
+        issuer_name_der: &issuer_name_der,
+        hash_algorithm_der: &req.hash_algorithm_der,
+        issuer_name_hash: &req.issuer_name_hash,
+        issuer_key_hash: &req.issuer_key_hash,
+        serial: &req.serial,
+    };
+
+    let produced_at = SystemTime::now()
+        .checked_sub(CLOCK_SKEW_BACKDATE)
+        .unwrap_or_else(SystemTime::now);
+
+    build_ocsp_response(
+        &cert,
+        OcspCertStatus::Good,
+        produced_at,
+        validity,
+        info.nonce.as_deref(),
+        |tbs| sign_tbs(issuer_key, tbs),
+    )
 }
 
 /// Window from `produced_at` to the leaf's `notAfter`, so the OCSP `nextUpdate`

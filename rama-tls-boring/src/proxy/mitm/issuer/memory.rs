@@ -9,6 +9,7 @@ use rama_core::{error::BoxError, telemetry::tracing};
 use rama_net::tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
+use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
 use crate::server::utils::{MitmLeafOcspStatus, self_signed_server_auth_gen_ca};
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
@@ -19,6 +20,7 @@ use super::{BoringMitmCertIssuer, MitmIssuedCert};
 pub struct InMemoryBoringMitmCertIssuer {
     ca_crt: X509,
     ca_key: PKey<Private>,
+    revocation: Option<Arc<dyn BoringMitmRevocation>>,
 }
 
 impl fmt::Debug for InMemoryBoringMitmCertIssuer {
@@ -26,6 +28,7 @@ impl fmt::Debug for InMemoryBoringMitmCertIssuer {
         f.debug_struct("InMemoryBoringMitmCertIssuer")
             .field("ca_crt", &self.ca_crt)
             .field("ca_key", &"PKey<Private>")
+            .field("revocation", &self.revocation.is_some())
             .finish()
     }
 }
@@ -35,7 +38,11 @@ impl InMemoryBoringMitmCertIssuer {
     /// Create a new [`InMemoryBoringMitmCertIssuer`].
     #[must_use]
     pub fn new(ca_crt: X509, ca_key: PKey<Private>) -> Self {
-        Self { ca_crt, ca_key }
+        Self {
+            ca_crt,
+            ca_key,
+            revocation: None,
+        }
     }
 
     #[inline(always)]
@@ -44,6 +51,15 @@ impl InMemoryBoringMitmCertIssuer {
         let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data)?;
         Ok(Self::new(ca_cert, ca_privkey))
     }
+
+    /// Attach a [`BoringMitmRevocation`] responder. Its CA must be the same one
+    /// this issuer signs with, so the stamped pointers resolve. Issued leaves
+    /// then carry the responder's revocation extensions.
+    #[must_use]
+    pub fn with_revocation(mut self, revocation: Arc<dyn BoringMitmRevocation>) -> Self {
+        self.revocation = Some(revocation);
+        self
+    }
 }
 
 impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
@@ -51,10 +67,19 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
 
     #[inline(always)]
     async fn issue_mitm_x509_cert(&self, original: X509) -> Result<MitmIssuedCert, Self::Error> {
-        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert(
+        let extra_extensions = match &self.revocation {
+            Some(revocation) => revocation.leaf_extensions(&MitmRevocationCtx {
+                original: &original,
+                issuer_ca: &self.ca_crt,
+            })?,
+            None => Vec::new(),
+        };
+
+        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert_with_extensions(
             &original,
             &self.ca_crt,
             &self.ca_key,
+            &extra_extensions,
         )?;
 
         // Staple a `good` only when the upstream advertised revocation info (the

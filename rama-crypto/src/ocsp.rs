@@ -38,6 +38,27 @@ fn oid_ocsp_basic() -> ObjectIdentifier {
 fn oid_ocsp_nonce() -> ObjectIdentifier {
     ObjectIdentifier::from_slice(&[1, 3, 6, 1, 5, 5, 7, 48, 1, 2])
 }
+fn oid_ad_ocsp() -> ObjectIdentifier {
+    ObjectIdentifier::from_slice(&[1, 3, 6, 1, 5, 5, 7, 48, 1])
+}
+
+/// DER of an `AuthorityInfoAccessSyntax` extension value with a single
+/// `id-ad-ocsp` responder URI, for embedding as the `1.3.6.1.5.5.7.1.1`
+/// extension on a re-signed leaf.
+#[must_use]
+pub fn authority_info_access_ocsp_der(uri: &str) -> Vec<u8> {
+    yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&oid_ad_ocsp());
+                // accessLocation: uniformResourceIdentifier [6] IA5String
+                w.next().write_tagged_implicit(Tag::context(6), |w| {
+                    w.write_bytes(uri.as_bytes());
+                });
+            });
+        });
+    })
+}
 
 /// DER of the `sha1` CertID `hashAlgorithm` (`AlgorithmIdentifier { sha1, NULL }`),
 /// for callers building a `CertID` without an inbound request to echo (e.g. a
@@ -472,5 +493,23 @@ mod tests {
         assert!(contains(&der, &[0xBB; 20]), "issuerKeyHash echoed");
         assert!(contains(&der, &[0x12, 0x34, 0x56]), "serial echoed");
         assert!(contains(&der, &nonce_value), "nonce echoed");
+    }
+
+    #[test]
+    fn aia_ocsp_carries_the_responder_uri() {
+        let uri = "http://127.0.0.1:9999/ocsp/abc";
+        let der = authority_info_access_ocsp_der(uri);
+        let oid = yasna::parse_der(&der, |r| {
+            r.read_sequence(|r| {
+                r.next().read_sequence(|r| {
+                    let oid = r.next().read_oid()?;
+                    let _loc = r.next().read_der()?;
+                    Ok(oid)
+                })
+            })
+        })
+        .expect("AIA structure");
+        assert_eq!(oid, oid_ad_ocsp());
+        assert!(contains(&der, uri.as_bytes()), "responder URI present");
     }
 }

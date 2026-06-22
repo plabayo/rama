@@ -298,6 +298,18 @@ pub fn self_signed_server_auth_mirror_cert(
     ca_cert: &X509,
     ca_privkey: &PKey<Private>,
 ) -> Result<(X509, PKey<Private>), BoxError> {
+    self_signed_server_auth_mirror_cert_with_extensions(source_cert, ca_cert, ca_privkey, &[])
+}
+
+/// Like [`self_signed_server_auth_mirror_cert`], additionally appending
+/// `extra_extensions` (e.g. proxy-hosted CRL/OCSP revocation pointers) to the
+/// re-signed leaf before signing.
+pub fn self_signed_server_auth_mirror_cert_with_extensions(
+    source_cert: &X509Ref,
+    ca_cert: &X509,
+    ca_privkey: &PKey<Private>,
+    extra_extensions: &[X509Extension],
+) -> Result<(X509, PKey<Private>), BoxError> {
     let source_pubkey = source_cert
         .public_key()
         .context("x509 cert builder: read source public key")?;
@@ -437,6 +449,12 @@ pub fn self_signed_server_auth_mirror_cert(
                 .append_extension(auth_key_identifier.as_ref())
                 .context("x509 cert builder: append derived mirrored authority key identifier")?;
         }
+    }
+
+    for ext in extra_extensions {
+        cert_builder
+            .append_extension(ext.as_ref())
+            .context("x509 cert builder: append extra revocation extension")?;
     }
 
     cert_builder
