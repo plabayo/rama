@@ -90,7 +90,7 @@ impl<T: AuthorityInputExt + ?Sized> AuthorityInputExt for &T {
 /// Read the application-layer [`Protocol`] (scheme) of a service input.
 pub trait ProtocolInputExt {
     /// The application protocol, or `None` if it can't be determined.
-    fn protocol(&self) -> Option<Protocol>;
+    fn protocol(&self) -> Option<&Protocol>;
 
     /// The default port of the resolved [`Protocol`] (e.g. 443 for HTTPS), or
     /// `None` if the protocol is unknown or portless.
@@ -100,7 +100,7 @@ pub trait ProtocolInputExt {
 }
 
 impl<T: ProtocolInputExt + ?Sized> ProtocolInputExt for &T {
-    fn protocol(&self) -> Option<Protocol> {
+    fn protocol(&self) -> Option<&Protocol> {
         (**self).protocol()
     }
 }
@@ -127,11 +127,11 @@ impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
 /// Always known, so this is infallible.
 pub trait TransportProtocolInputExt {
     /// The transport protocol (TCP or UDP).
-    fn transport_protocol(&self) -> TransportProtocol;
+    fn transport_protocol(&self) -> Option<TransportProtocol>;
 }
 
 impl<T: TransportProtocolInputExt + ?Sized> TransportProtocolInputExt for &T {
-    fn transport_protocol(&self) -> TransportProtocol {
+    fn transport_protocol(&self) -> Option<TransportProtocol> {
         (**self).transport_protocol()
     }
 }

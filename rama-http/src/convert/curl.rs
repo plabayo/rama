@@ -160,11 +160,11 @@ fn write_curl_command_for_request_parts(
         && let Some(authority) = parts.authority()
     {
         let protocol = parts.protocol();
-        uri.set_authority(authority.without_default_port_for(protocol.as_ref()).into());
+        uri.set_authority(authority.without_default_port_for(protocol).into());
         if uri.scheme().is_none()
             && let Some(protocol) = protocol
         {
-            uri.set_scheme(protocol);
+            uri.set_scheme(protocol.clone());
         }
     }
     writer.write_uri(uri);

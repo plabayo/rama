@@ -327,8 +327,8 @@ where
 
         forwarded_element.set_forwarded_host(authority);
 
-        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
-        if let Ok(forwarded_proto) = (&protocol).try_into() {
+        let protocol = req.protocol().unwrap_or(&Protocol::HTTP);
+        if let Ok(forwarded_proto) = protocol.try_into() {
             forwarded_element.set_forwarded_proto(forwarded_proto);
         }
 

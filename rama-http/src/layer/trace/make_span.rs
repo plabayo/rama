@@ -97,7 +97,7 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
         // to ensure that we always log authority even if not included in full protocol
         // TODO: in near future this will be slightly more elegant with input extensions,
         // it is blocking on the url rework that has to be done first
-        let protocol = request.protocol().unwrap_or(Protocol::HTTP);
+        let protocol = request.protocol().unwrap_or(&Protocol::HTTP);
         // according to OTEL spec domain can be domain or IP, so host is fine
         let (found_domain, found_port, found_scheme) =
             if let Some(hwp) = request.host_with_port_or(Protocol::HTTP_DEFAULT_PORT) {

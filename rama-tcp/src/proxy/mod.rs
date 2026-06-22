@@ -5,8 +5,5 @@
 // this is a clear sign of wrong boundaries that we need to fix soon, probably
 // still before the actual 0.3 release
 
-#[cfg(feature = "http")]
 mod io_to_bridge_io;
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub use self::io_to_bridge_io::{IoToProxyBridgeIo, IoToProxyBridgeIoLayer};

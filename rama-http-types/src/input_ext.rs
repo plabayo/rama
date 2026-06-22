@@ -122,23 +122,23 @@ pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Ver
         .unwrap_or_else(|| parts.version())
 }
 
-fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
-    uri.scheme().cloned().or_else(|| {
+fn protocol_from_uri_or_extensions<'a>(ext: &'a Extensions, uri: &'a Uri) -> &'a Protocol {
+    uri.scheme().or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
         // This is especially useful for marking a HTTPS server as HTTPS,
         // despite it not showing up anywhere due to a non-default port
         // and it being http/1
-        ext.get_ref::<Protocol>().cloned()
+        ext.get_ref::<Protocol>()
     }).or_else(|| ext.get_ref::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
-            p.into()
+            if p.is_secure() { &Protocol::HTTPS } else { &Protocol::HTTP }
         })))
         .unwrap_or_else(||
     if ext.contains::<SecureTransport>() {
-        Protocol::HTTPS
+        &Protocol::HTTPS
     } else {
-        Protocol::HTTP
+        &Protocol::HTTP
     })
 }
 
@@ -155,7 +155,7 @@ impl AuthorityInputExt for Parts {
 }
 
 impl<Body> ProtocolInputExt for Request<Body> {
-    fn protocol(&self) -> Option<Protocol> {
+    fn protocol(&self) -> Option<&Protocol> {
         Some(protocol_from_uri_or_extensions(
             self.extensions(),
             self.uri(),
@@ -164,7 +164,7 @@ impl<Body> ProtocolInputExt for Request<Body> {
 }
 
 impl ProtocolInputExt for Parts {
-    fn protocol(&self) -> Option<Protocol> {
+    fn protocol(&self) -> Option<&Protocol> {
         Some(protocol_from_uri_or_extensions(
             self.extensions(),
             HttpRequestParts::uri(self),
@@ -193,14 +193,14 @@ fn transport_protocol_for_http_version(version: Version) -> TransportProtocol {
 }
 
 impl<Body> TransportProtocolInputExt for Request<Body> {
-    fn transport_protocol(&self) -> TransportProtocol {
-        transport_protocol_for_http_version(self.version())
+    fn transport_protocol(&self) -> Option<TransportProtocol> {
+        Some(transport_protocol_for_http_version(self.version()))
     }
 }
 
 impl TransportProtocolInputExt for Parts {
-    fn transport_protocol(&self) -> TransportProtocol {
-        transport_protocol_for_http_version(self.version())
+    fn transport_protocol(&self) -> Option<TransportProtocol> {
+        Some(transport_protocol_for_http_version(self.version()))
     }
 }
 
@@ -232,7 +232,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(req.http_version(), Some(Version::HTTP_11));
-        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTP));
         assert_eq!(req.authority().unwrap().to_string(), "example.com:8080");
     }
 
@@ -244,14 +244,14 @@ mod tests {
             .body(())
             .unwrap();
         assert_eq!(req.authority().unwrap().to_string(), "example.com:8443");
-        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTPS));
         assert_eq!(req.http_version(), Some(Version::HTTP_2));
 
         // origin-form with no resolvable authority -> None, but protocol and
         // version still resolve (they don't depend on the authority).
         let req = Request::builder().uri("/path").body(()).unwrap();
         assert_eq!(req.authority(), None);
-        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTP));
         assert_eq!(req.http_version(), Some(Version::HTTP_11));
     }
 
@@ -266,7 +266,7 @@ mod tests {
         let (parts, _) = req.into_parts();
 
         assert_eq!(parts.http_version(), Some(Version::HTTP_11));
-        assert_eq!(parts.protocol(), Some(Protocol::HTTP));
+        assert_eq!(parts.protocol(), Some(&Protocol::HTTP));
         assert_eq!(
             parts.authority().unwrap(),
             HostWithOptPort::try_from("example.com:8080").unwrap()
@@ -314,7 +314,7 @@ mod tests {
             );
             assert_eq!(
                 req.protocol(),
-                Some(Protocol::HTTP),
+                Some(&Protocol::HTTP),
                 "Failed for {forwarded_str_vec:?}"
             );
             assert_eq!(
@@ -342,7 +342,7 @@ mod tests {
             )));
 
         assert_eq!(req.http_version(), Some(Version::HTTP_11));
-        assert_eq!(req.protocol(), Some(Protocol::HTTP));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTP));
         let authority = req.authority().unwrap();
         assert_eq!(authority.to_string(), "echo.ramaproxy.org");
         let default_port = req
@@ -371,6 +371,6 @@ mod tests {
             .unwrap();
         req.extensions().insert(SecureTransport::default());
 
-        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTPS));
     }
 }

@@ -28,3 +28,7 @@ use rama_core::extensions::Extension;
 /// of the requested address, unless a proxy is requested in
 /// which case a proxy is to be used instead.
 pub struct ConnectorTarget(pub HostWithPort);
+
+mod request;
+#[doc(inline)]
+pub use request::Request;

@@ -13,7 +13,7 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
         let authority = req
             .authority()
             .ok_or_else(|| BoxError::from_static_str("no authority found in http request"))?;
-        let protocol = req.protocol().unwrap_or(Protocol::HTTP);
+        let protocol = req.protocol().cloned().unwrap_or(Protocol::HTTP);
 
         Ok(BasicHttpConId {
             protocol,

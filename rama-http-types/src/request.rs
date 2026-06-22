@@ -490,10 +490,12 @@ impl<T> Request<T> {
 
         let mut uri = self.uri().clone();
         if let Some(authority) = self.authority() {
-            let protocol = self.protocol().unwrap_or(rama_net::Protocol::HTTP);
+            let protocol = self.protocol().unwrap_or(&rama_net::Protocol::HTTP);
             let rama_net::address::HostWithOptPort { host, port } =
-                authority.without_default_port_for(Some(&protocol));
-            uri.set_scheme(protocol).set_host(host).set_port(port);
+                authority.without_default_port_for(Some(protocol));
+            uri.set_scheme(protocol.clone())
+                .set_host(host)
+                .set_port(port);
         }
         uri
     }

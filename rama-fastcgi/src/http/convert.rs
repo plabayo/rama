@@ -158,7 +158,7 @@ pub(super) async fn http_request_to_fastcgi(
         .cloned()
         .unwrap_or_default();
     let authority = req.authority();
-    let app_protocol = req.protocol();
+    let app_protocol = req.protocol().cloned();
 
     let (parts, body) = req.into_parts();
 

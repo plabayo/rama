@@ -165,8 +165,8 @@ where
         }
 
         match input.transport_protocol() {
-            TransportProtocol::Tcp => (), // a-ok :)
-            TransportProtocol::Udp => {
+            Some(TransportProtocol::Tcp) | None => (), // a-ok :)
+            Some(TransportProtocol::Udp) => {
                 // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
                 return Err(BoxError::from_static_str(
                     "Tcp Connector Service cannot establish a UDP transport",

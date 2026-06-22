@@ -125,7 +125,7 @@ where
         let authority = input
             .authority()
             .context("http proxy connector: resolve authority")?;
-        let app_protocol = input.protocol();
+        let app_protocol = input.protocol().cloned();
 
         #[cfg(feature = "tls")]
         let input = input;
@@ -188,6 +188,7 @@ where
         );
 
         if !app_protocol
+            .as_ref()
             .map(|p| p.is_secure())
             // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
             .unwrap_or_else(|| authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT))

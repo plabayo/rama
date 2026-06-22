@@ -4,13 +4,13 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, io::Io};
 use rama_net::address::HostWithPort;
-use rama_net::client::ConnectorService;
+use rama_net::client::{ConnectorService, Request as TransportRequest};
 use rama_net::{
     client::EstablishedClientConnection,
     proxy::{IoForwardService, ProxyTarget},
     stream::Socket,
 };
-use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
+use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
 use std::time::Duration;
@@ -139,8 +139,8 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (TcpRequest)
-    ///     -> (EstablishedConnection<T, TcpRequest>, Into<BoxError>)
+    /// (TransportRequest)
+    ///     -> (EstablishedConnection<T, TransportRequest>, Into<BoxError>)
     /// ```
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
         Connector {
@@ -193,7 +193,7 @@ impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Io + Unpin + ExtensionsRef,
-    InnerConnector: ConnectorService<TcpRequest, Connection: Io + Socket + Unpin>,
+    InnerConnector: ConnectorService<TransportRequest, Connection: Io + Socket + Unpin>,
     StreamService:
         Service<BridgeIo<S, InnerConnector::Connection>, Output = (), Error: Into<BoxError>>,
 {
@@ -207,10 +207,12 @@ where
         );
 
         // Clone so we also have them on (ingress) stream still
-        let connect_future = self.connector.connect(TcpRequest::new_with_extensions(
-            destination.clone(),
-            ingress_stream.extensions().clone(),
-        ));
+        let connect_future = self
+            .connector
+            .connect(TransportRequest::new_with_extensions(
+                destination.clone(),
+                ingress_stream.extensions().clone(),
+            ));
 
         let result = match self.connect_timeout {
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {
