@@ -30,6 +30,7 @@
 
 use std::{fs, sync::Arc, time::Duration};
 
+use base64::Engine as _;
 use rama::{
     ServiceInput,
     error::{BoxError, ErrorContext},
@@ -421,10 +422,20 @@ async fn serve_revocation_conn(
 
     let artifact = if path.ends_with(".crl") {
         Some(revocation.serve(RevocationFetch::Crl { ca_id })?)
-    } else if path.contains("/ocsp") && method.eq_ignore_ascii_case("POST") {
+    } else if path.contains("/ocsp") {
+        // POST carries the DER request as the body; GET (RFC 6960 A.1.1) carries
+        // it as a percent-encoded base64 segment appended to the AIA path.
+        let der = if method.eq_ignore_ascii_case("POST") {
+            body
+        } else {
+            let segment = path.rsplit('/').next().unwrap_or_default();
+            base64::engine::general_purpose::STANDARD
+                .decode(percent_decode(segment))
+                .context("decode base64 OCSP GET request")?
+        };
         Some(revocation.serve(RevocationFetch::Ocsp {
             ca_id,
-            der_request: body.as_slice(),
+            der_request: &der,
         })?)
     } else {
         None
@@ -458,6 +469,37 @@ async fn serve_revocation_conn(
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Percent-decode an URL path segment (the base64 in an OCSP GET is URL-encoded).
+fn percent_decode(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = bytes.get(i + 1).copied().and_then(hex_val);
+        let lo = bytes.get(i + 2).copied().and_then(hex_val);
+        match (bytes[i], hi, lo) {
+            (b'%', Some(hi), Some(lo)) => {
+                out.push((hi << 4) | lo);
+                i += 3;
+            }
+            (b, _, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Self-signed upstream identity (key + cert) with a SAN and the given

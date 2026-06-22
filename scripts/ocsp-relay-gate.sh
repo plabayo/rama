@@ -226,7 +226,20 @@ run_ocsp_endpoint() {
         || { echo "$status"; fail "ocsp-endpoint: response signature did not verify"; }
     echo "$status" | grep -q ": good" \
         || { echo "$status"; fail "ocsp-endpoint: status was not good"; }
-    echo "[ocsp-endpoint] OK — leaf AIA + CA-signed OCSP accepted by openssl ocsp"
+    echo "[ocsp-endpoint] OK — POST transport accepted by openssl ocsp"
+
+    # Also exercise the GET transport (base64-in-path), which is what schannel uses.
+    local b64 enc
+    "$OPENSSL" ocsp -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" -reqout "$WORK/ocsp-req.der" -no_nonce \
+        >/dev/null 2>&1 || fail "ocsp-endpoint: could not build an OCSP request"
+    b64="$(base64 < "$WORK/ocsp-req.der" | tr -d '\n')"
+    enc="$(printf '%s' "$b64" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g')"
+    "$CURL" -sS "http://$revoc/ocsp/mitm/$enc" -o "$WORK/ocsp-resp.der" \
+        || fail "ocsp-endpoint: GET request failed"
+    "$OPENSSL" ocsp -respin "$WORK/ocsp-resp.der" -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
+        -CAfile "$ca" -no_nonce 2>&1 | grep -q ": good" \
+        || fail "ocsp-endpoint: GET response was not good"
+    echo "[ocsp-endpoint] OK — GET (base64-in-path) transport also accepted"
 
     kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
 }
