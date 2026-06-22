@@ -86,7 +86,7 @@ struct ServerInfo {
 }
 
 /// Derive server info from the request's resolved authority and protocol
-/// (which already do the heavy lifting of URI / Forwarded / SNI / ProxyTarget /
+/// (which already do the heavy lifting of URI / Forwarded / SNI /
 /// Host-header resolution). Falls back to localhost only when no authority can
 /// be resolved.
 fn derive_server_info(

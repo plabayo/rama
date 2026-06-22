@@ -1,11 +1,10 @@
-use crate::client::proxy::layer::HttpProxyError;
 use rama_core::error::BoxErrorExt as _;
 
 use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext as _, ErrorExt},
+    error::{BoxError, ErrorContext as _},
     extensions::{Extension, Extensions, ExtensionsRef},
     io::Io,
     telemetry::tracing,
@@ -21,7 +20,7 @@ use rama_http_types::Version;
 use rama_net::{
     AuthorityInputExt, Protocol, ProtocolInputExt,
     address::ProxyAddress,
-    client::{ConnectorService, EstablishedClientConnection},
+    client::{ConnectorService, ConnectorTarget, EstablishedClientConnection},
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -110,10 +109,32 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let proxy_info = input.extensions().get_ref::<ProxyAddress>().cloned();
+        let maybe_proxy_info = input.extensions().get_ref::<ProxyAddress>().cloned();
+
+        let Some(proxy_info) = maybe_proxy_info else {
+            // return early in case we did not use a proxy
+
+            return if self.required {
+                Err("http proxy required but none is defined".into())
+            } else {
+                tracing::trace!(
+                    "http proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                let EstablishedClientConnection { input, conn } =
+                    self.inner
+                        .connect(input)
+                        .await
+                        .context("establish direct connection (no http proxy given or required)")?;
+                return Ok(EstablishedClientConnection {
+                    input,
+                    conn: MaybeHttpProxiedConnection::direct(conn),
+                });
+            };
+        };
+
         if !proxy_info
+            .protocol
             .as_ref()
-            .and_then(|addr| addr.protocol.as_ref())
             .map(|p| p.is_http())
             .unwrap_or(true)
         {
@@ -127,17 +148,18 @@ where
             .context("http proxy connector: resolve authority")?;
         let app_protocol = input.protocol().cloned();
 
-        #[cfg(feature = "tls")]
-        let input = input;
+        // insert target so that inner connector can use it instead of input's version
+        input
+            .extensions()
+            .insert(ConnectorTarget(proxy_info.address.clone()));
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
-        if let Some(proxy_info) = &proxy_info
-            && proxy_info
-                .protocol
-                .as_ref()
-                .map(|p| p.is_secure())
-                .unwrap_or_default()
+        if proxy_info
+            .protocol
+            .as_ref()
+            .map(|p| p.is_secure())
+            .unwrap_or_default()
         {
             tracing::trace!(
                 server.address = %proxy_info.address.host,
@@ -149,37 +171,13 @@ where
             });
         }
 
-        let established_conn =
-            self.inner
-                .connect(input)
-                .await
-                .map_err(|err| match proxy_info.as_ref() {
-                    Some(proxy_info) => Box::new(HttpProxyError::Transport(
-                        err.context("establish connection to proxy")
-                            .context_field("address", proxy_info.address.clone())
-                            .context_debug_field("protocol", proxy_info.protocol.clone()),
-                    )),
-                    None => err.context("establish connection target"),
-                })?;
-
-        // return early in case we did not use a proxy
-        let Some(proxy_info) = proxy_info else {
-            return if self.required {
-                Err("http proxy required but none is defined".into())
-            } else {
-                tracing::trace!(
-                    "http proxy connector: no proxy required or set: proceed with direct connection"
-                );
-                let EstablishedClientConnection { input, conn } = established_conn;
-                return Ok(EstablishedClientConnection {
-                    input,
-                    conn: MaybeHttpProxiedConnection::direct(conn),
-                });
-            };
-        };
-        // and do the handshake otherwise...
-
-        let EstablishedClientConnection { input, conn } = established_conn;
+        let EstablishedClientConnection { input, conn } = self
+            .inner
+            .connect(input)
+            .await
+            .context("establish connection to proxy")
+            .context_field("address", proxy_info.address.clone())
+            .context_debug_field("protocol", proxy_info.protocol.clone())?;
 
         tracing::trace!(
             server.address = %authority.host,

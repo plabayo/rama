@@ -20,8 +20,8 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    TransportAddressInputExt,
-    address::{Host, HostWithPort, ProxyAddress},
+    ConnectorTargetInputExt,
+    address::{Host, HostWithPort},
     client::ConnectorTarget,
     mode::DnsResolveIpMode,
 };
@@ -215,7 +215,7 @@ impl<S, R, P, Input> Service<Input> for DnsLoadBalancer<S, R, P>
 where
     S: Service<Input>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
-    Input: TransportAddressInputExt + ExtensionsRef + Send + 'static,
+    Input: ConnectorTargetInputExt + ExtensionsRef + Send + 'static,
     R: DnsAddressResolver + Clone,
     P: DnsIpPicker,
 {
@@ -223,20 +223,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        // TODO maybe if a ProxyAddress is configured with dns we want to choose
-        // an IP for this. Since this might complicate things I'll keep this open
-        // for the future, if a need would arise.
-        if input.extensions().get_ref::<ProxyAddress>().is_some() {
-            tracing::trace!("dns lb: ProxyAddress set, skipping");
-            return self.inner.serve(input).await.map_err(Into::into);
-        }
-
-        if input.extensions().get_ref::<ConnectorTarget>().is_some() {
-            tracing::trace!("dns lb: ConnectorTarget already set, skipping");
-            return self.inner.serve(input).await.map_err(Into::into);
-        }
-
-        let Some(authority) = input.host_with_port() else {
+        let Some(authority) = input.connector_target() else {
             tracing::trace!("dns lb: no authority/port resolvable, skipping");
             return self.inner.serve(input).await.map_err(Into::into);
         };
@@ -451,49 +438,6 @@ mod tests {
                 443,
             )),
         };
-        svc.serve(request).await.unwrap();
-
-        let captured = inner.captured.lock();
-        assert_eq!(captured.len(), 1);
-        assert!(captured[0].is_none(), "no ConnectorTarget should be set");
-    }
-
-    #[tokio::test]
-    async fn proxy_address_request_is_skipped() {
-        // Resolver panics if called: proves the LB short-circuits.
-        #[derive(Clone)]
-        struct PanickingResolver;
-        impl DnsAddressResolver for PanickingResolver {
-            type Error = Infallible;
-            fn lookup_ipv4(
-                &self,
-                _: Domain,
-            ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-                panic!("resolver should not be called when ProxyAddress is set");
-                #[expect(unreachable_code, reason = "panic before stream construction")]
-                stream::empty()
-            }
-            fn lookup_ipv6(
-                &self,
-                _: Domain,
-            ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-                panic!("resolver should not be called when ProxyAddress is set");
-                #[expect(unreachable_code, reason = "panic before stream construction")]
-                stream::empty()
-            }
-        }
-
-        let inner = CapturingInner::default();
-        let config = DnsLoadBalancerConfig {
-            mode: DnsResolveIpMode::SingleIpV4,
-            ..DnsLoadBalancerConfig::from_parts(PanickingResolver, RoundRobinPicker::new())
-        };
-        let svc = DnsLoadBalancer::new(inner.clone(), config);
-
-        let request = req("example.com", 443);
-        request
-            .extensions
-            .insert(ProxyAddress::try_from("http://proxy.example.com:8080").unwrap());
         svc.serve(request).await.unwrap();
 
         let captured = inner.captured.lock();

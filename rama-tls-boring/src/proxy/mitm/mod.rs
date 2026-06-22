@@ -17,7 +17,7 @@ use rama_net::{
     address::{Domain, HostWithPort},
     tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData},
 };
-use rama_net::{extensions::StreamTransformed, proxy::ProxyTarget, tls::KeyLogIntent};
+use rama_net::{extensions::StreamTransformed, tls::KeyLogIntent};
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
     fmt,
@@ -195,7 +195,7 @@ impl
 /// (client ↔ MITM) from egress (MITM ↔ upstream).
 pub struct TlsMitmRelayError {
     kind: TlsMitmRelayErrorKind,
-    proxy_target: Option<ProxyTarget>,
+    connector_target: Option<HostWithPort>,
     sni: Option<Domain>,
     inner: BoxError,
 }
@@ -205,7 +205,7 @@ impl TlsMitmRelayError {
     fn config(error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::Config,
-            proxy_target: None,
+            connector_target: None,
             sni: None,
             inner: error.into(),
         }
@@ -232,7 +232,7 @@ impl TlsMitmRelayError {
                 direction,
                 classification,
             },
-            proxy_target: None,
+            connector_target: None,
             sni: None,
             inner: error.into(),
         }
@@ -245,7 +245,7 @@ impl TlsMitmRelayError {
                 direction,
                 classification: HandshakeRelayClassification::Transport,
             },
-            proxy_target: None,
+            connector_target: None,
             sni: None,
             inner: error.into(),
         }
@@ -260,7 +260,7 @@ impl TlsMitmRelayError {
                 direction,
                 classification,
             },
-            proxy_target: None,
+            connector_target: None,
             sni: None,
             inner: BoxError::from(err).context("tls mitm relay: tls accept ssl error"),
         }
@@ -270,15 +270,15 @@ impl TlsMitmRelayError {
     fn tls_serve(error: impl Into<BoxError>) -> Self {
         Self {
             kind: TlsMitmRelayErrorKind::TlsServe,
-            proxy_target: None,
+            connector_target: None,
             sni: None,
             inner: error.into(),
         }
     }
 
     #[inline(always)]
-    pub fn proxy_target(&self) -> Option<&HostWithPort> {
-        self.proxy_target.as_ref().map(|t| &t.0)
+    pub fn connector_target(&self) -> Option<&HostWithPort> {
+        self.connector_target.as_ref()
     }
 
     #[inline(always)]
@@ -306,8 +306,8 @@ impl TlsMitmRelayError {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        fn proxy_target(mut self, proxy_target: Option<ProxyTarget>) -> Self {
-            self.proxy_target = proxy_target;
+        fn connector_target(mut self, connector_target: Option<HostWithPort>) -> Self {
+            self.connector_target = connector_target;
             self
         }
     }
@@ -324,8 +324,8 @@ impl fmt::Display for TlsMitmRelayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "{:?}: {} (proxy-target={:?}; sni={:?})",
-            self.kind, self.inner, self.proxy_target, self.sni
+            "{:?}: {} (connector-target={:?}; sni={:?})",
+            self.kind, self.inner, self.connector_target, self.sni
         )
     }
 }

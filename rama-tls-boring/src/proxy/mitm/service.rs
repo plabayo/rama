@@ -7,7 +7,7 @@ use rama_core::{
 };
 use rama_net::{
     address::Domain,
-    proxy::ProxyTarget,
+    client::ConnectorTarget,
     tls::{
         KeyLogIntent,
         client::{ClientHello, ServerVerifyMode, TlsClientConfig},
@@ -103,12 +103,15 @@ where
         })
         .ok();
 
-        let proxy_target = input.extensions().get_ref::<ProxyTarget>().cloned();
+        let connector_target = input
+            .extensions()
+            .get_ref()
+            .map(|ConnectorTarget(target)| target.clone());
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)
             .await
-            .map_err(|err| err.maybe_with_proxy_target(proxy_target))?;
+            .map_err(|err| err.maybe_with_connector_target(connector_target))?;
 
         self.inner
             .serve(tls_input)
@@ -161,13 +164,17 @@ where
             })
             .ok();
 
-        let proxy_target = input.extensions().get_ref::<ProxyTarget>().cloned();
+        let connector_target = input
+            .extensions()
+            .get_ref()
+            .map(|ConnectorTarget(target)| target.clone());
+
         let tls_input = self
             .relay
             .handshake(input, maybe_connector_data)
             .await
             .map_err(|err| {
-                err.maybe_with_proxy_target(proxy_target)
+                err.maybe_with_connector_target(connector_target)
                     .maybe_with_sni(maybe_sni.clone())
             })?;
 

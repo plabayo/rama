@@ -1,2 +1,2 @@
 mod tproxy;
-pub use self::tproxy::{ProxyTargetFromGetSocketname, ProxyTargetFromGetSocketnameLayer};
+pub use self::tproxy::{ConnectorTargetFromGetSocketname, ConnectorTargetFromGetSocketnameLayer};
