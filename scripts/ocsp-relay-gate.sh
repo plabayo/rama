@@ -162,7 +162,78 @@ run_connect() {
     PROXY_PID=""
 }
 
+# Wait for the harness READY line, echoing it; fails if the harness dies first.
+wait_ready() {
+    local out="$1" line
+    for _ in $(seq 1 100); do
+        line="$(grep '^READY' "$out" 2>/dev/null | head -1)"
+        [ -n "$line" ] && { echo "$line"; return 0; }
+        kill -0 "$PROXY_PID" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
+# Proxy-hosted CRL endpoint: the re-signed leaf carries a CRL distribution point
+# at our loopback responder, which serves a CA-signed CRL. Proves a
+# revocation-strict verifier (openssl -crl_check) accepts the leaf via that CRL,
+# and (negative) that -crl_check genuinely needs it.
+run_crl_endpoint() {
+    local ca="$WORK/ca-crlpt.pem" out="$WORK/out-crlpt.log" line addr revoc port
+    "$BIN" --upstream-revocation crl --leaf-revocation crl --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "crl-endpoint: harness never READY"; }
+    addr="$(echo "$line" | sed -n 's/.*proxy=\([^ ]*\).*/\1/p')"; port="${addr##*:}"
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[crl-endpoint] proxy=$addr revoc=$revoc"
+
+    "$OPENSSL" s_client -connect "127.0.0.1:$port" -servername upstream.example </dev/null 2>/dev/null \
+        | "$OPENSSL" x509 -out "$WORK/leaf-crlpt.pem" || fail "crl-endpoint: could not grab mirrored leaf"
+    "$OPENSSL" x509 -in "$WORK/leaf-crlpt.pem" -noout -text | grep -q "$revoc" \
+        || fail "crl-endpoint: leaf is missing our CRL distribution point"
+
+    # Negative control: -crl_check with no CRL available must fail.
+    if "$OPENSSL" verify -crl_check -CAfile "$ca" "$WORK/leaf-crlpt.pem" >/dev/null 2>&1; then
+        fail "crl-endpoint: -crl_check unexpectedly passed without a CRL"
+    fi
+
+    "$CURL" -sS "http://$revoc/mitm.crl" | "$OPENSSL" crl -inform DER -out "$WORK/crlpt.pem" 2>/dev/null \
+        || fail "crl-endpoint: could not fetch/parse the served CRL"
+    "$OPENSSL" verify -crl_check -CAfile "$ca" -CRLfile "$WORK/crlpt.pem" "$WORK/leaf-crlpt.pem" >/dev/null \
+        || fail "crl-endpoint: -crl_check rejected the leaf with our CRL"
+    echo "[crl-endpoint] OK — leaf CDP + CA-signed CRL accepted by openssl -crl_check"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
+# Proxy-hosted OCSP endpoint: the re-signed leaf carries an AIA OCSP URL at our
+# loopback responder. Proves an OCSP client (openssl ocsp) verifies the CA-signed
+# response (incl. nonce echo) and reads status good.
+run_ocsp_endpoint() {
+    local ca="$WORK/ca-ocsppt.pem" out="$WORK/out-ocsppt.log" line addr revoc port status
+    "$BIN" --upstream-revocation ocsp --leaf-revocation ocsp --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "ocsp-endpoint: harness never READY"; }
+    addr="$(echo "$line" | sed -n 's/.*proxy=\([^ ]*\).*/\1/p')"; port="${addr##*:}"
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[ocsp-endpoint] proxy=$addr revoc=$revoc"
+
+    "$OPENSSL" s_client -connect "127.0.0.1:$port" -servername upstream.example </dev/null 2>/dev/null \
+        | "$OPENSSL" x509 -out "$WORK/leaf-ocsppt.pem" || fail "ocsp-endpoint: could not grab mirrored leaf"
+    status="$("$OPENSSL" ocsp -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
+        -url "http://$revoc/ocsp/mitm" -CAfile "$ca" 2>&1 || true)"
+    echo "$status" | grep -q "Response verify OK" \
+        || { echo "$status"; fail "ocsp-endpoint: response signature did not verify"; }
+    echo "$status" | grep -q ": good" \
+        || { echo "$status"; fail "ocsp-endpoint: status was not good"; }
+    echo "[ocsp-endpoint] OK — leaf AIA + CA-signed OCSP accepted by openssl ocsp"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
 for kind in ocsp crl none; do run_scenario "$kind"; done
+run_crl_endpoint
+run_ocsp_endpoint
 
 # Real-crates.io leg needs network; CI always has it, local dev may not.
 if "$CURL" -sS --max-time 15 -o /dev/null https://index.crates.io/config.json 2>/dev/null; then

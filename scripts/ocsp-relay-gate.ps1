@@ -1,12 +1,14 @@
-# Windows half of the MITM OCSP-stapling gate.
+# Windows half of the MITM revocation gate.
 #
 # Proves the actual customer scenario: cargo on Windows (libcurl + schannel, with
-# http.check-revoke on by default) accepts a re-signed leaf that the relay staples,
-# talking through the CONNECT proxy to the *real* crates.io. If the staple were
-# missing/invalid, schannel would fail with CRYPT_E_NO_REVOCATION_CHECK.
+# http.check-revoke on by default) accepts a re-signed leaf, talking through the
+# CONNECT proxy to the *real* crates.io. libcurl + schannel ignores stapled OCSP
+# and resolves revocation from the cert's own pointers, so the relay re-points the
+# leaf's CRL distribution point at a proxy-hosted CA-signed CRL (--leaf-revocation
+# crl). Without it schannel fails with CRYPT_E_NO_REVOCATION_CHECK.
 #
-# The curl/Linux hermetic matrix + the no-staple negative control live in
-# ocsp-relay-gate.sh; this script is cargo-on-Windows only.
+# The curl/openssl Linux hermetic matrix lives in ocsp-relay-gate.sh; this script
+# is cargo-on-Windows only.
 
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -34,7 +36,8 @@ $log = Join-Path $work "harness.log"
 $proc = $null
 $thumb = $null
 try {
-    $proc = Start-Process -FilePath $bin -ArgumentList @("--connect", "--ca-out", $ca) `
+    $proc = Start-Process -FilePath $bin `
+        -ArgumentList @("--connect", "--leaf-revocation", "crl", "--ca-out", $ca) `
         -RedirectStandardOutput $log -NoNewWindow -PassThru
 
     # Wait for "READY proxy=127.0.0.1:PORT ...".
@@ -60,7 +63,8 @@ try {
     $thumb = $cert.Thumbprint
 
     # A real crate resolved through the MITM. Windows enforces revocation by
-    # default, so this only succeeds if our staple is good.
+    # default, so this only succeeds if schannel can fetch our CRL from the
+    # leaf's re-pointed distribution point.
     $proj = Join-Path $work "cargo-probe"
     New-Item -ItemType Directory -Force -Path (Join-Path $proj "src") | Out-Null
     Set-Content -Path (Join-Path $proj "src\lib.rs") -Value ""
@@ -78,13 +82,13 @@ itoa = "1"
     $env:CARGO_HTTP_PROXY = "http://$addr"
     $env:CARGO_HTTP_CHECK_REVOKE = "true" # default on Windows; explicit for clarity
     cargo generate-lockfile --manifest-path (Join-Path $proj "Cargo.toml")
-    if ($LASTEXITCODE -ne 0) { Fail "cargo rejected the stapled crates.io mirror (revocation/trust)" }
+    if ($LASTEXITCODE -ne 0) { Fail "cargo rejected the crates.io mirror (revocation/trust)" }
     if (-not (Select-String -Path (Join-Path $proj "Cargo.lock") -Pattern 'name = "itoa"' -Quiet)) {
         Fail "cargo did not resolve itoa through the MITM"
     }
 
-    Write-Host "[connect] OK - cargo (schannel + check-revoke) trusts the stapled crates.io mirror"
-    Write-Host "OCSP RELAY GATE (WINDOWS/CARGO) PASSED"
+    Write-Host "[connect] OK - cargo (schannel + check-revoke) resolved revocation via our CRL"
+    Write-Host "MITM REVOCATION GATE (WINDOWS/CARGO) PASSED"
 }
 finally {
     if ($thumb) { Remove-Item -Path ("Cert:\LocalMachine\Root\" + $thumb) -ErrorAction SilentlyContinue }
