@@ -3,14 +3,12 @@ use crate::{
     service::web::response::IntoResponse as _,
 };
 use rama_core::{Service, extensions::Extensions, telemetry::tracing};
-use rama_net::proxy::ProxyTarget;
-use rama_net::{Protocol, TransportAddressInputExt};
+use rama_net::{ConnectorTargetInputExt, Protocol, client::ConnectorTarget};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A default [`Service`] which responds on an http (proxy) connect with
-/// a default http response and which injects
-/// the destination address as the proxy target.
+/// a default http response.
 ///
 /// It can also be used for other HTTP connect purposes,
 /// but that is not what the service is intended for.
@@ -35,17 +33,19 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let extensions = Extensions::new();
 
-        if let Some(authority) = req.host_with_port_or(Protocol::HTTP_DEFAULT_PORT) {
+        if let Some(authority) = req.connector_target_with_default_port(Protocol::HTTP_DEFAULT_PORT)
+        {
             tracing::info!(
                 server.address = %authority.host,
                 server.port = authority.port,
-                "accept CONNECT: insert proxy target into extensions",
+                "accept CONNECT: insert proxy (connector) target into extensions",
             );
-            extensions.insert(ProxyTarget(authority));
+            extensions.insert(ConnectorTarget(authority));
         } else {
-            tracing::error!("error extracting authority");
+            tracing::error!("http proxy, error extracting connector target");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
+
         Ok(UpgradeResponse {
             request: req,
             response: StatusCode::OK.into_response(),

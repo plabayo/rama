@@ -2,7 +2,7 @@ use crate::Request;
 use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
 use rama_core::telemetry::tracing::{self, Level, Span};
-use rama_net::{Protocol, ProtocolInputExt, TransportAddressInputExt};
+use rama_net::Protocol;
 use rama_utils::str::arcstr::{ArcStr, arcstr};
 
 use super::DEFAULT_MESSAGE_LEVEL;
@@ -94,18 +94,22 @@ impl Default for DefaultMakeSpan {
 
 impl<B> MakeSpan<B> for DefaultMakeSpan {
     fn make_span(&self, request: &Request<B>) -> Span {
+        let full_uri = request.request_uri();
+
         // to ensure that we always log authority even if not included in full protocol
-        // TODO: in near future this will be slightly more elegant with input extensions,
-        // it is blocking on the url rework that has to be done first
-        let protocol = request.protocol().unwrap_or(&Protocol::HTTP);
+        let protocol = full_uri.scheme().unwrap_or(&Protocol::HTTP);
+
         // according to OTEL spec domain can be domain or IP, so host is fine
-        let (found_domain, found_port, found_scheme) =
-            if let Some(hwp) = request.host_with_port_or(Protocol::HTTP_DEFAULT_PORT) {
-                (Some(hwp.host), Some(hwp.port), Some(protocol.as_str()))
-            } else {
-                tracing::debug!("no authority could be resolved for request");
-                (None, None, None)
-            };
+        let (found_domain, found_port, found_scheme) = if let Some(host) = full_uri.host() {
+            (
+                Some(host),
+                full_uri.port_u16().or_else(|| protocol.default_port()),
+                Some(protocol.as_str()),
+            )
+        } else {
+            tracing::debug!("no authority could be resolved for request");
+            (None, None, None)
+        };
 
         let found_domain_cow_str = found_domain.as_ref().map(|d| d.to_str());
         let found_domain_str = found_domain_cow_str.as_deref();

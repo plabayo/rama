@@ -16,7 +16,7 @@ use windows_sys::Win32::Networking::WinSock::{
     WSAIoctl,
 };
 
-use crate::proxy::ProxyTarget;
+use crate::client::ConnectorTarget;
 
 const WFP_CONTEXT_BUFFER_STACK_LEN: usize = 128;
 
@@ -24,7 +24,7 @@ const WFP_CONTEXT_BUFFER_STACK_LEN: usize = 128;
 type WfpContextBuffer = SmallVec<[u8; WFP_CONTEXT_BUFFER_STACK_LEN]>;
 
 #[derive(Debug, Clone)]
-pub struct ProxyTargetFromWfpContextLayer<D> {
+pub struct ConnectorTargetFromWfpContextLayer<D> {
     decoder: D,
     context_optional: bool,
 }
@@ -33,10 +33,10 @@ pub trait WfpContextDecoder: Send + Sync + 'static {
     type Context: Extension;
     type Error: Into<BoxError>;
 
-    fn decode(&self, bytes: &[u8]) -> Result<(Self::Context, ProxyTarget), Self::Error>;
+    fn decode(&self, bytes: &[u8]) -> Result<(Self::Context, ConnectorTarget), Self::Error>;
 }
 
-impl<D> ProxyTargetFromWfpContextLayer<D> {
+impl<D> ConnectorTargetFromWfpContextLayer<D> {
     pub fn new(decoder: D) -> Self {
         Self {
             decoder,
@@ -52,14 +52,14 @@ impl<D> ProxyTargetFromWfpContextLayer<D> {
     }
 }
 
-impl<S, D> Layer<S> for ProxyTargetFromWfpContextLayer<D>
+impl<S, D> Layer<S> for ConnectorTargetFromWfpContextLayer<D>
 where
     D: Clone,
 {
-    type Service = ProxyTargetFromWfpContext<S, D>;
+    type Service = ConnectorTargetFromWfpContext<S, D>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyTargetFromWfpContext {
+        ConnectorTargetFromWfpContext {
             inner,
             decoder: self.decoder.clone(),
             context_optional: self.context_optional,
@@ -68,13 +68,13 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct ProxyTargetFromWfpContext<S, D> {
+pub struct ConnectorTargetFromWfpContext<S, D> {
     inner: S,
     decoder: D,
     context_optional: bool,
 }
 
-impl<S, Input, D> Service<Input> for ProxyTargetFromWfpContext<S, D>
+impl<S, Input, D> Service<Input> for ConnectorTargetFromWfpContext<S, D>
 where
     S: Service<Input, Error: Into<BoxError>>,
     Input: AsRawSocket + ExtensionsRef + Send + 'static,
@@ -104,13 +104,13 @@ where
             }
         };
 
-        let (context, proxy_target) = self
+        let (context, connector_target) = self
             .decoder
             .decode(&context_bytes)
             .context("decode WFP context")?;
 
         input.extensions().insert(context);
-        input.extensions().insert(proxy_target);
+        input.extensions().insert(connector_target);
 
         self.inner
             .serve(input)

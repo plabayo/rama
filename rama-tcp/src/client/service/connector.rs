@@ -1,16 +1,14 @@
-use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::ExtensionsRef,
     rt::Executor,
     telemetry::tracing,
 };
 use rama_dns::client::{GlobalDnsResolver, resolver::DnsAddressResolver};
 use rama_net::{
-    TransportAddressInputExt, TransportProtocolInputExt,
-    address::ProxyAddress,
-    client::{ConnectorTarget, EstablishedClientConnection},
+    ConnectorTargetInputExt, TransportProtocolInputExt,
+    client::EstablishedClientConnection,
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
 };
@@ -91,7 +89,7 @@ impl Default for TcpConnector {
 
 impl<Input, Dns, ConnectorFactory> Service<Input> for TcpConnector<Dns, ConnectorFactory>
 where
-    Input: TransportAddressInputExt + TransportProtocolInputExt + Send + ExtensionsRef + 'static,
+    Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
     Dns: DnsAddressResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
@@ -108,66 +106,9 @@ where
             .await
             .into_box_error()?;
 
-        if let Some(proxy) = input.extensions().get_arc::<ProxyAddress>() {
-            let (conn, addr) = crate::client::tcp_connect(
-                input.extensions(),
-                proxy.address.clone(),
-                self.dns.clone(),
-                connector,
-                self.exec.clone(),
-            )
-            .await
-            .context("tcp connector: conncept to proxy")?;
-
-            conn.extensions().insert_arc(proxy);
-
-            let socket_info = SocketInfo::new(
-                conn.local_addr()
-                    .inspect_err(|err| {
-                        tracing::debug!(
-                            "failed to receive local addr of established connection to proxy: {err:?}"
-                        )
-                    })
-                    .ok(),
-                addr.into(),
-            );
-            conn.extensions().insert(socket_info);
-
-            return Ok(EstablishedClientConnection { input, conn });
-        }
-
-        if let Some(target) = input.extensions().get_arc::<ConnectorTarget>() {
-            let (conn, addr) = crate::client::tcp_connect(
-                input.extensions(),
-                target.0.clone(),
-                self.dns.clone(),
-                connector,
-                self.exec.clone(),
-            )
-            .await
-            .context("tcp connector: conncept to connector target (overwrite?)")?;
-
-            conn.extensions().insert_arc(target);
-
-            let socket_info = SocketInfo::new(
-                conn.local_addr()
-                    .inspect_err(|err| {
-                        tracing::debug!(
-                            "failed to receive local addr of established connection to target (overwrite?): {err:?}"
-                        )
-                    })
-                    .ok(),
-                addr.into(),
-            );
-            conn.extensions().insert(socket_info);
-
-            return Ok(EstablishedClientConnection { input, conn });
-        }
-
         match input.transport_protocol() {
             Some(TransportProtocol::Tcp) | None => (), // a-ok :)
             Some(TransportProtocol::Udp) => {
-                // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
                 return Err(BoxError::from_static_str(
                     "Tcp Connector Service cannot establish a UDP transport",
                 ));
@@ -175,8 +116,9 @@ where
         }
 
         let authority = input
-            .host_with_port()
-            .context("get host:port from input authority")?;
+            .connector_target()
+            .context("get host:port from input")?;
+
         let (conn, addr) = crate::client::tcp_connect(
             input.extensions(),
             authority,
@@ -200,5 +142,29 @@ where
         conn.extensions().insert(socket_info);
 
         Ok(EstablishedClientConnection { input, conn })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_net::{address::HostWithPort, client::Request, transport::TransportProtocol};
+
+    use crate::client::connect::DenyTcpStreamConnector;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn rejects_udp_transport_inputs() {
+        let connector =
+            TcpConnector::new(Executor::default()).with_connector(DenyTcpStreamConnector::new());
+        let req = Request::new(HostWithPort::local_ipv4(80))
+            .with_transport_protocol(TransportProtocol::Udp);
+
+        let err = connector.serve(req).await.unwrap_err();
+
+        assert!(
+            err.to_string().contains("cannot establish a UDP transport"),
+            "unexpected error: {err}"
+        );
     }
 }

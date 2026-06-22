@@ -12,39 +12,39 @@ use rama_core::{
     extensions::ExtensionsRef,
 };
 
-use crate::{address::SocketAddress, proxy::ProxyTarget};
+use crate::{address::SocketAddress, client::ConnectorTarget};
 
 #[derive(Debug, Clone, Default)]
-/// Layer to create [`ProxyTargetFromGetSocketname`] middleware.
-pub struct ProxyTargetFromGetSocketnameLayer;
+/// Layer to create [`ConnectorTargetFromGetSocketname`] middleware.
+pub struct ConnectorTargetFromGetSocketnameLayer;
 
-impl ProxyTargetFromGetSocketnameLayer {
+impl ConnectorTargetFromGetSocketnameLayer {
     #[inline(always)]
-    /// Create a new [`ProxyTargetFromGetSocketnameLayer`]
+    /// Create a new [`ConnectorTargetFromGetSocketnameLayer`]
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<S> Layer<S> for ProxyTargetFromGetSocketnameLayer {
-    type Service = ProxyTargetFromGetSocketname<S>;
+impl<S> Layer<S> for ConnectorTargetFromGetSocketnameLayer {
+    type Service = ConnectorTargetFromGetSocketname<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyTargetFromGetSocketname { inner }
+        ConnectorTargetFromGetSocketname { inner }
     }
 }
 
 #[derive(Debug, Clone)]
 /// Middleware that can be used by Linux transparent proxies,
-/// to insert the [`ProxyTarget`] based on the address inserted
+/// to insert the [`ConnectorTarget`] based on the address inserted
 /// by the OS in the "socketname" of the underlying OS socket.
 ///
-/// Created using [`ProxyTargetFromGetSocketnameLayer`].
-pub struct ProxyTargetFromGetSocketname<S> {
+/// Created using [`ConnectorTargetFromGetSocketnameLayer`].
+pub struct ConnectorTargetFromGetSocketname<S> {
     inner: S,
 }
 
-impl<S, Input> Service<Input> for ProxyTargetFromGetSocketname<S>
+impl<S, Input> Service<Input> for ConnectorTargetFromGetSocketname<S>
 where
     S: Service<Input, Error: Into<BoxError>>,
     Input: AsRawFd + ExtensionsRef + Send + 'static,
@@ -53,14 +53,16 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let proxy_target = proxy_target_from_input(input.as_raw_fd())
-            .context("get proxy target from input stream")?;
-        input.extensions().insert(ProxyTarget(proxy_target.into()));
+        let proxy_target = connector_target_from_input(input.as_raw_fd())
+            .context("get (proxy) connector target from input stream")?;
+        input
+            .extensions()
+            .insert(ConnectorTarget(proxy_target.into()));
         self.inner.serve(input).await.context("inner serve tcp")
     }
 }
 
-fn proxy_target_from_input(fd: RawFd) -> Result<SocketAddress, BoxError> {
+fn connector_target_from_input(fd: RawFd) -> Result<SocketAddress, BoxError> {
     // SAFETY: `sockaddr_storage` is a plain old data buffer used as out-parameter
     // storage for `getsockname`, so zero-initializing it is valid.
     let mut storage: libc::sockaddr_storage = unsafe { zeroed() };

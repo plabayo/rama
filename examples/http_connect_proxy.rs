@@ -159,7 +159,7 @@ async fn main() {
                         DefaultHttpProxyConnectReplyService::new(),
                         (
                             ConsumeErrLayer::default(),
-                            IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone()),
+                            IoToProxyBridgeIoLayer::extension_connector_target(exec.clone()),
                         ).into_layer(IoForwardService::new(exec)),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),

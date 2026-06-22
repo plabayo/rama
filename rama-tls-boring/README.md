@@ -164,7 +164,7 @@ The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / `TlsAcceptorSe
 
 **Trust:** egress verification is forced `Disable` (the relay accepts the upstream's real cert without verifying it); ingress loads no OS trust store and enforces no client-cert verification ([service.rs#L43-L93](src/proxy/mitm/service.rs#L43-L93), [mod.rs#L643-L650](src/proxy/mitm/mod.rs#L643-L650)).
 
-**Error classification:** `TlsMitmRelayError` carries a kind (Config / Handshake{direction, classification} / TlsServe). Handshake errors are classified `CertTrust` (cacheable bypass candidate) vs `TlsProtocol` vs `Transport` vs `Unclassified` from peer alerts and `rama-boring` reason strings, with direction (Ingress/Egress), `ProxyTarget`, and SNI attached ([mod.rs#L188-L478](src/proxy/mitm/mod.rs#L188-L478)). A plaintext pre-handshake alert primitive exists in [alert.rs](src/proxy/mitm/alert.rs) but is currently **disabled** (`mod alert;` commented out) — failures are conveyed by transport close.
+**Error classification:** `TlsMitmRelayError` carries a kind (Config / Handshake{direction, classification} / TlsServe). Handshake errors are classified `CertTrust` (cacheable bypass candidate) vs `TlsProtocol` vs `Transport` vs `Unclassified` from peer alerts and `rama-boring` reason strings, with direction (Ingress/Egress), `ConnectorTarget`, and SNI attached ([mod.rs#L188-L478](src/proxy/mitm/mod.rs#L188-L478)). A plaintext pre-handshake alert primitive exists in [alert.rs](src/proxy/mitm/alert.rs) but is currently **disabled** (`mod alert;` commented out) — failures are conveyed by transport close.
 
 ### Shared type vocabulary
 

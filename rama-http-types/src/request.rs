@@ -482,7 +482,7 @@ impl<T> Request<T> {
     /// Where [`uri`](Self::uri) returns the URI exactly as received (often
     /// origin-form `/path` for HTTP/1.1), this fills in the scheme and
     /// authority from the request's effective protocol and authority (URI →
-    /// `ProxyTarget` → TLS SNI → `Forwarded` → `Host` header) — a derivation
+    /// TLS SNI → `Forwarded` → `Host` header) — a derivation
     /// callers can treat as a technical detail.
     #[must_use]
     pub fn request_uri(&self) -> Uri {

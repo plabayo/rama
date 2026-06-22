@@ -39,7 +39,7 @@ pub use client_ip::ClientIp;
 pub use input_ext::HttpVersionInputExt;
 #[doc(inline)]
 pub use input_ext::{
-    AuthorityInputExt, ProtocolInputExt, TransportAddressInputExt, TransportProtocolInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, ProtocolInputExt, TransportProtocolInputExt,
     UriInputExt,
 };
 #[doc(inline)]

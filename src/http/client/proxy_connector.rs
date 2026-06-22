@@ -110,14 +110,22 @@ where
                 });
 
                 if protocol.is_socks5() {
-                    tracing::trace!("using socks proxy connector");
+                    tracing::trace!(
+                        target = %&proxy.address,
+                        "using socks proxy connector",
+                    );
+
                     let EstablishedClientConnection { input, conn } =
                         self.socks.connect(input).await?;
 
                     let conn = MaybeProxiedConnection::socks(conn);
                     Ok(EstablishedClientConnection { input, conn })
                 } else if protocol.is_http() {
-                    tracing::trace!("using http proxy connector");
+                    tracing::trace!(
+                        target = %&proxy.address,
+                        "using http proxy connector"
+                    );
+
                     let EstablishedClientConnection { input, conn } =
                         self.http.connect(input).await?;
 

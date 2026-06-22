@@ -1,8 +1,7 @@
 use rama::{
     Layer, Service,
     dns::client::resolver::DnsAddresssResolverOverwrite,
-    extensions::ExtensionsRef,
-    net::{TransportAddressInputExt, address::DomainTrie},
+    net::{ConnectorTargetInputExt, address::DomainTrie},
 };
 
 use crate::cmd::send::arg::ResolveArg;
@@ -42,7 +41,7 @@ pub(in crate::cmd::send) struct OptDnsOverwriteService<S> {
 
 impl<Input, S> Service<Input> for OptDnsOverwriteService<S>
 where
-    Input: TransportAddressInputExt + ExtensionsRef + Send + 'static,
+    Input: ConnectorTargetInputExt + Send + 'static,
     S: Service<Input>,
 {
     type Output = S::Output;
@@ -55,7 +54,7 @@ where
 
         if info.port.is_none()
             || input
-                .host_with_port()
+                .connector_target()
                 .map(|hwp| info.port == Some(hwp.port))
                 .unwrap_or_default()
         {
