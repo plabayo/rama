@@ -174,7 +174,7 @@ where
 
         if let Some(filter) = maybe_filter {
             let proxy_ctx = ProxyContext {
-                protocol: input.transport_protocol(),
+                protocol: input.transport_protocol().unwrap_or(TransportProtocol::Tcp),
             };
 
             let transport_protocol = proxy_ctx.protocol;
@@ -460,6 +460,7 @@ mod tests {
         Protocol,
         address::{HostWithPort, ProxyAddress},
         asn::Asn,
+        client::Request as NetRequest,
     };
     use rama_utils::str::non_empty_str;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
@@ -708,12 +709,12 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .with_filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |req: rama_tcp::client::Request| {
+            .into_layer(service_fn(async |req: NetRequest| {
                 Ok::<_, Infallible>(req.extensions().get_ref::<ProxyAddress>().unwrap().clone())
             }));
 
-        let req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
-            .with_protocol(Protocol::HTTPS);
+        let req = NetRequest::new("www.example.com:443".parse().unwrap())
+            .with_application_protocol(Protocol::HTTPS);
 
         req.extensions().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),

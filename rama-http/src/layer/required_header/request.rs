@@ -148,7 +148,7 @@ where
                 .authority()
                 .context("AddRequiredRequestHeaders: resolve authority")?;
             let protocol = req.protocol();
-            let authority = authority.without_default_port_for(protocol.as_ref());
+            let authority = authority.without_default_port_for(protocol);
             tracing::trace!(
                 server.address = %authority,
                 "add missing authority as host header",

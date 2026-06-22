@@ -9,7 +9,7 @@ use rama_core::{
 };
 use rama_net::{
     address::HostWithPort,
-    client::{ConnectorService, EstablishedClientConnection},
+    client::{ConnectorService, EstablishedClientConnection, Request},
     proxy::ProxyTarget,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -181,7 +181,7 @@ impl<S, Ingress, C> Service<Ingress> for IoToProxyBridgeIo<S, C>
 where
     S: Service<BridgeIo<Ingress, C::Connection>, Error: Into<BoxError>>,
     Ingress: Io + ExtensionsRef,
-    C: ConnectorService<crate::client::Request, Connection: Io + Unpin>,
+    C: ConnectorService<Request, Connection: Io + Unpin>,
 {
     type Output = S::Output;
     type Error = BoxError;
@@ -205,7 +205,7 @@ where
         );
 
         let extensions = ingress.extensions().clone();
-        let tcp_req = crate::client::Request::new_with_extensions(egress_addr.clone(), extensions);
+        let tcp_req = Request::new_with_extensions(egress_addr.clone(), extensions);
 
         let EstablishedClientConnection {
             input: _,

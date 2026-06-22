@@ -39,8 +39,8 @@ dial9-tokio-telemetry = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true }
-rama-net = { workspace = true, features = ["http"] }
-rama-tcp = { workspace = true, features = ["http"] }
+rama-net = { workspace = true }
+rama-tcp = { workspace = true }
 rama-udp = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true }

@@ -7,7 +7,7 @@ use rama::{
     net::{
         Protocol,
         address::{HostWithOptPort, HostWithPort},
-        client::{ConnectorService, EstablishedClientConnection},
+        client::{ConnectorService, EstablishedClientConnection, Request},
         stream::Socket,
         tls::{
             DataEncoding,
@@ -15,10 +15,7 @@ use rama::{
         },
     },
     rt::Executor,
-    tcp::{
-        TcpStream,
-        client::{Request, service::TcpConnector},
-    },
+    tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
     tls::boring::{client::TlsConnectorLayer, core::x509::X509},
 };

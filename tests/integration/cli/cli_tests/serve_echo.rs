@@ -19,9 +19,11 @@ use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
     net::tls::client::{ServerVerifyMode, TlsClientConfig},
-    tcp::client::{Request as TcpRequest, service::TcpConnector},
+    tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
 };
+#[cfg(feature = "boring")]
+use rama_net::client::Request as TransportRequest;
 
 use super::utils;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -223,7 +225,7 @@ async fn test_tls_tcp_echo() {
         let connector = TlsConnector::secure(TcpConnector::new(Executor::default()))
             .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
         match connector
-            .connect(TcpRequest::new(HostWithPort::local_ipv4(63111)))
+            .connect(TransportRequest::new(HostWithPort::local_ipv4(63111)))
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => {

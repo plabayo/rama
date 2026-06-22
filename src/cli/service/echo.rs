@@ -402,7 +402,7 @@ impl Service<Request> for EchoService {
             .authority()
             .context("echo: resolve request authority")?
             .to_string();
-        let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
+        let scheme = req.protocol().unwrap_or(&Protocol::HTTP).to_string();
 
         let ua_str = req
             .headers()

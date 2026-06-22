@@ -400,7 +400,7 @@ where
                             req.extensions().contains::<PreserveHeaderUserAgent>();
 
                         let authority = req.authority().map(Cow::Owned);
-                        let protocol = req.protocol().map(Cow::Owned);
+                        let protocol = req.protocol().map(Cow::Borrowed);
 
                         let output_headers = merge_http_headers(
                             base_http_headers,

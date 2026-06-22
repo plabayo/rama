@@ -150,7 +150,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         .unwrap_or_default();
 
     let authority = req.authority().context("fetch request authority")?;
-    let protocol = req.protocol();
+    let protocol = req.protocol().cloned();
 
     let is_insecure_request_over_http_proxy =
         !protocol.as_ref().map(|p| p.is_secure()).unwrap_or_default() && uses_http_proxy;
@@ -217,7 +217,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
                 let authority = req
                     .authority()
                     .context("[h2+] add scheme/host: missing authority")?;
-                let protocol = req.protocol();
+                let protocol = req.protocol().cloned();
 
                 tracing::trace!(
                     network.protocol.name = "http",
@@ -402,6 +402,6 @@ mod tests {
             .unwrap();
         req.extensions().insert(SecureTransport::default());
 
-        assert_eq!(req.protocol(), Some(Protocol::HTTPS));
+        assert_eq!(req.protocol(), Some(&Protocol::HTTPS));
     }
 }

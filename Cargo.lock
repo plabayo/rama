@@ -4086,7 +4086,6 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-dns",
- "rama-http-types",
  "rama-net",
  "rama-utils",
  "rand 0.10.1",

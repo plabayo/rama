@@ -185,7 +185,7 @@ pub(super) async fn get_request_info(
         .authority()
         .context("get or compose request authority")?
         .to_string();
-    let scheme = req.protocol().unwrap_or(Protocol::HTTP).to_string();
+    let scheme = req.protocol().unwrap_or(&Protocol::HTTP).to_string();
 
     // The forwarded client IP lives in the request's extensions, which must be
     // read from `req` — `req.into_parts()` yields the http `Parts` whose

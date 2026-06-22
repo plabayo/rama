@@ -330,14 +330,14 @@ mod tests {
     }
 
     impl ProtocolInputExt for FakeRequest {
-        fn protocol(&self) -> Option<Protocol> {
-            Some(Protocol::HTTPS)
+        fn protocol(&self) -> Option<&Protocol> {
+            Some(&Protocol::HTTPS)
         }
     }
 
     impl TransportProtocolInputExt for FakeRequest {
-        fn transport_protocol(&self) -> TransportProtocol {
-            TransportProtocol::Tcp
+        fn transport_protocol(&self) -> Option<TransportProtocol> {
+            Some(TransportProtocol::Tcp)
         }
     }
 
