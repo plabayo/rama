@@ -7,7 +7,8 @@ use rama::{
     io::{BridgeIo, Io},
     net::{
         address::{Domain, Host},
-        proxy::{IoForwardService, ProxyTarget},
+        client::ConnectorTarget,
+        proxy::IoForwardService,
         tls::server::InputWithClientHello,
     },
     rt::Executor,
@@ -162,21 +163,21 @@ where
             }
         }
 
-        if let Some(ProxyTarget(target)) = bridge_io.extensions().get_ref().cloned()
+        if let Some(ConnectorTarget(target)) = bridge_io.extensions().get_ref().cloned()
             && self
                 .cache
                 .get(&PolicyKey::Target(target.host.clone()))
                 .is_some()
         {
             tracing::debug!(
-                "serving via fallback IO due to exception in cache for ProxyTarget = {target}"
+                "serving via fallback IO due to exception in cache for ConnectorTarget = {target}"
             );
             return self
                 .fallback
                 .serve(bridge_io)
                 .await
                 .context("serve via fallback IO (skip TLS due to cached exception)")
-                .context_field("proxy_target", target);
+                .context_field("connector_target", target);
         }
 
         if let Err(err) = self
@@ -200,9 +201,9 @@ where
                 );
                 self.cache.insert(PolicyKey::Sni(sni), ());
             }
-            if let Some(target) = err.proxy_target() {
+            if let Some(target) = err.connector_target() {
                 tracing::debug!(
-                    "adding ProxyTarget ({target}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
+                    "adding ConnectorTarget ({target}) exception for follow-up tls relay inputs due to CertTrust handshake failure"
                 );
                 self.cache
                     .insert(PolicyKey::Target(target.host.clone()), ());

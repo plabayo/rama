@@ -16,7 +16,10 @@ use rama_core::{
     rt::Executor,
     service::Service,
 };
-use rama_net::proxy::{BridgeCloseReason, IdleGuard, ProxyTarget};
+use rama_net::{
+    client::ConnectorTarget,
+    proxy::{BridgeCloseReason, IdleGuard},
+};
 use rama_utils::octets::kib;
 
 use atomic_waker::AtomicWaker;
@@ -870,7 +873,7 @@ impl TransparentProxyTcpSession {
         let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::graceful(flow_guard)));
         ingress_stream.extensions().insert_arc(meta_arc);
         if let Some(remote) = remote_endpoint {
-            ingress_stream.extensions().insert(ProxyTarget(remote));
+            ingress_stream.extensions().insert(ConnectorTarget(remote));
         }
         // Service-initiated hand-off back to Swift; see [`PromoteHandle`].
         // The handle is backed by the session's `PromoteRegistry` so
@@ -1508,7 +1511,7 @@ impl TransparentProxyUdpSession {
         let protocol = meta.protocol;
         ingress_flow.extensions().insert_arc(meta);
         if let Some(remote) = remote_endpoint {
-            ingress_flow.extensions().insert(ProxyTarget(remote));
+            ingress_flow.extensions().insert(ConnectorTarget(remote));
         }
 
         tracing::debug!(protocol = ?protocol, "udp session activated");

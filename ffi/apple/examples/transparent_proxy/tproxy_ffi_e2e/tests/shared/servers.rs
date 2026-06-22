@@ -405,7 +405,7 @@ pub(crate) async fn spawn_combined_proxy() -> (u16, tokio::task::JoinHandle<()>)
                 .and_method_connect(),
             DefaultHttpProxyConnectReplyService::new(),
             ConsumeErrLayer::trace_as_debug().into_layer(
-                IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
+                IoToProxyBridgeIoLayer::extension_connector_target(exec.clone())
                     .into_layer(IoForwardService::new(exec.clone())),
             ),
         )

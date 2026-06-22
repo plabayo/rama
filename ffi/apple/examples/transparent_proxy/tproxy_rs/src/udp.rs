@@ -7,7 +7,7 @@ use rama::{
     extensions::ExtensionsRef as _,
     net::{
         apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
-        proxy::ProxyTarget,
+        client::ConnectorTarget,
     },
     service::service_fn,
     telemetry::tracing,
@@ -43,7 +43,7 @@ pub(super) async fn try_new_service(
 /// single listener for an entire family of flows, or wrap a
 /// higher-level rama-udp transport.
 ///
-/// `ProxyTarget` in the flow's extensions is informational — the
+/// `ConnectorTarget` in the flow's extensions is informational — the
 /// first peer the app addressed when the flow was opened — not a
 /// binding constraint; we log it for telemetry only.
 async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
@@ -51,15 +51,19 @@ async fn service(mut ingress: UdpFlow) -> Result<(), Infallible> {
         .extensions()
         .get_ref()
         .cloned()
-        .map(|ProxyTarget(addr)| addr);
+        .map(|ConnectorTarget(addr)| addr);
+
     // The NE kernel surfaces UDP remote endpoints as already-resolved
     // IPs (transparent proxy intercepts post-connect / per-datagram
     // sendto traffic), so the cast is the common case. If a non-IP
     // host ever sneaks through, fallback is simply unavailable for
     // that flow.
-    let initial_target: Option<SocketAddr> = initial_target_hwp
-        .as_ref()
-        .and_then(|hwp| hwp.host.try_as_ip().ok().map(|ip| SocketAddr::new(ip, hwp.port)));
+    let initial_target: Option<SocketAddr> = initial_target_hwp.as_ref().and_then(|hwp| {
+        hwp.host
+            .try_as_ip()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, hwp.port))
+    });
 
     tracing::info!(
         initial_target = ?initial_target_hwp,

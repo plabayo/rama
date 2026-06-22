@@ -1,7 +1,6 @@
-use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::ExtensionsRef,
     io::{BridgeIo, Io},
     rt::Executor,
@@ -9,8 +8,8 @@ use rama_core::{
 };
 use rama_net::{
     address::HostWithPort,
+    client::ConnectorTarget,
     client::{ConnectorService, EstablishedClientConnection, Request},
-    proxy::ProxyTarget,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -30,7 +29,7 @@ pub struct IoToProxyBridgeIo<S, C = TcpConnector> {
 #[derive(Debug, Clone)]
 enum AddressProvider {
     Static(HostWithPort),
-    ExtensionProxyTarget,
+    ExtensionConnectorTarget,
 }
 
 impl<S> IoToProxyBridgeIo<S> {
@@ -38,8 +37,8 @@ impl<S> IoToProxyBridgeIo<S> {
     /// Creates a new [`IoToProxyBridgeIo`] service,
     /// which will use the provided target info to connect to.
     ///
-    /// Use [`Self::extension_proxy_target`] if you wish to have it be done
-    /// using the [`ProxyTarget`] extension instead, failing the input flow
+    /// Use [`Self::extension_connector_target`] if you wish to have it be done
+    /// using the [`ConnectorTarget`] extension instead, failing the input flow
     /// in case that extension not exist.
     pub fn new(inner: S, exec: Executor, target: HostWithPort) -> Self {
         Self {
@@ -51,15 +50,15 @@ impl<S> IoToProxyBridgeIo<S> {
 
     #[inline(always)]
     /// Creates a new [`IoToProxyBridgeIo`] service,
-    /// which expects while serving that [`ProxyTarget`]
+    /// which expects while serving that [`ConnectorTarget`]
     /// is available in the input's extension, and fail otherwise.
     ///
     /// Use [`Self::new`] if you wish to use a hardcoded target instead,
-    pub fn extension_proxy_target(exec: Executor, inner: S) -> Self {
+    pub fn extension_connector_target(exec: Executor, inner: S) -> Self {
         Self {
             inner,
             connector: TcpConnector::new(exec),
-            address_provider: AddressProvider::ExtensionProxyTarget,
+            address_provider: AddressProvider::ExtensionConnectorTarget,
         }
     }
 
@@ -94,8 +93,8 @@ impl IoToProxyBridgeIoLayer {
     /// Creates a new [`IoToProxyBridgeIoLayer`],
     /// which will use by the [`IoToProxyBridgeIo`] [`Service`] the provided target info to connect to.
     ///
-    /// Use [`Self::extension_proxy_target`] if you wish to have it be done
-    /// using the [`ProxyTarget`] extension instead, failing the input flow
+    /// Use [`Self::extension_connector_target`] if you wish to have it be done
+    /// using the [`ConnectorTarget`] extension instead, failing the input flow
     /// in case that extension not exist.
     pub fn new(exec: Executor, target: impl Into<HostWithPort>) -> Self {
         Self {
@@ -107,14 +106,14 @@ impl IoToProxyBridgeIoLayer {
     #[inline(always)]
     /// Creates a new [`IoToProxyBridgeIoLayer`],
     /// which will create the [`IoToProxyBridgeIo`] [`Service`]
-    /// that with this constructor will expect while serving that [`ProxyTarget`]
+    /// that with this constructor will expect while serving that [`ConnectorTarget`]
     /// is available in the input's extension, and fail otherwise.
     ///
     /// Use [`Self::new`] if you wish to use a hardcoded target instead,
-    pub fn extension_proxy_target(exec: Executor) -> Self {
+    pub fn extension_connector_target(exec: Executor) -> Self {
         Self {
             connector: TcpConnector::new(exec),
-            address_provider: AddressProvider::ExtensionProxyTarget,
+            address_provider: AddressProvider::ExtensionConnectorTarget,
         }
     }
 }
@@ -145,11 +144,11 @@ impl<C> IoToProxyBridgeIoLayer<C> {
     }
 
     #[inline(always)]
-    /// Same as [`Self::extension_proxy_target`] but using a custom connector.
-    pub fn extension_proxy_target_with_connector(connector: C) -> Self {
+    /// Same as [`Self::extension_connector_target`] but using a custom connector.
+    pub fn extension_connector_target_with_connector(connector: C) -> Self {
         Self {
             connector,
-            address_provider: AddressProvider::ExtensionProxyTarget,
+            address_provider: AddressProvider::ExtensionConnectorTarget,
         }
     }
 }
@@ -189,12 +188,14 @@ where
     async fn serve(&self, ingress: Ingress) -> Result<Self::Output, Self::Error> {
         let egress_addr = match self.address_provider.clone() {
             AddressProvider::Static(host_with_port) => host_with_port,
-            AddressProvider::ExtensionProxyTarget => {
-                if let Some(ProxyTarget(host_with_port)) = ingress.extensions().get_ref().cloned() {
+            AddressProvider::ExtensionConnectorTarget => {
+                if let Some(ConnectorTarget(host_with_port)) =
+                    ingress.extensions().get_ref().cloned()
+                {
                     host_with_port
                 } else {
                     return Err(BoxError::from_static_str(
-                        "missing ProxyTarget in IoToProxyBridgeIo: proxy target assumed to exist in ingress extensions",
+                        "missing ConnectorTarget in IoToProxyBridgeIo: connector (proxy) target assumed to exist in ingress extensions",
                     ));
                 }
             }
@@ -204,8 +205,8 @@ where
             "try to establish connection to egress as a means to create a BridgeIo: addr = {egress_addr}"
         );
 
-        let extensions = ingress.extensions().clone();
-        let tcp_req = Request::new_with_extensions(egress_addr.clone(), extensions);
+        let tcp_req =
+            Request::new_with_extensions(egress_addr.clone(), ingress.extensions().fork());
 
         let EstablishedClientConnection {
             input: _,
@@ -219,5 +220,164 @@ where
 
         let bridge_io = BridgeIo(ingress, egress);
         self.inner.serve(bridge_io).await.into_box_error()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        convert::Infallible,
+        io,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    use rama_core::{
+        error::BoxError,
+        extensions::{Extension, Extensions, ExtensionsRef},
+        service::service_fn,
+    };
+    use rama_net::address::HostWithPort;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+    use super::*;
+
+    #[derive(Debug, Clone, Extension)]
+    struct InheritedMarker;
+
+    #[derive(Debug, Clone, Extension)]
+    struct ConnectorOnlyMarker;
+
+    #[derive(Debug)]
+    struct TestIo {
+        extensions: Extensions,
+    }
+
+    impl TestIo {
+        fn new() -> Self {
+            Self {
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for TestIo {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl AsyncRead for TestIo {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for TestIo {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[derive(Clone)]
+    struct CapturingConnector {
+        expected_addr: HostWithPort,
+        saw_connector_request: Arc<AtomicBool>,
+    }
+
+    impl Service<Request> for CapturingConnector {
+        type Output = EstablishedClientConnection<TestIo, Request>;
+        type Error = BoxError;
+
+        async fn serve(&self, input: Request) -> Result<Self::Output, Self::Error> {
+            assert_eq!(input.authority, self.expected_addr);
+            assert!(
+                input.extensions().parent().is_some(),
+                "egress request extensions should be forked from ingress extensions"
+            );
+            assert!(
+                input.extensions().get_ref::<InheritedMarker>().is_some(),
+                "egress request should inherit ingress extensions"
+            );
+
+            input.extensions().insert(ConnectorOnlyMarker);
+            self.saw_connector_request.store(true, Ordering::SeqCst);
+
+            Ok(EstablishedClientConnection {
+                input,
+                conn: TestIo::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn egress_request_forks_ingress_extensions() {
+        let target = HostWithPort::local_ipv4(8080);
+        let saw_connector_request = Arc::new(AtomicBool::new(false));
+        let saw_bridge = Arc::new(AtomicBool::new(false));
+
+        let connector = CapturingConnector {
+            expected_addr: target.clone(),
+            saw_connector_request: saw_connector_request.clone(),
+        };
+
+        let inner = service_fn({
+            let saw_bridge = saw_bridge.clone();
+            move |bridge_io: BridgeIo<TestIo, TestIo>| {
+                let saw_bridge = saw_bridge.clone();
+                async move {
+                    assert!(
+                        bridge_io
+                            .0
+                            .extensions()
+                            .get_ref::<InheritedMarker>()
+                            .is_some(),
+                        "ingress should keep its original extensions"
+                    );
+                    assert!(
+                        bridge_io
+                            .0
+                            .extensions()
+                            .get_ref::<ConnectorOnlyMarker>()
+                            .is_none(),
+                        "connector-local egress mutations must not leak back into ingress"
+                    );
+                    saw_bridge.store(true, Ordering::SeqCst);
+                    Ok::<_, Infallible>(())
+                }
+            }
+        });
+
+        let service = IoToProxyBridgeIoLayer::extension_connector_target_with_connector(connector)
+            .into_layer(inner);
+
+        let ingress = TestIo::new();
+        ingress.extensions().insert(InheritedMarker);
+        ingress.extensions().insert(ConnectorTarget(target));
+
+        service.serve(ingress).await.unwrap();
+
+        assert!(saw_connector_request.load(Ordering::SeqCst));
+        assert!(saw_bridge.load(Ordering::SeqCst));
     }
 }

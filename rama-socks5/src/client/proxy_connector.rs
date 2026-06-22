@@ -5,8 +5,7 @@ use crate::{
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorContext as _, ErrorExt},
-    extensions::ExtensionsRef,
+    error::{BoxError, ErrorContext as _},
     io::Io,
     telemetry::tracing,
 };
@@ -15,10 +14,9 @@ use rama_dns::client::{
     resolver::{BoxDnsAddressResolver, DnsAddressResolver},
 };
 use rama_net::{
-    Protocol, TransportAddressInputExt,
-    address::Host,
-    address::ProxyAddress,
-    client::{ConnectorService, EstablishedClientConnection},
+    ConnectorTargetInputExt, Protocol,
+    address::{Host, ProxyAddress},
+    client::{ConnectorService, ConnectorTarget, EstablishedClientConnection},
     mode::DnsResolveIpMode,
     user::ProxyCredential,
 };
@@ -262,16 +260,32 @@ impl<S> Socks5ProxyConnector<S> {
 impl<S, Input> Service<Input> for Socks5ProxyConnector<S>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: TransportAddressInputExt + Send + ExtensionsRef + 'static,
+    Input: ConnectorTargetInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<S::Connection, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let address = input.extensions().get_ref::<ProxyAddress>().cloned();
-        if !address
+        let Some(proxy_info) = input.extensions().get_ref::<ProxyAddress>().cloned() else {
+            // return early in case we did not use a proxy
+
+            return if self.required {
+                Err(BoxError::from_static_str(
+                    "socks5 proxy required but none is defined",
+                ))
+            } else {
+                tracing::trace!(
+                    "socks5 proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                self.inner.connect(input).await.context(
+                    "establish connection target (no socks5 proxy defined and neither reuired)",
+                )
+            };
+        };
+
+        if !proxy_info
+            .protocol
             .as_ref()
-            .and_then(|addr| addr.protocol.as_ref())
             .map(|p| p.is_socks5())
             .unwrap_or(true)
         {
@@ -280,56 +294,34 @@ where
             ));
         }
 
-        let address = match address {
-            Some(addr) => {
-                let addr = self
-                    .normalize_socks5_proxy_addr(
-                        input.extensions().get_ref().copied().unwrap_or_default(),
-                        addr,
-                    )
-                    .await;
-                input.extensions().insert(addr.clone());
-                Some(addr)
-            }
-            None => None,
-        };
+        let normalized_proxy_info = self
+            .normalize_socks5_proxy_addr(
+                input.extensions().get_ref().copied().unwrap_or_default(),
+                proxy_info,
+            )
+            .await;
+        input.extensions().insert(normalized_proxy_info.clone());
 
-        let established_conn =
-            self.inner
-                .connect(input)
-                .await
-                .map_err(|err| match address.as_ref() {
-                    Some(proxy_info) => Socks5ProxyError::Transport(
-                        err.context("establish connection to proxy")
-                            .with_context_field("address", || proxy_info.address.clone())
-                            .with_context_debug_field("protocol", || proxy_info.protocol.clone()),
-                    )
-                    .into_box_error(),
-                    None => err.context("establish connection target"),
-                })?;
+        // insert target so that inner connector can use it instead of input's version
+        input
+            .extensions()
+            .insert(ConnectorTarget(normalized_proxy_info.address.clone()));
 
-        // return early in case we did not use a proxy
-        let Some(proxy_address) = address else {
-            return if self.required {
-                Err("socks5 proxy required but none is defined".into())
-            } else {
-                tracing::trace!(
-                    "socks5 proxy connector: no proxy required or set: proceed with direct connection"
-                );
-                return Ok(established_conn);
-            };
-        };
-        // and do the handshake otherwise...
-
-        let EstablishedClientConnection { input, mut conn } = established_conn;
+        let EstablishedClientConnection { input, mut conn } = self
+            .inner
+            .connect(input)
+            .await
+            .context("establish connection to proxy")
+            .with_context_field("address", || normalized_proxy_info.address.clone())
+            .with_context_debug_field("protocol", || normalized_proxy_info.protocol.clone())?;
 
         let authority = input
             .authority()
             .context("socks5 proxy connector: resolve authority")?;
 
         tracing::trace!(
-            network.peer.address = %proxy_address.address.host,
-            network.peer.port = %proxy_address.address.port,
+            network.peer.address = %normalized_proxy_info.address.host,
+            network.peer.port = %normalized_proxy_info.address.port,
             server.address = %authority.host,
             server.port = authority.port_u16(),
             "socks5 proxy connector: connected to proxy",
@@ -337,11 +329,11 @@ where
 
         let mut client = Socks5Client::new();
 
-        match &proxy_address.credential {
+        match &normalized_proxy_info.credential {
             Some(ProxyCredential::Basic(basic)) => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.address.host,
-                    network.peer.port = %proxy_address.address.port,
+                    network.peer.address = %normalized_proxy_info.address.host,
+                    network.peer.port = %normalized_proxy_info.address.port,
                     server.address = %authority.host,
                     server.port = authority.port_u16(),
                     "socks5 proxy connector: continue handshake with authorisation",
@@ -355,8 +347,8 @@ where
             }
             None => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.address.host,
-                    network.peer.port = %proxy_address.address.port,
+                    network.peer.address = %normalized_proxy_info.address.host,
+                    network.peer.port = %normalized_proxy_info.address.port,
                     server.address = %authority.host,
                     server.port = authority.port_u16(),
                     "socks5 proxy connector: continue handshake without authorisation",
@@ -364,8 +356,6 @@ where
             }
         }
 
-        // Reuse the authority already resolved above instead of re-resolving via
-        // `input.host_with_port()` (which would call `input.authority()` again).
         let Some(connect_authority) = authority
             .clone()
             .into_host_with_port(input.protocol_default_port())
@@ -383,8 +373,8 @@ where
         {
             Ok(bind_addr) => {
                 tracing::trace!(
-                    network.peer.address = %proxy_address.address.host,
-                    network.peer.port = %proxy_address.address.port,
+                    network.peer.address = %normalized_proxy_info.address.host,
+                    network.peer.port = %normalized_proxy_info.address.port,
                     server.address = %authority.host,
                     server.port = authority.port_u16(),
                     %bind_addr,

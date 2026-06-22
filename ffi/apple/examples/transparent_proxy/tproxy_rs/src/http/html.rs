@@ -2,7 +2,6 @@ use rama::{
     Layer, Service,
     bytes::Bytes,
     error::BoxError,
-    extensions::ExtensionsRef as _,
     http::{
         Body, Method, Request, Response, StreamingBody,
         header::CONTENT_ENCODING,
@@ -20,10 +19,10 @@ use rama::{
         },
     },
     matcher::service::{ServiceMatch, ServiceMatcher},
-    net::{AuthorityInputExt, address::Domain, proxy::ProxyTarget},
+    net::{AuthorityInputExt, address::Domain},
     telemetry::tracing,
 };
-use std::{borrow::Cow, convert::Infallible};
+use std::convert::Infallible;
 
 use crate::policy::DomainExclusionList;
 
@@ -142,7 +141,7 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         let req_method = req.method().clone();
-        let req_domain = try_get_domain_for_req(&req).map(Cow::into_owned);
+        let req_domain = req.host_as_domain();
         let req_uri = req.uri().clone();
 
         let response = self.inner.serve(req).await?;
@@ -239,12 +238,12 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> Result<ServiceMatch<Self::ModifiedInput, Self::Service>, Self::Error> {
-        let req_domain = try_get_domain_for_req(&req);
+        let req_domain = req.host_as_domain();
 
         let enabled = is_request_eligible_for_html_rewrite(
             self.enabled,
             req.method(),
-            req_domain.as_deref(),
+            req_domain.as_ref(),
             &self.excluded_domains,
         );
 
@@ -309,16 +308,6 @@ fn badge_rewrite_layer(label: &str) -> HtmlRewriteLayer<BadgeHandler> {
             label: label.to_owned(),
         },
     )
-}
-
-fn try_get_domain_for_req<Body>(req: &Request<Body>) -> Option<Cow<'_, Domain>> {
-    if let Some(ProxyTarget(target)) = req.extensions().get_ref()
-        && let Ok(domain) = target.host.try_as_domain()
-    {
-        Some(domain)
-    } else {
-        req.host_as_domain().map(Cow::Owned)
-    }
 }
 
 #[cfg(test)]
@@ -410,8 +399,7 @@ mod tests {
                         b"<html><body class=\"foo",
                     )))
                     .await;
-                    y.yield_item(Ok(Bytes::from_static(b"\" data-x=\"y")))
-                        .await;
+                    y.yield_item(Ok(Bytes::from_static(b"\" data-x=\"y"))).await;
                     y.yield_item(Ok(Bytes::from_static(b"\">tail</body>")))
                         .await;
                 });

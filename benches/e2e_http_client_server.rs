@@ -272,7 +272,7 @@ where
             DefaultHttpProxyConnectReplyService::new(),
             (
                 ConsumeErrLayer::default(),
-                IoToProxyBridgeIoLayer::extension_proxy_target(Executor::default()),
+                IoToProxyBridgeIoLayer::extension_connector_target(Executor::default()),
             )
                 .into_layer(IoForwardService::new(Executor::default())),
         ),

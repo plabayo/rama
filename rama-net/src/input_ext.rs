@@ -6,13 +6,13 @@
 //! combined context up front.
 //!
 //! Design (matching [`ClientIp`](crate::ClientIp)): each *resolution* trait has
-//! no [`ExtensionsRef`](rama_core::extensions::ExtensionsRef) bound and is never
+//! no [`ExtensionsRef`] bound and is never
 //! blanket-derived from another trait — every input type opts in with the
 //! resolution that fits it (the http `Request`/`Parts` impls in `rama-http-types`
-//! walk the uri → `ProxyTarget` → TLS SNI → `Forwarded` → `Host` fallback chain;
+//! walk the uri → TLS SNI → `Forwarded` → `Host` fallback chain;
 //! a transport target resolves its authority directly). The only blanket impls
 //! are the trivial reference-forwarding ones and the composed
-//! [`TransportAddressInputExt`], whose method is purely derived.
+//! [`ConnectorTargetInputExt`], whose method is purely derived.
 //!
 //! The return type *is* the fallibility contract: an `Option` may be absent (a
 //! caller that requires it does `.ok_or_else(|| …)?` with its own error);
@@ -23,8 +23,11 @@
 //! required accessor (e.g. [`AuthorityInputExt::host_as_domain`]), so callers
 //! get ergonomic projections without re-writing the same closure chains.
 
+use rama_core::extensions::ExtensionsRef;
+
 use crate::Protocol;
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
+use crate::client::ConnectorTarget;
 #[cfg(feature = "http")]
 use crate::http::Version;
 use crate::transport::TransportProtocol;
@@ -139,7 +142,7 @@ impl<T: TransportProtocolInputExt + ?Sized> TransportProtocolInputExt for &T {
 mod private {
     use super::{AuthorityInputExt, ProtocolInputExt};
 
-    /// Seals [`TransportAddressInputExt`](super::TransportAddressInputExt): it is
+    /// Seals [`ConnectorTargetInputExt`](super::ConnectorTargetInputExt): it is
     /// purely derived from [`AuthorityInputExt`] + [`ProtocolInputExt`], so it must
     /// never be implemented by hand.
     pub trait Sealed {}
@@ -153,21 +156,40 @@ mod private {
 /// Auto-implemented (and sealed) for every input that is both an
 /// [`AuthorityInputExt`] and a [`ProtocolInputExt`]; it yields the typed
 /// `host:port` a connector needs, and is never implemented by hand.
-pub trait TransportAddressInputExt: AuthorityInputExt + ProtocolInputExt + private::Sealed {
+pub trait ConnectorTargetInputExt:
+    AuthorityInputExt + ProtocolInputExt + ExtensionsRef + private::Sealed
+{
     /// The `host:port` to connect to: the authority's port if set, else the
     /// protocol's default port. `None` when no host (or no port) resolves.
-    fn host_with_port(&self) -> Option<HostWithPort> {
+    ///
+    /// NOTE that this method respects the extension [`ConnectorTarget`]
+    /// as overwrite, used for proxy connections and similar bypasses.
+    fn connector_target(&self) -> Option<HostWithPort> {
+        if let Some(ConnectorTarget(target)) = self.extensions().get_ref() {
+            return Some(target.clone());
+        }
+
         self.authority()
             .and_then(|a| a.into_host_with_port(self.protocol_default_port()))
     }
 
-    /// Like [`host_with_port`](Self::host_with_port) but with `default_port` as
-    /// the ultimate fallback (authority port → protocol default → `default_port`),
+    /// Like [`connector_target`](Self::connector_target) but with `default_port` as
+    /// the ultimate fallback (ConnectorTarget → authority port → protocol default → `default_port`),
     /// so it yields `Some` whenever an authority resolves at all.
-    fn host_with_port_or(&self, default_port: u16) -> Option<HostWithPort> {
+    ///
+    /// NOTE that this method respects the extension [`ConnectorTarget`]
+    /// as overwrite, used for proxy connections and similar bypasses.
+    fn connector_target_with_default_port(&self, default_port: u16) -> Option<HostWithPort> {
+        if let Some(ConnectorTarget(target)) = self.extensions().get_ref() {
+            return Some(target.clone());
+        }
+
         self.authority()
             .map(|a| a.into_host_with_port_or(self.protocol_default_port().unwrap_or(default_port)))
     }
 }
 
-impl<T: AuthorityInputExt + ProtocolInputExt + ?Sized> TransportAddressInputExt for T {}
+impl<T: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + ?Sized> ConnectorTargetInputExt
+    for T
+{
+}

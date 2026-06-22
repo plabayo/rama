@@ -5,7 +5,7 @@
 //! - create dual-stack TCP listeners with `IP_TRANSPARENT` (IPv4) and
 //!   `IPV6_TRANSPARENT` (IPv6);
 //! - recover the original destination using
-//!   `rama::net::socket::linux::ProxyTargetFromGetSocketnameLayer`;
+//!   `rama::net::socket::linux::ConnectorTargetFromGetSocketnameLayer`;
 //! - forward the intercepted stream to that destination.
 //!
 //! It is intentionally small and only demonstrates the ingress side of a Linux
@@ -131,7 +131,7 @@ use ::{
             proxy::IoForwardService,
             socket::{
                 SocketOptions,
-                linux::ProxyTargetFromGetSocketnameLayer,
+                linux::ConnectorTargetFromGetSocketnameLayer,
                 opts::{Domain, TcpKeepAlive},
             },
             stream::Socket,
@@ -230,8 +230,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "make sure Linux policy routing and TPROXY rules are installed first (for both IPv4 and IPv6)"
     );
 
-    let service = ProxyTargetFromGetSocketnameLayer::new().into_layer(service_fn({
-        let forward = IoToProxyBridgeIoLayer::extension_proxy_target(exec.clone())
+    let service = ConnectorTargetFromGetSocketnameLayer::new().into_layer(service_fn({
+        let forward = IoToProxyBridgeIoLayer::extension_connector_target(exec.clone())
             .into_layer(IoForwardService::new(exec));
         move |stream: TcpStream| {
             let forward = forward.clone();

@@ -4,12 +4,8 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Service, error::BoxError, io::Io};
 use rama_net::address::HostWithPort;
-use rama_net::client::{ConnectorService, Request as TransportRequest};
-use rama_net::{
-    client::EstablishedClientConnection,
-    proxy::{IoForwardService, ProxyTarget},
-    stream::Socket,
-};
+use rama_net::client::{ConnectorService, ConnectorTarget, Request as TransportRequest};
+use rama_net::{client::EstablishedClientConnection, proxy::IoForwardService, stream::Socket};
 use rama_tcp::client::service::TcpConnector;
 use rama_tcp::proxy::IoToProxyBridgeIo;
 use rama_utils::macros::generate_set_and_with;
@@ -326,7 +322,7 @@ impl LazyConnector<IoToProxyBridgeIo<IoForwardService>> {
     #[must_use]
     pub fn default_with_exec(exec: Executor) -> Self {
         Self {
-            service: IoToProxyBridgeIo::extension_proxy_target(
+            service: IoToProxyBridgeIo::extension_connector_target(
                 exec.clone(),
                 IoForwardService::new(exec),
             ),
@@ -360,7 +356,7 @@ where
             "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
-        stream.extensions().insert(ProxyTarget(destination));
+        stream.extensions().insert(ConnectorTarget(destination));
 
         self.service
             .serve(stream)

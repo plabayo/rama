@@ -174,7 +174,7 @@ fn new_mitm_svc<Ingress: Io + Unpin + ExtensionsRef>(
     Ok(Arc::new(
         (
             ConsumeErrLayer::trace_as_debug(),
-            IoToProxyBridgeIoLayer::extension_proxy_target(exec),
+            IoToProxyBridgeIoLayer::extension_connector_target(exec),
         )
             .into_layer(app_mitm_layer),
     ))

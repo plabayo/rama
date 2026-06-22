@@ -8,7 +8,6 @@ use rama_core::telemetry::tracing;
 use rama_net::Protocol;
 use rama_net::address::{Domain, Host, HostWithOptPort};
 use rama_net::forwarded::Forwarded;
-use rama_net::proxy::ProxyTarget;
 use rama_net::transport::TransportProtocol;
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
@@ -42,7 +41,7 @@ fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
 }
 
 /// Resolve the routing authority of `parts`, walking the
-/// uri → `ProxyTarget` → TLS SNI → `Forwarded` → `Host`-header fallback chain.
+/// uri → TLS SNI → `Forwarded` → `Host`-header fallback chain.
 /// `None` when none of them yields a host.
 pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option<HostWithOptPort> {
     let uri = parts.uri();
@@ -57,22 +56,6 @@ pub(crate) fn authority_from_http_parts(parts: &impl HttpRequestParts) -> Option
             let h: Host = h.into_owned();
             tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
             (h, default_port).into()
-        })
-        .or_else(|| {
-            parts
-                .extensions()
-                .get_ref::<ProxyTarget>()
-                .and_then(|t| {
-                    // Bridge `Uninterpreted` reg-names (`exa%6Dple.com`)
-                    // to Domain so they participate in the proxy-target
-                    // fallback. `is_domain()` was variant-only and
-                    // missed these.
-                    t.0.host.try_as_domain().ok().map(|_| {
-                        let authority = t.0.clone().into();
-                        tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
-                        authority
-                    })
-                })
         })
         .or_else(|| {
             parts

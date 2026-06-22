@@ -1,6 +1,7 @@
 use super::{LruDropPool, PooledConnector};
 use crate::address::ProxyAddress;
-use crate::{Protocol, address::HostWithOptPort, client::ConnectorTarget};
+use crate::client::ConnectorTarget;
+use crate::{Protocol, address::HostWithOptPort};
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use std::time::Duration;
@@ -14,7 +15,7 @@ pub struct BasicHttpConnIdentifier;
 /// Connection Identifier which will match inputs that have the exact same
 /// protocol, authority, proxy address and connector target
 pub struct BasicHttpConId {
-    pub protocol: Protocol,
+    pub protocol: Option<Protocol>,
     pub authority: HostWithOptPort,
     pub proxy_address: Option<ProxyAddress>,
     pub connector_target: Option<ConnectorTarget>,
@@ -23,17 +24,16 @@ pub struct BasicHttpConId {
 impl super::ConnID for BasicHttpConId {
     #[cfg(feature = "opentelemetry")]
     fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
-        [
-            rama_core::telemetry::opentelemetry::KeyValue::new(
-                "protocol",
-                self.protocol.to_string(),
-            ),
-            rama_core::telemetry::opentelemetry::KeyValue::new(
+        self.protocol
+            .as_ref()
+            .map(|protocol| {
+                rama_core::telemetry::opentelemetry::KeyValue::new("protocol", protocol.to_string())
+            })
+            .into_iter()
+            .chain([rama_core::telemetry::opentelemetry::KeyValue::new(
                 "authority",
                 self.authority.to_string(),
-            ),
-        ]
-        .into_iter()
+            )])
     }
 }
 

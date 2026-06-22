@@ -215,7 +215,7 @@ pub(super) async fn get_request_info(
         resource_type,
         initiator,
         path: req.uri().path_or_root().to_owned(),
-        uri: req.uri().to_string(),
+        uri: req.request_uri().to_string(),
         peer_addr: req
             .extensions()
             .get_ref::<Forwarded>()
