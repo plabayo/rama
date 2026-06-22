@@ -8,13 +8,18 @@
 //! `--upstream-revocation` (`ocsp`, `crl`, or `none`); the relay staples iff the
 //! upstream advertised one, mirroring the origin's posture.
 //!
+//! `--leaf-revocation` (`staple` default, or `crl` / `ocsp` / `both`) additionally
+//! stands up a proxy-hosted revocation responder on loopback and stamps a CRL
+//! distribution point and/or AIA OCSP URL onto the re-signed leaf, so clients
+//! that ignore staples (libcurl + schannel) can resolve revocation against us.
+//!
 //! ```sh
 //! cargo run --example mitm_ocsp_relay_gate --features=http-full,boring -- \
-//!   --upstream-revocation ocsp --ca-out /tmp/ca.pem
+//!   --upstream-revocation crl --leaf-revocation crl --ca-out /tmp/ca.pem
 //! ```
 //!
-//! Prints `READY proxy=<addr> ca=<path>` once both listeners are up, then serves
-//! until killed.
+//! Prints `READY proxy=<addr> ca=<path> [revoc=<addr>]` once the listeners are up,
+//! then serves until killed.
 
 #![expect(
     clippy::expect_used,
@@ -23,7 +28,7 @@
     reason = "harness: panic-on-setup-error, the READY line on stdout, and best-effort upstream I/O are intended"
 )]
 
-use std::{fs, sync::Arc};
+use std::{fs, sync::Arc, time::Duration};
 
 use rama::{
     ServiceInput,
@@ -51,7 +56,13 @@ use rama::{
                 extension::SubjectAlternativeName,
             },
         },
-        proxy::TlsMitmRelay,
+        proxy::{
+            TlsMitmRelay,
+            cert_issuer::InMemoryBoringMitmCertIssuer,
+            revocation::{
+                BoringMitmRevocation, CaId, MitmCa, ProxyHostedRevocation, RevocationFetch,
+            },
+        },
         server::utils::self_signed_server_auth_gen_ca,
     },
 };
@@ -81,9 +92,35 @@ impl Revocation {
     }
 }
 
+/// How the re-signed leaf advertises revocation to the client.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafRevocation {
+    /// OCSP staple only (the default; what the relay does out of the box).
+    Staple,
+    /// Stamp a CRL distribution point pointing at a proxy-hosted responder.
+    Crl,
+    /// Stamp an AIA OCSP responder pointing at a proxy-hosted responder.
+    Ocsp,
+    /// Stamp both a CRL distribution point and an AIA OCSP responder.
+    Both,
+}
+
+impl LeafRevocation {
+    fn parse(s: &str) -> Result<Self, BoxError> {
+        match s {
+            "staple" => Ok(Self::Staple),
+            "crl" => Ok(Self::Crl),
+            "ocsp" => Ok(Self::Ocsp),
+            "both" => Ok(Self::Both),
+            other => Err(format!("invalid --leaf-revocation: {other}").into()),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     let mut revocation = Revocation::Ocsp;
+    let mut leaf_revocation = LeafRevocation::Staple;
     let mut ca_out = "/tmp/rama-mitm-ocsp-ca.pem".to_owned();
     let mut connect = false;
     let mut args = std::env::args().skip(1);
@@ -91,6 +128,10 @@ async fn main() -> Result<(), BoxError> {
         match arg.as_str() {
             "--upstream-revocation" => {
                 revocation = Revocation::parse(&args.next().context("missing revocation value")?)?;
+            }
+            "--leaf-revocation" => {
+                leaf_revocation =
+                    LeafRevocation::parse(&args.next().context("missing leaf revocation value")?)?;
             }
             "--ca-out" => ca_out = args.next().context("missing --ca-out value")?,
             // CONNECT-proxy mode: MITM clients through to the real host they ask
@@ -107,7 +148,30 @@ async fn main() -> Result<(), BoxError> {
     })
     .context("gen MITM CA")?;
     fs::write(&ca_out, ca_crt.to_pem().context("CA to PEM")?).context("write CA PEM")?;
-    let relay = Arc::new(TlsMitmRelay::new_in_memory(ca_crt, ca_key));
+
+    // Optionally stand up a proxy-hosted revocation responder, sharing the CA,
+    // and stamp its pointers onto each re-signed leaf.
+    let mut issuer = InMemoryBoringMitmCertIssuer::new(ca_crt.clone(), ca_key.clone());
+    let mut revoc_addr = None;
+    if leaf_revocation != LeafRevocation::Staple {
+        let responder = TcpListener::bind("127.0.0.1:0")
+            .await
+            .context("bind revocation responder")?;
+        let addr = responder.local_addr().context("revocation addr")?;
+        revoc_addr = Some(addr);
+        let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
+        let revocation =
+            ProxyHostedRevocation::new(ca, format!("http://{addr}"), Duration::from_hours(24 * 7));
+        let revocation = match leaf_revocation {
+            LeafRevocation::Crl => revocation.with_ocsp(false),
+            LeafRevocation::Ocsp => revocation.with_crl(false),
+            LeafRevocation::Both | LeafRevocation::Staple => revocation,
+        };
+        let revocation = Arc::new(revocation);
+        tokio::spawn(serve_revocation(responder, revocation.clone()));
+        issuer = issuer.with_revocation(revocation);
+    }
+    let relay = Arc::new(TlsMitmRelay::new(issuer));
 
     let proxy = TcpListener::bind("127.0.0.1:0")
         .await
@@ -118,7 +182,7 @@ async fn main() -> Result<(), BoxError> {
         // CONNECT-proxy mode: MITM each client through to the real host it asks
         // for (e.g. crates.io), mirroring that origin's real cert. No local
         // upstream; `--upstream-revocation` is ignored.
-        announce_ready(proxy_addr, &ca_out)?;
+        announce_ready(proxy_addr, &ca_out, revoc_addr)?;
         loop {
             let (client, _) = proxy.accept().await.context("accept client")?;
             let relay = relay.clone();
@@ -143,7 +207,7 @@ async fn main() -> Result<(), BoxError> {
     let up_addr = up_listener.local_addr().context("upstream addr")?;
     tokio::spawn(serve_upstream(up_listener, up_acceptor));
 
-    announce_ready(proxy_addr, &ca_out)?;
+    announce_ready(proxy_addr, &ca_out, revoc_addr)?;
     loop {
         let (client, _) = proxy.accept().await.context("accept client")?;
         let relay = relay.clone();
@@ -155,9 +219,16 @@ async fn main() -> Result<(), BoxError> {
     }
 }
 
-fn announce_ready(proxy_addr: std::net::SocketAddr, ca_out: &str) -> Result<(), BoxError> {
+fn announce_ready(
+    proxy_addr: std::net::SocketAddr,
+    ca_out: &str,
+    revoc_addr: Option<std::net::SocketAddr>,
+) -> Result<(), BoxError> {
     use std::io::Write as _;
-    println!("READY proxy={proxy_addr} ca={ca_out}");
+    match revoc_addr {
+        Some(addr) => println!("READY proxy={proxy_addr} ca={ca_out} revoc={addr}"),
+        None => println!("READY proxy={proxy_addr} ca={ca_out}"),
+    }
     std::io::stdout().flush().context("flush stdout")?;
     Ok(())
 }
@@ -286,6 +357,107 @@ async fn serve_upstream(listener: TcpListener, acceptor: Arc<SslAcceptor>) {
             let _ = tls.shutdown().await;
         });
     }
+}
+
+/// Minimal plain-HTTP responder for the proxy-hosted revocation endpoints:
+/// `GET …/<ca>.crl` serves the CRL; `POST …/ocsp/<ca>` answers an OCSP request.
+async fn serve_revocation(listener: TcpListener, revocation: Arc<ProxyHostedRevocation>) {
+    let ca_id = revocation.ca().id();
+    while let Ok((sock, _)) = listener.accept().await {
+        let revocation = revocation.clone();
+        let ca_id = ca_id.clone();
+        tokio::spawn(async move {
+            if let Err(err) = serve_revocation_conn(sock, &revocation, &ca_id).await {
+                eprintln!("revoc: {err}");
+            }
+        });
+    }
+}
+
+async fn serve_revocation_conn(
+    mut sock: TcpStream,
+    revocation: &ProxyHostedRevocation,
+    ca_id: &CaId,
+) -> Result<(), BoxError> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut tmp = [0u8; 1024];
+    let header_end = loop {
+        let n = sock.read(&mut tmp).await.context("read request")?;
+        if n == 0 {
+            return Err("eof before request headers".into());
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find_subsequence(&buf, b"\r\n\r\n") {
+            break pos;
+        }
+        if buf.len() > 64 * 1024 {
+            return Err("request headers too large".into());
+        }
+    };
+
+    let head = std::str::from_utf8(&buf[..header_end]).context("request utf8")?;
+    let mut lines = head.split("\r\n");
+    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
+    let method = request_line.next().unwrap_or_default().to_owned();
+    let path = request_line.next().unwrap_or_default().to_owned();
+    let content_length = lines
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+
+    let mut body = buf[header_end + 4..].to_vec();
+    while body.len() < content_length {
+        let n = sock.read(&mut tmp).await.context("read body")?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+
+    let artifact = if path.ends_with(".crl") {
+        Some(revocation.serve(RevocationFetch::Crl { ca_id })?)
+    } else if path.contains("/ocsp") && method.eq_ignore_ascii_case("POST") {
+        Some(revocation.serve(RevocationFetch::Ocsp {
+            ca_id,
+            der_request: body.as_slice(),
+        })?)
+    } else {
+        None
+    };
+
+    match artifact {
+        Some(art) => {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                art.content_type.as_str(),
+                art.body.len(),
+            );
+            sock.write_all(header.as_bytes())
+                .await
+                .context("write response head")?;
+            sock.write_all(&art.body)
+                .await
+                .context("write response body")?;
+        }
+        None => {
+            sock.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .context("write 404")?;
+        }
+    }
+    sock.shutdown().await.context("shutdown")?;
+    Ok(())
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Self-signed upstream identity (key + cert) with a SAN and the given
