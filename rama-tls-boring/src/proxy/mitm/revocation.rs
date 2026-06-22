@@ -332,13 +332,17 @@ fn upstream_has_crl(cert: &X509Ref) -> bool {
     })
 }
 
-fn crl_distribution_point_extension(url: &str) -> Result<X509Extension, BoxError> {
+/// Build a non-critical `CRL Distribution Points` extension with a single
+/// `fullName` URI pointing at `url`.
+pub fn crl_distribution_point_extension(url: &str) -> Result<X509Extension, BoxError> {
     let oid = Asn1Object::from_str("2.5.29.31").context("crl dp oid")?;
     X509Extension::from_der_payload(oid.as_ref(), false, &crl_distribution_point_der(url))
         .context("build CRL distribution point extension")
 }
 
-fn aia_ocsp_extension(url: &str) -> Result<X509Extension, BoxError> {
+/// Build a non-critical `Authority Information Access` extension with a single
+/// `id-ad-ocsp` responder URI pointing at `url`.
+pub fn aia_ocsp_extension(url: &str) -> Result<X509Extension, BoxError> {
     let oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.1").context("aia oid")?;
     X509Extension::from_der_payload(oid.as_ref(), false, &authority_info_access_ocsp_der(url))
         .context("build AIA OCSP extension")
