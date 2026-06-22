@@ -220,25 +220,28 @@ impl ProxyHostedRevocation {
         }
     }
 
-    /// Enable or disable serving (and stamping) CRLs.
-    #[must_use]
-    pub fn with_crl(mut self, enabled: bool) -> Self {
-        self.serves_crl = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable or disable serving (and stamping) CRLs.
+        pub fn crl(mut self, enabled: bool) -> Self {
+            self.serves_crl = enabled;
+            self
+        }
     }
 
-    /// Enable or disable serving (and stamping) OCSP.
-    #[must_use]
-    pub fn with_ocsp(mut self, enabled: bool) -> Self {
-        self.serves_ocsp = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable or disable serving (and stamping) OCSP.
+        pub fn ocsp(mut self, enabled: bool) -> Self {
+            self.serves_ocsp = enabled;
+            self
+        }
     }
 
-    /// Set a [`RevocationLedger`] supplying revoked serials.
-    #[must_use]
-    pub fn with_ledger(mut self, ledger: Arc<dyn RevocationLedger>) -> Self {
-        self.ledger = Some(ledger);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// A [`RevocationLedger`] supplying revoked serials (none if unset).
+        pub fn ledger(mut self, ledger: Option<Arc<dyn RevocationLedger>>) -> Self {
+            self.ledger = ledger;
+            self
+        }
     }
 
     /// The shared CA.

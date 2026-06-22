@@ -52,13 +52,14 @@ impl InMemoryBoringMitmCertIssuer {
         Ok(Self::new(ca_cert, ca_privkey))
     }
 
-    /// Attach a [`BoringMitmRevocation`] responder. Its CA must be the same one
-    /// this issuer signs with, so the stamped pointers resolve. Issued leaves
-    /// then carry the responder's revocation extensions.
-    #[must_use]
-    pub fn with_revocation(mut self, revocation: Arc<dyn BoringMitmRevocation>) -> Self {
-        self.revocation = Some(revocation);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a [`BoringMitmRevocation`] responder. Its CA must be the same
+        /// one this issuer signs with, so the stamped pointers resolve. Issued
+        /// leaves then carry the responder's revocation extensions.
+        pub fn revocation(mut self, revocation: Option<Arc<dyn BoringMitmRevocation>>) -> Self {
+            self.revocation = revocation;
+            self
+        }
     }
 }
 
