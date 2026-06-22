@@ -167,9 +167,10 @@ jobs:
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
-      # Windows: cargo through the CONNECT proxy to real crates.io with a
-      # re-pointed CRL distribution point, where schannel enforces revocation
-      # (the customer scenario libcurl + schannel can't resolve via a staple).
+      # Windows: cargo through the CONNECT proxy to real crates.io for each
+      # leaf-revocation mode (crl, ocsp, both) with re-pointed CRL/AIA pointers,
+      # where schannel enforces revocation (the customer scenario libcurl +
+      # schannel can't resolve via a staple).
       - name: MITM revocation gate (curl + openssl + cargo)
         if: matrix.os == 'ubuntu-latest'
         env:
