@@ -258,14 +258,14 @@ impl ProxyHostedRevocation {
 impl BoringMitmRevocation for ProxyHostedRevocation {
     fn leaf_extensions(&self, ctx: &MitmRevocationCtx<'_>) -> Result<Vec<X509Extension>, BoxError> {
         let mut exts = Vec::new();
-        let ca_id = self.ca.id();
         if self.serves_crl && upstream_has_crl(ctx.original) {
-            let url = format!("{}/{}.crl", self.base(), ca_id);
-            exts.push(crl_distribution_point_extension(&url)?);
+            exts.push(crl_distribution_point_extension(&format!(
+                "{}/crl",
+                self.base()
+            ))?);
         }
         if self.serves_ocsp && upstream_has_ocsp(ctx.original) {
-            let url = format!("{}/ocsp/{}", self.base(), ca_id);
-            exts.push(aia_ocsp_extension(&url)?);
+            exts.push(aia_ocsp_extension(&format!("{}/ocsp", self.base()))?);
         }
         Ok(exts)
     }

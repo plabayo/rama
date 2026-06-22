@@ -34,6 +34,15 @@ use base64::Engine as _;
 use rama::{
     ServiceInput,
     error::{BoxError, ErrorContext},
+    http::{
+        Body, Response, StatusCode,
+        header::CONTENT_TYPE,
+        server::HttpServer,
+        service::web::{
+            WebService,
+            extract::{Bytes, Path, State},
+        },
+    },
     io::BridgeIo,
     net::{
         address::Domain,
@@ -42,6 +51,8 @@ use rama::{
             server::{SelfSignedData, peek_client_hello_from_input},
         },
     },
+    rt::Executor,
+    tcp::server::TcpListener as RamaTcpListener,
     tls::boring::{
         client::{BoringClientConfigExt, TlsConnectorData},
         core::{
@@ -61,12 +72,14 @@ use rama::{
             TlsMitmRelay,
             cert_issuer::InMemoryBoringMitmCertIssuer,
             revocation::{
-                BoringMitmRevocation, CaId, MitmCa, ProxyHostedRevocation, RevocationFetch,
+                BoringMitmRevocation, CaId, MitmCa, ProxyHostedRevocation, RevocationArtifact,
+                RevocationFetch,
             },
         },
         server::utils::self_signed_server_auth_gen_ca,
     },
 };
+use serde::Deserialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -155,10 +168,10 @@ async fn main() -> Result<(), BoxError> {
     let mut issuer = InMemoryBoringMitmCertIssuer::new(ca_crt.clone(), ca_key.clone());
     let mut revoc_addr = None;
     if leaf_revocation != LeafRevocation::Staple {
-        let responder = TcpListener::bind("127.0.0.1:0")
+        let listener = RamaTcpListener::bind_address("127.0.0.1:0", Executor::default())
             .await
             .context("bind revocation responder")?;
-        let addr = responder.local_addr().context("revocation addr")?;
+        let addr = listener.local_addr().context("revocation addr")?;
         revoc_addr = Some(addr);
         let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
         let revocation =
@@ -169,7 +182,15 @@ async fn main() -> Result<(), BoxError> {
             LeafRevocation::Both | LeafRevocation::Staple => revocation,
         };
         let revocation = Arc::new(revocation);
-        tokio::spawn(serve_revocation(responder, revocation.clone()));
+        let state = Arc::new(RevocationState {
+            ca_id: revocation.ca().id(),
+            revocation: revocation.clone(),
+        });
+        let web = WebService::new_with_state(state)
+            .with_get("/crl", revocation_crl)
+            .with_post("/ocsp", revocation_ocsp_post)
+            .with_get("/ocsp/{req}", revocation_ocsp_get);
+        tokio::spawn(listener.serve(HttpServer::default().service(web)));
         issuer = issuer.with_revocation(revocation);
     }
     let relay = Arc::new(TlsMitmRelay::new(issuer));
@@ -360,146 +381,68 @@ async fn serve_upstream(listener: TcpListener, acceptor: Arc<SslAcceptor>) {
     }
 }
 
-/// Minimal plain-HTTP responder for the proxy-hosted revocation endpoints:
-/// `GET …/<ca>.crl` serves the CRL; `POST …/ocsp/<ca>` answers an OCSP request.
-async fn serve_revocation(listener: TcpListener, revocation: Arc<ProxyHostedRevocation>) {
-    let ca_id = revocation.ca().id();
-    while let Ok((sock, _)) = listener.accept().await {
-        let revocation = revocation.clone();
-        let ca_id = ca_id.clone();
-        tokio::spawn(async move {
-            if let Err(err) = serve_revocation_conn(sock, &revocation, &ca_id).await {
-                eprintln!("revoc: {err}");
-            }
-        });
-    }
+/// Shared state for the proxy-hosted revocation responder.
+struct RevocationState {
+    ca_id: CaId,
+    revocation: Arc<ProxyHostedRevocation>,
 }
 
-async fn serve_revocation_conn(
-    mut sock: TcpStream,
-    revocation: &ProxyHostedRevocation,
-    ca_id: &CaId,
-) -> Result<(), BoxError> {
-    let mut buf = Vec::with_capacity(1024);
-    let mut tmp = [0u8; 1024];
-    let header_end = loop {
-        let n = sock.read(&mut tmp).await.context("read request")?;
-        if n == 0 {
-            return Err("eof before request headers".into());
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        if let Some(pos) = find_subsequence(&buf, b"\r\n\r\n") {
-            break pos;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err("request headers too large".into());
-        }
+#[derive(Deserialize)]
+struct OcspGetParams {
+    req: String,
+}
+
+/// `GET /crl` — the CA-signed CRL.
+async fn revocation_crl(State(state): State<Arc<RevocationState>>) -> Response {
+    artifact_response(state.revocation.serve(RevocationFetch::Crl {
+        ca_id: &state.ca_id,
+    }))
+}
+
+/// `POST /ocsp` — the OCSP request DER is the body.
+async fn revocation_ocsp_post(
+    State(state): State<Arc<RevocationState>>,
+    Bytes(body): Bytes,
+) -> Response {
+    artifact_response(state.revocation.serve(RevocationFetch::Ocsp {
+        ca_id: &state.ca_id,
+        der_request: body.as_ref(),
+    }))
+}
+
+/// `GET /ocsp/{req}` — the OCSP request DER is base64 in the path (RFC 6960
+/// A.1.1); the router percent-decodes `req` for us.
+async fn revocation_ocsp_get(
+    State(state): State<Arc<RevocationState>>,
+    Path(OcspGetParams { req }): Path<OcspGetParams>,
+) -> Response {
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(req.as_bytes()) else {
+        return empty_status(StatusCode::BAD_REQUEST);
     };
-
-    let head = std::str::from_utf8(&buf[..header_end]).context("request utf8")?;
-    let mut lines = head.split("\r\n");
-    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
-    let method = request_line.next().unwrap_or_default().to_owned();
-    let path = request_line.next().unwrap_or_default().to_owned();
-    let content_length = lines
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.trim()
-                .eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-
-    let mut body = buf[header_end + 4..].to_vec();
-    while body.len() < content_length {
-        let n = sock.read(&mut tmp).await.context("read body")?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&tmp[..n]);
-    }
-
-    let artifact = if path.ends_with(".crl") {
-        Some(revocation.serve(RevocationFetch::Crl { ca_id })?)
-    } else if path.contains("/ocsp") {
-        // POST carries the DER request as the body; GET (RFC 6960 A.1.1) carries
-        // it as a percent-encoded base64 segment appended to the AIA path.
-        let der = if method.eq_ignore_ascii_case("POST") {
-            body
-        } else {
-            let segment = path.rsplit('/').next().unwrap_or_default();
-            base64::engine::general_purpose::STANDARD
-                .decode(percent_decode(segment))
-                .context("decode base64 OCSP GET request")?
-        };
-        Some(revocation.serve(RevocationFetch::Ocsp {
-            ca_id,
-            der_request: &der,
-        })?)
-    } else {
-        None
-    };
-
-    match artifact {
-        Some(art) => {
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                art.content_type.as_str(),
-                art.body.len(),
-            );
-            sock.write_all(header.as_bytes())
-                .await
-                .context("write response head")?;
-            sock.write_all(&art.body)
-                .await
-                .context("write response body")?;
-        }
-        None => {
-            sock.write_all(
-                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .await
-            .context("write 404")?;
-        }
-    }
-    sock.shutdown().await.context("shutdown")?;
-    Ok(())
+    artifact_response(state.revocation.serve(RevocationFetch::Ocsp {
+        ca_id: &state.ca_id,
+        der_request: &der,
+    }))
 }
 
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-/// Percent-decode an URL path segment (the base64 in an OCSP GET is URL-encoded).
-fn percent_decode(s: &str) -> Vec<u8> {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = bytes.get(i + 1).copied().and_then(hex_val);
-        let lo = bytes.get(i + 2).copied().and_then(hex_val);
-        match (bytes[i], hi, lo) {
-            (b'%', Some(hi), Some(lo)) => {
-                out.push((hi << 4) | lo);
-                i += 3;
-            }
-            (b, _, _) => {
-                out.push(b);
-                i += 1;
-            }
+fn artifact_response(result: Result<RevocationArtifact, BoxError>) -> Response {
+    match result {
+        Ok(art) => Response::builder()
+            .header(CONTENT_TYPE, art.content_type.as_str())
+            .body(Body::from(art.body))
+            .expect("build revocation response"),
+        Err(err) => {
+            eprintln!("revoc: {err}");
+            empty_status(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-    out
 }
 
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+fn empty_status(status: StatusCode) -> Response {
+    Response::builder()
+        .status(status)
+        .body(Body::empty())
+        .expect("build empty response")
 }
 
 /// Self-signed upstream identity (key + cert) with a SAN and the given

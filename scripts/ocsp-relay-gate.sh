@@ -197,7 +197,7 @@ run_crl_endpoint() {
         fail "crl-endpoint: -crl_check unexpectedly passed without a CRL"
     fi
 
-    "$CURL" -sS "http://$revoc/mitm.crl" | "$OPENSSL" crl -inform DER -out "$WORK/crlpt.pem" 2>/dev/null \
+    "$CURL" -sS "http://$revoc/crl" | "$OPENSSL" crl -inform DER -out "$WORK/crlpt.pem" 2>/dev/null \
         || fail "crl-endpoint: could not fetch/parse the served CRL"
     "$OPENSSL" verify -crl_check -CAfile "$ca" -CRLfile "$WORK/crlpt.pem" "$WORK/leaf-crlpt.pem" >/dev/null \
         || fail "crl-endpoint: -crl_check rejected the leaf with our CRL"
@@ -221,7 +221,7 @@ run_ocsp_endpoint() {
     "$OPENSSL" s_client -connect "127.0.0.1:$port" -servername upstream.example </dev/null 2>/dev/null \
         | "$OPENSSL" x509 -out "$WORK/leaf-ocsppt.pem" || fail "ocsp-endpoint: could not grab mirrored leaf"
     status="$("$OPENSSL" ocsp -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
-        -url "http://$revoc/ocsp/mitm" -CAfile "$ca" 2>&1 || true)"
+        -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 || true)"
     echo "$status" | grep -q "Response verify OK" \
         || { echo "$status"; fail "ocsp-endpoint: response signature did not verify"; }
     echo "$status" | grep -q ": good" \
@@ -234,7 +234,7 @@ run_ocsp_endpoint() {
         >/dev/null 2>&1 || fail "ocsp-endpoint: could not build an OCSP request"
     b64="$(base64 < "$WORK/ocsp-req.der" | tr -d '\n')"
     enc="$(printf '%s' "$b64" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g')"
-    "$CURL" -sS "http://$revoc/ocsp/mitm/$enc" -o "$WORK/ocsp-resp.der" \
+    "$CURL" -sS "http://$revoc/ocsp/$enc" -o "$WORK/ocsp-resp.der" \
         || fail "ocsp-endpoint: GET request failed"
     "$OPENSSL" ocsp -respin "$WORK/ocsp-resp.der" -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
         -CAfile "$ca" -no_nonce 2>&1 | grep -q ": good" \
