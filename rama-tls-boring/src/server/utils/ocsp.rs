@@ -22,7 +22,9 @@ use rama_boring::{
     x509::X509Ref,
 };
 use rama_core::error::{BoxError, ErrorContext};
-use rama_crypto::ocsp::{OcspCertId, OcspSignatureAlgorithm, build_ocsp_response};
+use rama_crypto::ocsp::{
+    OcspCertId, OcspSignatureAlgorithm, build_ocsp_response, sha1_hash_algorithm_der,
+};
 
 #[doc(inline)]
 pub use rama_crypto::ocsp::OcspCertStatus as MitmLeafOcspStatus;
@@ -61,10 +63,12 @@ pub fn build_mitm_leaf_ocsp_response(
         .context("ocsp: leaf serial to bn")?
         .to_vec();
 
+    let hash_algorithm_der = sha1_hash_algorithm_der();
     let cert = OcspCertId {
         issuer_name_der: &issuer_name_der,
-        issuer_name_sha1: issuer_name_sha1.as_ref(),
-        issuer_key_sha1: issuer_key_sha1.as_ref(),
+        hash_algorithm_der: &hash_algorithm_der,
+        issuer_name_hash: issuer_name_sha1.as_ref(),
+        issuer_key_hash: issuer_key_sha1.as_ref(),
         serial: &serial,
     };
 
@@ -76,7 +80,7 @@ pub fn build_mitm_leaf_ocsp_response(
     // before the cert it attests (independent of the issuer cache TTL).
     let validity = validity_until_not_after(leaf, produced_at)?;
 
-    build_ocsp_response(&cert, status, produced_at, validity, |tbs| {
+    build_ocsp_response(&cert, status, produced_at, validity, None, |tbs| {
         sign_tbs(issuer_key, tbs)
     })
 }
@@ -165,10 +169,12 @@ mod tests {
         let serial = leaf.serial_number().to_bn().expect("serial bn").to_vec();
         assert_eq!(issuer_key_sha1.as_ref().len(), 20, "SHA-1 issuerKeyHash");
 
+        let hash_algorithm_der = sha1_hash_algorithm_der();
         let cert = OcspCertId {
             issuer_name_der: &issuer_name_der,
-            issuer_name_sha1: issuer_name_sha1.as_ref(),
-            issuer_key_sha1: issuer_key_sha1.as_ref(),
+            hash_algorithm_der: &hash_algorithm_der,
+            issuer_name_hash: issuer_name_sha1.as_ref(),
+            issuer_key_hash: issuer_key_sha1.as_ref(),
             serial: &serial,
         };
 
@@ -179,6 +185,7 @@ mod tests {
             OcspCertStatus::Good,
             SystemTime::now(),
             Duration::from_hours(24 * 7),
+            None,
             |tbs| {
                 captured_tbs = tbs.to_vec();
                 let (alg, sig) = sign_tbs(&ca_key, tbs)?;

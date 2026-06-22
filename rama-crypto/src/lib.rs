@@ -41,6 +41,8 @@ pub mod native_certs;
 
 pub mod ocsp;
 
+pub mod crl;
+
 pub mod dep {
     //! Dependencies for rama crypto modules.
     //!
