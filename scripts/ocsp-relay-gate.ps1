@@ -17,6 +17,16 @@ Set-Location (Join-Path $PSScriptRoot "..")
 
 function Fail($msg) { Write-Error "FAIL: $msg"; exit 1 }
 
+function Dump-HarnessLogs($variant, $proc, $log, $errlog) {
+    $code = if ($proc -and $proc.HasExited) { $proc.ExitCode } else { "running" }
+    Write-Host "---- harness ($variant) exit=$code ----"
+    Write-Host "---- harness ($variant) stdout ($log) ----"
+    if (Test-Path $log) { Get-Content $log | ForEach-Object { Write-Host $_ } } else { Write-Host "(no stdout file)" }
+    Write-Host "---- harness ($variant) stderr ($errlog) ----"
+    if (Test-Path $errlog) { Get-Content $errlog | ForEach-Object { Write-Host $_ } } else { Write-Host "(no stderr file)" }
+    Write-Host "---- end harness ($variant) logs ----"
+}
+
 # Trusting the CA requires writing the LocalMachine Root store, which needs
 # elevation. Fail fast and clearly when not elevated rather than dying mid-run on
 # an access-denied. CI runners are already elevated; run this elevated locally.
@@ -53,10 +63,10 @@ function Invoke-Variant($variant) {
                 $m = Select-String -Path $log -Pattern '^READY proxy=(\S+) ' | Select-Object -First 1
                 if ($m) { $addr = $m.Matches[0].Groups[1].Value; break }
             }
-            if ($proc.HasExited) { Get-Content $log -ErrorAction SilentlyContinue; Fail "[$variant] harness exited early" }
+            if ($proc.HasExited) { Dump-HarnessLogs $variant $proc $log $errlog; Fail "[$variant] harness exited early" }
             Start-Sleep -Milliseconds 100
         }
-        if (-not $addr) { Get-Content $log -ErrorAction SilentlyContinue; Fail "[$variant] harness never became READY" }
+        if (-not $addr) { Dump-HarnessLogs $variant $proc $log $errlog; Fail "[$variant] harness never became READY" }
         $revoc = $null
         $rm = Select-String -Path $log -Pattern 'revoc=(\S+)' | Select-Object -First 1
         if ($rm) { $revoc = $rm.Matches[0].Groups[1].Value }
@@ -102,10 +112,7 @@ itoa = "1"
         $env:CARGO_HTTP_TIMEOUT = "25" # fail fast with signal instead of the 60s default
         cargo generate-lockfile --manifest-path (Join-Path $proj "Cargo.toml")
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "---- relay stdout ($variant) ----"
-            Get-Content $log -ErrorAction SilentlyContinue
-            Write-Host "---- relay stderr ($variant) ----"
-            Get-Content $errlog -ErrorAction SilentlyContinue
+            Dump-HarnessLogs $variant $proc $log $errlog
             Fail "[$variant] cargo rejected the crates.io mirror (revocation/trust)"
         }
         if (-not (Select-String -Path (Join-Path $proj "Cargo.lock") -Pattern 'name = "itoa"' -Quiet)) {
