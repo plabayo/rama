@@ -384,12 +384,27 @@ pub fn self_signed_server_auth_mirror_cert_with_extensions(
         .set_pubkey(&privkey)
         .context("x509 cert builder: set public key using generated private key (ref)")?;
 
+    // Clamp the mirrored validity into the issuing CA's window so the leaf is
+    // fully nested. A freshly-generated MITM CA starts later than the origin
+    // (issued in the past), and a leaf that predates — or outlives — its issuer
+    // is rejected by strict validators (CERT_E_VALIDITYPERIODNESTING), even
+    // though Schannel tolerates it.
+    let not_before = if source_cert.not_before() < ca_cert.not_before() {
+        ca_cert.not_before()
+    } else {
+        source_cert.not_before()
+    };
+    let not_after = if source_cert.not_after() > ca_cert.not_after() {
+        ca_cert.not_after()
+    } else {
+        source_cert.not_after()
+    };
     cert_builder
-        .set_not_before(source_cert.not_before())
-        .context("x509 cert builder: mirror source not-before")?;
+        .set_not_before(not_before)
+        .context("x509 cert builder: set mirrored not-before (clamped to CA)")?;
     cert_builder
-        .set_not_after(source_cert.not_after())
-        .context("x509 cert builder: mirror source not-after")?;
+        .set_not_after(not_after)
+        .context("x509 cert builder: set mirrored not-after (clamped to CA)")?;
 
     let source_had_ski = source_cert.subject_key_id().is_some();
     let source_had_aki = source_cert.authority_key_id().is_some();
