@@ -92,7 +92,8 @@ async fn main() {
         .init();
 
     let acceptor_data = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData::default())
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed")
         .with_keylog(KeyLogIntent::Environment);
 
     let shutdown = Shutdown::default();

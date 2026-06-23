@@ -54,7 +54,8 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let tls_server_config = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData::default())
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed")
         .with_alpn_http_1();
 
     graceful.spawn_task_fn(async |guard| {

@@ -178,10 +178,12 @@ where
 }
 
 fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: SocketAddress) {
-    let tls_server_config = TlsServerConfig::new().with_self_signed(SelfSignedData {
-        common_name: Some(format!("{name}.local").parse().expect("encode common name")),
-        ..Default::default()
-    });
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            common_name: Some(format!("{name}.local")),
+            ..Default::default()
+        })
+        .expect("self-signed");
 
     guard.into_spawn_task_fn(async move |guard| {
         tracing::info!(

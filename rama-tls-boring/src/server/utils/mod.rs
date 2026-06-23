@@ -1,10 +1,7 @@
 //! Server Utilities
-
-mod certs;
-pub use self::certs::{
-    self_signed_server_auth_gen_ca, self_signed_server_auth_gen_cert,
-    self_signed_server_auth_mirror_cert,
-};
+//!
+//! Generic certificate generation (self-signed CA/leaf + MITM mirroring) lives
+//! in [`rama_crypto::cert::boring`]
 
 mod ocsp;
 pub use self::ocsp::{MitmLeafOcspStatus, build_mitm_leaf_ocsp_response};

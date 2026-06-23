@@ -514,7 +514,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
                 pkey::{PKey, Private},
                 x509::X509,
             },
-            server::{TlsAcceptorLayer, utils as boring_server_utils},
+            server::TlsAcceptorLayer,
         },
     };
 
@@ -524,12 +524,13 @@ async fn test_https_with_remote_tls_cert_issuer() {
     utils::init_tracing();
 
     let (ca_issuer_cert, ca_issuer_key) =
-        boring_server_utils::self_signed_server_auth_gen_ca(&SelfSignedData::default()).unwrap();
+        rama::crypto::cert::boring::self_signed_server_auth_gen_ca(&SelfSignedData::default())
+            .unwrap();
     let (issuer_server_cert, issuer_server_key) =
-        boring_server_utils::self_signed_server_auth_gen_cert(
+        rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
             &SelfSignedData {
                 organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
-                common_name: Some(DOMAIN_TLS_ECHO_CERTS),
+                common_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
                 subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS.to_string()]),
                 ..Default::default()
             },
@@ -586,10 +587,10 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     // NOTE this is a very basic and bad impl of a tls issuer,
                     // do not do something like this in production... ever...
 
-                    let (crt, key) = boring_server_utils::self_signed_server_auth_gen_cert(
+                    let (crt, key) = rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
                         &SelfSignedData {
                             organisation_name: Some(domain.to_string()),
-                            common_name: Some(domain.clone()),
+                            common_name: Some(domain.to_string()),
                             subject_alternative_names: Some(vec![domain.to_string()]),
                             ..Default::default()
                         },

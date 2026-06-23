@@ -81,7 +81,9 @@ async fn main() {
         )
         .init();
 
-    let tls_server_config = TlsServerConfig::new().with_self_signed(SelfSignedData::default());
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed");
 
     let shutdown = Shutdown::default();
 

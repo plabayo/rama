@@ -141,7 +141,9 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let tls_server_config = TlsServerConfig::new().with_self_signed(SelfSignedData::default());
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed");
 
     let secure_socks5_acceptor = TlsAcceptorService::new(tls_server_config, socks5_acceptor, false);
 

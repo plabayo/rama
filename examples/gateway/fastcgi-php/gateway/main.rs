@@ -96,10 +96,11 @@ async fn main() {
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
     let tls_data = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("rama-fastcgi-php example".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto();
 
     // ── FastCGI client: HTTP → CGI env (+SCRIPT_FILENAME) → php-fpm ──────

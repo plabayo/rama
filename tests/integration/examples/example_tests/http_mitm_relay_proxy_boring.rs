@@ -119,10 +119,11 @@ async fn test_http_mitm_relay_proxy() {
     });
 
     let data = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto()
         .with_keylog(KeyLogIntent::Environment);
 
@@ -151,10 +152,11 @@ async fn test_http_mitm_relay_proxy() {
     });
 
     let data_http1_no_alpn = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example h1 Server Acceptor".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed identity")
         .with_keylog(KeyLogIntent::Environment);
 
     let http_1_over_tls_server = HttpServer::new_http1(Executor::default());

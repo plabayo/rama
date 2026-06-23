@@ -5,14 +5,10 @@ use rama_core::conversion::{RamaTryFrom, RamaTryInto};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
-use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::tls::keylog::open_intent_sink;
-use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData};
+use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuthData};
 use std::pin::Pin;
 use std::sync::Arc;
-
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-use ::{rama_crypto::pki_types::PrivatePkcs8KeyDer, rama_net::address::Domain};
 
 #[derive(Clone, Debug, Extension)]
 #[extension(tags(tls))]
@@ -146,24 +142,18 @@ impl TryFrom<super::config::RustlsTlsAcceptorConfig<'_>> for rustls::ServerConfi
             }
         };
 
-        let (cert_chain, key, ocsp) = match value.server_auth.map(|a| &a.0) {
-            Some(ServerAuth::SelfSigned(data)) => {
-                let (chain, key) = self_signed_server_auth(data.clone())?;
-                (chain, key, None)
-            }
-            Some(ServerAuth::Single(data)) => {
-                let ServerAuthData {
-                    cert_chain,
-                    ocsp,
-                    private_key,
-                } = data.clone();
-                (cert_chain, private_key, ocsp)
-            }
+        let (cert_chain, key, ocsp) = match value.server_auth.map(|a| a.0.clone()) {
+            Some(ServerAuthData {
+                cert_chain,
+                ocsp,
+                private_key,
+            }) => (cert_chain, private_key, ocsp),
             // No server identity configured. If a modify hook is present, build a
-            // self-signed scaffold so the hook can install its own cert source
+            // self-signed scaffold so the hook can install its own cert source.
             // Without a modify hook there is nothing to serve, so this is an error.
             None if value.modify.is_some() => {
-                let (chain, key) = self_signed_server_auth(SelfSignedData::default())?;
+                let (chain, key) =
+                    rama_crypto::cert::self_signed_server_auth(SelfSignedData::default())?;
                 (chain, key, None)
             }
             None => {
@@ -258,81 +248,10 @@ where
     }
 }
 
-#[cfg(not(any(feature = "aws-lc", feature = "ring")))]
-#[cfg_attr(docsrs, doc(cfg(not(any(feature = "aws-lc", feature = "ring")))))]
-pub fn self_signed_server_auth(
-    _: SelfSignedData,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    use rama_core::error::BoxErrorExt;
-
-    Err(BoxError::from_static_str(
-        "enable aws-lc or ring feature to use fn self_signed_server_auth",
-    ))
-}
-
-#[cfg(any(feature = "aws-lc", feature = "ring"))]
-#[cfg_attr(docsrs, doc(cfg(any(feature = "aws-lc", feature = "ring"))))]
-pub fn self_signed_server_auth(
-    data: SelfSignedData,
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), BoxError> {
-    // Create an issuer CA cert.
-    let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let ca_key_pair =
-        rcgen::KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;
-
-    let common_name = data
-        .common_name
-        .clone()
-        .unwrap_or(Domain::from_static("localhost"));
-
-    let mut ca_params =
-        rcgen::CertificateParams::new(Vec::new()).context("self-signed: create ca params")?;
-    ca_params.distinguished_name.push(
-        rcgen::DnType::OrganizationName,
-        data.organisation_name
-            .unwrap_or_else(|| "Anonymous".to_owned()),
-    );
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, common_name.as_str());
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
-        rcgen::KeyUsagePurpose::KeyCertSign,
-        rcgen::KeyUsagePurpose::DigitalSignature,
-        rcgen::KeyUsagePurpose::CrlSign,
-    ];
-    let ca_cert = ca_params
-        .self_signed(&ca_key_pair)
-        .context("self-signed: create ca cert")?;
-
-    let server_key_pair =
-        rcgen::KeyPair::generate_for(alg).context("self-signed: create server key pair")?;
-    let mut server_ee_params =
-        rcgen::CertificateParams::new(data.subject_alternative_names.unwrap_or_default())
-            .context("self-signed: create server EE params")?;
-    server_ee_params.is_ca = rcgen::IsCa::NoCa;
-    server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_ee_params
-        .signed_by(
-            &server_key_pair,
-            &rcgen::Issuer::new(ca_params, ca_key_pair),
-        )
-        .context("self-signed: sign servert cert")?;
-
-    let server_ca_cert_der: CertificateDer = ca_cert.into();
-    let server_cert_der: CertificateDer = server_cert.into();
-    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
-
-    Ok((
-        vec![server_cert_der, server_ca_cert_der],
-        PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
-    ))
-}
-
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod server_pieces_tests {
     use super::*;
-    use rama_net::tls::server::{SelfSignedData, ServerAuth, TlsServerConfig};
+    use rama_net::tls::server::{SelfSignedData, TlsServerConfig};
 
     fn stored(data: &TlsAcceptorData) -> Option<&Arc<rustls::ServerConfig>> {
         match &data.server_config {
@@ -345,7 +264,8 @@ mod server_pieces_tests {
     fn build_from_pieces_self_signed_with_alpn() {
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
-            .with_server_auth(ServerAuth::SelfSigned(SelfSignedData::default()))
+            .try_with_self_signed(SelfSignedData::default())
+            .unwrap()
             .with_alpn_http_auto();
         let data = TlsAcceptorData::try_from(&cfg).unwrap();
         assert_eq!(
@@ -359,7 +279,8 @@ mod server_pieces_tests {
         use super::super::config::RustlsServerConfigExt;
         crate::ensure_default_crypto_provider();
         let cfg = TlsServerConfig::new()
-            .with_server_auth(ServerAuth::SelfSigned(SelfSignedData::default()))
+            .try_with_self_signed(SelfSignedData::default())
+            .unwrap()
             .with_alpn_http_auto()
             .with_modify_rustls_config(|mut c| {
                 c.alpn_protocols = vec![b"my-proto".to_vec()];

@@ -76,9 +76,9 @@ async fn test_tls_sni_proxy_mitm() {
 }
 
 async fn spawn_test_egres_server() {
-    let data = TlsServerConfig::default_http();
+    let config = TlsServerConfig::default_http().unwrap();
 
-    let tcp_service = TlsAcceptorLayer::new(data).into_layer(
+    let tcp_service = TlsAcceptorLayer::new(config).into_layer(
         HttpServer::default().service("tls-sni-proxy-mitm-example".into_endpoint_service()),
     );
 

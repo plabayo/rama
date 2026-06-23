@@ -9,7 +9,9 @@ use rama_core::{error::BoxError, telemetry::tracing};
 use rama_net::tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
-use crate::server::utils::{MitmLeafOcspStatus, self_signed_server_auth_gen_ca};
+use rama_crypto::cert::boring::self_signed_server_auth_gen_ca;
+
+use crate::server::utils::MitmLeafOcspStatus;
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
@@ -51,7 +53,7 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
 
     #[inline(always)]
     async fn issue_mitm_x509_cert(&self, original: X509) -> Result<MitmIssuedCert, Self::Error> {
-        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert(
+        let (crt, key) = rama_crypto::cert::boring::self_signed_server_auth_mirror_cert(
             &original,
             &self.ca_crt,
             &self.ca_key,
@@ -144,7 +146,7 @@ mod tests {
 
     fn mitm_ca(key_kind: SelfSignedKeyKind) -> InMemoryBoringMitmCertIssuer {
         InMemoryBoringMitmCertIssuer::try_new_self_signed(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-ca.example")),
+            common_name: Some("rama-mitm-ca.example".to_owned()),
             organisation_name: Some("Rama".to_owned()),
             key_kind,
             ..Default::default()
@@ -457,7 +459,7 @@ mod tests {
 
         // MITM relay with an in-memory self-signed CA (kept here for validation).
         let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example")),
+            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example").to_string()),
             organisation_name: Some("Rama".to_owned()),
             ..Default::default()
         })

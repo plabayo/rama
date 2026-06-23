@@ -85,18 +85,20 @@ async fn main() {
 
     #[cfg(feature = "boring")]
     let tls_service_data = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto();
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto();
 
     let exec = Executor::graceful(graceful.guard());

@@ -319,10 +319,11 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // load it in from memory/file, so that your clients can install the certificate for trust.
 fn new_mitm_tls_service_data() -> TlsServerConfig {
     TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto()
 }
 

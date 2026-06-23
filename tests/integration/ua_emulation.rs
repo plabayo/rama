@@ -464,7 +464,7 @@ where
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
-            let server = TlsAcceptorLayer::new(TlsServerConfig::default_http())
+            let server = TlsAcceptorLayer::new(TlsServerConfig::default_http().unwrap())
                 .with_store_client_hello(true)
                 .into_layer(HttpServer::auto(Executor::default()).service(svc));
             server.serve(server_socket).await.unwrap();

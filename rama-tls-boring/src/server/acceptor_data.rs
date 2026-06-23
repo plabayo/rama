@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use rama_boring::ssl::{ClientHello, NameType, SelectCertError, SslAcceptorBuilder, SslRef};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::conversion::RamaTryFrom;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{
@@ -18,7 +18,7 @@ use rama_net::{
     tls::{
         ApplicationProtocol, KeyLogIntent, ProtocolVersion,
         client::ClientHello as RamaClientHello,
-        server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData},
+        server::{ClientVerifyMode, SelfSignedData, ServerAuthData},
     },
 };
 use std::{sync::Arc, time::Duration};
@@ -320,8 +320,9 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
 
                 match issuer_data.kind {
                     ServerCertIssuerKind::SelfSigned(data) => {
-                        let (ca_cert, ca_key) = super::utils::self_signed_server_auth_gen_ca(&data)
-                            .context("boring/TlsAcceptorData: CA: self-signed ca")?;
+                        let (ca_cert, ca_key) =
+                            rama_crypto::cert::boring::self_signed_server_auth_gen_ca(&data)
+                                .context("boring/TlsAcceptorData: CA: self-signed ca")?;
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
                             ca_key,
@@ -349,21 +350,16 @@ impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
 
             other => {
                 let server_auth = match other {
-                    Some(BoringTlsAuth::ServerAuth(server_auth)) => server_auth.0.clone(),
-                    _ => ServerAuth::default(),
+                    Some(BoringTlsAuth::ServerAuth(server_auth)) => &server_auth.0,
+                    _ => {
+                        return Err(BoxError::from_static_str(
+                            "boring/TlsAcceptorData: no server auth configured: provide a certificate \
+                             (e.g. via TlsServerConfig::single_cert or try_with_self_signed)",
+                        ));
+                    }
                 };
-                match server_auth {
-                    ServerAuth::SelfSigned(data) => {
-                        let issued_cert =
-                            self_signed_server_auth(&data).context("boring/TlsAcceptorData")?;
-                        TlsCertSourceKind::InMemory(issued_cert)
-                    }
-                    ServerAuth::Single(data) => {
-                        let issued_cert = server_auth_data_to_private_key_and_ca_chain(&data)?;
-
-                        TlsCertSourceKind::InMemory(issued_cert)
-                    }
-                }
+                let issued_cert = server_auth_data_to_private_key_and_ca_chain(server_auth)?;
+                TlsCertSourceKind::InMemory(issued_cert)
             }
         };
 
@@ -436,7 +432,7 @@ fn issue_cert_for_ca(
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, BoxError> {
     tracing::trace!("generate certs for domain {domain:?} using in-memory ca cert");
-    let (cert, key) = super::utils::self_signed_server_auth_gen_cert(
+    let (cert, key) = rama_crypto::cert::boring::self_signed_server_auth_gen_cert(
         &SelfSignedData {
             organisation_name: Some(
                 ca_cert
@@ -447,7 +443,7 @@ fn issue_cert_for_ca(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
-            common_name: domain.cloned(),
+            common_name: domain.map(|d| d.to_string()),
             ..Default::default()
         },
         ca_cert,
@@ -486,16 +482,4 @@ fn add_issued_cert_to_ssl_ref(
         .context("boring add issue cert to ssl ref: set private key")?;
 
     Ok(())
-}
-
-fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, BoxError> {
-    let (ca_cert, ca_privkey) =
-        super::utils::self_signed_server_auth_gen_ca(data).context("self-signed CA")?;
-    let (cert, privkey) =
-        super::utils::self_signed_server_auth_gen_cert(data, &ca_cert, &ca_privkey)
-            .context("self-signed cert using self-signed CA")?;
-    Ok(IssuedCert {
-        cert_chain: vec![cert, ca_cert],
-        key: privkey,
-    })
 }

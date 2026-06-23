@@ -27,6 +27,7 @@ use std::{fs, sync::Arc};
 
 use rama::{
     ServiceInput,
+    crypto::cert::boring::self_signed_server_auth_gen_ca,
     error::{BoxError, ErrorContext},
     io::BridgeIo,
     net::{
@@ -52,9 +53,9 @@ use rama::{
             },
         },
         proxy::TlsMitmRelay,
-        server::utils::self_signed_server_auth_gen_ca,
     },
 };
+
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},

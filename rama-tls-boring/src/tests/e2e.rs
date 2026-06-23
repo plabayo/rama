@@ -20,8 +20,12 @@ use crate::{
 #[tracing_test::traced_test]
 async fn test_assumed_default_group_id_support() {
     let server = Arc::new(
-        TlsAcceptorLayer::new(TlsServerConfig::new().with_self_signed(SelfSignedData::default()))
-            .into_layer(EchoService::new()),
+        TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .try_with_self_signed(SelfSignedData::default())
+                .expect("self-signed"),
+        )
+        .into_layer(EchoService::new()),
     );
 
     for group in [

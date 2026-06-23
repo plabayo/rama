@@ -145,10 +145,11 @@ async fn spawn_https_server() -> SocketAddress {
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
     let config = TlsServerConfig::new()
-        .with_self_signed(SelfSignedData {
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Socks5 Https Test Server".to_owned()),
             ..Default::default()
         })
+        .expect("self-signed")
         .with_alpn_http_auto();
     let https_server = TlsAcceptorService::new(config, http_server, false);
 

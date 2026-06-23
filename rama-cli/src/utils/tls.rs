@@ -1,12 +1,15 @@
 use rama::{
-    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    crypto::{
+        cert::self_signed_server_auth,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    },
     error::{BoxError, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
     net::{
         address::Host,
         tls::{
             ApplicationProtocol,
-            server::{SelfSignedData, ServerAuth, ServerAuthData, TlsServerConfig},
+            server::{SelfSignedData, ServerAuthData, TlsServerConfig},
         },
     },
     rt::Executor,
@@ -44,9 +47,10 @@ pub fn try_new_server_config(
     Ok(config)
 }
 
-fn try_new_server_auth() -> Result<ServerAuth, BoxError> {
+fn try_new_server_auth() -> Result<ServerAuthData, BoxError> {
     let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
-        return Ok(ServerAuth::SelfSigned(SelfSignedData::default()));
+        let (cert_chain, private_key) = self_signed_server_auth(SelfSignedData::default())?;
+        return Ok(ServerAuthData::new(cert_chain, private_key));
     };
     let tls_key_pem_raw = &ENGINE
         .decode(tls_key_pem_raw)
@@ -64,11 +68,11 @@ fn try_new_server_auth() -> Result<ServerAuth, BoxError> {
     let private_key =
         PrivateKeyDer::from_pem_slice(tls_key_pem_raw).context("parse private key")?;
 
-    Ok(ServerAuth::Single(ServerAuthData {
+    Ok(ServerAuthData {
         private_key,
         cert_chain,
         ocsp: None,
-    }))
+    })
 }
 
 pub(crate) fn write_cert_info(

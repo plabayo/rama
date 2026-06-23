@@ -9,9 +9,10 @@ use rama_core::{
     error::BoxError,
     extensions::{Extension, Extensions},
 };
+use rama_crypto::cert::self_signed_server_auth;
+pub use rama_crypto::cert::{SelfSignedData, SelfSignedKeyKind};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
-use serde::{Deserialize, Serialize};
 
 /// A backend agnostic TLS server config
 ///
@@ -32,23 +33,21 @@ impl TlsServerConfig {
 
     /// Create a new config using with:
     /// - ALPN: H2, http1.1
-    /// - Self signed certificate
+    /// - Self signed certificate (freshly generated)
     /// - Keylogger: [`KeyLogIntent::Environment`]
-    #[must_use]
-    pub fn default_http() -> Self {
-        Self::new()
-            .with_server_auth(ServerAuth::SelfSigned(SelfSignedData::default()))
+    pub fn default_http() -> Result<Self, BoxError> {
+        Ok(Self::new()
+            .try_with_self_signed(SelfSignedData::default())?
             .with_alpn_http_auto()
-            .with_keylog(KeyLogIntent::Environment)
+            .with_keylog(KeyLogIntent::Environment))
     }
 
     /// Create a config that serves a freshly generated self-signed identity and
     /// offers HTTP/2 + HTTP/1.1 via ALPN.
-    #[must_use]
-    pub fn self_signed_http_auto() -> Self {
-        Self::new()
-            .with_server_auth(ServerAuth::SelfSigned(SelfSignedData::default()))
-            .with_alpn_http_auto()
+    pub fn self_signed_http_auto() -> Result<Self, BoxError> {
+        Ok(Self::new()
+            .try_with_self_signed(SelfSignedData::default())?
+            .with_alpn_http_auto())
     }
 
     /// Transfer this config's pieces onto `extensions` (appending, so they
@@ -58,28 +57,29 @@ impl TlsServerConfig {
     }
 
     generate_set_and_with! {
-        /// Set the server auth (cert/key source): self-signed or provided cert.
+        /// Set the server auth: the certificate chain + private key to serve.
         ///
         /// Dynamic / on-the-fly cert issuance (with caching) is backend-specific;
         /// configure it via the backend's server-config extension trait.
-        pub fn server_auth(mut self, auth: ServerAuth) -> Self {
+        pub fn server_auth(mut self, auth: ServerAuthData) -> Self {
             self.0.insert(TlsServerAuth(auth));
             self
         }
     }
 
     generate_set_and_with! {
-        /// Serve a freshly generated self-signed identity.
-        pub fn self_signed(mut self, data: SelfSignedData) -> Self {
-            self.0.insert(TlsServerAuth(ServerAuth::SelfSigned(data)));
-            self
+        /// Generate a fresh self-signed identity and serve it.
+        pub fn self_signed(mut self, data: SelfSignedData) -> Result<Self, BoxError> {
+            self.0
+                .insert(TlsServerAuth(ServerAuthData::new_self_signed(data)?));
+            Ok(self)
         }
     }
 
     generate_set_and_with! {
         /// Serve the provided certificate chain + private key.
         pub fn single_cert(mut self, data: ServerAuthData) -> Self {
-            self.0.insert(TlsServerAuth(ServerAuth::Single(data)));
+            self.0.insert(TlsServerAuth(data));
             self
         }
     }
@@ -170,60 +170,6 @@ impl Clone for TlsServerConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-/// The kind of server auth to be used.
-pub enum ServerAuth {
-    /// Request the tls implementation to generate self-signed single data
-    SelfSigned(SelfSignedData),
-    /// Single data provided by the configurator
-    Single(ServerAuthData),
-}
-
-impl Default for ServerAuth {
-    fn default() -> Self {
-        Self::SelfSigned(SelfSignedData::default())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-/// Data that can be used to configure the self-signed single data
-pub struct SelfSignedData {
-    /// name of the organisation
-    pub organisation_name: Option<String>,
-    /// common name (CN): server name protected by the SSL certificate
-    pub common_name: Option<Domain>,
-    /// Subject Alternative Names (SAN) can be defined
-    /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
-    pub subject_alternative_names: Option<Vec<String>>,
-    /// Key algorithm used for the generated key pair (defaults to EC P-256).
-    #[serde(default)]
-    pub key_kind: SelfSignedKeyKind,
-}
-
-/// Key algorithm to use when generating a self-signed key pair.
-///
-/// The default is [`SelfSignedKeyKind::EcP256`]: it is universally supported by
-/// TLS clients, generates and signs far faster than any RSA variant, and offers
-/// stronger security (128-bit) than RSA-2048 with much smaller certificates.
-/// Pick [`SelfSignedKeyKind::EcP384`] for a higher security margin (e.g. a
-/// long-lived CA) while staying faster than RSA-4096.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum SelfSignedKeyKind {
-    /// 2048-bit RSA.
-    Rsa2048,
-    /// 4096-bit RSA.
-    Rsa4096,
-    /// ECDSA over NIST P-256 (secp256r1). Default.
-    #[default]
-    EcP256,
-    /// ECDSA over NIST P-384 (secp384r1).
-    EcP384,
-    /// ECDSA over NIST P-521 (secp521r1).
-    EcP521,
-    /// Ed25519 (EdDSA).
-    Ed25519,
-}
-
 #[derive(Debug)]
 /// Raw private key and certificate data to facilitate server authentication.
 pub struct ServerAuthData {
@@ -234,6 +180,30 @@ pub struct ServerAuthData {
 
     /// `ocsp` is a DER-encoded OCSP response
     pub ocsp: Option<Vec<u8>>,
+}
+
+impl ServerAuthData {
+    /// Create [`ServerAuthData`] from a certificate chain and private key (no OCSP).
+    #[must_use]
+    pub fn new(
+        cert_chain: Vec<CertificateDer<'static>>,
+        private_key: PrivateKeyDer<'static>,
+    ) -> Self {
+        Self {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        }
+    }
+
+    pub fn new_self_signed(data: SelfSignedData) -> Result<Self, BoxError> {
+        let (cert_chain, private_key) = self_signed_server_auth(data)?;
+        Ok(Self {
+            cert_chain,
+            private_key,
+            ocsp: None,
+        })
+    }
 }
 
 impl Clone for ServerAuthData {
@@ -287,10 +257,10 @@ pub enum ClientVerifyMode {
     ClientAuth(Vec<CertificateDer<'static>>),
 }
 
-/// Server auth (cert/key source) to use, as configured on [`TlsServerConfig`].
+/// Server auth (cert chain + key) to use, as configured on [`TlsServerConfig`].
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-pub struct TlsServerAuth(pub ServerAuth);
+pub struct TlsServerAuth(pub ServerAuthData);
 
 /// How the client is verified (mTLS).
 #[derive(Debug, Clone, Extension)]

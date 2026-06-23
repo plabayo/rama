@@ -219,7 +219,9 @@ where
 }
 
 fn get_config_tls_data(params: TestParameters) -> TlsServerConfig {
-    let tls = TlsServerConfig::new().with_self_signed(SelfSignedData::default());
+    let tls = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self signed");
     match params.version {
         HttpVersion::Http1 => tls.with_alpn_http_1(),
         HttpVersion::Http2 => tls.with_alpn_http_2(),

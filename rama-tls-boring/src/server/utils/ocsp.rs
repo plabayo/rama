@@ -14,7 +14,7 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rama_boring::{
+use crate::core::{
     asn1::Asn1Time,
     hash::{MessageDigest, hash},
     pkey::{Id, PKeyRef, Private},
@@ -130,14 +130,16 @@ fn sign_tbs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::utils::{self_signed_server_auth_gen_ca, self_signed_server_auth_gen_cert};
-    use rama_boring::sign::Verifier;
+    use crate::core::sign::Verifier;
+    use rama_crypto::cert::boring::{
+        self_signed_server_auth_gen_ca, self_signed_server_auth_gen_cert,
+    };
     use rama_crypto::ocsp::OcspCertStatus;
-    use rama_net::{address::Domain, tls::server::SelfSignedData};
+    use rama_net::tls::server::SelfSignedData;
 
     fn sample(common_name: &'static str) -> SelfSignedData {
         SelfSignedData {
-            common_name: Some(Domain::from_static(common_name)),
+            common_name: Some(common_name.to_owned()),
             organisation_name: Some("Rama OCSP Test".to_owned()),
             ..Default::default()
         }
