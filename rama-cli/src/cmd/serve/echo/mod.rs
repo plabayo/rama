@@ -15,13 +15,13 @@ use rama::{
     net::{
         address::SocketAddress,
         stream::service::EchoService,
-        tls::{ApplicationProtocol, server::ServerConfig},
+        tls::{ApplicationProtocol, server::TlsServerConfig},
     },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
     ua::profile::UserAgentDatabase,
     udp::bind_udp_with_address,
 };
@@ -157,7 +157,7 @@ pub async fn run(
 async fn bind_echo_http_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
-    maybe_tls_config: Option<ServerConfig>,
+    maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     // opt-in IP geolocation, configured via the RAMA_IP_GEO_DB env var
@@ -209,7 +209,7 @@ async fn bind_echo_http_service(
 async fn bind_echo_tcp_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
-    maybe_tls_config: Option<ServerConfig>,
+    maybe_tls_config: Option<TlsServerConfig>,
 ) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
     if cfg.ws {
@@ -241,12 +241,6 @@ async fn bind_echo_tcp_service(
         None => false,
     };
 
-    let maybe_tls_data: Option<TlsAcceptorData> = if let Some(tls_config) = maybe_tls_config {
-        Some(tls_config.try_into()?)
-    } else {
-        None
-    };
-
     let concurrent = cfg.concurrent.unwrap_or_default();
     let timeout = cfg.timeout.unwrap_or(300);
 
@@ -263,7 +257,7 @@ async fn bind_echo_tcp_service(
             TimeoutLayer::never()
         },
         with_ha_proxy.then(|| HaProxyLayer::new().with_peek(true)),
-        maybe_tls_data.map(TlsAcceptorLayer::new),
+        maybe_tls_config.map(TlsAcceptorLayer::new),
     );
     let echo_svc = middleware.into_layer(EchoService::new());
 
@@ -296,7 +290,7 @@ async fn bind_echo_tcp_service(
 async fn bind_echo_udp_service(
     graceful: ShutdownGuard,
     cfg: CliCommandEcho,
-    maybe_tls_config: Option<ServerConfig>,
+    maybe_tls_config: Option<TlsServerConfig>,
     etx: tokio::sync::mpsc::Sender<BoxError>,
 ) -> Result<(), BoxError> {
     if cfg.ws {

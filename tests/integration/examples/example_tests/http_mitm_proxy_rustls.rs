@@ -4,11 +4,12 @@ use rama::{
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
     net::address::ProxyAddress,
-    net::tls::server::SelfSignedData,
+    net::tls::KeyLogIntent,
+    net::tls::server::{SelfSignedData, TlsServerConfig},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
 };
 use serde_json::{Value, json};
 
@@ -32,15 +33,14 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("Example Server Acceptor".to_owned()),
-        ..Default::default()
-    })
-    .expect("self signed acceptor data")
-    .with_alpn_protocols_http_auto()
-    .try_with_env_key_logger()
-    .expect("with env key logger")
-    .build();
+    let data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto()
+        .with_keylog(KeyLogIntent::Environment);
 
     let executor = Executor::default();
 

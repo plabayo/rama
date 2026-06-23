@@ -68,9 +68,9 @@ use rama::{
     layer::{AddInputExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
         tls::{
-            ApplicationProtocol, SecureTransport,
+            SecureTransport,
             client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, ServerAuth, ServerConfig},
+            server::{SelfSignedData, TlsServerConfig},
         },
         user::credentials::basic,
     },
@@ -84,7 +84,7 @@ use rama::{
     },
     tls::boring::{
         client::{BoringClientConfigExt, EmulateTlsProfileLayer},
-        server::{TlsAcceptorData, TlsAcceptorLayer},
+        server::TlsAcceptorLayer,
     },
     ua::{
         layer::emulate::{
@@ -105,7 +105,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Extension)]
 struct State {
-    mitm_tls_service_data: TlsAcceptorData,
+    mitm_tls_service_config: TlsServerConfig,
     ua_db: Arc<UserAgentDatabase>,
     har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
     har_toggle_ctl: mpsc::Sender<()>,
@@ -123,8 +123,7 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let mitm_tls_service_data =
-        try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+    let mitm_tls_service_config = new_mitm_tls_service_config();
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -133,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
     let har_layer = HARExportLayer::new(FileRecorder::default(), har_toggle);
 
     let state = State {
-        mitm_tls_service_data,
+        mitm_tls_service_config,
         ua_db: Arc::new(UserAgentDatabase::try_embedded()?),
         har_layer,
         har_toggle_ctl,
@@ -221,7 +220,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
     let http_transport_service = http_tp.service(http_service);
 
-    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
+    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_config.clone())
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
@@ -309,18 +308,12 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+fn new_mitm_tls_service_config() -> TlsServerConfig {
+    TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
-        }))
-    };
-    tls_server_config
-        .try_into()
-        .context("create tls server config")
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto()
 }

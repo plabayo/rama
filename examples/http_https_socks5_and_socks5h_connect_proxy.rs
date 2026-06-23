@@ -63,16 +63,10 @@ use rama::{
 };
 
 #[cfg(feature = "boring")]
-use rama::{
-    net::tls::{
-        ApplicationProtocol,
-        server::{ServerAuth, ServerConfig},
-    },
-    tls::boring::server::TlsAcceptorService,
-};
+use rama::{net::tls::server::TlsServerConfig, tls::boring::server::TlsAcceptorService};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama::{net::tls::server::TlsServerConfig, tls::rustls::server::TlsAcceptorLayer};
 
 use std::{convert::Infallible, time::Duration};
 
@@ -90,34 +84,22 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     #[cfg(feature = "boring")]
-    let tls_service_data = {
-        let tls_server_config = ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-                organisation_name: Some("Example Server Acceptor".to_owned()),
-                ..Default::default()
-            }))
-        };
-        tls_server_config
-            .try_into()
-            .expect("create tls server config")
-    };
-
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    let tls_service_data = {
-        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
-        .expect("self signed acceptor data")
-        .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
-        .expect("with env key logger")
-        .build()
-    };
+        .expect("self-signed")
+        .with_alpn_http_auto();
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto();
 
     let exec = Executor::graceful(graceful.guard());
 

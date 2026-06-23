@@ -1,22 +1,23 @@
-use super::{TlsAcceptorData, TlsAcceptorService};
+use super::TlsAcceptorService;
 use rama_core::Layer;
+use rama_net::tls::server::TlsServerConfig;
 
 /// A [`Layer`] which wraps the given service with a [`TlsAcceptorService`].
 #[derive(Debug, Clone)]
 pub struct TlsAcceptorLayer {
-    data: TlsAcceptorData,
+    config: TlsServerConfig,
     store_client_hello: bool,
 }
 
 impl TlsAcceptorLayer {
-    /// Creates a new [`TlsAcceptorLayer`] using the given [`ServerConfig`],
-    /// which is used to configure the inner TLS acceptor.
+    /// Creates a new [`TlsAcceptorLayer`] using the given [`TlsServerConfig`].
     ///
-    /// [`ServerConfig`]: https://docs.rs/rustls/latest/rustls/server/struct.ServerConfig.html
+    /// The acceptor config is resolved per-connection from this base config (see
+    /// [`TlsAcceptorService`]).
     #[must_use]
-    pub const fn new(data: TlsAcceptorData) -> Self {
+    pub const fn new(config: TlsServerConfig) -> Self {
         Self {
-            data,
+            config,
             store_client_hello: false,
         }
     }
@@ -34,10 +35,10 @@ impl<S> Layer<S> for TlsAcceptorLayer {
     type Service = TlsAcceptorService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        TlsAcceptorService::new(self.data.clone(), inner, self.store_client_hello)
+        TlsAcceptorService::new(self.config.clone(), inner, self.store_client_hello)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        TlsAcceptorService::new(self.data, inner, self.store_client_hello)
+        TlsAcceptorService::new(self.config, inner, self.store_client_hello)
     }
 }

@@ -40,6 +40,8 @@ use std::{
 use base64::Engine as _;
 use rama::{
     Layer,
+    crypto::cert::boring::self_signed_server_auth_gen_ca,
+    crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     error::{BoxError, ErrorContext},
     http::{
         Body, Request, Response, StatusCode,
@@ -58,12 +60,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::{
         proxy::IoForwardService,
-        tls::{
-            DataEncoding,
-            server::{
-                PeekTlsClientHelloService, SelfSignedData, ServerAuth, ServerAuthData, ServerConfig,
-            },
-        },
+        tls::server::{PeekTlsClientHelloService, SelfSignedData, ServerAuthData, TlsServerConfig},
     },
     rt::Executor,
     service::service_fn,
@@ -91,8 +88,7 @@ use rama::{
                 crl_distribution_point_extension,
             },
         },
-        server::utils::self_signed_server_auth_gen_ca,
-        server::{TlsAcceptorData, TlsAcceptorLayer},
+        server::TlsAcceptorLayer,
     },
 };
 use serde::Deserialize;
@@ -429,14 +425,19 @@ fn parse_hex(s: &str) -> Result<Vec<u8>, BoxError> {
 
 /// Build the local upstream's TLS acceptor data: a self-signed leaf advertising
 /// `revocation`, served by the rama TLS acceptor so the relay mirrors it.
-fn upstream_acceptor_data(revocation: Revocation) -> Result<TlsAcceptorData, BoxError> {
+fn upstream_acceptor_data(revocation: Revocation) -> Result<TlsServerConfig, BoxError> {
     let (key, cert) = upstream_identity(revocation)?;
-    let config = ServerConfig::new(ServerAuth::Single(ServerAuthData {
-        private_key: DataEncoding::Der(key.private_key_to_der().context("upstream key to DER")?),
-        cert_chain: DataEncoding::Der(cert.to_der().context("upstream cert to DER")?),
+    Ok(TlsServerConfig::new().with_single_cert(ServerAuthData {
+        private_key: PrivatePkcs8KeyDer::from(
+            key.private_key_to_der_pkcs8()
+                .context("upstream key to PKCS#8 DER")?,
+        )
+        .into(),
+        cert_chain: vec![CertificateDer::from(
+            cert.to_der().context("upstream cert to DER")?,
+        )],
         ocsp: None,
-    }));
-    TlsAcceptorData::try_from(config).context("upstream acceptor data")
+    }))
 }
 
 /// Self-signed upstream identity (key + cert) with a SAN and the given

@@ -49,8 +49,9 @@ use rama::{
         address::SocketAddress,
         proxy::IoForwardService,
         tls::{
-            DataEncoding,
+            KeyLogIntent,
             client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
+            server::{ClientVerifyMode, ServerAuthData, TlsServerConfig},
         },
     },
     rt::Executor,
@@ -62,17 +63,12 @@ use rama::{
     },
     tls::rustls::{
         client::{TlsConnectorLayer, self_signed_client_auth},
-        dep::rustls::{
-            ALL_VERSIONS, RootCertStore,
-            server::{ServerConfig, WebPkiClientVerifier},
-        },
-        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
+        server::TlsAcceptorLayer,
     },
 };
 
 // everything else is provided by the standard library, community crates or tokio
 
-use std::sync::Arc;
 use std::time::Duration;
 
 const SERVER_AUTHORITY: SocketAddress = SocketAddress::local_ipv4(63014);
@@ -97,44 +93,22 @@ async fn main() {
 
         let tls_client_data = TlsClientConfig::default_http()
             .with_client_auth(ClientAuth::Single(ClientAuthData {
-                cert_chain: DataEncoding::DerStack(
-                    client_cert_chain
-                        .iter()
-                        .map(|cert| cert.as_ref().to_vec())
-                        .collect(),
-                ),
-                private_key: DataEncoding::Der(client_priv_key.secret_der().to_vec()),
+                cert_chain: client_cert_chain,
+                private_key: client_priv_key,
             }))
             .with_server_verify(ServerVerifyMode::Disable)
             .with_server_name(SERVER_AUTHORITY.ip_addr.into());
 
-        // More complex use cases like this aren't directly supported by rama, but that is no problem, we can work with rustls
-        // native configs, so that means if rustls can do it: so can we, and so can you.
-        // We can either directly convert [`rustls::ServerConfig`] into [`TlsAcceptorData`] or we can convert it into
-        // [`TlsAcceptorDataBuilder`] so we can make use of some of the utils rama provides.
-
-        let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
-        let mut root_cert_storage = RootCertStore::empty();
-        root_cert_storage.add(client_cert).unwrap();
-        let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
-            .build()
-            .expect("new webpki client verifier");
-        let builder = builder.with_client_cert_verifier(cert_verifier);
-
         let (server_cert_chain, server_priv_key) = self_signed_client_auth().unwrap();
-        let server_config = builder
-            .with_single_cert(server_cert_chain, server_priv_key)
-            .expect("server config with single cert");
-
-        // Directly convert [`rustls::ServerConfig`] to [`TlsAcceptorData`]
-        let _tls_server_data = TlsAcceptorData::from(server_config.clone());
-
-        // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
-        let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
-            .with_alpn_protocols_http_auto()
-            .try_with_env_key_logger()
-            .expect("acceptor with env keylogger")
-            .build();
+        let tls_server_data = TlsServerConfig::new()
+            .with_single_cert(ServerAuthData {
+                cert_chain: server_cert_chain,
+                private_key: server_priv_key,
+                ocsp: None,
+            })
+            .with_client_verify(ClientVerifyMode::ClientAuth(vec![client_cert]))
+            .with_alpn_http_auto()
+            .with_keylog(KeyLogIntent::Environment);
 
         (tls_client_data, tls_server_data)
     };

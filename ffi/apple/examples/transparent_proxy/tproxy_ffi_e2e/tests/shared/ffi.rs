@@ -6,11 +6,9 @@ use std::{
 };
 
 use rama::{
+    crypto::cert::boring::self_signed_server_auth_gen_ca,
     net::tls::server::SelfSignedData,
-    tls::boring::{
-        core::x509::{X509, store::X509StoreBuilder},
-        server::utils::self_signed_server_auth_gen_ca,
-    },
+    tls::boring::core::x509::{X509, store::X509StoreBuilder},
 };
 
 use super::{bindings, types::BADGE_LABEL};

@@ -12,6 +12,7 @@ pub(crate) type DemoTlsMitmRelay =
     TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>;
 
 use rama::{
+    crypto::cert::boring::self_signed_server_auth_gen_ca,
     error::{BoxError, ErrorContext as _},
     net::{
         address::Domain,
@@ -24,12 +25,9 @@ use rama::{
         tls::server::SelfSignedData,
     },
     telemetry::tracing,
-    tls::boring::{
-        core::{
-            pkey::{PKey, Private},
-            x509::X509,
-        },
-        server::utils::self_signed_server_auth_gen_ca,
+    tls::boring::core::{
+        pkey::{PKey, Private},
+        x509::X509,
     },
 };
 
@@ -198,7 +196,7 @@ pub(crate) fn uninstall_root_ca() -> Result<Option<Vec<u8>>, BoxError> {
 fn generate_ca_pair() -> Result<(X509, PKey<Private>), BoxError> {
     let pair = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),
-        common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost")),
+        common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost").to_string()),
         ..Default::default()
     })
     .context("generate MITM CA")?;

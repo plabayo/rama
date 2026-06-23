@@ -1,19 +1,23 @@
 use rama::{
+    crypto::{
+        cert::self_signed_server_auth,
+        pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    },
     error::{BoxError, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
     net::{
         address::Host,
         tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{
-                CacheKind, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuerData,
-                ServerConfig,
-            },
+            ApplicationProtocol,
+            server::{SelfSignedData, ServerAuthData, TlsServerConfig},
         },
     },
     rt::Executor,
     telemetry::tracing,
-    tls::boring::core::x509::X509,
+    tls::boring::{
+        core::x509::X509,
+        server::{BoringServerConfigExt as _, CacheKind, ServerCertIssuerData},
+    },
     utils::str::NATIVE_NEWLINE,
 };
 
@@ -23,54 +27,51 @@ use base64::engine::general_purpose::STANDARD as ENGINE;
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
     exec: Executor,
-) -> Result<ServerConfig, BoxError> {
+) -> Result<TlsServerConfig, BoxError> {
+    let mut config = TlsServerConfig::new();
     match CertIssuerHttpClient::try_from_env(exec) {
         Ok(issuer) => {
-            return Ok(ServerConfig {
-                application_layer_protocol_negotiation: alpn,
-                ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
-                    kind: issuer.into(),
-                    cache_kind: CacheKind::default(),
-                }))
+            config.set_cert_issuer(ServerCertIssuerData {
+                kind: issuer.into(),
+                cache_kind: CacheKind::default(),
             });
         }
         Err(err) => {
             tracing::debug!("failed to create CertIssuerHttpClient from env: {err}");
+            config.set_server_auth(try_new_server_auth()?);
         }
     }
+    if let Some(alpn) = alpn {
+        config.set_alpn(alpn.into());
+    }
+    Ok(config)
+}
 
+fn try_new_server_auth() -> Result<ServerAuthData, BoxError> {
     let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
-        return Ok(ServerConfig {
-            application_layer_protocol_negotiation: alpn,
-            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-        });
+        let (cert_chain, private_key) = self_signed_server_auth(SelfSignedData::default())?;
+        return Ok(ServerAuthData::new(cert_chain, private_key));
     };
-    let tls_key_pem_raw = std::str::from_utf8(
-        &ENGINE
-            .decode(tls_key_pem_raw)
-            .context("base64 decode RAMA_TLS_KEY")?[..],
-    )
-    .context("base64-decoded RAMA_TLS_KEY valid utf-8")?
-    .try_into()
-    .context("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)")?;
+    let tls_key_pem_raw = &ENGINE
+        .decode(tls_key_pem_raw)
+        .context("base64 decode RAMA_TLS_KEY")?[..];
+
     let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT")
         .context("RAMA_TLS_CRT env to be available when RAMA_TLS_KEY is available")?;
-    let tls_crt_pem_raw = std::str::from_utf8(
-        &ENGINE
-            .decode(tls_crt_pem_raw)
-            .context("base64 decode RAMA_TLS_CRT")?[..],
-    )
-    .context("base64-decoded RAMA_TLS_CRT valid utf-8")?
-    .try_into()
-    .context("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)")?;
+    let tls_crt_pem_raw = &ENGINE
+        .decode(tls_crt_pem_raw)
+        .context("base64 decode RAMA_TLS_CRT")?[..];
 
-    Ok(ServerConfig {
-        application_layer_protocol_negotiation: alpn,
-        ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-            private_key: DataEncoding::Pem(tls_key_pem_raw),
-            cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-            ocsp: None,
-        }))
+    let cert_chain = CertificateDer::pem_slice_iter(tls_crt_pem_raw)
+        .collect::<Result<Vec<_>, _>>()
+        .context("parse crt pem chain")?;
+    let private_key =
+        PrivateKeyDer::from_pem_slice(tls_key_pem_raw).context("parse private key")?;
+
+    Ok(ServerAuthData {
+        private_key,
+        cert_chain,
+        ocsp: None,
     })
 }
 

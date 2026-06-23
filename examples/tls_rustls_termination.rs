@@ -52,8 +52,14 @@ use rama::{
     io::Io,
     layer::ConsumeErrLayer,
     net::{
-        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
-        tls::server::SelfSignedData,
+        address::HostWithPort,
+        forwarded::Forwarded,
+        proxy::IoForwardService,
+        stream::SocketInfo,
+        tls::{
+            KeyLogIntent,
+            server::{SelfSignedData, TlsServerConfig},
+        },
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -66,7 +72,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -85,11 +91,10 @@ async fn main() {
         )
         .init();
 
-    let acceptor_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData::default())
-        .expect("tls acceptor with self signed data")
-        .try_with_env_key_logger()
-        .expect("with env key logger")
-        .build();
+    let acceptor_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed")
+        .with_keylog(KeyLogIntent::Environment);
 
     let shutdown = Shutdown::default();
 

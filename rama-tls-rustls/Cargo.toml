@@ -32,8 +32,9 @@ aws-lc = [
     "tokio-rustls/aws_lc_rs",
     "rcgen/aws_lc_rs",
     "rustls/prefer-post-quantum",
+    "rama-crypto/aws-lc",
 ]
-ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring"]
+ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "rama-crypto/ring"]
 # Optional [dial9] runtime telemetry support.
 #
 # Building with this feature requires `--cfg tokio_unstable`.

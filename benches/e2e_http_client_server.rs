@@ -46,8 +46,8 @@ use rama::{
         proxy::IoForwardService,
         tls::{
             ApplicationProtocol,
-            client::ServerVerifyMode,
-            server::{SelfSignedData, ServerAuth, ServerConfig},
+            client::{ServerVerifyMode, TlsClientConfig},
+            server::{SelfSignedData, TlsServerConfig},
         },
         user::credentials::{ProxyCredential, basic},
     },
@@ -57,12 +57,10 @@ use rama::{
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{self},
     tls::{boring, rustls},
+    utils::collections::smallvec::smallvec,
 };
 
-use rama_net::tls::client::TlsClientConfig;
-use rama_utils::collections::smallvec::smallvec;
 use rand::prelude::*;
-
 pub mod e2e_utils;
 
 #[global_allocator]
@@ -220,29 +218,14 @@ where
     }
 }
 
-fn get_rustls_tls_data(params: TestParameters) -> rustls::server::TlsAcceptorData {
-    let proto = match params.version {
-        HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
-        HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
-    };
-
-    rustls::server::TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData::default())
-        .unwrap()
-        .with_alpn_protocols(&[proto])
-        .build()
-}
-
-fn get_boring_tls_data(params: TestParameters) -> boring::server::TlsAcceptorData {
-    let proto = match params.version {
-        HttpVersion::Http1 => ApplicationProtocol::HTTP_11,
-        HttpVersion::Http2 => ApplicationProtocol::HTTP_2,
-    };
-
-    let config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![proto]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-    };
-    boring::server::TlsAcceptorData::try_from(config).unwrap()
+fn get_config_tls_data(params: TestParameters) -> TlsServerConfig {
+    let tls = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self signed");
+    match params.version {
+        HttpVersion::Http1 => tls.with_alpn_http_1(),
+        HttpVersion::Http2 => tls.with_alpn_http_2(),
+    }
 }
 
 fn get_http_proxy_service_boxed<Input>(params: TestParameters) -> BoxService<Input, (), BoxError>
@@ -356,23 +339,23 @@ fn spawn_http_server(params: TestParameters, body_content: Bytes) -> SocketAddre
                 Tls::Rustls => {
                     let service = get_http_service_boxed(params, body_content);
 
-                    let data = get_rustls_tls_data(params);
+                    let config = get_config_tls_data(params);
 
                     ready_tx.send(Ok(())).unwrap();
 
                     async_listener
-                        .serve(rustls::server::TlsAcceptorLayer::new(data).into_layer(service))
+                        .serve(rustls::server::TlsAcceptorLayer::new(config).into_layer(service))
                         .await
                 }
                 Tls::Boring => {
                     let service = get_http_service_boxed(params, body_content);
 
-                    let data = get_boring_tls_data(params);
+                    let config = get_config_tls_data(params);
 
                     ready_tx.send(Ok(())).unwrap();
 
                     async_listener
-                        .serve(boring::server::TlsAcceptorLayer::new(data).into_layer(service))
+                        .serve(boring::server::TlsAcceptorLayer::new(config).into_layer(service))
                         .await
                 }
             }

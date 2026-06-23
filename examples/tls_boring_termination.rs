@@ -49,7 +49,7 @@ use rama::{
         stream::SocketInfo,
         tls::{
             SecureTransport,
-            server::{SelfSignedData, ServerAuth, ServerConfig},
+            server::{SelfSignedData, TlsServerConfig},
         },
     },
     proxy::haproxy::{
@@ -63,7 +63,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -81,9 +81,9 @@ async fn main() {
         )
         .init();
 
-    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed");
 
     let shutdown = Shutdown::default();
 
@@ -91,7 +91,7 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard);
         let tcp_service = (
-            TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
+            TlsAcceptorLayer::new(tls_server_config).with_store_client_hello(true),
             GetInputExtensionRefLayer::new(|st: &SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!("secure connection established: client hello = {client_hello:?}");

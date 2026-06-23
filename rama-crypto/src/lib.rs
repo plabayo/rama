@@ -22,6 +22,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
+pub mod cert;
+
 #[cfg(feature = "aws-lc")]
 #[cfg_attr(docsrs, doc(cfg(feature = "aws-lc")))]
 pub mod jose;
@@ -57,6 +59,17 @@ pub mod dep {
 
         #[doc(inline)]
         pub use aws_lc_rs::*;
+    }
+
+    #[cfg(feature = "boring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
+    pub mod boring {
+        //! Re-export of the [`rama-boring`] crate.
+        //!
+        //! [`rama-boring`]: https://docs.rs/rama-boring
+
+        #[doc(inline)]
+        pub use rama_boring::*;
     }
 
     #[cfg(any(feature = "aws-lc", feature = "ring"))]

@@ -299,11 +299,6 @@ where
         })
         .transpose()?;
 
-    let tls_acceptor_data = match maybe_tls_server_config {
-        None => None,
-        Some(cfg) => Some(cfg.try_into()?),
-    };
-
     let tcp_listener = TcpListener::build(exec.clone())
         .bind_address(cfg.bind)
         .await
@@ -331,7 +326,7 @@ where
         }),
         // Limit the body size to 1MB for both request and response
         BodyLimitLayer::symmetric(mib(1)),
-        tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
+        maybe_tls_server_config.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
     );
 
     exec.clone().into_spawn_task(async move {

@@ -27,10 +27,7 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::tls::{
-        ApplicationProtocol,
-        server::{SelfSignedData, ServerAuth, ServerConfig},
-    },
+    net::tls::server::{SelfSignedData, TlsServerConfig},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -38,7 +35,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
 };
 
 use std::time::Duration;
@@ -56,11 +53,10 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![ApplicationProtocol::HTTP_11]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-    };
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed")
+        .with_alpn_http_1();
 
     graceful.spawn_task_fn(async |guard| {
         let server = HttpServer::new_http1(Executor::graceful(guard.clone())).service(
@@ -73,7 +69,7 @@ async fn main() {
             ),
         );
 
-        let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
+        let tls_server = TlsAcceptorLayer::new(tls_server_config).into_layer(server);
 
         info!("open web echo chat @ https://127.0.0.1:62034");
         info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama')");

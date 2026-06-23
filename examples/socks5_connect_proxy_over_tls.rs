@@ -39,7 +39,7 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection},
         tls::{
             client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, ServerAuth, ServerConfig},
+            server::{SelfSignedData, TlsServerConfig},
         },
         user::{ProxyCredential, credentials::basic},
     },
@@ -51,10 +51,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::{
-        client::TlsConnector,
-        server::{TlsAcceptorData, TlsAcceptorService},
-    },
+    tls::boring::{client::TlsConnector, server::TlsAcceptorService},
 };
 
 #[tokio::main]
@@ -144,11 +141,11 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
     let socks5_acceptor =
         Socks5Acceptor::default().with_authorizer(basic!("john", "secret").into_authorizer());
 
-    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-    let acceptor_data =
-        TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data");
+    let tls_server_config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData::default())
+        .expect("self-signed");
 
-    let secure_socks5_acceptor = TlsAcceptorService::new(acceptor_data, socks5_acceptor, false);
+    let secure_socks5_acceptor = TlsAcceptorService::new(tls_server_config, socks5_acceptor, false);
 
     tokio::spawn(tcp_service.serve(secure_socks5_acceptor));
 

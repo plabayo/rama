@@ -3,6 +3,7 @@ use itertools::Itertools;
 use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing::trace;
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::client::{ClientHello, parse_client_hello};
 
 impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
@@ -102,33 +103,38 @@ try_from_mapping! {
     let SSLv3 = SSL3;
 }
 
-impl RamaTryFrom<&rama_boring::x509::X509, RamaTlsBoringCrateMarker>
-    for rama_net::tls::DataEncoding
-{
+impl RamaTryFrom<&rama_boring::x509::X509, RamaTlsBoringCrateMarker> for CertificateDer<'static> {
     type Error = BoxError;
 
     fn rama_try_from(value: &rama_boring::x509::X509) -> Result<Self, Self::Error> {
-        let der = value.to_der().context("boring X509 to Der DataEncoding")?;
-        Ok(Self::Der(der))
+        let der = value.to_der().context("boring X509 to CertificateDer")?;
+        Ok(CertificateDer::from(der))
+    }
+}
+
+impl RamaTryFrom<&rama_boring::x509::X509Ref, RamaTlsBoringCrateMarker>
+    for CertificateDer<'static>
+{
+    type Error = BoxError;
+
+    fn rama_try_from(value: &rama_boring::x509::X509Ref) -> Result<Self, Self::Error> {
+        let der = value.to_der().context("boring X509 to CertificateDer")?;
+        Ok(CertificateDer::from(der))
     }
 }
 
 impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTlsBoringCrateMarker>
-    for rama_net::tls::DataEncoding
+    for Vec<CertificateDer<'static>>
 {
     type Error = BoxError;
 
     fn rama_try_from(
         value: &rama_boring::stack::StackRef<rama_boring::x509::X509>,
     ) -> Result<Self, Self::Error> {
-        let der = value
+        value
             .into_iter()
-            .map(|cert| {
-                cert.to_der()
-                    .context("boring X509 stackref to DerStack DataEncoding")
-            })
-            .collect::<Result<Vec<Vec<u8>>, _>>()?;
-        Ok(Self::DerStack(der))
+            .map(RamaTryFrom::rama_try_from)
+            .collect::<Result<Vec<CertificateDer<'static>>, BoxError>>()
     }
 }
 

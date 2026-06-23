@@ -21,7 +21,7 @@ use super::{AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData};
 
 use crate::{TlsStream, types::TlsTunnel};
 #[cfg(feature = "http")]
-use rama_net::tls::client::TlsAlpn;
+use rama_net::tls::TlsAlpn;
 
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
@@ -592,16 +592,14 @@ where
 
     #[cfg(feature = "dial9")]
     {
-        use rama_net::tls::DataEncoding;
         // Approximate cert-chain depth: opaque single Der/Pem counts as
         // 1 (we don't parse PEM here), an explicit DerStack contributes
         // its real length, no chain stored yields 0. Used for telemetry
         // bucketing only — exact length lives in the structured chain.
-        let depth = match params.peer_certificate_chain.as_ref() {
-            Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
-            Some(DataEncoding::DerStack(stack)) => stack.len(),
-            None => 0,
-        };
+        let depth = params
+            .peer_certificate_chain
+            .as_ref()
+            .map_or(0, |chain| chain.len());
         crate::dial9::record_handshake_completed(
             dial9_server_name,
             params.protocol_version,

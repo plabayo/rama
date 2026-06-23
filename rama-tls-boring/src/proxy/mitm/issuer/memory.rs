@@ -10,7 +10,9 @@ use rama_net::tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
 use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
-use crate::server::utils::{MitmLeafOcspStatus, self_signed_server_auth_gen_ca};
+use rama_crypto::cert::boring::self_signed_server_auth_gen_ca;
+
+use crate::server::utils::MitmLeafOcspStatus;
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
@@ -76,12 +78,13 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
             None => Vec::new(),
         };
 
-        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert_with_extensions(
-            &original,
-            &self.ca_crt,
-            &self.ca_key,
-            &extra_extensions,
-        )?;
+        let (crt, key) =
+            rama_crypto::cert::boring::self_signed_server_auth_mirror_cert_with_extensions(
+                &original,
+                &self.ca_crt,
+                &self.ca_key,
+                &extra_extensions,
+            )?;
 
         // Staple a `good` only when the upstream advertised revocation info (the
         // mirror strips it, so a strict client would otherwise have nothing to
@@ -171,7 +174,7 @@ mod tests {
 
     fn mitm_ca(key_kind: SelfSignedKeyKind) -> InMemoryBoringMitmCertIssuer {
         InMemoryBoringMitmCertIssuer::try_new_self_signed(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-ca.example")),
+            common_name: Some("rama-mitm-ca.example".to_owned()),
             organisation_name: Some("Rama".to_owned()),
             key_kind,
             ..Default::default()
@@ -397,7 +400,7 @@ mod tests {
         use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
 
         let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-with-revoc-ca.example")),
+            common_name: Some("rama-mitm-with-revoc-ca.example".to_owned()),
             ..Default::default()
         })
         .expect("gen ca");
@@ -520,7 +523,7 @@ mod tests {
 
         // MITM relay with an in-memory self-signed CA (kept here for validation).
         let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example")),
+            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example").to_string()),
             organisation_name: Some("Rama".to_owned()),
             ..Default::default()
         })

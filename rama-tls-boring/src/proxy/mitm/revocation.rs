@@ -433,9 +433,9 @@ mod tests {
         rsa::Rsa,
         x509::{X509Builder, X509NameBuilder},
     };
-    use rama_net::{address::Domain, tls::server::SelfSignedData};
+    use rama_net::tls::server::SelfSignedData;
 
-    use crate::server::utils::{
+    use rama_crypto::cert::boring::{
         self_signed_server_auth_gen_ca, self_signed_server_auth_mirror_cert_with_extensions,
     };
 
@@ -445,7 +445,7 @@ mod tests {
 
     fn ca() -> (X509, PKey<Private>) {
         self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-revoc-test-ca.example")),
+            common_name: Some("rama-mitm-revoc-test-ca.example".to_owned()),
             organisation_name: Some("Rama Revocation Test".to_owned()),
             ..Default::default()
         })
@@ -610,7 +610,7 @@ mod tests {
         let mitm = Arc::new(MitmCa::new(ca_crt, ca_key));
         let rev = ProxyHostedRevocation::new(mitm, base_uri(), Duration::from_hours(24));
         let (other_crt, other_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("other-ca.example")),
+            common_name: Some("other-ca.example".to_owned()),
             ..Default::default()
         })
         .expect("gen other CA");

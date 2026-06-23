@@ -23,8 +23,14 @@ pub use layer::TlsAcceptorLayer;
 
 mod acceptor_data;
 #[doc(inline)]
-pub use acceptor_data::{
-    DynamicConfigProvider, TlsAcceptorData, TlsAcceptorDataBuilder, self_signed_server_auth,
+pub use acceptor_data::{DynamicConfigProvider, TlsAcceptorData};
+#[doc(inline)]
+pub use rama_crypto::cert::self_signed_server_auth;
+
+mod config;
+#[doc(inline)]
+pub use config::{
+    ModifyRustlsServerConfig, RustlsDynamicConfig, RustlsServerConfigExt, RustlsTlsAcceptorConfig,
 };
 
 mod tls_stream;

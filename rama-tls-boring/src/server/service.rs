@@ -1,4 +1,5 @@
 use super::TlsAcceptorData;
+use super::config::BoringTlsAcceptorConfig;
 use crate::{
     TlsStream,
     core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
@@ -17,7 +18,7 @@ use rama_core::{
 use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 use rama_net::{
     extensions::StreamTransformed,
-    tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
+    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig},
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
@@ -26,16 +27,16 @@ use std::{io::ErrorKind, sync::Arc};
 /// stream to the given service.
 #[derive(Debug, Clone)]
 pub struct TlsAcceptorService<S> {
-    data: TlsAcceptorData,
+    config: TlsServerConfig,
     store_client_hello: bool,
     inner: S,
 }
 
 impl<S> TlsAcceptorService<S> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(data: TlsAcceptorData, inner: S, store_client_hello: bool) -> Self {
+    pub const fn new(config: TlsServerConfig, inner: S, store_client_hello: bool) -> Self {
         Self {
-            data,
+            config,
             store_client_hello,
             inner,
         }
@@ -56,15 +57,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        // allow tls acceptor data to be injected,
-        // e.g. useful for TLS environments where some data (such as server auth, think ACME)
-        // is updated at runtime, be it infrequent
-        let tls_config = stream
-            .extensions()
-            .get_ref::<TlsAcceptorData>()
-            .unwrap_or(&self.data)
-            .config
-            .clone();
+        let merged = stream.extensions().with_base(self.config.as_extensions());
+        let tls_config =
+            TlsAcceptorData::try_from(BoringTlsAcceptorConfig::from_extensions(&merged))
+                .context("boring acceptor: build acceptor data from config")?
+                .config;
 
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
             .context("create boring ssl acceptor")?;
@@ -95,7 +92,6 @@ where
 
         let mut acceptor_builder = tls_config
             .cert_source
-            .clone()
             .issue_certs(
                 acceptor_builder,
                 server_domain.clone(),
@@ -127,7 +123,7 @@ where
                 .context("build boring ssl acceptor: set ca client cert")?;
         }
 
-        if let Some(alpn_protocols) = tls_config.alpn_protocols.clone() {
+        if let Some(alpn_protocols) = tls_config.alpn_protocols {
             trace!("tls boring server service: set alpn protos callback");
             acceptor_builder.set_alpn_select_callback(
                 move |_: &mut SslRef, client_alpns: &[u8]| {
@@ -213,21 +209,17 @@ where
                     .flatten()
                 {
                     // peer_cert_chain doesn't contain the leaf certificate in a server ctx
-                    let mut chain = stream.ssl().peer_cert_chain().map_or(Ok(vec![]), |chain| {
-                        chain
-                            .into_iter()
-                            .map(|cert| {
-                                cert.to_der()
-                                    .context("boring ssl session: failed to convert peer certificates to der")
-                            })
-                            .collect::<Result<Vec<Vec<u8>>, _>>()
-                    })?;
+                    let mut chain = stream
+                        .ssl()
+                        .peer_cert_chain()
+                        .map_or(Ok(vec![]), RamaTryInto::rama_try_into)?;
 
                     let certificate = certificate
-                        .to_der()
+                        .as_ref()
+                        .rama_try_into()
                         .context("boring ssl session: failed to convert peer certificate to der")?;
                     chain.insert(0, certificate);
-                    Some(DataEncoding::DerStack(chain))
+                    Some(chain)
                 } else {
                     None
                 };

@@ -67,7 +67,7 @@ use rama::{
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
-    net::tls::client::ClientHello,
+    net::tls::{KeyLogIntent, client::ClientHello, server::TlsServerConfig},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -77,11 +77,8 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::{
-        dep::rustls::{
-            ALL_VERSIONS, ServerConfig, crypto::aws_lc_rs, server::ResolvesServerCert,
-            sign::CertifiedKey,
-        },
-        server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+        dep::rustls::{crypto::aws_lc_rs, server::ResolvesServerCert, sign::CertifiedKey},
+        server::{RustlsServerConfigExt, TlsAcceptorLayer},
     },
 };
 
@@ -107,15 +104,18 @@ async fn main() {
     // [`rustls::ServerConfig`] depending on received client_hello in an async context
 
     let dynamic_issuer = Arc::new(DynamicIssuer::new());
-    let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
-        .with_no_client_auth()
-        .with_cert_resolver(dynamic_issuer);
 
-    let acceptor_data = TlsAcceptorDataBuilder::from(config)
-        .with_alpn_protocols_http_auto()
-        .try_with_env_key_logger()
-        .expect("with env keylogger")
-        .build();
+    // The common pieces can't express a custom synchronous [`ResolvesServerCert`],
+    // so use the rustls escape-hatch closure to install it. With no server-auth
+    // piece set, rama hands us a config backed by a self-signed certificate, which we
+    // replace with our resolver here.
+    let acceptor_data = TlsServerConfig::new()
+        .with_alpn_http_auto()
+        .with_keylog(KeyLogIntent::Environment)
+        .with_modify_rustls_config(move |mut config| {
+            config.cert_resolver = dynamic_issuer.clone();
+            Ok(config)
+        });
 
     // create http server
     shutdown.spawn_task_fn(async |guard| {

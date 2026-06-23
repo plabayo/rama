@@ -5,11 +5,10 @@ use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_net::{
     address::{Domain, Host},
     tls::{
-        ApplicationProtocol, CipherSuite, DataEncoding, ProtocolVersion, SignatureScheme,
+        ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
         client::{ClientHello, ClientHelloExtension},
     },
 };
-use rustls::pki_types;
 use std::net::IpAddr;
 
 macro_rules! enum_from_rustls {
@@ -120,23 +119,6 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
             rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
                 .context("convert domain to rustls (PKI) ServerName")?,
         ))
-    }
-}
-
-impl RamaFrom<&pki_types::CertificateDer<'static>, RamaTlsRustlsCrateMarker> for DataEncoding {
-    fn rama_from(value: &pki_types::CertificateDer<'static>) -> Self {
-        Self::Der(value.as_ref().into())
-    }
-}
-
-impl RamaFrom<&[pki_types::CertificateDer<'static>], RamaTlsRustlsCrateMarker> for DataEncoding {
-    fn rama_from(value: &[pki_types::CertificateDer<'static>]) -> Self {
-        Self::DerStack(
-            value
-                .iter()
-                .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))
-                .collect(),
-        )
     }
 }
 

@@ -1,6 +1,7 @@
 use super::utils::{self, ClientService};
 use rama::{
     Layer, Service,
+    crypto::pki_types::{CertificateDer, pem::PemObject},
     error::BoxError,
     extensions::ExtensionsRef,
     http::{
@@ -17,13 +18,9 @@ use rama::{
     layer::MapResultLayer,
     net::{
         address::Domain,
-        tls::{
-            DataEncoding,
-            client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-        },
+        tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
     },
     rt::Executor,
-    tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -34,29 +31,21 @@ use std::{str::FromStr, time::Duration};
 async fn test_tls_rustls_dynamic_certs() {
     utils::init_tracing();
 
-    let chain = DataEncoding::DerStack(
-        X509::stack_from_pem(include_bytes!(
-            "../../../../examples/assets/example.com.crt"
-        ))
-        .unwrap()
-        .into_iter()
-        .map(|i| i.to_der().unwrap())
-        .collect(),
-    );
+    let chain = CertificateDer::pem_slice_iter(include_bytes!(
+        "../../../../examples/assets/example.com.crt"
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
 
-    let second_chain = DataEncoding::DerStack(
-        X509::stack_from_pem(include_bytes!(
-            "../../../../examples/assets/second_example.com.crt"
-        ))
-        .unwrap()
-        .into_iter()
-        .map(|i| i.to_der().unwrap())
-        .collect(),
-    );
+    let second_chain = CertificateDer::pem_slice_iter(include_bytes!(
+        "../../../../examples/assets/second_example.com.crt"
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap();
 
     let default_chain = chain.clone();
 
-    let tests: Vec<(DataEncoding, Option<&'static str>)> = vec![
+    let tests = vec![
         (chain, Some("example")),
         (second_chain, Some("second.example")),
         (default_chain, None),

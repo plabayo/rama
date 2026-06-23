@@ -1,6 +1,7 @@
 use super::TlsAcceptorData;
 use super::TlsStream;
 use super::acceptor_data::ServerConfig;
+use super::config::RustlsTlsAcceptorConfig;
 use crate::dep::rustls::server::Acceptor;
 use crate::dep::tokio_rustls::LazyConfigAcceptor;
 use crate::types::SecureTransport;
@@ -13,7 +14,7 @@ use rama_core::{
 };
 use rama_net::{
     extensions::StreamTransformed,
-    tls::{ApplicationProtocol, client::NegotiatedTlsParameters},
+    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig},
 };
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -21,16 +22,16 @@ use rama_utils::macros::define_inner_service_accessors;
 /// stream to the given service.
 #[derive(Debug, Clone)]
 pub struct TlsAcceptorService<S> {
-    data: TlsAcceptorData,
+    config: TlsServerConfig,
     store_client_hello: bool,
     inner: S,
 }
 
 impl<S> TlsAcceptorService<S> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(data: TlsAcceptorData, inner: S, store_client_hello: bool) -> Self {
+    pub fn new(config: TlsServerConfig, inner: S, store_client_hello: bool) -> Self {
         Self {
-            data,
+            config,
             store_client_hello,
             inner,
         }
@@ -48,11 +49,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, stream: IO) -> Result<Self::Output, Self::Error> {
-        let tls_acceptor_data = stream
-            .extensions()
-            .get_ref::<TlsAcceptorData>()
-            .unwrap_or(&self.data)
-            .clone();
+        let merged = stream.extensions().with_base(self.config.as_extensions());
+        let tls_acceptor_data =
+            TlsAcceptorData::try_from(RustlsTlsAcceptorConfig::from_extensions(&merged))
+                .context("rustls acceptor: build acceptor data from config")?;
 
         let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 

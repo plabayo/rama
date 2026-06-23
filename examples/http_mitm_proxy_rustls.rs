@@ -65,7 +65,12 @@ use rama::{
         server::HttpServer,
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
-    net::{tls::server::SelfSignedData, user::credentials::basic},
+    net::{
+        tls::KeyLogIntent,
+        tls::client::{ServerVerifyMode, TlsClientConfig},
+        tls::server::{SelfSignedData, TlsServerConfig},
+        user::credentials::basic,
+    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -74,16 +79,15 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
     utils::octets::mib,
 };
-use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 #[derive(Debug, Clone, Extension)]
 struct State {
-    mitm_tls_service_data: TlsAcceptorData,
+    mitm_tls_service_data: TlsServerConfig,
     exec: Executor,
 }
 
@@ -98,8 +102,7 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let mitm_tls_service_data =
-        try_new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+    let mitm_tls_service_data = new_mitm_tls_service_data();
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -236,16 +239,13 @@ async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn try_new_mitm_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
-    let data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("Example Server Acceptor".to_owned()),
-        ..Default::default()
-    })
-    .context("self signed builder")?
-    .with_alpn_protocols_http_auto()
-    .try_with_env_key_logger()
-    .context("with env key logger")?
-    .build();
-
-    Ok(data)
+fn new_mitm_tls_service_data() -> TlsServerConfig {
+    TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto()
+        .with_keylog(KeyLogIntent::Environment)
 }

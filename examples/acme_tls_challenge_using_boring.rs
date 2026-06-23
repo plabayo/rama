@@ -66,12 +66,8 @@ use rama::{
     net::{
         address::Domain,
         tls::{
-            DataEncoding,
             client::{ClientHello, ServerVerifyMode, TlsClientConfig},
-            server::{
-                CacheKind, DynamicCertIssuer, ServerAuth, ServerAuthData, ServerCertIssuerData,
-                ServerConfig,
-            },
+            server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
         },
     },
     rt::Executor,
@@ -91,8 +87,11 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+        boring::server::{
+            BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, TlsAcceptorLayer,
+        },
     },
+    utils::collections::smallvec::smallvec,
 };
 use rama_net::tls::KeyLogIntent;
 
@@ -176,33 +175,23 @@ async fn main() {
         .expect("create tls challenge data");
 
     let auth_data = ServerAuthData {
-        private_key: DataEncoding::Der(pk.secret_pkcs8_der().into()),
-        cert_chain: DataEncoding::DerStack(vec![cert.der().to_vec()]),
+        private_key: pk.into(),
+        cert_chain: vec![cert.into()],
         ocsp: None,
     };
 
     let issuer = TlsAcmeIssue(auth_data);
 
-    let tls_server_config = ServerConfig {
-        server_auth: ServerAuth::CertIssuer(ServerCertIssuerData {
+    let tls_server_config = TlsServerConfig::new()
+        .with_cert_issuer(ServerCertIssuerData {
             kind: issuer.into(),
             cache_kind: CacheKind::Disabled,
-        }),
-        application_layer_protocol_negotiation: Some(vec![
-            rama::net::tls::ApplicationProtocol::ACME_TLS,
-        ]),
-        client_verify_mode: Default::default(),
-        expose_server_cert: Default::default(),
-        key_logger: Default::default(),
-        protocol_versions: Default::default(),
-        store_client_certificate_chain: Default::default(),
-    };
-
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+        })
+        .with_alpn(smallvec![rama::net::tls::ApplicationProtocol::ACME_TLS]);
 
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let tcp_service =
-            TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
+            TlsAcceptorLayer::new(tls_server_config).layer(service_fn(internal_tcp_service_fn));
 
         TcpListener::bind_address("127.0.0.1:5001", Executor::graceful(guard))
             .await
@@ -229,16 +218,16 @@ async fn main() {
 
     order.finalize(csr.der()).await.expect("finalize order");
 
-    let cert = order
-        .download_certificate_as_pem_stack()
+    let cert_chain = order
+        .download_certificate_chain()
         .await
         .expect("download certificate");
 
     challenge_server_handle.abort();
 
     let server_auth = ServerAuthData {
-        cert_chain: DataEncoding::DerStack(cert.into_iter().map(|pem| pem.contents).collect()),
-        private_key: DataEncoding::Der(key_pair.serialize_der()),
+        cert_chain,
+        private_key: key_pair.into(),
         ocsp: None,
     };
 
@@ -250,14 +239,11 @@ async fn main() {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
-        let tls_server_config = ServerConfig::new(ServerAuth::Single(server_auth));
-
-        let acceptor_data =
-            TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+        let tls_server_config = TlsServerConfig::new().with_single_cert(server_auth);
 
         let tcp_service = (
             ConsumeErrLayer::default(),
-            TlsAcceptorLayer::new(acceptor_data),
+            TlsAcceptorLayer::new(tls_server_config),
         )
             .into_layer(http_service);
 

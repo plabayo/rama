@@ -1,3 +1,5 @@
+use super::cert_issuer::{CacheKind, DynamicIssuer, ServerCertIssuerKind};
+use super::config::BoringTlsAuth;
 use crate::core::{
     nid::Nid,
     pkey::{PKey, Private},
@@ -8,29 +10,23 @@ use parking_lot::Mutex;
 use rama_boring::ssl::{ClientHello, NameType, SelectCertError, SslAcceptorBuilder, SslRef};
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::conversion::RamaTryFrom;
-use rama_core::error::{BoxError, ErrorContext, ErrorExt as _};
-use rama_core::extensions::Extension;
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
+use rama_crypto::dep::x509_parser::nom::AsBytes;
 use rama_net::{
     address::Domain,
     tls::{
-        ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
+        ApplicationProtocol, KeyLogIntent, ProtocolVersion,
         client::ClientHello as RamaClientHello,
-        server::{
-            CacheKind, ClientVerifyMode, DynamicIssuer, SelfSignedData, ServerAuth, ServerAuthData,
-            ServerCertIssuerKind,
-        },
+        server::{ClientVerifyMode, SelfSignedData, ServerAuthData},
     },
 };
 use std::{sync::Arc, time::Duration};
 
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(tls))]
+#[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
-///
-/// Created by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
 pub struct TlsAcceptorData {
-    pub(super) config: Arc<TlsConfig>,
+    pub(super) config: TlsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -262,50 +258,52 @@ impl TlsCertSource {
     }
 }
 
-impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
+impl TryFrom<&rama_net::tls::server::TlsServerConfig> for TlsAcceptorData {
     type Error = BoxError;
 
-    fn try_from(value: rama_net::tls::server::ServerConfig) -> Result<Self, Self::Error> {
-        let client_cert_chain = match value.client_verify_mode {
+    fn try_from(value: &rama_net::tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
+        Self::try_from(super::config::BoringTlsAcceptorConfig::from_extensions(
+            value.as_extensions(),
+        ))
+    }
+}
+
+impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsAcceptorData {
+    type Error = BoxError;
+
+    /// Build [`TlsAcceptorData`] from the gathered common pieces.
+    fn try_from(value: super::config::BoringTlsAcceptorConfig<'_>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            config: TlsConfig::try_from(value)?,
+        })
+    }
+}
+
+impl TryFrom<super::config::BoringTlsAcceptorConfig<'_>> for TlsConfig {
+    type Error = BoxError;
+
+    /// Build [`TlsConfig`] from the gathered common pieces.
+    fn try_from(value: super::config::BoringTlsAcceptorConfig<'_>) -> Result<Self, Self::Error> {
+        let client_cert_chain = match value.client_verify.map(|c| &c.0) {
             // no client auth
-            ClientVerifyMode::Auto | ClientVerifyMode::Disable => None,
+            None | Some(ClientVerifyMode::Auto | ClientVerifyMode::Disable) => None,
             // client auth enabled
-            ClientVerifyMode::ClientAuth(DataEncoding::Der(bytes)) => {
-                Some(vec![X509::from_der(&bytes[..]).context(
-                    "boring/TlsAcceptorData: parse x509 client cert from DER content",
-                )?])
-            }
-            ClientVerifyMode::ClientAuth(DataEncoding::DerStack(bytes_list)) => Some(
-                bytes_list
-                    .into_iter()
-                    .map(|b| {
-                        X509::from_der(&b[..]).context(
+            Some(ClientVerifyMode::ClientAuth(certs)) => Some(
+                certs
+                    .iter()
+                    .map(|cert| {
+                        X509::from_der(cert.as_bytes()).context(
                             "boring/TlsAcceptorData: parse x509 client cert from DER content",
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             ),
-            ClientVerifyMode::ClientAuth(DataEncoding::Pem(raw_data)) => Some(
-                X509::stack_from_pem(raw_data.as_bytes())
-                    .context("boring/TlsAcceptorData: parse x509 client cert from PEM content")?,
-            ),
         };
 
-        let cert_source_kind = match value.server_auth {
-            ServerAuth::SelfSigned(data) => {
-                let issued_cert =
-                    self_signed_server_auth(&data).context("boring/TlsAcceptorData")?;
-                TlsCertSourceKind::InMemory(issued_cert)
-            }
-            ServerAuth::Single(data) => {
-                // server TLS Certs
-                let issued_cert = server_auth_data_to_private_key_and_ca_chain(&data)?;
-
-                TlsCertSourceKind::InMemory(issued_cert)
-            }
-
-            ServerAuth::CertIssuer(data) => {
-                let cert_cache = match data.cache_kind {
+        let cert_source_kind = match value.auth {
+            Some(BoringTlsAuth::CertIssuer(cert_issuer)) => {
+                let issuer_data = cert_issuer.0.clone();
+                let cert_cache = match issuer_data.cache_kind {
                     CacheKind::Disabled => None,
                     CacheKind::MemCache { max_size, ttl } => Some(
                         Cache::builder()
@@ -320,10 +318,11 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                     ),
                 };
 
-                match data.kind {
+                match issuer_data.kind {
                     ServerCertIssuerKind::SelfSigned(data) => {
-                        let (ca_cert, ca_key) = super::utils::self_signed_server_auth_gen_ca(&data)
-                            .context("boring/TlsAcceptorData: CA: self-signed ca")?;
+                        let (ca_cert, ca_key) =
+                            rama_crypto::cert::boring::self_signed_server_auth_gen_ca(&data)
+                                .context("boring/TlsAcceptorData: CA: self-signed ca")?;
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
                             ca_key,
@@ -348,20 +347,34 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                     }
                 }
             }
+
+            other => {
+                let server_auth = match other {
+                    Some(BoringTlsAuth::ServerAuth(server_auth)) => &server_auth.0,
+                    _ => {
+                        return Err(BoxError::from_static_str(
+                            "boring/TlsAcceptorData: no server auth configured: provide a certificate \
+                             (e.g. via TlsServerConfig::single_cert or try_with_self_signed)",
+                        ));
+                    }
+                };
+                let issued_cert = server_auth_data_to_private_key_and_ca_chain(server_auth)?;
+                TlsCertSourceKind::InMemory(issued_cert)
+            }
         };
 
-        // return the created server config, all good if you reach here
         Ok(Self {
-            config: Arc::new(TlsConfig {
-                cert_source: TlsCertSource {
-                    kind: cert_source_kind,
-                },
-                alpn_protocols: value.application_layer_protocol_negotiation.clone(),
-                keylog_intent: value.key_logger,
-                protocol_versions: value.protocol_versions.clone(),
-                client_cert_chain,
-                store_client_certificate_chain: value.store_client_certificate_chain,
-            }),
+            cert_source: TlsCertSource {
+                kind: cert_source_kind,
+            },
+            alpn_protocols: value.alpn.map(|a| a.0.to_vec()),
+            keylog_intent: value.keylog.map(|k| k.0.clone()).unwrap_or_default(),
+            protocol_versions: value.versions.map(|v| v.0.clone()),
+            client_cert_chain,
+            store_client_certificate_chain: value
+                .store_client_chain
+                .map(|s| s.0)
+                .unwrap_or_default(),
         })
     }
 }
@@ -395,35 +408,17 @@ fn to_opt_domain(
 fn server_auth_data_to_private_key_and_ca_chain(
     data: &ServerAuthData,
 ) -> Result<IssuedCert, BoxError> {
-    // server TLS key
-    let private_key = match &data.private_key {
-        DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
-            .context("boring/TlsAcceptorData: parse private key from DER content")?,
-        DataEncoding::DerStack(raw_data_list) => PKey::private_key_from_der(
-            &raw_data_list
-                .first()
-                .context("boring/TlsAcceptorData: get first private key raw data")?[..],
-        )
-        .context("boring/TlsAcceptorData: parse private key from DER content")?,
-        DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
-            .context("boring/TlsAcceptorData: parse private key from PEM content")?,
-    };
+    let private_key = PKey::private_key_from_der(data.private_key.secret_der())
+        .context("boring/TlsAcceptorData: parse private key from DER content")?;
 
-    let cert_chain = match &data.cert_chain {
-        DataEncoding::Der(raw_data) => vec![
+    let cert_chain = data
+        .cert_chain
+        .iter()
+        .map(|raw_data| {
             X509::from_der(&raw_data[..])
-                .context("boring/TlsAcceptorData: parse x509 server cert from DER content")?,
-        ],
-        DataEncoding::DerStack(raw_data_list) => raw_data_list
-            .iter()
-            .map(|raw_data| {
-                X509::from_der(&raw_data[..])
-                    .context("boring/TlsAcceptorData: parse x509 server cert from DER content")
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-            .context("boring/TlsAcceptorData: parse x509 server cert chain from PEM content")?,
-    };
+                .context("boring/TlsAcceptorData: parse x509 server cert from DER content")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(IssuedCert {
         cert_chain,
@@ -437,7 +432,7 @@ fn issue_cert_for_ca(
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, BoxError> {
     tracing::trace!("generate certs for domain {domain:?} using in-memory ca cert");
-    let (cert, key) = super::utils::self_signed_server_auth_gen_cert(
+    let (cert, key) = rama_crypto::cert::boring::self_signed_server_auth_gen_cert(
         &SelfSignedData {
             organisation_name: Some(
                 ca_cert
@@ -448,7 +443,7 @@ fn issue_cert_for_ca(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
-            common_name: domain.cloned(),
+            common_name: domain.map(|d| d.to_string()),
             ..Default::default()
         },
         ca_cert,
@@ -487,16 +482,4 @@ fn add_issued_cert_to_ssl_ref(
         .context("boring add issue cert to ssl ref: set private key")?;
 
     Ok(())
-}
-
-fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, BoxError> {
-    let (ca_cert, ca_privkey) =
-        super::utils::self_signed_server_auth_gen_ca(data).context("self-signed CA")?;
-    let (cert, privkey) =
-        super::utils::self_signed_server_auth_gen_cert(data, &ca_cert, &ca_privkey)
-            .context("self-signed cert using self-signed CA")?;
-    Ok(IssuedCert {
-        cert_chain: vec![cert, ca_cert],
-        key: privkey,
-    })
 }

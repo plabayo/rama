@@ -37,7 +37,7 @@ idna = ["dep:idna"]
 # Memory-map IP geolocation databases from disk (MmdbReader::open_mmap) instead
 # of reading them fully into memory.
 mmap = ["dep:memmap2"]
-tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:jiff"]
+tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:jiff", "dep:rama-crypto"]
 opentelemetry = ["rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
 #
@@ -69,6 +69,7 @@ pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true }
 rama-core = { workspace = true }
+rama-crypto = { workspace = true, optional = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
