@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     http::{
         Body, Request, Response, StatusCode,
-        header::CONTENT_TYPE,
+        header::{CONNECTION, CONTENT_TYPE},
         layer::{
             trace::TraceLayer,
             upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
@@ -225,7 +225,12 @@ async fn main() -> Result<(), BoxError> {
             .with_get("/crl", revocation_crl)
             .with_post("/ocsp", revocation_ocsp_post)
             .with_get("/ocsp/{req}", revocation_ocsp_get);
-        tokio::spawn(listener.serve(HttpServer::auto(exec.clone()).service(web)));
+        // Serve revocation as plain HTTP/1.1, never `auto`: the only client is
+        // schannel/WinHTTP fetching the CRL/OCSP mid-handshake, which speaks
+        // HTTP/1.1 and (on the constrained CI runner) can stall on `auto`'s h2
+        // detection or a kept-alive socket. http1 + `Connection: close` per
+        // response keeps that in-handshake fetch deterministic and self-closing.
+        tokio::spawn(listener.serve(HttpServer::new_http1(exec.clone()).service(web)));
         issuer = issuer.with_revocation(responder);
     }
     let relay = TlsMitmRelay::new(issuer);
@@ -372,6 +377,7 @@ fn artifact_response(result: Result<RevocationArtifact, BoxError>) -> Response {
     match result {
         Ok(art) => Response::builder()
             .header(CONTENT_TYPE, art.content_type.as_str())
+            .header(CONNECTION, "close")
             .body(Body::from(art.body))
             .expect("build revocation response"),
         Err(err) => {
@@ -384,6 +390,7 @@ fn artifact_response(result: Result<RevocationArtifact, BoxError>) -> Response {
 fn empty_status(status: StatusCode) -> Response {
     Response::builder()
         .status(status)
+        .header(CONNECTION, "close")
         .body(Body::empty())
         .expect("build empty response")
 }
