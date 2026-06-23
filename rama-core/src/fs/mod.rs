@@ -245,7 +245,7 @@ impl Default for OpenOptions {
 async fn ensure_within_root(root: &Path, target: &Path) -> io::Result<()> {
     let canonical_root = tokio::fs::canonicalize(root).await?;
     if let Some(existing) = nearest_existing_ancestor(target).await {
-        let canonical_target = tokio::fs::canonicalize(&existing).await?;
+        let canonical_target = canonicalize_existing_path(&existing).await?;
         if !canonical_target.starts_with(&canonical_root) {
             return Err(UnsafePathError::EscapesRoot.into());
         }
@@ -253,11 +253,24 @@ async fn ensure_within_root(root: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
+async fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
+    match tokio::fs::canonicalize(path).await {
+        Ok(path) => Ok(path),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            if tokio::fs::symlink_metadata(path).await.is_ok() {
+                return Err(UnsafePathError::EscapesRoot.into());
+            }
+            Err(err)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Walk up from `path` until an existing path is found, returning it.
 async fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     let mut current = Some(path);
     while let Some(candidate) = current {
-        if tokio::fs::try_exists(candidate).await.unwrap_or(false) {
+        if tokio::fs::symlink_metadata(candidate).await.is_ok() {
             return Some(candidate.to_path_buf());
         }
         current = candidate.parent();
@@ -379,6 +392,29 @@ mod tests {
 
         let file = safe_open_in(root.path(), "link").await.unwrap();
         assert_eq!(read_to_string(file).await, "data");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn jail_create_rejects_dangling_symlink_escape() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("public");
+        let outside = parent.path().join("outside");
+        tokio::fs::create_dir(&root).await.unwrap();
+        tokio::fs::create_dir(&outside).await.unwrap();
+
+        let outside_target = outside.join("created.txt");
+        std::os::unix::fs::symlink(&outside_target, root.join("upload.txt")).unwrap();
+
+        let result = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .jail(&root)
+            .open("upload.txt")
+            .await;
+
+        assert_eq!(err_kind(result), io::ErrorKind::InvalidInput);
+        assert!(!outside_target.exists());
     }
 
     #[cfg(unix)]

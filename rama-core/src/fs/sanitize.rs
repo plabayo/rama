@@ -132,7 +132,7 @@ fn check_normal_component(name: &OsStr) -> Result<(), UnsafePathError> {
 /// This answers a property of the *name*, not of the running OS: on a Windows
 /// host such a name resolves to a device rather than a file, so it must be
 /// rejected when mapping untrusted input to the filesystem (see
-/// [`check_normal_component`], which only consults it on Windows). Exposed so
+/// the normal-component validator, which only consults it on Windows). Exposed so
 /// other crates can reuse the exact same check instead of duplicating it.
 #[must_use]
 pub fn is_reserved_device_name(name: impl AsRef<OsStr>) -> bool {
