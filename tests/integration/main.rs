@@ -17,3 +17,6 @@ mod ua_emulation;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod client;
+
+#[cfg(all(feature = "http-full", feature = "rustls", feature = "aws-lc"))]
+mod tls_close_notify;

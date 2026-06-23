@@ -1,4 +1,5 @@
-use std::convert::Infallible;
+use std::fmt;
+use std::sync::Arc;
 
 use crate::{
     Body, Request, Response, StreamingBody, io::upgrade::Upgraded,
@@ -6,7 +7,8 @@ use crate::{
 };
 use rama_core::{
     Service, bytes,
-    error::BoxError,
+    error::{BoxError, ErrorExt as _},
+    error_sink::{ErrorSink, TracingErrorSink},
     extensions::ExtensionsRef,
     io::BridgeIo,
     matcher::service::{ServiceMatch, ServiceMatcher},
@@ -14,7 +16,7 @@ use rama_core::{
     telemetry::tracing::{self, Instrument as _},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 /// Http middleware that can be used by MITM proxies,
 /// such as transparent (L4) proxies to relay a HTTP upgrade-request
 /// as-is and pipe the upgraded upgrade request on both ends
@@ -23,18 +25,40 @@ pub struct HttpUpgradeMitmRelay<M, S> {
     exec: Executor,
     nested_matcher_svc: M,
     inner_svc: S,
+    error_sink: Arc<dyn ErrorSink>,
 }
 
 impl<M, S> HttpUpgradeMitmRelay<M, S> {
     #[inline(always)]
     #[must_use]
     /// Create a new [`HttpUpgradeMitmRelay`].
-    pub const fn new(exec: Executor, nested_matcher_svc: M, inner_svc: S) -> Self {
+    pub fn new(exec: Executor, nested_matcher_svc: M, inner_svc: S) -> Self {
         Self {
             exec,
             nested_matcher_svc,
             inner_svc,
+            error_sink: Arc::new(TracingErrorSink::default()),
         }
+    }
+
+    /// Set a custom [`ErrorSink`] used to observe errors from the detached
+    /// relay task (relay-service failures and upgrade failures on either side).
+    ///
+    /// Defaults to [`TracingErrorSink::default`] (traces at DEBUG level).
+    #[must_use]
+    pub fn with_error_sink(mut self, sink: impl ErrorSink) -> Self {
+        self.error_sink = Arc::new(sink);
+        self
+    }
+}
+
+impl<M: fmt::Debug, S: fmt::Debug> fmt::Debug for HttpUpgradeMitmRelay<M, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpUpgradeMitmRelay")
+            .field("exec", &self.exec)
+            .field("nested_matcher_svc", &self.nested_matcher_svc)
+            .field("inner_svc", &self.inner_svc)
+            .finish()
     }
 }
 
@@ -49,7 +73,7 @@ where
                 Response<ResBody>,
                 Error: Into<S::Error>,
                 ModifiedInput = Response<ModResBody>,
-                Service: Service<BridgeIo<Upgraded, Upgraded>, Output = (), Error = Infallible>,
+                Service: Service<BridgeIo<Upgraded, Upgraded>, Output = (), Error: Into<BoxError>>,
             >,
         >,
     S: Service<Request, Output = Response<ResBody>>,
@@ -156,6 +180,7 @@ where
                 // cycle → stack overflow on `get_ref` traversal (confirmed
                 // empirically: centralizing SIGABRTs the WS suite).
                 let egress_msg_ext = res.extensions().clone();
+                let error_sink = self.error_sink.clone();
                 tracing::trace!("HttpUpgradeMitmRelay: spawn relay svc on its own task");
 
                 self.exec.spawn_task(async move {
@@ -166,7 +191,11 @@ where
                     let (ingress_stream, egress_stream) = match tokio::try_join!(on_upgrade_ingress, on_upgrade_egress) {
                         Ok(streams) => streams,
                         Err(err) => {
-                            tracing::debug!("HttpUpgradeMitmRelay: relay task: one or both sides filed to upgrade: {err}");
+                            // routed to the sink instead of swallowed: the relay
+                            // task is detached, so this is its only error outlet.
+                            error_sink.sink_error(
+                                err.context("mitm relay: upgrade failed on one or both sides"),
+                            );
                             return;
                         }
                     };
@@ -176,7 +205,9 @@ where
                     tracing::trace!(
                         "HttpUpgradeMitmRelay: relay task: bidirectional upgrade complete: continue serving via upgrade relay svc"
                     );
-                    relay_svc.serve(BridgeIo(ingress_stream, egress_stream)).await;
+                    if let Err(err) = relay_svc.serve(BridgeIo(ingress_stream, egress_stream)).await {
+                        error_sink.sink_error(err.context("mitm relay handler failed"));
+                    }
                 }.instrument(relay_upgrade_span));
 
                 Ok(res.map(Body::new))
