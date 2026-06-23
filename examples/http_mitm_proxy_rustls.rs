@@ -153,7 +153,7 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), BoxError> {
     let http_service = new_http_mitm_proxy();
 
     let state = upgraded.extensions().get_ref::<State>().unwrap();
@@ -165,7 +165,10 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service.serve(upgraded).await.expect("infallible");
+    // The upgrade handler may return an error: it is routed to the
+    // `UpgradeLayer`'s error sink (tracing at DEBUG by default) instead of
+    // being coerced to `Infallible` with `.expect(..)`.
+    https_service.serve(upgraded).await?;
 
     Ok(())
 }

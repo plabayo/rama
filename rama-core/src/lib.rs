@@ -28,6 +28,8 @@ pub mod extensions;
 #[doc(inline)]
 pub use ::rama_error as error;
 
+pub mod error_sink;
+
 pub mod graceful;
 pub mod rt;
 

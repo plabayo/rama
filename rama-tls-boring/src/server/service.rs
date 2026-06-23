@@ -258,6 +258,13 @@ where
             by: "rama-tls-boring::TlsAcceptor",
         });
 
+        // NOTE(#1014): graceful TLS `close_notify` on this stream relies on the
+        // inner service driving `poll_shutdown` before `stream` is dropped here.
+        // The h1 dispatcher now does so on both clean finish and error, but inner
+        // HTTP/2 (GOAWAY only), panics, and raw (non-http) tunnels still don't. A
+        // bounded shutdown guard wrapping `stream` here (cf. the once-gated,
+        // grace-timeout idiom in `rama_net::proxy::forward`; it must spawn via the
+        // `Executor` since `Drop` is sync) would cover those paths uniformly.
         self.inner
             .serve(stream)
             .await

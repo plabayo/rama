@@ -28,6 +28,14 @@ pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     body_tx: SenderDropGuard,
     body_rx: Pin<Box<Option<Bs>>>,
     is_closing: bool,
+    // Set once the dispatch loop has errored: we still want to drive a
+    // best-effort transport shutdown (so e.g. a TLS stream emits close_notify)
+    // before yielding, instead of dropping it mid-flight.
+    shutting_down: bool,
+    // An error that could not be handed to a user (e.g. server-side, where
+    // there is no client callback) and must be surfaced once the best-effort
+    // shutdown has been driven.
+    pending_err: Option<crate::Error>,
 }
 
 pub(crate) trait Dispatch {
@@ -84,6 +92,8 @@ where
             body_tx: SenderDropGuard::none(),
             body_rx: Box::pin(None),
             is_closing: false,
+            shutting_down: false,
+            pending_err: None,
         }
     }
 
@@ -124,19 +134,47 @@ where
         cx: &mut Context<'_>,
         should_shutdown: bool,
     ) -> Poll<crate::Result<Dispatched>> {
-        Poll::Ready(ready!(self.poll_inner(cx, should_shutdown)).or_else(|e| {
-            // Be sure to alert a streaming body of the failure with a
-            // more specific error than the drop guard would provide.
-            if let Some(mut body) = self.body_tx.take() {
-                body.send_error(crate::Error::new_body("connection error"));
+        // Phase 1: run the dispatch loop until it finishes or errors. On error
+        // we switch into a best-effort shutdown phase rather than dropping the
+        // transport mid-flight (which would skip TLS `close_notify`).
+        if !self.shutting_down {
+            match ready!(self.poll_inner(cx, should_shutdown)) {
+                Ok(ds) => return Poll::Ready(Ok(ds)),
+                Err(e) => {
+                    // Be sure to alert a streaming body of the failure with a
+                    // more specific error than the drop guard would provide.
+                    if let Some(mut body) = self.body_tx.take() {
+                        body.send_error(crate::Error::new_body("connection error"));
+                    }
+                    // Try to hand the error to the user (client callback). The
+                    // server has no user to hand it to, so `recv_msg` returns
+                    // the error back; either way we still drive a best-effort
+                    // shutdown below before surfacing any residual error,
+                    // rather than returning early as the old code did.
+                    self.pending_err = self.dispatch.recv_msg(Err(e)).err();
+                    self.shutting_down = true;
+                }
             }
-            // An error means we're shutting down either way.
-            // We just try to give the error to the user,
-            // and close the connection with an Ok. If we
-            // cannot give it to the user, then return the Err.
-            self.dispatch.recv_msg(Err(e))?;
-            Ok(Dispatched::Shutdown)
-        }))
+        }
+
+        // Phase 2: best-effort transport shutdown so a still-writable stream
+        // (e.g. a TLS stream whose *upstream* failed) emits `close_notify`
+        // instead of being dropped silently. This intentionally applies to both
+        // server and client connections (the clean path already shuts down).
+        // `poll_shutdown` does not wait for the peer's `close_notify` reply, but
+        // may still return Pending on local write readiness; it is bounded by
+        // the surrounding connection / graceful-shutdown lifecycle, not
+        // intrinsically.
+        if should_shutdown {
+            // result ignored: the transport may already be broken, and
+            // `conn::poll_shutdown` logs any IO error itself.
+            _ = ready!(self.conn.poll_shutdown(cx));
+        }
+
+        match self.pending_err.take() {
+            Some(e) => Poll::Ready(Err(e)),
+            None => Poll::Ready(Ok(Dispatched::Shutdown)),
+        }
     }
 
     fn poll_inner(
@@ -865,5 +903,88 @@ mod tests {
         // Ensure conn.write_body wasn't called with the empty chunk.
         // If it is, it will trigger an assertion.
         assert!(dispatcher.poll().is_pending());
+    }
+
+    // Regression for #1014: when a server connection ends via a dispatch error,
+    // the dispatcher must still drive `poll_shutdown` on the transport (so e.g.
+    // a TLS stream emits close_notify) instead of dropping it mid-flight.
+    #[cfg(not(miri))]
+    #[tokio::test]
+    async fn server_drives_shutdown_on_dispatch_error() {
+        use crate::proto::h1::ServerTransaction;
+        use rama_core::service::service_fn;
+        use std::convert::Infallible;
+        use std::io;
+        use std::pin::Pin;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Context, Poll};
+        use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+        struct RecordIo {
+            // a valid request on the first read, then a hard error on the next.
+            request: Option<&'static [u8]>,
+            shutdown_called: Arc<AtomicBool>,
+        }
+
+        impl AsyncRead for RecordIo {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                match self.request.take() {
+                    Some(req) => {
+                        buf.put_slice(req);
+                        Poll::Ready(Ok(()))
+                    }
+                    // mid-connection transport failure on the next (keep-alive) read.
+                    None => Poll::Ready(Err(io::Error::other("boom"))),
+                }
+            }
+        }
+
+        impl AsyncWrite for RecordIo {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &[u8],
+            ) -> Poll<io::Result<usize>> {
+                // sink the response write
+                Poll::Ready(Ok(buf.len()))
+            }
+            fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+                self.shutdown_called.store(true, Ordering::SeqCst);
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let io = RecordIo {
+            request: Some(b"GET / HTTP/1.1\r\nhost: a\r\n\r\n"),
+            shutdown_called: shutdown_called.clone(),
+        };
+        let io = ServiceInput::new(io);
+
+        let service = service_fn(|_req: Request<IncomingBody>| async move {
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        });
+
+        let conn = Conn::<_, rama_core::bytes::Bytes, ServerTransaction>::new(io);
+        let dispatcher = Dispatcher::new(Server::new(service), conn);
+
+        let result = dispatcher.await;
+
+        assert!(
+            result.is_err(),
+            "an errored connection should surface its error"
+        );
+        assert!(
+            shutdown_called.load(Ordering::SeqCst),
+            "poll_shutdown must be driven on the dispatch error path (regression #1014)"
+        );
     }
 }
