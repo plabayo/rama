@@ -182,7 +182,9 @@ impl<S> OctetStream<S> {
     async fn open_file_with_metadata(
         path: &Path,
     ) -> std::io::Result<(File, Option<u64>, Option<String>)> {
-        let file = File::open(path).await?;
+        // Reject path-traversal (`..`) and other unsafe paths: this is reachable
+        // with request-derived input, so guard it at the source.
+        let file = rama_core::fs::safe_open(path).await?;
 
         let metadata = file.metadata().await.ok();
         let content_size = metadata.as_ref().map(|m| m.len());
@@ -203,6 +205,9 @@ impl<S> OctetStream<S> {
     ///
     /// Both operations are graceful - if metadata cannot be read or the filename cannot
     /// be extracted, the corresponding field will be `None`.
+    ///
+    /// The file is opened with `rama_core::fs::safe_open`, which rejects
+    /// path-traversal (`..`) and other unsafe paths.
     ///
     /// # Arguments
     ///
@@ -244,6 +249,9 @@ impl<S> OctetStream<S> {
     /// This is a convenience method that combines file opening, seeking to the range start,
     /// and creating a partial content (HTTP 206) response in one step. It automatically
     /// extracts the filename from the path and uses the file size as the complete length.
+    ///
+    /// The file is opened with `rama_core::fs::safe_open`, which rejects
+    /// path-traversal (`..`) and other unsafe paths.
     ///
     /// # Arguments
     ///
@@ -417,8 +425,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_path() {
-        let file_path = "../test-files/hello.txt";
-        let stream = OctetStream::<ReaderStream<File>>::try_from_path(file_path)
+        // Canonicalize so the path carries no `..` traversal component, which
+        // `safe_open` rejects by design.
+        let file_path = std::fs::canonicalize("../test-files/hello.txt").unwrap();
+        let stream = OctetStream::<ReaderStream<File>>::try_from_path(&file_path)
             .await
             .unwrap();
 
@@ -434,9 +444,9 @@ mod tests {
     async fn test_try_range_response_from_path() {
         use crate::header::{CONTENT_DISPOSITION, CONTENT_RANGE};
 
-        let file_path = "../test-files/hello.txt";
+        let file_path = std::fs::canonicalize("../test-files/hello.txt").unwrap();
         let response =
-            OctetStream::<ReaderStream<File>>::try_range_response_from_path(file_path, 0, 5)
+            OctetStream::<ReaderStream<File>>::try_range_response_from_path(&file_path, 0, 5)
                 .await
                 .unwrap();
 

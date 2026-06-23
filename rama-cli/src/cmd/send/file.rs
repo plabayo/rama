@@ -18,9 +18,13 @@ use std::path::{Path, PathBuf};
 /// - Missing file → `io::ErrorKind::NotFound`, surfaced as
 ///   `Couldn't open file <path>` (matching curl's exit-37 message).
 pub async fn run(uri: &Uri) -> Result<(), BoxError> {
-    let path = extract_path(uri)?;
+    // Canonicalize first so `.`/`..` segments (incl. percent-encoded ones) are
+    // resolved and clamped to root per RFC 3986 before touching the filesystem;
+    // `safe_open` is then the defensive backstop against any residual traversal.
+    let uri = uri.clone().canonicalize();
+    let path = extract_path(&uri)?;
 
-    let mut file = tokio::fs::File::open(&path)
+    let mut file = rama::fs::safe_open(&path)
         .await
         .with_context(|| format!("Couldn't open file {}", path.display()))?;
 
