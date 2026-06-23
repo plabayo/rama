@@ -86,15 +86,17 @@ pub fn build_mitm_leaf_ocsp_response(
     })
 }
 
-/// Answer an OCSP `request_der` for a leaf issued by `issuer`, returning a
-/// signed `good` response with the request's `CertID` and nonce echoed so the
-/// client binds it to the request. Only the first requested `CertID` is
-/// answered (TLS clients query a single leaf).
+/// Answer an OCSP `request_der` for a leaf issued by `issuer`, echoing the
+/// request's `CertID` and nonce so the client binds the response to its request.
+/// `status_for` maps the requested serial to its status, so the same revocation
+/// state that drives the CRL also drives OCSP. Only the first requested `CertID`
+/// is answered (TLS clients query a single leaf).
 pub fn answer_ocsp_request(
     issuer: &X509Ref,
     issuer_key: &PKeyRef<Private>,
     request_der: &[u8],
     validity: Duration,
+    status_for: impl FnOnce(&[u8]) -> OcspCertStatus,
 ) -> Result<Vec<u8>, BoxError> {
     let info = parse_ocsp_request(request_der).context("ocsp: parse request")?;
     let req = info
@@ -121,7 +123,7 @@ pub fn answer_ocsp_request(
 
     build_ocsp_response(
         &cert,
-        OcspCertStatus::Good,
+        status_for(&req.serial),
         produced_at,
         validity,
         info.nonce.as_deref(),

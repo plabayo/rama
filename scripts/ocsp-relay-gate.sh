@@ -244,9 +244,34 @@ run_ocsp_endpoint() {
     kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
 }
 
+# Revoked-serial control: a serial put in the responder's ledger is reported
+# revoked by an OCSP client and listed in the CRL, while an unrelated serial
+# stays good — proving the ledger actually drives a "fail closed" outcome.
+run_revoked_control() {
+    local ca="$WORK/ca-revoked.pem" out="$WORK/out-revoked.log" line revoc
+    local serial="deadbeefdeadbeef"
+    "$BIN" --upstream-revocation ocsp --leaf-revocation both --revoke-serial "$serial" \
+        --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "revoked: harness never READY"; }
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[revoked] revoc=$revoc serial=$serial"
+
+    "$OPENSSL" ocsp -issuer "$ca" -serial "0x$serial" -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 \
+        | grep -qi "revoked" || fail "revoked: OCSP did not report the serial revoked"
+    "$OPENSSL" ocsp -issuer "$ca" -serial "0x01" -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 \
+        | grep -q ": good" || fail "revoked: an unrelated serial was not reported good"
+    "$CURL" -sS "http://$revoc/crl" | "$OPENSSL" crl -inform DER -text -noout 2>/dev/null \
+        | tr -d ' :' | grep -qi "$serial" || fail "revoked: serial not listed in CRL"
+    echo "[revoked] OK — revoked serial reported revoked (OCSP) and listed (CRL)"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
 for kind in ocsp crl none; do run_scenario "$kind"; done
 run_crl_endpoint
 run_ocsp_endpoint
+run_revoked_control
 
 # Real-crates.io leg needs network; CI always has it, local dev may not.
 if "$CURL" -sS --max-time 15 -o /dev/null https://index.crates.io/config.json 2>/dev/null; then

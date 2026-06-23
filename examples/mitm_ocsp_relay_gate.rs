@@ -30,7 +30,12 @@
     reason = "harness: panic-on-setup-error and the READY line on stdout are intended"
 )]
 
-use std::{convert::Infallible, fs, sync::Arc, time::Duration};
+use std::{
+    convert::Infallible,
+    fs,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use base64::Engine as _;
 use rama::{
@@ -77,7 +82,8 @@ use rama::{
             cert_issuer::InMemoryBoringMitmCertIssuer,
             revocation::{
                 BoringMitmRevocation, CaId, MitmCa, ProxyHostedRevocation, RevocationArtifact,
-                RevocationFetch, aia_ocsp_extension, crl_distribution_point_extension,
+                RevocationFetch, RevocationLedger, RevokedCert, aia_ocsp_extension,
+                crl_distribution_point_extension,
             },
         },
         server::utils::self_signed_server_auth_gen_ca,
@@ -138,6 +144,7 @@ async fn main() -> Result<(), BoxError> {
     let mut leaf_revocation = LeafRevocation::Staple;
     let mut ca_out = "/tmp/rama-mitm-ocsp-ca.pem".to_owned();
     let mut connect = false;
+    let mut revoke_serial: Option<Vec<u8>> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -152,6 +159,11 @@ async fn main() -> Result<(), BoxError> {
             // CONNECT-proxy mode: MITM clients through to the real host they ask
             // for (e.g. crates.io) instead of the built-in local upstream.
             "--connect" => connect = true,
+            // Revoke a single (hex) serial in the responder's ledger, so the gate
+            // can prove a revoked serial is reported revoked over the wire.
+            "--revoke-serial" => {
+                revoke_serial = Some(parse_hex(&args.next().context("missing --revoke-serial")?)?);
+            }
             other => return Err(format!("unknown arg: {other}").into()),
         }
     }
@@ -183,6 +195,10 @@ async fn main() -> Result<(), BoxError> {
             LeafRevocation::Crl => responder.with_ocsp(false),
             LeafRevocation::Ocsp => responder.with_crl(false),
             LeafRevocation::Both | LeafRevocation::Staple => responder,
+        };
+        let responder = match &revoke_serial {
+            Some(serial) => responder.with_ledger(Arc::new(GateLedger(serial.clone()))),
+            None => responder,
         };
         let responder = Arc::new(responder);
         let state = Arc::new(RevocationState {
@@ -354,6 +370,33 @@ fn empty_status(status: StatusCode) -> Response {
         .status(status)
         .body(Body::empty())
         .expect("build empty response")
+}
+
+/// A ledger that revokes one serial, for the gate's revoked-serial control.
+struct GateLedger(Vec<u8>);
+
+impl RevocationLedger for GateLedger {
+    fn revoked(&self, _ca_id: &CaId) -> Vec<RevokedCert> {
+        vec![RevokedCert {
+            serial: self.0.clone(),
+            revocation_date: SystemTime::now(),
+        }]
+    }
+}
+
+/// Decode a hex serial (optional `0x` prefix) into big-endian bytes.
+fn parse_hex(s: &str) -> Result<Vec<u8>, BoxError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if !s.len().is_multiple_of(2) {
+        return Err("odd-length hex serial".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| BoxError::from(format!("bad hex serial: {e}")))
+        })
+        .collect()
 }
 
 /// Build the local upstream's TLS acceptor data: a self-signed leaf advertising

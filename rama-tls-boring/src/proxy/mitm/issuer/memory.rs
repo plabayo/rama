@@ -389,6 +389,42 @@ mod tests {
         }
     }
 
+    /// Wiring a responder via `with_revocation` makes issued leaves carry the
+    /// responder's proxy-hosted pointers (the `None` arm is covered elsewhere).
+    #[tokio::test]
+    async fn with_revocation_stamps_proxy_hosted_pointers() {
+        use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
+
+        let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
+            common_name: Some(Domain::from_static("rama-mitm-with-revoc-ca.example")),
+            ..Default::default()
+        })
+        .expect("gen ca");
+        let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
+        let responder = Arc::new(ProxyHostedRevocation::new(
+            ca,
+            "http://127.0.0.1:7",
+            std::time::Duration::from_hours(24),
+        ));
+        let issuer = InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key).with_revocation(responder);
+
+        let issued = issuer
+            .issue_mitm_x509_cert(upstream_cert(Revocation::Ocsp))
+            .await
+            .expect("issue");
+        let leaf_der = issued
+            .crt_chain
+            .iter()
+            .next()
+            .expect("leaf")
+            .to_der()
+            .expect("leaf der");
+        assert!(
+            leaf_der.windows(11).any(|w| w == b"127.0.0.1:7"),
+            "leaf carries the proxy-hosted responder URL"
+        );
+    }
+
     /// Real in-memory TLS handshake: a boring client that requested OCSP
     /// stapling connects to a server acceptor configured like the mirror flow
     /// (minted leaf chain + `set_status_callback` → `set_ocsp_status`). Proves

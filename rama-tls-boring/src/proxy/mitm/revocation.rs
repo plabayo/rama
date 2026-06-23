@@ -9,10 +9,14 @@
 
 use std::{
     fmt,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime},
 };
 
+use parking_lot::Mutex;
 use rama_boring::{
     asn1::Asn1Object,
     hash::MessageDigest,
@@ -26,7 +30,7 @@ use rama_core::{
 };
 use rama_crypto::{
     crl::{RevokedEntry, crl_distribution_point_der},
-    ocsp::authority_info_access_ocsp_der,
+    ocsp::{OcspCertStatus, authority_info_access_ocsp_der},
 };
 
 use crate::server::utils::{answer_ocsp_request, build_mitm_ca_crl};
@@ -37,7 +41,8 @@ const CLOCK_SKEW_BACKDATE: Duration = Duration::from_hours(1);
 /// The MITM signing identity shared between the cert issuer and the revocation
 /// responder. Sharing one instance keeps the leaf's issuer and the CRL/OCSP
 /// signer in agreement — the client derives its `CertID` and CRL issuer match
-/// from this CA.
+/// from this CA. An immutable handle meant to be wrapped in `Arc` and shared,
+/// not cloned per use.
 #[derive(Clone)]
 pub struct MitmCa {
     /// CA certificate.
@@ -144,6 +149,7 @@ pub enum RevocationFetch<'a> {
 
 /// MIME type of a [`RevocationArtifact`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RevocationContentType {
     /// `application/pkix-crl`.
     Crl,
@@ -164,6 +170,7 @@ impl RevocationContentType {
 
 /// A revocation artifact (DER) to return over HTTP.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RevocationArtifact {
     /// Content type to set on the response.
     pub content_type: RevocationContentType,
@@ -185,17 +192,30 @@ pub trait BoringMitmRevocation: Send + Sync + 'static {
 /// CA over plain HTTP, stamping whichever pointer the upstream advertised.
 pub struct ProxyHostedRevocation {
     ca: Arc<MitmCa>,
-    base_url: String,
+    ca_id: CaId,
+    crl_url: String,
+    ocsp_url: String,
     validity: Duration,
     serves_crl: bool,
     serves_ocsp: bool,
     ledger: Option<Arc<dyn RevocationLedger>>,
+    /// Monotonic `cRLNumber`, bumped only on a real CRL (re)build.
+    crl_seq: AtomicU64,
+    /// Last built CRL, reused until its `nextUpdate` (no-ledger case only).
+    cached_crl: Mutex<Option<CachedCrl>>,
+}
+
+struct CachedCrl {
+    body: Bytes,
+    next_update: SystemTime,
 }
 
 impl fmt::Debug for ProxyHostedRevocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ProxyHostedRevocation")
-            .field("base_url", &self.base_url)
+            .field("ca_id", &self.ca_id)
+            .field("crl_url", &self.crl_url)
+            .field("ocsp_url", &self.ocsp_url)
             .field("validity", &self.validity)
             .field("serves_crl", &self.serves_crl)
             .field("serves_ocsp", &self.serves_ocsp)
@@ -210,13 +230,19 @@ impl ProxyHostedRevocation {
     /// CRL and OCSP are served; nothing is revoked.
     #[must_use]
     pub fn new(ca: Arc<MitmCa>, base_url: impl Into<String>, validity: Duration) -> Self {
+        let base = base_url.into();
+        let base = base.trim_end_matches('/');
         Self {
+            ca_id: ca.id(),
+            crl_url: format!("{base}/crl"),
+            ocsp_url: format!("{base}/ocsp"),
             ca,
-            base_url: base_url.into(),
             validity,
             serves_crl: true,
             serves_ocsp: true,
             ledger: None,
+            crl_seq: AtomicU64::new(1),
+            cached_crl: Mutex::new(None),
         }
     }
 
@@ -250,8 +276,71 @@ impl ProxyHostedRevocation {
         &self.ca
     }
 
-    fn base(&self) -> &str {
-        self.base_url.trim_end_matches('/')
+    /// The CA identifier, computed once at construction.
+    #[must_use]
+    pub fn ca_id(&self) -> &CaId {
+        &self.ca_id
+    }
+
+    /// Reject a fetch whose `ca_id` is not the one this responder serves.
+    fn check_ca(&self, ca_id: &CaId) -> Result<(), BoxError> {
+        if *ca_id == self.ca_id {
+            Ok(())
+        } else {
+            Err(format!("revocation: request for unknown ca id {ca_id}").into())
+        }
+    }
+
+    /// Currently-revoked serials from the ledger (empty without one).
+    fn revoked(&self) -> Vec<RevokedCert> {
+        self.ledger
+            .as_ref()
+            .map(|l| l.revoked(&self.ca_id))
+            .unwrap_or_default()
+    }
+
+    /// The signed CRL, reused from cache while still within its validity window.
+    /// Skips the cache when a ledger is set, since its revoked set can change.
+    fn crl_body(&self) -> Result<Bytes, BoxError> {
+        let now = SystemTime::now();
+        if self.ledger.is_none() {
+            let cache = self.cached_crl.lock();
+            if let Some(cached) = cache.as_ref()
+                && now < cached.next_update
+            {
+                return Ok(cached.body.clone());
+            }
+        }
+
+        let this_update = now.checked_sub(CLOCK_SKEW_BACKDATE).unwrap_or(now);
+        let next_update = now
+            .checked_add(self.validity)
+            .ok_or_else(|| BoxError::from("crl: nextUpdate overflow"))?;
+        let crl_number = self.crl_seq.fetch_add(1, Ordering::Relaxed);
+        let revoked = self.revoked();
+        let entries: Vec<RevokedEntry<'_>> = revoked
+            .iter()
+            .map(|r| RevokedEntry {
+                serial: &r.serial,
+                revocation_date: r.revocation_date,
+            })
+            .collect();
+        let der = build_mitm_ca_crl(
+            &self.ca.cert,
+            &self.ca.key,
+            this_update,
+            next_update,
+            crl_number,
+            &entries,
+        )?;
+        let body = Bytes::from(der);
+        if self.ledger.is_none() {
+            *self.cached_crl.lock() = Some(CachedCrl {
+                body: body.clone(),
+                next_update,
+            });
+        }
+        Ok(body)
     }
 }
 
@@ -259,57 +348,38 @@ impl BoringMitmRevocation for ProxyHostedRevocation {
     fn leaf_extensions(&self, ctx: &MitmRevocationCtx<'_>) -> Result<Vec<X509Extension>, BoxError> {
         let mut exts = Vec::new();
         if self.serves_crl && upstream_has_crl(ctx.original) {
-            exts.push(crl_distribution_point_extension(&format!(
-                "{}/crl",
-                self.base()
-            ))?);
+            exts.push(crl_distribution_point_extension(&self.crl_url)?);
         }
         if self.serves_ocsp && upstream_has_ocsp(ctx.original) {
-            exts.push(aia_ocsp_extension(&format!("{}/ocsp", self.base()))?);
+            exts.push(aia_ocsp_extension(&self.ocsp_url)?);
         }
         Ok(exts)
     }
 
     fn serve(&self, fetch: RevocationFetch<'_>) -> Result<RevocationArtifact, BoxError> {
         match fetch {
-            RevocationFetch::Crl { .. } => {
-                let now = SystemTime::now();
-                let this_update = now.checked_sub(CLOCK_SKEW_BACKDATE).unwrap_or(now);
-                let next_update = now
-                    .checked_add(self.validity)
-                    .ok_or_else(|| BoxError::from("crl: nextUpdate overflow"))?;
-                let crl_number = this_update
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(1);
-                let revoked = self
-                    .ledger
-                    .as_ref()
-                    .map(|l| l.revoked(&self.ca.id()))
-                    .unwrap_or_default();
-                let entries: Vec<RevokedEntry<'_>> = revoked
-                    .iter()
-                    .map(|r| RevokedEntry {
-                        serial: &r.serial,
-                        revocation_date: r.revocation_date,
-                    })
-                    .collect();
-                let der = build_mitm_ca_crl(
-                    &self.ca.cert,
-                    &self.ca.key,
-                    this_update,
-                    next_update,
-                    crl_number,
-                    &entries,
-                )?;
+            RevocationFetch::Crl { ca_id } => {
+                self.check_ca(ca_id)?;
                 Ok(RevocationArtifact {
                     content_type: RevocationContentType::Crl,
-                    body: Bytes::from(der),
+                    body: self.crl_body()?,
                 })
             }
-            RevocationFetch::Ocsp { der_request, .. } => {
-                let der =
-                    answer_ocsp_request(&self.ca.cert, &self.ca.key, der_request, self.validity)?;
+            RevocationFetch::Ocsp { ca_id, der_request } => {
+                self.check_ca(ca_id)?;
+                let revoked = self.revoked();
+                let der = answer_ocsp_request(
+                    &self.ca.cert,
+                    &self.ca.key,
+                    der_request,
+                    self.validity,
+                    |serial| match revoked.iter().find(|r| r.serial.as_slice() == serial) {
+                        Some(r) => OcspCertStatus::Revoked {
+                            revocation_time: r.revocation_date,
+                        },
+                        None => OcspCertStatus::Good,
+                    },
+                )?;
                 Ok(RevocationArtifact {
                     content_type: RevocationContentType::Ocsp,
                     body: Bytes::from(der),
@@ -481,6 +551,61 @@ mod tests {
         assert!(
             contains(&art.body, &issuer_der),
             "CRL carries the CA issuer name"
+        );
+    }
+
+    /// A ledger-revoked serial appears in the served CRL; absent without a ledger.
+    #[test]
+    fn ledger_revoked_serial_listed_in_crl() {
+        struct Ledger(Vec<u8>);
+        impl RevocationLedger for Ledger {
+            fn revoked(&self, _ca_id: &CaId) -> Vec<RevokedCert> {
+                vec![RevokedCert {
+                    serial: self.0.clone(),
+                    revocation_date: SystemTime::now(),
+                }]
+            }
+        }
+
+        let (ca_crt, ca_key) = ca();
+        let mitm = Arc::new(MitmCa::new(ca_crt, ca_key));
+        let serial = vec![0xAB_u8; 19];
+
+        let plain = ProxyHostedRevocation::new(mitm.clone(), BASE, Duration::from_hours(24));
+        let plain_crl = plain
+            .serve(RevocationFetch::Crl { ca_id: &mitm.id() })
+            .expect("serve crl")
+            .body;
+        assert!(
+            !contains(&plain_crl, &serial),
+            "no ledger: serial must be absent"
+        );
+
+        let revoking = ProxyHostedRevocation::new(mitm.clone(), BASE, Duration::from_hours(24))
+            .with_ledger(Arc::new(Ledger(serial.clone())));
+        let crl = revoking
+            .serve(RevocationFetch::Crl { ca_id: &mitm.id() })
+            .expect("serve crl")
+            .body;
+        assert!(contains(&crl, &serial), "revoked serial listed in CRL");
+    }
+
+    /// A fetch for a CA id this responder does not serve is rejected.
+    #[test]
+    fn rejects_unknown_ca_id() {
+        let (ca_crt, ca_key) = ca();
+        let mitm = Arc::new(MitmCa::new(ca_crt, ca_key));
+        let rev = ProxyHostedRevocation::new(mitm, BASE, Duration::from_hours(24));
+        let (other_crt, other_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
+            common_name: Some(Domain::from_static("other-ca.example")),
+            ..Default::default()
+        })
+        .expect("gen other CA");
+        let other_id = MitmCa::new(other_crt, other_key).id();
+        assert!(
+            rev.serve(RevocationFetch::Crl { ca_id: &other_id })
+                .is_err(),
+            "unknown ca id must be rejected"
         );
     }
 }
