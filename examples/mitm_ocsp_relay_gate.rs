@@ -205,8 +205,11 @@ async fn main() -> Result<(), BoxError> {
         let addr = listener.local_addr().context("revocation addr")?;
         revoc_addr = Some(addr);
         let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
-        let responder =
-            ProxyHostedRevocation::new(ca, format!("http://{addr}"), Duration::from_hours(24 * 7));
+        let responder = ProxyHostedRevocation::new(
+            ca,
+            "http://{addr}".parse().context("parse revoc base uri")?,
+            Duration::from_hours(24 * 7),
+        );
         let responder = match leaf_revocation {
             LeafRevocation::Crl => responder.with_ocsp(false),
             LeafRevocation::Ocsp => responder.with_crl(false),

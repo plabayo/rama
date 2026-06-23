@@ -144,6 +144,7 @@ mod tests {
     use rama_net::{
         address::Domain,
         tls::server::{SelfSignedData, SelfSignedKeyKind},
+        uri::Uri,
     };
     use tokio::io::duplex;
     use x509_cert::der::{Decode, Encode};
@@ -403,7 +404,7 @@ mod tests {
         let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
         let responder = Arc::new(ProxyHostedRevocation::new(
             ca,
-            "http://127.0.0.1:7",
+            Uri::from_static("http://127.0.0.1:7"),
             std::time::Duration::from_hours(24),
         ));
         let issuer = InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key).with_revocation(responder);

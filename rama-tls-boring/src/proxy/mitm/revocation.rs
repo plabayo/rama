@@ -32,6 +32,7 @@ use rama_crypto::{
     crl::{RevokedEntry, crl_distribution_point_der},
     ocsp::{OcspCertStatus, authority_info_access_ocsp_der},
 };
+use rama_net::uri::Uri;
 
 use crate::server::utils::{answer_ocsp_request, build_mitm_ca_crl};
 
@@ -193,8 +194,8 @@ pub trait BoringMitmRevocation: Send + Sync + 'static {
 pub struct ProxyHostedRevocation {
     ca: Arc<MitmCa>,
     ca_id: CaId,
-    crl_url: String,
-    ocsp_url: String,
+    crl_url: Arc<str>,
+    ocsp_url: Arc<str>,
     validity: Duration,
     serves_crl: bool,
     serves_ocsp: bool,
@@ -229,13 +230,18 @@ impl ProxyHostedRevocation {
     /// `http://127.0.0.1:9999`), with the given CRL/OCSP `validity` window. Both
     /// CRL and OCSP are served; nothing is revoked.
     #[must_use]
-    pub fn new(ca: Arc<MitmCa>, base_url: impl Into<String>, validity: Duration) -> Self {
-        let base = base_url.into();
-        let base = base.trim_end_matches('/');
+    pub fn new(ca: Arc<MitmCa>, base_url: Uri, validity: Duration) -> Self {
         Self {
             ca_id: ca.id(),
-            crl_url: format!("{base}/crl"),
-            ocsp_url: format!("{base}/ocsp"),
+            crl_url: base_url
+                .clone()
+                .with_additional_path_segment("crl")
+                .to_string()
+                .into(),
+            ocsp_url: base_url
+                .with_additional_path_segment("ocsp")
+                .to_string()
+                .into(),
             ca,
             validity,
             serves_crl: true,
@@ -433,7 +439,9 @@ mod tests {
         self_signed_server_auth_gen_ca, self_signed_server_auth_mirror_cert_with_extensions,
     };
 
-    const BASE: &str = "http://127.0.0.1:9999";
+    fn base_uri() -> Uri {
+        Uri::from_static("http://127.0.0.1:9999")
+    }
 
     fn ca() -> (X509, PKey<Private>) {
         self_signed_server_auth_gen_ca(&SelfSignedData {
@@ -500,7 +508,7 @@ mod tests {
     fn stamps_pointers_mirroring_upstream() {
         let (ca_crt, ca_key) = ca();
         let mitm = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
-        let rev = ProxyHostedRevocation::new(mitm, BASE, Duration::from_hours(24));
+        let rev = ProxyHostedRevocation::new(mitm, base_uri(), Duration::from_hours(24));
 
         let up = upstream(true, true);
         let exts = rev
@@ -515,7 +523,11 @@ mod tests {
             self_signed_server_auth_mirror_cert_with_extensions(&up, &ca_crt, &ca_key, &exts)
                 .expect("mirror leaf");
         let der = leaf.to_der().expect("leaf der");
-        assert!(contains(&der, BASE.as_bytes()), "our endpoint stamped");
+
+        assert!(
+            contains(&der, base_uri().as_str().as_bytes()),
+            "our endpoint stamped"
+        );
         assert!(
             !contains(&der, b"crl.upstream.test"),
             "upstream CRL pointer stripped"
@@ -541,7 +553,7 @@ mod tests {
     fn serves_a_crl_signed_for_the_ca() {
         let (ca_crt, ca_key) = ca();
         let mitm = Arc::new(MitmCa::new(ca_crt.clone(), ca_key));
-        let rev = ProxyHostedRevocation::new(mitm.clone(), BASE, Duration::from_hours(24));
+        let rev = ProxyHostedRevocation::new(mitm.clone(), base_uri(), Duration::from_hours(24));
 
         let art = rev
             .serve(RevocationFetch::Crl { ca_id: &mitm.id() })
@@ -571,7 +583,7 @@ mod tests {
         let mitm = Arc::new(MitmCa::new(ca_crt, ca_key));
         let serial = vec![0xAB_u8; 19];
 
-        let plain = ProxyHostedRevocation::new(mitm.clone(), BASE, Duration::from_hours(24));
+        let plain = ProxyHostedRevocation::new(mitm.clone(), base_uri(), Duration::from_hours(24));
         let plain_crl = plain
             .serve(RevocationFetch::Crl { ca_id: &mitm.id() })
             .expect("serve crl")
@@ -581,8 +593,9 @@ mod tests {
             "no ledger: serial must be absent"
         );
 
-        let revoking = ProxyHostedRevocation::new(mitm.clone(), BASE, Duration::from_hours(24))
-            .with_ledger(Arc::new(Ledger(serial.clone())));
+        let revoking =
+            ProxyHostedRevocation::new(mitm.clone(), base_uri(), Duration::from_hours(24))
+                .with_ledger(Arc::new(Ledger(serial.clone())));
         let crl = revoking
             .serve(RevocationFetch::Crl { ca_id: &mitm.id() })
             .expect("serve crl")
@@ -595,7 +608,7 @@ mod tests {
     fn rejects_unknown_ca_id() {
         let (ca_crt, ca_key) = ca();
         let mitm = Arc::new(MitmCa::new(ca_crt, ca_key));
-        let rev = ProxyHostedRevocation::new(mitm, BASE, Duration::from_hours(24));
+        let rev = ProxyHostedRevocation::new(mitm, base_uri(), Duration::from_hours(24));
         let (other_crt, other_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
             common_name: Some(Domain::from_static("other-ca.example")),
             ..Default::default()
