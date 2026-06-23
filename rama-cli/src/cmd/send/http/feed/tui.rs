@@ -19,6 +19,7 @@ use rama::{
         },
         rss::{Feed, FeedItem, FeedStream},
     },
+    net::{Protocol, address::HostRef, uri::Uri},
     telemetry::tracing,
 };
 
@@ -989,35 +990,105 @@ fn extract_attr(tag: &StartTag<'_>, name: &[u8]) -> Option<String> {
         .map(|attr| attr.value_decoded().into_owned())
 }
 
-fn open_url(url: &str) {
-    use std::process::{Command, Stdio};
+/// Normalize `url` into a browser-safe absolute URL, or `None` if it isn't one.
+///
+/// Feed-provided links are untrusted, so rather than launch the raw string we
+/// strict-parse + canonicalize it per RFC 3986 (`parse_canonical_strict`): the
+/// result is normalized (lowercased scheme/host, resolved dot-segments) and
+/// guaranteed to be properly percent-encoded — anything under-encoded is
+/// rejected rather than opened. We then require an `http`/`https` scheme and a
+/// real host (domain or IP literal), rejecting other schemes (`file:`,
+/// `javascript:`, ...) and host-less URLs. The returned, normalized URL is what
+/// we hand to the browser.
+fn to_browser_safe_url(url: &str) -> Option<Uri> {
+    let uri = Uri::parse_canonical_strict(url).ok()?;
 
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut c = Command::new("open");
-        c.arg(url);
-        c
+    let scheme = uri.scheme();
+    if scheme != Some(&Protocol::HTTP) && scheme != Some(&Protocol::HTTPS) {
+        return None;
+    }
+
+    // Require a validated host (DNS name or IP literal); reject authority-less
+    // URLs (`http:///x`) and unvalidated reg-names.
+    matches!(uri.host(), Some(HostRef::Name(_) | HostRef::Address(_))).then_some(uri)
+}
+
+fn open_url(raw_url: &str) {
+    let Some(url) = to_browser_safe_url(raw_url).map(|uri| uri.to_string()) else {
+        tracing::debug!("refusing to open non-http(s) url in browser: {raw_url}");
+        return;
     };
+
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", "", url]);
-        c
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut c = Command::new("xdg-open");
-        c.arg(url);
-        c
+    open_url_windows(&url);
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::process::{Command, Stdio};
+
+        #[cfg(target_os = "macos")]
+        let program = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let program = "xdg-open";
+
+        // `open`/`xdg-open` receive the URL as a single argv element with no
+        // shell involved, so it cannot inject commands.
+        if let Err(err) = Command::new(program)
+            .arg(&url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            tracing::debug!("failed to open url {url} in browser: {err}");
+        }
+    }
+}
+
+/// Open `url` via the Win32 `ShellExecuteW` "open" verb.
+///
+/// Replaces the previous `cmd /C start "" <url>`, which routed the URL through
+/// `cmd.exe` whose metacharacters (`&`, `|`, `^`, ...) are interpreted after
+/// argv escaping — a command-injection vector (cf. CVE-2024-24576).
+/// `ShellExecuteW` performs no shell parsing: the URL is handed as a UTF-16
+/// string straight to the default protocol handler.
+#[cfg(target_os = "windows")]
+fn open_url_windows(url: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let verb = to_wide("open");
+    let target = to_wide(url);
+
+    // SAFETY: `verb` and `target` are NUL-terminated UTF-16 buffers that
+    // outlive the call; the remaining arguments are null. `ShellExecuteW` does
+    // not retain any pointer past the call.
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
     };
 
-    if let Err(err) = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        tracing::debug!("failed to open url {url} in browser: {err}");
+    // ShellExecuteW returns a value greater than 32 on success.
+    if (result as isize) <= 32 {
+        tracing::debug!(
+            "failed to open url {url} in browser (ShellExecuteW returned {})",
+            result as isize,
+        );
     }
 }
 
@@ -1031,6 +1102,51 @@ mod tests {
     use rama::http::Body;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn browser_safe_url_accepts_and_normalizes_http_https() {
+        for url in [
+            "http://example.com/",
+            "https://example.com/feed?a=1&b=2#frag",
+            "HTTPS://EXAMPLE.COM/",
+        ] {
+            assert!(
+                to_browser_safe_url(url).is_some(),
+                "expected `{url}` to be accepted",
+            );
+        }
+
+        // The returned URL is canonicalized: scheme/host lowercased and
+        // dot-segments resolved.
+        assert_eq!(
+            to_browser_safe_url("HTTPS://Example.COM/a/b/../c")
+                .unwrap()
+                .to_string(),
+            "https://example.com/a/c",
+        );
+    }
+
+    #[test]
+    fn browser_safe_url_rejects_dangerous_or_non_web() {
+        for url in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "vbscript:msgbox(1)",
+            "ftp://example.com/x",
+            "ws://example.com",
+            "http:///no-host",
+            "/relative/path",
+            "-flag",
+            "not a url",
+            "",
+        ] {
+            assert!(
+                to_browser_safe_url(url).is_none(),
+                "expected `{url}` to be rejected",
+            );
+        }
+    }
 
     const RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
