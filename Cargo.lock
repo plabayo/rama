@@ -4049,7 +4049,6 @@ dependencies = [
  "rama-core",
  "rama-http-types",
  "rama-net",
- "rama-tcp",
  "rama-utils",
  "serde",
  "serde_html_form",
