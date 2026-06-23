@@ -38,12 +38,13 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 function Invoke-Variant($variant) {
     $ca = Join-Path $work "ca-$variant.pem"
     $log = Join-Path $work "harness-$variant.log"
+    $errlog = Join-Path $work "harness-$variant.err"
     $proc = $null
     $thumb = $null
     try {
         $proc = Start-Process -FilePath $bin `
             -ArgumentList @("--connect", "--leaf-revocation", $variant, "--ca-out", $ca) `
-            -RedirectStandardOutput $log -NoNewWindow -PassThru
+            -RedirectStandardOutput $log -RedirectStandardError $errlog -NoNewWindow -PassThru
 
         # Wait for "READY proxy=127.0.0.1:PORT ...".
         $addr = $null
@@ -56,7 +57,23 @@ function Invoke-Variant($variant) {
             Start-Sleep -Milliseconds 100
         }
         if (-not $addr) { Get-Content $log -ErrorAction SilentlyContinue; Fail "[$variant] harness never became READY" }
-        Write-Host "[$variant] proxy=$addr -> real crates.io"
+        $revoc = $null
+        $rm = Select-String -Path $log -Pattern 'revoc=(\S+)' | Select-Object -First 1
+        if ($rm) { $revoc = $rm.Matches[0].Groups[1].Value }
+        Write-Host "[$variant] proxy=$addr revoc=$revoc -> real crates.io"
+
+        # Diagnostic: prove the loopback responder serves a CRL in user space.
+        # schannel fetches this mid-handshake; if even this probe fails, the
+        # responder (not schannel) is the problem.
+        if ($revoc -and $variant -ne "ocsp") {
+            try {
+                $crl = Invoke-WebRequest -Uri "http://$revoc/crl" -TimeoutSec 10 -UseBasicParsing
+                Write-Host "[$variant] responder /crl reachable: $($crl.RawContentLength) bytes"
+            }
+            catch {
+                Write-Host "[$variant] responder /crl probe FAILED: $($_.Exception.Message)"
+            }
+        }
 
         # Trust the MITM CA in the machine Root store; schannel reads it for chain
         # building + revocation. Must be LocalMachine, not CurrentUser: the latter
@@ -82,8 +99,15 @@ itoa = "1"
         $env:CARGO_HOME = Join-Path $work "cargo-home-$variant"
         $env:CARGO_HTTP_PROXY = "http://$addr"
         $env:CARGO_HTTP_CHECK_REVOKE = "true" # default on Windows; explicit for clarity
+        $env:CARGO_HTTP_TIMEOUT = "25" # fail fast with signal instead of the 60s default
         cargo generate-lockfile --manifest-path (Join-Path $proj "Cargo.toml")
-        if ($LASTEXITCODE -ne 0) { Fail "[$variant] cargo rejected the crates.io mirror (revocation/trust)" }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "---- relay stdout ($variant) ----"
+            Get-Content $log -ErrorAction SilentlyContinue
+            Write-Host "---- relay stderr ($variant) ----"
+            Get-Content $errlog -ErrorAction SilentlyContinue
+            Fail "[$variant] cargo rejected the crates.io mirror (revocation/trust)"
+        }
         if (-not (Select-String -Path (Join-Path $proj "Cargo.lock") -Pattern 'name = "itoa"' -Quiet)) {
             Fail "[$variant] cargo did not resolve itoa through the MITM"
         }

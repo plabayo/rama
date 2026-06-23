@@ -68,6 +68,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
         core::{
             asn1::Asn1Time,
@@ -140,6 +145,17 @@ impl LeafRevocation {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    // Logs to stderr (the READY line stays on stdout) so the gate can surface
+    // the relay's trail when a handshake or egress stalls. RUST_LOG overrides.
+    tracing::subscriber::registry()
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let mut revocation = Revocation::Ocsp;
     let mut leaf_revocation = LeafRevocation::Staple;
     let mut ca_out = "/tmp/rama-mitm-ocsp-ca.pem".to_owned();
