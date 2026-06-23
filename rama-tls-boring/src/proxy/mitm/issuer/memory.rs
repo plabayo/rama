@@ -9,6 +9,7 @@ use rama_core::{error::BoxError, telemetry::tracing};
 use rama_net::tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
+use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
 use crate::server::utils::{MitmLeafOcspStatus, self_signed_server_auth_gen_ca};
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
@@ -19,6 +20,7 @@ use super::{BoringMitmCertIssuer, MitmIssuedCert};
 pub struct InMemoryBoringMitmCertIssuer {
     ca_crt: X509,
     ca_key: PKey<Private>,
+    revocation: Option<Arc<dyn BoringMitmRevocation>>,
 }
 
 impl fmt::Debug for InMemoryBoringMitmCertIssuer {
@@ -26,6 +28,7 @@ impl fmt::Debug for InMemoryBoringMitmCertIssuer {
         f.debug_struct("InMemoryBoringMitmCertIssuer")
             .field("ca_crt", &self.ca_crt)
             .field("ca_key", &"PKey<Private>")
+            .field("revocation", &self.revocation.is_some())
             .finish()
     }
 }
@@ -35,7 +38,11 @@ impl InMemoryBoringMitmCertIssuer {
     /// Create a new [`InMemoryBoringMitmCertIssuer`].
     #[must_use]
     pub fn new(ca_crt: X509, ca_key: PKey<Private>) -> Self {
-        Self { ca_crt, ca_key }
+        Self {
+            ca_crt,
+            ca_key,
+            revocation: None,
+        }
     }
 
     #[inline(always)]
@@ -44,6 +51,16 @@ impl InMemoryBoringMitmCertIssuer {
         let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data)?;
         Ok(Self::new(ca_cert, ca_privkey))
     }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a [`BoringMitmRevocation`] responder. Its CA must be the same
+        /// one this issuer signs with, so the stamped pointers resolve. Issued
+        /// leaves then carry the responder's revocation extensions.
+        pub fn revocation(mut self, revocation: Option<Arc<dyn BoringMitmRevocation>>) -> Self {
+            self.revocation = revocation;
+            self
+        }
+    }
 }
 
 impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
@@ -51,10 +68,19 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
 
     #[inline(always)]
     async fn issue_mitm_x509_cert(&self, original: X509) -> Result<MitmIssuedCert, Self::Error> {
-        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert(
+        let extra_extensions = match &self.revocation {
+            Some(revocation) => revocation.leaf_extensions(&MitmRevocationCtx {
+                original: &original,
+                issuer_ca: &self.ca_crt,
+            })?,
+            None => Vec::new(),
+        };
+
+        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert_with_extensions(
             &original,
             &self.ca_crt,
             &self.ca_key,
+            &extra_extensions,
         )?;
 
         // Staple a `good` only when the upstream advertised revocation info (the
@@ -118,6 +144,7 @@ mod tests {
     use rama_net::{
         address::Domain,
         tls::server::{SelfSignedData, SelfSignedKeyKind},
+        uri::Uri,
     };
     use tokio::io::duplex;
     use x509_cert::der::{Decode, Encode};
@@ -361,6 +388,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Wiring a responder via `with_revocation` makes issued leaves carry the
+    /// responder's proxy-hosted pointers (the `None` arm is covered elsewhere).
+    #[tokio::test]
+    async fn with_revocation_stamps_proxy_hosted_pointers() {
+        use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
+
+        let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
+            common_name: Some(Domain::from_static("rama-mitm-with-revoc-ca.example")),
+            ..Default::default()
+        })
+        .expect("gen ca");
+        let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
+        let responder = Arc::new(ProxyHostedRevocation::new(
+            ca,
+            Uri::from_static("http://127.0.0.1:7"),
+            std::time::Duration::from_hours(24),
+        ));
+        let issuer = InMemoryBoringMitmCertIssuer::new(ca_crt, ca_key).with_revocation(responder);
+
+        let issued = issuer
+            .issue_mitm_x509_cert(upstream_cert(Revocation::Ocsp))
+            .await
+            .expect("issue");
+        let leaf_der = issued
+            .crt_chain
+            .iter()
+            .next()
+            .expect("leaf")
+            .to_der()
+            .expect("leaf der");
+        assert!(
+            leaf_der.windows(11).any(|w| w == b"127.0.0.1:7"),
+            "leaf carries the proxy-hosted responder URL"
+        );
     }
 
     /// Real in-memory TLS handshake: a boring client that requested OCSP

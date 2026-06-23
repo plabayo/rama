@@ -36,6 +36,8 @@ use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
 
 pub mod issuer;
 
+pub mod revocation;
+
 mod service;
 pub use self::service::TlsMitmRelayService;
 

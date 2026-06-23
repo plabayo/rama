@@ -164,16 +164,19 @@ jobs:
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
         run: cargo nextest run --all-features --workspace --run-ignored=only
-      # MITM OCSP-stapling gate. Linux: hermetic curl --cert-status matrix
-      # (incl. the no-staple negative) + a real-crates.io curl/cargo leg.
-      # Windows: cargo through the CONNECT proxy to real crates.io, where
-      # schannel enforces revocation (the customer scenario).
-      - name: MITM OCSP stapling gate (curl + cargo)
+      # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
+      # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
+      # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
+      # Windows: cargo through the CONNECT proxy to real crates.io for each
+      # leaf-revocation mode (crl, ocsp, both) with re-pointed CRL/AIA pointers,
+      # where schannel enforces revocation (the customer scenario libcurl +
+      # schannel can't resolve via a staple).
+      - name: MITM revocation gate (curl + openssl + cargo)
         if: matrix.os == 'ubuntu-latest'
         env:
           OCSP_GATE_REQUIRE: "1"
         run: bash scripts/ocsp-relay-gate.sh
-      - name: MITM OCSP stapling gate (cargo / schannel)
+      - name: MITM revocation gate (cargo / schannel)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: ./scripts/ocsp-relay-gate.ps1

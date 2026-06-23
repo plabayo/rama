@@ -1,64 +1,101 @@
-//! Self-contained harness for the MITM OCSP-stapling gate: a local upstream
-//! TLS+HTTP server plus the boring [`TlsMitmRelay`] proxy in front of it. It
-//! runs the real mirror → issue → staple flow so an external client
-//! (`curl --cert-status` / `openssl s_client -status`) can validate the stapled
-//! response. Driven by `scripts/ocsp-relay-gate.sh`.
+//! Self-contained harness for the MITM revocation gate: the boring
+//! [`TlsMitmRelay`] in front of either a built-in upstream (local hermetic mode)
+//! or a real host reached through an HTTP `CONNECT` tunnel. It runs the real
+//! mirror → issue → staple/replace flow so external clients (`curl`,
+//! `openssl s_client`, `cargo`) can validate the re-signed leaf.
 //!
-//! The upstream cert advertises the revocation source picked by
-//! `--upstream-revocation` (`ocsp`, `crl`, or `none`); the relay staples iff the
-//! upstream advertised one, mirroring the origin's posture.
+//! The whole proxy is assembled from rama building blocks — `UpgradeLayer`
+//! (CONNECT), `IoToProxyBridgeIoLayer` (egress dial + bridge), the TLS
+//! client-hello peek router, `TlsMitmRelay` as a layer, and `IoForwardService`
+//! to bridge the terminated streams. The local upstream is a rama `HttpServer`
+//! behind a `TlsAcceptorLayer`, and the revocation endpoints are a rama
+//! `WebService`.
+//!
+//! `--upstream-revocation` (`ocsp` / `crl` / `none`) sets what the local upstream
+//! cert advertises; `--leaf-revocation` (`staple` default, or `crl` / `ocsp` /
+//! `both`) stands up a proxy-hosted revocation responder on loopback and stamps
+//! the matching pointer onto the re-signed leaf.
 //!
 //! ```sh
 //! cargo run --example mitm_ocsp_relay_gate --features=http-full,boring -- \
-//!   --upstream-revocation ocsp --ca-out /tmp/ca.pem
+//!   --upstream-revocation crl --leaf-revocation crl --ca-out /tmp/ca.pem
 //! ```
 //!
-//! Prints `READY proxy=<addr> ca=<path>` once both listeners are up, then serves
-//! until killed.
+//! Prints `READY proxy=<addr> ca=<path> [revoc=<addr>]` once the listeners are up,
+//! then serves until killed.
 
 #![expect(
     clippy::expect_used,
     clippy::print_stdout,
-    clippy::let_underscore_must_use,
-    reason = "harness: panic-on-setup-error, the READY line on stdout, and best-effort upstream I/O are intended"
+    reason = "harness: panic-on-setup-error and the READY line on stdout are intended"
 )]
 
-use std::{fs, sync::Arc};
+use std::{
+    convert::Infallible,
+    fs,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
+use base64::Engine as _;
 use rama::{
-    ServiceInput,
+    Layer,
     error::{BoxError, ErrorContext},
-    io::BridgeIo,
-    net::{
-        address::Domain,
-        tls::{
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, peek_client_hello_from_input},
+    http::{
+        Body, Request, Response, StatusCode,
+        header::{CONNECTION, CONTENT_TYPE},
+        layer::{
+            trace::TraceLayer,
+            upgrade::{DefaultHttpProxyConnectReplyService, UpgradeLayer},
+        },
+        matcher::MethodMatcher,
+        server::HttpServer,
+        service::web::{
+            WebService,
+            extract::{Bytes, Path, State},
         },
     },
+    layer::ConsumeErrLayer,
+    net::{
+        proxy::IoForwardService,
+        tls::{
+            DataEncoding,
+            server::{
+                PeekTlsClientHelloService, SelfSignedData, ServerAuth, ServerAuthData, ServerConfig,
+            },
+        },
+    },
+    rt::Executor,
+    service::service_fn,
+    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    telemetry::tracing::{
+        self,
+        level_filters::LevelFilter,
+        subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
     tls::boring::{
-        client::{BoringClientConfigExt, TlsConnectorData},
         core::{
-            asn1::{Asn1Object, Asn1Time},
+            asn1::Asn1Time,
             bn::{BigNum, MsbOption},
             hash::MessageDigest,
             pkey::{PKey, Private},
             rsa::Rsa,
-            ssl::{SslAcceptor, SslMethod},
-            tokio::accept,
-            x509::{
-                X509, X509Builder, X509Extension, X509NameBuilder,
-                extension::SubjectAlternativeName,
+            x509::{X509, X509Builder, X509NameBuilder, extension::SubjectAlternativeName},
+        },
+        proxy::{
+            TlsMitmRelay,
+            cert_issuer::InMemoryBoringMitmCertIssuer,
+            revocation::{
+                BoringMitmRevocation, CaId, MitmCa, ProxyHostedRevocation, RevocationArtifact,
+                RevocationFetch, RevocationLedger, RevokedCert, aia_ocsp_extension,
+                crl_distribution_point_extension,
             },
         },
-        proxy::TlsMitmRelay,
         server::utils::self_signed_server_auth_gen_ca,
+        server::{TlsAcceptorData, TlsAcceptorLayer},
     },
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
-    net::{TcpListener, TcpStream},
-};
+use serde::Deserialize;
 
 /// Hostname mirrored onto the leaf; clients connect with this SNI.
 const SNI: &str = "upstream.example";
@@ -81,24 +118,73 @@ impl Revocation {
     }
 }
 
+/// How the re-signed leaf advertises revocation to the client.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeafRevocation {
+    /// OCSP staple only (the default; what the relay does out of the box).
+    Staple,
+    /// Stamp a CRL distribution point pointing at a proxy-hosted responder.
+    Crl,
+    /// Stamp an AIA OCSP responder pointing at a proxy-hosted responder.
+    Ocsp,
+    /// Stamp both a CRL distribution point and an AIA OCSP responder.
+    Both,
+}
+
+impl LeafRevocation {
+    fn parse(s: &str) -> Result<Self, BoxError> {
+        match s {
+            "staple" => Ok(Self::Staple),
+            "crl" => Ok(Self::Crl),
+            "ocsp" => Ok(Self::Ocsp),
+            "both" => Ok(Self::Both),
+            other => Err(format!("invalid --leaf-revocation: {other}").into()),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
+    // Logs to stderr (the READY line stays on stdout) so the gate can surface
+    // the relay's trail when a handshake or egress stalls. RUST_LOG overrides.
+    tracing::subscriber::registry()
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let mut revocation = Revocation::Ocsp;
+    let mut leaf_revocation = LeafRevocation::Staple;
     let mut ca_out = "/tmp/rama-mitm-ocsp-ca.pem".to_owned();
     let mut connect = false;
+    let mut revoke_serial: Option<Vec<u8>> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--upstream-revocation" => {
                 revocation = Revocation::parse(&args.next().context("missing revocation value")?)?;
             }
+            "--leaf-revocation" => {
+                leaf_revocation =
+                    LeafRevocation::parse(&args.next().context("missing leaf revocation value")?)?;
+            }
             "--ca-out" => ca_out = args.next().context("missing --ca-out value")?,
             // CONNECT-proxy mode: MITM clients through to the real host they ask
             // for (e.g. crates.io) instead of the built-in local upstream.
             "--connect" => connect = true,
+            // Revoke a single (hex) serial in the responder's ledger, so the gate
+            // can prove a revoked serial is reported revoked over the wire.
+            "--revoke-serial" => {
+                revoke_serial = Some(parse_hex(&args.next().context("missing --revoke-serial")?)?);
+            }
             other => return Err(format!("unknown arg: {other}").into()),
         }
     }
+
+    let exec = Executor::default();
 
     // MITM relay with a fresh in-memory CA; export the CA cert for the client.
     let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
@@ -107,270 +193,295 @@ async fn main() -> Result<(), BoxError> {
     })
     .context("gen MITM CA")?;
     fs::write(&ca_out, ca_crt.to_pem().context("CA to PEM")?).context("write CA PEM")?;
-    let relay = Arc::new(TlsMitmRelay::new_in_memory(ca_crt, ca_key));
 
-    let proxy = TcpListener::bind("127.0.0.1:0")
+    // Optionally stand up a proxy-hosted revocation responder, sharing the CA,
+    // and stamp its pointers onto each re-signed leaf.
+    let mut issuer = InMemoryBoringMitmCertIssuer::new(ca_crt.clone(), ca_key.clone());
+    let mut revoc_addr = None;
+    if leaf_revocation != LeafRevocation::Staple {
+        let listener = TcpListener::bind_address("127.0.0.1:0", exec.clone())
+            .await
+            .context("bind revocation responder")?;
+        let addr = listener.local_addr().context("revocation addr")?;
+        revoc_addr = Some(addr);
+        let ca = Arc::new(MitmCa::new(ca_crt.clone(), ca_key.clone()));
+        let responder = ProxyHostedRevocation::new(
+            ca,
+            format!("http://{addr}")
+                .parse()
+                .context("parse revoc base uri")?,
+            Duration::from_hours(24 * 7),
+        );
+        let responder = match leaf_revocation {
+            LeafRevocation::Crl => responder.with_ocsp(false),
+            LeafRevocation::Ocsp => responder.with_crl(false),
+            LeafRevocation::Both | LeafRevocation::Staple => responder,
+        };
+        let responder = match &revoke_serial {
+            Some(serial) => responder.with_ledger(Arc::new(GateLedger(serial.clone()))),
+            None => responder,
+        };
+        let responder = Arc::new(responder);
+        let state = Arc::new(RevocationState {
+            ca_id: responder.ca().id(),
+            responder: responder.clone(),
+        });
+        let web = WebService::new_with_state(state)
+            .with_get("/crl", revocation_crl)
+            .with_post("/ocsp", revocation_ocsp_post)
+            .with_get("/ocsp/{req}", revocation_ocsp_get);
+        // Serve revocation as plain HTTP/1.1, never `auto`: the only client is
+        // schannel/WinHTTP fetching the CRL/OCSP mid-handshake, which speaks
+        // HTTP/1.1 and (on the constrained CI runner) can stall on `auto`'s h2
+        // detection or a kept-alive socket. http1 + `Connection: close` per
+        // response keeps that in-handshake fetch deterministic and self-closing.
+        tokio::spawn(listener.serve(HttpServer::new_http1(exec.clone()).service(web)));
+        issuer = issuer.with_revocation(responder);
+    }
+    let relay = TlsMitmRelay::new(issuer);
+
+    let proxy = TcpListener::bind_address("127.0.0.1:0", exec.clone())
         .await
         .context("bind proxy")?;
     let proxy_addr = proxy.local_addr().context("proxy addr")?;
 
     if connect {
-        // CONNECT-proxy mode: MITM each client through to the real host it asks
-        // for (e.g. crates.io), mirroring that origin's real cert. No local
-        // upstream; `--upstream-revocation` is ignored.
-        announce_ready(proxy_addr, &ca_out)?;
-        loop {
-            let (client, _) = proxy.accept().await.context("accept client")?;
-            let relay = relay.clone();
-            tokio::spawn(async move {
-                if let Err(err) = connect_one(&relay, client).await {
-                    eprintln!("connect: {err}");
-                }
-            });
-        }
+        // CONNECT-proxy mode: terminate the tunnel, dial the requested host, and
+        // MITM it. `--upstream-revocation` is ignored (the real origin's cert is
+        // mirrored). No local upstream.
+        announce_ready(proxy_addr, &ca_out, revoc_addr)?;
+        let mitm_svc = Arc::new(
+            (
+                ConsumeErrLayer::trace_as_debug(),
+                IoToProxyBridgeIoLayer::extension_connector_target(exec.clone()),
+            )
+                .into_layer(mitm_app(relay, exec.clone())),
+        );
+        let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
+            (
+                TraceLayer::new_for_http(),
+                ConsumeErrLayer::default(),
+                UpgradeLayer::new(
+                    exec.clone(),
+                    MethodMatcher::CONNECT,
+                    DefaultHttpProxyConnectReplyService::new(),
+                    mitm_svc,
+                ),
+            )
+                .into_layer(service_fn(reject_non_connect)),
+        ));
+        proxy.serve(http_service).await;
+        return Ok(());
     }
 
-    // Local hermetic mode: a built-in upstream advertising `revocation`.
-    let (up_key, up_crt) = upstream_identity(revocation);
-    let mut up = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
-        .context("build upstream acceptor")?;
-    up.set_certificate(&up_crt).context("upstream cert")?;
-    up.set_private_key(&up_key).context("upstream key")?;
-    let up_acceptor = Arc::new(up.build());
-    let up_listener = TcpListener::bind("127.0.0.1:0")
+    // Local hermetic mode: a built-in upstream (rama HTTPS server) advertising
+    // `revocation`; the relay dials it for every client connection.
+    let upstream = TcpListener::bind_address("127.0.0.1:0", exec.clone())
         .await
         .context("bind upstream")?;
-    let up_addr = up_listener.local_addr().context("upstream addr")?;
-    tokio::spawn(serve_upstream(up_listener, up_acceptor));
+    let up_addr = upstream.local_addr().context("upstream addr")?;
+    let up_acceptor = upstream_acceptor_data(revocation)?;
+    let up_service =
+        TlsAcceptorLayer::new(up_acceptor).into_layer(HttpServer::auto(exec.clone()).service(
+            service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::from("ok\n")))),
+        ));
+    tokio::spawn(upstream.serve(up_service));
 
-    announce_ready(proxy_addr, &ca_out)?;
-    loop {
-        let (client, _) = proxy.accept().await.context("accept client")?;
-        let relay = relay.clone();
-        tokio::spawn(async move {
-            if let Err(err) = relay_one(&relay, client, up_addr).await {
-                eprintln!("relay: {err}");
-            }
-        });
-    }
+    announce_ready(proxy_addr, &ca_out, revoc_addr)?;
+    let local_svc = Arc::new(
+        (
+            ConsumeErrLayer::trace_as_debug(),
+            IoToProxyBridgeIoLayer::new(exec.clone(), up_addr),
+        )
+            .into_layer(mitm_app(relay, exec.clone())),
+    );
+    proxy.serve(local_svc).await;
+    Ok(())
 }
 
-fn announce_ready(proxy_addr: std::net::SocketAddr, ca_out: &str) -> Result<(), BoxError> {
+/// The MITM core, shared by both modes: peek the client hello, run the relay
+/// (mirror → issue → staple/replace), and bridge the terminated streams to the
+/// already-dialed egress. Non-TLS input falls back to a plain byte forward.
+fn mitm_app(
+    relay: TlsMitmRelay<InMemoryBoringMitmCertIssuer>,
+    exec: Executor,
+) -> PeekTlsClientHelloService<
+    rama::tls::boring::proxy::TlsMitmRelayService<InMemoryBoringMitmCertIssuer, IoForwardService>,
+    IoForwardService,
+> {
+    let forward = IoForwardService::new(exec);
+    PeekTlsClientHelloService::new(relay.into_layer(forward.clone())).with_fallback(forward)
+}
+
+async fn reject_non_connect(_req: Request) -> Result<Response, Infallible> {
+    Ok(Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .body(Body::empty())
+        .expect("build 405 response"))
+}
+
+fn announce_ready(
+    proxy_addr: std::net::SocketAddr,
+    ca_out: &str,
+    revoc_addr: Option<std::net::SocketAddr>,
+) -> Result<(), BoxError> {
     use std::io::Write as _;
-    println!("READY proxy={proxy_addr} ca={ca_out}");
+    match revoc_addr {
+        Some(addr) => println!("READY proxy={proxy_addr} ca={ca_out} revoc={addr}"),
+        None => println!("READY proxy={proxy_addr} ca={ca_out}"),
+    }
     std::io::stdout().flush().context("flush stdout")?;
     Ok(())
 }
 
-/// CONNECT-proxy one client: read its `CONNECT host:port`, reply `200`, dial the
-/// real host, peek the client's ClientHello to mirror its TLS version/SNI onto
-/// the egress connector (which verifies the real cert via native roots), run the
-/// relay handshake, then bridge plaintext both ways.
-async fn connect_one(
-    relay: &TlsMitmRelay<
-        impl rama::tls::boring::proxy::cert_issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
-    >,
-    mut client: TcpStream,
-) -> Result<(), BoxError> {
-    let target = read_connect_target(&mut client).await?;
-    client
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await
-        .context("write CONNECT 200")?;
-    let upstream = TcpStream::connect(&target)
-        .await
-        .with_context(|| format!("dial upstream {target}"))?;
-    let host = target.rsplit_once(':').map_or(target.as_str(), |(h, _)| h);
+/// Shared state for the proxy-hosted revocation responder.
+struct RevocationState {
+    ca_id: CaId,
+    responder: Arc<ProxyHostedRevocation>,
+}
 
-    // Peek the client's ClientHello off the ingress side and mirror its TLS
-    // capabilities onto the egress connector — the same thing the production
-    // `TlsMitmRelayService` does. The relay pins the ingress acceptor to the
-    // version it negotiated on egress; with a generic egress connector that
-    // version can be newer (e.g. TLS 1.3 with crates.io) than the real client
-    // offered — cargo's libcurl+schannel is TLS 1.2 only over a CONNECT tunnel
-    // — and the pinned ingress would then reject it with UNSUPPORTED_PROTOCOL.
-    // Mirroring caps egress to the client's own versions, keeping them aligned.
-    let bridge = BridgeIo(ServiceInput::new(client), ServiceInput::new(upstream));
-    let (bridge, client_hello) = peek_client_hello_from_input(bridge, None)
-        .await
-        .context("peek client hello")?;
+#[derive(Deserialize)]
+struct OcspGetParams {
+    req: String,
+}
 
-    let mut config = match &client_hello {
-        Some(hello) => TlsClientConfig::new_from_client_hello(hello),
-        None => TlsClientConfig::new(),
+/// `GET /crl` — the CA-signed CRL.
+async fn revocation_crl(State(state): State<Arc<RevocationState>>) -> Response {
+    artifact_response(state.responder.serve(RevocationFetch::Crl {
+        ca_id: &state.ca_id,
+    }))
+}
+
+/// `POST /ocsp` — the OCSP request DER is the body.
+async fn revocation_ocsp_post(
+    State(state): State<Arc<RevocationState>>,
+    Bytes(body): Bytes,
+) -> Response {
+    artifact_response(state.responder.serve(RevocationFetch::Ocsp {
+        ca_id: &state.ca_id,
+        der_request: body.as_ref(),
+    }))
+}
+
+/// `GET /ocsp/{req}` — the OCSP request DER is base64 in the path (RFC 6960
+/// A.1.1); the router percent-decodes `req` for us.
+async fn revocation_ocsp_get(
+    State(state): State<Arc<RevocationState>>,
+    Path(OcspGetParams { req }): Path<OcspGetParams>,
+) -> Response {
+    let Ok(der) = base64::engine::general_purpose::STANDARD.decode(req.as_bytes()) else {
+        return empty_status(StatusCode::BAD_REQUEST);
     };
-    if let Ok(domain) = Domain::try_from(host) {
-        config.set_server_name(domain.into()); // SNI + verify hostname for egress
-    }
-    let egress = TlsConnectorData::try_from(&config).ok();
-
-    let BridgeIo(mut ingress, mut egress_stream) = relay
-        .handshake(bridge, egress)
-        .await
-        .map_err(BoxError::from)?;
-    copy_bidirectional(&mut ingress, &mut egress_stream)
-        .await
-        .context("bridge")?;
-    Ok(())
+    artifact_response(state.responder.serve(RevocationFetch::Ocsp {
+        ca_id: &state.ca_id,
+        der_request: &der,
+    }))
 }
 
-/// Read an HTTP `CONNECT host:port` request line (up to the blank line) and
-/// return the `host:port` authority. Byte-at-a-time so we never over-read into
-/// the client's following TLS bytes.
-async fn read_connect_target(stream: &mut TcpStream) -> Result<String, BoxError> {
-    let mut buf = Vec::with_capacity(128);
-    let mut byte = [0u8; 1];
-    loop {
-        if stream.read(&mut byte).await.context("read CONNECT")? == 0 {
-            return Err("eof before CONNECT terminator".into());
-        }
-        buf.push(byte[0]);
-        if buf.ends_with(b"\r\n\r\n") {
-            break;
-        }
-        if buf.len() > 8192 {
-            return Err("CONNECT header too large".into());
+fn artifact_response(result: Result<RevocationArtifact, BoxError>) -> Response {
+    match result {
+        Ok(art) => Response::builder()
+            .header(CONTENT_TYPE, art.content_type.as_str())
+            .header(CONNECTION, "close")
+            .body(Body::from(art.body))
+            .expect("build revocation response"),
+        Err(err) => {
+            eprintln!("revoc: {err}");
+            empty_status(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-    let first_line = buf.split(|&b| b == b'\r').next().unwrap_or_default();
-    std::str::from_utf8(first_line)
-        .context("CONNECT line utf8")?
-        .strip_prefix("CONNECT ")
-        .and_then(|rest| rest.split_whitespace().next())
-        .map(str::to_owned)
-        .ok_or_else(|| BoxError::from("malformed CONNECT request"))
 }
 
-/// MITM a single client connection: connect upstream, run the real relay
-/// handshake (mirror → issue → staple), then bridge plaintext both ways.
-async fn relay_one(
-    relay: &TlsMitmRelay<
-        impl rama::tls::boring::proxy::cert_issuer::BoringMitmCertIssuer<Error: Into<BoxError>>,
-    >,
-    client: TcpStream,
-    up_addr: std::net::SocketAddr,
-) -> Result<(), BoxError> {
-    let upstream = TcpStream::connect(up_addr)
-        .await
-        .context("connect upstream")?;
-    let egress = TlsConnectorData::try_from(
-        &TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable),
-    )
-    .ok();
-    let BridgeIo(mut ingress, mut egress_stream) = relay
-        .handshake(
-            BridgeIo(ServiceInput::new(client), ServiceInput::new(upstream)),
-            egress,
-        )
-        .await
-        .map_err(BoxError::from)?;
-    copy_bidirectional(&mut ingress, &mut egress_stream)
-        .await
-        .context("bridge")?;
-    Ok(())
+fn empty_status(status: StatusCode) -> Response {
+    Response::builder()
+        .status(status)
+        .header(CONNECTION, "close")
+        .body(Body::empty())
+        .expect("build empty response")
 }
 
-/// Accept loop for the upstream: TLS handshake, then a fixed `200 OK`.
-async fn serve_upstream(listener: TcpListener, acceptor: Arc<SslAcceptor>) {
-    while let Ok((sock, _)) = listener.accept().await {
-        let acceptor = acceptor.clone();
-        tokio::spawn(async move {
-            let Ok(mut tls) = accept(&acceptor, sock).await else {
-                return;
-            };
-            let mut buf = [0u8; 1024];
-            let _ = tls.read(&mut buf).await;
-            let _ = tls
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n")
-                .await;
-            let _ = tls.shutdown().await;
-        });
+/// A ledger that revokes one serial, for the gate's revoked-serial control.
+struct GateLedger(Vec<u8>);
+
+impl RevocationLedger for GateLedger {
+    fn revoked(&self, _ca_id: &CaId) -> Vec<RevokedCert> {
+        vec![RevokedCert {
+            serial: self.0.clone(),
+            revocation_date: SystemTime::now(),
+        }]
     }
+}
+
+/// Decode a hex serial (optional `0x` prefix) into big-endian bytes.
+fn parse_hex(s: &str) -> Result<Vec<u8>, BoxError> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if !s.len().is_multiple_of(2) {
+        return Err("odd-length hex serial".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| BoxError::from(format!("bad hex serial: {e}")))
+        })
+        .collect()
+}
+
+/// Build the local upstream's TLS acceptor data: a self-signed leaf advertising
+/// `revocation`, served by the rama TLS acceptor so the relay mirrors it.
+fn upstream_acceptor_data(revocation: Revocation) -> Result<TlsAcceptorData, BoxError> {
+    let (key, cert) = upstream_identity(revocation)?;
+    let config = ServerConfig::new(ServerAuth::Single(ServerAuthData {
+        private_key: DataEncoding::Der(key.private_key_to_der().context("upstream key to DER")?),
+        cert_chain: DataEncoding::Der(cert.to_der().context("upstream cert to DER")?),
+        ocsp: None,
+    }));
+    TlsAcceptorData::try_from(config).context("upstream acceptor data")
 }
 
 /// Self-signed upstream identity (key + cert) with a SAN and the given
-/// revocation advertisement.
-fn upstream_identity(revocation: Revocation) -> (PKey<Private>, X509) {
-    let key = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
-    let mut name = X509NameBuilder::new().expect("name builder");
-    name.append_entry_by_text("CN", SNI).expect("cn");
+/// revocation advertisement (whose URLs the relay strips and replaces).
+fn upstream_identity(revocation: Revocation) -> Result<(PKey<Private>, X509), BoxError> {
+    let key = PKey::from_rsa(Rsa::generate(2048).context("rsa")?).context("pkey")?;
+    let mut name = X509NameBuilder::new().context("name builder")?;
+    name.append_entry_by_text("CN", SNI).context("cn")?;
     let name = name.build();
 
-    let mut b = X509Builder::new().expect("x509 builder");
-    b.set_version(2).expect("version");
+    let mut b = X509Builder::new().context("x509 builder")?;
+    b.set_version(2).context("version")?;
     let serial = {
-        let mut bn = BigNum::new().expect("bn");
-        bn.rand(159, MsbOption::MAYBE_ZERO, false).expect("rand");
-        bn.to_asn1_integer().expect("serial")
+        let mut bn = BigNum::new().context("bn")?;
+        bn.rand(159, MsbOption::MAYBE_ZERO, false).context("rand")?;
+        bn.to_asn1_integer().context("serial")?
     };
-    b.set_serial_number(&serial).expect("serial");
-    b.set_subject_name(&name).expect("subject");
-    b.set_issuer_name(&name).expect("issuer");
-    b.set_pubkey(&key).expect("pubkey");
-    b.set_not_before(&Asn1Time::days_from_now(0).expect("nb"))
-        .expect("set nb");
-    b.set_not_after(&Asn1Time::days_from_now(365).expect("na"))
-        .expect("set na");
+    b.set_serial_number(&serial).context("serial")?;
+    b.set_subject_name(&name).context("subject")?;
+    b.set_issuer_name(&name).context("issuer")?;
+    b.set_pubkey(&key).context("pubkey")?;
+    b.set_not_before(Asn1Time::days_from_now(0).context("nb")?.as_ref())
+        .context("set nb")?;
+    b.set_not_after(Asn1Time::days_from_now(365).context("na")?.as_ref())
+        .context("set na")?;
 
-    // SAN so a strict client (curl) accepts the mirrored hostname.
     let san = SubjectAlternativeName::new()
         .dns(SNI)
         .build(&b.x509v3_context(None, None))
-        .expect("san");
-    b.append_extension(&san).expect("append san");
+        .context("san")?;
+    b.append_extension(&san).context("append san")?;
 
     match revocation {
         Revocation::None => {}
         Revocation::Ocsp => {
-            let oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.1").expect("aia oid");
-            let ext = X509Extension::from_der_payload(
-                oid.as_ref(),
-                false,
-                &aia_ocsp_payload(b"http://ocsp.test.example"),
-            )
-            .expect("aia ext");
-            b.append_extension(&ext).expect("append aia");
+            b.append_extension(aia_ocsp_extension("http://ocsp.test.example")?.as_ref())
+                .context("append aia")?;
         }
         Revocation::Crl => {
-            let oid = Asn1Object::from_str("2.5.29.31").expect("crldp oid");
-            let ext = X509Extension::from_der_payload(
-                oid.as_ref(),
-                false,
-                &crldp_payload(b"http://crl.test.example/a.crl"),
+            b.append_extension(
+                crl_distribution_point_extension("http://crl.test.example/a.crl")?.as_ref(),
             )
-            .expect("crldp ext");
-            b.append_extension(&ext).expect("append crldp");
+            .context("append crldp")?;
         }
     }
-    b.sign(&key, MessageDigest::sha256()).expect("sign");
-    (key, b.build())
-}
-
-/// DER of `AuthorityInfoAccessSyntax` with one `id-ad-ocsp` AccessDescription.
-fn aia_ocsp_payload(uri: &[u8]) -> Vec<u8> {
-    let mut loc = vec![0x86, uri.len() as u8];
-    loc.extend_from_slice(uri);
-    let oid = [0x06u8, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01];
-    let mut ad = oid.to_vec();
-    ad.extend_from_slice(&loc);
-    let mut ad_seq = vec![0x30, ad.len() as u8];
-    ad_seq.extend_from_slice(&ad);
-    let mut aia = vec![0x30, ad_seq.len() as u8];
-    aia.extend_from_slice(&ad_seq);
-    aia
-}
-
-/// DER of `CRLDistributionPoints` with one fullName URI DistributionPoint.
-fn crldp_payload(uri: &[u8]) -> Vec<u8> {
-    let mut gn = vec![0x86, uri.len() as u8];
-    gn.extend_from_slice(uri);
-    let mut full = vec![0xA0, gn.len() as u8];
-    full.extend_from_slice(&gn);
-    let mut dpn = vec![0xA0, full.len() as u8];
-    dpn.extend_from_slice(&full);
-    let mut dp = vec![0x30, dpn.len() as u8];
-    dp.extend_from_slice(&dpn);
-    let mut crldp = vec![0x30, dp.len() as u8];
-    crldp.extend_from_slice(&dp);
-    crldp
+    b.sign(&key, MessageDigest::sha256()).context("sign")?;
+    Ok((key, b.build()))
 }

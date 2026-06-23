@@ -162,7 +162,116 @@ run_connect() {
     PROXY_PID=""
 }
 
+# Wait for the harness READY line, echoing it; fails if the harness dies first.
+wait_ready() {
+    local out="$1" line
+    for _ in $(seq 1 100); do
+        line="$(grep '^READY' "$out" 2>/dev/null | head -1)"
+        [ -n "$line" ] && { echo "$line"; return 0; }
+        kill -0 "$PROXY_PID" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
+# Proxy-hosted CRL endpoint: the re-signed leaf carries a CRL distribution point
+# at our loopback responder, which serves a CA-signed CRL. Proves a
+# revocation-strict verifier (openssl -crl_check) accepts the leaf via that CRL,
+# and (negative) that -crl_check genuinely needs it.
+run_crl_endpoint() {
+    local ca="$WORK/ca-crlpt.pem" out="$WORK/out-crlpt.log" line addr revoc port
+    "$BIN" --upstream-revocation crl --leaf-revocation crl --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "crl-endpoint: harness never READY"; }
+    addr="$(echo "$line" | sed -n 's/.*proxy=\([^ ]*\).*/\1/p')"; port="${addr##*:}"
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[crl-endpoint] proxy=$addr revoc=$revoc"
+
+    "$OPENSSL" s_client -connect "127.0.0.1:$port" -servername upstream.example </dev/null 2>/dev/null \
+        | "$OPENSSL" x509 -out "$WORK/leaf-crlpt.pem" || fail "crl-endpoint: could not grab mirrored leaf"
+    "$OPENSSL" x509 -in "$WORK/leaf-crlpt.pem" -noout -text | grep -q "$revoc" \
+        || fail "crl-endpoint: leaf is missing our CRL distribution point"
+
+    # Negative control: -crl_check with no CRL available must fail.
+    if "$OPENSSL" verify -crl_check -CAfile "$ca" "$WORK/leaf-crlpt.pem" >/dev/null 2>&1; then
+        fail "crl-endpoint: -crl_check unexpectedly passed without a CRL"
+    fi
+
+    "$CURL" -sS "http://$revoc/crl" | "$OPENSSL" crl -inform DER -out "$WORK/crlpt.pem" 2>/dev/null \
+        || fail "crl-endpoint: could not fetch/parse the served CRL"
+    "$OPENSSL" verify -crl_check -CAfile "$ca" -CRLfile "$WORK/crlpt.pem" "$WORK/leaf-crlpt.pem" >/dev/null \
+        || fail "crl-endpoint: -crl_check rejected the leaf with our CRL"
+    echo "[crl-endpoint] OK — leaf CDP + CA-signed CRL accepted by openssl -crl_check"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
+# Proxy-hosted OCSP endpoint: the re-signed leaf carries an AIA OCSP URL at our
+# loopback responder. Proves an OCSP client (openssl ocsp) verifies the CA-signed
+# response (incl. nonce echo) and reads status good.
+run_ocsp_endpoint() {
+    local ca="$WORK/ca-ocsppt.pem" out="$WORK/out-ocsppt.log" line addr revoc port status
+    "$BIN" --upstream-revocation ocsp --leaf-revocation ocsp --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "ocsp-endpoint: harness never READY"; }
+    addr="$(echo "$line" | sed -n 's/.*proxy=\([^ ]*\).*/\1/p')"; port="${addr##*:}"
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[ocsp-endpoint] proxy=$addr revoc=$revoc"
+
+    "$OPENSSL" s_client -connect "127.0.0.1:$port" -servername upstream.example </dev/null 2>/dev/null \
+        | "$OPENSSL" x509 -out "$WORK/leaf-ocsppt.pem" || fail "ocsp-endpoint: could not grab mirrored leaf"
+    status="$("$OPENSSL" ocsp -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
+        -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 || true)"
+    echo "$status" | grep -q "Response verify OK" \
+        || { echo "$status"; fail "ocsp-endpoint: response signature did not verify"; }
+    echo "$status" | grep -q ": good" \
+        || { echo "$status"; fail "ocsp-endpoint: status was not good"; }
+    echo "[ocsp-endpoint] OK — POST transport accepted by openssl ocsp"
+
+    # Also exercise the GET transport (base64-in-path), which is what schannel uses.
+    local b64 enc
+    "$OPENSSL" ocsp -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" -reqout "$WORK/ocsp-req.der" -no_nonce \
+        >/dev/null 2>&1 || fail "ocsp-endpoint: could not build an OCSP request"
+    b64="$(base64 < "$WORK/ocsp-req.der" | tr -d '\n')"
+    enc="$(printf '%s' "$b64" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g')"
+    "$CURL" -sS "http://$revoc/ocsp/$enc" -o "$WORK/ocsp-resp.der" \
+        || fail "ocsp-endpoint: GET request failed"
+    "$OPENSSL" ocsp -respin "$WORK/ocsp-resp.der" -issuer "$ca" -cert "$WORK/leaf-ocsppt.pem" \
+        -CAfile "$ca" -no_nonce 2>&1 | grep -q ": good" \
+        || fail "ocsp-endpoint: GET response was not good"
+    echo "[ocsp-endpoint] OK — GET (base64-in-path) transport also accepted"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
+# Revoked-serial control: a serial put in the responder's ledger is reported
+# revoked by an OCSP client and listed in the CRL, while an unrelated serial
+# stays good — proving the ledger actually drives a "fail closed" outcome.
+run_revoked_control() {
+    local ca="$WORK/ca-revoked.pem" out="$WORK/out-revoked.log" line revoc
+    local serial="deadbeefdeadbeef"
+    "$BIN" --upstream-revocation ocsp --leaf-revocation both --revoke-serial "$serial" \
+        --ca-out "$ca" >"$out" 2>&1 &
+    PROXY_PID=$!
+    line="$(wait_ready "$out")" || { cat "$out"; fail "revoked: harness never READY"; }
+    revoc="$(echo "$line" | sed -n 's/.*revoc=\([^ ]*\).*/\1/p')"
+    echo "[revoked] revoc=$revoc serial=$serial"
+
+    "$OPENSSL" ocsp -issuer "$ca" -serial "0x$serial" -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 \
+        | grep -qi "revoked" || fail "revoked: OCSP did not report the serial revoked"
+    "$OPENSSL" ocsp -issuer "$ca" -serial "0x01" -url "http://$revoc/ocsp" -CAfile "$ca" 2>&1 \
+        | grep -q ": good" || fail "revoked: an unrelated serial was not reported good"
+    "$CURL" -sS "http://$revoc/crl" | "$OPENSSL" crl -inform DER -text -noout 2>/dev/null \
+        | tr -d ' :' | grep -qi "$serial" || fail "revoked: serial not listed in CRL"
+    echo "[revoked] OK — revoked serial reported revoked (OCSP) and listed (CRL)"
+
+    kill "$PROXY_PID" 2>/dev/null || true; wait "$PROXY_PID" 2>/dev/null || true; PROXY_PID=""
+}
+
 for kind in ocsp crl none; do run_scenario "$kind"; done
+run_crl_endpoint
+run_ocsp_endpoint
+run_revoked_control
 
 # Real-crates.io leg needs network; CI always has it, local dev may not.
 if "$CURL" -sS --max-time 15 -o /dev/null https://index.crates.io/config.json 2>/dev/null; then

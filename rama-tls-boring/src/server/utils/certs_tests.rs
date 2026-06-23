@@ -29,6 +29,17 @@ fn build_self_signed_source_with_pkey(
     pkey: &PKey<Private>,
     common_name: &str,
 ) -> Result<X509, BoxError> {
+    let not_before = Asn1Time::days_from_now(0).context("source not before")?;
+    let not_after = Asn1Time::days_from_now(30).context("source not after")?;
+    build_self_signed_source_with_validity(pkey, common_name, &not_before, &not_after)
+}
+
+fn build_self_signed_source_with_validity(
+    pkey: &PKey<Private>,
+    common_name: &str,
+    not_before: &Asn1Time,
+    not_after: &Asn1Time,
+) -> Result<X509, BoxError> {
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
         .append_entry_by_nid(Nid::COMMONNAME, common_name)
@@ -60,13 +71,11 @@ fn build_self_signed_source_with_pkey(
     cert_builder
         .set_pubkey(pkey)
         .context("set source public key")?;
-    let not_before = Asn1Time::days_from_now(0).context("source not before")?;
     cert_builder
-        .set_not_before(&not_before)
+        .set_not_before(not_before)
         .context("set source not before")?;
-    let not_after = Asn1Time::days_from_now(30).context("source not after")?;
     cert_builder
-        .set_not_after(&not_after)
+        .set_not_after(not_after)
         .context("set source not after")?;
 
     let san = SubjectAlternativeName::new()
@@ -175,6 +184,47 @@ fn mirror_preserves_subject_validity_and_issuer() {
     // source was gen'd with the default key kind (EC P-256), so the mirror
     // matches it.
     assert_eq!(mirrored_key.id(), Id::EC);
+}
+
+#[test]
+fn mirror_clamps_validity_into_ca_window() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    // A real upstream cert was issued before our fresh CA and may outlive it:
+    // notBefore 30 days ago, notAfter 30 years out (well past the CA's 20y).
+    let pkey = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("now")
+        .as_secs();
+    let past = Asn1Time::from_unix((now - 30 * 86_400).try_into().expect("time_t"))
+        .expect("past not-before");
+    let far = Asn1Time::days_from_now(365 * 30).expect("far not-after");
+    let source = build_self_signed_source_with_validity(&pkey, "source.rama.test", &past, &far)
+        .expect("source cert");
+    assert!(
+        source.not_before() < ca_cert.not_before() && source.not_after() > ca_cert.not_after(),
+        "source must straddle the CA window for this test to mean anything"
+    );
+
+    let (mirrored, _) =
+        self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key).expect("mirror");
+
+    // The leaf is fully nested in the CA: notBefore clamped up, notAfter down.
+    assert_eq!(
+        mirrored.not_before(),
+        ca_cert.not_before(),
+        "leaf notBefore clamped up to the CA"
+    );
+    assert_eq!(
+        mirrored.not_after(),
+        ca_cert.not_after(),
+        "leaf notAfter clamped down to the CA"
+    );
+    assert!(mirrored.not_before() >= ca_cert.not_before());
+    assert!(mirrored.not_after() <= ca_cert.not_after());
+    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
 }
 
 #[test]

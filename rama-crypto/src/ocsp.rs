@@ -35,13 +35,54 @@ fn oid_rsa_sha256() -> ObjectIdentifier {
 fn oid_ocsp_basic() -> ObjectIdentifier {
     ObjectIdentifier::from_slice(&[1, 3, 6, 1, 5, 5, 7, 48, 1, 1])
 }
+fn oid_ocsp_nonce() -> ObjectIdentifier {
+    ObjectIdentifier::from_slice(&[1, 3, 6, 1, 5, 5, 7, 48, 1, 2])
+}
+fn oid_ad_ocsp() -> ObjectIdentifier {
+    ObjectIdentifier::from_slice(&[1, 3, 6, 1, 5, 5, 7, 48, 1])
+}
 
-/// Status to assert for the certificate. Only `Good` today; `Revoked` is the
-/// seam for a future mode that mirrors an upstream's real revocation status.
+/// DER of an `AuthorityInfoAccessSyntax` extension value with a single
+/// `id-ad-ocsp` responder URI, for embedding as the `1.3.6.1.5.5.7.1.1`
+/// extension on a re-signed leaf.
+#[must_use]
+pub fn authority_info_access_ocsp_der(uri: &str) -> Vec<u8> {
+    yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_sequence(|w| {
+                w.next().write_oid(&oid_ad_ocsp());
+                // accessLocation: uniformResourceIdentifier [6] IA5String
+                w.next().write_tagged_implicit(Tag::context(6), |w| {
+                    w.write_bytes(uri.as_bytes());
+                });
+            });
+        });
+    })
+}
+
+/// DER of the `sha1` CertID `hashAlgorithm` (`AlgorithmIdentifier { sha1, NULL }`),
+/// for callers building a `CertID` without an inbound request to echo (e.g. a
+/// stapled `good` response).
+#[must_use]
+pub fn sha1_hash_algorithm_der() -> Vec<u8> {
+    yasna::construct_der(|w| {
+        w.write_sequence(|w| {
+            w.next().write_oid(&oid_sha1());
+            w.next().write_null();
+        });
+    })
+}
+
+/// Status to assert for the certificate.
 #[derive(Debug, Clone, Copy)]
 pub enum OcspCertStatus {
     /// The certificate is valid.
     Good,
+    /// The certificate is revoked (RFC 6960 `RevokedInfo`, reason omitted).
+    Revoked {
+        /// When the certificate was revoked.
+        revocation_time: SystemTime,
+    },
 }
 
 /// Signature algorithm the caller used to sign the `tbsResponseData`.
@@ -55,18 +96,23 @@ pub enum OcspSignatureAlgorithm {
 
 /// Identifies the certificate whose status is attested (RFC 6960 `CertID`).
 ///
-/// All fields are caller-computed so this crate needs no hash backend; the
-/// `*_sha1` hashes use the SHA-1 CertID algorithm clients expect.
+/// All fields are caller-computed so this crate needs no hash backend. When
+/// answering a request, set `hash_algorithm_der` to the request's verbatim
+/// `hashAlgorithm` and the hashes to the request's values, so the response
+/// `CertID` matches byte-for-byte; for a stapled response use
+/// [`sha1_hash_algorithm_der`] with SHA-1 hashes.
 #[derive(Debug, Clone, Copy)]
 pub struct OcspCertId<'a> {
     /// DER of the issuer's subject `Name` (the full `SEQUENCE` TLV), used for
     /// the `responderID` byName field.
     pub issuer_name_der: &'a [u8],
-    /// SHA-1 over the issuer `Name` (the `issuerNameHash`).
-    pub issuer_name_sha1: &'a [u8],
-    /// SHA-1 over the issuer's `subjectPublicKey` BIT STRING value
+    /// The `hashAlgorithm` `AlgorithmIdentifier` as full DER.
+    pub hash_algorithm_der: &'a [u8],
+    /// Hash over the issuer `Name` (the `issuerNameHash`).
+    pub issuer_name_hash: &'a [u8],
+    /// Hash over the issuer's `subjectPublicKey` BIT STRING value
     /// (the `issuerKeyHash`).
-    pub issuer_key_sha1: &'a [u8],
+    pub issuer_key_hash: &'a [u8],
     /// The leaf's serial number as a big-endian unsigned magnitude.
     pub serial: &'a [u8],
 }
@@ -79,14 +125,23 @@ pub struct OcspCertId<'a> {
 ///
 /// The public surface takes only `std` time types — `time::OffsetDateTime` is
 /// an internal detail of the DER `GeneralizedTime` encoding.
+/// `nonce`, when set, is echoed verbatim as the `id-pkix-ocsp-nonce`
+/// `responseExtensions` value (the bytes a request's matching `extnValue`
+/// carried); pass the value [`parse_ocsp_request`] returned.
 pub fn build_ocsp_response(
     cert: &OcspCertId<'_>,
     status: OcspCertStatus,
     produced_at: SystemTime,
     validity: Duration,
+    nonce: Option<&[u8]>,
     sign_tbs: impl FnOnce(&[u8]) -> Result<(OcspSignatureAlgorithm, Vec<u8>), BoxError>,
 ) -> Result<Vec<u8>, BoxError> {
-    let OcspCertStatus::Good = status;
+    // certStatus: Good is [0] NULL; Revoked is [1] IMPLICIT RevokedInfo, whose
+    // revocationTime must be encoded before the (infallible) writer closure.
+    let revoked_at = match status {
+        OcspCertStatus::Good => None,
+        OcspCertStatus::Revoked { revocation_time } => Some(generalized_time(revocation_time)?),
+    };
 
     // producedAt and thisUpdate are the same instant — encode it once.
     let produced = generalized_time(produced_at)?;
@@ -110,18 +165,26 @@ pub fn build_ocsp_response(
                 w.next().write_sequence(|w| {
                     // certID
                     w.next().write_sequence(|w| {
-                        // hashAlgorithm = sha1, NULL params
-                        w.next().write_sequence(|w| {
-                            w.next().write_oid(&oid_sha1());
-                            w.next().write_null();
-                        });
-                        w.next().write_bytes(cert.issuer_name_sha1);
-                        w.next().write_bytes(cert.issuer_key_sha1);
+                        w.next().write_der(cert.hash_algorithm_der);
+                        w.next().write_bytes(cert.issuer_name_hash);
+                        w.next().write_bytes(cert.issuer_key_hash);
                         w.next().write_bigint_bytes(cert.serial, true);
                     });
                     // certStatus ::= good [0] IMPLICIT NULL
-                    w.next()
-                        .write_tagged_implicit(Tag::context(0), |w| w.write_null());
+                    //              | revoked [1] IMPLICIT RevokedInfo { revocationTime }
+                    match &revoked_at {
+                        None => {
+                            w.next()
+                                .write_tagged_implicit(Tag::context(0), |w| w.write_null());
+                        }
+                        Some(revoked_at) => {
+                            w.next().write_tagged_implicit(Tag::context(1), |w| {
+                                w.write_sequence(|w| {
+                                    w.next().write_generalized_time(revoked_at);
+                                });
+                            });
+                        }
+                    }
                     // thisUpdate (same instant as producedAt)
                     w.next().write_generalized_time(&produced);
                     // nextUpdate [0] EXPLICIT GeneralizedTime
@@ -129,6 +192,17 @@ pub fn build_ocsp_response(
                         .write_tagged(Tag::context(0), |w| w.write_generalized_time(&next_update));
                 });
             });
+            // responseExtensions [1] EXPLICIT Extensions — nonce echo only.
+            if let Some(nonce) = nonce {
+                w.next().write_tagged(Tag::context(1), |w| {
+                    w.write_sequence(|w| {
+                        w.next().write_sequence(|w| {
+                            w.next().write_oid(&oid_ocsp_nonce());
+                            w.next().write_bytes(nonce);
+                        });
+                    });
+                });
+            }
         });
     });
 
@@ -171,6 +245,102 @@ pub fn build_ocsp_response(
     Ok(resp_der)
 }
 
+/// A single `CertID` extracted from an OCSP request.
+#[derive(Debug, Clone)]
+pub struct OcspRequestCertId {
+    /// The `hashAlgorithm` `AlgorithmIdentifier` as full DER, to echo verbatim
+    /// so the response `CertID` matches the request.
+    pub hash_algorithm_der: Vec<u8>,
+    /// `issuerNameHash` value.
+    pub issuer_name_hash: Vec<u8>,
+    /// `issuerKeyHash` value.
+    pub issuer_key_hash: Vec<u8>,
+    /// `serialNumber` as a big-endian unsigned magnitude.
+    pub serial: Vec<u8>,
+}
+
+/// A parsed OCSP request: the requested `CertID`s and the optional nonce.
+#[derive(Debug, Clone, Default)]
+pub struct OcspRequestInfo {
+    /// One entry per `Request` in the `requestList`.
+    pub certs: Vec<OcspRequestCertId>,
+    /// `id-pkix-ocsp-nonce` `extnValue` contents, for verbatim echo via
+    /// [`build_ocsp_response`].
+    pub nonce: Option<Vec<u8>>,
+}
+
+/// Parse a DER `OCSPRequest` (RFC 6960 §4.1.1).
+///
+/// Returns each requested `CertID` and the optional nonce. `version`,
+/// `requestorName`, the optional signature and per-request extensions are
+/// accepted but ignored.
+pub fn parse_ocsp_request(der: &[u8]) -> Result<OcspRequestInfo, BoxError> {
+    yasna::parse_der(der, |r| {
+        r.read_sequence(|r| {
+            let info = r.next().read_sequence(|r| {
+                // version [0] EXPLICIT DEFAULT v1
+                r.read_optional(|r| r.read_tagged(Tag::context(0), |r| r.read_i64()))?;
+                // requestorName [1] EXPLICIT GeneralName
+                r.read_optional(|r| r.read_tagged(Tag::context(1), |r| r.read_der()))?;
+                // requestList ::= SEQUENCE OF Request
+                let mut certs = Vec::new();
+                r.next().read_sequence_of(|r| {
+                    r.read_sequence(|r| {
+                        let cert = r.next().read_sequence(|r| {
+                            let hash_algorithm_der = r.next().read_der()?;
+                            let issuer_name_hash = r.next().read_bytes()?;
+                            let issuer_key_hash = r.next().read_bytes()?;
+                            let (serial, _positive) = r.next().read_bigint_bytes()?;
+                            // DER prepends a 0x00 sign byte to a positive integer
+                            // whose MSB is set; strip it so `serial` is the unsigned
+                            // magnitude (matching ledger serials and the echoed CertID).
+                            let serial = match serial.split_first() {
+                                Some((0x00, rest)) if !rest.is_empty() => rest.to_vec(),
+                                _ => serial,
+                            };
+                            Ok(OcspRequestCertId {
+                                hash_algorithm_der,
+                                issuer_name_hash,
+                                issuer_key_hash,
+                                serial,
+                            })
+                        })?;
+                        // singleRequestExtensions [0] EXPLICIT
+                        r.read_optional(|r| r.read_tagged(Tag::context(0), |r| r.read_der()))?;
+                        certs.push(cert);
+                        Ok(())
+                    })
+                })?;
+                // requestExtensions [2] EXPLICIT Extensions
+                let nonce = r
+                    .read_optional(|r| {
+                        r.read_tagged(Tag::context(2), |r| {
+                            let mut nonce = None;
+                            r.read_sequence_of(|r| {
+                                r.read_sequence(|r| {
+                                    let oid = r.next().read_oid()?;
+                                    r.read_optional(|r| r.read_bool())?;
+                                    let value = r.next().read_bytes()?;
+                                    if oid == oid_ocsp_nonce() {
+                                        nonce = Some(value);
+                                    }
+                                    Ok(())
+                                })
+                            })?;
+                            Ok(nonce)
+                        })
+                    })?
+                    .flatten();
+                Ok(OcspRequestInfo { certs, nonce })
+            })?;
+            // optionalSignature [0] EXPLICIT
+            r.read_optional(|r| r.read_tagged(Tag::context(0), |r| r.read_der()))?;
+            Ok(info)
+        })
+    })
+    .map_err(|e| BoxError::from(format!("ocsp: parse request: {e}")))
+}
+
 /// Convert a `SystemTime` to a DER `GeneralizedTime`. `time::OffsetDateTime` is
 /// used only here (internal); it never appears in the public API.
 fn generalized_time(t: SystemTime) -> Result<GeneralizedTime, BoxError> {
@@ -198,8 +368,9 @@ mod tests {
                 // a minimal Name: SEQUENCE {} (empty RDNSequence) — enough for shape.
                 w.write_sequence(|_| {});
             }),
-            issuer_name_sha1: &[0xAA; 20],
-            issuer_key_sha1: &[0xBB; 20],
+            hash_algorithm_der: &sha1_hash_algorithm_der(),
+            issuer_name_hash: &[0xAA; 20],
+            issuer_key_hash: &[0xBB; 20],
             serial: &[0x12, 0x34, 0x56],
         };
 
@@ -209,6 +380,7 @@ mod tests {
             OcspCertStatus::Good,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
             Duration::from_hours(24 * 7),
+            None,
             |tbs| {
                 signed_tbs = tbs.to_vec();
                 Ok((
@@ -259,5 +431,263 @@ mod tests {
             })
         })
         .expect("parse BasicOCSPResponse");
+    }
+
+    /// SHA-256 CertID `hashAlgorithm` `AlgorithmIdentifier` (params absent).
+    fn sha256_hash_algorithm_der() -> Vec<u8> {
+        yasna::construct_der(|w| {
+            w.write_sequence(|w| {
+                w.next().write_oid(&ObjectIdentifier::from_slice(&[
+                    2, 16, 840, 1, 101, 3, 4, 2, 1,
+                ]));
+            });
+        })
+    }
+
+    /// Build a minimal `OCSPRequest` with one `CertID` (using `algid` as the
+    /// `hashAlgorithm`), optionally a version field and a nonce extension.
+    fn build_request(version: bool, nonce: Option<&[u8]>, algid: &[u8]) -> Vec<u8> {
+        yasna::construct_der(|w| {
+            w.write_sequence(|w| {
+                w.next().write_sequence(|w| {
+                    if version {
+                        w.next().write_tagged(Tag::context(0), |w| w.write_i64(0));
+                    }
+                    w.next().write_sequence(|w| {
+                        w.next().write_sequence(|w| {
+                            w.next().write_sequence(|w| {
+                                w.next().write_der(algid);
+                                w.next().write_bytes(&[0xAA; 20]);
+                                w.next().write_bytes(&[0xBB; 20]);
+                                w.next().write_bigint_bytes(&[0x12, 0x34, 0x56], true);
+                            });
+                        });
+                    });
+                    if let Some(nonce) = nonce {
+                        w.next().write_tagged(Tag::context(2), |w| {
+                            w.write_sequence(|w| {
+                                w.next().write_sequence(|w| {
+                                    w.next().write_oid(&oid_ocsp_nonce());
+                                    w.next().write_bytes(nonce);
+                                });
+                            });
+                        });
+                    }
+                });
+            });
+        })
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn parses_minimal_request() {
+        let info = parse_ocsp_request(&build_request(false, None, &sha1_hash_algorithm_der()))
+            .expect("parse");
+        assert_eq!(info.certs.len(), 1);
+        let c = &info.certs[0];
+        assert_eq!(c.hash_algorithm_der, sha1_hash_algorithm_der());
+        assert_eq!(c.issuer_name_hash, vec![0xAA; 20]);
+        assert_eq!(c.issuer_key_hash, vec![0xBB; 20]);
+        assert_eq!(c.serial, vec![0x12, 0x34, 0x56]);
+        assert!(info.nonce.is_none());
+    }
+
+    #[test]
+    fn parses_request_with_version_and_nonce() {
+        let nonce_value = yasna::construct_der(|w| w.write_bytes(&[1, 2, 3, 4, 5, 6, 7, 8]));
+        let info = parse_ocsp_request(&build_request(
+            true,
+            Some(&nonce_value),
+            &sha1_hash_algorithm_der(),
+        ))
+        .expect("parse");
+        assert_eq!(info.certs.len(), 1);
+        assert_eq!(info.nonce.as_deref(), Some(nonce_value.as_slice()));
+    }
+
+    /// A serial whose MSB is set (DER adds a 0x00 sign byte) parses back to its
+    /// unsigned magnitude — so it matches a ledger serial / the CertID we echo.
+    #[test]
+    fn parses_msb_set_serial_as_unsigned_magnitude() {
+        let algid = sha1_hash_algorithm_der();
+        let req = yasna::construct_der(|w| {
+            w.write_sequence(|w| {
+                w.next().write_sequence(|w| {
+                    w.next().write_sequence(|w| {
+                        w.next().write_sequence(|w| {
+                            w.next().write_sequence(|w| {
+                                w.next().write_der(&algid);
+                                w.next().write_bytes(&[0xAA; 20]);
+                                w.next().write_bytes(&[0xBB; 20]);
+                                w.next().write_bigint_bytes(&[0xDE, 0xAD, 0xBE, 0xEF], true);
+                            });
+                        });
+                    });
+                });
+            });
+        });
+        let info = parse_ocsp_request(&req).expect("parse");
+        assert_eq!(
+            info.certs[0].serial,
+            vec![0xDE, 0xAD, 0xBE, 0xEF],
+            "leading 0x00 sign byte stripped"
+        );
+    }
+
+    /// A response built from a parsed request echoes the request's `CertID`
+    /// (hashes + serial) and nonce verbatim.
+    #[test]
+    fn response_echoes_request_certid_and_nonce() {
+        let nonce_value = yasna::construct_der(|w| w.write_bytes(&[9, 9, 9, 9]));
+        let info = parse_ocsp_request(&build_request(
+            true,
+            Some(&nonce_value),
+            &sha1_hash_algorithm_der(),
+        ))
+        .expect("parse");
+        let c = &info.certs[0];
+        let issuer = yasna::construct_der(|w| w.write_sequence(|_| {}));
+        let cert = OcspCertId {
+            issuer_name_der: &issuer,
+            hash_algorithm_der: &c.hash_algorithm_der,
+            issuer_name_hash: &c.issuer_name_hash,
+            issuer_key_hash: &c.issuer_key_hash,
+            serial: &c.serial,
+        };
+        let der = build_ocsp_response(
+            &cert,
+            OcspCertStatus::Good,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+            Duration::from_hours(24),
+            info.nonce.as_deref(),
+            |_| Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0x00])),
+        )
+        .expect("build ocsp response");
+
+        assert!(contains(&der, &[0xAA; 20]), "issuerNameHash echoed");
+        assert!(contains(&der, &[0xBB; 20]), "issuerKeyHash echoed");
+        assert!(contains(&der, &[0x12, 0x34, 0x56]), "serial echoed");
+        assert!(contains(&der, &nonce_value), "nonce echoed");
+    }
+
+    /// The first byte of the `certStatus` TLV in a built response: `[0]` (0x80)
+    /// for good, `[1]` (0xA1) for revoked.
+    fn cert_status_first_byte(response_der: &[u8]) -> u8 {
+        let basic = yasna::parse_der(response_der, |r| {
+            r.read_sequence(|r| {
+                let _status = r.next().read_enum()?;
+                r.next().read_tagged(Tag::context(0), |r| {
+                    r.read_sequence(|r| {
+                        let _oid = r.next().read_oid()?;
+                        r.next().read_bytes()
+                    })
+                })
+            })
+        })
+        .expect("parse OCSPResponse");
+        yasna::parse_der(&basic, |r| {
+            r.read_sequence(|r| {
+                let tbs = r.next().read_der()?;
+                let _alg = r.next().read_der()?;
+                let _sig = r.next().read_bitvec_bytes()?;
+                yasna::parse_der(&tbs, |r| {
+                    r.read_sequence(|r| {
+                        let _responder = r.next().read_der()?;
+                        let _produced = r.next().read_der()?;
+                        r.next().read_sequence(|r| {
+                            r.next().read_sequence(|r| {
+                                let _cert_id = r.next().read_der()?;
+                                let cert_status = r.next().read_der()?;
+                                let _this = r.next().read_der()?;
+                                let _next = r.next().read_der()?;
+                                Ok(cert_status[0])
+                            })
+                        })
+                    })
+                })
+            })
+        })
+        .expect("parse BasicOCSPResponse")
+    }
+
+    fn good_or_revoked(status: OcspCertStatus) -> u8 {
+        let cert = OcspCertId {
+            issuer_name_der: &yasna::construct_der(|w| w.write_sequence(|_| {})),
+            hash_algorithm_der: &sha1_hash_algorithm_der(),
+            issuer_name_hash: &[0xAA; 20],
+            issuer_key_hash: &[0xBB; 20],
+            serial: &[0x12, 0x34, 0x56],
+        };
+        let der = build_ocsp_response(
+            &cert,
+            status,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+            Duration::from_hours(24),
+            None,
+            |_| Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0x00])),
+        )
+        .expect("build ocsp response");
+        cert_status_first_byte(&der)
+    }
+
+    /// `Good` encodes `certStatus` as `[0]`, `Revoked` as `[1]`.
+    #[test]
+    fn revoked_status_encodes_as_context_1() {
+        assert_eq!(good_or_revoked(OcspCertStatus::Good), 0x80, "good is [0]");
+        assert_eq!(
+            good_or_revoked(OcspCertStatus::Revoked {
+                revocation_time: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            }),
+            0xA1,
+            "revoked is [1] IMPLICIT RevokedInfo"
+        );
+    }
+
+    /// A non-SHA-1 CertID `hashAlgorithm` is echoed verbatim into the response.
+    #[test]
+    fn echoes_sha256_cert_id_hash_algorithm() {
+        let sha256 = sha256_hash_algorithm_der();
+        let info = parse_ocsp_request(&build_request(false, None, &sha256)).expect("parse");
+        let c = &info.certs[0];
+        assert_eq!(c.hash_algorithm_der, sha256, "parsed verbatim");
+        let issuer = yasna::construct_der(|w| w.write_sequence(|_| {}));
+        let cert = OcspCertId {
+            issuer_name_der: &issuer,
+            hash_algorithm_der: &c.hash_algorithm_der,
+            issuer_name_hash: &c.issuer_name_hash,
+            issuer_key_hash: &c.issuer_key_hash,
+            serial: &c.serial,
+        };
+        let der = build_ocsp_response(
+            &cert,
+            OcspCertStatus::Good,
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+            Duration::from_hours(24),
+            None,
+            |_| Ok((OcspSignatureAlgorithm::EcdsaSha256, vec![0x00])),
+        )
+        .expect("build ocsp response");
+        assert!(contains(&der, &sha256), "sha256 hashAlgorithm echoed");
+    }
+
+    #[test]
+    fn aia_ocsp_carries_the_responder_uri() {
+        let uri = "http://127.0.0.1:9999/ocsp/abc";
+        let der = authority_info_access_ocsp_der(uri);
+        let oid = yasna::parse_der(&der, |r| {
+            r.read_sequence(|r| {
+                r.next().read_sequence(|r| {
+                    let oid = r.next().read_oid()?;
+                    let _loc = r.next().read_der()?;
+                    Ok(oid)
+                })
+            })
+        })
+        .expect("AIA structure");
+        assert_eq!(oid, oid_ad_ocsp());
+        assert!(contains(&der, uri.as_bytes()), "responder URI present");
     }
 }
