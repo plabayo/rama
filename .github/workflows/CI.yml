@@ -24,7 +24,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -39,7 +39,7 @@ jobs:
   precheck-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh
@@ -61,8 +61,8 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
@@ -94,8 +94,8 @@ jobs:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
@@ -129,8 +129,8 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
@@ -190,7 +190,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -217,7 +217,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -238,7 +238,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -257,7 +257,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -278,7 +278,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -315,7 +315,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.toolchain }}
@@ -326,7 +326,7 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
       - name: Install Zig
         if: contains(matrix.target, 'unknown-linux-musl')
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.13.0
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
@@ -336,7 +336,7 @@ jobs:
         run: |
           cargo zigbuild -p rama -p rama-cli --target ${{ matrix.target }} --all-features
       - name: Setup Docker buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Scratch run test (rama-cli, with diagnostics)
         shell: bash
@@ -441,7 +441,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ matrix.rust }}
@@ -501,7 +501,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -523,7 +523,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -547,7 +547,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -574,7 +574,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -599,12 +599,12 @@ jobs:
       - precheck-rust
       - precheck-docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - name: cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2
         with:
           rust-version: ${{env.RUST_TOOLCHAIN}}
       - uses: taiki-e/install-action@fa0dd4cd0a40696e6f9766370614a5ce482e6aa8
@@ -627,8 +627,8 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
@@ -654,7 +654,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
@@ -679,7 +679,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -699,9 +699,9 @@ jobs:
   #     - precheck-rust
   #     - precheck-docs
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
   #     - name: Check semver
-  #       uses: obi1kenobi/cargo-semver-checks-action@v2
+  #       uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
   #       with:
   #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
@@ -728,13 +728,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           push: true
           tags: glendc/rama:edge
@@ -744,8 +744,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/fp
           flyctl deploy --verbose --remote-only
@@ -756,8 +756,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/fp-h1
           flyctl deploy --verbose --remote-only
@@ -768,8 +768,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/ipv4
           flyctl deploy --verbose --remote-only
@@ -780,8 +780,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/ipv6
           flyctl deploy --verbose --remote-only
@@ -792,8 +792,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/echo
           flyctl deploy --verbose --remote-only
@@ -804,8 +804,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v6
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master
       - run: |
           cd rama-fp/infra/deployments/http-test
           flyctl deploy --verbose --remote-only
