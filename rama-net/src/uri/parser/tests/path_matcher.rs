@@ -576,3 +576,25 @@ fn brace_misuse_falls_back_to_literal() {
     assert!(pat.is_match(p("/{*}}")));
     assert!(!pat.is_match(p("/a/b")));
 }
+
+#[test]
+fn segment_kinds_classify_each_segment() {
+    use crate::uri::PathPatternSegmentKind as K;
+    let kinds = |pat: &str| PathPattern::new(pat).segment_kinds().collect::<Vec<_>>();
+
+    assert_eq!(kinds("/a/b"), [K::Literal, K::Literal]);
+    assert_eq!(kinds("/users/{id}"), [K::Literal, K::Dynamic]);
+    assert_eq!(kinds("/files/{}.json"), [K::Literal, K::Dynamic]);
+    assert_eq!(kinds("/p/{pkg}.json"), [K::Literal, K::Dynamic]);
+    assert_eq!(kinds("/assets/{*}"), [K::Literal, K::CatchAll]);
+    assert_eq!(kinds("/assets/{*rest}"), [K::Literal, K::CatchAll]);
+    // An optional element makes the segment non-fixed -> dynamic.
+    assert_eq!(kinds("/maybe/a?"), [K::Literal, K::Dynamic]);
+    // Invalid catch-all / brace junk is a literal, exactly as the matcher
+    // treats it (no router-side drift).
+    assert_eq!(kinds("/api/{*bad name}"), [K::Literal, K::Literal]);
+    assert_eq!(kinds("/x/{na.me}"), [K::Literal, K::Literal]);
+    // Bare root has no segments.
+    assert_eq!(PathPattern::new("/").segment_kinds().len(), 0);
+    assert_eq!(PathPattern::new("").segment_kinds().len(), 0);
+}

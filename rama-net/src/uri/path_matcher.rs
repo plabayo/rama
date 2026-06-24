@@ -82,6 +82,20 @@ pub struct PathPattern {
     capture_free: bool,
 }
 
+/// Coarse classification of a compiled [`PathPattern`] segment, exposed via
+/// [`PathPattern::segment_kinds`] so callers (e.g. a router) can reason about
+/// route specificity without re-parsing the pattern syntax themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PathPatternSegmentKind {
+    /// A fixed string: the segment matches exactly one literal value.
+    Literal,
+    /// Within-segment dynamic (a capture/wildcard or optional element) still
+    /// bound to exactly one path segment.
+    Dynamic,
+    /// A whole-segment catch-all (`{*}` / `{*name}`) spanning 1+ segments.
+    CatchAll,
+}
+
 /// Policy for a path's trailing slash, derived from the pattern's own
 /// trailing form (explicit, never inferred).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +267,32 @@ impl PathPattern {
             opts,
             capture_free,
         }
+    }
+
+    /// The [kind](PathPatternSegmentKind) of each `/`-delimited pattern segment,
+    /// in order — so callers can classify segments (literal vs dynamic vs
+    /// catch-all) straight from the compiled pattern instead of re-parsing the
+    /// syntax. A bare-root pattern (`/`) yields an empty iterator.
+    ///
+    /// ```
+    /// use rama_net::uri::{PathPattern, PathPatternSegmentKind as K};
+    ///
+    /// let kinds: Vec<_> = PathPattern::new("/users/{id}/{*rest}").segment_kinds().collect();
+    /// assert_eq!(kinds, [K::Literal, K::Dynamic, K::CatchAll]);
+    /// // An invalid catch-all body is a literal, exactly as the matcher treats it.
+    /// let kinds: Vec<_> = PathPattern::new("/api/{*bad name}").segment_kinds().collect();
+    /// assert_eq!(kinds, [K::Literal, K::Literal]);
+    /// ```
+    pub fn segment_kinds(&self) -> impl ExactSizeIterator<Item = PathPatternSegmentKind> + '_ {
+        self.segments.iter().map(|seg| match seg {
+            PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. } => {
+                PathPatternSegmentKind::CatchAll
+            }
+            // `ambiguity == 0` means no wildcard/capture/optional element — the
+            // segment is a fixed string.
+            PatternSegment::Normal { ambiguity: 0, .. } => PathPatternSegmentKind::Literal,
+            PatternSegment::Normal { .. } => PathPatternSegmentKind::Dynamic,
+        })
     }
 
     /// `true` when `path` matches. Allocation-free when the pattern has no

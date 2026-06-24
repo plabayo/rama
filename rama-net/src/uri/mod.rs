@@ -86,7 +86,7 @@ pub use path_mut::PathMut;
 
 mod path_matcher;
 #[doc(inline)]
-pub use path_matcher::{PathCaptures, PathPattern};
+pub use path_matcher::{PathCaptures, PathPattern, PathPatternSegmentKind};
 
 mod query;
 #[doc(inline)]

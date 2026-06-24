@@ -18,7 +18,7 @@ use rama_http_types::Method;
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };
-use rama_net::uri::PathPattern;
+use rama_net::uri::{PathPattern, PathPatternSegmentKind};
 use rama_utils::{
     collections::NonEmptySmallVec,
     str::smol_str::{StrExt as _, format_smolstr},
@@ -87,38 +87,20 @@ struct RouteEntry<O, E> {
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
-/// `true` when `seg` is a whole-segment catch-all (`{*}` or `{*name}`). Mirrors
-/// the matcher's acceptance: a non-name body (`{*bad name}`) is a literal there,
-/// so it must not rank as a catch-all here.
-fn is_catch_all(seg: &str) -> bool {
-    seg.strip_prefix("{*")
-        .and_then(|s| s.strip_suffix('}'))
-        .is_some_and(|name| name.is_empty() || name.bytes().all(is_segment_name_byte))
-}
-
-/// Capture-name byte class of the `PathPattern` grammar: `ALPHA / DIGIT / "_" / "-"`.
-fn is_segment_name_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-}
-
-/// Specificity rank of one pattern segment.
-fn segment_rank(seg: &str) -> u8 {
-    if is_catch_all(seg) {
-        0 // catch-all (variable length)
-    } else if seg.contains('{') {
-        1 // within-segment capture / wildcard
-    } else {
-        2 // literal
+/// Specificity rank of one segment kind: literal (2) beats within-segment
+/// dynamic (1) beats catch-all (0). Higher under `Vec`'s ordering = more specific.
+fn rank(kind: PathPatternSegmentKind) -> u8 {
+    match kind {
+        PathPatternSegmentKind::Literal => 2,
+        PathPatternSegmentKind::Dynamic => 1,
+        PathPatternSegmentKind::CatchAll => 0,
     }
 }
 
-/// Per-segment specificity key for a normalized pattern.
-fn path_specificity(pattern: &str) -> Vec<u8> {
-    pattern
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(segment_rank)
-        .collect()
+/// Per-segment specificity key for a compiled pattern. The pattern itself is
+/// the authority on what each segment is — the router never parses the syntax.
+fn specificity_of(pattern: &PathPattern) -> Vec<u8> {
+    pattern.segment_kinds().map(rank).collect()
 }
 
 impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
@@ -602,13 +584,14 @@ where
         if let Some(entry) = self.routes.iter_mut().find(|e| e.key == key) {
             entry.handlers.push((matcher, service));
         } else {
-            let specificity = path_specificity(path);
+            let pattern = compile_pattern(&pattern_str);
+            let specificity = specificity_of(&pattern);
             // keep `routes` most-specific-first; first match wins at lookup
             let pos = self.routes.partition_point(|e| e.specificity > specificity);
             self.routes.insert(
                 pos,
                 RouteEntry {
-                    pattern: compile_pattern(&pattern_str),
+                    pattern,
                     key,
                     specificity,
                     handlers: vec![(matcher, service)],
@@ -707,14 +690,34 @@ struct DynamicPrefix {
 /// Split a (normalized, lowercased) mount prefix into its leading literal run
 /// — the trie key — and any dynamic tail. A trailing catch-all (`{*}` or
 /// `{*name}`) is dropped: the nested service handles the remainder.
+///
+/// Segment classification comes from the compiled [`PathPattern`]
+/// ([`segment_kinds`](PathPattern::segment_kinds)); the router only splits on
+/// `/`, never on the pattern syntax itself.
 fn split_sub_prefix(prefix: &str) -> (String, Option<DynamicPrefix>) {
-    let mut segs: Vec<&str> = prefix.split('/').filter(|s| !s.is_empty()).collect();
-    if segs.last().is_some_and(|s| segment_rank(s) == 0) {
-        segs.pop();
+    if prefix.is_empty() {
+        return (String::new(), None);
     }
-    let lit_end = segs.iter().take_while(|s| segment_rank(s) == 2).count();
+    let kinds: Vec<_> = compile_pattern(prefix).segment_kinds().collect();
+    let segs: Vec<&str> = prefix.split('/').collect();
+    // The caller trimmed surrounding slashes, so `/`-splitting lines up 1:1
+    // with the compiled segments. If a degenerate prefix (e.g. trailing `/?`)
+    // breaks that, fall back to mounting under the whole literal.
+    if segs.len() != kinds.len() {
+        return (prefix.to_owned(), None);
+    }
+    // Drop a trailing catch-all; the nested service owns the remainder.
+    let end = if kinds.last() == Some(&PathPatternSegmentKind::CatchAll) {
+        segs.len() - 1
+    } else {
+        segs.len()
+    };
+    let lit_end = kinds[..end]
+        .iter()
+        .take_while(|k| **k == PathPatternSegmentKind::Literal)
+        .count();
     let literal = segs[..lit_end].join("/");
-    let dynamic = &segs[lit_end..];
+    let dynamic = &segs[lit_end..end];
     if dynamic.is_empty() {
         (literal, None)
     } else {
@@ -1198,27 +1201,15 @@ mod tests {
     }
 
     #[test]
-    fn segment_rank_and_catch_all_classification() {
-        assert_eq!(segment_rank("users"), 2); // literal
-        assert_eq!(segment_rank("{id}"), 1); // within-segment capture
-        assert_eq!(segment_rank("{}"), 1); // within-segment wildcard
-        assert_eq!(segment_rank("{pkg}.json"), 1); // affixed capture
-        assert!(is_catch_all("{*}"));
-        assert!(is_catch_all("{*rest}"));
-        assert_eq!(segment_rank("{*}"), 0);
-        assert_eq!(segment_rank("{*rest}"), 0);
-        // The matcher treats `{*bad name}` / `{*}}` as literals (non-name body),
-        // so they must NOT be ranked as low-priority catch-alls here.
-        assert!(!is_catch_all("{*bad name}"));
-        assert!(!is_catch_all("{*}}"));
-        assert_eq!(segment_rank("{*bad name}"), 1);
-    }
-
-    #[test]
-    fn path_specificity_orders_static_over_capture_over_catch_all() {
-        assert_eq!(path_specificity("/users/{id}"), vec![2, 1]);
-        assert_eq!(path_specificity("/assets/{*path}"), vec![2, 0]);
-        assert_eq!(path_specificity("/a/b/c"), vec![2, 2, 2]);
+    fn specificity_reflects_segment_kinds() {
+        let spec = |p: &str| specificity_of(&compile_pattern(p));
+        assert_eq!(spec("/a/b/c"), vec![2, 2, 2]); // all literal
+        assert_eq!(spec("/users/{id}"), vec![2, 1]); // literal + capture
+        assert_eq!(spec("/files/{}.json"), vec![2, 1]); // literal + affixed wildcard
+        assert_eq!(spec("/assets/{*path}"), vec![2, 0]); // literal + catch-all
+        // An invalid catch-all body is a literal in the matcher, so it ranks as
+        // a literal here too — the router no longer guesses, so no drift.
+        assert_eq!(spec("/api/{*bad name}"), vec![2, 2]);
     }
 
     #[test]
