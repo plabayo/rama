@@ -53,7 +53,7 @@ use rama::{
 
 use clap::Args;
 use itertools::Itertools;
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, fmt, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -67,6 +67,10 @@ use crate::utils::{http::HttpVersion, tls::try_new_server_config};
 
 #[derive(Debug, Clone, Copy, Default, Extension)]
 pub struct StorageAuthorized;
+
+fn redacted_storage_auth(storage_auth: Option<&str>) -> Option<&'static str> {
+    storage_auth.map(|_| "<redacted>")
+}
 
 #[derive(Debug, Args)]
 /// rama fp service (used for FP collection in purpose of UA emulation)
@@ -383,9 +387,20 @@ where
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct StorageAuthLayer {
     storage_auth: Option<String>,
+}
+
+impl fmt::Debug for StorageAuthLayer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StorageAuthLayer")
+            .field(
+                "storage_auth",
+                &redacted_storage_auth(self.storage_auth.as_deref()),
+            )
+            .finish()
+    }
 }
 
 impl StorageAuthLayer {
@@ -419,11 +434,14 @@ struct StorageAuthService<S> {
     storage_auth: Option<String>,
 }
 
-impl<S: std::fmt::Debug> std::fmt::Debug for StorageAuthService<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<S: fmt::Debug> fmt::Debug for StorageAuthService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StorageAuthService")
             .field("inner", &self.inner)
-            .field("storage_auth", &self.storage_auth)
+            .field(
+                "storage_auth",
+                &redacted_storage_auth(self.storage_auth.as_deref()),
+            )
             .finish()
     }
 }
@@ -471,5 +489,47 @@ where
         }
 
         self.inner.serve(req).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_auth_layer_debug_redacts_secret() {
+        let layer = StorageAuthLayer {
+            storage_auth: Some("super-secret-cookie".to_owned()),
+        };
+
+        let formatted = format!("{layer:?}");
+
+        assert!(
+            !formatted.contains("super-secret-cookie"),
+            "debug leaked storage auth: {formatted}"
+        );
+        assert!(
+            formatted.contains("<redacted>"),
+            "debug missing storage auth redaction marker: {formatted}"
+        );
+    }
+
+    #[test]
+    fn storage_auth_service_debug_redacts_secret() {
+        let service = StorageAuthService {
+            inner: "inner-service",
+            storage_auth: Some("super-secret-cookie".to_owned()),
+        };
+
+        let formatted = format!("{service:?}");
+
+        assert!(
+            !formatted.contains("super-secret-cookie"),
+            "debug leaked storage auth: {formatted}"
+        );
+        assert!(
+            formatted.contains("<redacted>"),
+            "debug missing storage auth redaction marker: {formatted}"
+        );
     }
 }
