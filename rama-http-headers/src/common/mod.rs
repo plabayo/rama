@@ -68,7 +68,7 @@ pub use self::pragma::Pragma;
 //pub use self::prefer::{Prefer, Preference};
 //pub use self::preference_applied::PreferenceApplied;
 pub use self::proxy_authorization::ProxyAuthorization;
-pub use self::range::Range;
+pub use self::range::{ByteRangeSpec, Range};
 pub use self::referer::Referer;
 pub use self::referrer_policy::ReferrerPolicy;
 pub use self::retry_after::{After, RetryAfter};
