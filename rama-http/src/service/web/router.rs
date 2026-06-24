@@ -3,7 +3,7 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use std::{convert::Infallible, error::Error, fmt};
+use std::{cmp::Reverse, convert::Infallible, error::Error, fmt};
 
 use radix_trie::{Trie, TrieCommon as _};
 use rama_core::{
@@ -18,7 +18,7 @@ use rama_http_types::Method;
 use rama_http_types::{
     Body, OriginalRouterUri, StatusCode, uri::try_to_strip_path_prefix_from_uri,
 };
-use rama_net::uri::{PathPattern, PathPatternSegmentKind};
+use rama_net::uri::{PathPattern, PathPatternSegmentKind, PathPatternSegmentSpecificity};
 use rama_utils::{
     collections::NonEmptySmallVec,
     str::smol_str::{StrExt as _, format_smolstr},
@@ -83,24 +83,39 @@ struct RouteEntry<O, E> {
     key: String,
     /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
     /// higher under `Vec`'s ordering = more specific.
-    specificity: Vec<u8>,
+    specificity: Vec<SegmentSpecificityRank>,
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
-/// Specificity rank of one segment kind: literal (2) beats within-segment
-/// dynamic (1) beats catch-all (0). Higher under `Vec`'s ordering = more specific.
-fn rank(kind: PathPatternSegmentKind) -> u8 {
-    match kind {
+/// Specificity rank of one segment. Literal beats dynamic beats catch-all; for
+/// two dynamic segments, more literal bytes and fewer wildcard/capture/optional
+/// parts wins (e.g. `{file}.json` beats `{file}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct SegmentSpecificityRank {
+    kind: u8,
+    literal_bytes: usize,
+    fewer_dynamic_parts: Reverse<usize>,
+    fewer_optional_parts: Reverse<usize>,
+}
+
+fn rank(spec: PathPatternSegmentSpecificity) -> SegmentSpecificityRank {
+    let kind = match spec.kind {
         PathPatternSegmentKind::Literal => 2,
         PathPatternSegmentKind::Dynamic => 1,
         PathPatternSegmentKind::CatchAll => 0,
+    };
+    SegmentSpecificityRank {
+        kind,
+        literal_bytes: spec.literal_bytes,
+        fewer_dynamic_parts: Reverse(spec.dynamic_parts),
+        fewer_optional_parts: Reverse(spec.optional_parts),
     }
 }
 
 /// Per-segment specificity key for a compiled pattern. The pattern itself is
 /// the authority on what each segment is — the router never parses the syntax.
-fn specificity_of(pattern: &PathPattern) -> Vec<u8> {
-    pattern.segment_kinds().map(rank).collect()
+fn specificity_of(pattern: &PathPattern) -> Vec<SegmentSpecificityRank> {
+    pattern.segment_specificity().map(rank).collect()
 }
 
 impl<S, L, O, E> std::fmt::Debug for Router<S, L, O, E> {
@@ -587,7 +602,9 @@ where
             let pattern = compile_pattern(&pattern_str);
             let specificity = specificity_of(&pattern);
             // keep `routes` most-specific-first; first match wins at lookup
-            let pos = self.routes.partition_point(|e| e.specificity > specificity);
+            let pos = self
+                .routes
+                .partition_point(|e| e.specificity >= specificity);
             self.routes.insert(
                 pos,
                 RouteEntry {
@@ -1202,7 +1219,12 @@ mod tests {
 
     #[test]
     fn specificity_reflects_segment_kinds() {
-        let spec = |p: &str| specificity_of(&compile_pattern(p));
+        let spec = |p: &str| {
+            specificity_of(&compile_pattern(p))
+                .into_iter()
+                .map(|rank| rank.kind)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(spec("/a/b/c"), vec![2, 2, 2]); // all literal
         assert_eq!(spec("/users/{id}"), vec![2, 1]); // literal + capture
         assert_eq!(spec("/files/{}.json"), vec![2, 1]); // literal + affixed wildcard
@@ -1210,6 +1232,16 @@ mod tests {
         // An invalid catch-all body is a literal in the matcher, so it ranks as
         // a literal here too — the router no longer guesses, so no drift.
         assert_eq!(spec("/api/{*bad name}"), vec![2, 2]);
+    }
+
+    #[test]
+    fn specificity_breaks_dynamic_ties_with_literal_weight() {
+        let plain = specificity_of(&compile_pattern("/files/{name}"));
+        let json = specificity_of(&compile_pattern("/files/{name}.json"));
+        let wildcard_json = specificity_of(&compile_pattern("/files/{}.json"));
+
+        assert!(json > plain);
+        assert!(wildcard_json > plain);
     }
 
     #[test]
@@ -1295,6 +1327,70 @@ mod tests {
         let res = router.serve(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "rest:a/b");
+    }
+
+    #[tokio::test]
+    async fn test_router_affixed_dynamic_beats_plain_dynamic_either_order() {
+        fn plain_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("plain:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+        fn json_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("json:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+
+        let routers = [
+            Router::new()
+                .with_get("/files/{name}", plain_svc())
+                .with_get("/files/{name}.json", json_svc()),
+            Router::new()
+                .with_get("/files/{name}.json", json_svc())
+                .with_get("/files/{name}", plain_svc()),
+        ];
+        for router in routers {
+            let router = ErrorHandlerLayer::new().layer(router);
+            let req = Request::get("/files/readme.json")
+                .body(Body::empty())
+                .unwrap();
+            let res = router.serve(req).await.unwrap();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "json:readme");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_router_equal_specificity_preserves_registration_order() {
+        fn svc(
+            label: &'static str,
+        ) -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(move |_req: Request| async move {
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(label))
+                    .unwrap())
+            })
+        }
+
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/files/{a}", svc("first"))
+                .with_get("/files/{b}", svc("second")),
+        );
+        let req = Request::get("/files/readme").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "first");
     }
 
     #[tokio::test]

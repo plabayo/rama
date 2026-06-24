@@ -600,6 +600,32 @@ fn segment_kinds_classify_each_segment() {
 }
 
 #[test]
+fn segment_specificity_reports_dynamic_tie_breakers() {
+    use crate::uri::PathPatternSegmentKind as K;
+    let specs: Vec<_> = PathPattern::new("/files/{name}.json")
+        .segment_specificity()
+        .collect();
+
+    assert_eq!(specs[0].kind, K::Literal);
+    assert_eq!(specs[0].literal_bytes, 5);
+    assert_eq!(specs[0].dynamic_parts, 0);
+    assert_eq!(specs[0].optional_parts, 0);
+
+    assert_eq!(specs[1].kind, K::Dynamic);
+    assert_eq!(specs[1].literal_bytes, 5);
+    assert_eq!(specs[1].dynamic_parts, 1);
+    assert_eq!(specs[1].optional_parts, 0);
+
+    let specs: Vec<_> = PathPattern::new("/maybe/a?")
+        .segment_specificity()
+        .collect();
+    assert_eq!(specs[1].kind, K::Dynamic);
+    assert_eq!(specs[1].literal_bytes, 1);
+    assert_eq!(specs[1].dynamic_parts, 0);
+    assert_eq!(specs[1].optional_parts, 1);
+}
+
+#[test]
 fn prefix_matching() {
     let api = PathPattern::new_prefix("/api");
     assert!(api.is_match(p("/api"))); // bare prefix

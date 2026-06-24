@@ -100,6 +100,24 @@ pub enum PathPatternSegmentKind {
     CatchAll,
 }
 
+/// Specificity metadata for one compiled [`PathPattern`] segment.
+///
+/// This lets callers rank overlapping patterns without re-parsing the pattern
+/// syntax. The broad [`kind`](Self::kind) preserves the usual ordering
+/// (literal > dynamic > catch-all), while the counters let a router break ties
+/// between dynamic segments such as `{name}` and `{name}.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PathPatternSegmentSpecificity {
+    /// Coarse segment kind.
+    pub kind: PathPatternSegmentKind,
+    /// Number of fixed literal bytes inside the segment.
+    pub literal_bytes: usize,
+    /// Number of wildcard/capture runs inside the segment.
+    pub dynamic_parts: usize,
+    /// Number of optional elements inside the segment.
+    pub optional_parts: usize,
+}
+
 /// Policy for a path's trailing slash, derived from the pattern's own
 /// trailing form (explicit, never inferred).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,14 +336,62 @@ impl PathPattern {
     /// assert_eq!(kinds, [K::Literal, K::Literal]);
     /// ```
     pub fn segment_kinds(&self) -> impl ExactSizeIterator<Item = PathPatternSegmentKind> + '_ {
+        self.segment_specificity().map(|spec| spec.kind)
+    }
+
+    /// Specificity metadata for each `/`-delimited pattern segment, in order.
+    /// This is a richer version of [`segment_kinds`](Self::segment_kinds) for
+    /// callers that need stable precedence among overlapping dynamic patterns.
+    ///
+    /// ```
+    /// use rama_net::uri::{PathPattern, PathPatternSegmentKind as K};
+    ///
+    /// let specs: Vec<_> = PathPattern::new("/files/{name}.json")
+    ///     .segment_specificity()
+    ///     .collect();
+    /// assert_eq!(specs[0].kind, K::Literal);
+    /// assert_eq!(specs[1].kind, K::Dynamic);
+    /// assert_eq!(specs[1].literal_bytes, 5);
+    /// assert_eq!(specs[1].dynamic_parts, 1);
+    /// ```
+    pub fn segment_specificity(
+        &self,
+    ) -> impl ExactSizeIterator<Item = PathPatternSegmentSpecificity> + '_ {
         self.segments.iter().map(|seg| match seg {
             PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. } => {
-                PathPatternSegmentKind::CatchAll
+                PathPatternSegmentSpecificity {
+                    kind: PathPatternSegmentKind::CatchAll,
+                    literal_bytes: 0,
+                    dynamic_parts: 1,
+                    optional_parts: 0,
+                }
             }
-            // `ambiguity == 0` means no wildcard/capture/optional element — the
-            // segment is a fixed string.
-            PatternSegment::Normal { ambiguity: 0, .. } => PathPatternSegmentKind::Literal,
-            PatternSegment::Normal { .. } => PathPatternSegmentKind::Dynamic,
+            PatternSegment::Normal { elems, ambiguity } => {
+                let literal_bytes = elems
+                    .iter()
+                    .map(|el| match &el.kind {
+                        ElementKind::Literal(lit) => lit.len(),
+                        ElementKind::Star | ElementKind::Capture { .. } => 0,
+                    })
+                    .sum();
+                let dynamic_parts = elems
+                    .iter()
+                    .filter(|el| matches!(el.kind, ElementKind::Star | ElementKind::Capture { .. }))
+                    .count();
+                let optional_parts = elems.iter().filter(|el| el.optional).count();
+                PathPatternSegmentSpecificity {
+                    // `ambiguity == 0` means no wildcard/capture/optional
+                    // element, so the segment is a fixed string.
+                    kind: if *ambiguity == 0 {
+                        PathPatternSegmentKind::Literal
+                    } else {
+                        PathPatternSegmentKind::Dynamic
+                    },
+                    literal_bytes,
+                    dynamic_parts,
+                    optional_parts,
+                }
+            }
         })
     }
 
