@@ -11,6 +11,15 @@ pin_project! {
     ///
     /// This body will return an error if more than the configured number
     /// of bytes are returned on polling the wrapped body.
+    ///
+    /// Hard-failing counterpart to [`BodyExt::collect_with`]: crossing the limit
+    /// errors with [`LengthLimitError`] and discards the body. To instead keep
+    /// the bytes read and forward the unread remainder (e.g. in a proxy),
+    /// collect with a [`CollectOptions`] cap and recover via [`CollectError`].
+    ///
+    /// [`BodyExt::collect_with`]: crate::body::util::BodyExt::collect_with
+    /// [`CollectOptions`]: crate::body::util::CollectOptions
+    /// [`CollectError`]: crate::body::util::CollectError
     #[derive(Clone, Copy, Debug)]
     pub struct Limited<B> {
         remaining: usize,

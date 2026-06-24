@@ -31,6 +31,8 @@
 //!
 //! [`Empty`] and [`Full`] provide simple implementations.
 
+mod collect_error;
+mod collect_with;
 mod collected;
 pub mod combinators;
 mod either;
@@ -42,7 +44,10 @@ mod stream;
 mod util;
 
 use self::combinators::{BoxBody, MapErr, MapFrame, UnsyncBoxBody};
+use rama_core::error::BoxError;
 
+pub use self::collect_error::{CollectError, CollectErrorKind};
+pub use self::collect_with::{CollectOptions, CollectWith};
 pub use self::collected::Collected;
 pub use self::either::Either;
 pub use self::empty::Empty;
@@ -99,6 +104,13 @@ pub trait BodyExt: crate::body::http_body::Body {
 
     /// Turn this body into [`Collected`] body which will collect all the DATA frames
     /// and trailers.
+    ///
+    /// On a body stream error the returned future yields a [`CollectError`] that
+    /// still carries the bytes read before the failure. Use [`collect_with`] to
+    /// additionally bound the size and/or time and keep the unread remainder
+    /// forwardable.
+    ///
+    /// [`collect_with`]: BodyExt::collect_with
     fn collect(self) -> combinators::Collect<Self>
     where
         Self: Sized,
@@ -107,6 +119,36 @@ pub trait BodyExt: crate::body::http_body::Body {
             body: self,
             collected: Some(crate::body::http_body_util::Collected::default()),
         }
+    }
+
+    /// Collect this body, but bounded by the size cap and/or timeout in
+    /// [`CollectOptions`].
+    ///
+    /// On success returns the [`Collected`] body, exactly like [`collect`]. When
+    /// a bound is hit it stops early with a [`CollectError`] that retains the
+    /// bytes read so far *and* the unread remainder — call
+    /// [`CollectError::into_full_body`] to reassemble and forward the body on
+    /// untouched (handy for proxies).
+    ///
+    /// This is the soft, recoverable counterpart to [`Limited`]: where `Limited`
+    /// hard-fails with a [`LengthLimitError`] and discards the body the moment
+    /// its cap is crossed, `collect_with` loses nothing — the bytes read and the
+    /// remainder are both preserved.
+    ///
+    /// [`collect`]: BodyExt::collect
+    /// [`Limited`]: crate::body::http_body_util::Limited
+    /// [`LengthLimitError`]: crate::body::http_body_util::LengthLimitError
+    /// [`CollectError::into_full_body`]: crate::body::http_body_util::CollectError::into_full_body
+    fn collect_with(self, opts: CollectOptions) -> CollectWith<Self>
+    where
+        Self: Sized
+            + crate::body::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+            + Send
+            + Sync
+            + Unpin
+            + 'static,
+    {
+        CollectWith::new(self, opts)
     }
 
     /// Add trailers to the body.

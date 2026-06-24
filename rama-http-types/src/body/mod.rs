@@ -36,6 +36,9 @@ pub use limit::BodyLimit;
 mod ext;
 pub use ext::BodyExtractExt;
 
+#[doc(inline)]
+pub use util::{CollectError, CollectErrorKind, CollectOptions};
+
 pub mod sse;
 
 mod infinite;

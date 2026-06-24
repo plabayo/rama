@@ -789,7 +789,8 @@ async fn symlink_directory_component_can_be_served_with_allow_all_policy() {
 
 async fn body_into_text<B>(body: B) -> String
 where
-    B: StreamingBody<Data = rama_core::bytes::Bytes, Error: std::fmt::Debug> + Unpin,
+    B: StreamingBody<Data = rama_core::bytes::Bytes, Error: Into<rama_core::error::BoxError>>
+        + Unpin,
 {
     let bytes = body.collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
