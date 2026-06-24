@@ -4,10 +4,7 @@ use rama::{
     Service,
     bytes::Bytes,
     net::{
-        address::{
-            HostWithPort,
-            ip::{IpScopes, private::is_private_ip},
-        },
+        address::ip::{IpScopes, private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -53,11 +50,33 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     init_status
 }
 
+/// Domains spliced *up-front* (born-spliced: claim + direct Swift splice, no
+/// Rust hop), keyed on the OS-provided destination hostname (`remote_hostname`,
+/// available before any TLS peek). Distinct from `exclude_domains`, which
+/// promote *after* the peek. A few common, easy-to-drive names here let a soak
+/// run exercise the born-spliced TCP path on demand — just
+/// `curl https://example.com/` in a loop.
+const BORN_SPLICE_DOMAINS: &[&str] = &["example.com", "example.org", "example.net", "neverssl.com"];
+
+/// `true` if `host` equals or is a subdomain of any suffix in `suffixes`.
+fn host_matches_suffix(host: &str, suffixes: &[&str]) -> bool {
+    suffixes
+        .iter()
+        .any(|s| host == *s || host.strip_suffix(s).is_some_and(|p| p.ends_with('.')))
+}
+
 #[inline(always)]
-fn flow_action_for_remote_endpoint(
-    remote_endpoint: Option<&HostWithPort>,
-) -> TransparentProxyFlowAction {
-    let Some(target) = remote_endpoint else {
+fn flow_action_for_flow(meta: &TransparentProxyFlowMeta) -> TransparentProxyFlowAction {
+    // Up-front born-splice by destination hostname (OS-provided, no TLS peek).
+    // For TCP, `Passthrough` now means claim + direct splice (born-spliced),
+    // not a flow-closing `return false`.
+    if let Some(host) = meta.remote_hostname.as_deref()
+        && host_matches_suffix(host, BORN_SPLICE_DOMAINS)
+    {
+        return TransparentProxyFlowAction::Passthrough;
+    }
+
+    let Some(target) = meta.remote_endpoint.as_ref() else {
         return TransparentProxyFlowAction::Passthrough;
     };
 
@@ -249,7 +268,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
     > + Send
     + '_ {
         log_new_flow("tcp", &meta);
-        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let action = flow_action_for_flow(&meta);
         let concurrency_limiter = self.concurrency_limiter.clone();
         let tcp_mitm_service = self.tcp_mitm_service.clone();
         std::future::ready(match action {
@@ -298,7 +317,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
             return std::future::ready(FlowAction::Passthrough);
         }
-        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        let action = flow_action_for_flow(&meta);
         let udp_service = self.udp_service.clone();
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => FlowAction::Intercept {
