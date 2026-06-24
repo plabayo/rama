@@ -1,6 +1,6 @@
 //! A simple example demonstrating `OctetStream` responses for binary data.
 //!
-//! This example will create a server that listens on `127.0.0.1:62003`.
+//! This example will create a server that listens on `127.0.0.1:62056`.
 //!
 //! # Run the example
 //!
@@ -12,10 +12,10 @@
 //!
 //! ```sh
 //! # Simple binary data
-//! curl http://127.0.0.1:62003/data -o output.bin
+//! curl http://127.0.0.1:62056/data -o output.bin
 //!
 //! # Download with filename
-//! curl -O -J http://127.0.0.1:62003/download
+//! curl -O -J http://127.0.0.1:62056/download
 //! ```
 
 #![expect(
@@ -33,7 +33,7 @@ use rama::{Layer, http::server::HttpServer};
 async fn main() {
     HttpServer::default()
         .listen(
-            "127.0.0.1:62003",
+            "127.0.0.1:62056",
             TraceLayer::new_for_http().layer(
                 WebService::default()
                     .with_get("/data", serve_binary_data)

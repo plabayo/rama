@@ -18,11 +18,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62054`. You can fetch the feeds with:
+//! The server will start and listen on `:62057`. You can fetch the feeds with:
 //!
 //! ```sh
-//! curl http://127.0.0.1:62054/podcast.rss
-//! curl http://127.0.0.1:62054/podcast-stream.rss
+//! curl http://127.0.0.1:62057/podcast.rss
+//! curl http://127.0.0.1:62057/podcast-stream.rss
 //! ```
 
 #![expect(
@@ -212,7 +212,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
     let exec = Executor::graceful(graceful.guard());
 
-    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62054), exec.clone())
+    let listener = TcpListener::bind_address(SocketAddress::default_ipv4(62057), exec.clone())
         .await
         .expect("bind address");
     let bind_address = listener.local_addr().expect("local addr");
