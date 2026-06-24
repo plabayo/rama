@@ -27,7 +27,7 @@ use rama_utils::{
 use crate::{
     Request, Response,
     headers::Allow,
-    matcher::path::{compile_pattern, match_pattern, translate_route_path},
+    matcher::path::{compile_pattern, match_pattern},
     matcher::{HttpMatcher, MethodMatcher, UriParams},
     service::web::{
         IntoEndpointService, IntoEndpointServiceWithState,
@@ -78,7 +78,7 @@ pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = Ro
 /// sharing this path.
 struct RouteEntry<O, E> {
     pattern: PathPattern,
-    /// Lowercased, translated pattern string — identity key for merging repeat
+    /// Lowercased pattern string — identity key for merging repeat
     /// registrations of the same path under different methods.
     key: String,
     /// Per-segment specificity ranks (static=2, capture=1, catch-all=0);
@@ -87,20 +87,25 @@ struct RouteEntry<O, E> {
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
-/// Specificity rank of one translated pattern segment.
+/// `true` when `seg` is a whole-segment catch-all (`{*}` or `{*name}`).
+fn is_catch_all(seg: &str) -> bool {
+    seg.starts_with("{*") && seg.ends_with('}')
+}
+
+/// Specificity rank of one pattern segment.
 fn segment_rank(seg: &str) -> u8 {
-    if seg == "**" || (seg.starts_with(':') && seg.ends_with("**")) {
+    if is_catch_all(seg) {
         0 // catch-all (variable length)
-    } else if seg.contains(':') || seg.contains('*') {
+    } else if seg.contains('{') {
         1 // within-segment capture / wildcard
     } else {
         2 // literal
     }
 }
 
-/// Per-segment specificity key for a translated, normalized pattern.
-fn path_specificity(translated: &str) -> Vec<u8> {
-    translated
+/// Per-segment specificity key for a normalized pattern.
+fn path_specificity(pattern: &str) -> Vec<u8> {
+    pattern
         .split('/')
         .filter(|s| !s.is_empty())
         .map(segment_rank)
@@ -582,14 +587,13 @@ where
             .boxed();
 
         let path = path.as_ref().trim().trim_matches('/');
-        let translated = translate_route_path(path);
-        let pattern_str = format_smolstr!("/{translated}");
+        let pattern_str = format_smolstr!("/{path}");
         let key = pattern_str.to_lowercase();
 
         if let Some(entry) = self.routes.iter_mut().find(|e| e.key == key) {
             entry.handlers.push((matcher, service));
         } else {
-            let specificity = path_specificity(&translated);
+            let specificity = path_specificity(path);
             // keep `routes` most-specific-first; first match wins at lookup
             let pos = self.routes.partition_point(|e| e.specificity > specificity);
             self.routes.insert(
@@ -692,15 +696,11 @@ struct DynamicPrefix {
 }
 
 /// Split a (normalized, lowercased) mount prefix into its leading literal run
-/// — the trie key — and any dynamic tail. A trailing catch-all (`*`, `**`,
-/// `{*name}`, `:name**`) is dropped: the nested service handles the remainder.
+/// — the trie key — and any dynamic tail. A trailing catch-all (`{*}` or
+/// `{*name}`) is dropped: the nested service handles the remainder.
 fn split_sub_prefix(prefix: &str) -> (String, Option<DynamicPrefix>) {
-    let translated = translate_route_path(prefix);
-    let mut segs: Vec<&str> = translated.split('/').filter(|s| !s.is_empty()).collect();
-    if segs
-        .last()
-        .is_some_and(|s| segment_rank(s) == 0 || *s == "*")
-    {
+    let mut segs: Vec<&str> = prefix.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.last().is_some_and(|s| segment_rank(s) == 0) {
         segs.pop();
     }
     let lit_end = segs.iter().take_while(|s| segment_rank(s) == 2).count();
@@ -1231,7 +1231,7 @@ mod tests {
                 .with_post(format!("{prefix}users"), create_user_service())
                 .with_delete(format!("{prefix}users/{{user_id}}"), delete_user_service())
                 .with_sub_router_make_fn(
-                    format!("{prefix}users/{{user_id}}/*"), // glob should be dropped by nester
+                    format!("{prefix}users/{{user_id}}/{{*}}"), // glob should be dropped by nester
                     |router| {
                         router
                             .with_get(prefix, get_user_service())

@@ -75,8 +75,8 @@ pub enum HttpMatcherKind<Body> {
     /// [`MethodMatcher`], a matcher that matches one or more HTTP methods.
     Method(MethodMatcher),
     /// A matcher based on the URI path, compiled from a [`PathPattern`]
-    /// (`:name` / `:name**` captures, `*` / `**` globs). Captures are recorded
-    /// as [`UriParams`].
+    /// (`{name}` / `{*name}` captures, `{}` / `{*}` globs). Captures are
+    /// recorded as [`UriParams`].
     Path(PathPattern),
     /// Matches when the URI path begins with this prefix (segment-boundary,
     /// case-insensitive).
@@ -578,20 +578,18 @@ impl<Body> HttpMatcher<Body> {
         self.or(Self::uri_wildcard(wc))
     }
 
-    /// Create a path matcher from a [`PathPattern`] (`:name` / `:name**`
-    /// captures, `*` / `**` globs; `{name}` / `{*name}` accepted as aliases).
+    /// Create a path matcher from a [`PathPattern`] (`{name}` / `{*name}`
+    /// captures, `{}` / `{*}` globs).
     #[must_use]
     pub fn path(path: impl AsRef<str>) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(path::compile_pattern(&path::translate_route_path(
-                path.as_ref(),
-            ))),
+            kind: HttpMatcherKind::Path(path::compile_pattern(path.as_ref())),
             negate: false,
         }
     }
 
     /// Create a path matcher that matches a literal path exactly, with
-    /// metacharacters (`*`, `:`, …) compared verbatim rather than interpreted.
+    /// brace tokens (`{name}`, …) compared verbatim rather than interpreted.
     #[must_use]
     pub fn path_literal(path: impl AsRef<str>) -> Self {
         Self {

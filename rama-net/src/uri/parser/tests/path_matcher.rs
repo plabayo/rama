@@ -1,10 +1,11 @@
 //! `PathPattern` — infallible path-pattern matching and captures.
 //!
 //! Pins the matcher contract: literal exactness, whole-segment and run
-//! captures, anonymous wildcards with literal affixes, catch-all (`**`, incl.
+//! captures, anonymous wildcards with literal affixes, catch-all (`{*}`, incl.
 //! mid-pattern), explicit trailing-slash policy, decode-aware and case-(in)
 //! sensitive comparison, the `?` optional element, polynomial backtracking, and
-//! that meta-char misuse / UTF-8 / percent-encoding never panic.
+//! that brace misuse / UTF-8 / percent-encoding never panic. `*`, `:`, `.` etc.
+//! are plain literals; only `{`, `}`, `?` are metacharacters.
 
 use crate::uri::{PathMatchOptions, PathPattern, PathRef};
 
@@ -27,7 +28,7 @@ fn caps(pattern: &str, path: &str) -> Option<Vec<(String, String)>> {
     })
 }
 
-/// The `**` glob value for `path` against `pattern`, if matched.
+/// The `{*}` glob value for `path` against `pattern`, if matched.
 fn glob_of(pattern: &str, path: &str) -> Option<String> {
     PathPattern::new(pattern)
         .captures(p(path))
@@ -49,25 +50,45 @@ fn literal_exact() {
 }
 
 #[test]
+fn old_metachars_are_now_literals() {
+    // `:` is a plain literal now (Google AIP custom-method style).
+    let colon = PathPattern::new("/books:archive");
+    assert!(colon.is_match(p("/books:archive")));
+    assert!(!colon.is_match(p("/books/archive")));
+    assert!(colon.captures(p("/books:archive")).unwrap().is_empty());
+
+    // `*` is a plain literal now, not a wildcard.
+    let star = PathPattern::new("/a*b");
+    assert!(star.is_match(p("/a*b")));
+    assert!(!star.is_match(p("/axb")));
+    assert!(!star.is_match(p("/ab")));
+
+    // `**` likewise: a literal segment, no longer a catch-all.
+    let dstar = PathPattern::new("/x/**");
+    assert!(dstar.is_match(p("/x/**")));
+    assert!(!dstar.is_match(p("/x/a/b")));
+}
+
+#[test]
 fn whole_segment_capture_trailing_required() {
     assert_eq!(
-        caps("/simple/:name/", "/simple/requests/"),
+        caps("/simple/{name}/", "/simple/requests/"),
         Some(vec![("name".to_owned(), "requests".to_owned())])
     );
-    assert!(caps("/simple/:name/", "/simple/requests").is_none());
+    assert!(caps("/simple/{name}/", "/simple/requests").is_none());
 }
 
 #[test]
 fn optional_trailing_slash() {
     let want = Some(vec![("name".to_owned(), "requests".to_owned())]);
-    assert_eq!(caps("/simple/:name/?", "/simple/requests"), want);
-    assert_eq!(caps("/simple/:name/?", "/simple/requests/"), want);
+    assert_eq!(caps("/simple/{name}/?", "/simple/requests"), want);
+    assert_eq!(caps("/simple/{name}/?", "/simple/requests/"), want);
 }
 
 #[test]
 fn capture_with_suffix() {
     assert_eq!(
-        caps("/p2/:vendor/:pkg*.json", "/p2/acme/widget.json"),
+        caps("/p2/{vendor}/{pkg}.json", "/p2/acme/widget.json"),
         Some(vec![
             ("pkg".to_owned(), "widget".to_owned()),
             ("vendor".to_owned(), "acme".to_owned()),
@@ -75,18 +96,18 @@ fn capture_with_suffix() {
     );
     // `~` lands inside the captured run.
     assert_eq!(
-        caps("/p2/:vendor/:pkg*.json", "/p2/acme/widget~dev.json"),
+        caps("/p2/{vendor}/{pkg}.json", "/p2/acme/widget~dev.json"),
         Some(vec![
             ("pkg".to_owned(), "widget~dev".to_owned()),
             ("vendor".to_owned(), "acme".to_owned()),
         ])
     );
-    assert!(caps("/p2/:vendor/:pkg*.json", "/p2/acme/widget.txt").is_none());
+    assert!(caps("/p2/{vendor}/{pkg}.json", "/p2/acme/widget.txt").is_none());
 }
 
 #[test]
 fn anonymous_wildcard_suffix() {
-    let pat = PathPattern::new("/files/*.txt");
+    let pat = PathPattern::new("/files/{}.txt");
     assert!(pat.is_match(p("/files/readme.txt")));
     assert!(!pat.is_match(p("/files/readme.md")));
     assert!(pat.captures(p("/files/readme.txt")).unwrap().is_empty());
@@ -94,28 +115,28 @@ fn anonymous_wildcard_suffix() {
 
 #[test]
 fn catch_all_tail() {
-    assert_eq!(glob_of("/assets/**", "/assets/a"), Some("a".to_owned()));
+    assert_eq!(glob_of("/assets/{*}", "/assets/a"), Some("a".to_owned()));
     assert_eq!(
-        glob_of("/assets/**", "/assets/a/b/c"),
+        glob_of("/assets/{*}", "/assets/a/b/c"),
         Some("a/b/c".to_owned())
     );
-    // `**` requires 1+ segments.
+    // `{*}` requires 1+ segments.
     assert!(
-        PathPattern::new("/assets/**")
+        PathPattern::new("/assets/{*}")
             .captures(p("/assets"))
             .is_none()
     );
-    assert!(!PathPattern::new("/assets/**").is_match(p("/assets")));
+    assert!(!PathPattern::new("/assets/{*}").is_match(p("/assets")));
 }
 
 #[test]
 fn catch_all_middle() {
-    let pat = PathPattern::new("/p2/**/*.txt");
+    let pat = PathPattern::new("/p2/{*}/{}.txt");
     assert!(pat.is_match(p("/p2/a/b/c.txt")));
-    // `**` is 1+, so a single trailing segment leaves nothing for it.
+    // `{*}` is 1+, so a single trailing segment leaves nothing for it.
     assert!(!pat.is_match(p("/p2/x.txt")));
     assert_eq!(
-        glob_of("/p2/**/*.txt", "/p2/a/b/c.txt"),
+        glob_of("/p2/{*}/{}.txt", "/p2/a/b/c.txt"),
         Some("a/b".to_owned())
     );
 }
@@ -124,7 +145,7 @@ fn catch_all_middle() {
 fn decode_aware_capture() {
     // `%6d` decodes to `m`, so the encoded path still captures vendor=acme.
     assert_eq!(
-        caps("/p2/:vendor/:pkg*.json", "/p2/ac%6de/widget.json"),
+        caps("/p2/{vendor}/{pkg}.json", "/p2/ac%6de/widget.json"),
         Some(vec![
             ("pkg".to_owned(), "widget".to_owned()),
             ("vendor".to_owned(), "acme".to_owned()),
@@ -165,12 +186,12 @@ fn root_and_empty_edges() {
     assert!(PathPattern::new("/a").is_match(p("/a")));
 
     assert!(PathPattern::new("").is_match(p("")));
-    // `*` is 0+ within a segment and `/` is a single empty segment, so `/*`
+    // `{}` is 0+ within a segment and `/` is a single empty segment, so `/{}`
     // matches `/`.
-    assert!(PathPattern::new("/*").is_match(p("/")));
-    assert!(!PathPattern::new(":weird*?[]").is_match(p("/x")));
-    assert!(PathPattern::new("/*").is_match(p("/anything")));
-    assert_eq!(glob_of("/**", "/a/b"), Some("a/b".to_owned()));
+    assert!(PathPattern::new("/{}").is_match(p("/")));
+    assert!(!PathPattern::new("{weird}?[]").is_match(p("/x")));
+    assert!(PathPattern::new("/{}").is_match(p("/anything")));
+    assert_eq!(glob_of("/{*}", "/a/b"), Some("a/b".to_owned()));
 }
 
 #[test]
@@ -180,12 +201,12 @@ fn is_match_captures_parity() {
             "/backend-api/codex/responses",
             "/backend-api/codex/responses",
         ),
-        ("/files/*.txt", "/files/a.txt"),
-        ("/p2/:vendor/:pkg*.json", "/p2/acme/widget.json"),
-        ("/assets/**", "/assets/a/b"),
-        ("/simple/:name/?", "/simple/x/"),
+        ("/files/{}.txt", "/files/a.txt"),
+        ("/p2/{vendor}/{pkg}.json", "/p2/acme/widget.json"),
+        ("/assets/{*}", "/assets/a/b"),
+        ("/simple/{name}/?", "/simple/x/"),
         ("/api/v2", "/api/v3"),
-        ("/files/*.txt", "/files/a.md"),
+        ("/files/{}.txt", "/files/a.md"),
         ("/", "/"),
         ("/", "/a"),
     ];
@@ -205,7 +226,7 @@ fn is_match_captures_parity() {
 
 #[test]
 fn capture_accessors() {
-    let pat = PathPattern::new("/p2/:vendor/:pkg*.json");
+    let pat = PathPattern::new("/p2/{vendor}/{pkg}.json");
     let caps = pat.captures(p("/p2/acme/widget.json")).unwrap();
     assert_eq!(caps.get("vendor"), Some("acme"));
     assert_eq!(caps.get("pkg"), Some("widget"));
@@ -220,9 +241,9 @@ fn capture_accessors() {
 
 #[test]
 fn capture_then_literal_without_star() {
-    // `:pkg.json` (no `*`) captures the greedy run before the `.json` literal —
-    // same result as `:pkg*.json`, with the literal matched intact.
-    let pat = PathPattern::new("/p2/:vendor/:pkg.json");
+    // `{pkg}.json` captures the greedy run before the `.json` literal, with the
+    // literal matched intact.
+    let pat = PathPattern::new("/p2/{vendor}/{pkg}.json");
     let caps = pat.captures(p("/p2/acme/widget.json")).unwrap();
     assert_eq!(caps.get("pkg"), Some("widget"));
     assert_eq!(caps.get("vendor"), Some("acme"));
@@ -231,7 +252,7 @@ fn capture_then_literal_without_star() {
 
 #[test]
 fn capture_names_with_underscore_and_dash() {
-    let pat = PathPattern::new("/:my_name/:other-id");
+    let pat = PathPattern::new("/{my_name}/{other-id}");
     let caps = pat.captures(p("/foo/bar")).unwrap();
     assert_eq!(caps.get("my_name"), Some("foo"));
     assert_eq!(caps.get("other-id"), Some("bar"));
@@ -254,26 +275,26 @@ fn capture_free_trailing_slash_fast_path() {
 
 #[test]
 fn backtracking_discards_stale_bindings() {
-    // `**` is shortest-first: take=1 ([a]) tentatively binds :x="b" then fails
+    // `{*}` is shortest-first: take=1 ([a]) tentatively binds x="b" then fails
     // on the leftover [c]; that binding must be discarded before take=2 binds
-    // :x="c". A leaked binding would surface as a stale `x` here.
+    // x="c". A leaked binding would surface as a stale `x` here.
     assert_eq!(
-        caps("/**/:x", "/a/b/c"),
+        caps("/{*}/{x}", "/a/b/c"),
         Some(vec![("x".to_owned(), "c".to_owned())])
     );
-    assert_eq!(glob_of("/**/:x", "/a/b/c"), Some("a/b".to_owned()));
+    assert_eq!(glob_of("/{*}/{x}", "/a/b/c"), Some("a/b".to_owned()));
 }
 
 #[test]
 fn anonymous_and_glob_excluded_from_named() {
-    // `:` with no following name is an uncaptured wildcard run.
-    let anon_pat = PathPattern::new("/p2/:/:real");
+    // `{}` is an uncaptured wildcard run.
+    let anon_pat = PathPattern::new("/p2/{}/{real}");
     let caps = anon_pat.captures(p("/p2/foo/bar")).unwrap();
     assert_eq!(caps.get("real"), Some("bar"));
     assert_eq!(caps.iter().collect::<Vec<_>>(), vec![("real", "bar")]);
 
-    // The `**` glob is reachable only via glob(), never get()/iter().
-    let glob_pat = PathPattern::new("/files/**/:name");
+    // The `{*}` glob is reachable only via glob(), never get()/iter().
+    let glob_pat = PathPattern::new("/files/{*}/{name}");
     let g = glob_pat.captures(p("/files/a/b/x")).unwrap();
     assert_eq!(g.get("name"), Some("x"));
     assert_eq!(g.glob(), Some("a/b"));
@@ -282,50 +303,50 @@ fn anonymous_and_glob_excluded_from_named() {
 
 #[test]
 fn named_catch_all() {
-    // `:name**` is a named catch-all: 1+ segments, '/'-joined and decoded,
+    // `{*name}` is a named catch-all: 1+ segments, '/'-joined and decoded,
     // read via get()/iter() — not glob().
     assert_eq!(
-        caps("/assets/:path**", "/assets/css/app.css"),
+        caps("/assets/{*path}", "/assets/css/app.css"),
         Some(vec![("path".to_owned(), "css/app.css".to_owned())])
     );
     assert_eq!(
-        caps("/assets/:path**", "/assets/a"),
+        caps("/assets/{*path}", "/assets/a"),
         Some(vec![("path".to_owned(), "a".to_owned())])
     );
     // It is a named binding, so glob() stays empty.
-    let pat = PathPattern::new("/assets/:path**");
+    let pat = PathPattern::new("/assets/{*path}");
     let c = pat.captures(p("/assets/a/b")).unwrap();
     assert_eq!(c.get("path"), Some("a/b"));
     assert_eq!(c.glob(), None);
 
-    // Like `**`, it needs 1+ segments: the bare prefix does not match.
+    // Like `{*}`, it needs 1+ segments: the bare prefix does not match.
     assert!(
-        PathPattern::new("/assets/:path**")
+        PathPattern::new("/assets/{*path}")
             .captures(p("/assets"))
             .is_none()
     );
 
     // Mid-pattern: the run stops before the trailing literal.
     assert_eq!(
-        caps("/a/:mid**/z", "/a/b/c/z"),
+        caps("/a/{*mid}/z", "/a/b/c/z"),
         Some(vec![("mid".to_owned(), "b/c".to_owned())])
     );
 
     // Decoded + joined across segments.
     assert_eq!(
-        caps("/d/:rest**", "/d/a%20b/c"),
+        caps("/d/{*rest}", "/d/a%20b/c"),
         Some(vec![("rest".to_owned(), "a b/c".to_owned())])
     );
 
-    // A single `*` stays within a segment (contrast): `:path*` captures one
-    // segment only, so a multi-segment path does not match.
+    // `{name}` stays within a segment (contrast): it captures one segment
+    // only, so a multi-segment path does not match.
     assert!(
-        PathPattern::new("/assets/:path*")
+        PathPattern::new("/assets/{path}")
             .captures(p("/assets/a/b"))
             .is_none()
     );
     assert_eq!(
-        caps("/assets/:path*", "/assets/a"),
+        caps("/assets/{path}", "/assets/a"),
         Some(vec![("path".to_owned(), "a".to_owned())])
     );
 }
@@ -338,21 +359,21 @@ fn utf8_literal_and_capture() {
 
     // Capture carries a multibyte value through intact.
     assert_eq!(
-        caps("/u/:name", "/u/naïve"),
+        caps("/u/{name}", "/u/naïve"),
         Some(vec![("name".to_owned(), "naïve".to_owned())])
     );
 
     // Percent-encoded UTF-8 decodes to the same value, both in a capture and
     // against a (decoded) literal segment.
     assert_eq!(
-        caps("/u/:name", "/u/caf%C3%A9"),
+        caps("/u/{name}", "/u/caf%C3%A9"),
         Some(vec![("name".to_owned(), "café".to_owned())])
     );
     assert!(PathPattern::new("/café").is_match(p("/caf%C3%A9")));
 
     // A multibyte run inside an affixed capture splits on the literal byte.
     assert_eq!(
-        caps("/d/:name*.md", "/d/naïve.md"),
+        caps("/d/{name}.md", "/d/naïve.md"),
         Some(vec![("name".to_owned(), "naïve".to_owned())])
     );
 }
@@ -362,18 +383,18 @@ fn pct_encoded_inside_segment_is_not_a_separator() {
     // `%2F` decodes to `/` but stays *within* the captured value — segmentation
     // happens on raw `/`, before decoding, so it must not split the segment.
     assert_eq!(
-        caps("/files/:name", "/files/a%2Fb"),
+        caps("/files/{name}", "/files/a%2Fb"),
         Some(vec![("name".to_owned(), "a/b".to_owned())])
     );
     assert_eq!(
-        caps("/person/:name/age", "/person/glen%20dc/age"),
+        caps("/person/{name}/age", "/person/glen%20dc/age"),
         Some(vec![("name".to_owned(), "glen dc".to_owned())])
     );
-    // A percent-encoded metacharacter decodes to a plain literal in the value
-    // (`%2A` == `*`); it is never re-interpreted as a wildcard.
+    // A percent-encoded brace decodes to a plain literal in the value
+    // (`%7B` == `{`); it is never re-interpreted as a token.
     assert_eq!(
-        caps("/x/:v", "/x/%2A"),
-        Some(vec![("v".to_owned(), "*".to_owned())])
+        caps("/x/{v}", "/x/%7Babc"),
+        Some(vec![("v".to_owned(), "{abc".to_owned())])
     );
 }
 
@@ -381,55 +402,61 @@ fn pct_encoded_inside_segment_is_not_a_separator() {
 fn invalid_utf8_decodes_lossy_without_panic() {
     // `%ff` decodes to byte 0xFF (not valid UTF-8): the capture is rendered
     // lossily (U+FFFD) rather than panicking or dropping the match.
-    let pat = PathPattern::new("/x/:v");
+    let pat = PathPattern::new("/x/{v}");
     let caps = pat.captures(p("/x/%ff")).unwrap();
     assert_eq!(caps.get("v"), Some("\u{FFFD}"));
-    // Same for the `**` glob join.
-    assert_eq!(glob_of("/g/**", "/g/a/%ff"), Some("a/\u{FFFD}".to_owned()));
+    // Same for the `{*}` glob join.
+    assert_eq!(glob_of("/g/{*}", "/g/a/%ff"), Some("a/\u{FFFD}".to_owned()));
 }
 
 #[test]
 fn misused_meta_chars_never_panic_and_stay_consistent() {
-    // Patterns that abuse the matching metacharacters (`*`, `:`, `?`, `**`)
-    // must compile (infallible) and match without panicking, and is_match must
-    // always agree with captures().is_some() — including on percent-encoded,
-    // empty, and double-slash paths.
+    // Patterns that abuse the brace metacharacters (`{`, `}`, `?`) or pile up
+    // the now-literal `*`/`:` must compile (infallible) and match without
+    // panicking, and is_match must always agree with captures().is_some() —
+    // including on percent-encoded, empty, and double-slash paths.
     let patterns = [
-        ":",
-        "::",
-        ":*",
-        "*:",
-        "*",
-        "**",
-        "***",
-        "/:",
-        "/::/",
-        "a**",
-        "**b",
-        ":?",
-        "?:",
+        "{",
+        "}",
+        "{}",
+        "{{}}",
+        "{}}",
+        "{{}",
+        "{name",
+        "name}",
+        "{bad name}",
+        "{na/me}",
+        "{*}",
+        "{**}",
+        "{*}}",
+        "{*bad name}",
+        "{*na/me}",
+        "a{*}",
+        "{*}b",
+        "{}?",
+        "{name}?",
+        "{?}",
+        "?{}",
         "??",
         "a?",
         "ab?c",
-        "*?",
-        "**?",
-        ":name?",
-        ":*name",
-        "[]{}",
-        "(){}",
-        ":weird*?[]",
+        "{weird}?[]",
+        ":",
+        "*",
+        "**",
+        "***",
         "/",
         "//",
         "///",
         "",
-        "::*::",
-        "/a/**/**/b",
-        ":a*:b*:c",
-        ":rest**",
-        ":**",
-        ":name***",
-        "x:name**",
-        "/a/:mid**/z",
+        "/a/{*}/{*}/b",
+        "{a}{b}{c}",
+        "{*rest}",
+        "x{*name}",
+        "{*name}}",
+        "/a/{*mid}/z",
+        "{}.{}",
+        "v{ver}-rc",
     ];
     let paths = [
         "", "/", "//", "/abc", "/a/b", "/a/b/c", "/a//b", "/x/", "/*", "/:", "/a?b", "/%2F",
@@ -466,10 +493,10 @@ fn misused_meta_chars_never_panic_and_stay_consistent() {
 fn pathological_multi_run_segment_is_polynomial_and_correct() {
     use std::time::{Duration, Instant};
 
-    // One segment, two literal-separated captures `[a*][b][b*][b]`: matching
+    // One segment, two literal-separated captures `[a][b][b][b]`: matching
     // "aaa…a" + "bb", greedy-longest binds a="aaa…a", literal `b`, then b=""
     // before the trailing literal `b`.
-    let pat = PathPattern::new("/:a*b:b*b");
+    let pat = PathPattern::new("/{a}b{b}b");
     let hay = "/".to_owned() + &"a".repeat(40) + "bb";
     let start = Instant::now();
     let caps = pat.captures(p(&hay)).expect("must match");
@@ -478,7 +505,7 @@ fn pathological_multi_run_segment_is_polynomial_and_correct() {
 
     // A failing match over a long run forces the matcher to prove no split
     // works — the exponential blowup case.
-    let fail_pat = PathPattern::new(":x*:y*:z*:w*:v*END");
+    let fail_pat = PathPattern::new("{x}{y}{z}{w}{v}END");
     let fail_hay = "/".to_owned() + &"q".repeat(60);
     assert!(!fail_pat.is_match(p(&fail_hay)));
     assert!(
@@ -514,9 +541,9 @@ fn pathological_many_optional_literals_is_polynomial() {
 fn pathological_multi_catchall_is_polynomial_and_correct() {
     use std::time::{Duration, Instant};
 
-    // Eight `**` plus a trailing literal that never appears: naive search is
+    // Eight `{*}` plus a trailing literal that never appears: naive search is
     // O(segments^8); the cross-segment memo keeps it polynomial.
-    let pat = PathPattern::new("/**/**/**/**/**/**/**/**/end");
+    let pat = PathPattern::new("/{*}/{*}/{*}/{*}/{*}/{*}/{*}/{*}/end");
     let hay = "/".to_owned() + &"x/".repeat(30) + "y";
     let start = Instant::now();
     assert!(!pat.is_match(p(&hay)));
@@ -525,9 +552,9 @@ fn pathological_multi_catchall_is_polynomial_and_correct() {
         "matching must stay polynomial"
     );
 
-    // Still matches + globs correctly when the tail lines up. `**` is
+    // Still matches + globs correctly when the tail lines up. `{*}` is
     // shortest-first, so the first takes one segment and the second the rest.
-    let ok = PathPattern::new("/**/**/end");
+    let ok = PathPattern::new("/{*}/{*}/end");
     let g = ok.captures(p("/a/b/c/end")).expect("must match");
     assert_eq!(g.glob(), Some("a"));
 }

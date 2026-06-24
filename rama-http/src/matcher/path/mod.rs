@@ -1,11 +1,11 @@
 //! URI path parameters captured during routing, plus the helpers that bridge
 //! [`rama_net::uri::PathPattern`] matching into [`UriParams`].
 //!
-//! The matching engine itself lives in rama-net ([`PathPattern`]); this module
-//! owns the HTTP-routing glue: the `{name}` / `{*name}` syntax aliases, the
-//! case-insensitive match options, and turning [`PathCaptures`] into the
-//! [`UriParams`] extension the [`Path`](crate::service::web::extract::Path)
-//! extractor reads.
+//! The matching engine itself lives in rama-net ([`PathPattern`]), whose
+//! `{name}` / `{*name}` brace syntax is used directly by HTTP routing; this
+//! module owns the routing glue: the case-insensitive match options and
+//! turning [`PathCaptures`] into the [`UriParams`] extension the
+//! [`Path`](crate::service::web::extract::Path) extractor reads.
 
 use crate::StatusCode;
 use crate::service::web::response::IntoResponse;
@@ -101,7 +101,7 @@ impl UriParams {
     }
 
     /// Build [`UriParams`] from a successful [`PathPattern`] match: named
-    /// captures (incl. `:name**`) become params, the anonymous `**` glob (if
+    /// captures (incl. `{*name}`) become params, the anonymous `{*}` glob (if
     /// any) becomes the glob value.
     pub(crate) fn from_captures(caps: &PathCaptures<'_, '_>) -> Self {
         let mut params = Self::default();
@@ -145,39 +145,6 @@ pub(crate) const HTTP_PATH_OPTS: PathMatchOptions = PathMatchOptions {
 /// Compile `pattern` (in [`PathPattern`] syntax) with the HTTP routing options.
 pub(crate) fn compile_pattern(pattern: &str) -> PathPattern {
     PathPattern::new_with_opts(pattern, HTTP_PATH_OPTS)
-}
-
-/// Translate router / [`HttpMatcher`](crate::matcher::HttpMatcher) path syntax
-/// into [`PathPattern`] syntax: `{name}` → `:name`, `{*name}` → `:name**`.
-/// Everything else — including native `:name`, `*`, `**`, and literals — passes
-/// through unchanged, so both spellings are accepted.
-pub(crate) fn translate_route_path(path: &str) -> String {
-    if !path.contains('{') {
-        return path.to_owned();
-    }
-    let mut out = String::with_capacity(path.len());
-    let mut rest = path;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        if let Some(close) = after.find('}') {
-            let inner = &after[..close];
-            out.push(':');
-            if let Some(name) = inner.strip_prefix('*') {
-                out.push_str(name);
-                out.push_str("**");
-            } else {
-                out.push_str(inner);
-            }
-            rest = &after[close + 1..];
-        } else {
-            // Unbalanced `{` — keep it literal and move on.
-            out.push('{');
-            rest = after;
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Match `path` against a compiled [`PathPattern`], inserting the captured
@@ -281,28 +248,15 @@ mod test {
     use rama_utils::str::arcstr::arcstr;
 
     #[test]
-    fn translate_route_syntax() {
-        assert_eq!(translate_route_path("/users/{id}"), "/users/:id");
-        assert_eq!(translate_route_path("/assets/{*path}"), "/assets/:path**");
-        assert_eq!(
-            translate_route_path("/users/{user_id}/orders/{order_id}"),
-            "/users/:user_id/orders/:order_id"
-        );
-        // Native syntax passes through.
-        assert_eq!(translate_route_path("/users/:id/x"), "/users/:id/x");
-        assert_eq!(translate_route_path("/a/**"), "/a/**");
-    }
-
-    #[test]
     fn pattern_captures_into_uri_params() {
-        let pat = compile_pattern(&translate_route_path("/users/{id}"));
+        let pat = compile_pattern("/users/{id}");
         let ext = Extensions::new();
         assert!(match_pattern(&pat, Some(&ext), "/users/glen%20dc"));
         let params = ext.get_ref::<UriParams>().unwrap();
         assert_eq!(params.get("id"), Some("glen dc"));
 
         // Named catch-all is read as a normal param.
-        let pat = compile_pattern(&translate_route_path("/assets/{*path}"));
+        let pat = compile_pattern("/assets/{*path}");
         let ext = Extensions::new();
         assert!(match_pattern(&pat, Some(&ext), "/assets/css/app.css"));
         assert_eq!(

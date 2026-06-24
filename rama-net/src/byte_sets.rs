@@ -70,7 +70,7 @@ const IPVFUTURE_TAIL_BYTE_SET: [bool; 256] =
 const LABEL_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
 
 /// Path-pattern capture-name byte class: `ALPHA / DIGIT / "_" / "-"`. Scans the
-/// `:name` identifier in [`crate::uri::PathPattern`]. Same membership as a DNS
+/// `{name}` identifier in [`crate::uri::PathPattern`]. Same membership as a DNS
 /// label, kept separate so the two grammars can drift independently.
 const PATTERN_NAME_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
 

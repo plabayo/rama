@@ -104,12 +104,12 @@ async fn main() {
                     ),
                     // you can also use options for the policy itself, in case you want to disable
                     // the limit for some
-                    (HttpMatcher::path("/admin/*"), None),
+                    (HttpMatcher::path("/admin/{*}"), None),
                     // test path so you can test also rate limiting on an http level
                     // > NOTE: as you can also make your own Matchers you can limit on w/e
                     // > property you want.
                     (
-                        HttpMatcher::path("/limit/*"),
+                        HttpMatcher::path("/limit/{*}"),
                         Some(Either::A(ConcurrentPolicy::max_with_backoff(
                             2,
                             Some(ExponentialBackoff::default()),
@@ -118,7 +118,7 @@ async fn main() {
                     // this one is the reason why we are using the (Vec<M, P>, P) approach from above,
                     // as we want to have a default policy for all other requests
                     (
-                        HttpMatcher::path("/api/*"),
+                        HttpMatcher::path("/api/{*}"),
                         Some(Either::B((
                             vec![
                                 (

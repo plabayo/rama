@@ -1,10 +1,11 @@
 //! Infallible path-pattern matching.
 //!
-//! [`PathPattern`] compiles a small glob/capture syntax and matches it against
-//! a [`PathRef`](super::PathRef) segment-by-segment, decode-aware and (by
-//! default) case-sensitive. Compilation never fails: anything that isn't a
-//! recognized meta token is treated as a literal. See [`PathPattern`] for the
-//! full syntax.
+//! [`PathPattern`] compiles a small brace-based glob/capture syntax and matches
+//! it against a [`PathRef`](super::PathRef) segment-by-segment, decode-aware and
+//! (by default) case-sensitive. Compilation never fails: anything that isn't a
+//! recognized brace token is treated as a literal. The only metacharacters are
+//! `{`, `}` and `?` — none of which is a valid unencoded URI path byte — so
+//! `*`, `:`, `.` etc. are all literals. See [`PathPattern`] for the full syntax.
 
 use std::borrow::Cow;
 
@@ -22,23 +23,29 @@ use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, str
 ///
 /// # Syntax
 ///
-/// A pattern is split on `/` into segments. Within a segment:
+/// A pattern is split on `/` into segments. The only metacharacters are `{`,
+/// `}` and `?`; everything else (`*`, `:`, `.`, …) is a literal. Within a
+/// segment:
 ///
 /// - **literal** text must equal the (decoded) path segment value;
-/// - `:name` captures a whole segment under `name`;
-/// - `:name*` captures a wildcard run within a segment, allowing literal
-///   prefix/suffix around it (`:pkg*.json` captures the part before `.json`).
-///   `:name` and `:name*` are equivalent when there is no surrounding literal;
-/// - `*` is an anonymous wildcard run (0+ chars), not captured;
+/// - `{name}` captures a run under `name`: a whole segment when alone
+///   (`{id}`), or the run bounded by surrounding literals when affixed
+///   (`{pkg}.json` captures the part before `.json`, `v{ver}-rc` the part
+///   between);
+/// - `{}` is an anonymous wildcard run (0+ chars), not captured (`{}.txt`);
 /// - `?` makes the immediately preceding element optional (zero-or-one):
-///   `a?` is an optional `a`, a trailing `/?` is an optional trailing slash;
-/// - `**`, as a *whole* segment, is an anonymous catch-all matching one or
+///   `a?` is an optional `a`, `{}?` an optional run, a trailing `/?` an
+///   optional trailing slash;
+/// - `{*}`, as a *whole* segment, is an anonymous catch-all matching one or
 ///   more path segments, available '/'-joined and decoded via
 ///   [`PathCaptures::glob`]. It may appear in the middle of a pattern;
-/// - `:name**`, as a *whole* segment, is the **named** catch-all: same 1+
-///   segment match as `**`, but the run is recorded under `name` (read back,
-///   '/'-joined and decoded, via [`PathCaptures::get`]). So a single `*`
-///   stays within a segment; a doubled `**` spans segments.
+/// - `{*name}`, as a *whole* segment, is the **named** catch-all: same 1+
+///   segment match as `{*}`, but the run is recorded under `name` (read back,
+///   '/'-joined and decoded, via [`PathCaptures::get`]). So `{name}` stays
+///   within a segment; `{*name}` spans segments.
+///
+/// An unclosed `{`, or a brace group whose body isn't a valid token, is taken
+/// literally. `{*}`/`{*name}` are catch-alls only as a *whole* segment.
 ///
 /// Trailing slash is explicit: `/a` matches only `/a`, `/a/` matches only
 /// `/a/`, and `/a/?` matches both.
@@ -46,18 +53,18 @@ use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, str
 /// ```
 /// use rama_net::uri::{PathPattern, PathRef};
 ///
-/// let pat = PathPattern::new("/p2/:vendor/:pkg*.json");
+/// let pat = PathPattern::new("/p2/{vendor}/{pkg}.json");
 /// let caps = pat.captures(PathRef::from_raw_str("/p2/acme/widget.json")).unwrap();
 /// assert_eq!(caps.get("vendor"), Some("acme"));
 /// assert_eq!(caps.get("pkg"), Some("widget"));
 /// assert!(pat.captures(PathRef::from_raw_str("/p2/acme/widget.txt")).is_none());
 ///
-/// let assets = PathPattern::new("/assets/**");
+/// let assets = PathPattern::new("/assets/{*}");
 /// assert!(assets.is_match(PathRef::from_raw_str("/assets/css/app.css")));
 /// assert!(!assets.is_match(PathRef::from_raw_str("/assets")));
 ///
-/// // `:name**` is the named catch-all (read back via `get`).
-/// let files = PathPattern::new("/files/:rest**");
+/// // `{*name}` is the named catch-all (read back via `get`).
+/// let files = PathPattern::new("/files/{*rest}");
 /// let caps = files.captures(PathRef::from_raw_str("/files/a/b/c.txt")).unwrap();
 /// assert_eq!(caps.get("rest"), Some("a/b/c.txt"));
 /// ```
@@ -102,15 +109,15 @@ impl TrailingSlash {
 /// One `/`-delimited unit of a compiled pattern.
 #[derive(Debug, Clone)]
 enum PatternSegment {
-    /// `**` — matches one or more whole path segments (anonymous; read back
+    /// `{*}` — matches one or more whole path segments (anonymous; read back
     /// via [`PathCaptures::glob`]).
     CatchAll,
-    /// `:name**` — like [`CatchAll`](Self::CatchAll) but records the matched,
+    /// `{*name}` — like [`CatchAll`](Self::CatchAll) but records the matched,
     /// '/'-joined run under `name` (read back via [`PathCaptures::get`]).
     NamedCatchAll { name_start: usize, name_len: usize },
     /// A sequence of within-segment elements matched against a single path
     /// segment via greedy backtracking. Inline-sized for the common one- or
-    /// two-element segment (a bare literal, capture, or `:name*.ext` pair).
+    /// two-element segment (a bare literal, capture, or `{pkg}.ext` pair).
     Normal {
         elems: SmallVec<[Element; 2]>,
         /// Count of *ambiguity sources* in `elems`: wildcard runs
@@ -137,7 +144,7 @@ enum ElementKind {
     /// Literal bytes, compared against the decoded path-segment bytes. Boxed:
     /// fixed after compilation, so the `Vec` capacity word is dead weight.
     Literal(Box<[u8]>),
-    /// Anonymous wildcard run (0+ chars within the segment).
+    /// Anonymous wildcard run (`{}`, 0+ chars within the segment).
     Star,
     /// Named wildcard run that records what it matched. The name is the
     /// `name_bytes[start..start+len]` slice of the owning [`PathPattern`].
@@ -206,25 +213,23 @@ impl PathPattern {
         // exactly `/`.
         if !body.is_empty() {
             for seg in body.split(|&b| b == b'/') {
-                if seg == b"**" {
-                    capture_free = false;
-                    segments.push(PatternSegment::CatchAll);
-                    continue;
-                }
-                if let Some(name) = parse_named_catchall(seg) {
-                    capture_free = false;
-                    // `:**` (empty name) is just the anonymous catch-all.
-                    if name.is_empty() {
+                match parse_catchall(seg) {
+                    Some(CatchAll::Anon) => {
+                        capture_free = false;
                         segments.push(PatternSegment::CatchAll);
-                    } else {
+                        continue;
+                    }
+                    Some(CatchAll::Named(name)) => {
+                        capture_free = false;
                         let name_start = name_bytes.len();
                         name_bytes.extend_from_slice(name);
                         segments.push(PatternSegment::NamedCatchAll {
                             name_start,
                             name_len: name.len(),
                         });
+                        continue;
                     }
-                    continue;
+                    None => {}
                 }
                 let elements = parse_segment(seg, &mut name_bytes, &mut capture_free);
                 let ambiguity = elements
@@ -256,7 +261,7 @@ impl PathPattern {
     /// ```
     /// use rama_net::uri::{PathPattern, PathRef};
     ///
-    /// let pat = PathPattern::new("/files/*.txt");
+    /// let pat = PathPattern::new("/files/{}.txt");
     /// assert!(pat.is_match(PathRef::from_raw_str("/files/readme.txt")));
     /// assert!(!pat.is_match(PathRef::from_raw_str("/files/readme.md")));
     /// ```
@@ -270,7 +275,7 @@ impl PathPattern {
     }
 
     /// Allocation-free match for capture-free patterns. A capture-free
-    /// pattern has no `**`, so every pattern segment matches exactly one path
+    /// pattern has no catch-all, so every pattern segment matches exactly one path
     /// segment positionally — no backtracking across segments, no `Vec`, no
     /// captured-value strings.
     fn is_match_fast(&self, path: PathRef<'_>) -> bool {
@@ -320,7 +325,7 @@ impl PathPattern {
     /// ```
     /// use rama_net::uri::{PathPattern, PathRef};
     ///
-    /// let pat = PathPattern::new("/simple/:name/?");
+    /// let pat = PathPattern::new("/simple/{name}/?");
     /// let caps = pat.captures(PathRef::from_raw_str("/simple/requests")).unwrap();
     /// assert_eq!(caps.get("name"), Some("requests"));
     /// ```
@@ -374,7 +379,7 @@ struct Binding<'p> {
     name_start: usize,
     name_len: usize,
     value: Cow<'p, str>,
-    /// `true` for the `**` catch-all's joined value.
+    /// `true` for the `{*}` catch-all's joined value.
     is_glob: bool,
 }
 
@@ -416,7 +421,7 @@ impl<'p> Sink<'_, 'p> {
 /// ```
 /// use rama_net::uri::{PathPattern, PathRef};
 ///
-/// let pat = PathPattern::new("/p2/**/:file*.txt");
+/// let pat = PathPattern::new("/p2/{*}/{file}.txt");
 /// let caps = pat.captures(PathRef::from_raw_str("/p2/a/b/c.txt")).unwrap();
 /// assert_eq!(caps.glob(), Some("a/b"));
 /// assert_eq!(caps.get("file"), Some("c"));
@@ -436,7 +441,7 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
     }
 
     /// The decoded value captured under `name`, or `None` if `name` was not
-    /// bound. The `**` catch-all is reachable via [`glob`](Self::glob), not
+    /// bound. The `{*}` catch-all is reachable via [`glob`](Self::glob), not
     /// here.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
@@ -455,7 +460,7 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
             .map(|b| (self.name_of(b), b.value.as_ref()))
     }
 
-    /// The `**` catch-all value, '/'-joined and decoded, or `None` when the
+    /// The `{*}` catch-all value, '/'-joined and decoded, or `None` when the
     /// pattern has no catch-all (or it didn't match).
     #[must_use]
     pub fn glob(&self) -> Option<&str> {
@@ -476,21 +481,35 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
 // Compilation helpers
 // ----------------------------------------------------------------------
 
-/// If `seg` is a whole-segment named catch-all (`:name**`), return its name
-/// bytes (possibly empty for `:**`). Returns `None` for anything else — including
-/// within-segment `:name*` runs (single `*`) and names with non-identifier bytes,
-/// which fall through to [`parse_segment`].
-fn parse_named_catchall(seg: &[u8]) -> Option<&[u8]> {
-    let name = seg.strip_prefix(b":")?.strip_suffix(b"**")?;
-    name.iter()
+/// A whole-segment catch-all token.
+enum CatchAll<'a> {
+    /// `{*}`
+    Anon,
+    /// `{*name}` (name is non-empty, all [`is_pattern_name_byte`]).
+    Named(&'a [u8]),
+}
+
+/// If `seg` is a whole-segment catch-all (`{*}` or `{*name}`), classify it.
+/// Returns `None` for anything else — including mid-segment `{*…}` (handled as
+/// a literal by [`parse_segment`]) and `{*bad name}` — which fall through.
+fn parse_catchall(seg: &[u8]) -> Option<CatchAll<'_>> {
+    let inner = seg.strip_prefix(b"{*")?.strip_suffix(b"}")?;
+    if inner.is_empty() {
+        return Some(CatchAll::Anon);
+    }
+    inner
+        .iter()
         .all(|&b| is_pattern_name_byte(b))
-        .then_some(name)
+        .then_some(CatchAll::Named(inner))
 }
 
 /// Parse one (non catch-all) pattern segment into a sequence of elements.
 ///
-/// `name_bytes` accumulates capture-name bytes; element name indices point
-/// into it. `capture_free` is cleared whenever a named capture is seen.
+/// Scans for `{…}` brace groups (`{}` -> [`Star`](ElementKind::Star),
+/// `{name}` -> [`Capture`](ElementKind::Capture)); everything outside braces is
+/// literal. An unclosed `{`, or a group whose body isn't a valid token, is kept
+/// literal. `name_bytes` accumulates capture-name bytes; element name indices
+/// point into it. `capture_free` is cleared whenever a named capture is seen.
 fn parse_segment(
     seg: &[u8],
     name_bytes: &mut Vec<u8>,
@@ -514,37 +533,18 @@ fn parse_segment(
 
     while i < seg.len() {
         match seg[i] {
-            b'*' => {
-                flush_literal!();
-                elements.push(Element {
-                    kind: ElementKind::Star,
-                    optional: false,
-                });
-                i += 1;
-            }
-            b':' => {
-                flush_literal!();
-                // Capture name: identifier bytes until a meta char.
-                let start = i + 1;
-                let mut end = start;
-                while end < seg.len() && is_pattern_name_byte(seg[end]) {
-                    end += 1;
-                }
-                let name = &seg[start..end];
-                let name_start = name_bytes.len();
-                name_bytes.extend_from_slice(name);
-                *capture_free = false;
-                elements.push(Element {
-                    kind: ElementKind::Capture {
-                        name_start,
-                        name_len: name.len(),
-                    },
-                    optional: false,
-                });
-                i = end;
-                // `:name*` — the trailing `*` is part of the capture (run
-                // semantics) and adds no separate Star element.
-                if i < seg.len() && seg[i] == b'*' {
+            b'{' => {
+                // A `{…}` group is a token only when it closes and its body is
+                // a valid name (or empty); otherwise the `{` is a literal byte.
+                if let Some((kind, next)) = parse_brace(seg, i, name_bytes, capture_free) {
+                    flush_literal!();
+                    elements.push(Element {
+                        kind,
+                        optional: false,
+                    });
+                    i = next;
+                } else {
+                    literal.push(b'{');
                     i += 1;
                 }
             }
@@ -577,6 +577,39 @@ fn parse_segment(
     elements
 }
 
+/// Parse a within-segment `{…}` group starting at `seg[open] == '{'`. On a
+/// valid token returns its [`ElementKind`] and the index just past the closing
+/// `}`. `{}` -> Star, `{name}` -> Capture (name = non-empty
+/// [`is_pattern_name_byte`] run). Returns `None` (so the caller keeps `{`
+/// literal) for an unclosed brace or any non-name body — including `{*…}`,
+/// which is a catch-all only as a whole segment.
+fn parse_brace(
+    seg: &[u8],
+    open: usize,
+    name_bytes: &mut Vec<u8>,
+    capture_free: &mut bool,
+) -> Option<(ElementKind, usize)> {
+    let close = open + 1 + seg[open + 1..].iter().position(|&b| b == b'}')?;
+    let inner = &seg[open + 1..close];
+    let next = close + 1;
+    if inner.is_empty() {
+        return Some((ElementKind::Star, next));
+    }
+    if !inner.iter().all(|&b| is_pattern_name_byte(b)) {
+        return None;
+    }
+    let name_start = name_bytes.len();
+    name_bytes.extend_from_slice(inner);
+    *capture_free = false;
+    Some((
+        ElementKind::Capture {
+            name_start,
+            name_len: inner.len(),
+        },
+        next,
+    ))
+}
+
 // ----------------------------------------------------------------------
 // Matching
 // ----------------------------------------------------------------------
@@ -584,12 +617,12 @@ fn parse_segment(
 // Both match entry points share one greedy recursion. Without guards that
 // recursion is exponential: a wildcard run tries every split point and an
 // optional element forks, so a segment with many such *ambiguity sources*
-// (or a pattern with many `**`) revisits the same `(position)` state over and
+// (or a pattern with many `{*}`) revisits the same `(position)` state over and
 // over. Each level fixes that by memoizing *failed* states. Failure-only memo
 // is sound because capture recording happens solely on the unique success
 // path: a state proven unmatchable can never later succeed, so caching it
 // cannot drop or corrupt a binding. The memo grid is allocated only for the
-// pathological shapes (>= 2 ambiguity sources in a segment, >= 2 `**` in a
+// pathological shapes (>= 2 ambiguity sources in a segment, >= 2 `{*}` in a
 // pattern); simpler shapes recurse linearly with no allocation.
 
 /// Dense 2D failure set (`rows × cols`), one bit per `(row, col)` state packed
@@ -626,9 +659,9 @@ impl BitGrid {
     }
 }
 
-/// Failure memo for the cross-segment `**` search, keyed on the *remaining*
+/// Failure memo for the cross-segment catch-all search, keyed on the *remaining*
 /// `(pattern, path-segment)` counts. Only allocated when a pattern has two or
-/// more `**` (a single `**` can't revisit states).
+/// more catch-alls (a single one can't revisit states).
 enum SeqMemo {
     None,
     Grid {
@@ -687,7 +720,7 @@ impl SeqMemo {
 }
 
 /// Match a sequence of pattern segments against the path segments, with
-/// backtracking across `**` catch-alls. Returns `true` on full match.
+/// backtracking across `{*}` catch-alls. Returns `true` on full match.
 fn match_sequence<'p>(
     pats: &[PatternSegment],
     segs: &[&'p [u8]],
@@ -734,7 +767,7 @@ fn match_sequence<'p>(
     matched
 }
 
-/// Match a catch-all (`**` or `:name**`) against `segs`, then the remaining
+/// Match a catch-all (`{*}` or `{*name}`) against `segs`, then the remaining
 /// `rest` patterns against the tail. Consumes 1+ path segments, shortest first,
 /// growing until the tail matches. On success records the matched run, '/'-joined
 /// and decoded — as the anonymous glob when `name` is `None`, else a named binding.
@@ -860,7 +893,7 @@ fn match_elems<'p>(
     matched
 }
 
-/// Match a wildcard run (anonymous `*` or named capture) followed by `rest`.
+/// Match a wildcard run (anonymous `{}` or named capture) followed by `rest`.
 /// Greedy: try the longest run first, shrinking on backtrack. For a named
 /// capture, record the matched (decoded) substring as a binding.
 fn match_run<'p>(

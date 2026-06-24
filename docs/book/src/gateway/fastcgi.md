@@ -127,7 +127,7 @@ embed it deep inside an otherwise normal HTTP service stack.
 Practical cases this unlocks:
 
 - **Hybrid server, FastCGI for one slice.** Run a regular rama HTTP server, but
-  route a subset of paths (e.g. `/admin/**` powered by PHP-FPM, or `/legacy/**`
+  route a subset of paths (e.g. `/admin/{*}` powered by PHP-FPM, or `/legacy/{*}`
   living behind an old FastCGI authorizer) into `FastCgiHttpClient` while the
   rest is served natively. Conditional [service branches](../intro/service_branches.md)
   on path or host make this a few extra lines.
