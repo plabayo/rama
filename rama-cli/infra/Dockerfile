@@ -19,5 +19,8 @@ WORKDIR /app
 # Get compiled binaries from builder's cargo install directory
 COPY --from=builder /usr/src/app/bin/rama /app/rama
 
+RUN useradd -U -u 1000 appuser && chown -R 1000:1000 /app
+USER 1000
+
 # Run the app
 ENTRYPOINT ["/app/rama"]

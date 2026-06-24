@@ -124,12 +124,12 @@ jobs:
           cargo install --version "${MDBOOK_GRAPHVIZ_VERSION}" mdbook-graphviz 2>/dev/null || true
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@1f0c5cde4bc74cd7e1254d0cb4de8d49e9068c7d # v4
       - name: Build with mdBook
         working-directory: ./docs/book
         run: mdbook build
       - name: Download per-target rustdoc artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: doc-artifacts
       - name: Compose site layout

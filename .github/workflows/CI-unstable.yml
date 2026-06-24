@@ -33,8 +33,8 @@ jobs:
     env:
       RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
-      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
@@ -68,7 +68,7 @@ jobs:
       # auto-fixes as it can, even if some lints remain unfixable.
       RUSTFLAGS: --cfg tokio_unstable
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: beta
@@ -140,7 +140,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       # ASan needs nightly for `-Z sanitizer=address` and a matching
       # `rust-src` so the sanitizer-built std actually compiles.
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
@@ -160,7 +160,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: nightly
@@ -196,7 +196,7 @@ jobs:
       # whatever the runner's default is on any given day.
       RAMA_FUZZ_TARGET: x86_64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
