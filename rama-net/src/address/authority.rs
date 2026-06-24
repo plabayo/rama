@@ -393,6 +393,34 @@ impl From<Host> for Authority {
     }
 }
 
+impl From<Domain> for Authority {
+    #[inline(always)]
+    fn from(domain: Domain) -> Self {
+        Host::Name(domain).into()
+    }
+}
+
+impl From<IpAddr> for Authority {
+    #[inline(always)]
+    fn from(ip: IpAddr) -> Self {
+        Host::Address(ip).into()
+    }
+}
+
+impl From<Ipv4Addr> for Authority {
+    #[inline(always)]
+    fn from(ip: Ipv4Addr) -> Self {
+        Host::Address(IpAddr::V4(ip)).into()
+    }
+}
+
+impl From<Ipv6Addr> for Authority {
+    #[inline(always)]
+    fn from(ip: Ipv6Addr) -> Self {
+        Host::Address(IpAddr::V6(ip)).into()
+    }
+}
+
 impl From<(Host, u16)> for Authority {
     #[inline(always)]
     fn from((host, port): (Host, u16)) -> Self {

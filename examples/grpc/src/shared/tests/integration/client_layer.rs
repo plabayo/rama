@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use rama::http::Uri;
+use rama::net::Protocol;
 use rama::{
     Layer as _,
     graceful::Shutdown,
@@ -59,7 +61,7 @@ async fn connect_supports_standard_rama_http_layers() {
             TraceLayer::new_for_grpc(),
         )
             .into_layer(EasyHttpWebClient::default()),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     tokio::time::sleep(Duration::from_millis(100)).await;

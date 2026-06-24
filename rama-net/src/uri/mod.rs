@@ -352,6 +352,133 @@ impl Uri {
         Some(Self::from_authority_form(self.authority()?.into_owned()))
     }
 
+    /// Build an **absolute** URI (`scheme://[userinfo@]host[:port]`) from a
+    /// scheme and anything convertible into an
+    /// [`Authority`](crate::address::Authority) — a
+    /// [`Domain`](crate::address::Domain), [`IpAddr`](std::net::IpAddr),
+    /// [`Host`](crate::address::Host), [`SocketAddr`](std::net::SocketAddr),
+    /// a `(host, port)` tuple, an [`Authority`](crate::address::Authority)
+    /// itself, and so on.
+    ///
+    /// This is the structured, allocation-light replacement for the
+    /// `format!("http://{host}").parse()` idiom: the already-typed host /
+    /// port are moved straight into the value (no re-parsing) and the
+    /// canonical bytes are rendered exactly once. The result has the given
+    /// scheme and authority, an empty path, and no query or fragment —
+    /// matching what `Uri::parse("http://example.com")` produces.
+    ///
+    /// For a string host that still needs parsing, use
+    /// [`try_from_authority`](Self::try_from_authority). For the scheme-less
+    /// CONNECT request-target shape, use
+    /// [`from_authority_form`](Self::from_authority_form).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::{Protocol, address::Domain, uri::Uri};
+    ///
+    /// let uri = Uri::from_authority(Protocol::HTTP, Domain::from_static("example.com"));
+    /// assert_eq!(uri.to_string(), "http://example.com");
+    ///
+    /// let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    /// let uri = Uri::from_authority(Protocol::HTTPS, addr);
+    /// assert_eq!(uri.to_string(), "https://127.0.0.1:8080");
+    /// ```
+    #[must_use]
+    pub fn from_authority(
+        scheme: impl Into<crate::Protocol>,
+        authority: impl Into<crate::address::Authority>,
+    ) -> Self {
+        Self::from_scheme_and_authority(scheme.into(), authority.into())
+    }
+
+    /// Fallible [`from_authority`](Self::from_authority) for inputs that must
+    /// be parsed into an [`Authority`](crate::address::Authority) first —
+    /// typically a `&str` / `String` host (`"example.com"`,
+    /// `"user@example.com:8080"`).
+    ///
+    /// This is the one-shot replacement for the
+    /// `format!("http://{s}").parse()` round-trip when `s` is a string; for
+    /// already-typed hosts prefer the infallible
+    /// [`from_authority`](Self::from_authority).
+    ///
+    /// Returns [`UriError::ComponentConversion`] tagged with
+    /// [`Component::Authority`] when the input cannot be read as an
+    /// authority — the boxed cause carries the original error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::{Protocol, uri::Uri};
+    ///
+    /// let uri = Uri::try_from_authority(Protocol::HTTP, "user@example.com:8080").unwrap();
+    /// assert_eq!(uri.to_string(), "http://user@example.com:8080");
+    /// ```
+    pub fn try_from_authority<A>(
+        scheme: impl Into<crate::Protocol>,
+        authority: A,
+    ) -> Result<Self, UriError>
+    where
+        A: TryInto<crate::address::Authority>,
+        A::Error: Into<rama_core::error::BoxError>,
+    {
+        let authority = authority
+            .try_into()
+            .map_err(|e| UriError::ComponentConversion {
+                component: Component::Authority,
+                cause: e.into(),
+            })?;
+        Ok(Self::from_scheme_and_authority(scheme.into(), authority))
+    }
+
+    /// Monomorphic core shared by [`from_authority`](Self::from_authority)
+    /// and [`try_from_authority`](Self::try_from_authority) — renders the
+    /// absolute lazy form once from owned scheme + authority values.
+    fn from_scheme_and_authority(
+        scheme: crate::Protocol,
+        authority: crate::address::Authority,
+    ) -> Self {
+        use std::fmt::Write as _;
+
+        let crate::address::Authority { user_info, address } = authority;
+
+        // Render the canonical `scheme://[userinfo@]host[:port]` bytes once,
+        // tracking the userinfo span as we go — the lazy form needs the raw
+        // bytes, but the host/port are carried as already-parsed values so
+        // nothing is re-scanned.
+        let mut s = String::new();
+        _ = write!(s, "{scheme}://");
+        let userinfo_range = match &user_info {
+            Some(ui) => {
+                let start = u16::try_from(s.len()).unwrap_or(u16::MAX);
+                _ = write!(s, "{ui}");
+                let end = u16::try_from(s.len()).unwrap_or(u16::MAX);
+                s.push('@');
+                Some((start, end))
+            }
+            None => None,
+        };
+        _ = write!(s, "{address}");
+        let crate::address::HostWithOptPort { host, port } = address;
+
+        let bytes = rama_core::bytes::Bytes::from(s);
+        // Empty path anchored at the end, matching `Uri::parse("scheme://host")`.
+        let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+
+        Self::from_lazy(LazyUriRef {
+            scheme: Some(scheme),
+            authority: Some(LazyAuthority {
+                userinfo_range,
+                host,
+                port,
+            }),
+            path: (len, len),
+            query: None,
+            fragment: None,
+            bytes,
+        })
+    }
+
     /// View this [`Uri`] as a str.
     ///
     /// This method may allocate, and can also contain
@@ -1701,6 +1828,170 @@ mod from_authority_form_tests {
             );
             assert!(from_ctor.scheme().is_none(), "no scheme: {s}");
         }
+    }
+}
+
+#[cfg(test)]
+mod from_authority_tests {
+    use super::*;
+    use crate::Protocol;
+    use crate::address::{Authority, Domain, Host};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    /// `from_authority(scheme, auth)` must be byte-identical to parsing the
+    /// equivalent `scheme://authority` absolute form — same wire output and
+    /// same decomposed components — but without re-parsing.
+    #[test]
+    fn matches_parse_of_absolute_form() {
+        for (auth_str, expected) in [
+            ("example.com", "http://example.com"),
+            ("example.com:8080", "http://example.com:8080"),
+            ("user@example.com", "http://user@example.com"),
+            (
+                "user:pass@example.com:8080",
+                "http://user:pass@example.com:8080",
+            ),
+            ("127.0.0.1:80", "http://127.0.0.1:80"),
+            ("[::1]:443", "http://[::1]:443"),
+            ("[2001:db8::1]", "http://[2001:db8::1]"),
+        ] {
+            let auth = Authority::try_from(auth_str).unwrap();
+            let from_ctor = Uri::from_authority(Protocol::HTTP, auth);
+            let from_parse = Uri::parse(expected).unwrap();
+
+            assert_eq!(from_ctor.to_string(), expected, "wire form: {auth_str}");
+            assert_eq!(
+                from_ctor.to_string(),
+                from_parse.to_string(),
+                "parse parity: {auth_str}"
+            );
+            assert!(from_ctor.is_absolute(), "absolute: {auth_str}");
+            assert_eq!(
+                from_ctor.scheme_str(),
+                from_parse.scheme_str(),
+                "scheme: {auth_str}"
+            );
+            assert_eq!(
+                from_ctor.host_str(),
+                from_parse.host_str(),
+                "host: {auth_str}"
+            );
+            assert_eq!(from_ctor.port(), from_parse.port(), "port: {auth_str}");
+            assert_eq!(
+                from_ctor.userinfo().map(|u| u.to_string()),
+                from_parse.userinfo().map(|u| u.to_string()),
+                "userinfo: {auth_str}"
+            );
+            // Authority-only absolute URI: empty path, no query / fragment.
+            assert_eq!(
+                from_ctor.path().map(|p| p.as_raw_str().to_owned()),
+                from_parse.path().map(|p| p.as_raw_str().to_owned()),
+                "path: {auth_str}"
+            );
+            assert!(from_ctor.query().is_none(), "query: {auth_str}");
+            assert!(from_ctor.fragment().is_none(), "fragment: {auth_str}");
+        }
+    }
+
+    /// Anything convertible into an [`Authority`] is accepted — bare domain /
+    /// IP / host values (no port) plus `(host, port)` tuples and `SocketAddr`.
+    #[test]
+    fn accepts_into_authority_inputs() {
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTP, Domain::from_static("example.com")).to_string(),
+            "http://example.com"
+        );
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTPS, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
+                .to_string(),
+            "https://127.0.0.1"
+        );
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTP, Ipv4Addr::new(10, 0, 0, 1)).to_string(),
+            "http://10.0.0.1"
+        );
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTP, Ipv6Addr::LOCALHOST).to_string(),
+            "http://[::1]"
+        );
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTP, Host::Name(Domain::from_static("h.example")))
+                .to_string(),
+            "http://h.example"
+        );
+        assert_eq!(
+            Uri::from_authority(
+                Protocol::HTTP,
+                (Domain::from_static("example.com"), 8080u16)
+            )
+            .to_string(),
+            "http://example.com:8080"
+        );
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert_eq!(
+            Uri::from_authority(Protocol::HTTPS, addr).to_string(),
+            "https://127.0.0.1:8080"
+        );
+    }
+
+    /// Works for any URI scheme, not just HTTP.
+    #[test]
+    fn supports_custom_and_non_http_schemes() {
+        let redis = Protocol::try_from("redis").unwrap();
+        assert_eq!(
+            Uri::from_authority(redis, Authority::try_from("localhost:6379").unwrap()).to_string(),
+            "redis://localhost:6379"
+        );
+        assert_eq!(
+            Uri::from_authority(Protocol::WSS, Domain::from_static("example.com")).to_string(),
+            "wss://example.com"
+        );
+    }
+
+    /// `try_from_authority` parses string hosts (the `format!("http://{s}")`
+    /// replacement) and surfaces a tagged error on invalid input.
+    #[test]
+    fn try_from_authority_parses_strings() {
+        assert_eq!(
+            Uri::try_from_authority(Protocol::HTTP, "example.com")
+                .unwrap()
+                .to_string(),
+            "http://example.com"
+        );
+        assert_eq!(
+            Uri::try_from_authority(Protocol::HTTPS, "user@example.com:8080")
+                .unwrap()
+                .to_string(),
+            "https://user@example.com:8080"
+        );
+        assert_eq!(
+            Uri::try_from_authority(Protocol::HTTP, String::from("[::1]:443"))
+                .unwrap()
+                .to_string(),
+            "http://[::1]:443"
+        );
+
+        let err = Uri::try_from_authority(Protocol::HTTP, ":80").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                UriError::ComponentConversion {
+                    component: Component::Authority,
+                    ..
+                }
+            ),
+            "expected ComponentConversion(Authority), got {err:?}"
+        );
+    }
+
+    /// The constructed URI is the cheap lazy form and stays mutable through
+    /// the normal builder API (promotes to owned on first mutation).
+    #[test]
+    fn is_mutable_after_construction() {
+        let uri = Uri::from_authority(Protocol::HTTP, Domain::from_static("example.com"))
+            .with_path("/v1/ping")
+            .with_query_from_bytes("a=1");
+        assert_eq!(uri.to_string(), "http://example.com/v1/ping?a=1");
     }
 }
 

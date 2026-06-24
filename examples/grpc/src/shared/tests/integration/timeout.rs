@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use rama::http::Uri;
+use rama::net::Protocol;
 use rama::{
     Layer as _,
     http::{
@@ -26,7 +28,7 @@ async fn cancelation_on_timeout() {
 
     let client = TestClient::new(
         EasyHttpWebClient::default(),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     let mut req = Request::new(Input {});
@@ -48,7 +50,7 @@ async fn picks_server_timeout_if_thats_sorter() {
 
     let client = TestClient::new(
         EasyHttpWebClient::default(),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     let mut req = Request::new(Input {});
@@ -69,7 +71,7 @@ async fn picks_client_timeout_if_thats_sorter() {
 
     let client = TestClient::new(
         EasyHttpWebClient::default(),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     let mut req = Request::new(Input {});

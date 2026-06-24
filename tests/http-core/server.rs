@@ -25,6 +25,7 @@ use rama::http::core::h2::client::SendRequest;
 use rama::http::core::h2::{RecvStream, SendStream};
 use rama::http::core::service::RamaHttpService;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
+use rama::net::Protocol;
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
@@ -322,13 +323,10 @@ mod response_body_lengths {
     #[tokio::test]
     async fn http2_auto_response_with_known_length() {
         let server = serve_opts().http2().serve();
-        let addr_str = format!("http://{}", server.addr());
         server.reply().body("Hello, World!");
 
         let client = TestClient::new().http2_only();
-        let uri = addr_str
-            .parse::<rama::http::Uri>()
-            .expect("server addr should parse");
+        let uri = Uri::from_authority(Protocol::HTTP, server.addr());
 
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length").unwrap(), "13");
@@ -338,16 +336,13 @@ mod response_body_lengths {
     #[tokio::test]
     async fn http2_auto_response_with_conflicting_lengths() {
         let server = serve_opts().http2().serve();
-        let addr_str = format!("http://{}", server.addr());
         server
             .reply()
             .header("content-length", "10")
             .body("Hello, World!");
 
         let client = TestClient::new().http2_only();
-        let uri = addr_str
-            .parse::<rama::http::Uri>()
-            .expect("server addr should parse");
+        let uri = Uri::from_authority(Protocol::HTTP, server.addr());
 
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length").unwrap(), "10");
@@ -357,13 +352,10 @@ mod response_body_lengths {
     #[tokio::test]
     async fn http2_implicit_empty_size_hint() {
         let server = serve_opts().http2().serve();
-        let addr_str = format!("http://{}", server.addr());
         server.reply();
 
         let client = TestClient::new().http2_only();
-        let uri = addr_str
-            .parse::<rama::http::Uri>()
-            .expect("server addr should parse");
+        let uri = Uri::from_authority(Protocol::HTTP, server.addr());
 
         let res = client.get(uri).await.unwrap();
         assert_eq!(res.headers().get("content-length"), None);

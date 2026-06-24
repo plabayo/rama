@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use rama::http::Uri;
+use rama::net::Protocol;
 use tokio::sync::oneshot;
 
 use rama::{
@@ -55,7 +57,7 @@ async fn http2_keepalive_does_not_cause_panics() {
 
     let client = TestClient::new(
         EasyHttpWebClient::default(),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     let res = client.unary_call(Request::new(Input {})).await;
@@ -96,7 +98,7 @@ async fn http2_keepalive_does_not_cause_panics_on_client_side() {
             ..Default::default()
         })
         .into_layer(EasyHttpWebClient::default()),
-        format!("http://{addr}").parse().unwrap(),
+        Uri::from_authority(Protocol::HTTP, addr),
     );
 
     let res = client.unary_call(Request::new(Input {})).await;
