@@ -1,55 +1,56 @@
 //! Infallible path-pattern matching.
 //!
-//! [`PathPattern`] compiles a small glob/capture syntax and matches it
-//! against a [`PathRef`](super::PathRef) segment-by-segment, decode-aware
-//! and (by default) case-sensitive. Compilation never fails: anything that
-//! isn't a recognized meta token is treated as a literal.
-//!
-//! # Syntax
-//!
-//! A pattern is split on `/` into segments. Within a segment:
-//!
-//! - **literal** text must equal the (decoded) path segment value;
-//! - `:name` captures a whole segment under `name`;
-//! - `:name*` captures a wildcard run within a segment, allowing literal
-//!   prefix/suffix around it (`:pkg*.json` captures the part before `.json`).
-//!   `:name` and `:name*` are equivalent when there is no surrounding literal;
-//! - `*` is an anonymous wildcard run (0+ chars), not captured;
-//! - `?` makes the immediately preceding element optional (zero-or-one):
-//!   `a?` is an optional `a`, a trailing `/?` is an optional trailing slash;
-//! - `**`, as a *whole* segment, is a catch-all matching one or more path
-//!   segments, available '/'-joined and decoded via [`PathCaptures::glob`].
-//!   It may appear in the middle of a pattern.
-//!
-//! Trailing slash is explicit: `/a` matches only `/a`, `/a/` matches only
-//! `/a/`, and `/a/?` matches both.
-//!
-//! ```
-//! use rama_net::uri::{PathPattern, PathRef};
-//!
-//! let pat = PathPattern::new("/p2/:vendor/:pkg*.json");
-//! let caps = pat.captures(PathRef::from_raw_str("/p2/acme/widget.json")).unwrap();
-//! assert_eq!(caps.get("vendor"), Some("acme"));
-//! assert_eq!(caps.get("pkg"), Some("widget"));
-//! assert!(pat.captures(PathRef::from_raw_str("/p2/acme/widget.txt")).is_none());
-//! ```
+//! [`PathPattern`] compiles a small glob/capture syntax and matches it against
+//! a [`PathRef`](super::PathRef) segment-by-segment, decode-aware and (by
+//! default) case-sensitive. Compilation never fails: anything that isn't a
+//! recognized meta token is treated as a literal. See [`PathPattern`] for the
+//! full syntax.
 
 use std::borrow::Cow;
+
+use rama_utils::collections::smallvec::SmallVec;
+
+use crate::byte_sets::is_pattern_name_byte;
 
 use super::component_input::IntoUriComponent;
 use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, strip_leading_slash};
 
-/// A compiled path pattern — see the [module docs](self) for the syntax.
+/// A compiled path pattern.
 ///
 /// Construct via [`PathPattern::new`] / [`new_with_opts`](Self::new_with_opts)
 /// and test paths with [`is_match`](Self::is_match) / [`captures`](Self::captures).
 ///
+/// # Syntax
+///
+/// A pattern is split on `/` into segments. Within a segment:
+///
+/// - **literal** text must equal the (decoded) path segment value;
+/// - `:name` captures a whole segment under `name`;
+/// - `:name*` captures a wildcard run within a segment, allowing literal
+///   prefix/suffix around it (`:pkg*.json` captures the part before `.json`).
+///   `:name` and `:name*` are equivalent when there is no surrounding literal;
+/// - `*` is an anonymous wildcard run (0+ chars), not captured;
+/// - `?` makes the immediately preceding element optional (zero-or-one):
+///   `a?` is an optional `a`, a trailing `/?` is an optional trailing slash;
+/// - `**`, as a *whole* segment, is a catch-all matching one or more path
+///   segments, available '/'-joined and decoded via [`PathCaptures::glob`].
+///   It may appear in the middle of a pattern.
+///
+/// Trailing slash is explicit: `/a` matches only `/a`, `/a/` matches only
+/// `/a/`, and `/a/?` matches both.
+///
 /// ```
 /// use rama_net::uri::{PathPattern, PathRef};
 ///
-/// let pat = PathPattern::new("/assets/**");
-/// assert!(pat.is_match(PathRef::from_raw_str("/assets/css/app.css")));
-/// assert!(!pat.is_match(PathRef::from_raw_str("/assets")));
+/// let pat = PathPattern::new("/p2/:vendor/:pkg*.json");
+/// let caps = pat.captures(PathRef::from_raw_str("/p2/acme/widget.json")).unwrap();
+/// assert_eq!(caps.get("vendor"), Some("acme"));
+/// assert_eq!(caps.get("pkg"), Some("widget"));
+/// assert!(pat.captures(PathRef::from_raw_str("/p2/acme/widget.txt")).is_none());
+///
+/// let assets = PathPattern::new("/assets/**");
+/// assert!(assets.is_match(PathRef::from_raw_str("/assets/css/app.css")));
+/// assert!(!assets.is_match(PathRef::from_raw_str("/assets")));
 /// ```
 #[derive(Debug, Clone)]
 pub struct PathPattern {
@@ -95,9 +96,10 @@ enum PatternSegment {
     /// `**` — matches one or more whole path segments.
     CatchAll,
     /// A sequence of within-segment elements matched against a single path
-    /// segment via greedy backtracking.
+    /// segment via greedy backtracking. Inline-sized for the common one- or
+    /// two-element segment (a bare literal, capture, or `:name*.ext` pair).
     Normal {
-        elems: Vec<Element>,
+        elems: SmallVec<[Element; 2]>,
         /// Count of *ambiguity sources* in `elems`: wildcard runs
         /// (`Star`/`Capture`) plus `optional` elements. Each is a backtrack
         /// point; with two or more of them the greedy recursion can revisit
@@ -119,8 +121,9 @@ struct Element {
 
 #[derive(Debug, Clone)]
 enum ElementKind {
-    /// Literal bytes, compared against the decoded path-segment bytes.
-    Literal(Vec<u8>),
+    /// Literal bytes, compared against the decoded path-segment bytes. Boxed:
+    /// fixed after compilation, so the `Vec` capacity word is dead weight.
+    Literal(Box<[u8]>),
     /// Anonymous wildcard run (0+ chars within the segment).
     Star,
     /// Named wildcard run that records what it matched. The name is the
@@ -293,7 +296,9 @@ impl PathPattern {
     /// ```
     #[must_use]
     pub fn captures<'p>(&self, path: PathRef<'p>) -> Option<PathCaptures<'_, 'p>> {
-        let segs: Vec<&'p [u8]> = path.segments().map(|s| s.as_bytes()).collect();
+        // Inline the segment list: most paths have a handful of segments, so
+        // this keeps the capturing path off the allocator in the common case.
+        let segs: SmallVec<[&'p [u8]; 8]> = path.segments().map(|s| s.as_bytes()).collect();
         let segs = self.check_trailing(&segs)?;
         let mut bindings: Vec<Binding<'p>> = Vec::new();
         let mut sink = Sink::Record(&mut bindings);
@@ -445,8 +450,12 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
 ///
 /// `name_bytes` accumulates capture-name bytes; element name indices point
 /// into it. `capture_free` is cleared whenever a named capture is seen.
-fn parse_segment(seg: &[u8], name_bytes: &mut Vec<u8>, capture_free: &mut bool) -> Vec<Element> {
-    let mut elements: Vec<Element> = Vec::new();
+fn parse_segment(
+    seg: &[u8],
+    name_bytes: &mut Vec<u8>,
+    capture_free: &mut bool,
+) -> SmallVec<[Element; 2]> {
+    let mut elements: SmallVec<[Element; 2]> = SmallVec::new();
     let mut literal: Vec<u8> = Vec::new();
     let mut i = 0;
 
@@ -455,7 +464,7 @@ fn parse_segment(seg: &[u8], name_bytes: &mut Vec<u8>, capture_free: &mut bool) 
         () => {
             if !literal.is_empty() {
                 elements.push(Element {
-                    kind: ElementKind::Literal(std::mem::take(&mut literal)),
+                    kind: ElementKind::Literal(std::mem::take(&mut literal).into_boxed_slice()),
                     optional: false,
                 });
             }
@@ -477,7 +486,7 @@ fn parse_segment(seg: &[u8], name_bytes: &mut Vec<u8>, capture_free: &mut bool) 
                 // Capture name: identifier bytes until a meta char.
                 let start = i + 1;
                 let mut end = start;
-                while end < seg.len() && is_name_byte(seg[end]) {
+                while end < seg.len() && is_pattern_name_byte(seg[end]) {
                     end += 1;
                 }
                 let name = &seg[start..end];
@@ -506,7 +515,7 @@ fn parse_segment(seg: &[u8], name_bytes: &mut Vec<u8>, capture_free: &mut bool) 
                     // byte as its own optional literal element.
                     flush_literal!();
                     elements.push(Element {
-                        kind: ElementKind::Literal(vec![last]),
+                        kind: ElementKind::Literal(Box::from([last])),
                         optional: true,
                     });
                 } else if let Some(last) = elements.last_mut() {
@@ -527,11 +536,6 @@ fn parse_segment(seg: &[u8], name_bytes: &mut Vec<u8>, capture_free: &mut bool) 
     elements
 }
 
-/// Bytes allowed in a `:name` identifier.
-fn is_name_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
-}
-
 // ----------------------------------------------------------------------
 // Matching
 // ----------------------------------------------------------------------
@@ -547,12 +551,50 @@ fn is_name_byte(b: u8) -> bool {
 // pathological shapes (>= 2 ambiguity sources in a segment, >= 2 `**` in a
 // pattern); simpler shapes recurse linearly with no allocation.
 
-/// Failure memo for the cross-segment `**` search, keyed on
-/// `(pattern_index, path_segment_index)`. Only allocated when a pattern has
-/// two or more `**` (a single `**` can't revisit states).
+/// Dense 2D failure set (`rows × cols`), one bit per `(row, col)` state packed
+/// into `u64` words — 8× tighter than a `bool` grid and fewer cache lines to
+/// touch during the recursion. Only built for the pathological shapes that need
+/// a memo; simpler patterns never allocate one.
+struct BitGrid {
+    words: Box<[u64]>,
+    cols: usize,
+}
+
+impl BitGrid {
+    fn new(rows: usize, cols: usize) -> Self {
+        let words = vec![0u64; (rows * cols).div_ceil(64)].into_boxed_slice();
+        Self { words, cols }
+    }
+
+    #[inline]
+    fn bit(&self, row: usize, col: usize) -> (usize, u64) {
+        let idx = row * self.cols + col;
+        (idx >> 6, 1u64 << (idx & 63))
+    }
+
+    #[inline]
+    fn get(&self, row: usize, col: usize) -> bool {
+        let (word, mask) = self.bit(row, col);
+        self.words[word] & mask != 0
+    }
+
+    #[inline]
+    fn set(&mut self, row: usize, col: usize) {
+        let (word, mask) = self.bit(row, col);
+        self.words[word] |= mask;
+    }
+}
+
+/// Failure memo for the cross-segment `**` search, keyed on the *remaining*
+/// `(pattern, path-segment)` counts. Only allocated when a pattern has two or
+/// more `**` (a single `**` can't revisit states).
 enum SeqMemo {
     None,
-    Grid { failed: Vec<bool>, stride: usize },
+    Grid {
+        grid: BitGrid,
+        base_pats: usize,
+        base_segs: usize,
+    },
 }
 
 impl SeqMemo {
@@ -562,28 +604,38 @@ impl SeqMemo {
             .filter(|p| matches!(p, PatternSegment::CatchAll))
             .count();
         if catch_alls >= 2 {
-            let rows = pats.len() + 1;
-            let stride = n_segs + 1;
             Self::Grid {
-                failed: vec![false; rows * stride],
-                stride,
+                grid: BitGrid::new(pats.len() + 1, n_segs + 1),
+                base_pats: pats.len(),
+                base_segs: n_segs,
             }
         } else {
             Self::None
         }
     }
 
-    /// `true` if `(pat_idx, seg_idx)` is already known to fail.
-    fn is_failed(&self, pat_idx: usize, seg_idx: usize) -> bool {
+    /// `true` if the state with `pats_left`/`segs_left` remaining is known to
+    /// fail. Both args are suffix lengths of the originals, so the advance from
+    /// the start (the grid row/col) is `base − left`.
+    fn is_failed(&self, pats_left: usize, segs_left: usize) -> bool {
         match self {
             Self::None => false,
-            Self::Grid { failed, stride } => failed[pat_idx * stride + seg_idx],
+            Self::Grid {
+                grid,
+                base_pats,
+                base_segs,
+            } => grid.get(base_pats - pats_left, base_segs - segs_left),
         }
     }
 
-    fn mark_failed(&mut self, pat_idx: usize, seg_idx: usize) {
-        if let Self::Grid { failed, stride } = self {
-            failed[pat_idx * *stride + seg_idx] = true;
+    fn mark_failed(&mut self, pats_left: usize, segs_left: usize) {
+        if let Self::Grid {
+            grid,
+            base_pats,
+            base_segs,
+        } = self
+        {
+            grid.set(*base_pats - pats_left, *base_segs - segs_left);
         }
     }
 }
@@ -597,11 +649,7 @@ fn match_sequence<'p>(
     sink: &mut Sink<'_, 'p>,
     memo: &mut SeqMemo,
 ) -> bool {
-    // State indices for the failure memo: how far we've advanced from the
-    // originals (both args are always suffixes of the originals).
-    let pat_idx = memo_pat_len(memo).saturating_sub(pats.len());
-    let seg_idx = memo_seg_len(memo).saturating_sub(segs.len());
-    if memo.is_failed(pat_idx, seg_idx) {
+    if memo.is_failed(pats.len(), segs.len()) {
         return false;
     }
 
@@ -651,26 +699,9 @@ fn match_sequence<'p>(
     };
 
     if !matched {
-        memo.mark_failed(pat_idx, seg_idx);
+        memo.mark_failed(pats.len(), segs.len());
     }
     matched
-}
-
-/// Original pattern length, recovered from the memo (only meaningful when a
-/// grid is present; otherwise indices are unused).
-fn memo_pat_len(memo: &SeqMemo) -> usize {
-    match memo {
-        SeqMemo::None => 0,
-        SeqMemo::Grid { failed, stride } => failed.len() / stride - 1,
-    }
-}
-
-/// Original path-segment count, recovered from the memo.
-fn memo_seg_len(memo: &SeqMemo) -> usize {
-    match memo {
-        SeqMemo::None => 0,
-        SeqMemo::Grid { stride, .. } => stride - 1,
-    }
 }
 
 /// Match one pattern segment's elements against one path segment's bytes.
@@ -688,43 +719,36 @@ fn match_segment<'p>(
 ) -> bool {
     let decoded = maybe_decode(raw_seg, opts.percent_decode);
     if ambiguity >= 2 {
-        // (element_index, hay_index) failure grid; rows are element positions
-        // 0..=elems.len(), columns hay positions 0..=hay.len().
-        let stride = decoded.len() + 1;
-        let mut failed = vec![false; (elems.len() + 1) * stride];
-        let mut memo = ElemMemo {
-            base_elems: elems.len(),
-            base_hay: decoded.len(),
-            failed: &mut failed,
-            stride,
-        };
+        let mut memo = ElemMemo::new(elems.len(), decoded.len());
         match_elems(elems, &decoded, opts, sink, &mut Some(&mut memo))
     } else {
         match_elems(elems, &decoded, opts, sink, &mut None)
     }
 }
 
-/// Failure memo for within-segment matching, keyed on
-/// `(element_index, hay_index)`.
-struct ElemMemo<'m> {
+/// Failure memo for within-segment matching, keyed on the *remaining*
+/// `(element, hay-byte)` counts.
+struct ElemMemo {
+    grid: BitGrid,
     base_elems: usize,
     base_hay: usize,
-    failed: &'m mut [bool],
-    stride: usize,
 }
 
-impl ElemMemo<'_> {
-    fn index(&self, elems_left: usize, hay_left: usize) -> usize {
-        let ei = self.base_elems - elems_left;
-        let hi = self.base_hay - hay_left;
-        ei * self.stride + hi
+impl ElemMemo {
+    fn new(n_elems: usize, n_hay: usize) -> Self {
+        Self {
+            grid: BitGrid::new(n_elems + 1, n_hay + 1),
+            base_elems: n_elems,
+            base_hay: n_hay,
+        }
     }
     fn is_failed(&self, elems_left: usize, hay_left: usize) -> bool {
-        self.failed[self.index(elems_left, hay_left)]
+        self.grid
+            .get(self.base_elems - elems_left, self.base_hay - hay_left)
     }
     fn mark_failed(&mut self, elems_left: usize, hay_left: usize) {
-        let i = self.index(elems_left, hay_left);
-        self.failed[i] = true;
+        self.grid
+            .set(self.base_elems - elems_left, self.base_hay - hay_left);
     }
 }
 
@@ -736,7 +760,7 @@ fn match_elems<'p>(
     hay: &[u8],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
-    memo: &mut Option<&mut ElemMemo<'_>>,
+    memo: &mut Option<&mut ElemMemo>,
 ) -> bool {
     if let Some(m) = memo
         && m.is_failed(elems.len(), hay.len())
@@ -778,15 +802,14 @@ fn match_run<'p>(
     hay: &[u8],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
-    memo: &mut Option<&mut ElemMemo<'_>>,
+    memo: &mut Option<&mut ElemMemo>,
 ) -> bool {
     // Try every split point, longest run first (greedy).
     for take in (0..=hay.len()).rev() {
         let mark = sink.len();
         if match_elems(rest, &hay[take..], opts, sink, memo) {
             if let Some((name_start, name_len)) = name {
-                // `hay` is already decoded; render the run lossily (invalid
-                // UTF-8 in the decoded bytes is vanishingly rare).
+                // `hay` is already decoded; just own the slice.
                 let value = decoded_owned(&hay[..take]);
                 // Insert before whatever `rest` recorded so order stays L-to-R.
                 sink.insert_at(
@@ -806,17 +829,23 @@ fn match_run<'p>(
     false
 }
 
-/// '/'-join decoded segment values into an owned string.
+/// '/'-join decoded segment values into an owned string, in a single pass
+/// (no intermediate `Vec<String>`).
 fn join_decoded<'p>(segs: &[&'p [u8]], decode: bool) -> Cow<'p, str> {
-    let parts: Vec<String> = segs
-        .iter()
-        .map(|s| String::from_utf8_lossy(&maybe_decode(s, decode)).into_owned())
-        .collect();
-    Cow::Owned(parts.join("/"))
+    // Decoded length ≤ raw length; pre-size for raw bytes plus separators.
+    let cap = segs.iter().map(|s| s.len()).sum::<usize>() + segs.len();
+    let mut out = String::with_capacity(cap);
+    for (i, s) in segs.iter().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        out.push_str(&String::from_utf8_lossy(&maybe_decode(s, decode)));
+    }
+    Cow::Owned(out)
 }
 
-/// Render an already-decoded byte slice to an owned `Cow` string (lossy on
-/// the rare invalid-UTF-8 decode).
+/// Own an already-decoded byte slice as a string, replacing invalid UTF-8
+/// (reachable: a decoded `%ff` is byte `0xFF`) with U+FFFD.
 fn decoded_owned<'p>(bytes: &[u8]) -> Cow<'p, str> {
     Cow::Owned(String::from_utf8_lossy(bytes).into_owned())
 }

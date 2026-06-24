@@ -69,6 +69,11 @@ const IPVFUTURE_TAIL_BYTE_SET: [bool; 256] =
 /// records. Consumed by [`crate::address::domain`]'s label validator.
 const LABEL_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
 
+/// Path-pattern capture-name byte class: `ALPHA / DIGIT / "_" / "-"`. Scans the
+/// `:name` identifier in [`crate::uri::PathPattern`]. Same membership as a DNS
+/// label, kept separate so the two grammars can drift independently.
+const PATTERN_NAME_BYTE_SET: [bool; 256] = set_each(set_ascii_alphanum([false; 256]), b"_-");
+
 // --- Predicates (single-load hot path) -------------------------------------
 
 #[inline(always)]
@@ -129,4 +134,9 @@ pub(crate) const fn is_ipvfuture_tail_byte(b: u8) -> bool {
 #[inline(always)]
 pub(crate) const fn is_label_byte(b: u8) -> bool {
     LABEL_BYTE_SET[b as usize]
+}
+
+#[inline(always)]
+pub(crate) const fn is_pattern_name_byte(b: u8) -> bool {
+    PATTERN_NAME_BYTE_SET[b as usize]
 }

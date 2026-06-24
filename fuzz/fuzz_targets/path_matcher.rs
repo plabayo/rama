@@ -49,7 +49,6 @@ fuzz_target!(|input: Input| {
             // to the first binding, so don't assert value equality here).
             assert!(caps.get(name).is_some());
         }
-        drop(caps.glob());
-        drop(caps.is_empty());
+        std::hint::black_box((caps.glob(), caps.is_empty()));
     }
 });
