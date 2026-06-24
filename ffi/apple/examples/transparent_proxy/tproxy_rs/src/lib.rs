@@ -4,7 +4,10 @@ use rama::{
     Service,
     bytes::Bytes,
     net::{
-        address::{HostWithPort, ip::private::is_private_ip},
+        address::{
+            HostWithPort,
+            ip::{IpScopes, private::is_private_ip},
+        },
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -142,10 +145,17 @@ impl DemoTransparentProxyHandler {
             });
         }
 
-        let proxy_config = TransparentProxyConfig::new().with_rules(vec![
-            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
-            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
-        ]);
+        let proxy_config = TransparentProxyConfig::new()
+            .with_rules(vec![
+                TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+                TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
+            ])
+            // Exclude non-loopback private/local ranges (RFC1918, link-local,
+            // CGNAT) at the kernel level: they take the default route untouched
+            // and are never diverted to the provider. This is the *correct*
+            // way to passthrough whole ranges — declining a flow in the handler
+            // closes it instead. Loopback is intentionally left handled.
+            .exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
 
         let concurrency_limiter =
             Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
