@@ -68,6 +68,22 @@ fn flow_action_for_remote_endpoint(
     }
 }
 
+/// One line per new flow surfacing the Apple NE interface metadata: egress
+/// interface (name/type/index/bound) and remote hostname, when the OS exposes them.
+fn log_new_flow(protocol: &str, meta: &TransparentProxyFlowMeta) {
+    tracing::info!(
+        protocol,
+        remote = ?meta.remote_endpoint,
+        remote_hostname = meta.remote_hostname.as_deref(),
+        egress_interface = meta.local_interface_name.as_deref(),
+        egress_interface_type = ?meta.local_interface_type,
+        egress_interface_index = ?meta.local_interface_index,
+        is_bound = ?meta.is_bound,
+        bundle_identifier = meta.source_app_bundle_identifier.as_deref(),
+        "transparent proxy: new flow",
+    );
+}
+
 #[derive(Clone, Copy, Default)]
 struct DemoEngineFactory;
 
@@ -222,6 +238,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         >,
     > + Send
     + '_ {
+        log_new_flow("tcp", &meta);
         let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
         let concurrency_limiter = self.concurrency_limiter.clone();
         let tcp_mitm_service = self.tcp_mitm_service.clone();
@@ -264,6 +281,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
+        log_new_flow("udp", &meta);
         // Pass through DNS (port 53) — letting the system resolver
         // hit the wire directly avoids a circular dependency between
         // the proxy service and the resolver it might itself use.
