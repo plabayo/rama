@@ -44,6 +44,25 @@ async fn test_basic(svc: ServeDir) {
 }
 
 #[tokio::test]
+async fn dot_dot_traversal_is_clamped_to_root() {
+    let svc = ServeDir::new("../rama-http");
+
+    // `..` segments are resolved and clamped at the path root (RFC 3986), so
+    // each of these canonicalizes to `/README.md` and is served rather than
+    // escaping the root or 404ing.
+    for uri in [
+        "/foo/../README.md",
+        "/../../../README.md",
+        "/a/b/../../README.md",
+    ] {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let res = svc.serve(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "uri: {uri}");
+        assert_eq!(res.headers()["content-type"], "text/markdown", "uri: {uri}");
+    }
+}
+
+#[tokio::test]
 async fn basic_with_index() {
     let svc = ServeDir::new("../test-files");
     test_basic_with_index(svc).await;
@@ -1594,7 +1613,7 @@ fn verify_windows_device(name: &str, is_positive: bool) {
 
 #[test]
 fn test_is_reserved_dos_name() {
-    use super::is_reserved_dos_name;
+    use rama_core::fs::is_reserved_device_name;
 
     let positives = [
         "CON",
@@ -1643,10 +1662,7 @@ fn test_is_reserved_dos_name() {
     ];
 
     for name in positives {
-        assert!(
-            is_reserved_dos_name(|| name.encode_utf16()),
-            "Expected true for {name:?}",
-        );
+        assert!(is_reserved_device_name(name), "Expected true for {name:?}",);
 
         #[cfg(windows)]
         verify_windows_device(name, true);
@@ -1671,7 +1687,7 @@ fn test_is_reserved_dos_name() {
 
     for name in negatives {
         assert!(
-            !is_reserved_dos_name(|| name.encode_utf16()),
+            !is_reserved_device_name(name),
             "Expected false for {name:?}",
         );
 

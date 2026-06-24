@@ -78,6 +78,10 @@ unsafe impl BufMut for EncodeBuf<'_> {
 
     #[inline]
     unsafe fn advance_mut(&mut self, cnt: usize) {
+        // SAFETY: `BufMut::advance_mut`'s precondition (the first `cnt` bytes of
+        // the chunk have been initialized) is the caller's to uphold and is
+        // forwarded verbatim to the inner buffer, which has the identical
+        // precondition.
         unsafe { self.buf.advance_mut(cnt) }
     }
 
