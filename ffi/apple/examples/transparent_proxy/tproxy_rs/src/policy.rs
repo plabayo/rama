@@ -55,6 +55,23 @@ impl Default for DomainExclusionList {
             "*.gstatic.com",
             "*.cloudflare.com",
             "*.jsdelivr.net",
+            // More common high-traffic domains so a soak run drives the
+            // promote → Swift-splice → teardown path with heavy, realistic
+            // volume (kept in sync with `config::DemoProxyConfig::default`).
+            "*.apple.com",
+            "*.icloud.com",
+            "*.microsoft.com",
+            "*.azureedge.net",
+            "*.fastly.net",
+            "*.akamaized.net",
+            "*.amazonaws.com",
+            "*.cloudfront.net",
+            "*.google.com",
+            "*.googlevideo.com",
+            "*.slack-edge.com",
+            "registry.npmjs.org",
+            "*.pythonhosted.org",
+            "*.docker.io",
         ])
     }
 }
