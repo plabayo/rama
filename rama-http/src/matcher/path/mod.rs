@@ -1,26 +1,26 @@
-#![expect(
-    clippy::unreachable,
-    reason = "path-fragment branches gated on a `PathFragment::Literal` filter just above each unreachable arm"
-)]
+//! URI path parameters captured during routing, plus the helpers that bridge
+//! [`rama_net::uri::PathPattern`] matching into [`UriParams`].
+//!
+//! The matching engine itself lives in rama-net ([`PathPattern`]); this module
+//! owns the HTTP-routing glue: the `{name}` / `{*name}` syntax aliases, the
+//! case-insensitive match options, and turning [`PathCaptures`] into the
+//! [`UriParams`] extension the [`Path`](crate::service::web::extract::Path)
+//! extractor reads.
 
-use std::sync::Arc;
-
+use crate::StatusCode;
 use crate::service::web::response::IntoResponse;
-use crate::{Request, StatusCode};
 use ahash::{HashMap, HashMapExt as _};
 use rama_core::extensions::{Extension, Extensions};
-use rama_net::uri::util::percent_encoding;
-use rama_utils::collections::smallvec::SmallVec;
+use rama_net::uri::{PathCaptures, PathMatchOptions, PathPattern, PathRef};
 use rama_utils::str::arcstr::ArcStr;
-use rama_utils::str::smol_str::{StrExt as _, format_smolstr};
-use rama_utils::str::starts_with_ignore_ascii_case;
+use rama_utils::str::smol_str::format_smolstr;
 
 mod de;
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]
 /// parameters that are inserted in the [`Extensions`],
-/// in case the [`PathMatcher`] found a match for the given [`Request`].
+/// in case a path matcher found a match for the given [`Request`](crate::Request).
 pub struct UriParams {
     params: Option<HashMap<ArcStr, ArcStr>>,
     glob: Option<ArcStr>,
@@ -99,6 +99,25 @@ impl UriParams {
             .into_iter()
             .flatten()
     }
+
+    /// Build [`UriParams`] from a successful [`PathPattern`] match: named
+    /// captures (incl. `:name**`) become params, the anonymous `**` glob (if
+    /// any) becomes the glob value.
+    pub(crate) fn from_captures(caps: &PathCaptures<'_, '_>) -> Self {
+        let mut params = Self::default();
+        for (name, value) in caps.iter() {
+            params.insert(ArcStr::from(name), ArcStr::from(value));
+        }
+        if let Some(glob) = caps.glob() {
+            params.append_glob(glob);
+        }
+        params
+    }
+
+    /// `true` when no named param and no glob were captured.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.glob.is_none() && self.params.as_ref().is_none_or(HashMap::is_empty)
+    }
 }
 
 impl<K, V> FromIterator<(K, V)> for UriParams
@@ -113,6 +132,88 @@ where
         }
         params
     }
+}
+
+/// Path-matching options used throughout HTTP routing: case-insensitive,
+/// percent-decoded, segment-boundary — mirrors the legacy matcher's behaviour.
+pub(crate) const HTTP_PATH_OPTS: PathMatchOptions = PathMatchOptions {
+    partial: false,
+    ignore_ascii_case: true,
+    percent_decode: true,
+};
+
+/// Compile `pattern` (in [`PathPattern`] syntax) with the HTTP routing options.
+pub(crate) fn compile_pattern(pattern: &str) -> PathPattern {
+    PathPattern::new_with_opts(pattern, HTTP_PATH_OPTS)
+}
+
+/// Translate router / [`HttpMatcher`](crate::matcher::HttpMatcher) path syntax
+/// into [`PathPattern`] syntax: `{name}` → `:name`, `{*name}` → `:name**`.
+/// Everything else — including native `:name`, `*`, `**`, and literals — passes
+/// through unchanged, so both spellings are accepted.
+pub(crate) fn translate_route_path(path: &str) -> String {
+    if !path.contains('{') {
+        return path.to_owned();
+    }
+    let mut out = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        if let Some(close) = after.find('}') {
+            let inner = &after[..close];
+            out.push(':');
+            if let Some(name) = inner.strip_prefix('*') {
+                out.push_str(name);
+                out.push_str("**");
+            } else {
+                out.push_str(inner);
+            }
+            rest = &after[close + 1..];
+        } else {
+            // Unbalanced `{` — keep it literal and move on.
+            out.push('{');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Match `path` against a compiled [`PathPattern`], inserting the captured
+/// [`UriParams`] into `ext` on a successful match that bound anything.
+pub(crate) fn match_pattern(pattern: &PathPattern, ext: Option<&Extensions>, path: &str) -> bool {
+    match pattern.captures(PathRef::from_raw_str(path)) {
+        Some(caps) => {
+            if let Some(ext) = ext {
+                let params = UriParams::from_captures(&caps);
+                if !params.is_empty() {
+                    ext.insert(params);
+                }
+            }
+            true
+        }
+        None => false,
+    }
+}
+
+/// `true` when `path` begins with `prefix` at a segment boundary
+/// (case-insensitive, percent-decoded).
+pub(crate) fn match_prefix(prefix: &str, path: &str) -> bool {
+    PathRef::from_raw_str(path).has_prefix_with_opts(prefix, HTTP_PATH_OPTS)
+}
+
+/// `true` when `path` equals `literal` exactly (slashes trimmed,
+/// case-insensitive), with metacharacters compared verbatim.
+pub(crate) fn match_literal(literal: &str, path: &str) -> bool {
+    let path = path.trim().trim_matches('/');
+    literal.eq_ignore_ascii_case(path)
+}
+
+/// Normalise a path/prefix/literal the way the matchers store it: trimmed of
+/// surrounding whitespace and leading/trailing slashes.
+pub(crate) fn normalize(path: &str) -> &str {
+    path.trim().trim_matches('/')
 }
 
 #[derive(Debug)]
@@ -174,526 +275,49 @@ impl IntoResponse for UriParamsDeserializeError {
     }
 }
 
-#[derive(Debug, Clone)]
-enum PathFragment {
-    Literal(ArcStr),
-    Param(ArcStr),
-    Glob,
-}
-
-#[derive(Debug, Clone)]
-enum PathMatcherKind {
-    Prefix(ArcStr),
-    Literal(ArcStr),
-    FragmentList(std::sync::Arc<[PathFragment]>),
-}
-
-#[derive(Debug, Clone)]
-/// Matcher based on the URI path.
-pub struct PathMatcher {
-    kind: PathMatcherKind,
-}
-
-impl PathMatcher {
-    /// Create a new [`PathMatcher`] for the given path.
-    pub fn new(path: impl AsRef<str>) -> Self {
-        let path = path.as_ref();
-        let path = path.trim().trim_matches('/');
-
-        if !path.contains(['*', '{', '}']) {
-            return Self {
-                kind: PathMatcherKind::Literal(ArcStr::from(path)),
-            };
-        }
-
-        let path_parts: SmallVec<[_; 8]> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let fragment_length = path_parts.len();
-        if fragment_length == 1 && path_parts[0].is_empty() {
-            return Self {
-                kind: PathMatcherKind::FragmentList(Arc::from([PathFragment::Glob])),
-            };
-        }
-
-        let fragments: SmallVec<[_; 8]> = path_parts
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, s)| {
-                if s.is_empty() {
-                    return None;
-                }
-                if s.starts_with(':') {
-                    Some(PathFragment::Param(ArcStr::from(
-                        s.trim_start_matches(':').to_lowercase_smolstr(),
-                    )))
-                } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
-                    let param_name = s[1..s.len() - 1].to_lowercase_smolstr();
-                    Some(PathFragment::Param(ArcStr::from(param_name)))
-                } else if s == "*" && index == fragment_length - 1 {
-                    Some(PathFragment::Glob)
-                } else {
-                    Some(PathFragment::Literal(ArcStr::from(
-                        s.to_lowercase_smolstr(),
-                    )))
-                }
-            })
-            .collect();
-
-        if fragments
-            .iter()
-            .all(|f| matches!(f, PathFragment::Literal(_)))
-        {
-            // optimization for pure literal paths..
-            return Self {
-                kind: PathMatcherKind::Literal(ArcStr::from(path)),
-            };
-        }
-
-        Self {
-            kind: PathMatcherKind::FragmentList(Arc::from(fragments.as_slice())),
-        }
-    }
-
-    /// Create a new [`PathMatcher`] for the given prefix.
-    pub fn new_prefix(path: impl AsRef<str>) -> Self {
-        let path = path.as_ref();
-        let path = path.trim().trim_matches('/');
-        Self {
-            kind: PathMatcherKind::Prefix(path.into()),
-        }
-    }
-
-    /// Create a new [`PathMatcher`] for the given literal.
-    ///
-    /// Useful constructor in case you want to create a literal
-    /// with special characters given [`Self::new`] would interpret
-    /// something like `/*` as a glob, while you might require a literal *...
-    pub fn new_literal(path: impl AsRef<str>) -> Self {
-        let path = path.as_ref();
-        let path = path.trim().trim_matches('/');
-        Self {
-            kind: PathMatcherKind::Literal(path.into()),
-        }
-    }
-
-    #[must_use]
-    pub fn fragment_count(&self) -> usize {
-        match &self.kind {
-            PathMatcherKind::Prefix(_) | PathMatcherKind::Literal(_) => 0,
-            PathMatcherKind::FragmentList(path_fragments) => path_fragments.len(),
-        }
-    }
-
-    /// Try to remove the literals that prefix other fragments. This can be useful
-    /// for routers which want to first match on a literal, and do the rest as a normal prefix.
-    ///
-    /// Err is returned with the original data in case it doesn't contain literal prefixes.
-    pub fn try_remove_literal_prefix(
-        self,
-        allow_glob: bool,
-    ) -> Result<(ArcStr, Option<Self>), Self> {
-        match self.kind {
-            PathMatcherKind::Literal(s) | PathMatcherKind::Prefix(s) => Ok((s, None)),
-            PathMatcherKind::FragmentList(fragments) => {
-                let mut pos = 0;
-                for fragment in fragments.iter() {
-                    if !matches!(fragment, PathFragment::Literal(_)) {
-                        break;
-                    }
-                    pos += 1;
-                }
-                if pos == 0 || pos == fragments.len() {
-                    return Err(Self {
-                        kind: PathMatcherKind::FragmentList(fragments),
-                    });
-                }
-                let (fragments, rem) = fragments.split_at(pos);
-
-                let mut output = String::with_capacity(
-                    fragments.len()
-                        + fragments
-                            .iter()
-                            .map(|f| match f {
-                                PathFragment::Literal(s) => s.len(),
-                                PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
-                            })
-                            .sum::<usize>(),
-                );
-                for fragment in fragments {
-                    match fragment {
-                        PathFragment::Literal(s) => output.push_str(s.as_ref()),
-                        PathFragment::Param(_) | PathFragment::Glob => unreachable!(),
-                    }
-                }
-
-                Ok(if rem.is_empty() {
-                    (ArcStr::from(output), None)
-                } else if !allow_glob
-                    && rem
-                        .last()
-                        .map(|f| matches!(f, PathFragment::Glob))
-                        .unwrap_or_default()
-                {
-                    (
-                        ArcStr::from(output),
-                        Some(Self {
-                            kind: PathMatcherKind::FragmentList(Arc::from(&rem[..rem.len() - 1])),
-                        }),
-                    )
-                } else {
-                    (
-                        ArcStr::from(output),
-                        Some(Self {
-                            kind: PathMatcherKind::FragmentList(Arc::from(rem)),
-                        }),
-                    )
-                })
-            }
-        }
-    }
-
-    pub fn matches_path(&self, ext: Option<&Extensions>, path: impl AsRef<str>) -> bool {
-        match self.matches_path_inner(path) {
-            PathMatch::None => false,
-            PathMatch::Literal => true,
-            PathMatch::WithParams(params) => {
-                if let Some(ext) = ext {
-                    ext.insert(params);
-                }
-                true
-            }
-        }
-    }
-
-    fn matches_path_inner(&self, path: impl AsRef<str>) -> PathMatch {
-        let path = path.as_ref().trim().trim_matches('/');
-        match &self.kind {
-            PathMatcherKind::Prefix(prefix) => {
-                if prefix.is_empty() || starts_with_ignore_ascii_case(path, prefix) {
-                    PathMatch::Literal
-                } else {
-                    PathMatch::None
-                }
-            }
-            PathMatcherKind::Literal(literal) => {
-                if literal.eq_ignore_ascii_case(path) {
-                    PathMatch::Literal
-                } else {
-                    PathMatch::None
-                }
-            }
-            PathMatcherKind::FragmentList(fragments) => {
-                let fragments_iter = fragments.iter().map(Some).chain(std::iter::repeat(None));
-                let mut params = UriParams::default();
-                for (segment, fragment) in path
-                    .split('/')
-                    .map(Some)
-                    .chain(std::iter::repeat(None))
-                    .zip(fragments_iter)
-                {
-                    match (segment, fragment) {
-                        (Some(segment), Some(fragment)) => match fragment {
-                            PathFragment::Literal(literal) => {
-                                if !literal.eq_ignore_ascii_case(segment) {
-                                    return PathMatch::None;
-                                }
-                            }
-                            PathFragment::Param(name) => {
-                                if segment.is_empty() {
-                                    return PathMatch::None;
-                                }
-                                let segment = percent_encoding::percent_decode(segment.as_bytes())
-                                    .decode_utf8()
-                                    .map(Into::into)
-                                    .unwrap_or_else(|_| segment.into());
-                                params.insert(name.clone(), segment);
-                            }
-                            PathFragment::Glob => {
-                                params.append_glob(segment);
-                            }
-                        },
-                        (None, None) => {
-                            break;
-                        }
-                        (Some(segment), None) => {
-                            if params.glob().is_none() {
-                                return PathMatch::None;
-                            }
-                            params.append_glob(segment);
-                        }
-                        _ => {
-                            return PathMatch::None;
-                        }
-                    }
-                }
-
-                PathMatch::WithParams(params)
-            }
-        }
-    }
-}
-
-impl<Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
-    fn matches(&self, ext: Option<&Extensions>, req: &Request<Body>) -> bool {
-        self.matches_path(ext, req.uri().path_or_root())
-    }
-}
-
-#[derive(Debug, Clone)]
-enum PathMatch {
-    None,
-    Literal,
-    WithParams(UriParams),
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
     use rama_utils::str::arcstr::arcstr;
 
     #[test]
-    fn test_path_matcher_match_path() {
-        struct TestCase {
-            path: &'static str,
-            matcher_path: &'static str,
-            result: PathMatch,
-        }
-
-        impl TestCase {
-            fn some(
-                path: &'static str,
-                matcher_path: &'static str,
-                result: Option<UriParams>,
-            ) -> Self {
-                Self {
-                    path,
-                    matcher_path,
-                    result: result
-                        .map(PathMatch::WithParams)
-                        .unwrap_or(PathMatch::Literal),
-                }
-            }
-
-            fn none(path: &'static str, matcher_path: &'static str) -> Self {
-                Self {
-                    path,
-                    matcher_path,
-                    result: PathMatch::None,
-                }
-            }
-        }
-
-        let test_cases = vec![
-            TestCase::some("/", "/", None),
-            TestCase::some("", "/", None),
-            TestCase::some("/", "", None),
-            TestCase::some("", "", None),
-            TestCase::some("/foo", "/foo", None),
-            TestCase::some("/foo", "//foo//", None),
-            TestCase::some("/*foo", "/*foo", None),
-            TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", None),
-            TestCase::none("/foo/*bar/baz", "/foo/*bar"),
-            TestCase::none("/", "/{foo}"),
-            TestCase::some(
-                "/",
-                "/*",
-                Some(UriParams {
-                    glob: Some(ArcStr::from("/")),
-                    ..UriParams::default()
-                }),
-            ),
-            TestCase::none("/", "//{foo}"),
-            TestCase::none("", "/{foo}"),
-            TestCase::none("/foo", "/bar"),
-            TestCase::some(
-                "/person/glen%20dc/age",
-                "/person/{name}/age",
-                Some(UriParams {
-                    params: Some({
-                        let mut params = HashMap::new();
-                        params.insert(arcstr!("name"), arcstr!("glen dc"));
-                        params
-                    }),
-                    ..UriParams::default()
-                }),
-            ),
-            TestCase::none("/foo", "/bar"),
-            TestCase::some("/foo", "foo", None),
-            TestCase::some("/foo/bar/", "foo/bar", None),
-            TestCase::none("/foo/bar/", "foo/baz"),
-            TestCase::some("/foo/bar/", "/foo/bar", None),
-            TestCase::some("/foo/bar", "/foo/bar", None),
-            TestCase::some("/foo/bar", "foo/bar", None),
-            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
-                let mut params = UriParams::default();
-                params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
-                Some(params)
-            }),
-            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
-                let mut params = UriParams::default();
-                params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
-                Some(params)
-            }),
-            TestCase::some(
-                "/book/oxford-dictionary/author/0",
-                "/book/{title}/author/{index}",
-                {
-                    let mut params = UriParams::default();
-                    params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
-                    params.insert(arcstr!("index"), arcstr!("0"));
-                    Some(params)
-                },
-            ),
-            TestCase::some(
-                "/book/oxford-dictionary/author/1",
-                "/book/{title}/author/{index}",
-                {
-                    let mut params = UriParams::default();
-                    params.insert(arcstr!("title"), arcstr!("oxford-dictionary"));
-                    params.insert(arcstr!("index"), arcstr!("1"));
-                    Some(params)
-                },
-            ),
-            TestCase::none("/book/oxford-dictionary", "/book/{title}/author"),
-            TestCase::none(
-                "/book/oxford-dictionary/author/birthdate",
-                "/book/{title}/author",
-            ),
-            TestCase::none("oxford-dictionary/author", "/book/{title}/author"),
-            TestCase::none("/foo", "/"),
-            TestCase::none("/foo", "/*f"),
-            TestCase::some(
-                "/foo",
-                "/*",
-                Some(UriParams {
-                    glob: Some("/foo".into()),
-                    ..UriParams::default()
-                }),
-            ),
-            TestCase::some(
-                "/assets/css/reset.css",
-                "/assets/*",
-                Some(UriParams {
-                    glob: Some("/css/reset.css".into()),
-                    ..UriParams::default()
-                }),
-            ),
-            TestCase::some("/assets/eu/css/reset.css", "/assets/{local}/*", {
-                let mut params = UriParams::default();
-                params.insert(arcstr!("local"), arcstr!("eu"));
-                params.glob = Some("/css/reset.css".into());
-                Some(params)
-            }),
-            TestCase::some("/assets/eu/css/reset.css", "/assets/:local/css/*", {
-                let mut params = UriParams::default();
-                params.insert(arcstr!("local"), arcstr!("eu"));
-                params.glob = Some("/reset.css".into());
-                Some(params)
-            }),
-        ];
-        for test_case in test_cases.into_iter() {
-            let matcher = PathMatcher::new(test_case.matcher_path);
-            let result = matcher.matches_path_inner(test_case.path);
-            match (result.clone(), test_case.result.clone()) {
-                (PathMatch::None, PathMatch::None) | (PathMatch::Literal, PathMatch::Literal) => (),
-                (PathMatch::WithParams(result), PathMatch::WithParams(expected_result)) => {
-                    assert_eq!(
-                        result.params,
-                        expected_result.params,
-                        "unexpected result params: ({:?})({}).matcher({}) => {:?} != {:?}",
-                        matcher,
-                        test_case.matcher_path,
-                        test_case.path,
-                        result.params,
-                        expected_result.params,
-                    );
-                    assert_eq!(
-                        result.glob,
-                        expected_result.glob,
-                        "unexpected result glob: ({:?})({}).matcher({}) => {:?} != {:?}",
-                        matcher,
-                        test_case.matcher_path,
-                        test_case.path,
-                        result.glob,
-                        expected_result.glob,
-                    );
-                }
-                _ => {
-                    panic!(
-                        "unexpected result: ({:?})({}).matcher({}) => {:?} != {:?}",
-                        matcher, test_case.matcher_path, test_case.path, result, test_case.result
-                    )
-                }
-            }
-        }
+    fn translate_route_syntax() {
+        assert_eq!(translate_route_path("/users/{id}"), "/users/:id");
+        assert_eq!(translate_route_path("/assets/{*path}"), "/assets/:path**");
+        assert_eq!(
+            translate_route_path("/users/{user_id}/orders/{order_id}"),
+            "/users/:user_id/orders/:order_id"
+        );
+        // Native syntax passes through.
+        assert_eq!(translate_route_path("/users/:id/x"), "/users/:id/x");
+        assert_eq!(translate_route_path("/a/**"), "/a/**");
     }
 
     #[test]
-    fn test_path_matcher_match_path_literal() {
-        for (prefix, path, is_match) in [
-            ("", "", true),
-            ("/", "/", true),
-            ("/", "", true),
-            ("", "/", true),
-            ("/foo", "/", false),
-            ("/foo", "", false),
-            ("/", "/foo", false),
-            ("", "/foo", false),
-            ("/foo", "/foo", true),
-            ("/*/foo", "/*/foo", true),
-            ("/*/foo", "/*/foo/", true),
-            ("/*/foo/", "/*/foo/", true),
-            ("/*/foo/", "/*/foo", true),
-            ("/*/foo/", "/bar/foo", false),
-            ("/bar/foo/", "/bar/foo/baz", false),
-            ("/bar/foo", "/bar/foo/baz", false),
-            ("/bar/foo*", "/bar/foo/baz", false),
-            ("/FoO/42", "/foo/42/1", false),
-            ("/FoO/42", "/foo/42/", true),
-        ] {
-            let matcher = PathMatcher::new_literal(prefix);
-            match (matcher.matches_path_inner(path), is_match) {
-                (PathMatch::Literal, true) | (PathMatch::None, false) => (),
-                (result, is_match) => {
-                    panic!(
-                        "unexpected result for path '{path}: {result:?} (is_match: {is_match}); matcher = {matcher:?}"
-                    );
-                }
-            }
-        }
+    fn pattern_captures_into_uri_params() {
+        let pat = compile_pattern(&translate_route_path("/users/{id}"));
+        let ext = Extensions::new();
+        assert!(match_pattern(&pat, Some(&ext), "/users/glen%20dc"));
+        let params = ext.get_ref::<UriParams>().unwrap();
+        assert_eq!(params.get("id"), Some("glen dc"));
+
+        // Named catch-all is read as a normal param.
+        let pat = compile_pattern(&translate_route_path("/assets/{*path}"));
+        let ext = Extensions::new();
+        assert!(match_pattern(&pat, Some(&ext), "/assets/css/app.css"));
+        assert_eq!(
+            ext.get_ref::<UriParams>().unwrap().get("path"),
+            Some("css/app.css")
+        );
     }
 
     #[test]
-    fn test_path_matcher_match_path_prefix() {
-        for (prefix, path, is_match) in [
-            ("", "", true),
-            ("/", "/", true),
-            ("/", "", true),
-            ("", "/", true),
-            ("/foo", "/", false),
-            ("/foo", "", false),
-            ("/", "/foo", true),
-            ("", "/foo", true),
-            ("/foo", "/foo", true),
-            ("/*/foo", "/*/foo", true),
-            ("/*/foo", "/*/foo/", true),
-            ("/*/foo/", "/*/foo/", true),
-            ("/*/foo/", "/*/foo", true),
-            ("/*/foo/", "/bar/foo", false),
-            ("/bar/foo/", "/bar/foo/baz", true),
-            ("/bar/foo", "/bar/foo/baz", true),
-            ("/bar/foo*", "/bar/foo/baz", false),
-            ("/FoO/42", "/foo/42/1", true),
-        ] {
-            let matcher = PathMatcher::new_prefix(prefix);
-            match (matcher.matches_path_inner(path), is_match) {
-                (PathMatch::Literal, true) | (PathMatch::None, false) => (),
-                (result, is_match) => {
-                    panic!(
-                        "unexpected result for path '{path}: {result:?} (is_match: {is_match}); matcher = {matcher:?}"
-                    );
-                }
-            }
-        }
+    fn prefix_and_literal() {
+        assert!(match_prefix("api", "/api/users"));
+        assert!(match_prefix("api", "/api"));
+        assert!(!match_prefix("api", "/apixyz"));
+        assert!(match_literal("foo/bar", "/foo/bar/"));
+        assert!(!match_literal("foo/bar", "/foo/baz"));
     }
 
     #[test]

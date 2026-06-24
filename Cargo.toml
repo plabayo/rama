@@ -143,7 +143,6 @@ jiff = { version = "0.2.29", features = ["serde"] }
 libc = "0.2"
 libfuzzer-sys = "0.4"
 loom = "0.7"
-matchit = "0.9"
 md5 = "0.8"
 memchr = "2.8"
 memmap2 = "0.9"

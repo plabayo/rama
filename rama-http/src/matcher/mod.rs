@@ -10,7 +10,9 @@ use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{
     address::{AsDomainRef, Domain},
     stream::matcher::SocketMatcher,
+    uri::PathPattern,
 };
+use rama_utils::str::arcstr::ArcStr;
 use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
 use std::fmt;
 use std::sync::Arc;
@@ -30,9 +32,9 @@ mod version;
 #[doc(inline)]
 pub use version::VersionMatcher;
 
-mod path;
+pub(crate) mod path;
 #[doc(inline)]
-pub use path::{PathMatcher, UriParams, UriParamsDeserializeError};
+pub use path::{UriParams, UriParamsDeserializeError};
 
 mod header;
 #[doc(inline)]
@@ -72,8 +74,16 @@ pub enum HttpMatcherKind<Body> {
     All(Vec<HttpMatcher<Body>>),
     /// [`MethodMatcher`], a matcher that matches one or more HTTP methods.
     Method(MethodMatcher),
-    /// [`PathMatcher`], a matcher based on the URI path.
-    Path(PathMatcher),
+    /// A matcher based on the URI path, compiled from a [`PathPattern`]
+    /// (`:name` / `:name**` captures, `*` / `**` globs). Captures are recorded
+    /// as [`UriParams`].
+    Path(PathPattern),
+    /// Matches when the URI path begins with this prefix (segment-boundary,
+    /// case-insensitive).
+    PathPrefix(ArcStr),
+    /// Matches when the URI path equals this literal exactly (case-insensitive),
+    /// with metacharacters compared verbatim.
+    PathLiteral(ArcStr),
     /// [`DomainMatcher`], a matcher based on the (sub)domain of the request's URI.
     Domain(DomainMatcher),
     /// [`VersionMatcher`], a matcher based on the HTTP version of the request.
@@ -100,6 +110,8 @@ impl<Body> Clone for HttpMatcherKind<Body> {
             Self::All(inner) => Self::All(inner.clone()),
             Self::Method(inner) => Self::Method(*inner),
             Self::Path(inner) => Self::Path(inner.clone()),
+            Self::PathPrefix(inner) => Self::PathPrefix(inner.clone()),
+            Self::PathLiteral(inner) => Self::PathLiteral(inner.clone()),
             Self::Domain(inner) => Self::Domain(inner.clone()),
             Self::Version(inner) => Self::Version(*inner),
             Self::Any(inner) => Self::Any(inner.clone()),
@@ -118,6 +130,8 @@ impl<Body> fmt::Debug for HttpMatcherKind<Body> {
             Self::All(inner) => f.debug_tuple("All").field(inner).finish(),
             Self::Method(inner) => f.debug_tuple("Method").field(inner).finish(),
             Self::Path(inner) => f.debug_tuple("Path").field(inner).finish(),
+            Self::PathPrefix(inner) => f.debug_tuple("PathPrefix").field(inner).finish(),
+            Self::PathLiteral(inner) => f.debug_tuple("PathLiteral").field(inner).finish(),
             Self::Domain(inner) => f.debug_tuple("Domain").field(inner).finish(),
             Self::Version(inner) => f.debug_tuple("Version").field(inner).finish(),
             Self::Any(inner) => f.debug_tuple("Any").field(inner).finish(),
@@ -564,44 +578,45 @@ impl<Body> HttpMatcher<Body> {
         self.or(Self::uri_wildcard(wc))
     }
 
-    /// Create a [`PathMatcher`] matcher.
+    /// Create a path matcher from a [`PathPattern`] (`:name` / `:name**`
+    /// captures, `*` / `**` globs; `{name}` / `{*name}` accepted as aliases).
     #[must_use]
     pub fn path(path: impl AsRef<str>) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(PathMatcher::new(path)),
+            kind: HttpMatcherKind::Path(path::compile_pattern(&path::translate_route_path(
+                path.as_ref(),
+            ))),
             negate: false,
         }
     }
 
-    /// Create a [`PathMatcher`] matcher for literal.
+    /// Create a path matcher that matches a literal path exactly, with
+    /// metacharacters (`*`, `:`, …) compared verbatim rather than interpreted.
     #[must_use]
     pub fn path_literal(path: impl AsRef<str>) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(PathMatcher::new_literal(path)),
+            kind: HttpMatcherKind::PathLiteral(path::normalize(path.as_ref()).into()),
             negate: false,
         }
     }
 
-    /// Create a [`PathMatcher`] matcher for prefix.
+    /// Create a path matcher that matches any path beginning with `path`
+    /// (matched at `/` segment boundaries, case-insensitive).
     #[must_use]
     pub fn path_prefix(path: impl AsRef<str>) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(PathMatcher::new_prefix(path)),
+            kind: HttpMatcherKind::PathPrefix(path::normalize(path.as_ref()).into()),
             negate: false,
         }
     }
 
-    /// Add a [`PathMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
-    ///
-    /// See [`PathMatcher`] for more information.
+    /// Add a path matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     #[must_use]
     pub fn and_path(self, path: impl AsRef<str>) -> Self {
         self.and(Self::path(path))
     }
 
-    /// Create a [`PathMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
-    ///
-    /// See [`PathMatcher`] for more information.
+    /// Create a path matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     #[must_use]
     pub fn or_path(self, path: impl AsRef<str>) -> Self {
         self.or(Self::path(path))
@@ -734,7 +749,7 @@ impl<Body> HttpMatcher<Body> {
         self.or(Self::socket(socket))
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a GET request.
+    /// Create a matcher to match for a GET request.
     #[must_use]
     pub fn get(path: impl AsRef<str>) -> Self {
         Self::method_get().and_path(path)
@@ -815,55 +830,55 @@ impl<Body> HttpMatcher<Body> {
         self.or(Self::any_subdomain(domains))
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a POST request.
+    /// Create a matcher to match for a POST request.
     #[must_use]
     pub fn post(path: impl AsRef<str>) -> Self {
         Self::method_post().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a PUT request.
+    /// Create a matcher to match for a PUT request.
     #[must_use]
     pub fn put(path: impl AsRef<str>) -> Self {
         Self::method_put().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a DELETE request.
+    /// Create a matcher to match for a DELETE request.
     #[must_use]
     pub fn delete(path: impl AsRef<str>) -> Self {
         Self::method_delete().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a PATCH request.
+    /// Create a matcher to match for a PATCH request.
     #[must_use]
     pub fn patch(path: impl AsRef<str>) -> Self {
         Self::method_patch().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a HEAD request.
+    /// Create a matcher to match for a HEAD request.
     #[must_use]
     pub fn head(path: impl AsRef<str>) -> Self {
         Self::method_head().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a OPTIONS request.
+    /// Create a matcher to match for a OPTIONS request.
     #[must_use]
     pub fn options(path: impl AsRef<str>) -> Self {
         Self::method_options().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a TRACE request.
+    /// Create a matcher to match for a TRACE request.
     #[must_use]
     pub fn trace(path: impl AsRef<str>) -> Self {
         Self::method_trace().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a CONNECT request.
+    /// Create a matcher to match for a CONNECT request.
     #[must_use]
     pub fn connect(path: impl AsRef<str>) -> Self {
         Self::method_connect().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] matcher to match for a QUERY request.
+    /// Create a matcher to match for a QUERY request.
     #[must_use]
     pub fn query(path: impl AsRef<str>) -> Self {
         Self::method_query().and_path(path)
@@ -969,7 +984,9 @@ where
         match self {
             Self::All(all) => all.iter().matches_and(ext, req),
             Self::Method(method) => method.matches(ext, req),
-            Self::Path(path) => path.matches(ext, req),
+            Self::Path(pattern) => path::match_pattern(pattern, ext, req.uri().path_or_root()),
+            Self::PathPrefix(prefix) => path::match_prefix(prefix, req.uri().path_or_root()),
+            Self::PathLiteral(literal) => path::match_literal(literal, req.uri().path_or_root()),
             Self::Domain(domain) => domain.matches(ext, req),
             Self::Version(version) => version.matches(ext, req),
             Self::Uri(uri) => uri.matches(ext, req),

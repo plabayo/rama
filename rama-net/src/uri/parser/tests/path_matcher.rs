@@ -281,6 +281,56 @@ fn anonymous_and_glob_excluded_from_named() {
 }
 
 #[test]
+fn named_catch_all() {
+    // `:name**` is a named catch-all: 1+ segments, '/'-joined and decoded,
+    // read via get()/iter() — not glob().
+    assert_eq!(
+        caps("/assets/:path**", "/assets/css/app.css"),
+        Some(vec![("path".to_owned(), "css/app.css".to_owned())])
+    );
+    assert_eq!(
+        caps("/assets/:path**", "/assets/a"),
+        Some(vec![("path".to_owned(), "a".to_owned())])
+    );
+    // It is a named binding, so glob() stays empty.
+    let pat = PathPattern::new("/assets/:path**");
+    let c = pat.captures(p("/assets/a/b")).unwrap();
+    assert_eq!(c.get("path"), Some("a/b"));
+    assert_eq!(c.glob(), None);
+
+    // Like `**`, it needs 1+ segments: the bare prefix does not match.
+    assert!(
+        PathPattern::new("/assets/:path**")
+            .captures(p("/assets"))
+            .is_none()
+    );
+
+    // Mid-pattern: the run stops before the trailing literal.
+    assert_eq!(
+        caps("/a/:mid**/z", "/a/b/c/z"),
+        Some(vec![("mid".to_owned(), "b/c".to_owned())])
+    );
+
+    // Decoded + joined across segments.
+    assert_eq!(
+        caps("/d/:rest**", "/d/a%20b/c"),
+        Some(vec![("rest".to_owned(), "a b/c".to_owned())])
+    );
+
+    // A single `*` stays within a segment (contrast): `:path*` captures one
+    // segment only, so a multi-segment path does not match.
+    assert!(
+        PathPattern::new("/assets/:path*")
+            .captures(p("/assets/a/b"))
+            .is_none()
+    );
+    assert_eq!(
+        caps("/assets/:path*", "/assets/a"),
+        Some(vec![("path".to_owned(), "a".to_owned())])
+    );
+}
+
+#[test]
 fn utf8_literal_and_capture() {
     // Multibyte UTF-8 literal segment.
     assert!(PathPattern::new("/café/menu").is_match(p("/café/menu")));
@@ -375,6 +425,11 @@ fn misused_meta_chars_never_panic_and_stay_consistent() {
         "::*::",
         "/a/**/**/b",
         ":a*:b*:c",
+        ":rest**",
+        ":**",
+        ":name***",
+        "x:name**",
+        "/a/:mid**/z",
     ];
     let paths = [
         "", "/", "//", "/abc", "/a/b", "/a/b/c", "/a//b", "/x/", "/*", "/:", "/a?b", "/%2F",

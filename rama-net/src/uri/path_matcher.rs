@@ -32,9 +32,13 @@ use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, str
 /// - `*` is an anonymous wildcard run (0+ chars), not captured;
 /// - `?` makes the immediately preceding element optional (zero-or-one):
 ///   `a?` is an optional `a`, a trailing `/?` is an optional trailing slash;
-/// - `**`, as a *whole* segment, is a catch-all matching one or more path
-///   segments, available '/'-joined and decoded via [`PathCaptures::glob`].
-///   It may appear in the middle of a pattern.
+/// - `**`, as a *whole* segment, is an anonymous catch-all matching one or
+///   more path segments, available '/'-joined and decoded via
+///   [`PathCaptures::glob`]. It may appear in the middle of a pattern;
+/// - `:name**`, as a *whole* segment, is the **named** catch-all: same 1+
+///   segment match as `**`, but the run is recorded under `name` (read back,
+///   '/'-joined and decoded, via [`PathCaptures::get`]). So a single `*`
+///   stays within a segment; a doubled `**` spans segments.
 ///
 /// Trailing slash is explicit: `/a` matches only `/a`, `/a/` matches only
 /// `/a/`, and `/a/?` matches both.
@@ -51,6 +55,11 @@ use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, str
 /// let assets = PathPattern::new("/assets/**");
 /// assert!(assets.is_match(PathRef::from_raw_str("/assets/css/app.css")));
 /// assert!(!assets.is_match(PathRef::from_raw_str("/assets")));
+///
+/// // `:name**` is the named catch-all (read back via `get`).
+/// let files = PathPattern::new("/files/:rest**");
+/// let caps = files.captures(PathRef::from_raw_str("/files/a/b/c.txt")).unwrap();
+/// assert_eq!(caps.get("rest"), Some("a/b/c.txt"));
 /// ```
 #[derive(Debug, Clone)]
 pub struct PathPattern {
@@ -93,8 +102,12 @@ impl TrailingSlash {
 /// One `/`-delimited unit of a compiled pattern.
 #[derive(Debug, Clone)]
 enum PatternSegment {
-    /// `**` — matches one or more whole path segments.
+    /// `**` — matches one or more whole path segments (anonymous; read back
+    /// via [`PathCaptures::glob`]).
     CatchAll,
+    /// `:name**` — like [`CatchAll`](Self::CatchAll) but records the matched,
+    /// '/'-joined run under `name` (read back via [`PathCaptures::get`]).
+    NamedCatchAll { name_start: usize, name_len: usize },
     /// A sequence of within-segment elements matched against a single path
     /// segment via greedy backtracking. Inline-sized for the common one- or
     /// two-element segment (a bare literal, capture, or `:name*.ext` pair).
@@ -198,6 +211,21 @@ impl PathPattern {
                     segments.push(PatternSegment::CatchAll);
                     continue;
                 }
+                if let Some(name) = parse_named_catchall(seg) {
+                    capture_free = false;
+                    // `:**` (empty name) is just the anonymous catch-all.
+                    if name.is_empty() {
+                        segments.push(PatternSegment::CatchAll);
+                    } else {
+                        let name_start = name_bytes.len();
+                        name_bytes.extend_from_slice(name);
+                        segments.push(PatternSegment::NamedCatchAll {
+                            name_start,
+                            name_len: name.len(),
+                        });
+                    }
+                    continue;
+                }
                 let elements = parse_segment(seg, &mut name_bytes, &mut capture_free);
                 let ambiguity = elements
                     .iter()
@@ -272,9 +300,11 @@ impl PathPattern {
                     }
                 }
                 // Either the pattern ran out of segments (path has a real one
-                // left) or a `**` snuck in — impossible for a capture-free
+                // left) or a catch-all snuck in — impossible for a capture-free
                 // pattern, but a defensive miss either way.
-                None | Some(PatternSegment::CatchAll) => return false,
+                None | Some(PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. }) => {
+                    return false;
+                }
             }
             content_count += 1;
         };
@@ -446,7 +476,18 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
 // Compilation helpers
 // ----------------------------------------------------------------------
 
-/// Parse one (non-`**`) pattern segment into a sequence of elements.
+/// If `seg` is a whole-segment named catch-all (`:name**`), return its name
+/// bytes (possibly empty for `:**`). Returns `None` for anything else — including
+/// within-segment `:name*` runs (single `*`) and names with non-identifier bytes,
+/// which fall through to [`parse_segment`].
+fn parse_named_catchall(seg: &[u8]) -> Option<&[u8]> {
+    let name = seg.strip_prefix(b":")?.strip_suffix(b"**")?;
+    name.iter()
+        .all(|&b| is_pattern_name_byte(b))
+        .then_some(name)
+}
+
+/// Parse one (non catch-all) pattern segment into a sequence of elements.
 ///
 /// `name_bytes` accumulates capture-name bytes; element name indices point
 /// into it. `capture_free` is cleared whenever a named capture is seen.
@@ -601,7 +642,12 @@ impl SeqMemo {
     fn new(pats: &[PatternSegment], n_segs: usize) -> Self {
         let catch_alls = pats
             .iter()
-            .filter(|p| matches!(p, PatternSegment::CatchAll))
+            .filter(|p| {
+                matches!(
+                    p,
+                    PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. }
+                )
+            })
             .count();
         if catch_alls >= 2 {
             Self::Grid {
@@ -656,31 +702,15 @@ fn match_sequence<'p>(
     let matched = match pats.split_first() {
         None => segs.is_empty(),
         Some((PatternSegment::CatchAll, rest)) => {
-            // `**` consumes 1+ path segments; try the shortest first, growing
-            // until the remaining patterns can match the tail.
-            let mut ok = false;
-            for take in 1..=segs.len() {
-                let mark = sink.len();
-                if match_sequence(rest, &segs[take..], opts, sink, memo) {
-                    // Record the glob (joined, decoded) only once the tail
-                    // matched, so discarded attempts cost nothing.
-                    let value = join_decoded(&segs[..take], opts.percent_decode);
-                    sink.insert_at(
-                        mark,
-                        Binding {
-                            name_start: 0,
-                            name_len: 0,
-                            value,
-                            is_glob: true,
-                        },
-                    );
-                    ok = true;
-                    break;
-                }
-                sink.truncate(mark);
-            }
-            ok
+            match_catch_all(None, rest, segs, opts, sink, memo)
         }
+        Some((
+            PatternSegment::NamedCatchAll {
+                name_start,
+                name_len,
+            },
+            rest,
+        )) => match_catch_all(Some((*name_start, *name_len)), rest, segs, opts, sink, memo),
         Some((PatternSegment::Normal { elems, ambiguity }, rest)) => {
             if let Some((seg, segs_rest)) = segs.split_first() {
                 let mark = sink.len();
@@ -702,6 +732,43 @@ fn match_sequence<'p>(
         memo.mark_failed(pats.len(), segs.len());
     }
     matched
+}
+
+/// Match a catch-all (`**` or `:name**`) against `segs`, then the remaining
+/// `rest` patterns against the tail. Consumes 1+ path segments, shortest first,
+/// growing until the tail matches. On success records the matched run, '/'-joined
+/// and decoded — as the anonymous glob when `name` is `None`, else a named binding.
+fn match_catch_all<'p>(
+    name: Option<(usize, usize)>,
+    rest: &[PatternSegment],
+    segs: &[&'p [u8]],
+    opts: PathMatchOptions,
+    sink: &mut Sink<'_, 'p>,
+    memo: &mut SeqMemo,
+) -> bool {
+    for take in 1..=segs.len() {
+        let mark = sink.len();
+        if match_sequence(rest, &segs[take..], opts, sink, memo) {
+            // Record only once the tail matched, so discarded attempts cost nothing.
+            let value = join_decoded(&segs[..take], opts.percent_decode);
+            let (name_start, name_len, is_glob) = match name {
+                Some((start, len)) => (start, len, false),
+                None => (0, 0, true),
+            };
+            sink.insert_at(
+                mark,
+                Binding {
+                    name_start,
+                    name_len,
+                    value,
+                    is_glob,
+                },
+            );
+            return true;
+        }
+        sink.truncate(mark);
+    }
+    false
 }
 
 /// Match one pattern segment's elements against one path segment's bytes.
