@@ -1,5 +1,6 @@
 use super::StreamingBody;
-use super::util::BodyExt;
+use super::util::{BodyExt, CollectError, CollectOptions};
+use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext};
 
 /// An extension trait for [`StreamingBody`] that provides methods to extract data from it.
@@ -37,11 +38,36 @@ pub trait BodyExtractExt: private::Sealed {
 
     /// Try to turn the (contained) body in an utf-8 string.
     fn try_into_string(self) -> impl Future<Output = Result<String, BoxError>> + Send;
+
+    /// Like [`try_into_json`](Self::try_into_json), but bounded by `opts` (a size
+    /// cap and/or timeout).
+    ///
+    /// On success returns the decoded value. Otherwise a [`CollectError`] tells
+    /// you why — cap reached, timed out, stream failure, or decode failure — and
+    /// for everything but a stream failure [`CollectError::into_full_body`] hands
+    /// the body back so it can be forwarded on untouched (handy for proxies).
+    ///
+    /// Unlike wrapping the body in [`Limited`], hitting the cap here does not
+    /// destroy the body.
+    ///
+    /// [`Limited`]: crate::body::util::Limited
+    /// [`CollectError::into_full_body`]: crate::body::util::CollectError::into_full_body
+    fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
+        self,
+        opts: CollectOptions,
+    ) -> impl Future<Output = Result<T, CollectError>> + Send;
+
+    /// Like [`try_into_string`](Self::try_into_string), but bounded by `opts`.
+    /// See [`try_into_json_with`](Self::try_into_json_with) for the error semantics.
+    fn try_into_string_with(
+        self,
+        opts: CollectOptions,
+    ) -> impl Future<Output = Result<String, CollectError>> + Send;
 }
 
 impl<Body> BodyExtractExt for crate::Response<Body>
 where
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
@@ -64,11 +90,22 @@ where
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
+
+    async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
+        self,
+        opts: CollectOptions,
+    ) -> Result<T, CollectError> {
+        body_into_json_with(crate::Body::new(self.into_body()), opts).await
+    }
+
+    async fn try_into_string_with(self, opts: CollectOptions) -> Result<String, CollectError> {
+        body_into_string_with(crate::Body::new(self.into_body()), opts).await
+    }
 }
 
 impl<Body> BodyExtractExt for crate::Request<Body>
 where
-    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
@@ -89,6 +126,17 @@ where
         let body = self.into_body().collect().await.into_box_error()?;
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
+    }
+
+    async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
+        self,
+        opts: CollectOptions,
+    ) -> Result<T, CollectError> {
+        body_into_json_with(crate::Body::new(self.into_body()), opts).await
+    }
+
+    async fn try_into_string_with(self, opts: CollectOptions) -> Result<String, CollectError> {
+        body_into_string_with(crate::Body::new(self.into_body()), opts).await
     }
 }
 
@@ -116,6 +164,17 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
         let bytes = collected_body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
+
+    async fn try_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
+        self,
+        opts: CollectOptions,
+    ) -> Result<T, CollectError> {
+        body_into_json_with(self.into(), opts).await
+    }
+
+    async fn try_into_string_with(self, opts: CollectOptions) -> Result<String, CollectError> {
+        body_into_string_with(self.into(), opts).await
+    }
 }
 
 /// Drive a body's data frames through an `AsyncRead` and into
@@ -141,6 +200,32 @@ where
     })
     .await
     .map_err(BoxError::from)?
+}
+
+/// Collect `body` within `opts`, then JSON-decode the buffered bytes. A decode
+/// failure surfaces as a [`CollectError`] with the full body still recoverable.
+async fn body_into_json_with<T: serde::de::DeserializeOwned + Send + 'static>(
+    body: crate::Body,
+    opts: CollectOptions,
+) -> Result<T, CollectError> {
+    let bytes = body.collect_with(opts).await?.to_bytes();
+    match serde_json::from_slice::<T>(bytes.as_ref()) {
+        Ok(value) => Ok(value),
+        Err(err) => Err(CollectError::decode(bytes, err.into())),
+    }
+}
+
+/// Collect `body` within `opts`, then UTF-8 decode the buffered bytes. A decode
+/// failure surfaces as a [`CollectError`] with the full body still recoverable.
+async fn body_into_string_with(
+    body: crate::Body,
+    opts: CollectOptions,
+) -> Result<String, CollectError> {
+    let bytes = body.collect_with(opts).await?.to_bytes();
+    match std::str::from_utf8(bytes.as_ref()) {
+        Ok(s) => Ok(s.to_owned()),
+        Err(err) => Err(CollectError::decode(bytes, err.into())),
+    }
 }
 
 mod private {
@@ -194,5 +279,88 @@ mod tests {
         let body = Body::from("not actually json");
         let result: Result<serde_json::Value, _> = body.try_into_json_streaming().await;
         result.unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn try_into_string_with_complete() {
+        let body = Body::from("hello");
+        let s = body
+            .try_into_string_with(CollectOptions::new().with_max_size(100))
+            .await
+            .unwrap();
+        assert_eq!(s, "hello");
+    }
+
+    #[tokio::test]
+    async fn try_into_string_with_cap_returns_passthrough_body() {
+        let body = Body::from("hello world");
+        let err = body
+            .try_into_string_with(CollectOptions::new().with_max_size(5))
+            .await
+            .unwrap_err();
+        assert!(err.is_cap_reached());
+        let full = err.into_full_body().unwrap();
+        assert_eq!(full.try_into_string().await.unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn try_into_string_with_invalid_utf8_is_decode_error() {
+        let body = Body::from(vec![0xff_u8, 0xfe, 0xfd]);
+        let err = body
+            .try_into_string_with(CollectOptions::new().with_max_size(1024))
+            .await
+            .unwrap_err();
+        assert!(err.is_decode_error());
+        assert_eq!(err.bytes_read().to_vec(), vec![0xff, 0xfe, 0xfd]);
+    }
+
+    #[tokio::test]
+    async fn try_into_json_with_complete() {
+        let body = Body::from(r#"{"name":"alice","age":42}"#);
+        let foo: Foo = body
+            .try_into_json_with(CollectOptions::new().with_max_size(1024))
+            .await
+            .unwrap();
+        assert_eq!(
+            foo,
+            Foo {
+                name: "alice".to_owned(),
+                age: 42,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn try_into_json_with_cap_returns_passthrough_body() {
+        let body = Body::from(r#"{"name":"alice","age":42}"#);
+        let err = body
+            .try_into_json_with::<Foo>(CollectOptions::new().with_max_size(5))
+            .await
+            .unwrap_err();
+        assert!(err.is_cap_reached());
+        let recovered = err
+            .into_full_body()
+            .unwrap()
+            .try_into_string()
+            .await
+            .unwrap();
+        assert_eq!(recovered, r#"{"name":"alice","age":42}"#);
+    }
+
+    #[tokio::test]
+    async fn try_into_json_with_decode_error_recovers_full_body() {
+        let body = Body::from("not json");
+        let err = body
+            .try_into_json_with::<Foo>(CollectOptions::new().with_max_size(1024))
+            .await
+            .unwrap_err();
+        assert!(err.is_decode_error());
+        let recovered = err
+            .into_full_body()
+            .unwrap()
+            .try_into_string()
+            .await
+            .unwrap();
+        assert_eq!(recovered, "not json");
     }
 }

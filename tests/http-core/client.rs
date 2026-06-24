@@ -29,22 +29,50 @@ fn s(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).expect("from_utf8")
 }
 
+// Accumulate frames by hand (rather than via `BodyExt::collect`) so the body's
+// native error type is preserved — these helpers feed `TryFuture` chains that
+// unify on it.
 async fn concat<B>(b: B) -> Result<Bytes, B::Error>
 where
     B: StreamingBody,
 {
-    b.collect().await.map(|c| c.to_bytes())
+    use rama::bytes::{BufMut, BytesMut};
+    use rama::futures::future::poll_fn;
+
+    let mut b = std::pin::pin!(b);
+    let mut acc = BytesMut::new();
+    while let Some(frame) = poll_fn(|cx| b.as_mut().poll_frame(cx)).await {
+        if let Ok(data) = frame?.into_data() {
+            acc.put(data);
+        }
+    }
+    Ok(acc.freeze())
 }
 
 async fn concat_with_trailers<B>(b: B) -> Result<(Bytes, Option<HeaderMap>), B::Error>
 where
     B: StreamingBody,
 {
-    let collect = b.collect().await?;
-    let trailers = collect.trailers().cloned();
-    let bytes = collect.to_bytes();
+    use rama::bytes::{BufMut, BytesMut};
+    use rama::futures::future::poll_fn;
 
-    Ok((bytes, trailers))
+    let mut b = std::pin::pin!(b);
+    let mut acc = BytesMut::new();
+    let mut trailers: Option<HeaderMap> = None;
+    while let Some(frame) = poll_fn(|cx| b.as_mut().poll_frame(cx)).await {
+        match frame?.into_data() {
+            Ok(data) => acc.put(data),
+            Err(frame) => {
+                if let Ok(t) = frame.into_trailers() {
+                    match &mut trailers {
+                        Some(existing) => existing.extend(t),
+                        None => trailers = Some(t),
+                    }
+                }
+            }
+        }
+    }
+    Ok((acc.freeze(), trailers))
 }
 
 async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {

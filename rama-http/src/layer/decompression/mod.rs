@@ -136,6 +136,7 @@ mod tests {
     use crate::layer::compression::Compression;
     use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
     use rama_core::Service;
+    use rama_core::error::ErrorContext;
     use rama_core::extensions::ExtensionsRef;
     use rama_core::matcher::service::MatcherServicePair;
     use rama_core::service::service_fn;
@@ -317,7 +318,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = client.serve(req).await.unwrap();
-        res.into_body().collect().await.map(|c| c.to_bytes())
+        res.into_body()
+            .collect()
+            .await
+            .map(|c| c.to_bytes())
+            .into_box_error()
     }
 
     #[tokio::test]
