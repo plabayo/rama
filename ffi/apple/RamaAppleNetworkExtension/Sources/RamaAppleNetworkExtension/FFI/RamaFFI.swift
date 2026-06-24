@@ -11,6 +11,17 @@ struct RamaTransparentProxyFlowMetaBridge {
     var sourceAppBundleIdentifier: String?
     var sourceAppAuditToken: Data?
     var sourceAppPid: Int32?
+    /// Remote hostname (DNS name) the app connected to, when known.
+    var remoteHostname: String?
+    /// Egress interface name (e.g. `en0`, `utun4`), when known.
+    var localInterfaceName: String?
+    /// Egress interface type as a `NwInterfaceType` discriminant (the Rust wire
+    /// value), already mapped from `nw_interface_type_t` by the caller.
+    var localInterfaceType: UInt8?
+    /// Egress interface index, when known.
+    var localInterfaceIndex: UInt32?
+    /// Whether the app bound this flow to a specific interface, when known.
+    var isBound: Bool?
 }
 
 struct RamaTransparentProxyRuleBridge {
@@ -302,29 +313,45 @@ private func withFlowMeta<T>(
             withUtf8OrNil(meta.sourceAppSigningIdentifier) { signingIdPtr, signingIdLen in
                 withUtf8OrNil(meta.sourceAppBundleIdentifier) { bundleIdPtr, bundleIdLen in
                     withDataOrNil(meta.sourceAppAuditToken) { auditTokenPtr, auditTokenLen in
-                        var cMeta = RamaTransparentProxyFlowMeta(
-                            protocol: meta.protocolRaw,
-                            remote_endpoint: RamaTransparentProxyFlowEndpoint(
-                                host_utf8: remoteHostPtr,
-                                host_utf8_len: remoteHostLen,
-                                port: meta.remotePort,
-                            ),
-                            local_endpoint: RamaTransparentProxyFlowEndpoint(
-                                host_utf8: localHostPtr,
-                                host_utf8_len: localHostLen,
-                                port: meta.localPort,
-                            ),
-                            source_app_signing_identifier_utf8: signingIdPtr,
-                            source_app_signing_identifier_utf8_len: signingIdLen,
-                            source_app_bundle_identifier_utf8: bundleIdPtr,
-                            source_app_bundle_identifier_utf8_len: bundleIdLen,
-                            source_app_audit_token_bytes: auditTokenPtr,
-                            source_app_audit_token_bytes_len: auditTokenLen,
-                            source_app_pid: meta.sourceAppPid ?? 0,
-                            source_app_pid_is_set: meta.sourceAppPid != nil
-                        )
-                        return withUnsafePointer(to: &cMeta) { metaPtr in
-                            body(metaPtr)
+                        // Two more scoped UTF-8 buffers; like the others above
+                        // they are valid only for the synchronous `body` call.
+                        withUtf8OrNil(meta.remoteHostname) { remoteHostnamePtr, remoteHostnameLen in
+                            withUtf8OrNil(meta.localInterfaceName) { ifaceNamePtr, ifaceNameLen in
+                                var cMeta = RamaTransparentProxyFlowMeta(
+                                    protocol: meta.protocolRaw,
+                                    remote_endpoint: RamaTransparentProxyFlowEndpoint(
+                                        host_utf8: remoteHostPtr,
+                                        host_utf8_len: remoteHostLen,
+                                        port: meta.remotePort,
+                                    ),
+                                    local_endpoint: RamaTransparentProxyFlowEndpoint(
+                                        host_utf8: localHostPtr,
+                                        host_utf8_len: localHostLen,
+                                        port: meta.localPort,
+                                    ),
+                                    source_app_signing_identifier_utf8: signingIdPtr,
+                                    source_app_signing_identifier_utf8_len: signingIdLen,
+                                    source_app_bundle_identifier_utf8: bundleIdPtr,
+                                    source_app_bundle_identifier_utf8_len: bundleIdLen,
+                                    source_app_audit_token_bytes: auditTokenPtr,
+                                    source_app_audit_token_bytes_len: auditTokenLen,
+                                    source_app_pid: meta.sourceAppPid ?? 0,
+                                    source_app_pid_is_set: meta.sourceAppPid != nil,
+                                    remote_hostname_utf8: remoteHostnamePtr,
+                                    remote_hostname_utf8_len: remoteHostnameLen,
+                                    local_interface_name_utf8: ifaceNamePtr,
+                                    local_interface_name_utf8_len: ifaceNameLen,
+                                    local_interface_index: meta.localInterfaceIndex ?? 0,
+                                    local_interface_index_is_set: meta.localInterfaceIndex != nil,
+                                    local_interface_type: meta.localInterfaceType ?? 0,
+                                    local_interface_type_is_set: meta.localInterfaceType != nil,
+                                    is_bound: meta.isBound ?? false,
+                                    is_bound_is_set: meta.isBound != nil
+                                )
+                                return withUnsafePointer(to: &cMeta) { metaPtr in
+                                    body(metaPtr)
+                                }
+                            }
                         }
                     }
                 }

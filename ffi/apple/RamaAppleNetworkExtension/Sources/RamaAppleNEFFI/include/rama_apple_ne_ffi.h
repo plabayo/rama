@@ -170,6 +170,32 @@ typedef struct {
     int32_t source_app_pid;
     /// Whether `source_app_pid` is explicitly set.
     bool source_app_pid_is_set;
+    /// Remote hostname (DNS name, not resolved IP) the originating app
+    /// connected to, when exposed by the OS. UTF-8 bytes (not NUL-terminated).
+    /// May be NULL.
+    const char* remote_hostname_utf8;
+    /// Length of `remote_hostname_utf8`.
+    size_t remote_hostname_utf8_len;
+    /// Name of the network interface this flow egresses on (e.g. `en0`,
+    /// `utun4`). UTF-8 bytes (not NUL-terminated). May be NULL.
+    const char* local_interface_name_utf8;
+    /// Length of `local_interface_name_utf8`.
+    size_t local_interface_name_utf8_len;
+    /// Egress interface index. Only valid when `local_interface_index_is_set`.
+    uint32_t local_interface_index;
+    /// Whether `local_interface_index` is explicitly set.
+    bool local_interface_index_is_set;
+    /// Egress interface type, as a `RamaNwInterfaceType` discriminant. Swift
+    /// maps `nw_interface_type_t` to this. Only valid when
+    /// `local_interface_type_is_set`.
+    uint8_t local_interface_type;
+    /// Whether `local_interface_type` is explicitly set.
+    bool local_interface_type_is_set;
+    /// Whether the app bound this flow to a specific interface.
+    /// Only valid when `is_bound_is_set`.
+    bool is_bound;
+    /// Whether `is_bound` is explicitly set.
+    bool is_bound_is_set;
 } RamaTransparentProxyFlowMeta;
 
 /// One transparent-proxy network rule used to build Apple NE settings.
@@ -251,9 +277,13 @@ _Static_assert(sizeof(RamaBytesView) == 16, "RamaBytesView ABI drift");
 _Static_assert(sizeof(RamaBytesOwned) == 24, "RamaBytesOwned ABI drift");
 _Static_assert(sizeof(RamaBytesOwnedView) == 32, "RamaBytesOwnedView ABI drift");
 _Static_assert(sizeof(RamaTransparentProxyFlowEndpoint) == 24, "RamaTransparentProxyFlowEndpoint ABI drift");
-_Static_assert(sizeof(RamaTransparentProxyFlowMeta) == 112, "RamaTransparentProxyFlowMeta ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyFlowMeta) == 160, "RamaTransparentProxyFlowMeta ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyFlowMeta, remote_endpoint) == 8, "RamaTransparentProxyFlowMeta.remote_endpoint offset drift");
 _Static_assert(offsetof(RamaTransparentProxyFlowMeta, source_app_pid) == 104, "RamaTransparentProxyFlowMeta.source_app_pid offset drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, remote_hostname_utf8) == 112, "RamaTransparentProxyFlowMeta.remote_hostname_utf8 offset drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, local_interface_name_utf8) == 128, "RamaTransparentProxyFlowMeta.local_interface_name_utf8 offset drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, local_interface_index) == 144, "RamaTransparentProxyFlowMeta.local_interface_index offset drift");
+_Static_assert(offsetof(RamaTransparentProxyFlowMeta, is_bound) == 151, "RamaTransparentProxyFlowMeta.is_bound offset drift");
 _Static_assert(sizeof(RamaTransparentProxyNetworkRule) == 56, "RamaTransparentProxyNetworkRule ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, local_network_utf8) == 24, "RamaTransparentProxyNetworkRule.local_network_utf8 offset drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, protocol) == 44, "RamaTransparentProxyNetworkRule.protocol offset drift");

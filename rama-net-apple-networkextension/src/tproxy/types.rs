@@ -767,6 +767,20 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_audit_token: Option<AuditToken>,
     /// Process identifier resolved from the source-app audit token, if available.
     pub source_app_pid: Option<i32>,
+    /// Remote hostname the originating app connected to (DNS name, not the
+    /// resolved IP), if the OS exposed it for this flow.
+    pub remote_hostname: Option<Box<str>>,
+    /// Name of the network interface this flow egresses on (e.g. `en0`,
+    /// `utun4`), if known. The primary signal for detecting VPN/tunnel egress.
+    pub local_interface_name: Option<Box<str>>,
+    /// Type of the egress interface (wifi / wired / cellular / loopback /
+    /// other), if known.
+    pub local_interface_type: Option<NwInterfaceType>,
+    /// Index of the egress interface, if known.
+    pub local_interface_index: Option<u32>,
+    /// Whether the originating app bound this flow to a specific interface, if
+    /// known.
+    pub is_bound: Option<bool>,
 }
 
 impl TransparentProxyFlowMeta {
@@ -788,6 +802,11 @@ impl TransparentProxyFlowMeta {
             source_app_bundle_identifier: None,
             source_app_audit_token: None,
             source_app_pid: None,
+            remote_hostname: None,
+            local_interface_name: None,
+            local_interface_type: None,
+            local_interface_index: None,
+            is_bound: None,
         }
     }
 
@@ -841,6 +860,46 @@ impl TransparentProxyFlowMeta {
         /// Set source app pid.
         pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
             self.source_app_pid = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the remote hostname the originating app connected to.
+        pub fn remote_hostname(mut self, value: Option<Box<str>>) -> Self {
+            self.remote_hostname = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface name.
+        pub fn local_interface_name(mut self, value: Option<Box<str>>) -> Self {
+            self.local_interface_name = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface type.
+        pub fn local_interface_type(mut self, value: Option<NwInterfaceType>) -> Self {
+            self.local_interface_type = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface index.
+        pub fn local_interface_index(mut self, value: Option<u32>) -> Self {
+            self.local_interface_index = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the originating app bound this flow to a specific interface.
+        pub fn is_bound(mut self, value: Option<bool>) -> Self {
+            self.is_bound = value;
             self
         }
     }

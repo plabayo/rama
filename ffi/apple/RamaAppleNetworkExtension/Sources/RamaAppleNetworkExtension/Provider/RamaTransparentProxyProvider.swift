@@ -1124,6 +1124,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let remoteEndpoint = endpointHostPort(remote)
         let localEndpoint = endpointHostPort(bestEffortLocalEndpoint(flow))
         let appMeta = sourceAppMeta(flow)
+        let ifaceMeta = flowInterfaceMeta(flow)
         return RamaTransparentProxyFlowMetaBridge(
             protocolRaw: UInt32(RAMA_FLOW_PROTOCOL_TCP.rawValue),
             remoteHost: remoteEndpoint?.host,
@@ -1133,7 +1134,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             sourceAppSigningIdentifier: appMeta.signingIdentifier,
             sourceAppBundleIdentifier: appMeta.bundleIdentifier,
             sourceAppAuditToken: appMeta.auditToken,
-            sourceAppPid: appMeta.pid
+            sourceAppPid: appMeta.pid,
+            remoteHostname: ifaceMeta.remoteHostname,
+            localInterfaceName: ifaceMeta.interfaceName,
+            localInterfaceType: ifaceMeta.interfaceType,
+            localInterfaceIndex: ifaceMeta.interfaceIndex,
+            isBound: ifaceMeta.isBound
         )
     }
 
@@ -1145,6 +1151,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let remote = endpointHostPort(remoteEndpoint)
         let local = endpointHostPort(localEndpoint)
         let appMeta = sourceAppMeta(flow)
+        let ifaceMeta = flowInterfaceMeta(flow)
         return RamaTransparentProxyFlowMetaBridge(
             protocolRaw: UInt32(RAMA_FLOW_PROTOCOL_UDP.rawValue),
             remoteHost: remote?.host,
@@ -1154,7 +1161,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             sourceAppSigningIdentifier: appMeta.signingIdentifier,
             sourceAppBundleIdentifier: appMeta.bundleIdentifier,
             sourceAppAuditToken: appMeta.auditToken,
-            sourceAppPid: appMeta.pid
+            sourceAppPid: appMeta.pid,
+            remoteHostname: ifaceMeta.remoteHostname,
+            localInterfaceName: ifaceMeta.interfaceName,
+            localInterfaceType: ifaceMeta.interfaceType,
+            localInterfaceIndex: ifaceMeta.interfaceIndex,
+            isBound: ifaceMeta.isBound
         )
     }
 
