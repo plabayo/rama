@@ -12,7 +12,6 @@ use rama_net::{
     stream::matcher::SocketMatcher,
     uri::PathPattern,
 };
-use rama_utils::str::arcstr::ArcStr;
 use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
 use std::fmt;
 use std::sync::Arc;
@@ -78,12 +77,6 @@ pub enum HttpMatcherKind<Body> {
     /// (`{name}` / `{*name}` captures, `{}` / `{*}` globs). Captures are
     /// recorded as [`UriParams`].
     Path(PathPattern),
-    /// Matches when the URI path begins with this prefix (segment-boundary,
-    /// case-insensitive).
-    PathPrefix(ArcStr),
-    /// Matches when the URI path equals this literal exactly (case-insensitive),
-    /// with metacharacters compared verbatim.
-    PathLiteral(ArcStr),
     /// [`DomainMatcher`], a matcher based on the (sub)domain of the request's URI.
     Domain(DomainMatcher),
     /// [`VersionMatcher`], a matcher based on the HTTP version of the request.
@@ -110,8 +103,6 @@ impl<Body> Clone for HttpMatcherKind<Body> {
             Self::All(inner) => Self::All(inner.clone()),
             Self::Method(inner) => Self::Method(*inner),
             Self::Path(inner) => Self::Path(inner.clone()),
-            Self::PathPrefix(inner) => Self::PathPrefix(inner.clone()),
-            Self::PathLiteral(inner) => Self::PathLiteral(inner.clone()),
             Self::Domain(inner) => Self::Domain(inner.clone()),
             Self::Version(inner) => Self::Version(*inner),
             Self::Any(inner) => Self::Any(inner.clone()),
@@ -130,8 +121,6 @@ impl<Body> fmt::Debug for HttpMatcherKind<Body> {
             Self::All(inner) => f.debug_tuple("All").field(inner).finish(),
             Self::Method(inner) => f.debug_tuple("Method").field(inner).finish(),
             Self::Path(inner) => f.debug_tuple("Path").field(inner).finish(),
-            Self::PathPrefix(inner) => f.debug_tuple("PathPrefix").field(inner).finish(),
-            Self::PathLiteral(inner) => f.debug_tuple("PathLiteral").field(inner).finish(),
             Self::Domain(inner) => f.debug_tuple("Domain").field(inner).finish(),
             Self::Version(inner) => f.debug_tuple("Version").field(inner).finish(),
             Self::Any(inner) => f.debug_tuple("Any").field(inner).finish(),
@@ -588,22 +577,14 @@ impl<Body> HttpMatcher<Body> {
         }
     }
 
-    /// Create a path matcher that matches a literal path exactly, with
-    /// brace tokens (`{name}`, …) compared verbatim rather than interpreted.
-    #[must_use]
-    pub fn path_literal(path: impl AsRef<str>) -> Self {
-        Self {
-            kind: HttpMatcherKind::PathLiteral(path::normalize(path.as_ref()).into()),
-            negate: false,
-        }
-    }
-
-    /// Create a path matcher that matches any path beginning with `path`
-    /// (matched at `/` segment boundaries, case-insensitive).
+    /// Create a path matcher that matches any path beginning with `path`,
+    /// matched at `/` segment boundaries (case-insensitive): `/api` matches
+    /// `/api` and `/api/users`, but not `/apixyz`. Compiles to a prefix-mode
+    /// [`PathPattern`], so `{name}` / `{*name}` captures are honored too.
     #[must_use]
     pub fn path_prefix(path: impl AsRef<str>) -> Self {
         Self {
-            kind: HttpMatcherKind::PathPrefix(path::normalize(path.as_ref()).into()),
+            kind: HttpMatcherKind::Path(path::compile_prefix_pattern(path.as_ref())),
             negate: false,
         }
     }
@@ -983,8 +964,6 @@ where
             Self::All(all) => all.iter().matches_and(ext, req),
             Self::Method(method) => method.matches(ext, req),
             Self::Path(pattern) => path::match_pattern(pattern, ext, req.uri().path_or_root()),
-            Self::PathPrefix(prefix) => path::match_prefix(prefix, req.uri().path_or_root()),
-            Self::PathLiteral(literal) => path::match_literal(literal, req.uri().path_or_root()),
             Self::Domain(domain) => domain.matches(ext, req),
             Self::Version(version) => version.matches(ext, req),
             Self::Uri(uri) => uri.matches(ext, req),

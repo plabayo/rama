@@ -598,3 +598,32 @@ fn segment_kinds_classify_each_segment() {
     assert_eq!(PathPattern::new("/").segment_kinds().len(), 0);
     assert_eq!(PathPattern::new("").segment_kinds().len(), 0);
 }
+
+#[test]
+fn prefix_matching() {
+    let api = PathPattern::new_prefix("/api");
+    assert!(api.is_match(p("/api"))); // bare prefix
+    assert!(api.is_match(p("/api/"))); // trailing slash ignored
+    assert!(api.is_match(p("/api/users")));
+    assert!(api.is_match(p("/api/users/42")));
+    assert!(!api.is_match(p("/apixyz"))); // segment-boundary, not substring
+    assert!(!api.is_match(p("/"))); // shorter than the prefix
+    assert!(!api.is_match(p("")));
+
+    // Multi-segment prefix.
+    let v2 = PathPattern::new_prefix("/api/v2");
+    assert!(v2.is_match(p("/api/v2")));
+    assert!(v2.is_match(p("/api/v2/users")));
+    assert!(!v2.is_match(p("/api"))); // path shorter than prefix
+    assert!(!v2.is_match(p("/api/v2x"))); // partial last segment
+
+    // Empty prefix matches everything.
+    let any = PathPattern::new_prefix("");
+    assert!(any.is_match(p("/anything/at/all")));
+    assert!(any.is_match(p("")));
+
+    // Captures still bind in prefix mode; the trailing run is ignored.
+    let cap = PathPattern::new_prefix("/users/{id}");
+    let caps = cap.captures(p("/users/42/orders/7")).unwrap();
+    assert_eq!(caps.get("id"), Some("42"));
+}

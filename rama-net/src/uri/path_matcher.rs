@@ -80,6 +80,10 @@ pub struct PathPattern {
     /// `true` when no segment binds a name and there is no catch-all — the
     /// alloc-free [`is_match`](PathPattern::is_match) fast path applies.
     capture_free: bool,
+    /// `true` for a prefix matcher ([`new_prefix`](PathPattern::new_prefix)):
+    /// the pattern must match a *leading* run of the path's segments, and any
+    /// trailing segments and trailing-slash are ignored.
+    prefix: bool,
 }
 
 /// Coarse classification of a compiled [`PathPattern`] segment, exposed via
@@ -202,10 +206,39 @@ impl PathPattern {
     )]
     pub fn new_with_opts(pattern: impl IntoUriComponent, opts: PathMatchOptions) -> Self {
         let raw = pattern.as_uri_component_bytes();
-        Self::compile(&raw, opts)
+        Self::compile(&raw, opts, false)
     }
 
-    fn compile(raw: &[u8], opts: PathMatchOptions) -> Self {
+    /// Compile a **prefix** matcher: the pattern must match a leading run of the
+    /// path's segments; any trailing segments and the path's trailing slash are
+    /// ignored. So `/api` matches `/api`, `/api/`, and `/api/users` — but not
+    /// `/apixyz` (segments are matched whole).
+    ///
+    /// ```
+    /// use rama_net::uri::{PathPattern, PathRef};
+    ///
+    /// let api = PathPattern::new_prefix("/api");
+    /// assert!(api.is_match(PathRef::from_raw_str("/api")));
+    /// assert!(api.is_match(PathRef::from_raw_str("/api/users/42")));
+    /// assert!(!api.is_match(PathRef::from_raw_str("/apixyz")));
+    /// ```
+    #[must_use]
+    pub fn new_prefix(pattern: impl IntoUriComponent) -> Self {
+        Self::new_prefix_with_opts(pattern, PathMatchOptions::default())
+    }
+
+    /// [`new_prefix`](Self::new_prefix) with explicit [`PathMatchOptions`].
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling APIs; this impl only borrows the input"
+    )]
+    pub fn new_prefix_with_opts(pattern: impl IntoUriComponent, opts: PathMatchOptions) -> Self {
+        let raw = pattern.as_uri_component_bytes();
+        Self::compile(&raw, opts, true)
+    }
+
+    fn compile(raw: &[u8], opts: PathMatchOptions, prefix: bool) -> Self {
         // Trailing-slash policy is read off the raw pattern *before* the
         // leading slash is stripped, so the bare-root `/` (which becomes empty
         // after stripping) still registers as a required trailing slash.
@@ -266,6 +299,7 @@ impl PathPattern {
             trailing,
             opts,
             capture_free,
+            prefix,
         }
     }
 
@@ -307,7 +341,9 @@ impl PathPattern {
     /// ```
     #[must_use]
     pub fn is_match(&self, path: PathRef<'_>) -> bool {
-        if self.capture_free {
+        // The fast path assumes a full, both-ends-anchored match; prefix matching
+        // needs the segment-sequence engine, so route it through `captures`.
+        if self.capture_free && !self.prefix {
             self.is_match_fast(path)
         } else {
             self.captures(path).is_some()
@@ -373,12 +409,26 @@ impl PathPattern {
     pub fn captures<'p>(&self, path: PathRef<'p>) -> Option<PathCaptures<'_, 'p>> {
         // Inline the segment list: most paths have a handful of segments, so
         // this keeps the capturing path off the allocator in the common case.
-        let segs: SmallVec<[&'p [u8]; 8]> = path.segments().map(|s| s.as_bytes()).collect();
-        let segs = self.check_trailing(&segs)?;
+        let all: SmallVec<[&'p [u8]; 8]> = path.segments().map(|s| s.as_bytes()).collect();
+        // A prefix match ignores trailing segments + trailing-slash policy, so
+        // it matches against all segments; a full match trims the trailing-`/`
+        // marker and enforces the policy.
+        let segs: &[&'p [u8]] = if self.prefix {
+            &all
+        } else {
+            self.check_trailing(&all)?
+        };
         let mut bindings: Vec<Binding<'p>> = Vec::new();
         let mut sink = Sink::Record(&mut bindings);
         let mut seq_memo = SeqMemo::new(&self.segments, segs.len());
-        if match_sequence(&self.segments, segs, self.opts, &mut sink, &mut seq_memo) {
+        if match_sequence(
+            &self.segments,
+            segs,
+            self.opts,
+            &mut sink,
+            &mut seq_memo,
+            self.prefix,
+        ) {
             Some(PathCaptures {
                 name_bytes: &self.name_bytes,
                 bindings,
@@ -760,22 +810,25 @@ impl SeqMemo {
 }
 
 /// Match a sequence of pattern segments against the path segments, with
-/// backtracking across `{*}` catch-alls. Returns `true` on full match.
+/// backtracking across `{*}` catch-alls. Returns `true` on a match. When
+/// `prefix` is set, a path tail left over after the pattern is exhausted is
+/// accepted (leading-run match) instead of requiring full consumption.
 fn match_sequence<'p>(
     pats: &[PatternSegment],
     segs: &[&'p [u8]],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
     memo: &mut SeqMemo,
+    prefix: bool,
 ) -> bool {
     if memo.is_failed(pats.len(), segs.len()) {
         return false;
     }
 
     let matched = match pats.split_first() {
-        None => segs.is_empty(),
+        None => prefix || segs.is_empty(),
         Some((PatternSegment::CatchAll, rest)) => {
-            match_catch_all(None, rest, segs, opts, sink, memo)
+            match_catch_all(None, rest, segs, opts, sink, memo, prefix)
         }
         Some((
             PatternSegment::NamedCatchAll {
@@ -783,12 +836,20 @@ fn match_sequence<'p>(
                 name_len,
             },
             rest,
-        )) => match_catch_all(Some((*name_start, *name_len)), rest, segs, opts, sink, memo),
+        )) => match_catch_all(
+            Some((*name_start, *name_len)),
+            rest,
+            segs,
+            opts,
+            sink,
+            memo,
+            prefix,
+        ),
         Some((PatternSegment::Normal { elems, ambiguity }, rest)) => {
             if let Some((seg, segs_rest)) = segs.split_first() {
                 let mark = sink.len();
                 if match_segment(elems, *ambiguity, seg, opts, sink)
-                    && match_sequence(rest, segs_rest, opts, sink, memo)
+                    && match_sequence(rest, segs_rest, opts, sink, memo, prefix)
                 {
                     true
                 } else {
@@ -818,10 +879,11 @@ fn match_catch_all<'p>(
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
     memo: &mut SeqMemo,
+    prefix: bool,
 ) -> bool {
     for take in 1..=segs.len() {
         let mark = sink.len();
-        if match_sequence(rest, &segs[take..], opts, sink, memo) {
+        if match_sequence(rest, &segs[take..], opts, sink, memo, prefix) {
             // Record only once the tail matched, so discarded attempts cost nothing.
             let value = join_decoded(&segs[..take], opts.percent_decode);
             let (name_start, name_len, is_glob) = match name {

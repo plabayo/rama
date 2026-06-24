@@ -147,6 +147,13 @@ pub(crate) fn compile_pattern(pattern: &str) -> PathPattern {
     PathPattern::new_with_opts(pattern, HTTP_PATH_OPTS)
 }
 
+/// Compile a prefix matcher (in [`PathPattern`] syntax) with the HTTP routing
+/// options: matches a leading run of segments, ignoring trailing segments and
+/// the trailing slash. So `/api` matches `/api` and `/api/users`.
+pub(crate) fn compile_prefix_pattern(prefix: &str) -> PathPattern {
+    PathPattern::new_prefix_with_opts(normalize(prefix), HTTP_PATH_OPTS)
+}
+
 /// Match `path` against a compiled [`PathPattern`], inserting the captured
 /// [`UriParams`] into `ext` on a successful match that bound anything.
 pub(crate) fn match_pattern(pattern: &PathPattern, ext: Option<&Extensions>, path: &str) -> bool {
@@ -164,22 +171,9 @@ pub(crate) fn match_pattern(pattern: &PathPattern, ext: Option<&Extensions>, pat
     }
 }
 
-/// `true` when `path` begins with `prefix` at a segment boundary
-/// (case-insensitive, percent-decoded).
-pub(crate) fn match_prefix(prefix: &str, path: &str) -> bool {
-    PathRef::from_raw_str(path).has_prefix_with_opts(prefix, HTTP_PATH_OPTS)
-}
-
-/// `true` when `path` equals `literal` exactly (slashes trimmed,
-/// case-insensitive), with metacharacters compared verbatim.
-pub(crate) fn match_literal(literal: &str, path: &str) -> bool {
-    let path = path.trim().trim_matches('/');
-    literal.eq_ignore_ascii_case(path)
-}
-
-/// Normalise a path/prefix/literal the way the matchers store it: trimmed of
-/// surrounding whitespace and leading/trailing slashes.
-pub(crate) fn normalize(path: &str) -> &str {
+/// Normalise a prefix the way the matcher stores it: trimmed of surrounding
+/// whitespace and leading/trailing slashes.
+fn normalize(path: &str) -> &str {
     path.trim().trim_matches('/')
 }
 
@@ -266,12 +260,13 @@ mod test {
     }
 
     #[test]
-    fn prefix_and_literal() {
-        assert!(match_prefix("api", "/api/users"));
-        assert!(match_prefix("api", "/api"));
-        assert!(!match_prefix("api", "/apixyz"));
-        assert!(match_literal("foo/bar", "/foo/bar/"));
-        assert!(!match_literal("foo/bar", "/foo/baz"));
+    fn prefix_pattern_glue() {
+        let api = compile_prefix_pattern("/api");
+        assert!(api.is_match(PathRef::from_raw_str("/api")));
+        assert!(api.is_match(PathRef::from_raw_str("/api/users")));
+        assert!(!api.is_match(PathRef::from_raw_str("/apixyz")));
+        // case-insensitive via HTTP_PATH_OPTS
+        assert!(api.is_match(PathRef::from_raw_str("/API/users")));
     }
 
     #[test]
