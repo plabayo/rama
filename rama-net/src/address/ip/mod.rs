@@ -17,6 +17,10 @@ pub mod ipnet {
 
 pub mod geo;
 pub mod private;
+pub mod scope;
+
+#[doc(inline)]
+pub use scope::{IpScopes, ip_scope, ipv4_scope, ipv6_scope, scope_cidrs};
 
 /// An IPv4 address with the address pointing to localhost: `127.0.0.1`
 pub const IPV4_LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);

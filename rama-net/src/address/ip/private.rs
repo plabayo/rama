@@ -65,19 +65,19 @@ pub fn is_private_ipv6(addr: Ipv6Addr) -> bool {
 // --- IPv4 Helpers ---
 
 #[inline(always)]
-fn is_ipv4_this_network(val: u32) -> bool {
+pub(super) fn is_ipv4_this_network(val: u32) -> bool {
     // RFC 791 / IANA "This network": 0.0.0.0/8.
     val & 0xFF00_0000 == 0x0000_0000
 }
 
 #[inline(always)]
-fn is_ipv4_shared(val: u32) -> bool {
+pub(super) fn is_ipv4_shared(val: u32) -> bool {
     // RFC 6598 shared address space: 100.64.0.0/10.
     val & 0xFFC0_0000 == 0x6440_0000
 }
 
 #[inline(always)]
-fn is_ipv4_protocol_assignments(val: u32) -> bool {
+pub(super) fn is_ipv4_protocol_assignments(val: u32) -> bool {
     // Conservatively cover only the clearly non-global allocations under
     // 192.0.0.0/24, leaving out the globally reachable anycast addresses
     // 192.0.0.9/32 and 192.0.0.10/32.
@@ -90,13 +90,13 @@ fn is_ipv4_protocol_assignments(val: u32) -> bool {
 }
 
 #[inline(always)]
-fn is_ipv4_benchmarking(val: u32) -> bool {
+pub(super) fn is_ipv4_benchmarking(val: u32) -> bool {
     // RFC 2544 benchmarking: 198.18.0.0/15.
     val & 0xFFFE_0000 == 0xC612_0000
 }
 
 #[inline(always)]
-fn is_ipv4_reserved(val: u32) -> bool {
+pub(super) fn is_ipv4_reserved(val: u32) -> bool {
     // IANA reserved/future-use block: 240.0.0.0/4.
     val & 0xF000_0000 == 0xF000_0000
 }
@@ -104,37 +104,37 @@ fn is_ipv4_reserved(val: u32) -> bool {
 // --- IPv6 Helpers ---
 
 #[inline(always)]
-fn is_ipv6_site_local(val: u128) -> bool {
+pub(super) fn is_ipv6_site_local(val: u128) -> bool {
     // fec0::/10 (Deprecated, but non-global)
     (val >> 118) == 0x03fb
 }
 
 #[inline(always)]
-fn is_ipv6_documentation(val: u128) -> bool {
+pub(super) fn is_ipv6_documentation(val: u128) -> bool {
     // 2001:db8::/32 (RFC 3849) or 3fff::/20 (RFC 9637)
     (val >> 96 == 0x2001_0db8) || (val >> 108 == 0x3fff0)
 }
 
 #[inline(always)]
-fn is_ipv6_benchmarking(val: u128) -> bool {
+pub(super) fn is_ipv6_benchmarking(val: u128) -> bool {
     // RFC 5180 benchmarking: 2001:2::/48.
     (val >> 80) == 0x2001_0002_0000
 }
 
 #[inline(always)]
-fn is_ipv6_discard_only(val: u128) -> bool {
+pub(super) fn is_ipv6_discard_only(val: u128) -> bool {
     // RFC 6666 discard-only prefix: 100::/64.
     (val >> 64) == 0x0100_0000_0000_0000
 }
 
 #[inline(always)]
-fn is_ipv6_dummy_prefix(val: u128) -> bool {
+pub(super) fn is_ipv6_dummy_prefix(val: u128) -> bool {
     // RFC 9780 dummy prefix: 100:0:0:1::/64.
     (val >> 64) == 0x0100_0000_0000_0001
 }
 
 #[inline(always)]
-fn is_ipv6_local_use_translation(val: u128) -> bool {
+pub(super) fn is_ipv6_local_use_translation(val: u128) -> bool {
     // RFC 8215 local-use translation prefix: 64:ff9b:1::/48.
     (val >> 80) == 0x0064_ff9b_0001
 }
