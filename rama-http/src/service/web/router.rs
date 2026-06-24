@@ -87,9 +87,18 @@ struct RouteEntry<O, E> {
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
-/// `true` when `seg` is a whole-segment catch-all (`{*}` or `{*name}`).
+/// `true` when `seg` is a whole-segment catch-all (`{*}` or `{*name}`). Mirrors
+/// the matcher's acceptance: a non-name body (`{*bad name}`) is a literal there,
+/// so it must not rank as a catch-all here.
 fn is_catch_all(seg: &str) -> bool {
-    seg.starts_with("{*") && seg.ends_with('}')
+    seg.strip_prefix("{*")
+        .and_then(|s| s.strip_suffix('}'))
+        .is_some_and(|name| name.is_empty() || name.bytes().all(is_segment_name_byte))
+}
+
+/// Capture-name byte class of the `PathPattern` grammar: `ALPHA / DIGIT / "_" / "-"`.
+fn is_segment_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// Specificity rank of one pattern segment.
@@ -689,7 +698,7 @@ struct SubService<O, E> {
 /// The dynamic tail of a sub-service mount prefix (the part after the leading
 /// literal segments that key the trie).
 struct DynamicPrefix {
-    /// Pattern matching exactly the dynamic segments (e.g. `/:user_id`).
+    /// Pattern matching exactly the dynamic segments (e.g. `/{user_id}`).
     pattern: PathPattern,
     /// Number of dynamic segments to slice off after the literal prefix.
     seg_count: usize,
@@ -1186,6 +1195,139 @@ mod tests {
         let res = router.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert!(res.headers().get(header::ALLOW).is_none());
+    }
+
+    #[test]
+    fn segment_rank_and_catch_all_classification() {
+        assert_eq!(segment_rank("users"), 2); // literal
+        assert_eq!(segment_rank("{id}"), 1); // within-segment capture
+        assert_eq!(segment_rank("{}"), 1); // within-segment wildcard
+        assert_eq!(segment_rank("{pkg}.json"), 1); // affixed capture
+        assert!(is_catch_all("{*}"));
+        assert!(is_catch_all("{*rest}"));
+        assert_eq!(segment_rank("{*}"), 0);
+        assert_eq!(segment_rank("{*rest}"), 0);
+        // The matcher treats `{*bad name}` / `{*}}` as literals (non-name body),
+        // so they must NOT be ranked as low-priority catch-alls here.
+        assert!(!is_catch_all("{*bad name}"));
+        assert!(!is_catch_all("{*}}"));
+        assert_eq!(segment_rank("{*bad name}"), 1);
+    }
+
+    #[test]
+    fn path_specificity_orders_static_over_capture_over_catch_all() {
+        assert_eq!(path_specificity("/users/{id}"), vec![2, 1]);
+        assert_eq!(path_specificity("/assets/{*path}"), vec![2, 0]);
+        assert_eq!(path_specificity("/a/b/c"), vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn split_sub_prefix_shapes() {
+        use rama_net::uri::PathRef;
+
+        // Trailing within-segment capture (no catch-all) is kept as the tail.
+        let (lit, dynamic) = split_sub_prefix("users/{user_id}");
+        assert_eq!(lit, "users");
+        let d = dynamic.unwrap();
+        assert_eq!(d.seg_count, 1);
+        assert!(d.pattern.is_match(PathRef::from_raw_str("/123")));
+
+        // A named catch-all is dropped just like anon `{*}`.
+        let (lit, dynamic) = split_sub_prefix("users/{user_id}/{*rest}");
+        assert_eq!(lit, "users");
+        assert_eq!(dynamic.unwrap().seg_count, 1);
+
+        // Anon catch-all dropped, pure-literal prefix -> no dynamic tail.
+        let (lit, dynamic) = split_sub_prefix("api/v1/{*}");
+        assert_eq!(lit, "api/v1");
+        assert!(dynamic.is_none());
+
+        // Dynamic segment in the middle: literal stops at the first non-literal.
+        let (lit, dynamic) = split_sub_prefix("a/{id}/b");
+        assert_eq!(lit, "a");
+        let d = dynamic.unwrap();
+        assert_eq!(d.seg_count, 2);
+        assert!(d.pattern.is_match(PathRef::from_raw_str("/x/b")));
+
+        // All-dynamic prefix: empty literal trie key.
+        let (lit, dynamic) = split_sub_prefix("{id}/rest");
+        assert_eq!(lit, "");
+        assert_eq!(dynamic.unwrap().seg_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_router_capture_beats_catch_all_either_order() {
+        fn name_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("name:{}", p.get("name").unwrap())))
+                    .unwrap())
+            })
+        }
+        fn rest_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("rest:{}", p.get("rest").unwrap())))
+                    .unwrap())
+            })
+        }
+
+        // `{name}` (rank 1) must win over `{*rest}` (rank 0) on a single-segment
+        // path, independent of registration order.
+        let routers = [
+            Router::new()
+                .with_get("/files/{name}", name_svc())
+                .with_get("/files/{*rest}", rest_svc()),
+            Router::new()
+                .with_get("/files/{*rest}", rest_svc())
+                .with_get("/files/{name}", name_svc()),
+        ];
+        for router in routers {
+            let router = ErrorHandlerLayer::new().layer(router);
+            let req = Request::get("/files/x").body(Body::empty()).unwrap();
+            let res = router.serve(req).await.unwrap();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, "name:x");
+        }
+
+        // A multi-segment path no longer fits `{name}` and falls to the catch-all.
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/files/{name}", name_svc())
+                .with_get("/files/{*rest}", rest_svc()),
+        );
+        let req = Request::get("/files/a/b").body(Body::empty()).unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "rest:a/b");
+    }
+
+    #[tokio::test]
+    async fn test_router_anonymous_glob_surfaces_via_uri_params() {
+        fn glob_svc() -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(|req: Request| async move {
+                let p = req.extensions().get_ref::<UriParams>().unwrap();
+                // anon `{*}` is the glob, not a named param
+                assert!(p.get("rest").is_none());
+                Ok(Response::builder()
+                    .status(200)
+                    .body(Body::from(format!("glob:{}", p.glob().unwrap())))
+                    .unwrap())
+            })
+        }
+        let router =
+            ErrorHandlerLayer::new().layer(Router::new().with_get("/assets/{*}", glob_svc()));
+        let req = Request::get("/assets/css/app.css")
+            .body(Body::empty())
+            .unwrap();
+        let res = router.serve(req).await.unwrap();
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        // glob() is path-style (leading `/`), unlike a named catch-all param.
+        assert_eq!(body, "glob:/css/app.css");
     }
 
     #[tokio::test]

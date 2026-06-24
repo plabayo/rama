@@ -253,3 +253,71 @@ fn iterator_count_matches() {
         );
     }
 }
+
+#[test]
+fn exact_size_len_and_size_hint() {
+    for (path, n) in [
+        ("/foo", 1usize),
+        ("/foo/bar", 2),
+        ("/foo/bar/baz", 3),
+        ("/", 1),
+        ("/foo/", 2),
+        ("/a//b", 3),
+    ] {
+        let u = parse_graceful(path).unwrap();
+        let it = u.path().unwrap().segments();
+        assert_eq!(it.len(), n, "len for {path:?}");
+        assert_eq!(it.size_hint(), (n, Some(n)), "size_hint for {path:?}");
+    }
+    // Empty path -> zero-length iterator.
+    let u = parse_graceful("http://example.com").unwrap();
+    assert_eq!(u.path().unwrap().segments().len(), 0);
+}
+
+#[test]
+fn len_tracks_remaining_as_it_advances() {
+    let u = parse_graceful("/a/b/c").unwrap();
+    let mut it = u.path().unwrap().segments();
+    assert_eq!(it.len(), 3);
+    it.next();
+    assert_eq!(it.len(), 2);
+    it.next();
+    assert_eq!(it.len(), 1);
+    it.next();
+    assert_eq!(it.len(), 0);
+    assert!(it.next().is_none());
+    assert_eq!(it.len(), 0);
+}
+
+// ----------------------------------------------------------------------
+// Positional accessors: nth/first/last_segment, segment_count
+// ----------------------------------------------------------------------
+
+#[test]
+fn positional_accessors() {
+    let u = parse_graceful("/v1/users/42").unwrap();
+    let p = u.path().unwrap();
+    assert_eq!(p.first_segment().unwrap().as_raw_str(), "v1");
+    assert_eq!(p.nth_segment(1).unwrap().as_raw_str(), "users");
+    assert_eq!(p.last_segment().unwrap().as_raw_str(), "42");
+    assert_eq!(p.nth_segment(3), None);
+    assert_eq!(p.segment_count(), 3);
+}
+
+#[test]
+fn last_segment_of_trailing_slash_is_empty() {
+    let u = parse_graceful("/foo/").unwrap();
+    let p = u.path().unwrap();
+    assert!(p.last_segment().unwrap().is_empty());
+    assert_eq!(p.segment_count(), 2);
+}
+
+#[test]
+fn accessors_on_empty_path() {
+    let u = parse_graceful("http://example.com").unwrap();
+    let p = u.path().unwrap();
+    assert_eq!(p.first_segment(), None);
+    assert_eq!(p.last_segment(), None);
+    assert_eq!(p.nth_segment(0), None);
+    assert_eq!(p.segment_count(), 0);
+}

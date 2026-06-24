@@ -532,3 +532,50 @@ fn host_port_shortcuts_match_authority() {
         assert_eq!(u.port(), a.port(), "port mismatch on {s:?}");
     }
 }
+
+// ----------------------------------------------------------------------
+// path segment matching: contains_segments / PathSegment matchers
+// ----------------------------------------------------------------------
+
+#[test]
+fn contains_segments_matches_whole_segment_runs() {
+    let u = parse_graceful("/golang.org/x/mod/@v/list").unwrap();
+    let p = u.path().unwrap();
+    // present as whole segment(s), at any position
+    assert!(p.contains_segments("@v"));
+    assert!(p.contains_segments("mod/@v"));
+    assert!(p.contains_segments("x"));
+    // not a partial-segment match
+    assert!(!p.contains_segments("@version"));
+    assert!(!p.contains_segments("od/@v"));
+    // empty needle is trivially contained
+    assert!(p.contains_segments(""));
+}
+
+#[test]
+fn contains_segments_is_decode_aware() {
+    // `%2D` == `-`; the `/-/` registry marker must match decoded.
+    let u = parse_graceful("/npm/%2D/rev").unwrap();
+    assert!(u.path().unwrap().contains_segments("-"));
+}
+
+#[test]
+fn segment_suffix_prefix_and_matches() {
+    let u = parse_graceful("/dl/rails-7.1.0.gem").unwrap();
+    let seg = u.path().unwrap().last_segment().unwrap();
+    // only `.gem` is the real extension here
+    for ext in [".gem", ".tgz", ".zip", ".nupkg"] {
+        assert_eq!(seg.has_suffix(ext), ext == ".gem", "has_suffix({ext})");
+    }
+    assert!(seg.has_prefix("rails-"));
+    assert!(seg.matches("rails-7.1.0.gem"));
+    assert!(!seg.matches("rails-7.1.0.tgz"));
+}
+
+#[test]
+fn segment_has_suffix_is_decode_aware() {
+    // `%2E` == `.`; the suffix check decodes both sides.
+    let u = parse_graceful("/pkg/widget%2Etgz").unwrap();
+    let seg = u.path().unwrap().last_segment().unwrap();
+    assert!(seg.has_suffix(".tgz"));
+}

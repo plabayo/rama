@@ -153,11 +153,10 @@ impl<'a> PathRef<'a> {
         self.segments().last()
     }
 
-    /// Number of path segments. `O(n)` in the path length — segment
-    /// splitting is lazy, so there is no cached count.
+    /// Number of path segments. `O(n)` in the path length.
     #[must_use]
     pub fn segment_count(&self) -> usize {
-        self.segments().count()
+        self.segments().len()
     }
 
     /// `true` when `needle`'s segment(s) appear as a consecutive run of whole
@@ -381,9 +380,22 @@ impl<'a> Iterator for PathSegments<'a> {
             Some(PathSegment::new(seg))
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        // Each unyielded `/` precedes another segment, plus the final tail
+        // segment — exact, so this is also an `ExactSizeIterator`.
+        let n = if self.exhausted {
+            0
+        } else {
+            self.remaining.iter().filter(|&&b| b == b'/').count() + 1
+        };
+        (n, Some(n))
+    }
 }
 
 impl std::iter::FusedIterator for PathSegments<'_> {}
+
+impl ExactSizeIterator for PathSegments<'_> {}
 
 /// Options controlling path prefix/suffix matching and stripping
 /// ([`PathRef::has_prefix_with_opts`], [`super::PathMut::strip_prefix_with_opts`], …).

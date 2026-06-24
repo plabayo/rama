@@ -558,3 +558,21 @@ fn pathological_multi_catchall_is_polynomial_and_correct() {
     let g = ok.captures(p("/a/b/c/end")).expect("must match");
     assert_eq!(g.glob(), Some("a"));
 }
+
+#[test]
+fn brace_misuse_falls_back_to_literal() {
+    // Mid-segment `{*…}` is not a catch-all; the whole segment is literal.
+    let pat = PathPattern::new("/a{*}b");
+    assert!(pat.is_match(p("/a{*}b")));
+    assert!(!pat.is_match(p("/axb")));
+
+    // `{}}` = anonymous run `{}` then a literal `}`.
+    let pat = PathPattern::new("/{}}");
+    assert!(pat.is_match(p("/anything}")));
+    assert!(!pat.is_match(p("/anything")));
+
+    // Whole-segment `{*}}` has a non-name catch-all body -> literal segment.
+    let pat = PathPattern::new("/{*}}");
+    assert!(pat.is_match(p("/{*}}")));
+    assert!(!pat.is_match(p("/a/b")));
+}
