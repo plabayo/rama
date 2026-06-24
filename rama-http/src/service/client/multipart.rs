@@ -354,7 +354,7 @@ impl Part {
             .and_then(|ext| mime_guess::from_ext(ext).first())
             .unwrap_or(mime::APPLICATION_OCTET_STREAM);
 
-        let file = tokio::fs::File::open(path).await?;
+        let file = rama_core::fs::safe_open(path).await?;
         let metadata = file.metadata().await?;
         let len = metadata.len();
 
