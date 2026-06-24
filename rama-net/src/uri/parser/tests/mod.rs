@@ -51,6 +51,7 @@ pub(super) mod idna;
 pub(super) mod mutation;
 pub(super) mod non_http_schemes;
 pub(super) mod origin_form;
+pub(super) mod path_matcher;
 pub(super) mod path_mut;
 pub(super) mod path_segments;
 pub(super) mod query_collect;
@@ -180,8 +181,9 @@ const _: fn() = || {
         UserInfoRef,
     };
     use crate::uri::{
-        Fragment, FragmentRef, ParseError, PathRef, Query, QueryDeserializeError, QueryPair,
-        QueryPairRef, QueryRef, ResolveError, Uri, UriError, WireError,
+        Fragment, FragmentRef, ParseError, PathCaptures, PathPattern, PathRef, Query,
+        QueryDeserializeError, QueryPair, QueryPairRef, QueryRef, ResolveError, Uri, UriError,
+        WireError,
     };
 
     assert_send_sync::<Uri>();
@@ -198,6 +200,8 @@ const _: fn() = || {
     assert_send_sync::<Fragment>();
     assert_send_sync::<FragmentRef<'static>>();
     assert_send_sync::<PathRef<'static>>();
+    assert_send_sync::<PathPattern>();
+    assert_send_sync::<PathCaptures<'static, 'static>>();
 
     assert_send_sync::<Authority>();
     assert_send_sync::<AuthorityRef<'static>>();

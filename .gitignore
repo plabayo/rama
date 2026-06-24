@@ -32,3 +32,7 @@ Package.resolved
 # internal docs
 docs/internal
 docs/audit
+
+# TNMT
+mutants.out/
+mutants.out.old/

@@ -24,6 +24,19 @@ impl<'a> PathRef<'a> {
         Self { bytes }
     }
 
+    /// Borrow a raw on-the-wire path string as a [`PathRef`] — no allocation,
+    /// no `unsafe`.
+    ///
+    /// The input is treated as the already-encoded on-wire form (exactly like
+    /// the path of a parsed [`Uri`](super::Uri)). This is the cheap entry
+    /// point into the typed path API when you only hold a `&str`. Also
+    /// available as [`From<&str>`](#impl-From<%26str>-for-PathRef).
+    #[must_use]
+    #[inline]
+    pub const fn from_raw_str(path: &'a str) -> Self {
+        Self::new(path.as_bytes())
+    }
+
     /// Returns the raw on-the-wire path bytes.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
@@ -119,6 +132,82 @@ impl<'a> PathRef<'a> {
         let suffix = suffix.as_uri_component_bytes();
         match_suffix_in_body(strip_leading_slash(self.bytes), &suffix, opts).is_some()
     }
+
+    /// The `n`-th path segment (0-based), or `None` when the path has fewer
+    /// segments. See [`segments`](Self::segments) for the splitting rules.
+    #[must_use]
+    pub fn nth_segment(&self, n: usize) -> Option<PathSegment<'a>> {
+        self.segments().nth(n)
+    }
+
+    /// The first path segment, or `None` for an empty path.
+    #[must_use]
+    pub fn first_segment(&self) -> Option<PathSegment<'a>> {
+        self.segments().next()
+    }
+
+    /// The last path segment, or `None` for an empty path. A trailing `/`
+    /// yields a final empty segment, so `/foo/`'s last segment is `""`.
+    #[must_use]
+    pub fn last_segment(&self) -> Option<PathSegment<'a>> {
+        self.segments().last()
+    }
+
+    /// Number of path segments. `O(n)` in the path length — segment
+    /// splitting is lazy, so there is no cached count.
+    #[must_use]
+    pub fn segment_count(&self) -> usize {
+        self.segments().count()
+    }
+
+    /// `true` when `needle`'s segment(s) appear as a consecutive run of whole
+    /// path segments — matched at `/` boundaries with percent-decoded values
+    /// (default [`PathMatchOptions`]). E.g. `contains_segments("@v")` is true
+    /// for `/golang.org/x/mod/@v/list`, and false for `/x/@version/y`.
+    #[must_use]
+    pub fn contains_segments(&self, needle: impl IntoUriComponent) -> bool {
+        self.contains_segments_with_opts(needle, PathMatchOptions::default())
+    }
+
+    /// `true` when `needle`'s segment(s) appear as a consecutive run of whole
+    /// path segments under `opts`.
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn contains_segments_with_opts(
+        &self,
+        needle: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let needle = needle.as_uri_component_bytes();
+        if trim_ascii_slashes(&needle).is_empty() {
+            return true;
+        }
+        // Try the needle as a segment-prefix at each segment-aligned start
+        // of the path body (offset 0, and every byte just past a `/`).
+        let body = strip_leading_slash(self.bytes);
+        let mut start = 0;
+        loop {
+            if match_prefix_in_body(&body[start..], &needle, opts).is_some() {
+                return true;
+            }
+            match memchr::memchr(b'/', &body[start..]) {
+                Some(i) => start += i + 1,
+                None => return false,
+            }
+        }
+    }
+}
+
+impl<'a> From<&'a str> for PathRef<'a> {
+    /// Borrow a raw on-the-wire path string as a [`PathRef`]. See
+    /// [`PathRef::from_raw_str`].
+    #[inline]
+    fn from(path: &'a str) -> Self {
+        Self::from_raw_str(path)
+    }
 }
 
 impl std::fmt::Display for PathRef<'_> {
@@ -178,6 +267,77 @@ impl<'a> PathSegment<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty()
+    }
+
+    /// `true` when this segment equals `other`, comparing percent-decoded
+    /// values (default [`PathMatchOptions`]). The typed alternative to
+    /// `seg.as_decoded_str() == other` that also handles `%`-case and the
+    /// invalid-UTF-8 pitfalls correctly.
+    #[must_use]
+    pub fn matches(&self, other: impl IntoUriComponent) -> bool {
+        self.matches_with_opts(other, PathMatchOptions::default())
+    }
+
+    /// `true` when this segment equals `other` under `opts` (the `partial`
+    /// flag is irrelevant within a single segment and is ignored here).
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn matches_with_opts(&self, other: impl IntoUriComponent, opts: PathMatchOptions) -> bool {
+        segment_eq(self.raw, &other.as_uri_component_bytes(), opts)
+    }
+
+    /// `true` when the (percent-decoded) segment value begins with `prefix`.
+    /// Byte-level *within* this one segment — for e.g. file-name prefixes.
+    #[must_use]
+    pub fn has_prefix(&self, prefix: impl IntoUriComponent) -> bool {
+        self.has_prefix_with_opts(prefix, PathMatchOptions::default())
+    }
+
+    /// `true` when the (percent-decoded) segment value begins with `prefix`
+    /// under `opts` (`partial` ignored — always byte-level within the segment).
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn has_prefix_with_opts(
+        &self,
+        prefix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let pat = prefix.as_uri_component_bytes();
+        let seg = maybe_decode(self.raw, opts.percent_decode);
+        let pat = maybe_decode(&pat, opts.percent_decode);
+        byte_starts_with(&seg, &pat, opts.ignore_ascii_case)
+    }
+
+    /// `true` when the (percent-decoded) segment value ends with `suffix`.
+    /// Byte-level *within* this one segment — e.g. a file extension:
+    /// `seg.has_suffix(".tgz")`.
+    #[must_use]
+    pub fn has_suffix(&self, suffix: impl IntoUriComponent) -> bool {
+        self.has_suffix_with_opts(suffix, PathMatchOptions::default())
+    }
+
+    /// `true` when the (percent-decoded) segment value ends with `suffix`
+    /// under `opts` (`partial` ignored — always byte-level within the segment).
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "by-value matches IntoUriComponent's signature on sibling matchers; this impl only borrows the input"
+    )]
+    pub fn has_suffix_with_opts(
+        &self,
+        suffix: impl IntoUriComponent,
+        opts: PathMatchOptions,
+    ) -> bool {
+        let pat = suffix.as_uri_component_bytes();
+        let seg = maybe_decode(self.raw, opts.percent_decode);
+        let pat = maybe_decode(&pat, opts.percent_decode);
+        byte_ends_with(&seg, &pat, opts.ignore_ascii_case)
     }
 }
 
@@ -257,12 +417,12 @@ impl Default for PathMatchOptions {
 
 /// Drop a single leading `/`, yielding the path "body" used by the matchers.
 #[inline]
-fn strip_leading_slash(path: &[u8]) -> &[u8] {
+pub(super) fn strip_leading_slash(path: &[u8]) -> &[u8] {
     path.strip_prefix(b"/").unwrap_or(path)
 }
 
 /// Trim every leading and trailing `/` from a slice (pattern normalization).
-fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
+pub(super) fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
     while let Some(rest) = bytes.strip_prefix(b"/") {
         bytes = rest;
     }
@@ -272,8 +432,35 @@ fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
     bytes
 }
 
+#[inline]
+pub(super) fn maybe_decode(bytes: &[u8], decode: bool) -> Cow<'_, [u8]> {
+    if decode {
+        percent_decode(bytes).into()
+    } else {
+        Cow::Borrowed(bytes)
+    }
+}
+
+#[inline]
+pub(super) fn byte_starts_with(hay: &[u8], needle: &[u8], ignore_case: bool) -> bool {
+    if ignore_case {
+        hay.len() >= needle.len() && hay[..needle.len()].eq_ignore_ascii_case(needle)
+    } else {
+        hay.starts_with(needle)
+    }
+}
+
+#[inline]
+pub(super) fn byte_ends_with(hay: &[u8], needle: &[u8], ignore_case: bool) -> bool {
+    if ignore_case {
+        hay.len() >= needle.len() && hay[hay.len() - needle.len()..].eq_ignore_ascii_case(needle)
+    } else {
+        hay.ends_with(needle)
+    }
+}
+
 /// Compare a single path segment against a pattern segment under `opts`.
-fn segment_eq(seg: &[u8], pat: &[u8], opts: PathMatchOptions) -> bool {
+pub(super) fn segment_eq(seg: &[u8], pat: &[u8], opts: PathMatchOptions) -> bool {
     if opts.percent_decode {
         // Compare decoded BYTES, not a lossy-UTF-8 rendering: lossy decoding
         // collapses every distinct invalid-UTF-8 byte to U+FFFD, which would
