@@ -1331,6 +1331,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_router_invalid_catch_all_mount_is_literal() {
+        // RAMA-PR1027-001: `{*bad name}` is an invalid catch-all body, so the
+        // matcher treats it as a literal segment. The mount must therefore NOT
+        // collapse to `/api`; `/api/users` must not reach the nested service.
+        let app = Router::new()
+            .with_sub_service(
+                "/api/{*bad name}",
+                Router::new().with_get("/", root_service()),
+            )
+            .with_not_found(not_found_service());
+        let app = ErrorHandlerLayer::new().layer(app);
+
+        let req = Request::get("/api/users").body(Body::empty()).unwrap();
+        let res = app.serve(req).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "invalid catch-all must not mount the sub-service at /api"
+        );
+    }
+
+    #[tokio::test]
     #[tracing_test::traced_test]
     async fn test_router_nest() {
         let cases = [
