@@ -129,8 +129,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // detachEngine see it (the reaper keys on `ctx.mode == .promoted`).
             core?.logDebug("handleNewFlow tcp up-front passthrough -> born-spliced")
             bornSpliced = true
-            _ = core?.registerTcpFlow(flowId, anchor: self)
-            return startEgressConnection(session: nil)
+            // Mirror the intercept path: admit unconditionally, but if this
+            // registration reached the soft cap, nudge the idle reaper so a
+            // born-splice-heavy workload can't pile up slots past the cap
+            // without the pressure reaper ever running.
+            let occupancy = core?.registerTcpFlow(flowId, anchor: self) ?? 0
+            let admitted = startEgressConnection(session: nil)
+            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
+                core?.reapIdleUnderPressure()
+            }
+            return admitted
         case .blocked:
             core?.logLifecycle("handleNewFlow tcp blocked by rust flow policy")
             let error = blockedFlowError()
