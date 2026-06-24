@@ -22,12 +22,14 @@ use rama::{
             // which lives in the type namespace.
             secure_enclave::is_available as secure_enclave_is_available,
         },
-        tls::server::SelfSignedData,
     },
     telemetry::tracing,
-    tls::boring::core::{
-        pkey::{PKey, Private},
-        x509::X509,
+    tls::{
+        boring::core::{
+            pkey::{PKey, Private},
+            x509::X509,
+        },
+        server::SelfSignedData,
     },
 };
 

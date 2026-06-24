@@ -9,16 +9,18 @@ use rama::{
         address::{Domain, Host},
         client::ConnectorTarget,
         proxy::IoForwardService,
-        tls::server::InputWithClientHello,
     },
     rt::Executor,
     telemetry::tracing,
-    tls::boring::{
-        TlsStream,
-        proxy::{
-            HandshakeRelayClassification, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
-            TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer,
+    tls::{
+        boring::{
+            TlsStream,
+            proxy::{
+                HandshakeRelayClassification, TlsMitmRelayErrorDirection, TlsMitmRelayErrorKind,
+                TlsMitmRelayService, cert_issuer::BoringMitmCertIssuer,
+            },
         },
+        server::InputWithClientHello,
     },
 };
 

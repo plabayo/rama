@@ -40,14 +40,16 @@ use rama::{
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
-        tls::server::{SelfSignedData, TlsServerConfig},
     },
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
-    tls::rustls::server::TlsAcceptorLayer,
+    tls::{
+        rustls::server::TlsAcceptorLayer,
+        server::{SelfSignedData, TlsServerConfig},
+    },
     utils::octets::kib,
 };
 
