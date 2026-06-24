@@ -243,6 +243,16 @@ async fn serve_one_ingress_connection(
             source_app_audit_token_bytes_len: 0,
             source_app_pid: 0,
             source_app_pid_is_set: false,
+            remote_hostname_utf8: ptr::null(),
+            remote_hostname_utf8_len: 0,
+            local_interface_name_utf8: ptr::null(),
+            local_interface_name_utf8_len: 0,
+            local_interface_index: 0,
+            local_interface_index_is_set: false,
+            local_interface_type: 0,
+            local_interface_type_is_set: false,
+            is_bound: false,
+            is_bound_is_set: false,
         };
 
         let result = unsafe {
