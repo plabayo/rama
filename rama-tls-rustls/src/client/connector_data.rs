@@ -10,8 +10,8 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_net::address::Host;
-use rama_net::tls::client::{ClientAuth, ServerVerifyMode};
-use rama_net::tls::keylog::open_intent_sink;
+use rama_tls::client::{ClientAuth, ServerVerifyMode};
+use rama_tls::keylog::open_intent_sink;
 use std::sync::{Arc, LazyLock};
 
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
@@ -37,24 +37,20 @@ impl TryFrom<RustlsTlsConnectorConfig<'_>> for TlsConnectorData {
     }
 }
 
-impl RamaTryFrom<rama_net::tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker>
-    for ClientConfig
-{
+impl RamaTryFrom<rama_tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker> for ClientConfig {
     type Error = BoxError;
 
-    fn rama_try_from(value: rama_net::tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
+    fn rama_try_from(value: rama_tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
         Self::try_from(RustlsTlsConnectorConfig::from_extensions(
             value.as_extensions(),
         ))
     }
 }
 
-impl RamaTryFrom<&rama_net::tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker>
-    for ClientConfig
-{
+impl RamaTryFrom<&rama_tls::client::TlsClientConfig, RamaTlsRustlsCrateMarker> for ClientConfig {
     type Error = BoxError;
 
-    fn rama_try_from(value: &rama_net::tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
+    fn rama_try_from(value: &rama_tls::client::TlsClientConfig) -> Result<Self, Self::Error> {
         Self::try_from(RustlsTlsConnectorConfig::from_extensions(
             value.as_extensions(),
         ))
@@ -208,7 +204,7 @@ pub fn self_signed_client_auth()
 mod tests {
     use super::*;
     use rama_core::{error::BoxErrorExt, extensions::Extensions};
-    use rama_net::tls::{
+    use rama_tls::{
         TlsAlpn,
         client::{TlsClientAuth, TlsServerVerify, TlsStoreServerCertChain},
     };
@@ -246,7 +242,7 @@ mod tests {
 
     #[test]
     fn build_applies_client_auth_from_der() {
-        use rama_net::tls::client::ClientAuthData;
+        use rama_tls::client::ClientAuthData;
 
         crate::ensure_default_crypto_provider();
 
@@ -266,7 +262,7 @@ mod tests {
     #[test]
     fn modify_rustls_config_runs_last_and_overrides_common_pieces() {
         use crate::client::RustlsClientConfigExt;
-        use rama_net::tls::client::TlsClientConfig;
+        use rama_tls::client::TlsClientConfig;
 
         crate::ensure_default_crypto_provider();
 
@@ -292,7 +288,7 @@ mod tests {
     #[test]
     fn modify_rustls_config_error_propagates() {
         use crate::client::RustlsClientConfigExt;
-        use rama_net::tls::client::TlsClientConfig;
+        use rama_tls::client::TlsClientConfig;
 
         crate::ensure_default_crypto_provider();
 

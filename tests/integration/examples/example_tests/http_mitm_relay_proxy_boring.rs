@@ -23,17 +23,15 @@ use rama::{
         },
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{
-        address::ProxyAddress,
-        tls::ApplicationProtocol,
-        tls::{
-            KeyLogIntent, TlsAlpn,
-            server::{SelfSignedData, TlsServerConfig},
-        },
-    },
+    net::address::ProxyAddress,
     rt::Executor,
     tcp::server::TcpListener,
+    tls::ApplicationProtocol,
     tls::rustls::server::TlsAcceptorLayer,
+    tls::{
+        KeyLogIntent, TlsAlpn,
+        server::{SelfSignedData, TlsServerConfig},
+    },
     utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},
 };
 

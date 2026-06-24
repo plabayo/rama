@@ -12,10 +12,8 @@ use rama_core::{
     extensions::ExtensionsRef,
     io::Io,
 };
-use rama_net::{
-    extensions::StreamTransformed,
-    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig},
-};
+use rama_net::extensions::StreamTransformed;
+use rama_tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport

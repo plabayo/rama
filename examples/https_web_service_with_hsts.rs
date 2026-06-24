@@ -40,7 +40,6 @@ use rama::{
             web::{Router, response::Html},
         },
     },
-    net::tls::server::SelfSignedData,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -48,18 +47,19 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    tls::server::SelfSignedData,
 };
 
 #[cfg(feature = "boring")]
 use rama::{
-    net::tls::{KeyLogIntent, server::TlsServerConfig},
     tls::boring::server::TlsAcceptorLayer,
+    tls::{KeyLogIntent, server::TlsServerConfig},
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::{
-    net::tls::{KeyLogIntent, server::TlsServerConfig},
     tls::rustls::server::TlsAcceptorLayer,
+    tls::{KeyLogIntent, server::TlsServerConfig},
 };
 
 use std::{sync::Arc, time::Duration};

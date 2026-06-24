@@ -7,10 +7,8 @@ use dial9_trace_format::{
     EventEncoder, TraceEvent, TraceField,
     types::{FieldType, FieldValueRef},
 };
-use rama_net::{
-    address::Domain,
-    tls::{ApplicationProtocol, ProtocolVersion},
-};
+use rama_net::address::Domain;
+use rama_tls::{ApplicationProtocol, ProtocolVersion};
 use std::io::{self, Write};
 
 #[derive(Debug, Clone)]

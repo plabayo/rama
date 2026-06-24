@@ -9,9 +9,9 @@ use rama_core::{Layer, Service};
 use rama_net::address::Domain;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
-use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_tls::ApplicationProtocol;
+use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 use rama_utils::macros::generate_set_and_with;
@@ -21,7 +21,7 @@ use super::{AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData};
 
 use crate::{TlsStream, types::TlsTunnel};
 #[cfg(feature = "http")]
-use rama_net::tls::TlsAlpn;
+use rama_tls::TlsAlpn;
 
 #[cfg(feature = "http")]
 use rama_net::http::{TargetHttpVersion, Version};
@@ -606,7 +606,7 @@ where
             stream
                 .ssl()
                 .selected_alpn_protocol()
-                .map(rama_net::tls::ApplicationProtocol::from),
+                .map(rama_tls::ApplicationProtocol::from),
             depth,
         );
     }
@@ -639,7 +639,7 @@ pub struct ConnectorKindSecure;
 /// and using the hardcoded domain otherwise.
 /// Context always overwrites though.
 ///
-/// [`TlsTunnel`]: rama_net::tls::TlsTunnel
+/// [`TlsTunnel`]: rama_tls::TlsTunnel
 pub struct ConnectorKindTunnel {
     sni: Option<Domain>,
 }

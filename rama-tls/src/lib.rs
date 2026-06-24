@@ -1,5 +1,20 @@
-//! rama common tls types
+//! rama TLS-agnostic types and utilities.
 //!
+//! The TLS-implementation-agnostic vocabulary (protocol versions, cipher suites,
+//! ALPN, client/server config, `ClientHello`, fingerprints, keylog, …) shared by
+//! the backend crates (`rama-tls-boring` / `rama-tls-rustls`).
+//!
+//! Learn more about `rama`:
+//!
+//! - Github: <https://github.com/plabayo/rama>
+//! - Book: <https://ramaproxy.org/book/>
+
+#![doc(
+    html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
+)]
+#![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(test, allow(clippy::float_cmp))]
 
 use std::borrow::Cow;
 
@@ -13,8 +28,15 @@ pub use enums::{
 };
 
 pub mod client;
+pub mod fingerprint;
 pub mod keylog;
 pub mod server;
+
+#[cfg(feature = "http")]
+mod http;
+
+#[cfg(feature = "dial9")]
+mod dial9;
 
 /// ALPN protocols to offer.
 #[derive(Clone, Debug, Extension)]
@@ -61,7 +83,7 @@ pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 /// to configure the connection in function on an tls tunnel.
 pub struct TlsTunnel {
     /// The server name to use for the connection.
-    pub sni: Option<crate::address::Host>,
+    pub sni: Option<rama_net::address::Host>,
 }
 
 #[derive(Debug, Clone, Default, Extension)]
@@ -79,7 +101,7 @@ impl SecureTransport {
     /// attached to it, containing the client hello info
     /// used to establish this secure transport.
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     #[must_use]
     pub fn with_client_hello(hello: client::ClientHello) -> Self {
         Self {
@@ -90,7 +112,7 @@ impl SecureTransport {
     /// Return the [`ClientHello`] used to establish this secure transport,
     /// only available if the tls service stored it.
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     #[must_use]
     pub fn client_hello(&self) -> Option<&client::ClientHello> {
         self.client_hello.as_ref()

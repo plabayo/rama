@@ -185,11 +185,12 @@ mod tests {
         self_signed_server_auth_gen_ca, self_signed_server_auth_gen_cert,
     };
     use rama_crypto::ocsp::OcspCertStatus;
-    use rama_net::tls::server::SelfSignedData;
+    use rama_net::address::Domain;
+    use rama_tls::server::SelfSignedData;
 
     fn sample(common_name: &'static str) -> SelfSignedData {
         SelfSignedData {
-            common_name: Some(common_name.to_owned()),
+            common_name: Some(Domain::from_static(common_name)),
             organisation_name: Some("Rama OCSP Test".to_owned()),
             ..Default::default()
         }

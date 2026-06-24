@@ -62,10 +62,6 @@ use rama::{
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::tls::{
-        KeyLogIntent,
-        server::{ServerAuthData, TlsServerConfig},
-    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -77,6 +73,10 @@ use rama::{
     tls::rustls::{
         dep::rustls::ServerConfig,
         server::{DynamicConfigProvider, RustlsServerConfigExt, TlsAcceptorLayer},
+    },
+    tls::{
+        KeyLogIntent,
+        server::{ServerAuthData, TlsServerConfig},
     },
 };
 

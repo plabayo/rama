@@ -6,7 +6,7 @@ use rama_boring::{
     x509::X509,
 };
 use rama_core::{error::BoxError, telemetry::tracing};
-use rama_net::tls::server::SelfSignedData;
+use rama_tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
 use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
@@ -144,11 +144,8 @@ mod tests {
         ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode},
         x509::{X509, X509Builder, X509Extension, X509NameBuilder},
     };
-    use rama_net::{
-        address::Domain,
-        tls::server::{SelfSignedData, SelfSignedKeyKind},
-        uri::Uri,
-    };
+    use rama_net::{address::Domain, uri::Uri};
+    use rama_tls::server::{SelfSignedData, SelfSignedKeyKind};
     use tokio::io::duplex;
     use x509_cert::der::{Decode, Encode};
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
@@ -174,7 +171,7 @@ mod tests {
 
     fn mitm_ca(key_kind: SelfSignedKeyKind) -> InMemoryBoringMitmCertIssuer {
         InMemoryBoringMitmCertIssuer::try_new_self_signed(&SelfSignedData {
-            common_name: Some("rama-mitm-ca.example".to_owned()),
+            common_name: Some(Domain::from_static("rama-mitm-ca.example")),
             organisation_name: Some("Rama".to_owned()),
             key_kind,
             ..Default::default()
@@ -400,7 +397,7 @@ mod tests {
         use crate::proxy::mitm::revocation::{MitmCa, ProxyHostedRevocation};
 
         let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some("rama-mitm-with-revoc-ca.example".to_owned()),
+            common_name: Some(Domain::from_static("rama-mitm-with-revoc-ca.example")),
             ..Default::default()
         })
         .expect("gen ca");
@@ -512,7 +509,7 @@ mod tests {
         use crate::client::TlsConnectorData;
         use crate::proxy::mitm::TlsMitmRelay;
         use rama_core::{ServiceInput, io::BridgeIo};
-        use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
+        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
 
         // Upstream TLS server presenting a cert that advertises OCSP.
         let (upstream_key, upstream_x509) = upstream_identity(Revocation::Ocsp);
@@ -523,7 +520,7 @@ mod tests {
 
         // MITM relay with an in-memory self-signed CA (kept here for validation).
         let (ca_crt, ca_key) = self_signed_server_auth_gen_ca(&SelfSignedData {
-            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example").to_string()),
+            common_name: Some(Domain::from_static("rama-mitm-relay-ca.example")),
             organisation_name: Some("Rama".to_owned()),
             ..Default::default()
         })

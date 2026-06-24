@@ -37,10 +37,6 @@ use rama::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection},
-        tls::{
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, TlsServerConfig},
-        },
         user::{ProxyCredential, credentials::basic},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
@@ -52,6 +48,10 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::{client::TlsConnector, server::TlsAcceptorService},
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
+    },
 };
 
 #[tokio::main]

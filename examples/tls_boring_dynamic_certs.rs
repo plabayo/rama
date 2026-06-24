@@ -65,13 +65,7 @@ use rama::{
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::{
-        address::Domain,
-        tls::{
-            client::ClientHello,
-            server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
-        },
-    },
+    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -82,6 +76,10 @@ use rama::{
     },
     tls::boring::server::{
         BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, TlsAcceptorLayer,
+    },
+    tls::{
+        client::ClientHello,
+        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
     },
 };
 

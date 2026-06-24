@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use rama_core::{Layer, Service as _, ServiceInput, telemetry::tracing};
-use rama_net::{
-    stream::service::EchoService,
-    tls::{
-        SupportedGroup,
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{SelfSignedData, TlsServerConfig},
-    },
+use rama_net::stream::service::EchoService;
+use rama_tls::{
+    SupportedGroup,
+    client::{ServerVerifyMode, TlsClientConfig},
+    server::{SelfSignedData, TlsServerConfig},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 

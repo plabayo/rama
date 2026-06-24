@@ -1,7 +1,7 @@
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
-use rama_net::tls::client::ClientHello;
-use rama_net::tls::server::{DynamicCertIssuer, SelfSignedData, ServerAuthData};
+use rama_tls::client::ClientHello;
+use rama_tls::server::{DynamicCertIssuer, SelfSignedData, ServerAuthData};
 use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone, Default)]

@@ -21,6 +21,7 @@ use crate::dep::boring::{
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::telemetry::tracing;
+use rama_net::address::Domain;
 
 /// Generate a self-signed server certificate (leaf signed by a generated CA).
 ///
@@ -145,7 +146,7 @@ pub fn self_signed_server_auth_gen_cert(
     let common_name = data
         .common_name
         .clone()
-        .unwrap_or_else(|| "localhost".to_owned());
+        .unwrap_or_else(|| Domain::from_static("localhost"));
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name

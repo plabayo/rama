@@ -32,7 +32,7 @@ use std::{ops, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "tls")]
-use rama_net::tls::TlsTunnel;
+use rama_tls::TlsTunnel;
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///

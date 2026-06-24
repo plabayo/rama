@@ -15,11 +15,9 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
-use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
-use rama_net::{
-    extensions::StreamTransformed,
-    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig},
-};
+use rama_net::extensions::StreamTransformed;
+use rama_tls::keylog::{KeyLogSink, open_intent_sink};
+use rama_tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::TlsServerConfig};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
 

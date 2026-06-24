@@ -2,27 +2,25 @@ use crate::RamaTlsRustlsCrateMarker;
 use rama_core::conversion::{RamaFrom, RamaTryFrom};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_net::{
-    address::{Domain, Host},
-    tls::{
-        ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
-        client::{ClientHello, ClientHelloExtension},
-    },
+use rama_net::address::{Domain, Host};
+use rama_tls::{
+    ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
+    client::{ClientHello, ClientHelloExtension},
 };
 use std::net::IpAddr;
 
 macro_rules! enum_from_rustls {
     ($t:ty => $($name:ident),+$(,)?) => {
         $(
-            impl RamaFrom<rustls::$name, RamaTlsRustlsCrateMarker> for rama_net::tls::$name {
+            impl RamaFrom<rustls::$name, RamaTlsRustlsCrateMarker> for rama_tls::$name {
                 fn rama_from(value: ::rustls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }
             }
 
-            impl RamaFrom<rama_net::tls::$name, RamaTlsRustlsCrateMarker> for rustls::$name {
-                fn rama_from(value: rama_net::tls::$name) -> Self {
+            impl RamaFrom<rama_tls::$name, RamaTlsRustlsCrateMarker> for rustls::$name {
+                fn rama_from(value: rama_tls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }

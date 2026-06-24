@@ -19,10 +19,11 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::tls::client::ClientAuth;
-use rama_net::tls::client::TlsClientConfig;
-use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
-use rama_net::{address::Domain, tls::client::ServerVerifyMode};
+use rama_net::address::Domain;
+use rama_tls::client::ClientAuth;
+use rama_tls::client::ServerVerifyMode;
+use rama_tls::client::TlsClientConfig;
+use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::fmt;
 
 #[cfg(feature = "compression")]
@@ -30,9 +31,9 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 #[cfg(feature = "compression")]
-use rama_net::tls::CertificateCompressionAlgorithm;
+use rama_tls::CertificateCompressionAlgorithm;
 
-use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
+use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
 /// /// The resolved native boringssl config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
@@ -582,10 +583,10 @@ mod tests {
     use super::*;
     use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
     use rama_core::extensions::Extensions;
-    use rama_net::tls::client::{
+    use rama_tls::client::{
         ClientHello, ClientHelloExtension, TlsServerVerify, TlsStoreServerCertChain,
     };
-    use rama_net::tls::{CipherSuite, ProtocolVersion, SignatureScheme, TlsAlpn};
+    use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme, TlsAlpn};
 
     #[test]
     fn build_from_common_pieces() {

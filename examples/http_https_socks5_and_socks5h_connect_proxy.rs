@@ -45,12 +45,7 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::{
-        proxy::IoForwardService,
-        stream::SocketInfo,
-        tls::server::{SelfSignedData, TlsPeekRouter},
-        user::credentials::basic,
-    },
+    net::{proxy::IoForwardService, stream::SocketInfo, user::credentials::basic},
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
@@ -60,13 +55,14 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    tls::server::{SelfSignedData, TlsPeekRouter},
 };
 
 #[cfg(feature = "boring")]
-use rama::{net::tls::server::TlsServerConfig, tls::boring::server::TlsAcceptorService};
+use rama::{tls::boring::server::TlsAcceptorService, tls::server::TlsServerConfig};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::{net::tls::server::TlsServerConfig, tls::rustls::server::TlsAcceptorLayer};
+use rama::{tls::rustls::server::TlsAcceptorLayer, tls::server::TlsServerConfig};
 
 use std::{convert::Infallible, time::Duration};
 

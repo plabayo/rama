@@ -6,12 +6,12 @@ use crate::http::{
     service::client::HttpClientExt as _,
 };
 use crate::net::address::{AsDomainRef, Domain, DomainTrie};
-use crate::net::tls::{
+use crate::rt::Executor;
+use crate::telemetry::tracing;
+use crate::tls::{
     client::ClientHello,
     server::{DynamicCertIssuer, ServerAuthData},
 };
-use crate::rt::Executor;
-use crate::telemetry::tracing;
 use crate::{Service, service::BoxService};
 
 use base64::Engine;
@@ -63,12 +63,12 @@ impl CertIssuerHttpClient {
         use crate::{
             Layer as _,
             http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
-            net::tls::client::TlsClientConfig,
             net::user::Bearer,
             tls::boring::{
                 client::BoringClientConfigExt as _,
                 core::x509::{X509, store::X509StoreBuilder},
             },
+            tls::client::TlsClientConfig,
         };
         use std::sync::Arc;
 

@@ -12,16 +12,13 @@ use rama::{
         ConsumeErrLayer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{
-        address::SocketAddress,
-        stream::service::EchoService,
-        tls::{ApplicationProtocol, server::TlsServerConfig},
-    },
+    net::{address::SocketAddress, stream::service::EchoService},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
     tls::boring::server::TlsAcceptorLayer,
+    tls::{ApplicationProtocol, server::TlsServerConfig},
     ua::profile::UserAgentDatabase,
     udp::bind_udp_with_address,
 };

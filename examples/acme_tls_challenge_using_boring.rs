@@ -63,13 +63,7 @@ use rama::{
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::{
-        address::Domain,
-        tls::{
-            client::{ClientHello, ServerVerifyMode, TlsClientConfig},
-            server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
-        },
-    },
+    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -91,9 +85,13 @@ use rama::{
             BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, TlsAcceptorLayer,
         },
     },
+    tls::{
+        client::{ClientHello, ServerVerifyMode, TlsClientConfig},
+        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
+    },
     utils::collections::smallvec::smallvec,
 };
-use rama_net::tls::KeyLogIntent;
+use rama_tls::KeyLogIntent;
 
 use std::{convert::Infallible, time::Duration};
 use tokio::time::sleep;
@@ -187,7 +185,7 @@ async fn main() {
             kind: issuer.into(),
             cache_kind: CacheKind::Disabled,
         })
-        .with_alpn(smallvec![rama::net::tls::ApplicationProtocol::ACME_TLS]);
+        .with_alpn(smallvec![rama::tls::ApplicationProtocol::ACME_TLS]);
 
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let tcp_service =

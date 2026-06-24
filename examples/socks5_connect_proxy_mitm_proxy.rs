@@ -45,14 +45,7 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::{
-        tls::{
-            SecureTransport,
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, TlsPeekRouter, TlsServerConfig},
-        },
-        user::credentials::basic,
-    },
+    net::user::credentials::basic,
     proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     tcp::server::TcpListener,
@@ -62,6 +55,11 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::{client::BoringClientConfigExt, server::TlsAcceptorLayer},
+    tls::{
+        SecureTransport,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsPeekRouter, TlsServerConfig},
+    },
 };
 
 use std::{convert::Infallible, sync::Arc, time::Duration};

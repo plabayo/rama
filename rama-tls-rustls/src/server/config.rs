@@ -2,8 +2,8 @@ use super::acceptor_data::{DynDynamicConfigProvider, DynamicConfigProvider};
 use crate::dep::rustls::ServerConfig;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
-use rama_net::tls::server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain};
-use rama_net::tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
+use rama_tls::server::{TlsClientVerify, TlsServerAuth, TlsStoreClientCertChain};
+use rama_tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
 use std::sync::Arc;
 
 /// Gather all config pieces support by rustls
@@ -40,7 +40,7 @@ pub trait RustlsServerConfigExt: Sized {
     }
 }
 
-impl RustlsServerConfigExt for rama_net::tls::server::TlsServerConfig {
+impl RustlsServerConfigExt for rama_tls::server::TlsServerConfig {
     rama_utils::macros::generate_set_and_with! {
         fn modify_rustls_config(
             mut self,
@@ -87,7 +87,7 @@ impl std::fmt::Debug for RustlsDynamicConfig {
 /// install its own cert source (such as a resolver) without first configuring
 /// one through the common pieces.
 ///
-/// [`TlsServerConfig`]: rama_net::tls::server::TlsServerConfig
+/// [`TlsServerConfig`]: rama_tls::server::TlsServerConfig
 /// [`ResolvesServerCert`]: ServerConfig
 pub struct ModifyRustlsServerConfig(pub Box<ModifyFn>);
 

@@ -11,9 +11,9 @@ use rama_core::{Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
-use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_tls::ApplicationProtocol;
+use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
@@ -24,7 +24,7 @@ use ::{
         extensions::Extensions,
     },
     rama_net::http::{TargetHttpVersion, Version},
-    rama_net::tls::TlsAlpn,
+    rama_tls::TlsAlpn,
 };
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
@@ -498,7 +498,7 @@ pub struct ConnectorKindSecure;
 /// and using the hardcoded host otherwise.
 /// Context always overwrites though.
 ///
-/// [`TlsTunnel`]: rama_net::tls::TlsTunnel
+/// [`TlsTunnel`]: rama_tls::TlsTunnel
 pub struct ConnectorKindTunnel {
     host: Option<Host>,
 }
@@ -526,7 +526,7 @@ mod tests {
         use super::*;
         use rama_core::extensions::Extensions;
         use rama_net::http::{TargetHttpVersion, Version};
-        use rama_net::tls::ApplicationProtocol;
+        use rama_tls::ApplicationProtocol;
 
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone().into_vec())

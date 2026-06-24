@@ -12,6 +12,7 @@
 
 use crate::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_core::error::BoxError;
+use rama_net::address::Domain;
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "boring")]
@@ -31,10 +32,10 @@ pub struct SelfSignedData {
     /// name of the organisation
     pub organisation_name: Option<String>,
     /// common name (CN): server name protected by the certificate
-    pub common_name: Option<String>,
+    pub common_name: Option<Domain>,
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
-    pub subject_alternative_names: Option<Vec<String>>,
+    pub subject_alternative_names: Option<Vec<Domain>>,
     /// Key algorithm used for the generated key pair (defaults to EC P-256).
     #[serde(default)]
     pub key_kind: SelfSignedKeyKind,
@@ -109,10 +110,10 @@ mod tests {
     #[test]
     fn self_signed_leaf_san_covers_common_name_and_extra_sans() {
         let data = SelfSignedData {
-            common_name: Some("primary.rama.test".to_owned()),
+            common_name: Some(Domain::from_static("primary.rama.test")),
             subject_alternative_names: Some(vec![
-                "alt-one.rama.test".to_owned(),
-                "alt-two.rama.test".to_owned(),
+                Domain::from_static("alt-one.rama.test"),
+                Domain::from_static("alt-two.rama.test"),
             ]),
             ..Default::default()
         };

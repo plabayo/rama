@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = []
-http = ["rama-net/http"]
+http = ["rama-net/http", "rama-tls/http"]
 aws-lc = [
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",
@@ -40,7 +40,12 @@ ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "rama-crypto/ring"]
 # Building with this feature requires `--cfg tokio_unstable`.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
+dial9 = [
+    "dep:dial9-tokio-telemetry",
+    "dep:dial9-trace-format",
+    "rama-net/dial9",
+    "rama-tls/dial9",
+]
 
 [dependencies]
 dial9-tokio-telemetry = { workspace = true, optional = true }
@@ -48,7 +53,8 @@ dial9-trace-format = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, features = ["native-certs"] }
-rama-net = { workspace = true, features = ["tls"] }
+rama-net = { workspace = true }
+rama-tls = { workspace = true }
 rama-utils = { workspace = true }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true }

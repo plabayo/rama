@@ -33,10 +33,6 @@ use rama::{
     net::{
         address::{HostWithPort, SocketAddress},
         proxy::IoForwardService,
-        tls::{
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{ServerAuthData, TlsServerConfig},
-        },
     },
     rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -45,6 +41,10 @@ use rama::{
         client::{BoringClientConfigExt as _, TlsConnectorLayer},
         core::x509::{X509, store::X509StoreBuilder},
         server::TlsAcceptorLayer,
+    },
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{ServerAuthData, TlsServerConfig},
     },
 };
 

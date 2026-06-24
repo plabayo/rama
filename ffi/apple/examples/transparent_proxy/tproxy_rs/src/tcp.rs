@@ -1,7 +1,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-use rama::net::tls::KeyLogIntent;
-use rama::net::tls::keylog::{
+use rama::tls::KeyLogIntent;
+use rama::tls::keylog::{
     KeyLogSink, NoopKeyLogSink, RotatingFileKeyLogSink, RotationPeriod, ToggleableKeyLogSink,
 };
 use rama::telemetry::tracing;

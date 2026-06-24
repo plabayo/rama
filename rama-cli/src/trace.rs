@@ -1,7 +1,7 @@
 use rama::{
     error::{BoxError, ErrorContext as _},
     http::client::EasyHttpWebClient,
-    net::{client::pool::http::HttpPooledConnectorConfig, tls::client::TlsClientConfig},
+    net::client::pool::http::HttpPooledConnectorConfig,
     rt::Executor,
     telemetry::{
         opentelemetry::{
@@ -22,6 +22,7 @@ use rama::{
             },
         },
     },
+    tls::client::TlsClientConfig,
 };
 
 use std::{fs::OpenOptions, io::IsTerminal as _, path::Path};

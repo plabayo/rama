@@ -8,9 +8,9 @@ use tokio::io::AsyncReadExt as _;
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
-    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 
 #[cfg(feature = "boring")]

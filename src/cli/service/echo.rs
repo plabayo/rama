@@ -58,8 +58,8 @@ use crate::tls::boring::server::TlsAcceptorLayer;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    net::fingerprint::{Ja3, Ja4, PeetPrint},
-    net::tls::{
+    tls::fingerprint::{Ja3, Ja4, PeetPrint},
+    tls::{
         SecureTransport,
         client::ClientHelloExtension,
         client::{ECHClientHello, NegotiatedTlsParameters},

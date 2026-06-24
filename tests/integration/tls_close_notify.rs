@@ -32,7 +32,7 @@ use rama::{
         verify::NoServerCertVerifier,
     },
 };
-use rama_net::tls::server::TlsServerConfig;
+use rama_tls::server::TlsServerConfig;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, duplex};
 
 #[tokio::test]

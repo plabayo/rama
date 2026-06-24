@@ -44,11 +44,6 @@ use rama::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         proxy::IoForwardService,
-        tls::{
-            ApplicationProtocol,
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, TlsServerConfig},
-        },
         user::credentials::{ProxyCredential, basic},
     },
     proxy::socks5::Socks5Acceptor,
@@ -56,6 +51,11 @@ use rama::{
     service::{BoxService, service_fn},
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{self},
+    tls::{
+        ApplicationProtocol,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
+    },
     tls::{boring, rustls},
     utils::collections::smallvec::smallvec,
 };
@@ -393,7 +393,7 @@ fn get_inner_client(
             .build_client(),
         Tls::Rustls => {
             let tls_config = TlsClientConfig::new()
-                .with_keylog(rama::net::tls::KeyLogIntent::Environment)
+                .with_keylog(rama::tls::KeyLogIntent::Environment)
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);
@@ -405,7 +405,7 @@ fn get_inner_client(
         }
         Tls::Boring => {
             let tls_config = TlsClientConfig::new()
-                .with_keylog(rama::net::tls::KeyLogIntent::Environment)
+                .with_keylog(rama::tls::KeyLogIntent::Environment)
                 .with_alpn(smallvec![proto])
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_store_server_cert_chain(true);

@@ -273,7 +273,7 @@ async fn spawn_https_server_inner(
     let tls_data = TlsServerConfig::new()
         .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Rama FFI HTTPS E2E".to_owned()),
-            common_name: Some(Domain::from_static("127.0.0.1").to_string()),
+            common_name: Some(Domain::from_static("127.0.0.1")),
             ..Default::default()
         })
         .expect("self-signed")
@@ -337,7 +337,7 @@ pub(crate) async fn spawn_raw_tls_echo() -> (u16, tokio::task::JoinHandle<()>) {
     let tls_data = TlsServerConfig::new()
         .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Rama FFI Raw TLS E2E".to_owned()),
-            common_name: Some("127.0.0.1".to_owned()),
+            common_name: Some(Domain::from_static("127.0.0.1")),
             ..Default::default()
         })
         .expect("self-signed");

@@ -5,18 +5,16 @@ use rama::{
     },
     error::{BoxError, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
-    net::{
-        address::Host,
-        tls::{
-            ApplicationProtocol,
-            server::{SelfSignedData, ServerAuthData, TlsServerConfig},
-        },
-    },
+    net::address::Host,
     rt::Executor,
     telemetry::tracing,
     tls::boring::{
         core::x509::X509,
         server::{BoringServerConfigExt as _, CacheKind, ServerCertIssuerData},
+    },
+    tls::{
+        ApplicationProtocol,
+        server::{SelfSignedData, ServerAuthData, TlsServerConfig},
     },
     utils::str::NATIVE_NEWLINE,
 };

@@ -61,11 +61,6 @@ use rama::{
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::tls::{
-        ApplicationProtocol, KeyLogIntent,
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{ServerAuthData, TlsServerConfig},
-    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -73,6 +68,11 @@ use rama::{
         self,
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    },
+    tls::{
+        ApplicationProtocol, KeyLogIntent,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{ServerAuthData, TlsServerConfig},
     },
     tls::{
         acme::{

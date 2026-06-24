@@ -58,10 +58,7 @@ use rama::{
         },
     },
     layer::ConsumeErrLayer,
-    net::{
-        proxy::IoForwardService,
-        tls::server::{PeekTlsClientHelloService, SelfSignedData, ServerAuthData, TlsServerConfig},
-    },
+    net::proxy::IoForwardService,
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -90,6 +87,7 @@ use rama::{
         },
         server::TlsAcceptorLayer,
     },
+    tls::server::{PeekTlsClientHelloService, SelfSignedData, ServerAuthData, TlsServerConfig},
 };
 use serde::Deserialize;
 

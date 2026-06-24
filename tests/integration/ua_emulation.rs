@@ -7,15 +7,15 @@ use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
-use rama::net::fingerprint::{Ja3, Ja4};
-use rama::net::tls::client::parse_client_hello;
-use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};
-use rama::net::tls::server::TlsServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tls::boring::client::EmulateTlsProfileLayer;
 use rama::tls::boring::client::TlsConnector;
 use rama::tls::boring::server::TlsAcceptorLayer;
+use rama::tls::client::parse_client_hello;
+use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
+use rama::tls::fingerprint::{Ja3, Ja4};
+use rama::tls::server::TlsServerConfig;
 use rama::ua::layer::emulate::{
     SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
     UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,

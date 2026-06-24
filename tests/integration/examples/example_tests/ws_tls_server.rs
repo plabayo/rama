@@ -6,7 +6,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt},
         mime,
     },
-    net::tls::TlsAlpn,
+    tls::TlsAlpn,
 };
 
 #[tokio::test]

@@ -1,9 +1,6 @@
 use crate::{
-    address::Domain,
-    tls::{
-        ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
-        TlsSupportedVersions, client::ClientHello,
-    },
+    ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
+    client::ClientHello,
 };
 use rama_core::{
     error::BoxError,
@@ -12,6 +9,7 @@ use rama_core::{
 use rama_crypto::cert::self_signed_server_auth;
 pub use rama_crypto::cert::{SelfSignedData, SelfSignedKeyKind};
 use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
+use rama_net::address::Domain;
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 /// A backend agnostic TLS server config

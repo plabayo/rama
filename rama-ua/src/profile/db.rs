@@ -266,7 +266,7 @@ mod tests {
     use ahash::{HashSet, HashSetExt as _};
     use rama_http::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
     #[cfg(feature = "tls")]
-    use rama_net::tls::client::ClientHello;
+    use rama_tls::client::ClientHello;
 
     use super::*;
 
@@ -517,7 +517,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
                 client_hello: ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),

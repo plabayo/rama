@@ -4,11 +4,11 @@ use rama::Layer as _;
 use rama::http::BodyExtractExt;
 use rama::http::server::HttpServer;
 use rama::http::{StatusCode, service::web::IntoEndpointService, utils::HeaderValueGetter};
-use rama::net::tls::server::TlsServerConfig;
 use rama::net::{address::HostWithPort, client::ConnectorTarget};
 use rama::rt::Executor;
 use rama::tcp::server::TcpListener;
 use rama::tls::boring::server::TlsAcceptorLayer;
+use rama::tls::server::TlsServerConfig;
 
 #[tokio::test]
 #[ignore]

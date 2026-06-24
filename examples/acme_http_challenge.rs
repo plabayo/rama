@@ -70,10 +70,6 @@ use rama::{
         service::web::response::{Headers, IntoResponse},
     },
     layer::ConsumeErrLayer,
-    net::tls::{
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{ServerAuthData, TlsServerConfig},
-    },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -92,6 +88,10 @@ use rama::{
             },
         },
         boring::server::TlsAcceptorLayer,
+    },
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{ServerAuthData, TlsServerConfig},
     },
 };
 

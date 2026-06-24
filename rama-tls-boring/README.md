@@ -54,7 +54,7 @@ Learn more about `rama`:
 >
 > **Source is truth.** When in doubt, consult the linked source code below and treat it — not this summary — as authoritative (line ranges especially can drift over time).
 
-The TLS features below are implemented on top of [`rama-boring`](https://github.com/plabayo/rama-boring), which `rama-tls-boring` re-exports directly as [`rama_tls_boring::core`](src/lib.rs) — so its native types are available to you whenever the rama-level config isn't enough. Most features, though, are configured through rama's own TLS-agnostic type vocabulary in [`rama-net::tls`](../rama-net/src/tls/) (protocol versions, cipher suites, signature schemes, groups, ALPN, extensions, …) and mapped onto `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Configuration flows through extension-based pieces on `TlsClientConfig` / `TlsServerConfig`, and per-request extensions layer over an optional base config (newest-wins).
+The TLS features below are implemented on top of [`rama-boring`](https://github.com/plabayo/rama-boring), which `rama-tls-boring` re-exports directly as [`rama_tls_boring::core`](src/lib.rs) — so its native types are available to you whenever the rama-level config isn't enough. Most features, though, are configured through rama's own TLS-agnostic type vocabulary in [`rama-tls`](../rama-tls/src/) (protocol versions, cipher suites, signature schemes, groups, ALPN, extensions, …) and mapped onto `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Configuration flows through extension-based pieces on `TlsClientConfig` / `TlsServerConfig`, and per-request extensions layer over an optional base config (newest-wins).
 
 Most negotiables (cipher suites, extension order, ALPN, groups, versions, signature schemes, cert compression, delegated credentials, record-size-limit, ECH, ALPS, OCSP/SCT, GREASE) can also be **derived from a captured `ClientHello`** for fingerprint mimicry — see [Proxy](#proxy-mitm--mirroring) and `new_from_client_hello`.
 
@@ -168,7 +168,7 @@ The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / `TlsAcceptorSe
 
 ### Shared type vocabulary
 
-Features are expressed through open enums and config types in [`rama-net::tls`](../rama-net/src/tls/) and converted to `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Key types in [enums.rs](../rama-net/src/tls/enums.rs):
+Features are expressed through open enums and config types in [`rama-tls`](../rama-tls/src/) and converted to `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Key types in [enums.rs](../rama-tls/src/enums.rs):
 
 - **`ProtocolVersion`** (u16) — SSLv2/SSLv3, TLS 1.0–1.3, DTLS; only TLS 1.0–1.3 + SSL3 map to `rama-boring`.
 - **`CipherSuite`** (u16) — full IANA registry incl. the five TLS 1.3 suites + AEGIS; `is_tls13()` / `is_grease()`.

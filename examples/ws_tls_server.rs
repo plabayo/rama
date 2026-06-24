@@ -27,7 +27,6 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::tls::server::{SelfSignedData, TlsServerConfig},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -36,6 +35,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::server::TlsAcceptorLayer,
+    tls::server::{SelfSignedData, TlsServerConfig},
 };
 
 use std::time::Duration;

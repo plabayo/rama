@@ -9,12 +9,12 @@ use rama::{
         address::{HostWithOptPort, HostWithPort},
         client::{ConnectorService, EstablishedClientConnection, Request},
         stream::Socket,
-        tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
     },
     rt::Executor,
     tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
     tls::boring::{client::TlsConnectorLayer, core::x509::X509},
+    tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
 };
 
 use clap::Args;

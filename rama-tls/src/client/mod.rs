@@ -75,7 +75,7 @@ pub fn merge_client_hello_lists(
 
 #[cfg(test)]
 mod tests {
-    use crate::address::Domain;
+    use rama_net::address::Domain;
 
     use super::*;
 

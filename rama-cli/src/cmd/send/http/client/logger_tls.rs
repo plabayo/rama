@@ -1,12 +1,10 @@
 use rama::{
     Service,
     extensions::ExtensionsRef,
-    net::{
-        client::{ConnectorService, EstablishedClientConnection},
-        tls::{TlsAlpn, client::NegotiatedTlsParameters},
-    },
+    net::client::{ConnectorService, EstablishedClientConnection},
     telemetry::tracing,
     tls::boring::core::x509::X509,
+    tls::{TlsAlpn, client::NegotiatedTlsParameters},
 };
 
 use super::VerboseLogs;

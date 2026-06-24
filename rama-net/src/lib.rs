@@ -51,14 +51,6 @@ pub mod transport;
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 pub mod http;
 
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-pub mod tls;
-
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-pub mod fingerprint;
-
 pub mod socket;
 
 #[cfg(feature = "dial9")]

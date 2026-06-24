@@ -5,16 +5,14 @@ use rama::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
     },
-    net::tls::client::TlsClientConfig,
-    net::{
-        test_utils::client::MockConnectorService,
-        tls::server::{SelfSignedData, TlsServerConfig},
-    },
+    net::test_utils::client::MockConnectorService,
     rt::Executor,
     service::service_fn,
     tls::boring::server::TlsAcceptorLayer,
+    tls::client::TlsClientConfig,
+    tls::server::{SelfSignedData, TlsServerConfig},
 };
-use rama_net::tls::client::ServerVerifyMode;
+use rama_tls::client::ServerVerifyMode;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -84,7 +82,7 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
     let direct_connection = MockConnectorService::new(move || server.clone());
 
     let tls_config = TlsClientConfig::default_http()
-        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
+        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
@@ -147,7 +145,7 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
     });
 
     let tls_config = TlsClientConfig::default_http()
-        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
+        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)

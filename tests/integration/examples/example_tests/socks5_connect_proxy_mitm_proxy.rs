@@ -19,13 +19,13 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        tls::server::{SelfSignedData, TlsServerConfig},
         user::{Basic, ProxyCredential},
     },
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::server::TlsAcceptorService,
+    tls::server::{SelfSignedData, TlsServerConfig},
     utils::str::non_empty_str,
 };
 

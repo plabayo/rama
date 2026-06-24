@@ -67,7 +67,6 @@ use rama::{
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
-    net::tls::{KeyLogIntent, client::ClientHello, server::TlsServerConfig},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -80,6 +79,7 @@ use rama::{
         dep::rustls::{crypto::aws_lc_rs, server::ResolvesServerCert, sign::CertifiedKey},
         server::{RustlsServerConfigExt, TlsAcceptorLayer},
     },
+    tls::{KeyLogIntent, client::ClientHello, server::TlsServerConfig},
 };
 
 // everything else is provided by the standard library, community crates or tokio

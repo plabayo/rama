@@ -342,7 +342,12 @@ pub use ::rama_udp as udp;
 
 pub mod telemetry;
 
-#[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
+#[cfg(any(
+    feature = "tls",
+    feature = "rustls",
+    feature = "boring",
+    feature = "acme"
+))]
 pub mod tls;
 
 #[cfg(feature = "dns")]

@@ -2,8 +2,8 @@ use jiff::Timestamp;
 use rama::{
     error::{BoxError, ErrorContext},
     http::proto::h1::Http1HeaderMap,
-    net::tls::client::ClientHello,
     telemetry::tracing,
+    tls::client::ClientHello,
     ua::profile::{
         Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo,
         WsClientConfigOverwrites,

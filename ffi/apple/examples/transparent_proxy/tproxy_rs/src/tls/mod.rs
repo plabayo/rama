@@ -196,7 +196,7 @@ pub(crate) fn uninstall_root_ca() -> Result<Option<Vec<u8>>, BoxError> {
 fn generate_ca_pair() -> Result<(X509, PKey<Private>), BoxError> {
     let pair = self_signed_server_auth_gen_ca(&SelfSignedData {
         organisation_name: Some("Rama Transparent Proxy Example Root CA".to_owned()),
-        common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost").to_string()),
+        common_name: Some(Domain::from_static("rama-tproxy-mitm-ca.localhost")),
         ..Default::default()
     })
     .context("generate MITM CA")?;

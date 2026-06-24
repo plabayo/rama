@@ -94,14 +94,7 @@ use rama::{
     },
     layer::{AddInputExtensionLayer, ConsumeErrLayer},
     matcher::Matcher,
-    net::{
-        tls::{
-            SecureTransport,
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, TlsServerConfig},
-        },
-        user::credentials::basic,
-    },
+    net::user::credentials::basic,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -113,6 +106,11 @@ use rama::{
     tls::boring::{
         client::{BoringClientConfigExt, EmulateTlsProfileLayer},
         server::TlsAcceptorLayer,
+    },
+    tls::{
+        SecureTransport,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
     },
     ua::{
         layer::emulate::{

@@ -18,9 +18,9 @@ use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
-    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 #[cfg(feature = "boring")]
 use rama_net::client::Request as TransportRequest;
@@ -502,10 +502,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
             },
             tls::{CertOrderInput, CertOrderOutput},
         },
-        net::{
-            address::Domain,
-            tls::server::{SelfSignedData, ServerAuthData, TlsServerConfig},
-        },
+        net::address::Domain,
         proxy::haproxy::server::HaProxyLayer,
         rt::Executor,
         tcp::server::TcpListener,
@@ -516,6 +513,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
             },
             server::TlsAcceptorLayer,
         },
+        tls::server::{SelfSignedData, ServerAuthData, TlsServerConfig},
     };
 
     const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -530,8 +528,8 @@ async fn test_https_with_remote_tls_cert_issuer() {
         rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
             &SelfSignedData {
                 organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
-                common_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
-                subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS.to_string()]),
+                common_name: Some(DOMAIN_TLS_ECHO_CERTS),
+                subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS]),
                 ..Default::default()
             },
             &ca_issuer_cert,
@@ -590,8 +588,8 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     let (crt, key) = rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
                         &SelfSignedData {
                             organisation_name: Some(domain.to_string()),
-                            common_name: Some(domain.to_string()),
-                            subject_alternative_names: Some(vec![domain.to_string()]),
+                            common_name: Some(domain.clone()),
+                            subject_alternative_names: Some(vec![domain]),
                             ..Default::default()
                         },
                         &ca_crt,

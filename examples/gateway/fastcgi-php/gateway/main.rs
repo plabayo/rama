@@ -47,7 +47,6 @@ use rama::{
     net::{
         address::{HostWithPort, SocketAddress},
         client::EstablishedClientConnection,
-        tls::server::{SelfSignedData, TlsServerConfig},
     },
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
@@ -57,6 +56,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::rustls::server::TlsAcceptorLayer,
+    tls::server::{SelfSignedData, TlsServerConfig},
 };
 
 #[tokio::main]

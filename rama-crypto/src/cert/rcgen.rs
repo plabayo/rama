@@ -3,6 +3,7 @@
 use super::{SelfSignedData, SelfSignedKeyKind};
 use crate::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rama_core::error::{BoxError, ErrorContext};
+use rama_net::address::Domain;
 use time::{Duration, OffsetDateTime};
 
 /// Map a [`SelfSignedKeyKind`] to the rcgen signature algorithm used for both
@@ -39,7 +40,7 @@ pub fn self_signed_server_auth(
     let common_name = data
         .common_name
         .clone()
-        .unwrap_or_else(|| "localhost".to_owned());
+        .unwrap_or_else(|| Domain::from_static("localhost"));
 
     // CA cert: self-signed issuer, 20 year validity (matches the boring provider).
     let ca_key_pair =
@@ -66,10 +67,10 @@ pub fn self_signed_server_auth(
         .context("self-signed: create ca cert")?;
 
     // Leaf cert: valid for the common name plus any extra SANs, 90 day validity.
-    let mut sans = vec![common_name.clone()];
+    let mut sans: Vec<String> = vec![common_name.as_str().to_owned()];
     for extra_san in data.subject_alternative_names.into_iter().flatten() {
         if extra_san != common_name {
-            sans.push(extra_san);
+            sans.push(extra_san.as_str().to_owned());
         }
     }
     let server_key_pair =

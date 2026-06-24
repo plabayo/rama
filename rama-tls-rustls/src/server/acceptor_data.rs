@@ -5,8 +5,8 @@ use rama_core::conversion::{RamaTryFrom, RamaTryInto};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_core::extensions::Extension;
 use rama_core::telemetry::tracing;
-use rama_net::tls::keylog::open_intent_sink;
-use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuthData};
+use rama_tls::keylog::open_intent_sink;
+use rama_tls::server::{ClientVerifyMode, SelfSignedData, ServerAuthData};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -16,7 +16,7 @@ use std::sync::Arc;
 ///
 /// Built from a [`TlsServerConfig`] by gathering its common pieces.
 ///
-/// [`TlsServerConfig`]: rama_net::tls::server::TlsServerConfig
+/// [`TlsServerConfig`]: rama_tls::server::TlsServerConfig
 pub struct TlsAcceptorData {
     pub(super) server_config: ServerConfig,
 }
@@ -43,10 +43,10 @@ impl std::fmt::Debug for ServerConfig {
     }
 }
 
-impl TryFrom<&rama_net::tls::server::TlsServerConfig> for TlsAcceptorData {
+impl TryFrom<&rama_tls::server::TlsServerConfig> for TlsAcceptorData {
     type Error = BoxError;
 
-    fn try_from(value: &rama_net::tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
+    fn try_from(value: &rama_tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
         Self::try_from(super::config::RustlsTlsAcceptorConfig::from_extensions(
             value.as_extensions(),
         ))
@@ -74,24 +74,24 @@ impl TryFrom<super::config::RustlsTlsAcceptorConfig<'_>> for TlsAcceptorData {
     }
 }
 
-impl RamaTryFrom<rama_net::tls::server::TlsServerConfig, RamaTlsRustlsCrateMarker>
+impl RamaTryFrom<rama_tls::server::TlsServerConfig, RamaTlsRustlsCrateMarker>
     for rustls::ServerConfig
 {
     type Error = BoxError;
 
-    fn rama_try_from(value: rama_net::tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
+    fn rama_try_from(value: rama_tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
         Self::try_from(super::config::RustlsTlsAcceptorConfig::from_extensions(
             value.as_extensions(),
         ))
     }
 }
 
-impl RamaTryFrom<&rama_net::tls::server::TlsServerConfig, RamaTlsRustlsCrateMarker>
+impl RamaTryFrom<&rama_tls::server::TlsServerConfig, RamaTlsRustlsCrateMarker>
     for rustls::ServerConfig
 {
     type Error = BoxError;
 
-    fn rama_try_from(value: &rama_net::tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
+    fn rama_try_from(value: &rama_tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
         Self::try_from(super::config::RustlsTlsAcceptorConfig::from_extensions(
             value.as_extensions(),
         ))
@@ -251,7 +251,7 @@ where
 #[cfg(all(test, any(feature = "aws-lc", feature = "ring")))]
 mod server_pieces_tests {
     use super::*;
-    use rama_net::tls::server::{SelfSignedData, TlsServerConfig};
+    use rama_tls::server::{SelfSignedData, TlsServerConfig};
 
     fn stored(data: &TlsAcceptorData) -> Option<&Arc<rustls::ServerConfig>> {
         match &data.server_config {

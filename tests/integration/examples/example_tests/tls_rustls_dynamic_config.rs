@@ -16,11 +16,9 @@ use rama::{
         },
     },
     layer::{MapResultLayer, layer_fn},
-    net::{
-        address::Domain,
-        tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-    },
+    net::address::Domain,
     rt::Executor,
+    tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use tokio_test::assert_err;

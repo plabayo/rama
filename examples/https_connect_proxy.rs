@@ -44,7 +44,7 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::{proxy::IoForwardService, tls::server::SelfSignedData, user::credentials::basic},
+    net::{proxy::IoForwardService, user::credentials::basic},
     rt::Executor,
     service::service_fn,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -53,6 +53,7 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    tls::server::SelfSignedData,
     utils::octets::mib,
 };
 
@@ -63,7 +64,7 @@ use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::tls::rustls::server::TlsAcceptorLayer;
 
 #[cfg(any(feature = "boring", feature = "rustls"))]
-use rama::net::tls::{KeyLogIntent, server::TlsServerConfig};
+use rama::tls::{KeyLogIntent, server::TlsServerConfig};
 
 use std::convert::Infallible;
 use std::time::Duration;

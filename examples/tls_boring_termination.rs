@@ -43,14 +43,7 @@ use rama::{
     http::{Request, Response, server::HttpServer},
     layer::{ConsumeErrLayer, GetInputExtensionRefLayer},
     net::{
-        address::HostWithPort,
-        forwarded::Forwarded,
-        proxy::IoForwardService,
-        stream::SocketInfo,
-        tls::{
-            SecureTransport,
-            server::{SelfSignedData, TlsServerConfig},
-        },
+        address::HostWithPort, forwarded::Forwarded, proxy::IoForwardService, stream::SocketInfo,
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -64,6 +57,10 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::server::TlsAcceptorLayer,
+    tls::{
+        SecureTransport,
+        server::{SelfSignedData, TlsServerConfig},
+    },
 };
 
 // everything else is provided by the standard library, community crates or tokio

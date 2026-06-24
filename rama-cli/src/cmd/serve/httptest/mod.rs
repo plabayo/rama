@@ -21,10 +21,11 @@ use rama::{
         ConsumeErrLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
     },
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
+    tls::ApplicationProtocol,
     tls::boring::server::TlsAcceptorLayer,
     utils::{backoff::ExponentialBackoff, octets::mib},
 };

@@ -1,15 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use crate::address::Domain;
-use crate::tls::enums::{
+use crate::enums::{
     AuthenticatedEncryptionWithAssociatedData, CertificateCompressionAlgorithm,
     KeyDerivationFunction,
 };
-use crate::tls::{
+use crate::{
     ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
     SupportedGroup, enums::CompressionAlgorithm,
 };
+use rama_net::address::Domain;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// When a client first connects to a server, it is required to send

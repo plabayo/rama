@@ -14,7 +14,7 @@ use crate::dep::boring::{
 
 fn sample_data(common_name: &'static str) -> SelfSignedData {
     SelfSignedData {
-        common_name: Some(common_name.to_owned()),
+        common_name: Some(Domain::from_static(common_name)),
         organisation_name: Some("Rama Test".to_owned()),
         ..Default::default()
     }
@@ -945,7 +945,7 @@ fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
 #[test]
 fn self_signed_server_auth_produces_leaf_and_ca_der() {
     let data = SelfSignedData {
-        common_name: Some("leaf.rama.test".to_owned()),
+        common_name: Some(Domain::from_static("leaf.rama.test")),
         organisation_name: Some("Rama Test".to_owned()),
         ..Default::default()
     };
@@ -965,10 +965,10 @@ fn self_signed_server_auth_produces_leaf_and_ca_der() {
 #[test]
 fn leaf_san_includes_common_name_and_extra_sans() {
     let data = SelfSignedData {
-        common_name: Some("primary.rama.test".to_owned()),
+        common_name: Some(Domain::from_static("primary.rama.test")),
         subject_alternative_names: Some(vec![
-            "alt-one.rama.test".to_owned(),
-            "alt-two.rama.test".to_owned(),
+            Domain::from_static("alt-one.rama.test"),
+            Domain::from_static("alt-two.rama.test"),
         ]),
         ..Default::default()
     };

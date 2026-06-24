@@ -62,7 +62,6 @@ use rama::{
     net::{
         address::{Domain, SocketAddress},
         proxy::IoForwardService,
-        tls::server::{SelfSignedData, SniRequest, SniRouter, TlsServerConfig},
     },
     rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -72,6 +71,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::server::TlsAcceptorLayer,
+    tls::server::{SelfSignedData, SniRequest, SniRouter, TlsServerConfig},
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -180,7 +180,7 @@ where
 fn spawn_https_server(guard: ShutdownGuard, name: &'static str, socket_address: SocketAddress) {
     let tls_server_config = TlsServerConfig::new()
         .try_with_self_signed(SelfSignedData {
-            common_name: Some(format!("{name}.local")),
+            common_name: Some(format!("{name}.local").parse().expect("encode common name")),
             ..Default::default()
         })
         .expect("self-signed");

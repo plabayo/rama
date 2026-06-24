@@ -107,10 +107,6 @@ use rama::{
         address::{Domain, HostWithPort, SocketAddress},
         client::{ConnectorTarget, pool::http::HttpPooledConnectorConfig},
         proxy::IoForwardService,
-        tls::{
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SniPrefixedIo, SniRequest, SniRouter, TlsServerConfig},
-        },
     },
     rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -120,6 +116,10 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::server::{BoringServerConfigExt as _, ServerCertIssuerData, TlsAcceptorLayer},
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SniPrefixedIo, SniRequest, SniRouter, TlsServerConfig},
+    },
 };
 
 use std::{sync::Arc, time::Duration};

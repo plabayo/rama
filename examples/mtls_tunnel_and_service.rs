@@ -45,15 +45,7 @@ use rama::{
         },
     },
     layer::TraceErrLayer,
-    net::{
-        address::SocketAddress,
-        proxy::IoForwardService,
-        tls::{
-            KeyLogIntent,
-            client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
-            server::{ClientVerifyMode, ServerAuthData, TlsServerConfig},
-        },
-    },
+    net::{address::SocketAddress, proxy::IoForwardService},
     rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -64,6 +56,11 @@ use rama::{
     tls::rustls::{
         client::{TlsConnectorLayer, self_signed_client_auth},
         server::TlsAcceptorLayer,
+    },
+    tls::{
+        KeyLogIntent,
+        client::{ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientConfig},
+        server::{ClientVerifyMode, ServerAuthData, TlsServerConfig},
     },
 };
 

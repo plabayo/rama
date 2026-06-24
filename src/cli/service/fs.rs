@@ -40,7 +40,7 @@ use crate::tls::boring::server::TlsAcceptorLayer;
 use crate::tls::rustls::server::TlsAcceptorLayer;
 
 #[cfg(any(feature = "boring", feature = "rustls"))]
-use crate::net::tls::server::TlsServerConfig;
+use crate::tls::server::TlsServerConfig;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own serve [`Service`],

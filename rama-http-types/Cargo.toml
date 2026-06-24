@@ -26,7 +26,7 @@ targets = [
 
 [features]
 default = []
-tls = ["rama-net/tls"]
+tls = ["dep:rama-tls", "rama-tls/http"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -45,6 +45,7 @@ nom = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
+rama-tls = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

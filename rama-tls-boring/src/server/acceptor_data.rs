@@ -13,13 +13,11 @@ use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::{
-    address::Domain,
-    tls::{
-        ApplicationProtocol, KeyLogIntent, ProtocolVersion,
-        client::ClientHello as RamaClientHello,
-        server::{ClientVerifyMode, SelfSignedData, ServerAuthData},
-    },
+use rama_net::address::Domain;
+use rama_tls::{
+    ApplicationProtocol, KeyLogIntent, ProtocolVersion,
+    client::ClientHello as RamaClientHello,
+    server::{ClientVerifyMode, SelfSignedData, ServerAuthData},
 };
 use std::{sync::Arc, time::Duration};
 
@@ -258,10 +256,10 @@ impl TlsCertSource {
     }
 }
 
-impl TryFrom<&rama_net::tls::server::TlsServerConfig> for TlsAcceptorData {
+impl TryFrom<&rama_tls::server::TlsServerConfig> for TlsAcceptorData {
     type Error = BoxError;
 
-    fn try_from(value: &rama_net::tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
+    fn try_from(value: &rama_tls::server::TlsServerConfig) -> Result<Self, Self::Error> {
         Self::try_from(super::config::BoringTlsAcceptorConfig::from_extensions(
             value.as_extensions(),
         ))
@@ -443,7 +441,7 @@ fn issue_cert_for_ca(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
-            common_name: domain.map(|d| d.to_string()),
+            common_name: domain.cloned(),
             ..Default::default()
         },
         ca_cert,

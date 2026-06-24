@@ -1,5 +1,5 @@
 use crate::dep::rustls::KeyLog;
-use rama_net::tls::keylog::KeyLogSink;
+use rama_tls::keylog::KeyLogSink;
 use std::fmt;
 use std::sync::Arc;
 

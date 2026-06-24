@@ -1,6 +1,6 @@
 use super::TlsAcceptorService;
 use rama_core::Layer;
-use rama_net::tls::server::TlsServerConfig;
+use rama_tls::server::TlsServerConfig;
 
 /// A [`Layer`] which wraps the given service with a [`TlsAcceptorService`].
 #[derive(Debug, Clone)]

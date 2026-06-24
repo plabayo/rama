@@ -76,7 +76,7 @@ struct UserAgentProfileRow {
     h2_headers_form: Option<Http1HeaderMap>,
     h2_headers_ws: Option<Http1HeaderMap>,
     #[cfg(feature = "tls")]
-    tls_client_hello: Option<rama_net::tls::client::ClientHello>,
+    tls_client_hello: Option<rama_tls::client::ClientHello>,
     #[cfg(feature = "tls")]
     tls_ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
     js_web_apis: Option<JsProfileWebApis>,

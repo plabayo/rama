@@ -5,14 +5,11 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::{
-    address::Domain,
-    client::ConnectorTarget,
-    tls::{
-        KeyLogIntent,
-        client::{ClientHello, ServerVerifyMode, TlsClientConfig},
-        server::InputWithClientHello,
-    },
+use rama_net::{address::Domain, client::ConnectorTarget};
+use rama_tls::{
+    KeyLogIntent,
+    client::{ClientHello, ServerVerifyMode, TlsClientConfig},
+    server::InputWithClientHello,
 };
 
 use crate::{
@@ -192,7 +189,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::tls::{ProtocolVersion, client::ClientHelloExtension};
+    use rama_tls::{ProtocolVersion, client::ClientHelloExtension};
 
     fn hello_with_sni(sni: &Domain) -> ClientHello {
         ClientHello::new(

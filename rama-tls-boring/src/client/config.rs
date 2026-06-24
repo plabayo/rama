@@ -2,11 +2,11 @@ use itertools::Itertools;
 use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, FromExtensions};
-use rama_net::tls::client::{
+use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerName,
     TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_net::tls::{
+use rama_tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
 };
@@ -444,7 +444,7 @@ fn egress_max_version_clamp(hello: &ClientHello) -> Option<ProtocolVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::tls::CompressionAlgorithm;
+    use rama_tls::CompressionAlgorithm;
 
     fn clamp_of(hello: &ClientHello) -> Option<ProtocolVersion> {
         TlsClientConfig::rama_from(hello)

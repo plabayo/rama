@@ -3,12 +3,9 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 
 use crate::{
-    address::Host,
-    tls::{
-        ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
-        TlsSupportedVersions,
-    },
+    ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
 };
+use rama_net::address::Host;
 
 /// A backend agnostic builder for the common TLS configs.
 ///
@@ -80,7 +77,7 @@ impl TlsClientConfig {
         /// Overrides the SNI the connector would otherwise derive: the transport
         /// authority host, or for a tunnel connector, the [`TlsTunnel`] sni
         ///
-        /// [`TlsTunnel`]: crate::tls::TlsTunnel
+        /// [`TlsTunnel`]: crate::TlsTunnel
         pub fn server_name(mut self, server_name: Host) -> Self {
             self.0.insert(TlsServerName(server_name));
             self
@@ -165,7 +162,7 @@ pub struct TlsClientAuth(pub ClientAuth);
 
 /// Whether to capture the peer certificate chain into `NegotiatedTlsParameters`.
 ///
-/// [`NegotiatedTlsParameters`]: crate::tls::client::NegotiatedTlsParameters
+/// [`NegotiatedTlsParameters`]: crate::client::NegotiatedTlsParameters
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
 pub struct TlsStoreServerCertChain(pub bool);
