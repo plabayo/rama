@@ -10,7 +10,8 @@ use super::component_input::IntoUriComponent;
 use super::encode;
 use super::owned::OwnedUriRef;
 use super::path::{
-    PathMatchOptions, match_prefix_in_body, match_suffix_in_body, trim_ascii_slashes,
+    PathMatchOptions, match_prefix_in_body, match_suffix_in_body, segment_range_bounds,
+    trim_ascii_slashes,
 };
 
 /// Mutable view of a [`Uri`](super::Uri)'s path component.
@@ -177,6 +178,32 @@ impl<'a> PathMut<'a> {
     /// path is left unchanged and `false` is returned.
     pub fn strip_prefix(&mut self, prefix: impl IntoUriComponent) -> bool {
         self.strip_prefix_with_opts(prefix, PathMatchOptions::default())
+    }
+
+    /// Strip the first `count` path segments, re-rooting the remainder with a
+    /// single leading `/`.
+    ///
+    /// Returns `false` when the path has fewer than `count` segments. A
+    /// `count` of `0` only re-roots the current path.
+    pub fn strip_prefix_segments(&mut self, count: usize) -> bool {
+        let new = {
+            let path: &[u8] = &self.owned.path;
+            let rest = if count == 0 {
+                path
+            } else {
+                let Some((_, end)) = segment_range_bounds(path, 0, count) else {
+                    return false;
+                };
+                &path[end..]
+            };
+            let rest = trim_ascii_slashes(rest);
+            let mut new = BytesMut::with_capacity(rest.len() + 1);
+            new.extend_from_slice(b"/");
+            new.extend_from_slice(rest);
+            new
+        };
+        self.owned.path = new;
+        true
     }
 
     /// [`strip_prefix`](Self::strip_prefix) with explicit [`PathMatchOptions`].

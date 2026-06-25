@@ -64,6 +64,20 @@ impl<'a> PathRef<'a> {
         Self::new(trim_ascii_slashes(self.bytes))
     }
 
+    /// Borrow a window of `count` consecutive path segments starting at
+    /// `start`.
+    ///
+    /// When the window begins after an earlier segment, the returned view
+    /// includes the `/` delimiter immediately before the first selected
+    /// segment, making it directly usable with rooted [`PathPattern`]s.
+    /// Returns `None` when the requested window is empty or extends beyond the
+    /// available segments.
+    #[must_use]
+    pub fn segment_range(self, start: usize, count: usize) -> Option<Self> {
+        let (start, end) = segment_range_bounds(self.bytes, start, count)?;
+        Some(Self::new(&self.bytes[start..end]))
+    }
+
     /// Iterator over path segments — the parts between `/` separators.
     ///
     /// Matches `url::Url::path_segments`: an empty path yields no
@@ -630,6 +644,62 @@ pub(super) fn trim_ascii_slashes(mut bytes: &[u8]) -> &[u8] {
         bytes = rest;
     }
     bytes
+}
+
+pub(super) fn segment_range_bounds(
+    path: &[u8],
+    start: usize,
+    count: usize,
+) -> Option<(usize, usize)> {
+    if path.is_empty() || count == 0 {
+        return None;
+    }
+
+    let has_leading_slash = path.first().copied() == Some(b'/');
+    let body_offset = usize::from(has_leading_slash);
+    let body = &path[body_offset..];
+
+    let first = segment_body_bounds(body, start)?;
+    let last = segment_body_bounds(body, start.checked_add(count - 1)?)?;
+
+    let abs_start = if has_leading_slash {
+        if start == 0 {
+            0
+        } else {
+            body_offset + first.0 - 1
+        }
+    } else if start == 0 {
+        0
+    } else {
+        first.0 - 1
+    };
+
+    let abs_end = if has_leading_slash && body.is_empty() && start == 0 {
+        1
+    } else {
+        body_offset + last.1
+    };
+
+    Some((abs_start, abs_end))
+}
+
+fn segment_body_bounds(body: &[u8], target: usize) -> Option<(usize, usize)> {
+    let mut index = 0;
+    let mut start = 0;
+    loop {
+        let end = body[start..]
+            .iter()
+            .position(|&b| b == b'/')
+            .map_or(body.len(), |pos| start + pos);
+        if index == target {
+            return Some((start, end));
+        }
+        if end == body.len() {
+            return None;
+        }
+        start = end + 1;
+        index += 1;
+    }
 }
 
 #[inline]

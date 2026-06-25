@@ -340,6 +340,45 @@ fn strip_prefix_preserves_query_and_authority() {
 }
 
 #[test]
+fn strip_prefix_segments_shapes() {
+    for (start, count, stripped, want) in [
+        ("/api/users/42", 0, true, "/api/users/42"),
+        ("/api/users/42", 1, true, "/users/42"),
+        ("/api/users/42", 2, true, "/42"),
+        ("/api/users/42", 3, true, "/"),
+        ("/api/users/42", 4, false, "/api/users/42"),
+        ("/", 1, true, "/"),
+    ] {
+        let mut uri: Uri = parse_graceful(start).unwrap();
+        assert_eq!(
+            uri.path_mut().strip_prefix_segments(count),
+            stripped,
+            "start={start:?}, count={count}",
+        );
+        assert_eq!(
+            uri.path().map(|path| path.as_encoded_str()),
+            Some(std::borrow::Cow::Borrowed(want)),
+            "start={start:?}, count={count}",
+        );
+    }
+
+    let mut uri: Uri = parse_graceful("/x").unwrap();
+    uri.set_path("");
+    assert!(!uri.path_mut().strip_prefix_segments(1));
+    assert_eq!(
+        uri.path().map(|path| path.as_encoded_str()),
+        Some("".into())
+    );
+}
+
+#[test]
+fn strip_prefix_segments_preserves_query_and_authority() {
+    let mut uri: Uri = parse_graceful("https://example.com/api/v1/users?q=1").unwrap();
+    assert!(uri.path_mut().strip_prefix_segments(2));
+    assert_eq!(uri.to_string(), "https://example.com/users?q=1");
+}
+
+#[test]
 fn strip_prefix_is_case_sensitive() {
     let mut uri: Uri = parse_graceful("/FOO/bar").unwrap();
     assert!(!uri.path_mut().strip_prefix("foo"));

@@ -236,6 +236,32 @@ fn trimmed_slashes_is_typed_and_preserves_inner_encoding() {
     );
 }
 
+#[test]
+fn segment_range_borrows_rooted_segment_windows() {
+    let path = PathRef::from_raw_str("/api/users/42/orders");
+
+    assert_eq!(
+        path.segment_range(0, 2).unwrap().as_encoded_str(),
+        "/api/users"
+    );
+    assert_eq!(
+        path.segment_range(1, 2).unwrap().as_encoded_str(),
+        "/users/42"
+    );
+    assert_eq!(path.segment_range(2, 1).unwrap().as_encoded_str(), "/42");
+    assert_eq!(path.segment_range(3, 2), None);
+    assert_eq!(path.segment_range(1, 0), None);
+}
+
+#[test]
+fn segment_range_preserves_empty_segments() {
+    let path = PathRef::from_raw_str("/a//b/");
+
+    assert_eq!(path.segment_range(1, 1).unwrap().as_encoded_str(), "/");
+    assert_eq!(path.segment_range(1, 2).unwrap().as_encoded_str(), "//b");
+    assert_eq!(path.segment_range(3, 1).unwrap().as_encoded_str(), "/");
+}
+
 // ----------------------------------------------------------------------
 // PathSegment::is_empty
 // ----------------------------------------------------------------------

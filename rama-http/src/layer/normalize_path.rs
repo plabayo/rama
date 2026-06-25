@@ -37,7 +37,7 @@
 //! # }
 //! ```
 
-use crate::{Request, Response, Uri};
+use crate::{Request, Response};
 use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -158,24 +158,21 @@ where
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send + '_ {
         match self.mode {
-            NormalizeMode::Trim => trim_trailing_slash(req.uri_mut()),
-            NormalizeMode::Append => append_trailing_slash(req.uri_mut()),
+            NormalizeMode::Trim => {
+                req.uri_mut().path_mut().trim_trailing_slash();
+            }
+            NormalizeMode::Append => {
+                req.uri_mut().path_mut().append_trailing_slash();
+            }
         }
         self.inner.serve(req)
     }
 }
 
-fn trim_trailing_slash(uri: &mut Uri) {
-    uri.path_mut().trim_trailing_slash();
-}
-
-fn append_trailing_slash(uri: &mut Uri) {
-    uri.path_mut().append_trailing_slash();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Uri;
     use rama_core::Layer;
     use rama_core::service::service_fn;
     use std::convert::Infallible;
@@ -200,63 +197,63 @@ mod tests {
     #[test]
     fn is_noop_if_no_trailing_slash() {
         let mut uri = "/foo".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo");
     }
 
     #[test]
     fn maintains_query() {
         let mut uri = "/foo/?a=a".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo?a=a");
     }
 
     #[test]
     fn removes_multiple_trailing_slashes() {
         let mut uri = "/foo////".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo");
     }
 
     #[test]
     fn removes_multiple_trailing_slashes_even_with_query() {
         let mut uri = "/foo////?a=a".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo?a=a");
     }
 
     #[test]
     fn is_noop_on_index() {
         let mut uri = "/".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/");
     }
 
     #[test]
     fn removes_multiple_trailing_slashes_on_index() {
         let mut uri = "////".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/");
     }
 
     #[test]
     fn removes_multiple_trailing_slashes_on_index_even_with_query() {
         let mut uri = "////?a=a".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/?a=a");
     }
 
     #[test]
     fn removes_multiple_preceding_slashes_even_with_query() {
         let mut uri = "///foo//?a=a".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo?a=a");
     }
 
     #[test]
     fn removes_multiple_preceding_slashes() {
         let mut uri = "///foo".parse::<Uri>().unwrap();
-        trim_trailing_slash(&mut uri);
+        uri.path_mut().trim_trailing_slash();
         assert_eq!(uri, "/foo");
     }
 
@@ -280,63 +277,63 @@ mod tests {
     #[test]
     fn is_noop_if_trailing_slash() {
         let mut uri = "/foo/".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/");
     }
 
     #[test]
     fn append_maintains_query() {
         let mut uri = "/foo?a=a".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/?a=a");
     }
 
     #[test]
     fn append_only_keeps_one_slash() {
         let mut uri = "/foo////".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/");
     }
 
     #[test]
     fn append_only_keeps_one_slash_even_with_query() {
         let mut uri = "/foo////?a=a".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/?a=a");
     }
 
     #[test]
     fn append_is_noop_on_index() {
         let mut uri = "/".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/");
     }
 
     #[test]
     fn append_removes_multiple_trailing_slashes_on_index() {
         let mut uri = "////".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/");
     }
 
     #[test]
     fn append_removes_multiple_trailing_slashes_on_index_even_with_query() {
         let mut uri = "////?a=a".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/?a=a");
     }
 
     #[test]
     fn append_removes_multiple_preceding_slashes_even_with_query() {
         let mut uri = "///foo//?a=a".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/?a=a");
     }
 
     #[test]
     fn append_removes_multiple_preceding_slashes() {
         let mut uri = "///foo".parse::<Uri>().unwrap();
-        append_trailing_slash(&mut uri);
+        uri.path_mut().append_trailing_slash();
         assert_eq!(uri, "/foo/");
     }
 }
