@@ -20,6 +20,8 @@ use rama_core::{
 };
 use rama_utils::collections::smallvec::SmallVec;
 
+use crate::input_ext::PathInputExt;
+
 use crate::byte_sets::is_pattern_name_byte;
 
 use super::component_input::IntoUriComponent;
@@ -452,12 +454,6 @@ pub struct PathRouteCaptures {
     glob: Option<String>,
 }
 
-/// Input hook used by [`PathRouter`]'s [`Service`] implementation.
-pub trait PathRouteInput: Send + 'static {
-    /// Path to route against.
-    fn path_ref(&self) -> PathRef<'_>;
-}
-
 /// Error produced by [`PathRouter`] when used as a [`Service`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathRouterError<E> {
@@ -623,7 +619,7 @@ impl<T> PathRouter<T> {
 
 impl<Input, T> Service<Input> for PathRouter<T>
 where
-    Input: ExtensionsRef + PathRouteInput + Send + 'static,
+    Input: ExtensionsRef + PathInputExt + Send + 'static,
     T: Service<Input>,
 {
     type Output = T::Output;

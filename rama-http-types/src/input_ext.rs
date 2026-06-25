@@ -10,8 +10,8 @@ use rama_net::address::{Domain, Host, HostWithOptPort};
 use rama_net::forwarded::Forwarded;
 use rama_net::transport::TransportProtocol;
 use rama_net::{
-    AuthorityInputExt, HttpVersionInputExt, ProtocolInputExt, TransportProtocolInputExt,
-    UriInputExt,
+    AuthorityInputExt, HttpVersionInputExt, PathInputExt, ProtocolInputExt,
+    TransportProtocolInputExt, UriInputExt,
 };
 
 #[cfg(feature = "tls")]
@@ -199,6 +199,18 @@ impl UriInputExt for Parts {
     }
 }
 
+impl<Body> PathInputExt for Request<Body> {
+    fn path_ref(&self) -> rama_net::uri::PathRef<'_> {
+        self.uri().path_ref_or_root()
+    }
+}
+
+impl PathInputExt for Parts {
+    fn path_ref(&self) -> rama_net::uri::PathRef<'_> {
+        HttpRequestParts::uri(self).path_ref_or_root()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +229,19 @@ mod tests {
         assert_eq!(req.http_version(), Some(Version::HTTP_11));
         assert_eq!(req.protocol(), Some(&Protocol::HTTP));
         assert_eq!(req.authority().unwrap().to_string(), "example.com:8080");
+    }
+
+    #[test]
+    fn path_accessor_from_request_and_parts() {
+        let req = Request::builder()
+            .uri("http://example.com/a%2Fb?q=1")
+            .body(())
+            .unwrap();
+
+        assert_eq!(req.path_ref(), "/a%2Fb");
+
+        let (parts, _) = req.into_parts();
+        assert_eq!(parts.path_ref(), "/a%2Fb");
     }
 
     #[test]

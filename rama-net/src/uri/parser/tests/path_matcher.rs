@@ -864,8 +864,9 @@ fn path_router_capture_free_dynamic_prefix_returns_empty_captures() {
 
 #[tokio::test]
 async fn path_router_service_inserts_owned_captures() {
-    use crate::uri::{
-        PathRef, PathRouteCaptures, PathRouteInput, PathRouter, PathRouterError, Uri,
+    use crate::{
+        PathInputExt,
+        uri::{PathRouteCaptures, PathRouter, PathRouterError, Uri},
     };
     use rama_core::{
         Service,
@@ -893,8 +894,8 @@ async fn path_router_service_inserts_owned_captures() {
         }
     }
 
-    impl PathRouteInput for Input {
-        fn path_ref(&self) -> PathRef<'_> {
+    impl PathInputExt for Input {
+        fn path_ref(&self) -> crate::uri::PathRef<'_> {
             self.uri.path_ref_or_root()
         }
     }

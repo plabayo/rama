@@ -39,8 +39,8 @@ pub use client_ip::ClientIp;
 pub use input_ext::HttpVersionInputExt;
 #[doc(inline)]
 pub use input_ext::{
-    AuthorityInputExt, ConnectorTargetInputExt, ProtocolInputExt, TransportProtocolInputExt,
-    UriInputExt,
+    AuthorityInputExt, ConnectorTargetInputExt, PathInputExt, ProtocolInputExt,
+    TransportProtocolInputExt, UriInputExt,
 };
 #[doc(inline)]
 pub use proto::Protocol;

@@ -1,9 +1,9 @@
 //! Small, single-concern accessor traits for reading routing/transport
 //! properties off a service input (an http request, a connect target, …).
 //!
-//! Each concern (authority, protocol, http version, transport) is its own small
-//! trait, so a caller reads exactly the piece it needs instead of building a
-//! combined context up front.
+//! Each concern (URI, path, authority, protocol, http version, transport) is
+//! its own small trait, so a caller reads exactly the piece it needs instead of
+//! building a combined context up front.
 //!
 //! Design (matching [`ClientIp`](crate::ClientIp)): each *resolution* trait has
 //! no [`ExtensionsRef`] bound and is never
@@ -31,7 +31,7 @@ use crate::client::ConnectorTarget;
 #[cfg(feature = "http")]
 use crate::http::Version;
 use crate::transport::TransportProtocol;
-use crate::uri::Uri;
+use crate::uri::{PathRef, Uri};
 
 /// Read the [`Uri`] of a service input that carries one.
 ///
@@ -51,9 +51,37 @@ pub trait UriInputExt {
     fn uri(&self) -> &Uri;
 }
 
+impl<T: UriInputExt + ?Sized> UriInputExt for &T {
+    fn uri(&self) -> &Uri {
+        (**self).uri()
+    }
+}
+
 impl UriInputExt for Uri {
     fn uri(&self) -> &Uri {
         self
+    }
+}
+
+/// Read the URI path of a service input.
+///
+/// Implementations should return a typed [`PathRef`] and use
+/// [`Uri::path_ref_or_root`] when the path comes from a [`Uri`], so an empty URI
+/// path is observed as `/` and callers never need to fall back to raw strings.
+pub trait PathInputExt {
+    /// The path to route against.
+    fn path_ref(&self) -> PathRef<'_>;
+}
+
+impl<T: PathInputExt + ?Sized> PathInputExt for &T {
+    fn path_ref(&self) -> PathRef<'_> {
+        (**self).path_ref()
+    }
+}
+
+impl PathInputExt for Uri {
+    fn path_ref(&self) -> PathRef<'_> {
+        self.path_ref_or_root()
     }
 }
 
