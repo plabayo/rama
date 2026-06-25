@@ -84,7 +84,7 @@ jobs:
       - name: Install cross
         if: contains(matrix.target , 'unknown-linux-musl') == false
         run: |
-          cargo install --git https://github.com/cross-rs/cross --branch main cross
+          cargo install --git https://github.com/cross-rs/cross --rev 1b8cf50d20180c1a394099e608141480f934b7f7 cross
 
       - name: Install bindgen-cli
         run: |
