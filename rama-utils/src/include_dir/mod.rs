@@ -86,4 +86,74 @@ mod tests {
 
         _ = file.metadata().unwrap();
     }
+
+    #[test]
+    fn test_extract_rejects_absolute_paths() {
+        // Create a Dir with an absolute path entry
+        let malicious_file = File::new("/etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let malicious_dir = Dir::new("test", &[malicious_entry]);
+
+        // Attempt to extract should fail
+        let temp_dir = std::env::temp_dir().join("test_extract_absolute");
+        let result = malicious_dir.extract(&temp_dir);
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Absolute paths are not allowed"));
+    }
+
+    #[test]
+    fn test_extract_rejects_parent_traversal() {
+        // Create a Dir with a path traversal entry
+        let malicious_file = File::new("../../../etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let malicious_dir = Dir::new("test", &[malicious_entry]);
+
+        // Attempt to extract should fail
+        let temp_dir = std::env::temp_dir().join("test_extract_traversal");
+        let result = malicious_dir.extract(&temp_dir);
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Path traversal with '..' is not allowed"));
+    }
+
+    #[test]
+    fn test_extract_allows_safe_paths() {
+        // Create a Dir with safe relative paths
+        let safe_file = File::new("subdir/safe.txt", b"safe content");
+        let safe_entry = DirEntry::File(safe_file);
+        let safe_dir = Dir::new("test", &[safe_entry]);
+
+        // Extract should succeed
+        let temp_dir = std::env::temp_dir().join("test_extract_safe");
+        let result = safe_dir.extract(&temp_dir);
+        
+        // Clean up
+        if temp_dir.exists() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        }
+        
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_rejects_mixed_traversal() {
+        // Create a Dir with a path that goes down then tries to escape
+        let malicious_file = File::new("subdir/../../etc/passwd", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let malicious_dir = Dir::new("test", &[malicious_entry]);
+
+        // Attempt to extract should fail
+        let temp_dir = std::env::temp_dir().join("test_extract_mixed");
+        let result = malicious_dir.extract(&temp_dir);
+        
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("Path traversal with '..' is not allowed"));
+    }
 }
