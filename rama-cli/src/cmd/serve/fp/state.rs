@@ -1,11 +1,11 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use rama::error::{BoxError, ErrorContext};
 use rama::net::address::ip::geo::IpGeoDb;
 
-use super::{data::DataSource, storage::Storage};
+use super::{data::DataSource, redacted_storage_auth, storage::Storage};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,
@@ -13,6 +13,20 @@ pub(super) struct State {
     pub(super) storage_auth: Option<String>,
     /// Optional IP geolocation database, configured via `RAMA_IP_GEO_DB`.
     pub(super) geo_db: Option<Arc<IpGeoDb>>,
+}
+
+impl fmt::Debug for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("State")
+            .field("data_source", &self.data_source)
+            .field("storage", &self.storage)
+            .field(
+                "storage_auth",
+                &redacted_storage_auth(self.storage_auth.as_deref()),
+            )
+            .field("geo_db", &self.geo_db)
+            .finish()
+    }
 }
 
 impl State {
@@ -34,5 +48,31 @@ impl State {
             storage_auth: storage_auth.map(|s| s.to_owned()),
             geo_db,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_debug_redacts_storage_auth() {
+        let state = State {
+            data_source: DataSource::default(),
+            storage: None,
+            storage_auth: Some("super-secret-cookie".to_owned()),
+            geo_db: None,
+        };
+
+        let formatted = format!("{state:?}");
+
+        assert!(
+            !formatted.contains("super-secret-cookie"),
+            "debug leaked storage auth: {formatted}"
+        );
+        assert!(
+            formatted.contains("<redacted>"),
+            "debug missing storage auth redaction marker: {formatted}"
+        );
     }
 }

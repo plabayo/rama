@@ -1,8 +1,10 @@
+use std::fmt;
+
 use jiff::Timestamp;
 use rama::{
     error::{BoxError, ErrorContext},
     http::proto::h1::Http1HeaderMap,
-    net::tls::client::ClientHello,
+    net::{tls::client::ClientHello, uri::Uri},
     telemetry::tracing,
     ua::profile::{
         Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo,
@@ -14,15 +16,37 @@ mod postgres;
 use postgres::Pool;
 use tokio_postgres::types;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct Storage {
     pool: Pool,
 }
 
+impl fmt::Debug for Storage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Storage").finish_non_exhaustive()
+    }
+}
+
+struct DebugPgUrl(Option<Uri>);
+
+impl fmt::Debug for DebugPgUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Some(uri) => fmt::Debug::fmt(uri, f),
+            None => f.write_str("<invalid uri>"),
+        }
+    }
+}
+
+fn debug_pg_url(pg_url: &str) -> DebugPgUrl {
+    DebugPgUrl(Uri::parse(pg_url).ok())
+}
+
 impl Storage {
     pub(super) async fn try_new(pg_url: String) -> Result<Self, BoxError> {
+        let url = debug_pg_url(&pg_url);
         tracing::debug!(
-            url.full = %pg_url,
+            url.full = ?url,
             "create new PG storage",
         );
         let pool = postgres::try_new_pool(pg_url).await?;
@@ -559,5 +583,37 @@ impl Storage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_pg_url_redacts_password() {
+        let formatted = format!(
+            "{:?}",
+            debug_pg_url("postgres://alice:super-secret@example.com/rama")
+        );
+
+        assert!(
+            !formatted.contains("super-secret"),
+            "debug leaked database password: {formatted}"
+        );
+        assert!(
+            formatted.contains("***"),
+            "debug missing URI redaction marker: {formatted}"
+        );
+    }
+
+    #[test]
+    fn debug_pg_url_does_not_echo_invalid_input() {
+        let formatted = format!(
+            "{:?}",
+            debug_pg_url("postgres://alice:super-secret@example.com/rama\r")
+        );
+
+        assert_eq!(formatted, "<invalid uri>");
     }
 }
