@@ -128,7 +128,9 @@ impl sealed::Sealed for super::path::PathRef<'_> {
         }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_encoded_str().as_ref())
+        let mut bytes = BytesMut::with_capacity(self.bytes.len());
+        self.write_encoded_to(&mut bytes);
+        bytes
     }
     fn is_already_uri_component(&self) -> bool {
         true
@@ -144,7 +146,9 @@ impl sealed::Sealed for super::path::PathSegment<'_> {
         }
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
-        BytesMut::from(self.as_encoded_str().as_ref())
+        let mut bytes = BytesMut::with_capacity(self.encoded_capacity_hint());
+        self.write_encoded_to(&mut bytes);
+        bytes
     }
     fn is_already_uri_component(&self) -> bool {
         true

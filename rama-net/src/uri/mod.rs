@@ -782,7 +782,14 @@ impl Uri {
             return Cow::Borrowed("*");
         }
         match self.query() {
-            Some(q) => Cow::Owned(format!("{}?{}", self.path_or_root(), q.as_encoded_str())),
+            Some(q) => {
+                use std::fmt::Write as _;
+
+                let mut target = String::new();
+                write!(&mut target, "{}?{q}", self.path_ref_or_root())
+                    .expect("writing URI request target to String cannot fail");
+                Cow::Owned(target)
+            }
             None => self.path_or_root(),
         }
     }
@@ -1486,14 +1493,7 @@ impl Uri {
                     write!(f, "{}", auth.address)?;
                 }
 
-                write!(
-                    f,
-                    "{}",
-                    PathRef::from_raw_str({
-                        // Safety: parser invariant on the path bytes.
-                        unsafe { std::str::from_utf8_unchecked(&arc.path) }
-                    })
-                )?;
+                write!(f, "{}", PathRef::new(&arc.path))?;
 
                 if let Some(query) = &arc.query {
                     write!(f, "?{query}")?;

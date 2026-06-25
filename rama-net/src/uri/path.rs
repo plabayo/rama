@@ -13,7 +13,10 @@ use rama_core::bytes::BytesMut;
 
 use crate::uri::{
     PathCaptures, PathPattern,
-    encode::{encoded_path, encoded_segment, extend_encoded_path},
+    encode::{
+        encoded_path, encoded_segment, encoded_segment_cmp, encoded_segment_eq,
+        extend_encoded_path, hash_encoded_segment, write_encoded_path, write_encoded_segment,
+    },
 };
 
 use super::component_input::IntoUriComponent;
@@ -246,13 +249,6 @@ impl<'a> PathRef<'a> {
     pub fn pattern_captures(self, pattern: &PathPattern) -> Option<PathCaptures<'_, 'a>> {
         pattern.captures(self)
     }
-
-    /// True if the path ref starts with as slash '/'.
-    #[must_use]
-    #[inline(always)]
-    fn has_leading_slash(self) -> bool {
-        self.bytes.first().copied() == Some(b'/')
-    }
 }
 
 impl<'a> From<&'a str> for PathRef<'a> {
@@ -346,12 +342,7 @@ impl std::fmt::Display for PathRef<'_> {
     /// Renders the raw on-wire path bytes (pct-encoding preserved).
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut separator = if self.has_leading_slash() { "/" } else { "" };
-        for segment in self.segments() {
-            write!(f, "{separator}{segment}")?;
-            separator = "/";
-        }
-        Ok(())
+        write_encoded_path(f, self.bytes)
     }
 }
 
@@ -368,7 +359,7 @@ pub struct PathSegment<'a> {
 impl PartialEq for PathSegment<'_> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.as_encoded_str() == other.as_encoded_str()
+        encoded_segment_eq(self.raw, other.raw)
     }
 }
 
@@ -412,23 +403,21 @@ impl PartialOrd for PathSegment<'_> {
 impl Ord for PathSegment<'_> {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_encoded_str()
-            .as_ref()
-            .cmp(other.as_encoded_str().as_ref())
+        encoded_segment_cmp(self.raw, other.raw)
     }
 }
 
 impl Hash for PathSegment<'_> {
     #[inline(always)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_encoded_str().hash(state);
+        hash_encoded_segment(state, self.raw);
     }
 }
 
 impl fmt::Display for PathSegment<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_encoded_str())
+        write_encoded_segment(f, self.raw)
     }
 }
 
@@ -437,6 +426,16 @@ impl<'a> PathSegment<'a> {
     #[inline]
     pub(crate) const fn new(raw: &'a [u8]) -> Self {
         Self { raw }
+    }
+
+    #[inline]
+    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+        super::encode::extend_encoded_segment_bytes(buf, self.raw);
+    }
+
+    #[inline]
+    pub(super) fn encoded_capacity_hint(self) -> usize {
+        self.raw.len()
     }
 
     /// Percent-encoded segment.

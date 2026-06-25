@@ -13,7 +13,10 @@ use std::hash::Hash;
 use percent_encoding::percent_decode;
 use rama_core::bytes::{Bytes, BytesMut};
 
-use super::encode::{encoded_pair_component, encoded_query, extend_encoded_query};
+use super::encode::{
+    encoded_pair_component, encoded_query, encoded_query_cmp, encoded_query_eq,
+    extend_encoded_query, hash_encoded_query, write_encoded_query,
+};
 
 /// Owned query component. Cheaply mutable in-place via the
 /// [`QueryMut`](super::QueryMut) RAII guard.
@@ -243,7 +246,7 @@ impl<'a> QueryRef<'a> {
 impl PartialEq for QueryRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.as_encoded_str() == other.as_encoded_str()
+        encoded_query_eq(self.bytes, other.bytes)
     }
 }
 
@@ -259,16 +262,14 @@ impl PartialOrd for QueryRef<'_> {
 impl Ord for QueryRef<'_> {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_encoded_str()
-            .as_ref()
-            .cmp(other.as_encoded_str().as_ref())
+        encoded_query_cmp(self.bytes, other.bytes)
     }
 }
 
 impl Hash for QueryRef<'_> {
     #[inline(always)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_encoded_str().hash(state);
+        hash_encoded_query(state, self.bytes);
     }
 }
 
@@ -468,14 +469,7 @@ impl<'a> QueryPairRef<'a> {
 impl std::fmt::Display for QueryPairRef<'_> {
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_encoded_str().as_ref())
-    }
-}
-
-impl<'a> QueryPairRef<'a> {
-    #[inline]
-    fn as_encoded_str(self) -> Cow<'a, str> {
-        encoded_query(self.raw)
+        write_encoded_query(f, self.raw)
     }
 }
 
@@ -594,7 +588,7 @@ impl fmt::Display for QueryRef<'_> {
     /// Renders the encoded query bytes (no leading `?`).
     #[inline(always)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_encoded_str().as_ref())
+        write_encoded_query(f, self.bytes)
     }
 }
 

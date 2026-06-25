@@ -10,7 +10,10 @@ use std::{borrow::Cow, hash::Hash};
 use percent_encoding::percent_decode;
 use rama_core::bytes::BytesMut;
 
-use super::encode::encoded_fragment;
+use super::encode::{
+    encoded_fragment, encoded_fragment_cmp, encoded_fragment_eq, hash_encoded_fragment,
+    write_encoded_fragment,
+};
 
 /// Owned fragment component (the part after `#`, sans the `#` itself).
 ///
@@ -131,7 +134,7 @@ impl<'a> FragmentRef<'a> {
 impl PartialEq for FragmentRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
-        self.as_encoded_str() == other.as_encoded_str()
+        encoded_fragment_eq(self.bytes, other.bytes)
     }
 }
 
@@ -147,16 +150,14 @@ impl PartialOrd for FragmentRef<'_> {
 impl Ord for FragmentRef<'_> {
     #[inline(always)]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.as_encoded_str()
-            .as_ref()
-            .cmp(other.as_encoded_str().as_ref())
+        encoded_fragment_cmp(self.bytes, other.bytes)
     }
 }
 
 impl Hash for FragmentRef<'_> {
     #[inline(always)]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.as_encoded_str().hash(state);
+        hash_encoded_fragment(state, self.bytes);
     }
 }
 
@@ -171,7 +172,7 @@ impl std::fmt::Display for FragmentRef<'_> {
     /// Renders the encoded fragment bytes (no leading `#`).
     #[inline(always)]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_encoded_str().as_ref())
+        write_encoded_fragment(f, self.bytes)
     }
 }
 
