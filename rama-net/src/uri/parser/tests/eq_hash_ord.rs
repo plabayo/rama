@@ -87,6 +87,16 @@ fn eq_distinguishes_pct_encoded_vs_decoded_path() {
 }
 
 #[test]
+fn path_ref_string_eq_preserves_encoded_slash_boundary() {
+    let uri = Uri::parse("https://example.com/a%2Fb").unwrap();
+    let path = uri.path_ref_or_root();
+
+    assert_eq!(path, "/a%2Fb");
+    assert_ne!(path, "/a/b");
+    assert_eq!(path.segment_count(), 1);
+}
+
+#[test]
 fn eq_ignores_host_case_via_domain_semantics() {
     // RFC 3986 §6.2.2.1: hosts are case-insensitive. Match what
     // `Domain` already does so `Uri` works as a routing-table key

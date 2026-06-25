@@ -311,34 +311,29 @@ impl PartialOrd for PathRef<'_> {
 impl PartialEq<str> for PathRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &str) -> bool {
-        path_ref_eq_str(*self, other)
+        self.eq(&PathRef::from_raw_str(other))
     }
 }
 
 impl PartialEq<&str> for PathRef<'_> {
     #[inline(always)]
     fn eq(&self, other: &&str) -> bool {
-        path_ref_eq_str(*self, other)
+        self.eq(&PathRef::from_raw_str(other))
     }
 }
 
 impl<'a> PartialEq<PathRef<'a>> for str {
     #[inline(always)]
     fn eq(&self, other: &PathRef<'a>) -> bool {
-        path_ref_eq_str(*other, self)
+        PathRef::from_raw_str(self).eq(other)
     }
 }
 
 impl<'a> PartialEq<PathRef<'a>> for &str {
     #[inline(always)]
     fn eq(&self, other: &PathRef<'a>) -> bool {
-        path_ref_eq_str(*other, self)
+        PathRef::from_raw_str(self).eq(other)
     }
-}
-
-#[inline]
-fn path_ref_eq_str(path: PathRef<'_>, other: &str) -> bool {
-    path.bytes == other.as_bytes() || percent_decode(path.bytes).eq(other.bytes())
 }
 
 impl Hash for PathRef<'_> {
