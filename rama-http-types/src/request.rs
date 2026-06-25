@@ -3,7 +3,7 @@ use std::fmt;
 use crate::Result;
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
-use rama_net::ClientIp;
+use rama_net::{ClientIp, uri::PathRouteInput};
 use rama_utils::macros::generate_set_and_with;
 
 /// Represents an HTTP request.
@@ -694,6 +694,12 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
 impl<B> ExtensionsRef for Request<B> {
     fn extensions(&self) -> &Extensions {
         &self.head.extensions
+    }
+}
+
+impl<B: Send + 'static> PathRouteInput for Request<B> {
+    fn path_ref(&self) -> rama_net::uri::PathRef<'_> {
+        self.uri().path_ref_or_root()
     }
 }
 

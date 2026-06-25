@@ -803,3 +803,110 @@ fn path_router_replaces_equivalent_prefix() {
     assert_eq!(*matched.value(), "new");
     assert_eq!(matched.matched_segment_count(), 1);
 }
+
+#[test]
+fn path_router_uses_trie_precedence_without_registration_order_bias() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/{tenant}/settings", "dynamic-settings");
+    router.insert_prefix("/acme", "literal");
+    router.insert_prefix("/acme/settings/security", "literal-security");
+    router.insert_prefix("/acme/{section}", "literal-section");
+
+    let matched = router
+        .match_prefix(p("/acme/settings/security/mfa"))
+        .unwrap();
+    assert_eq!(*matched.value(), "literal-security");
+    assert_eq!(matched.matched_segment_count(), 3);
+
+    let matched = router.match_prefix(p("/acme/settings/profile")).unwrap();
+    assert_eq!(*matched.value(), "literal-section");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("section"), Some("settings"));
+
+    let matched = router.match_prefix(p("/globex/settings/profile")).unwrap();
+    assert_eq!(*matched.value(), "dynamic-settings");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("tenant"), Some("globex"));
+
+    let matched = router.match_prefix(p("/acme/billing/cards")).unwrap();
+    assert_eq!(*matched.value(), "literal-section");
+    assert_eq!(matched.matched_segment_count(), 2);
+    assert_eq!(matched.captures().get("section"), Some("billing"));
+}
+
+#[test]
+fn path_router_middle_catch_all_reports_consumed_path_segments() {
+    use crate::uri::PathRouter;
+
+    let mut router = PathRouter::new();
+    router.insert_prefix("/files/{*rest}/raw", "raw");
+
+    let matched = router.match_prefix(p("/files/a/b/c/raw/tail")).unwrap();
+    assert_eq!(*matched.value(), "raw");
+    assert_eq!(matched.matched_segment_count(), 5);
+    assert_eq!(matched.captures().get("rest"), Some("a/b/c"));
+}
+
+#[tokio::test]
+async fn path_router_service_inserts_owned_captures() {
+    use crate::uri::{
+        PathRef, PathRouteCaptures, PathRouteInput, PathRouter, PathRouterError, Uri,
+    };
+    use rama_core::{
+        Service,
+        extensions::{Extensions, ExtensionsRef},
+        service::service_fn,
+    };
+
+    struct Input {
+        uri: Uri,
+        extensions: Extensions,
+    }
+
+    impl Input {
+        fn new(path: &str) -> Self {
+            Self {
+                uri: path.parse().unwrap(),
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for Input {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl PathRouteInput for Input {
+        fn path_ref(&self) -> PathRef<'_> {
+            self.uri.path_ref_or_root()
+        }
+    }
+
+    let mut router = PathRouter::new();
+    router.insert_prefix(
+        "/users/{id}/files/{*rest}",
+        service_fn(async |input: Input| {
+            let captures = input
+                .extensions()
+                .get_ref::<PathRouteCaptures>()
+                .expect("path captures");
+            Ok::<_, std::convert::Infallible>((
+                captures.get("id").map(str::to_owned),
+                captures.glob().map(str::to_owned),
+            ))
+        }),
+    );
+
+    let output = router
+        .serve(Input::new("/users/42/files/a/b/c"))
+        .await
+        .unwrap();
+    assert_eq!(output, (Some("42".to_owned()), None));
+
+    let err = router.serve(Input::new("/teams/42")).await.unwrap_err();
+    assert!(matches!(err, PathRouterError::NotFound));
+}

@@ -10,9 +10,14 @@
 use std::{
     borrow::Cow,
     cmp::Reverse,
+    fmt,
     hash::{Hash, Hasher},
 };
 
+use rama_core::{
+    Service,
+    extensions::{Extension, ExtensionsRef},
+};
 use rama_utils::collections::smallvec::SmallVec;
 
 use crate::byte_sets::is_pattern_name_byte;
@@ -395,7 +400,23 @@ fn pattern_segment_capture_free(segment: &PatternSegment) -> bool {
 /// trim, split, or allocate string lookup keys on the request path.
 #[derive(Debug, Clone)]
 pub struct PathRouter<T> {
+    root: PathRouteNode<T>,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PathRouteNode<T> {
     routes: Vec<PathRoute<T>>,
+    children: Vec<PathRouteEdge<T>>,
+}
+
+#[derive(Debug, Clone)]
+struct PathRouteEdge<T> {
+    segment: PatternSegment,
+    name_bytes: Vec<u8>,
+    opts: PathMatchOptions,
+    rank: PathRouterSegmentRank,
+    child: Box<PathRouteNode<T>>,
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +443,52 @@ pub struct PathRouteMatch<'a, 'p, T> {
     captures: PathCaptures<'a, 'p>,
 }
 
+/// Decoded captures inserted by [`PathRouter`]'s [`Service`] implementation.
+#[derive(Debug, Clone, Default, Extension)]
+#[extension(tags(net))]
+pub struct PathRouteCaptures {
+    params: Vec<(String, String)>,
+    glob: Option<String>,
+}
+
+/// Input hook used by [`PathRouter`]'s [`Service`] implementation.
+pub trait PathRouteInput: Send + 'static {
+    /// Path to route against.
+    fn path_ref(&self) -> PathRef<'_>;
+}
+
+/// Error produced by [`PathRouter`] when used as a [`Service`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathRouterError<E> {
+    /// No registered path matched the input.
+    NotFound,
+    /// The matched service failed.
+    Inner(E),
+}
+
+impl<E> fmt::Display for PathRouterError<E>
+where
+    E: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("no path route matched input"),
+            Self::Inner(err) => err.fmt(f),
+        }
+    }
+}
+
+impl<E> std::error::Error for PathRouterError<E> where E: std::error::Error + 'static {}
+
+impl<T> Default for PathRouteNode<T> {
+    fn default() -> Self {
+        Self {
+            routes: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+}
+
 impl<T> Default for PathRouter<T> {
     fn default() -> Self {
         Self::new()
@@ -432,19 +499,22 @@ impl<T> PathRouter<T> {
     /// Create an empty path router.
     #[must_use]
     pub fn new() -> Self {
-        Self { routes: Vec::new() }
+        Self {
+            root: PathRouteNode::default(),
+            len: 0,
+        }
     }
 
     /// Returns `true` when no routes are registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.routes.is_empty()
+        self.len == 0
     }
 
     /// Number of registered routes.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.routes.len()
+        self.len
     }
 
     /// Insert a prefix route using default [`PathMatchOptions`].
@@ -470,7 +540,42 @@ impl<T> PathRouter<T> {
         let segment_count = pattern.segment_count();
         let specificity = path_router_specificity(&pattern);
 
-        if let Some(route) = self
+        let mut node = &mut self.root;
+        for (segment, rank) in pattern
+            .segments
+            .iter()
+            .cloned()
+            .zip(specificity.iter().copied())
+        {
+            let child_idx = if let Some(idx) = node.children.iter().position(|edge| {
+                edge.opts == pattern.opts
+                    && pattern_segments_eq(
+                        &edge.segment,
+                        &edge.name_bytes,
+                        &segment,
+                        &pattern.name_bytes,
+                        pattern.opts.ignore_ascii_case,
+                    )
+            }) {
+                idx
+            } else {
+                let idx = node.children.partition_point(|edge| edge.rank >= rank);
+                node.children.insert(
+                    idx,
+                    PathRouteEdge {
+                        segment,
+                        name_bytes: pattern.name_bytes.clone(),
+                        opts: pattern.opts,
+                        rank,
+                        child: Box::default(),
+                    },
+                );
+                idx
+            };
+            node = &mut node.children[child_idx].child;
+        }
+
+        if let Some(route) = node
             .routes
             .iter_mut()
             .find(|route| route.pattern == pattern)
@@ -478,11 +583,10 @@ impl<T> PathRouter<T> {
             return Some(std::mem::replace(&mut route.value, value));
         }
 
-        let pos = self.routes.partition_point(|route| {
-            route.segment_count > segment_count
-                || (route.segment_count == segment_count && route.specificity >= specificity)
-        });
-        self.routes.insert(
+        let pos = node
+            .routes
+            .partition_point(|route| route.specificity >= specificity);
+        node.routes.insert(
             pos,
             PathRoute {
                 pattern,
@@ -491,19 +595,124 @@ impl<T> PathRouter<T> {
                 value,
             },
         );
+        self.len += 1;
         None
     }
 
     /// Match `path` against the most specific registered prefix.
     #[must_use]
     pub fn match_prefix<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
-        self.routes.iter().find_map(|route| {
-            route.pattern.captures(path).map(|captures| PathRouteMatch {
-                value: &route.value,
-                matched_segment_count: route.segment_count,
-                captures,
-            })
+        let segments: SmallVec<[&'p [u8]; 8]> = path
+            .segments()
+            .map(|segment| segment.encoded_bytes_unchecked())
+            .collect();
+        let segments = prefix_content_segments(&segments);
+        let matched = self.root.match_prefix(segments, 0)?;
+        let captures = matched.route.pattern.captures(path)?;
+        Some(PathRouteMatch {
+            value: &matched.route.value,
+            matched_segment_count: matched.consumed,
+            captures,
         })
+    }
+}
+
+impl<Input, T> Service<Input> for PathRouter<T>
+where
+    Input: ExtensionsRef + PathRouteInput + Send + 'static,
+    T: Service<Input>,
+{
+    type Output = T::Output;
+    type Error = PathRouterError<T::Error>;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let Some((service, captures)) = self.match_service(input.path_ref()) else {
+            return Err(PathRouterError::NotFound);
+        };
+        if !captures.is_empty() {
+            input.extensions().insert(captures);
+        }
+        service.serve(input).await.map_err(PathRouterError::Inner)
+    }
+}
+
+impl<T> PathRouter<T> {
+    fn match_service<'a>(&'a self, path: PathRef<'_>) -> Option<(&'a T, PathRouteCaptures)> {
+        let matched = self.match_prefix(path)?;
+        let captures = PathRouteCaptures::from_captures(matched.captures());
+        Some((matched.value(), captures))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PathRouteCandidate<'a, T> {
+    route: &'a PathRoute<T>,
+    consumed: usize,
+}
+
+impl<T> PathRouteNode<T> {
+    fn match_prefix<'a>(
+        &'a self,
+        segments: &[&[u8]],
+        index: usize,
+    ) -> Option<PathRouteCandidate<'a, T>> {
+        let mut best = self.routes.first().map(|route| PathRouteCandidate {
+            route,
+            consumed: index,
+        });
+
+        for edge in &self.children {
+            match &edge.segment {
+                PatternSegment::Normal { elems, ambiguity } => {
+                    let Some(segment) = segments.get(index) else {
+                        continue;
+                    };
+                    let mut sink = Sink::Ignore;
+                    if !match_segment(elems, *ambiguity, segment, edge.opts, &mut sink) {
+                        continue;
+                    }
+                    if let Some(candidate) = edge.child.match_prefix(segments, index + 1) {
+                        best = best_route(best, candidate);
+                    }
+                }
+                PatternSegment::CatchAll | PatternSegment::NamedCatchAll { .. } => {
+                    for next in index + 1..=segments.len() {
+                        if let Some(candidate) = edge.child.match_prefix(segments, next) {
+                            best = best_route(best, candidate);
+                        }
+                    }
+                }
+            }
+        }
+
+        best
+    }
+}
+
+fn best_route<'a, T>(
+    current: Option<PathRouteCandidate<'a, T>>,
+    candidate: PathRouteCandidate<'a, T>,
+) -> Option<PathRouteCandidate<'a, T>> {
+    let Some(current) = current else {
+        return Some(candidate);
+    };
+    if candidate.consumed > current.consumed
+        || (candidate.consumed == current.consumed
+            && (candidate.route.segment_count > current.route.segment_count
+                || (candidate.route.segment_count == current.route.segment_count
+                    && candidate.route.specificity > current.route.specificity)))
+    {
+        Some(candidate)
+    } else {
+        Some(current)
+    }
+}
+
+fn prefix_content_segments<'s, 'p>(segments: &'s [&'p [u8]]) -> &'s [&'p [u8]] {
+    match segments {
+        [b""] => &segments[..0],
+        [head @ .., b""] => head,
+        _ => segments,
     }
 }
 
@@ -530,6 +739,46 @@ impl<'a, 'p, T> PathRouteMatch<'a, 'p, T> {
     #[must_use]
     pub fn into_parts(self) -> (&'a T, usize, PathCaptures<'a, 'p>) {
         (self.value, self.matched_segment_count, self.captures)
+    }
+}
+
+impl PathRouteCaptures {
+    fn from_captures(captures: &PathCaptures<'_, '_>) -> Self {
+        Self {
+            params: captures
+                .iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+            glob: captures.glob().map(str::to_owned),
+        }
+    }
+
+    /// The decoded value captured under `name`, or `None` if absent.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Iterator over decoded named captures in match order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+    }
+
+    /// The decoded anonymous `{*}` capture, if present.
+    #[must_use]
+    pub fn glob(&self) -> Option<&str> {
+        self.glob.as_deref()
+    }
+
+    /// `true` when no named param and no anonymous glob were captured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty() && self.glob.is_none()
     }
 }
 
