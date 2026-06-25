@@ -103,11 +103,11 @@ macro_rules! impl_authorizer_slice {
                 Some(authorizer) => authorizer.authorize(credentials).await,
                 None => {
                     tracing::debug!(
-                        "no authorizers in array found: assume all credentials are fine incl... this one... (fail-open)"
+                        "no authorizers in array found: rejecting credentials (fail-closed)"
                     );
                     return AuthorizeResult {
                         credentials,
-                        result: Ok(None),
+                        result: Err(Self::Error::default()),
                     };
                 }
             };
@@ -130,12 +130,18 @@ macro_rules! impl_authorizer_slice {
     };
 }
 
-impl<A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for Vec<A> {
+impl<A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for Vec<A>
+where
+    A::Error: Default,
+{
     type Error = A::Error;
     impl_authorizer_slice!();
 }
 
-impl<const N: usize, A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for [A; N] {
+impl<const N: usize, A: Authorizer<C>, C: Send + Sync + 'static> Authorizer<C> for [A; N]
+where
+    A::Error: Default,
+{
     type Error = A::Error;
     impl_authorizer_slice!();
 }
