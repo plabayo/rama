@@ -290,6 +290,20 @@ mod test {
     }
 
     #[test]
+    fn route_pattern_normalization_preserves_root() {
+        for root in ["", "/", " / "] {
+            let pat = compile_pattern(root);
+            assert!(pat.is_match(PathRef::from_raw_str("/")));
+            assert!(!pat.is_match(PathRef::from_raw_str("")));
+            assert!(!pat.is_match(PathRef::from_raw_str("/users")));
+        }
+
+        let users = compile_pattern(" /users/ ");
+        assert!(users.is_match(PathRef::from_raw_str("/users")));
+        assert!(!users.is_match(PathRef::from_raw_str("/users/")));
+    }
+
+    #[test]
     fn test_deserialize_uri_params() {
         let params = UriParams {
             params: Some({
