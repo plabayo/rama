@@ -323,9 +323,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
+checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -1187,9 +1187,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.102"
+version = "0.3.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03d04c30968dffe80775bd4d7fb676131cd04a1fb46d2686dbffbaec2d9dfd31"
+checksum = "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -1768,9 +1768,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "psl"
-version = "2.1.214"
+version = "2.1.215"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9124f6ba3f3aea75e4918fc86c76adfba8c9d289ab36f926f0b6ce4987a9e6a9"
+checksum = "caff7403e06671f170c65dc7bf475ed31d6e108c7e0d2440fb4df8ba56cfded6"
 dependencies = [
  "psl-types",
 ]
@@ -1841,6 +1841,7 @@ dependencies = [
  "rama-net-apple-networkextension",
  "rama-socks5",
  "rama-tcp",
+ "rama-tls",
  "rama-tls-boring",
  "rama-tls-rustls",
  "rama-tower",
@@ -1924,7 +1925,9 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "openssl-probe",
+ "rama-boring",
  "rama-core",
+ "rama-net",
  "rama-utils",
  "rcgen",
  "rustls-pki-types",
@@ -2042,6 +2045,7 @@ dependencies = [
  "rama-http-macros",
  "rama-http-types",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rand",
  "rawzip",
@@ -2064,6 +2068,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-tcp",
+ "rama-tls",
  "rama-unix",
  "rama-utils",
  "tokio",
@@ -2155,6 +2160,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rand",
  "serde",
@@ -2183,14 +2189,11 @@ dependencies = [
  "const_format",
  "csv",
  "flume",
- "hex",
  "idna",
  "ipnet",
  "itertools 0.15.0",
  "itoa",
- "jiff",
  "libc",
- "md5",
  "memchr",
  "nom 8.0.0",
  "parking_lot",
@@ -2203,7 +2206,6 @@ dependencies = [
  "rama-utils",
  "serde",
  "serde_html_form",
- "sha2",
  "socket2",
  "tokio",
  "tokio-util",
@@ -2257,6 +2259,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-tls"
+version = "0.3.0-rc1"
+dependencies = [
+ "ahash",
+ "bytes",
+ "flume",
+ "hex",
+ "itertools 0.15.0",
+ "jiff",
+ "md5",
+ "nom 8.0.0",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-core",
+ "rama-crypto",
+ "rama-net",
+ "rama-utils",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "rama-tls-boring"
 version = "0.3.0-rc1"
 dependencies = [
@@ -2271,6 +2297,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-net",
+ "rama-tls",
  "rama-ua",
  "rama-utils",
  "tokio",
@@ -2285,6 +2312,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rcgen",
  "rustls",
@@ -2316,6 +2344,7 @@ dependencies = [
  "rama-core",
  "rama-http",
  "rama-net",
+ "rama-tls",
  "rama-utils",
  "rand",
  "serde",
@@ -3184,9 +3213,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.23.3"
+version = "1.23.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
+checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -3237,9 +3266,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.125"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ddb3f79143bced6de84270411622a2699cee572fc0875aeaf1e7867cf9fca1a"
+checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -3250,9 +3279,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.125"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e21a184b13fb19e157296e2c46056aec9092264fab83e4ba59e68c61b323c3d"
+checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -3260,9 +3289,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.125"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fecefd9c35bd935a20fc3fc344b5f29138961e4f47fb03297d88f2587afb5ebd"
+checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -3273,9 +3302,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.125"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23939e44bb9a5d7576fa2b563dc2e136628f1224e88a8deed09e04858b77871f"
+checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
 dependencies = [
  "unicode-ident",
 ]
