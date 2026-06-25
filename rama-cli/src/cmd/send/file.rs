@@ -110,6 +110,6 @@ mod tests {
     fn extract_path_rejects_encoded_separator_inside_segment() {
         let uri: Uri = "file:///tmp/a%2Fb/report.txt".parse().unwrap();
 
-        assert!(extract_path(&uri).is_err());
+        let _ = extract_path(&uri).unwrap_err();
     }
 }

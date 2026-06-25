@@ -184,7 +184,10 @@ pub(super) fn encode_fragment<T: IntoUriComponent>(input: T) -> BytesMut {
 /// Append `input` to `target`, percent-encoding under the segment
 /// policy. Used by [`PathMut::push_segment`](super::PathMut::push_segment)
 /// where we always extend (no zero-copy opportunity).
-pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: impl IntoUriComponent) {
+pub(super) fn extend_encoded_segment<T: IntoUriComponent + ?Sized>(
+    target: &mut BytesMut,
+    input: &T,
+) {
     if input.is_already_uri_component() {
         let bytes = input.as_uri_component_bytes();
         extend_encoded_preserving_pct(target, &bytes, is_segment_byte);
@@ -200,7 +203,7 @@ pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: impl IntoUriC
 /// Append `input` to `target`, percent-encoding under the pair policy.
 /// Used by [`QueryMut::push_pair`](super::QueryMut::push_pair) /
 /// [`QueryMut::push_key`](super::QueryMut::push_key).
-pub(super) fn extend_encoded_pair(target: &mut BytesMut, input: impl IntoUriComponent) {
+pub(super) fn extend_encoded_pair<T: IntoUriComponent + ?Sized>(target: &mut BytesMut, input: &T) {
     let bytes = input.as_uri_component_bytes();
     for chunk in percent_encode(&bytes, PAIR_ENCODE_SET) {
         target.extend_from_slice(chunk.as_bytes());
