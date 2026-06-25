@@ -157,6 +157,12 @@ fn encode<T: IntoUriComponent, F: Fn(&[u8]) -> bool>(
 /// avoids the copy when the bytes are already path-legal.
 #[inline]
 pub(super) fn encode_path<T: IntoUriComponent>(input: T) -> BytesMut {
+    if input.is_already_uri_component() {
+        let bytes = input.as_uri_component_bytes();
+        let mut out = BytesMut::with_capacity(bytes.len());
+        extend_encoded_path(&mut out, &bytes);
+        return out;
+    }
     encode(input, path_needs_encoding, PATH_ENCODE_SET)
 }
 
@@ -178,8 +184,15 @@ pub(super) fn encode_fragment<T: IntoUriComponent>(input: T) -> BytesMut {
 /// Append `input` to `target`, percent-encoding under the segment
 /// policy. Used by [`PathMut::push_segment`](super::PathMut::push_segment)
 /// where we always extend (no zero-copy opportunity).
-pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: &[u8]) {
-    for chunk in percent_encode(input, SEGMENT_ENCODE_SET) {
+pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: impl IntoUriComponent) {
+    if input.is_already_uri_component() {
+        let bytes = input.as_uri_component_bytes();
+        extend_encoded_preserving_pct(target, &bytes, is_segment_byte);
+        return;
+    }
+
+    let bytes = input.as_uri_component_bytes();
+    for chunk in percent_encode(&bytes, SEGMENT_ENCODE_SET) {
         target.extend_from_slice(chunk.as_bytes());
     }
 }
@@ -187,8 +200,9 @@ pub(super) fn extend_encoded_segment(target: &mut BytesMut, input: &[u8]) {
 /// Append `input` to `target`, percent-encoding under the pair policy.
 /// Used by [`QueryMut::push_pair`](super::QueryMut::push_pair) /
 /// [`QueryMut::push_key`](super::QueryMut::push_key).
-pub(super) fn extend_encoded_pair(target: &mut BytesMut, input: &[u8]) {
-    for chunk in percent_encode(input, PAIR_ENCODE_SET) {
+pub(super) fn extend_encoded_pair(target: &mut BytesMut, input: impl IntoUriComponent) {
+    let bytes = input.as_uri_component_bytes();
+    for chunk in percent_encode(&bytes, PAIR_ENCODE_SET) {
         target.extend_from_slice(chunk.as_bytes());
     }
 }

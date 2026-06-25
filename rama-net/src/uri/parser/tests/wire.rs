@@ -3,7 +3,7 @@
 use rama_core::bytes::BytesMut;
 
 use super::parse_graceful;
-use crate::uri::{QueryRef, Uri, WireError};
+use crate::uri::{PathRef, QueryRef, Uri, WireError};
 
 fn buf() -> BytesMut {
     BytesMut::new()
@@ -87,6 +87,18 @@ fn origin_form_encodes_owned_raw_query_component_text() {
     assert_eq!(
         write_origin(&uri).unwrap(),
         "/p?a=1%0D%0AInjected:%20yes%20%23frag",
+    );
+}
+
+#[test]
+fn origin_form_direct_writers_preserve_valid_pct_and_escape_raw_text() {
+    let mut uri: Uri = parse_graceful("/old").unwrap();
+    uri.set_path(PathRef::from_raw_str("/raw space/%2F/%zz/%A"));
+    uri.set_query(QueryRef::from_raw_str("q=%2F&bad=%zz&tail=%A").into_owned());
+
+    assert_eq!(
+        write_origin(&uri).unwrap(),
+        "/raw%20space/%2F/%25zz/%25A?q=%2F&bad=%25zz&tail=%25A",
     );
 }
 

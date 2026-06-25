@@ -40,9 +40,9 @@ impl<'a> QueryMut<'a> {
         value: impl IntoUriComponent,
     ) -> &mut Self {
         let buf = self.buf_for_append();
-        encode::extend_encoded_pair(buf, &name.as_uri_component_bytes());
+        encode::extend_encoded_pair(buf, name);
         buf.extend_from_slice(b"=");
-        encode::extend_encoded_pair(buf, &value.as_uri_component_bytes());
+        encode::extend_encoded_pair(buf, value);
         self
     }
 
@@ -54,7 +54,7 @@ impl<'a> QueryMut<'a> {
     )]
     pub fn push_key(&mut self, name: impl IntoUriComponent) -> &mut Self {
         let buf = self.buf_for_append();
-        encode::extend_encoded_pair(buf, &name.as_uri_component_bytes());
+        encode::extend_encoded_pair(buf, name);
         self
     }
 

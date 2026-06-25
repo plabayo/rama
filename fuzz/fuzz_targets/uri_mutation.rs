@@ -37,7 +37,6 @@ fn exercise_views(uri: &Uri) {
 
     if let Some(path) = uri.path() {
         drop(path.as_encoded_str());
-        drop(path.as_decoded_str());
         drop(path.trimmed_slashes().as_encoded_str());
         for segment in path.segments() {
             drop(segment.as_encoded_str());

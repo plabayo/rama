@@ -48,11 +48,10 @@ impl<'a> PathMut<'a> {
         reason = "by-value matches IntoUriComponent's signature on sibling setters; this impl only borrows because percent_encode can't consume its input"
     )]
     pub fn push_segment(&mut self, segment: impl IntoUriComponent) -> &mut Self {
-        let bytes = segment.as_uri_component_bytes();
         if !self.owned.path.ends_with(b"/") {
             self.owned.path.extend_from_slice(b"/");
         }
-        encode::extend_encoded_segment(&mut self.owned.path, &bytes);
+        encode::extend_encoded_segment(&mut self.owned.path, segment);
         self
     }
 

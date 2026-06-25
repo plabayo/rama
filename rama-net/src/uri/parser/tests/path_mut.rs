@@ -1,7 +1,7 @@
 //! `Uri::path_mut()` — RAII guard for incremental path mutation.
 
 use super::parse_graceful;
-use crate::uri::{PathMatchOptions, Uri};
+use crate::uri::{PathMatchOptions, PathRef, Uri};
 
 // ----------------------------------------------------------------------
 // push_segment — basic shapes
@@ -110,6 +110,19 @@ fn push_segment_encodes_percent_literal() {
     let mut uri: Uri = parse_graceful("/p").unwrap();
     uri.path_mut().push_segment("a%2Fb");
     assert_eq!(uri.to_string(), "/p/a%252Fb");
+}
+
+#[test]
+fn push_segment_accepts_typed_path_segment_as_encoded_component_input() {
+    let segment = PathRef::from_raw_str("/a b/%2F/%zz/%A")
+        .segments()
+        .nth(1)
+        .unwrap();
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+
+    uri.path_mut().push_segment(segment);
+
+    assert_eq!(uri.to_string(), "/p/%2F");
 }
 
 #[test]

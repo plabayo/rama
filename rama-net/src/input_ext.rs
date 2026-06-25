@@ -221,3 +221,52 @@ impl<T: AuthorityInputExt + ProtocolInputExt + ExtensionsRef + ?Sized> Connector
     for T
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PathInputExt, UriInputExt};
+
+    use crate::uri::{PathPattern, Uri};
+
+    #[test]
+    fn uri_input_ref_forwards_to_inner_uri() {
+        let uri: Uri = "https://example.com/a%2Fb?q=1".parse().unwrap();
+        let uri_ref = &uri;
+        let forwarded = <&Uri as UriInputExt>::uri(&uri_ref);
+
+        assert_eq!(forwarded.path_ref_or_root(), "/a%2Fb");
+        assert_ne!(forwarded.path_ref_or_root(), "/a/b");
+    }
+
+    #[test]
+    fn path_input_ref_forwards_to_inner_path() {
+        let uri: Uri = "https://example.com/a%2Fb?q=1".parse().unwrap();
+        let uri_ref = &uri;
+        let forwarded = <&Uri as PathInputExt>::path_ref(&uri_ref);
+
+        assert_eq!(uri.path_ref(), "/a%2Fb");
+        assert_eq!(forwarded, "/a%2Fb");
+        assert_ne!(forwarded, "/a/b");
+    }
+
+    #[test]
+    fn path_input_for_uri_uses_root_fallback() {
+        let uri: Uri = "https://example.com".parse().unwrap();
+
+        assert_eq!(uri.path_ref(), "/");
+    }
+
+    #[test]
+    fn uri_pattern_helpers_route_through_typed_path() {
+        let uri: Uri = "https://example.com/api/acme/widgets".parse().unwrap();
+        let pattern = PathPattern::new("/api/{tenant}/widgets");
+        let miss = PathPattern::new("/api/{tenant}/orders");
+
+        assert!(uri.is_pattern_match(&pattern));
+        assert!(!uri.is_pattern_match(&miss));
+
+        let captures = uri.pattern_captures(&pattern).unwrap();
+        assert_eq!(captures.get("tenant"), Some("acme"));
+        assert!(uri.pattern_captures(&miss).is_none());
+    }
+}

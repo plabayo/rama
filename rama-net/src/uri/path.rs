@@ -21,9 +21,10 @@ use super::component_input::IntoUriComponent;
 /// Borrowed view of a URI path.
 ///
 /// The backing bytes preserve the parsed path representation. Use
-/// [`as_encoded_str`](Self::as_encoded_str) or
-/// [`as_decoded_str`](Self::as_decoded_str) to explicitly choose the
-/// presentation you need. Iterate segments via [`PathRef::segments`].
+/// [`as_encoded_str`](Self::as_encoded_str) for a whole-path presentation.
+/// Decode path data segment-by-segment via [`PathRef::segments`] and
+/// [`PathSegment::as_decoded_str`] so encoded delimiters such as `%2F`
+/// cannot be confused with structural `/` separators.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct PathRef<'a> {
     pub(crate) bytes: &'a [u8],
@@ -61,12 +62,6 @@ impl<'a> PathRef<'a> {
     #[inline(always)]
     pub fn is_empty(self) -> bool {
         self.bytes.is_empty()
-    }
-
-    /// Percent-decoded path.
-    #[must_use]
-    pub fn as_decoded_str(self) -> Cow<'a, str> {
-        percent_decode(self.bytes).decode_utf8_lossy()
     }
 
     /// Path view with every leading and trailing `/` removed.

@@ -21,6 +21,9 @@ mod sealed {
         /// format on demand and return `Cow::Owned`.
         fn as_uri_component_bytes(&self) -> Cow<'_, [u8]>;
         fn into_uri_component_bytes_mut(self) -> BytesMut;
+        fn is_already_uri_component(&self) -> bool {
+            false
+        }
     }
 }
 
@@ -127,6 +130,9 @@ impl sealed::Sealed for super::path::PathRef<'_> {
     fn into_uri_component_bytes_mut(self) -> BytesMut {
         BytesMut::from(self.as_encoded_str().as_ref())
     }
+    fn is_already_uri_component(&self) -> bool {
+        true
+    }
 }
 impl IntoUriComponent for super::path::PathRef<'_> {}
 
@@ -139,6 +145,9 @@ impl sealed::Sealed for super::path::PathSegment<'_> {
     }
     fn into_uri_component_bytes_mut(self) -> BytesMut {
         BytesMut::from(self.as_encoded_str().as_ref())
+    }
+    fn is_already_uri_component(&self) -> bool {
+        true
     }
 }
 impl IntoUriComponent for super::path::PathSegment<'_> {}

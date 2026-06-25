@@ -45,7 +45,6 @@ fuzz_target!(|data: &[u8]| {
             black_box(path == roundtrip);
             black_box(path.cmp(&roundtrip));
             black_box((hash(path), hash(roundtrip)));
-            drop(path.as_decoded_str());
             drop(path.trimmed_slashes().as_encoded_str());
             black_box((
                 path.segment_count(),
