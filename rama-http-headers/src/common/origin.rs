@@ -123,12 +123,16 @@ impl Origin {
         let bytes = Bytes::from(format!("{}://{}{}", scheme, host, MaybePort(port.into())));
         HeaderValue::from_maybe_shared(bytes)
             .ok()
-            .and_then(|val| Self::try_from_value(&val))
+            .and_then(|val| Self::try_from_header_value(&val))
             .ok_or(InvalidOrigin)
     }
 
-    // Used in AccessControlAllowOrigin
-    pub(super) fn try_from_value(value: &HeaderValue) -> Option<Self> {
+    /// Try to parse an `Origin` header value.
+    ///
+    /// Returns `None` for invalid origins, including values with a path other
+    /// than `/`, query, or fragment.
+    #[must_use]
+    pub fn try_from_header_value(value: &HeaderValue) -> Option<Self> {
         OriginOrNull::try_from_value(value).map(Origin)
     }
 }
@@ -215,6 +219,18 @@ mod tests {
 
         let headers = test_encode(origin);
         assert_eq!(headers["origin"], s);
+    }
+
+    #[test]
+    fn parse_from_header_value() {
+        let value = HeaderValue::from_static("http://localhost:8000");
+        let origin = Origin::try_from_header_value(&value).unwrap();
+
+        assert_eq!(origin.scheme(), "http");
+        assert_eq!(origin.hostname(), "localhost");
+        assert_eq!(origin.port(), Some(8000));
+
+        assert!(Origin::try_from_header_value(&HeaderValue::from_static("localhost")).is_none());
     }
 
     #[test]
