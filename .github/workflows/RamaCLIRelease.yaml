@@ -35,9 +35,14 @@ env:
   RUST_TOOLCHAIN: stable
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
 
+permissions:
+  contents: read
+
 jobs:
   build-release-linux:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: full
@@ -55,9 +60,9 @@ jobs:
           - name: arm-unknown-linux-gnueabihf
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -66,38 +71,41 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           targets: ${{ matrix.target.name }}
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           cache-bin: false
 
       - name: Install Zig
-        if: contains(matrix.target, 'unknown-linux-musl')
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: contains(matrix.target.name, 'unknown-linux-musl')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
 
       - name: Install cargo-zigbuild
-        if: contains(matrix.target, 'unknown-linux-musl')
-        run: cargo install cargo-zigbuild --locked
+        if: contains(matrix.target.name, 'unknown-linux-musl')
+        run: cargo install --version 0.23.0 --locked cargo-zigbuild
 
       - name: Install cross
-        if: contains(matrix.target , 'unknown-linux-musl') == false
+        if: contains(matrix.target.name, 'unknown-linux-musl') == false
         run: |
           cargo install --git https://github.com/cross-rs/cross --rev 1b8cf50d20180c1a394099e608141480f934b7f7 cross
 
       - name: Install bindgen-cli
         run: |
-          cargo install --force --locked bindgen-cli
+          cargo install --force --version 0.72.1 --locked bindgen-cli
 
-      - name: Build release
+      - name: Build release (musl)
+        if: contains(matrix.target.name, 'unknown-linux-musl')
         timeout-minutes: 120
         run: |
-          if [[ "${{ matrix.target.name }}" == *"unknown-linux-musl"* ]]; then
-            cargo zigbuild --release -p rama-cli --target "${{ matrix.target.name }}"
-          else
-            cross build --release -p rama-cli --target "${{ matrix.target.name }}"
-          fi
+          cargo zigbuild --release -p rama-cli --target "${{ matrix.target.name }}"
+
+      - name: Build release (cross)
+        if: contains(matrix.target.name, 'unknown-linux-musl') == false
+        timeout-minutes: 120
+        run: |
+          cross build --release -p rama-cli --target "${{ matrix.target.name }}"
 
       - name: Package
         run: |
@@ -109,7 +117,7 @@ jobs:
           sha256sum rama.${{ matrix.target.name }}.tar.xz > rama.${{ matrix.target.name }}.tar.xz.sha256
 
       - name: Upload Github Assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -121,6 +129,8 @@ jobs:
 
   build-release-macos:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
+    permissions:
+      contents: write
     runs-on: macos-latest
     env:
       RUST_BACKTRACE: full
@@ -131,9 +141,9 @@ jobs:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -141,21 +151,21 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install gnu-tar
-          echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> $GITHUB_PATH
+          echo "/usr/local/opt/gnu-tar/libexec/gnubin" >> "$GITHUB_PATH"
 
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
           cache-bin: false
 
       - name: Build and Sign
         run: |
-          bash ./rama-cli/scripts/build_and_sign_macos.sh ${{ matrix.target }}
+          bash ./rama-cli/scripts/build_and_sign_macos.sh "${{ matrix.target }}"
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -174,7 +184,7 @@ jobs:
           shasum -a 256 rama.${{ matrix.target }}.tar.xz > rama.${{ matrix.target }}.tar.xz.sha256
 
       - name: Upload Github Assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -186,6 +196,8 @@ jobs:
 
   build-release-windows:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
+    permissions:
+      contents: write
     runs-on: windows-latest
     env:
       RUST_BACKTRACE: full
@@ -196,16 +208,16 @@ jobs:
           - x86_64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
           cache-bin: false
@@ -217,12 +229,12 @@ jobs:
 
       - name: upload-unsigned-artifact
         id: upload-unsigned-artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: "target/${{ matrix.target }}/release/rama.exe"
 
       - id: optional_step_id
-        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
         with:
           api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
           organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
@@ -251,7 +263,7 @@ jobs:
           Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
 
       - name: Upload Github Assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -263,6 +275,8 @@ jobs:
 
   build-release-windows-arm:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
+    permissions:
+      contents: write
     runs-on: windows-11-arm
     env:
       RUST_BACKTRACE: full
@@ -273,16 +287,16 @@ jobs:
           - aarch64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
           cache-bin: false
@@ -294,12 +308,12 @@ jobs:
 
       - name: upload-unsigned-artifact
         id: upload-unsigned-artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: "target/${{ matrix.target }}/release/rama.exe"
 
       - id: optional_step_id
-        uses: signpath/github-action-submit-signing-request@ced31329c0317e779dad2eec2a7c3bb46ea1343e # v1
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
         with:
           api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
           organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
@@ -328,7 +342,7 @@ jobs:
           Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
 
       - name: Upload Github Assets
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -343,13 +357,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Login to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           push: true
           tags: glendc/rama:latest,glendc/rama:${{ inputs.tag || github.ref_name }}
