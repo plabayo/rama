@@ -38,6 +38,14 @@ where
     }
 }
 
+// `Intercept` is much larger than the unit variants (it carries the full
+// `TransparentProxyFlowMeta`), but this value is short-lived: it is produced per
+// flow by the matcher and consumed immediately. Boxing it would add a per-flow
+// heap allocation on the hot path for no real benefit, so allow the size skew.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived per-flow value; boxing would add a hot-path allocation"
+)]
 pub enum FlowAction<S> {
     Passthrough,
     Blocked,

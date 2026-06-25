@@ -17,7 +17,7 @@ final class FFIAbiLayoutTests: XCTestCase {
     func testTransparentProxyMetadataLayouts() {
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyFlowEndpoint>.size, 24)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyFlowEndpoint>.alignment, 8)
-        XCTAssertEqual(MemoryLayout<RamaTransparentProxyFlowMeta>.size, 112)
+        XCTAssertEqual(MemoryLayout<RamaTransparentProxyFlowMeta>.size, 160)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyFlowMeta>.alignment, 8)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyNetworkRule>.size, 56)
         XCTAssertEqual(MemoryLayout<RamaTransparentProxyNetworkRule>.alignment, 8)

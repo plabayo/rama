@@ -51,6 +51,30 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_audit_token_bytes_len: usize,
     pub source_app_pid: i32,
     pub source_app_pid_is_set: bool,
+    /// Remote hostname the originating app connected to (the DNS name, not the
+    /// resolved IP), when the OS exposes it. `null` / `0` when absent.
+    pub remote_hostname_utf8: *const c_char,
+    /// Length of `remote_hostname_utf8`.
+    pub remote_hostname_utf8_len: usize,
+    /// Name of the network interface the flow egresses on (e.g. `en0`,
+    /// `utun4`), when known. `null` / `0` when absent.
+    pub local_interface_name_utf8: *const c_char,
+    /// Length of `local_interface_name_utf8`.
+    pub local_interface_name_utf8_len: usize,
+    /// Egress interface index. Only valid when `local_interface_index_is_set`.
+    pub local_interface_index: u32,
+    /// Whether `local_interface_index` is set.
+    pub local_interface_index_is_set: bool,
+    /// Egress interface type, as a [`NwInterfaceType`] discriminant. Only valid
+    /// when `local_interface_type_is_set`.
+    pub local_interface_type: u8,
+    /// Whether `local_interface_type` is set.
+    pub local_interface_type_is_set: bool,
+    /// Whether the app bound this flow to a specific interface. Only valid when
+    /// `is_bound_is_set`.
+    pub is_bound: bool,
+    /// Whether `is_bound` is set.
+    pub is_bound_is_set: bool,
 }
 
 #[repr(u32)]
@@ -97,6 +121,16 @@ impl TransparentProxyFlowMeta {
             source_app_audit_token.as_ref().map(AuditToken::pid)
         };
 
+        let local_interface_type = if self.local_interface_type_is_set {
+            interface_type_from_u8(self.local_interface_type)
+        } else {
+            None
+        };
+        let local_interface_index = self
+            .local_interface_index_is_set
+            .then_some(self.local_interface_index);
+        let is_bound = self.is_bound_is_set.then_some(self.is_bound);
+
         Ok(tproxy::TransparentProxyFlowMeta::new(protocol)
             .maybe_with_remote_endpoint(
                 // SAFETY: pointer + length validity is guaranteed by caller contract.
@@ -125,7 +159,25 @@ impl TransparentProxyFlowMeta {
                 },
             )
             .maybe_with_source_app_audit_token(source_app_audit_token)
-            .maybe_with_source_app_pid(source_app_pid))
+            .maybe_with_source_app_pid(source_app_pid)
+            .maybe_with_remote_hostname(
+                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                unsafe {
+                    opt_utf8_to_boxed_str(self.remote_hostname_utf8, self.remote_hostname_utf8_len)
+                },
+            )
+            .maybe_with_local_interface_name(
+                // SAFETY: pointer + length validity is guaranteed by caller contract.
+                unsafe {
+                    opt_utf8_to_boxed_str(
+                        self.local_interface_name_utf8,
+                        self.local_interface_name_utf8_len,
+                    )
+                },
+            )
+            .maybe_with_local_interface_type(local_interface_type)
+            .maybe_with_local_interface_index(local_interface_index)
+            .maybe_with_is_bound(is_bound))
     }
 }
 
@@ -429,6 +481,21 @@ fn interface_type_to_u8(t: NwInterfaceType) -> u8 {
     }
 }
 
+/// Inverse of [`interface_type_to_u8`]: decode an FFI discriminant back into a
+/// [`NwInterfaceType`]. Returns `None` for unknown codes (fail-safe: the egress
+/// interface is simply treated as unknown rather than coerced). The Swift side
+/// is responsible for mapping `nw_interface_type_t` to these discriminants.
+fn interface_type_from_u8(raw: u8) -> Option<NwInterfaceType> {
+    match raw {
+        0 => Some(NwInterfaceType::Cellular),
+        1 => Some(NwInterfaceType::Loopback),
+        2 => Some(NwInterfaceType::Other),
+        3 => Some(NwInterfaceType::Wifi),
+        4 => Some(NwInterfaceType::Wired),
+        _ => None,
+    }
+}
+
 fn attribution_to_u8(a: NwAttribution) -> u8 {
     match a {
         NwAttribution::Developer => 0,
@@ -617,6 +684,20 @@ unsafe fn opt_utf8_to_non_empty_str(ptr: *const c_char, len: usize) -> Option<No
     raw.try_into().ok()
 }
 
+/// Copy a borrowed FFI string into an owned `Box<str>` (trimmed, non-empty),
+/// or `None` when the pointer is null / empty. Used for transient flow-meta
+/// strings the Swift side only keeps alive for the duration of the FFI call,
+/// so they must be copied out rather than borrowed.
+///
+/// # Safety
+///
+/// `ptr` must be null or readable for `len` bytes and contain UTF-8.
+unsafe fn opt_utf8_to_boxed_str(ptr: *const c_char, len: usize) -> Option<Box<str>> {
+    // SAFETY: pointer + length validity is guaranteed by caller contract.
+    let raw = unsafe { opt_utf8(ptr, len) }?;
+    Some(Box::from(raw))
+}
+
 /// # Safety
 ///
 /// `ptr` must be null or readable for `len` bytes and contain UTF-8.
@@ -660,14 +741,14 @@ mod tests {
 
     use crate::ffi::{BytesOwned, BytesOwnedView, BytesView};
     use crate::tproxy::{
-        self, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
+        self, NwInterfaceType, TransparentProxyFlowProtocol, TransparentProxyNetworkRule,
         TransparentProxyRuleProtocol,
     };
 
     use super::{
         NwEgressParameters, PromoteConfirmStatus, TransparentFlowEndpoint, TransparentProxyConfig,
         TransparentProxyFlowMeta, TransparentProxyInitConfig as FfiTransparentProxyInitConfig,
-        TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule,
+        TransparentProxyNetworkRule as FfiTransparentProxyNetworkRule, interface_type_from_u8,
     };
 
     #[test]
@@ -766,7 +847,7 @@ mod tests {
         assert_eq!(offset_of!(TransparentFlowEndpoint, host_utf8_len), 8);
         assert_eq!(offset_of!(TransparentFlowEndpoint, port), 16);
 
-        assert_eq!(size_of::<TransparentProxyFlowMeta>(), 112);
+        assert_eq!(size_of::<TransparentProxyFlowMeta>(), 160);
         assert_eq!(offset_of!(TransparentProxyFlowMeta, protocol), 0);
         assert_eq!(offset_of!(TransparentProxyFlowMeta, remote_endpoint), 8);
         assert_eq!(offset_of!(TransparentProxyFlowMeta, source_app_pid), 104);
@@ -774,6 +855,19 @@ mod tests {
             offset_of!(TransparentProxyFlowMeta, source_app_pid_is_set),
             108
         );
+        assert_eq!(
+            offset_of!(TransparentProxyFlowMeta, remote_hostname_utf8),
+            112
+        );
+        assert_eq!(
+            offset_of!(TransparentProxyFlowMeta, local_interface_name_utf8),
+            128
+        );
+        assert_eq!(
+            offset_of!(TransparentProxyFlowMeta, local_interface_index),
+            144
+        );
+        assert_eq!(offset_of!(TransparentProxyFlowMeta, is_bound), 151);
 
         assert_eq!(size_of::<FfiTransparentProxyNetworkRule>(), 56);
         assert_eq!(
@@ -914,6 +1008,16 @@ mod tests {
             source_app_audit_token_bytes_len: 0,
             source_app_pid: 4242,
             source_app_pid_is_set: true,
+            remote_hostname_utf8: ptr::null(),
+            remote_hostname_utf8_len: 0,
+            local_interface_name_utf8: ptr::null(),
+            local_interface_name_utf8_len: 0,
+            local_interface_index: 0,
+            local_interface_index_is_set: false,
+            local_interface_type: 0,
+            local_interface_type_is_set: false,
+            is_bound: false,
+            is_bound_is_set: false,
         };
 
         // SAFETY: every pointer field is null with matching len 0 above, so
@@ -921,6 +1025,12 @@ mod tests {
         let owned = unsafe { meta.as_owned_rust_type() }.expect("known protocol decodes");
         assert_eq!(owned.source_app_pid, Some(4242));
         assert!(owned.source_app_audit_token.is_none());
+        // Unset interface / hostname fields decode to None.
+        assert!(owned.remote_hostname.is_none());
+        assert!(owned.local_interface_name.is_none());
+        assert!(owned.local_interface_type.is_none());
+        assert!(owned.local_interface_index.is_none());
+        assert!(owned.is_bound.is_none());
     }
 
     /// Unknown protocol values must surface as `Err(raw)` so the FFI
@@ -949,9 +1059,76 @@ mod tests {
             source_app_audit_token_bytes_len: 0,
             source_app_pid: 0,
             source_app_pid_is_set: false,
+            remote_hostname_utf8: ptr::null(),
+            remote_hostname_utf8_len: 0,
+            local_interface_name_utf8: ptr::null(),
+            local_interface_name_utf8_len: 0,
+            local_interface_index: 0,
+            local_interface_index_is_set: false,
+            local_interface_type: 0,
+            local_interface_type_is_set: false,
+            is_bound: false,
+            is_bound_is_set: false,
         };
         // SAFETY: same as above.
         let result = unsafe { meta.as_owned_rust_type() };
         assert_eq!(result.unwrap_err(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn flow_meta_decodes_interface_and_hostname() {
+        let hostname = "api.github.com";
+        let iface = "utun4";
+        let meta = TransparentProxyFlowMeta {
+            protocol: TransparentProxyFlowProtocol::Tcp.as_u32(),
+            remote_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            local_endpoint: TransparentFlowEndpoint {
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+            },
+            source_app_signing_identifier_utf8: ptr::null(),
+            source_app_signing_identifier_utf8_len: 0,
+            source_app_bundle_identifier_utf8: ptr::null(),
+            source_app_bundle_identifier_utf8_len: 0,
+            source_app_audit_token_bytes: ptr::null(),
+            source_app_audit_token_bytes_len: 0,
+            source_app_pid: 0,
+            source_app_pid_is_set: false,
+            remote_hostname_utf8: hostname.as_ptr().cast(),
+            remote_hostname_utf8_len: hostname.len(),
+            local_interface_name_utf8: iface.as_ptr().cast(),
+            local_interface_name_utf8_len: iface.len(),
+            local_interface_index: 14,
+            local_interface_index_is_set: true,
+            // 2 == NwInterfaceType::Other (utun/VPN tunnels report as "other").
+            local_interface_type: 2,
+            local_interface_type_is_set: true,
+            is_bound: true,
+            is_bound_is_set: true,
+        };
+
+        // SAFETY: the two utf8 fields point at the `hostname`/`iface` str
+        // literals (valid for this scope, matching lengths); all other
+        // pointers are null with len 0.
+        let owned = unsafe { meta.as_owned_rust_type() }.expect("known protocol decodes");
+        assert_eq!(owned.remote_hostname.as_deref(), Some("api.github.com"));
+        assert_eq!(owned.local_interface_name.as_deref(), Some("utun4"));
+        assert_eq!(owned.local_interface_type, Some(NwInterfaceType::Other));
+        assert_eq!(owned.local_interface_index, Some(14));
+        assert_eq!(owned.is_bound, Some(true));
+    }
+
+    #[test]
+    fn flow_meta_unknown_interface_type_decodes_to_none() {
+        // An out-of-range interface-type discriminant must fail safe to None
+        // rather than coerce into a valid variant.
+        assert!(interface_type_from_u8(2).is_some());
+        assert!(interface_type_from_u8(5).is_none());
+        assert!(interface_type_from_u8(255).is_none());
     }
 }

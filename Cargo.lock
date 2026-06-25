@@ -3960,6 +3960,7 @@ name = "rama-net"
 version = "0.3.0-rc1"
 dependencies = [
  "ahash",
+ "bitflags 2.13.0",
  "const_format",
  "csv",
  "dial9-tokio-telemetry",

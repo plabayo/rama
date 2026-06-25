@@ -98,7 +98,7 @@ where
         let method = req.method().clone();
         let uri = req.uri().clone();
 
-        let (app_bundle_id, pid, info) = req
+        let (app_bundle_id, pid, info, egress_interface, remote_hostname) = req
             .extensions()
             .get_ref::<TransparentProxyFlowMeta>()
             .map(|meta| {
@@ -112,7 +112,13 @@ where
                         })
                     })
                     .unwrap_or_default();
-                (app_bundle_id, maybe_pid, info)
+                (
+                    app_bundle_id,
+                    maybe_pid,
+                    info,
+                    meta.local_interface_name.as_deref(),
+                    meta.remote_hostname.as_deref(),
+                )
             })
             .unwrap_or_default();
         let process_path_display = info.path.as_deref().map(|p| p.display());
@@ -123,6 +129,8 @@ where
             pid,
             ?process_path_display,
             ?process_args,
+            egress_interface,
+            remote_hostname,
             "demo traffic logger: http ingress: {method} {uri}: request",
         );
 

@@ -4,6 +4,9 @@
 //!
 //! - [App proxy provider — Implement a VPN client for a flow-oriented, custom VPN protocol](https://developer.apple.com/documentation/NetworkExtension/app-proxy-provider)
 //! - [NETransparentProxyProvider](https://developer.apple.com/documentation/NetworkExtension/NETransparentProxyProvider)
+//! - [`handleNewFlow(_:)` — return `false` "indicates that the flow should be closed"](https://developer.apple.com/documentation/networkextension/neappproxyprovider/handlenewflow(_:))
+//! - [Apple DTS: returning `false` can fail the originating process; set up rules so you're not passed the flow (TCP)](https://developer.apple.com/forums/thread/716594)
+//! - [Apple DTS: transparent proxy UDP flows / not-handling a flow](https://developer.apple.com/forums/thread/690456)
 //!
 //! ## Re-entrant traffic deadlocks in flow handlers
 //!
@@ -73,6 +76,30 @@
 //! [`NwEgressParameters::allow_system_proxy`]. Scope is the
 //! SystemConfiguration proxy table only — other NE providers and VPN
 //! tunnels in the stack are unaffected.
+//!
+//! ## Declining a flow closes it — passthrough needs rule-exclusion or splicing
+//!
+//! Returning `false` from `handleNewFlow` / `handleNewUDPFlow` is **not** a
+//! clean hand-off to the default route. Apple documents it as "the flow should
+//! be closed" and DTS confirms it "can cause the flow's originating process to
+//! fail" — by the time the provider is asked, the flow is already diverted, and
+//! declining tears it down rather than re-injecting it. Whether the originating
+//! app survives is *not* deterministic: it depends on whether the system can
+//! re-home the flow on another path at that instant (e.g. a healthy VPN tunnel
+//! vs one mid-reassert after sleep/wake), which is why this bites intermittently
+//! on the same host/OS rather than always. Refs: the `handleNewFlow` docs +
+//! Apple DTS forum threads linked under *Tech Notes* above.
+//!
+//! There are therefore only two reliable ways to leave a flow untouched:
+//!
+//! - **`excludedNetworkRules`** — the flow is never diverted to the provider,
+//!   so it takes the default path with zero involvement. Correct for static,
+//!   remote-endpoint/CIDR-shaped exclusions (private ranges, known VPN infra).
+//! - **claim it and splice** — return `true`, open the flow, and forward bytes
+//!   verbatim to a direct egress connection (no MITM). The only option when the
+//!   decision is per-flow / per-app and can't be expressed as a static rule.
+//!
+//! Do **not** rely on returning `false` as a passthrough mechanism.
 //!
 //! [`HostWithPort`]: rama_net::address::HostWithPort
 //! [`NwEgressParameters::preserve_original_meta_data`]: types::NwEgressParameters::preserve_original_meta_data

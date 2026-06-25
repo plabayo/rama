@@ -4,7 +4,7 @@ use rama::{
     Service,
     bytes::Bytes,
     net::{
-        address::{HostWithPort, ip::private::is_private_ip},
+        address::ip::{IpScopes, private::is_private_ip},
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
@@ -50,11 +50,38 @@ fn init(config: Option<&apple_ne::ffi::tproxy::TransparentProxyInitConfig>) -> b
     init_status
 }
 
+/// Domains spliced *up-front* (born-spliced: claim + direct Swift splice, no
+/// Rust hop), keyed on the OS-provided destination hostname (`remote_hostname`,
+/// available before any TLS peek). Distinct from `exclude_domains`, which
+/// promote *after* the peek. A few common, easy-to-drive names here let a soak
+/// run exercise the born-spliced TCP path on demand — just
+/// `curl https://example.com/` in a loop.
+const BORN_SPLICE_DOMAINS: &[&str] = &["example.com", "example.org", "example.net", "neverssl.com"];
+
+/// `true` if `host` equals or is a subdomain of any suffix in `suffixes`.
+fn host_matches_suffix(host: &str, suffixes: &[&str]) -> bool {
+    suffixes
+        .iter()
+        .any(|s| host == *s || host.strip_suffix(s).is_some_and(|p| p.ends_with('.')))
+}
+
 #[inline(always)]
-fn flow_action_for_remote_endpoint(
-    remote_endpoint: Option<&HostWithPort>,
+fn flow_action_for_flow(
+    meta: &TransparentProxyFlowMeta,
+    allow_born_splice: bool,
 ) -> TransparentProxyFlowAction {
-    let Some(target) = remote_endpoint else {
+    // Up-front born-splice by destination hostname (OS-provided, no TLS peek).
+    // TCP-ONLY: for TCP, `Passthrough` means claim + direct splice (born-spliced).
+    // For UDP, `Passthrough` is still a `return false` that Apple CLOSES, so the
+    // hostname trigger must NOT apply there — it would kill UDP/QUIC flows.
+    if allow_born_splice
+        && let Some(host) = meta.remote_hostname.as_deref()
+        && host_matches_suffix(host, BORN_SPLICE_DOMAINS)
+    {
+        return TransparentProxyFlowAction::Passthrough;
+    }
+
+    let Some(target) = meta.remote_endpoint.as_ref() else {
         return TransparentProxyFlowAction::Passthrough;
     };
 
@@ -66,6 +93,22 @@ fn flow_action_for_remote_endpoint(
         }
         _ => TransparentProxyFlowAction::Intercept,
     }
+}
+
+/// One line per new flow surfacing the Apple NE interface metadata: egress
+/// interface (name/type/index/bound) and remote hostname, when the OS exposes them.
+fn log_new_flow(protocol: &str, meta: &TransparentProxyFlowMeta) {
+    tracing::info!(
+        protocol,
+        remote = ?meta.remote_endpoint,
+        remote_hostname = meta.remote_hostname.as_deref(),
+        egress_interface = meta.local_interface_name.as_deref(),
+        egress_interface_type = ?meta.local_interface_type,
+        egress_interface_index = ?meta.local_interface_index,
+        is_bound = ?meta.is_bound,
+        bundle_identifier = meta.source_app_bundle_identifier.as_deref(),
+        "transparent proxy: new flow",
+    );
 }
 
 #[derive(Clone, Copy, Default)]
@@ -126,10 +169,17 @@ impl DemoTransparentProxyHandler {
             });
         }
 
-        let proxy_config = TransparentProxyConfig::new().with_rules(vec![
-            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
-            TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
-        ]);
+        let proxy_config = TransparentProxyConfig::new()
+            .with_rules(vec![
+                TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
+                TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
+            ])
+            // Exclude non-loopback private/local ranges (RFC1918, link-local,
+            // CGNAT) at the kernel level: they take the default route untouched
+            // and are never diverted to the provider. This is the *correct*
+            // way to passthrough whole ranges — declining a flow in the handler
+            // closes it instead. Loopback is intentionally left handled.
+            .exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
 
         let concurrency_limiter =
             Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
@@ -222,7 +272,8 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         >,
     > + Send
     + '_ {
-        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        log_new_flow("tcp", &meta);
+        let action = flow_action_for_flow(&meta, true); // TCP can born-splice
         let concurrency_limiter = self.concurrency_limiter.clone();
         let tcp_mitm_service = self.tcp_mitm_service.clone();
         std::future::ready(match action {
@@ -264,13 +315,16 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
         Output = FlowAction<impl rama::Service<apple_ne::UdpFlow, Output = (), Error = Infallible>>,
     > + Send
     + '_ {
+        log_new_flow("udp", &meta);
         // Pass through DNS (port 53) — letting the system resolver
         // hit the wire directly avoids a circular dependency between
         // the proxy service and the resolver it might itself use.
         if meta.remote_endpoint.as_ref().map(|e| e.port) == Some(53) {
             return std::future::ready(FlowAction::Passthrough);
         }
-        let action = flow_action_for_remote_endpoint(meta.remote_endpoint.as_ref());
+        // UDP cannot born-splice (no UDP splice path) — never trigger the
+        // hostname born-splice here, or UDP `Passthrough` would close the flow.
+        let action = flow_action_for_flow(&meta, false);
         let udp_service = self.udp_service.clone();
         std::future::ready(match action {
             TransparentProxyFlowAction::Intercept => FlowAction::Intercept {

@@ -294,6 +294,16 @@ fn make_tcp_meta_pin() -> (RamaTransparentProxyFlowMeta, &'static [u8]) {
         source_app_audit_token_bytes_len: 0,
         source_app_pid: 4242,
         source_app_pid_is_set: true,
+        remote_hostname_utf8: std::ptr::null(),
+        remote_hostname_utf8_len: 0,
+        local_interface_name_utf8: std::ptr::null(),
+        local_interface_name_utf8_len: 0,
+        local_interface_index: 0,
+        local_interface_index_is_set: false,
+        local_interface_type: 0,
+        local_interface_type_is_set: false,
+        is_bound: false,
+        is_bound_is_set: false,
     };
     (meta, HOST)
 }

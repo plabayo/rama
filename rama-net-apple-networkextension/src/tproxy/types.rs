@@ -2,7 +2,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use rama_core::extensions::Extension;
-use rama_net::address::{Host, HostWithPort};
+use rama_net::address::{
+    Host, HostWithPort,
+    ip::{IpScopes, ipnet::IpNet, scope_cidrs},
+};
 use rama_utils::{
     macros::generate_set_and_with,
     octets::kib,
@@ -523,6 +526,37 @@ impl TransparentProxyNetworkRule {
         self.exclude = true;
         self
     }
+
+    /// Set the remote network from a CIDR (IPv4 or IPv6), filling both the
+    /// network address and prefix length from a single [`IpNet`]. Host bits are
+    /// dropped — the rule matches the whole network.
+    #[must_use]
+    pub fn remote_net(mut self, net: impl Into<IpNet>) -> Self {
+        let net = net.into();
+        self.remote_network = Some(Host::from(net.network()));
+        self.remote_prefix = Some(net.prefix_len());
+        self
+    }
+
+    /// Build an "all traffic" rule restricted to the given remote CIDR.
+    #[must_use]
+    pub fn for_remote_net(net: impl Into<IpNet>) -> Self {
+        Self::any().remote_net(net)
+    }
+
+    /// One excluded rule per CIDR in the given [`IpScopes`] mask.
+    ///
+    /// Excluded rules are bypassed by the kernel and never reach the provider,
+    /// so the matching ranges take the default network path untouched. This is
+    /// the correct way to passthrough whole ranges: declining a flow in the
+    /// handler instead *closes* it (see the crate-level `tproxy` docs).
+    #[must_use]
+    pub fn excluded_for_ip_scopes(scopes: IpScopes) -> Vec<Self> {
+        scope_cidrs(scopes)
+            .into_iter()
+            .map(|net| Self::for_remote_net(net).excluded())
+            .collect()
+    }
 }
 
 /// Engine-level transparent proxy configuration.
@@ -604,6 +638,16 @@ impl TransparentProxyConfig {
             self.rules = rules;
             self
         }
+    }
+
+    /// Append excluded rules for every CIDR in `scopes`, so those ranges are
+    /// never diverted to the provider (true passthrough). See
+    /// [`TransparentProxyNetworkRule::excluded_for_ip_scopes`].
+    #[must_use]
+    pub fn exclude_ip_scopes(mut self, scopes: IpScopes) -> Self {
+        self.rules
+            .extend(TransparentProxyNetworkRule::excluded_for_ip_scopes(scopes));
+        self
     }
 
     generate_set_and_with! {
@@ -688,6 +732,34 @@ mod transparent_proxy_config_tests {
         );
     }
 
+    #[test]
+    fn remote_net_sets_network_and_prefix() {
+        let net: IpNet = "10.1.2.3/8".parse().unwrap();
+        let r = TransparentProxyNetworkRule::for_remote_net(net);
+        // host bits dropped → network address
+        assert_eq!(
+            r.remote_network().map(ToString::to_string).as_deref(),
+            Some("10.0.0.0")
+        );
+        assert_eq!(r.remote_prefix(), Some(8));
+        assert!(!r.exclude());
+    }
+
+    #[test]
+    fn exclude_ip_scopes_appends_excluded_cidr_rules() {
+        let base = TransparentProxyConfig::new();
+        let base_len = base.rules().len();
+        let cfg = base.exclude_ip_scopes(IpScopes::LOCAL);
+        let added = &cfg.rules()[base_len..];
+        assert_eq!(added.len(), scope_cidrs(IpScopes::LOCAL).len());
+        assert!(
+            added
+                .iter()
+                .all(|r| r.exclude() && r.remote_prefix().is_some()),
+            "every scope-derived rule must be an excluded CIDR rule"
+        );
+    }
+
     /// Builder coverage for `with_exclude` + `excluded`.
     #[test]
     fn network_rule_exclude_builders_round_trip() {
@@ -767,6 +839,20 @@ pub struct TransparentProxyFlowMeta {
     pub source_app_audit_token: Option<AuditToken>,
     /// Process identifier resolved from the source-app audit token, if available.
     pub source_app_pid: Option<i32>,
+    /// Remote hostname the originating app connected to (DNS name, not the
+    /// resolved IP), if the OS exposed it for this flow.
+    pub remote_hostname: Option<Box<str>>,
+    /// Name of the network interface this flow egresses on (e.g. `en0`,
+    /// `utun4`), if known. The primary signal for detecting VPN/tunnel egress.
+    pub local_interface_name: Option<Box<str>>,
+    /// Type of the egress interface (wifi / wired / cellular / loopback /
+    /// other), if known.
+    pub local_interface_type: Option<NwInterfaceType>,
+    /// Index of the egress interface, if known.
+    pub local_interface_index: Option<u32>,
+    /// Whether the originating app bound this flow to a specific interface, if
+    /// known.
+    pub is_bound: Option<bool>,
 }
 
 impl TransparentProxyFlowMeta {
@@ -788,6 +874,11 @@ impl TransparentProxyFlowMeta {
             source_app_bundle_identifier: None,
             source_app_audit_token: None,
             source_app_pid: None,
+            remote_hostname: None,
+            local_interface_name: None,
+            local_interface_type: None,
+            local_interface_index: None,
+            is_bound: None,
         }
     }
 
@@ -841,6 +932,46 @@ impl TransparentProxyFlowMeta {
         /// Set source app pid.
         pub fn source_app_pid(mut self, value: Option<i32>) -> Self {
             self.source_app_pid = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the remote hostname the originating app connected to.
+        pub fn remote_hostname(mut self, value: Option<Box<str>>) -> Self {
+            self.remote_hostname = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface name.
+        pub fn local_interface_name(mut self, value: Option<Box<str>>) -> Self {
+            self.local_interface_name = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface type.
+        pub fn local_interface_type(mut self, value: Option<NwInterfaceType>) -> Self {
+            self.local_interface_type = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the egress interface index.
+        pub fn local_interface_index(mut self, value: Option<u32>) -> Self {
+            self.local_interface_index = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set whether the originating app bound this flow to a specific interface.
+        pub fn is_bound(mut self, value: Option<bool>) -> Self {
+            self.is_bound = value;
             self
         }
     }

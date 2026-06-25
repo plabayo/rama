@@ -1060,51 +1060,14 @@ final class TransparentProxyCore: @unchecked Sendable {
         ctx.lastActivityAt = .now()
         logTrace("promote: cutover begin")
 
-        let forwarder = TcpDirectForwarder(
+        let forwarder = makePromotedForwarder(
+            ctx: ctx,
             flow: flow,
             connection: connection,
             clientWritePump: clientWritePump,
             egressWritePump: egressWritePump,
-            queue: flowQueue,
-            logger: { [weak self] message in self?.logFlowMessage(message) },
-            drainStallDeadline: .milliseconds(Int(ctx.lingerCloseMs)),
-            onClosing: { [weak ctx] in
-                // The forwarder began winding a direction down. Mark the
-                // ctx so the on-`stateQueue` maintenance watchdog reaps
-                // this promoted flow too if `flowQueue` later starves —
-                // the same `terminalSignalled` net the `viaRust` close
-                // path arms. Set on `flowQueue`; read off-queue by the
-                // watchdog (same relaxation as `egressReady`).
-                ctx?.terminalSignalled = true
-            },
-            onDrainStall: { [weak ctx] in
-                // A finishing direction's drain wedged (peer stopped
-                // reading). Route through the shared full-teardown reaper
-                // — cancels the write pumps, closes the kernel flow,
-                // cancels + detaches the egress NWConnection, cancels the
-                // forwarder, and drops the registry entry. Idempotent via
-                // the sticky `isDone`.
-                ctx?.applyDrainBackstop()
-            },
-            onActivity: { [weak ctx] in
-                // Bump the promoted-idle reaper clock on every byte moved in
-                // either direction. Runs on `flowQueue`, the same queue as
-                // every other `ctx` mutation; read off-queue by the
-                // maintenance watchdog (same relaxation as `egressReady` /
-                // `terminalSignalled`).
-                ctx?.lastActivityAt = .now()
-            },
-            onTerminal: { [weak ctx] in
-                // Both direct directions done. Route through the shared
-                // teardown so the close marks `done` (a racing post-terminal
-                // wake-recheck / watchdog then no-ops instead of a second,
-                // connection-cancelling teardown) and detaches handlers —
-                // WITHOUT cancelling the egress NWConnection, whose FIN/linger
-                // the egress write pump owns. See `applyPromotedTerminal`.
-                ctx?.applyPromotedTerminal()
-            }
+            flowQueue: flowQueue
         )
-        ctx.directForwarder = forwarder
 
         // Cancel the Rust-bound read pumps. Their in-flight
         // bytes (the `.paused` replay buffer plus any
@@ -1139,6 +1102,86 @@ final class TransparentProxyCore: @unchecked Sendable {
         // the mode-aware handlers transition the forwarder's
         // per-direction state to `.active`.
         session.confirmPromoted(.ok)
+    }
+
+    /// Build the direct kernel↔egress forwarder shared by the `viaRust`→promote
+    /// cutover and the born-spliced (up-front passthrough) path. Wires the same
+    /// lifecycle callbacks onto `ctx` and stores it as `ctx.directForwarder`.
+    /// The caller drives the cutover sequencing (read-pump carryover for the
+    /// promote path; the immediate Rust-done/read-drained signals for
+    /// born-spliced).
+    func makePromotedForwarder<F: TcpFlowLike>(
+        ctx: TcpFlowContext,
+        flow: F,
+        connection: any NwConnectionLike,
+        clientWritePump: TcpClientWritePump,
+        egressWritePump: NwTcpConnectionWritePump,
+        flowQueue: DispatchQueue
+    ) -> TcpDirectForwarder {
+        let forwarder = TcpDirectForwarder(
+            flow: flow,
+            connection: connection,
+            clientWritePump: clientWritePump,
+            egressWritePump: egressWritePump,
+            queue: flowQueue,
+            logger: { [weak self] message in self?.logFlowMessage(message) },
+            drainStallDeadline: .milliseconds(Int(ctx.lingerCloseMs)),
+            // Mark the ctx so the on-`stateQueue` maintenance watchdog can also
+            // reap this promoted flow if `flowQueue` later starves — the same
+            // `terminalSignalled` net the `viaRust` close path arms.
+            onClosing: { [weak ctx] in ctx?.terminalSignalled = true },
+            // A finishing direction's drain wedged (peer stopped reading):
+            // route through the shared full-teardown reaper. Idempotent via
+            // the sticky `isDone`.
+            onDrainStall: { [weak ctx] in ctx?.applyDrainBackstop() },
+            // Bump the promoted-idle reaper clock on every byte moved.
+            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() },
+            // Both directions done. Route through the shared teardown so the
+            // close marks `done` and detaches handlers — WITHOUT cancelling the
+            // egress NWConnection, whose FIN/linger the egress write pump owns.
+            onTerminal: { [weak ctx] in ctx?.applyPromotedTerminal() }
+        )
+        ctx.directForwarder = forwarder
+        return forwarder
+    }
+
+    /// Born-spliced cutover: a flow decided up-front as passthrough was claimed
+    /// (returning `true` so the kernel does NOT close it) but never routed
+    /// through Rust. It goes straight to the direct splice. Unlike
+    /// `beginPromoteCutover` there is no Rust service to unwind — no session,
+    /// no session-bound read pumps to cancel-with-carryover, no
+    /// `confirmPromoted`. Build the forwarder over the (empty) write pumps +
+    /// live connection and fire all four cutover signals immediately: with no
+    /// Rust bytes pending and no in-flight read to drain, both directions go
+    /// straight to `.active` and start their direct `flow.readData` /
+    /// `connection.receive` loops. The teardown path is identical to the
+    /// promote path (`applyPromotedTerminal` + the linger watchdog), so the
+    /// hardened, leak-fixed close is reused verbatim.
+    func beginBornSplicedCutover<F: TcpFlowLike>(
+        ctx: TcpFlowContext,
+        flow: F,
+        connection: any NwConnectionLike,
+        clientWritePump: TcpClientWritePump,
+        egressWritePump: NwTcpConnectionWritePump,
+        flowQueue: DispatchQueue
+    ) {
+        ctx.mode = .promoted
+        ctx.lastActivityAt = .now()
+        logTrace("born-splice: cutover begin")
+        let forwarder = makePromotedForwarder(
+            ctx: ctx,
+            flow: flow,
+            connection: connection,
+            clientWritePump: clientWritePump,
+            egressWritePump: egressWritePump,
+            flowQueue: flowQueue
+        )
+        // Order is irrelevant — whichever signal lands second per direction
+        // kicks off that direction's read loop (over empty carryover buffers).
+        forwarder.markClientReadDrained()
+        forwarder.markEgressReadDrained()
+        forwarder.markRustC2SDone()
+        forwarder.markRustS2CDone()
     }
 
     // MARK: - Per-flow handling (UDP)

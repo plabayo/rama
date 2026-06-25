@@ -57,6 +57,23 @@ impl Default for DemoProxyConfig {
                 "*.gstatic.com".to_owned(),
                 "*.cloudflare.com".to_owned(),
                 "*.jsdelivr.net".to_owned(),
+                // More common high-traffic domains so a soak run drives the
+                // promote → Swift-splice → teardown path with heavy, realistic
+                // volume (the path we want to prove leak-free).
+                "*.apple.com".to_owned(),
+                "*.icloud.com".to_owned(),
+                "*.microsoft.com".to_owned(),
+                "*.azureedge.net".to_owned(),
+                "*.fastly.net".to_owned(),
+                "*.akamaized.net".to_owned(),
+                "*.amazonaws.com".to_owned(),
+                "*.cloudfront.net".to_owned(),
+                "*.google.com".to_owned(),
+                "*.googlevideo.com".to_owned(),
+                "*.slack-edge.com".to_owned(),
+                "registry.npmjs.org".to_owned(),
+                "*.pythonhosted.org".to_owned(),
+                "*.docker.io".to_owned(),
             ],
             ca_cert_pem: None,
             ca_key_pem: None,

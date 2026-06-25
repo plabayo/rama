@@ -48,6 +48,7 @@ dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9
 
 [dependencies]
 ahash = { workspace = true }
+bitflags = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
 dial9-tokio-telemetry = { workspace = true, optional = true }

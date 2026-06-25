@@ -88,6 +88,53 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertNotNil(fx.session.ctx.clientWritePump)
     }
 
+    // MARK: - born-spliced (up-front passthrough → claim + direct splice)
+
+    private func poll(_ timeout: TimeInterval = 2.0, _ cond: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !cond() && Date() < deadline { Thread.sleep(forTimeInterval: 0.002) }
+    }
+
+    /// An up-front passthrough decision must NOT close the flow. The
+    /// born-spliced path claims it, builds the direct forwarder, and flips
+    /// `ctx.mode` to `.promoted` — no Rust session and no session-bound read
+    /// pumps. Drives the phase methods directly (no engine).
+    func testBornSplicedReadyBuildsForwarderAndPromotes() {
+        let fx = Fixture()
+        fx.session.buildClientWritePump()  // `start()` does this for every path
+        fx.session.bornSpliced = true
+        XCTAssertEqual(fx.session.ctx.mode, .viaRust, "mode is viaRust until the splice")
+
+        fx.session.handleBornSplicedReady(connection: fx.conn)
+        poll { fx.flow.openWasInvoked }
+        XCTAssertTrue(fx.flow.completeOpen(error: nil), "flow.open should be pending")
+
+        poll { fx.session.ctx.mode == .promoted }
+        XCTAssertEqual(
+            fx.session.ctx.mode, .promoted,
+            "born-spliced flow must promote to the direct splice, not close")
+        XCTAssertNotNil(fx.session.ctx.directForwarder, "the direct forwarder must be built")
+        XCTAssertNotNil(fx.session.ctx.egressWritePump, "the egress write pump must be built")
+    }
+
+    /// Born-spliced teardown routes through the SAME hardened promoted close
+    /// as the via-Rust→promote path (`applyPromotedTerminal`): cancelling the
+    /// forwarder marks the flow done (the shared, leak-fixed teardown).
+    func testBornSplicedForwarderCancelMarksDone() {
+        let fx = Fixture()
+        fx.session.buildClientWritePump()
+        fx.session.bornSpliced = true
+        fx.session.handleBornSplicedReady(connection: fx.conn)
+        poll { fx.flow.openWasInvoked }
+        XCTAssertTrue(fx.flow.completeOpen(error: nil))
+        poll { fx.session.ctx.directForwarder != nil }
+        XCTAssertNotNil(fx.session.ctx.directForwarder)
+
+        fx.session.ctx.directForwarder?.cancel()
+        poll { fx.session.ctx.isDone == true }
+        XCTAssertEqual(fx.session.ctx.isDone, true, "promoted teardown marks the flow done")
+    }
+
     // MARK: - viability handler wiring
 
     /// The wired `viabilityUpdateHandler` MUST update `ctx.lastPathViable`
