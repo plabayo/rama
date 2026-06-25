@@ -20,16 +20,14 @@ use rama::{
         },
     },
     layer::{HijackLayer, MapErrLayer, MapResultLayer, TimeoutLayer, layer_fn},
-    net::{
-        tls::{
-            ProtocolVersion,
-            client::{ServerVerifyMode, TlsClientConfig},
-        },
-        user::{Basic, ProxyCredential},
-    },
+    net::user::{Basic, ProxyCredential},
     proxy::socks5::Socks5ProxyConnectorLayer,
     rt::Executor,
     tls::boring::client::{BoringClientConfigExt, EmulateTlsProfileLayer},
+    tls::{
+        ProtocolVersion,
+        client::{ServerVerifyMode, TlsClientConfig},
+    },
     ua::{
         layer::emulate::{
             UserAgentEmulateHttpConnectModifierLayer, UserAgentEmulateHttpRequestModifierLayer,

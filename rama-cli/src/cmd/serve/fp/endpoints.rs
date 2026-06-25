@@ -16,8 +16,9 @@ use rama::{
             protocol::{CloseFrame, frame::coding::CloseCode},
         },
     },
-    net::{address::ip::geo::IpGeoInfo, tls::SecureTransport},
+    net::address::ip::geo::IpGeoInfo,
     telemetry::tracing,
+    tls::SecureTransport,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 

@@ -9,15 +9,12 @@ use rama::{
         address::{HostWithOptPort, HostWithPort},
         client::{ConnectorService, EstablishedClientConnection, Request},
         stream::Socket,
-        tls::{
-            DataEncoding,
-            client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
-        },
     },
     rt::Executor,
     tcp::{TcpStream, client::service::TcpConnector},
     telemetry::tracing,
     tls::boring::{client::TlsConnectorLayer, core::x509::X509},
+    tls::client::{NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig},
 };
 
 use clap::Args;
@@ -70,27 +67,16 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .get_ref::<NegotiatedTlsParameters>()
         .context("NegotiatedTlsParameters missing connector context")?;
 
-    if let Some(ref raw_pem_data) = params.peer_certificate_chain {
-        let x509_stack = match raw_pem_data {
-            DataEncoding::Der(raw_data) => {
-                vec![X509::from_der(raw_data.as_slice()).context("decode DER-encoded TLS cert")?]
-            }
-            DataEncoding::DerStack(raw_data_slice) => {
-                if raw_data_slice.is_empty() {
-                    return Err(BoxError::from_static_str(
-                        "DER-encoded stack byte slice for TLS cert is empty",
-                    ));
-                } else {
-                    vec![
-                        X509::from_der(raw_data_slice[0].as_slice())
-                            .context("decode DER-stack-encoded TLS cert")?,
-                    ]
-                }
-            }
-            DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-                .context("decode PEM-encoded TLS cert")?
-                .into_iter()
-                .collect(),
+    if let Some(ref cert_chain) = params.peer_certificate_chain {
+        let x509_stack = if cert_chain.is_empty() {
+            return Err(BoxError::from_static_str(
+                "DER-encoded stack byte slice for TLS cert is empty",
+            ));
+        } else {
+            vec![
+                X509::from_der(cert_chain[0].as_ref())
+                    .context("decode DER-stack-encoded TLS cert")?,
+            ]
         };
 
         for (index, x509) in x509_stack.iter().enumerate() {

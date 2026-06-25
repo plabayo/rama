@@ -1,3 +1,8 @@
+#[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+#[doc(inline)]
+pub use ::rama_tls::*;
+
 #[cfg(feature = "boring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
 #[doc(inline)]

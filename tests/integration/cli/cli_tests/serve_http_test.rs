@@ -13,9 +13,9 @@ use rama::{
         layer::decompression::DecompressionLayer,
         service::client::{HttpClientExt, multipart},
     },
-    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     rt::Executor,
     service::BoxService,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
     utils::octets::{kib, mib},
     utils::str::any_submatch_ignore_ascii_case,
 };

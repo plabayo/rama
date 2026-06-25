@@ -18,9 +18,9 @@ use ::rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
-    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 #[cfg(feature = "boring")]
 use rama_net::client::Request as TransportRequest;
@@ -486,6 +486,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
     use ::base64::Engine;
     use ::rama::{
         Layer as _,
+        crypto::pki_types::{CertificateDer, PrivateKeyDer},
         error::{BoxError, ErrorContext as _},
         http::{
             headers::StrictTransportSecurity,
@@ -501,13 +502,7 @@ async fn test_https_with_remote_tls_cert_issuer() {
             },
             tls::{CertOrderInput, CertOrderOutput},
         },
-        net::{
-            address::Domain,
-            tls::{
-                ApplicationProtocol, DataEncoding,
-                server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
-            },
-        },
+        net::address::Domain,
         proxy::haproxy::server::HaProxyLayer,
         rt::Executor,
         tcp::server::TcpListener,
@@ -516,8 +511,9 @@ async fn test_https_with_remote_tls_cert_issuer() {
                 pkey::{PKey, Private},
                 x509::X509,
             },
-            server::{TlsAcceptorLayer, utils as boring_server_utils},
+            server::TlsAcceptorLayer,
         },
+        tls::server::{SelfSignedData, ServerAuthData, TlsServerConfig},
     };
 
     const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -526,13 +522,14 @@ async fn test_https_with_remote_tls_cert_issuer() {
     utils::init_tracing();
 
     let (ca_issuer_cert, ca_issuer_key) =
-        boring_server_utils::self_signed_server_auth_gen_ca(&SelfSignedData::default()).unwrap();
+        rama::crypto::cert::boring::self_signed_server_auth_gen_ca(&SelfSignedData::default())
+            .unwrap();
     let (issuer_server_cert, issuer_server_key) =
-        boring_server_utils::self_signed_server_auth_gen_cert(
+        rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
             &SelfSignedData {
                 organisation_name: Some(DOMAIN_TLS_ECHO_CERTS.to_string()),
                 common_name: Some(DOMAIN_TLS_ECHO_CERTS),
-                subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS.to_string()]),
+                subject_alternative_names: Some(vec![DOMAIN_TLS_ECHO_CERTS]),
                 ..Default::default()
             },
             &ca_issuer_cert,
@@ -542,22 +539,18 @@ async fn test_https_with_remote_tls_cert_issuer() {
 
     let rama_remote_tls_ca = ca_issuer_cert.to_pem().unwrap();
 
-    let tls_acceptor_data = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-            private_key: DataEncoding::Der(issuer_server_key.private_key_to_der().unwrap()),
-            cert_chain: DataEncoding::DerStack(vec![
-                issuer_server_cert.to_der().unwrap(),
-                ca_issuer_cert.to_der().unwrap(),
-            ]),
+    let tls_acceptor_data = TlsServerConfig::new()
+        .with_single_cert(ServerAuthData {
+            private_key: PrivateKeyDer::try_from(issuer_server_key.private_key_to_der().unwrap())
+                .unwrap(),
+            cert_chain: vec![
+                CertificateDer::from(issuer_server_cert.to_der().unwrap()),
+                CertificateDer::from(ca_issuer_cert.to_der().unwrap()),
+            ],
+
             ocsp: None,
-        }))
-    }
-    .try_into()
-    .unwrap();
+        })
+        .with_alpn_http_auto();
 
     #[derive(Debug, Clone)]
     struct CaInfo {
@@ -592,11 +585,11 @@ async fn test_https_with_remote_tls_cert_issuer() {
                     // NOTE this is a very basic and bad impl of a tls issuer,
                     // do not do something like this in production... ever...
 
-                    let (crt, key) = boring_server_utils::self_signed_server_auth_gen_cert(
+                    let (crt, key) = rama::crypto::cert::boring::self_signed_server_auth_gen_cert(
                         &SelfSignedData {
                             organisation_name: Some(domain.to_string()),
                             common_name: Some(domain.clone()),
-                            subject_alternative_names: Some(vec![domain.to_string()]),
+                            subject_alternative_names: Some(vec![domain]),
                             ..Default::default()
                         },
                         &ca_crt,

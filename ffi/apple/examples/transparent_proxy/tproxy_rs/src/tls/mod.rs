@@ -12,6 +12,7 @@ pub(crate) type DemoTlsMitmRelay =
     TlsMitmRelay<CachedBoringMitmCertIssuer<InMemoryBoringMitmCertIssuer>>;
 
 use rama::{
+    crypto::cert::boring::self_signed_server_auth_gen_ca,
     error::{BoxError, ErrorContext as _},
     net::{
         address::Domain,
@@ -21,15 +22,14 @@ use rama::{
             // which lives in the type namespace.
             secure_enclave::is_available as secure_enclave_is_available,
         },
-        tls::server::SelfSignedData,
     },
     telemetry::tracing,
-    tls::boring::{
-        core::{
+    tls::{
+        boring::core::{
             pkey::{PKey, Private},
             x509::X509,
         },
-        server::utils::self_signed_server_auth_gen_ca,
+        server::SelfSignedData,
     },
 };
 

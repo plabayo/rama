@@ -2,28 +2,25 @@ use crate::RamaTlsRustlsCrateMarker;
 use rama_core::conversion::{RamaFrom, RamaTryFrom};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_net::{
-    address::{Domain, Host},
-    tls::{
-        ApplicationProtocol, CipherSuite, DataEncoding, ProtocolVersion, SignatureScheme,
-        client::{ClientHello, ClientHelloExtension},
-    },
+use rama_net::address::{Domain, Host};
+use rama_tls::{
+    ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
+    client::{ClientHello, ClientHelloExtension},
 };
-use rustls::pki_types;
 use std::net::IpAddr;
 
 macro_rules! enum_from_rustls {
     ($t:ty => $($name:ident),+$(,)?) => {
         $(
-            impl RamaFrom<rustls::$name, RamaTlsRustlsCrateMarker> for rama_net::tls::$name {
+            impl RamaFrom<rustls::$name, RamaTlsRustlsCrateMarker> for rama_tls::$name {
                 fn rama_from(value: ::rustls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }
             }
 
-            impl RamaFrom<rama_net::tls::$name, RamaTlsRustlsCrateMarker> for rustls::$name {
-                fn rama_from(value: rama_net::tls::$name) -> Self {
+            impl RamaFrom<rama_tls::$name, RamaTlsRustlsCrateMarker> for rustls::$name {
+                fn rama_from(value: rama_tls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }
@@ -120,23 +117,6 @@ impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::
             rustls::pki_types::DnsName::try_from(domain.as_str().to_owned())
                 .context("convert domain to rustls (PKI) ServerName")?,
         ))
-    }
-}
-
-impl RamaFrom<&pki_types::CertificateDer<'static>, RamaTlsRustlsCrateMarker> for DataEncoding {
-    fn rama_from(value: &pki_types::CertificateDer<'static>) -> Self {
-        Self::Der(value.as_ref().into())
-    }
-}
-
-impl RamaFrom<&[pki_types::CertificateDer<'static>], RamaTlsRustlsCrateMarker> for DataEncoding {
-    fn rama_from(value: &[pki_types::CertificateDer<'static>]) -> Self {
-        Self::DerStack(
-            value
-                .iter()
-                .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))
-                .collect(),
-        )
     }
 }
 

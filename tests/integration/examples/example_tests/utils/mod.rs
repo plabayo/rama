@@ -42,7 +42,7 @@ use rama::{
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(all(feature = "http-full", feature = "boring"))]
-use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};
+use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
 
 #[cfg(all(
     feature = "http-full",
@@ -158,12 +158,12 @@ impl ExampleRunner {
             #[cfg(all(feature = "rustls", feature = "aws-lc", not(feature = "boring")))]
             let inner_client = {
                 let tls_config = TlsClientConfig::default_http()
-                    .with_server_verify(rama::net::tls::client::ServerVerifyMode::Disable)
+                    .with_server_verify(rama::tls::client::ServerVerifyMode::Disable)
                     .with_store_server_cert_chain(true);
 
                 let proxy_tls_config = TlsClientConfig::new()
-                    .with_server_verify(rama::net::tls::client::ServerVerifyMode::Disable)
-                    .with_keylog(rama::net::tls::KeyLogIntent::Environment);
+                    .with_server_verify(rama::tls::client::ServerVerifyMode::Disable)
+                    .with_keylog(rama::tls::KeyLogIntent::Environment);
 
                 EasyHttpWebClient::connector_builder()
                     .with_default_transport_connector()

@@ -11,9 +11,9 @@ use rama_core::{Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::extensions::StreamTransformed;
-use rama_net::tls::ApplicationProtocol;
-use rama_net::tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_tls::ApplicationProtocol;
+use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
@@ -24,7 +24,7 @@ use ::{
         extensions::Extensions,
     },
     rama_net::http::{TargetHttpVersion, Version},
-    rama_net::tls::client::TlsAlpn,
+    rama_tls::TlsAlpn,
 };
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
@@ -336,10 +336,6 @@ impl<S, K> TlsConnector<S, K> {
     where
         Input: ExtensionsRef,
     {
-        // rustls needs a process default crypto provider before any config build
-        // ensure it once here (the connector is the entry point), not in build().
-        crate::ensure_default_crypto_provider();
-
         let extensions = if let Some(base) = &self.base_config {
             &input.extensions().with_base(base.as_extensions())
         } else {
@@ -413,12 +409,10 @@ impl<S, K> TlsConnector<S, K> {
 
         #[cfg(feature = "dial9")]
         {
-            use rama_net::tls::DataEncoding;
-            let depth = match params.peer_certificate_chain.as_ref() {
-                Some(DataEncoding::Der(_) | DataEncoding::Pem(_)) => 1,
-                Some(DataEncoding::DerStack(stack)) => stack.len(),
-                None => 0,
-            };
+            let depth = params
+                .peer_certificate_chain
+                .as_ref()
+                .map_or(0, |chain| chain.len());
             crate::dial9::record_handshake_completed(
                 dial9_server_name,
                 params.protocol_version,
@@ -504,7 +498,7 @@ pub struct ConnectorKindSecure;
 /// and using the hardcoded host otherwise.
 /// Context always overwrites though.
 ///
-/// [`TlsTunnel`]: rama_net::tls::TlsTunnel
+/// [`TlsTunnel`]: rama_tls::TlsTunnel
 pub struct ConnectorKindTunnel {
     host: Option<Host>,
 }
@@ -532,7 +526,7 @@ mod tests {
         use super::*;
         use rama_core::extensions::Extensions;
         use rama_net::http::{TargetHttpVersion, Version};
-        use rama_net::tls::ApplicationProtocol;
+        use rama_tls::ApplicationProtocol;
 
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone().into_vec())

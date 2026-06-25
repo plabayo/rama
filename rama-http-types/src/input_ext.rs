@@ -15,11 +15,11 @@ use rama_net::{
 };
 
 #[cfg(feature = "tls")]
-use rama_net::tls::SecureTransport;
+use rama_tls::SecureTransport;
 
 #[cfg(feature = "tls")]
 fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
-    use rama_net::tls::client::ClientHelloExtension;
+    use rama_tls::client::ClientHelloExtension;
 
     t.client_hello().and_then(|h| {
         h.extensions().iter().find_map(|e| match e {
@@ -343,7 +343,7 @@ mod tests {
     // This guards the `SecureTransport` fallback in `protocol_from_uri_or_extensions`
     // against the real type being swapped for the tls-off dummy. See the matching
     // cross-crate regression in rama-http-backend's `svc` tests, which catches the
-    // feature wiring (`rama-http-types/tls` must follow `rama-net/tls`).
+    // feature wiring (`rama-http-types/tls` must follow `rama-tls`).
     #[cfg(feature = "tls")]
     #[test]
     fn secure_transport_marks_origin_form_request_https() {

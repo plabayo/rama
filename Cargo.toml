@@ -61,6 +61,7 @@ members = [
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
+    "rama-tls",
     "rama-tls-acme",
     "rama-tls-boring",
     "rama-tls-rustls",
@@ -197,6 +198,7 @@ rama-net-apple-xpc = { version = "0.3.0-rc1", path = "./rama-net-apple-xpc", def
 rama-proxy = { version = "0.3.0-rc1", path = "./rama-proxy", default-features = false }
 rama-socks5 = { version = "0.3.0-rc1", path = "./rama-socks5", default-features = false }
 rama-tcp = { version = "0.3.0-rc1", path = "./rama-tcp", default-features = false }
+rama-tls = { version = "0.3.0-rc1", path = "./rama-tls", default-features = false }
 rama-tls-acme = { version = "0.3.0-rc1", path = "./rama-tls-acme", default-features = false }
 rama-tls-boring = { version = "0.3.0-rc1", path = "./rama-tls-boring", default-features = false }
 rama-tls-rustls = { version = "0.3.0-rc1", path = "./rama-tls-rustls", default-features = false }
@@ -389,7 +391,7 @@ crypto = ["dep:rama-crypto"]
 tls = [
     "net",
     "crypto",
-    "rama-net?/tls",
+    "dep:rama-tls",
     "rama-http?/tls",
     "rama-http-backend?/tls",
     "rama-ua?/tls",
@@ -429,6 +431,7 @@ http = [
     "dep:rama-http",
     "ua",
     "rama-net?/http",
+    "rama-tls?/http",
     "rama-tls-boring?/ua",
     "rama-tls-boring?/http",
     "rama-tls-rustls?/http",
@@ -512,6 +515,7 @@ rama-net-apple-xpc = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
+rama-tls = { workspace = true, optional = true }
 rama-tls-acme = { workspace = true, optional = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }

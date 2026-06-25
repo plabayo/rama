@@ -17,7 +17,8 @@ use rama_core::{
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
-use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};
+use crate::client::extract_sni_from_client_hello_handshake;
+use rama_net::address::Domain;
 
 use super::{NoTlsRejectError, TlsPrefixedIo};
 

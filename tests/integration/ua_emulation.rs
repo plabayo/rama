@@ -7,17 +7,15 @@ use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
-use rama::net::fingerprint::{Ja3, Ja4};
-use rama::net::tls::ApplicationProtocol;
-use rama::net::tls::client::parse_client_hello;
-use rama::net::tls::client::{ServerVerifyMode, TlsClientConfig};
-use rama::net::tls::server::ServerAuth;
-use rama::net::tls::server::ServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tls::boring::client::EmulateTlsProfileLayer;
 use rama::tls::boring::client::TlsConnector;
 use rama::tls::boring::server::TlsAcceptorLayer;
+use rama::tls::client::parse_client_hello;
+use rama::tls::client::{ServerVerifyMode, TlsClientConfig};
+use rama::tls::fingerprint::{Ja3, Ja4};
+use rama::tls::server::TlsServerConfig;
 use rama::ua::layer::emulate::{
     SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
     UserAgentEmulateHttpRequestModifierLayer, UserAgentEmulateLayer,
@@ -466,19 +464,9 @@ where
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
-            let server = TlsAcceptorLayer::new(
-                ServerConfig {
-                    application_layer_protocol_negotiation: Some(vec![
-                        ApplicationProtocol::HTTP_2,
-                        ApplicationProtocol::HTTP_11,
-                    ]),
-                    ..ServerConfig::new(ServerAuth::default())
-                }
-                .try_into()
-                .unwrap(),
-            )
-            .with_store_client_hello(true)
-            .into_layer(HttpServer::auto(Executor::default()).service(svc));
+            let server = TlsAcceptorLayer::new(TlsServerConfig::default_http().unwrap())
+                .with_store_client_hello(true)
+                .into_layer(HttpServer::auto(Executor::default()).service(svc));
             server.serve(server_socket).await.unwrap();
         });
 

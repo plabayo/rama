@@ -50,12 +50,7 @@ use rama::{
     },
     io::Io,
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{
-        http::server::HttpPeekRouter,
-        proxy::IoForwardService,
-        tls::server::{PeekTlsClientHelloService, SelfSignedData},
-        user::credentials::basic,
-    },
+    net::{http::server::HttpPeekRouter, proxy::IoForwardService, user::credentials::basic},
     rt::Executor,
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing::{
@@ -64,6 +59,7 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::boring::proxy::TlsMitmRelay,
+    tls::server::{PeekTlsClientHelloService, SelfSignedData},
     utils::octets::mib,
 };
 

@@ -5,8 +5,7 @@
 
 use super::hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite};
 use super::{ClientHello, ClientHelloExtension};
-use crate::address::{Domain, Host};
-use crate::tls::{
+use crate::{
     ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm,
 };
 use nom::{
@@ -20,6 +19,7 @@ use nom::{
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::telemetry::tracing;
+use rama_net::address::{Domain, Host};
 use std::str;
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
@@ -550,11 +550,11 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
 mod tests {
 
     use super::*;
-    use crate::address::Domain;
-    use crate::tls::{
+    use crate::{
         CertificateCompressionAlgorithm, ECPointFormat, ExtensionId, SignatureScheme,
         SupportedGroup,
     };
+    use rama_net::address::Domain;
 
     #[test]
     fn test_parse_tls_extension_sni_hostname() {

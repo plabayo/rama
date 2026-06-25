@@ -433,9 +433,10 @@ mod tests {
         rsa::Rsa,
         x509::{X509Builder, X509NameBuilder},
     };
-    use rama_net::{address::Domain, tls::server::SelfSignedData};
+    use rama_net::address::Domain;
+    use rama_tls::server::SelfSignedData;
 
-    use crate::server::utils::{
+    use rama_crypto::cert::boring::{
         self_signed_server_auth_gen_ca, self_signed_server_auth_mirror_cert_with_extensions,
     };
 

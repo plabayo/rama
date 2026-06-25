@@ -21,7 +21,6 @@ use rama::{
     error::{BoxError, BoxErrorExt as _},
     futures::stream,
     http::{Body, Request, Response, server::HttpServer},
-    net::tls::server::SelfSignedData,
     rt::Executor,
     service::service_fn,
     tls::rustls::{
@@ -29,10 +28,11 @@ use rama::{
             rustls::{ClientConfig, crypto::aws_lc_rs, pki_types::ServerName},
             tokio_rustls::TlsConnector,
         },
-        server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+        server::TlsAcceptorLayer,
         verify::NoServerCertVerifier,
     },
 };
+use rama_tls::server::TlsServerConfig;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, duplex};
 
 #[tokio::test]
@@ -40,11 +40,7 @@ async fn server_sends_close_notify_when_response_body_errors() {
     // rustls needs a process-default crypto provider for `ClientConfig::builder`.
     _ = aws_lc_rs::default_provider().install_default();
 
-    // ----- server: rustls acceptor + http server whose body errors mid-stream -----
-    let acceptor_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData::default())
-        .expect("self-signed mitm tls data")
-        .with_alpn_protocols_http_auto()
-        .build();
+    let acceptor_data = TlsServerConfig::default_http().unwrap();
 
     let svc = service_fn(|_req: Request| async move {
         // unknown-length (chunked) body that yields one chunk then fails: this

@@ -18,10 +18,12 @@ use rama_core::{
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt},
 };
-use rama_net::tls::client::TlsClientConfig;
-use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
-use rama_net::tls::{DataEncoding, client::ClientAuth};
-use rama_net::{address::Domain, tls::client::ServerVerifyMode};
+use rama_crypto::dep::x509_parser::nom::AsBytes;
+use rama_net::address::Domain;
+use rama_tls::client::ClientAuth;
+use rama_tls::client::ServerVerifyMode;
+use rama_tls::client::TlsClientConfig;
+use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::fmt;
 
 #[cfg(feature = "compression")]
@@ -29,9 +31,9 @@ use super::compress_certificate::{
     BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
 };
 #[cfg(feature = "compression")]
-use rama_net::tls::CertificateCompressionAlgorithm;
+use rama_tls::CertificateCompressionAlgorithm;
 
-use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
+use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
 /// /// The resolved native boringssl config consumed by [`super::TlsConnector`].
 pub struct TlsConnectorData {
@@ -482,39 +484,19 @@ impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
             }
             ClientAuth::Single(data) => {
                 // server TLS Certs
-                let cert_chain = match data.cert_chain {
-                    DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
-                        "boring/TlsConnectorData: parse x509 client cert from DER content",
-                    )?],
-                    DataEncoding::DerStack(raw_data_list) => raw_data_list
-                        .into_iter()
-                        .map(|raw_data| {
-                            X509::from_der(&raw_data[..]).context(
-                                "boring/TlsConnectorData: parse x509 client cert from DER content",
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-                        .context(
-                        "boring/TlsConnectorData: parse x509 client cert chain from PEM content",
-                    )?,
-                };
+                let cert_chain = data
+                    .cert_chain
+                    .into_iter()
+                    .map(|cert| {
+                        X509::from_der(cert.as_bytes()).context(
+                            "boring/TlsConnectorData: parse x509 client cert from DER content",
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 // server TLS key
-                let private_key = match data.private_key {
-                    DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
-                        .context("boring/TlsConnectorData: parse private key from DER content")?,
-                    DataEncoding::DerStack(raw_data_list) => {
-                        PKey::private_key_from_der(
-                            &raw_data_list.first().context(
-                                "boring/TlsConnectorData: get first private key raw data",
-                            )?[..],
-                        )
-                        .context("boring/TlsConnectorData: parse private key from DER content")?
-                    }
-                    DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
-                        .context("boring/TlsConnectorData: parse private key from PEM content")?,
-                };
+                let private_key = PKey::private_key_from_der(data.private_key.secret_der())
+                    .context("boring/TlsConnectorData: parse private key from DER content")?;
 
                 Ok(Self {
                     cert_chain,
@@ -601,10 +583,10 @@ mod tests {
     use super::*;
     use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
     use rama_core::extensions::Extensions;
-    use rama_net::tls::client::{
-        ClientHello, ClientHelloExtension, TlsAlpn, TlsServerVerify, TlsStoreServerCertChain,
+    use rama_tls::client::{
+        ClientHello, ClientHelloExtension, TlsServerVerify, TlsStoreServerCertChain,
     };
-    use rama_net::tls::{CipherSuite, ProtocolVersion, SignatureScheme};
+    use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme, TlsAlpn};
 
     #[test]
     fn build_from_common_pieces() {

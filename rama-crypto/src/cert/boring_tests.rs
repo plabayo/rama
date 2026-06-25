@@ -1,15 +1,16 @@
 use super::*;
 
-use crate::core::{
+use crate::dep::boring::{
+    asn1::Asn1Time,
     ec::{EcGroup, EcKey},
+    hash::MessageDigest,
     nid::Nid,
     pkey::Id,
     x509::{
-        X509NameBuilder,
-        extension::{BasicConstraints, KeyUsage},
+        X509Extension, X509NameBuilder,
+        extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
     },
 };
-use rama_net::{address::Domain, tls::server::SelfSignedData};
 
 fn sample_data(common_name: &'static str) -> SelfSignedData {
     SelfSignedData {
@@ -19,7 +20,7 @@ fn sample_data(common_name: &'static str) -> SelfSignedData {
     }
 }
 
-fn ext_by_nid(cert: &X509Ref, nid: Nid) -> Vec<&crate::core::x509::X509ExtensionRef> {
+fn ext_by_nid(cert: &X509Ref, nid: Nid) -> Vec<&crate::dep::boring::x509::X509ExtensionRef> {
     cert.extensions()
         .filter(|ext| ext.object().nid() == nid)
         .collect()
@@ -28,17 +29,6 @@ fn ext_by_nid(cert: &X509Ref, nid: Nid) -> Vec<&crate::core::x509::X509Extension
 fn build_self_signed_source_with_pkey(
     pkey: &PKey<Private>,
     common_name: &str,
-) -> Result<X509, BoxError> {
-    let not_before = Asn1Time::days_from_now(0).context("source not before")?;
-    let not_after = Asn1Time::days_from_now(30).context("source not after")?;
-    build_self_signed_source_with_validity(pkey, common_name, &not_before, &not_after)
-}
-
-fn build_self_signed_source_with_validity(
-    pkey: &PKey<Private>,
-    common_name: &str,
-    not_before: &Asn1Time,
-    not_after: &Asn1Time,
 ) -> Result<X509, BoxError> {
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
@@ -71,11 +61,13 @@ fn build_self_signed_source_with_validity(
     cert_builder
         .set_pubkey(pkey)
         .context("set source public key")?;
+    let not_before = Asn1Time::days_from_now(0).context("source not before")?;
     cert_builder
-        .set_not_before(not_before)
+        .set_not_before(&not_before)
         .context("set source not before")?;
+    let not_after = Asn1Time::days_from_now(30).context("source not after")?;
     cert_builder
-        .set_not_after(not_after)
+        .set_not_after(&not_after)
         .context("set source not after")?;
 
     let san = SubjectAlternativeName::new()
@@ -184,47 +176,6 @@ fn mirror_preserves_subject_validity_and_issuer() {
     // source was gen'd with the default key kind (EC P-256), so the mirror
     // matches it.
     assert_eq!(mirrored_key.id(), Id::EC);
-}
-
-#[test]
-fn mirror_clamps_validity_into_ca_window() {
-    let ca_data = sample_data("ca.rama.test");
-    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
-
-    // A real upstream cert was issued before our fresh CA and may outlive it:
-    // notBefore 30 days ago, notAfter 30 years out (well past the CA's 20y).
-    let pkey = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("now")
-        .as_secs();
-    let past = Asn1Time::from_unix((now - 30 * 86_400).try_into().expect("time_t"))
-        .expect("past not-before");
-    let far = Asn1Time::days_from_now(365 * 30).expect("far not-after");
-    let source = build_self_signed_source_with_validity(&pkey, "source.rama.test", &past, &far)
-        .expect("source cert");
-    assert!(
-        source.not_before() < ca_cert.not_before() && source.not_after() > ca_cert.not_after(),
-        "source must straddle the CA window for this test to mean anything"
-    );
-
-    let (mirrored, _) =
-        self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key).expect("mirror");
-
-    // The leaf is fully nested in the CA: notBefore clamped up, notAfter down.
-    assert_eq!(
-        mirrored.not_before(),
-        ca_cert.not_before(),
-        "leaf notBefore clamped up to the CA"
-    );
-    assert_eq!(
-        mirrored.not_after(),
-        ca_cert.not_after(),
-        "leaf notAfter clamped down to the CA"
-    );
-    assert!(mirrored.not_before() >= ca_cert.not_before());
-    assert!(mirrored.not_after() <= ca_cert.not_after());
-    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
 }
 
 #[test]
@@ -557,7 +508,7 @@ fn gen_cert_derives_aki_keyid_when_ca_has_no_ski() {
 /// logic keys off the extension OID, not the payload, so dummy payloads are
 /// sufficient to exercise the strip behaviour.
 fn append_raw_ext(
-    cert_builder: &mut crate::core::x509::X509Builder,
+    cert_builder: &mut crate::dep::boring::x509::X509Builder,
     oid: &str,
     critical: bool,
     payload: &[u8],
@@ -742,7 +693,7 @@ fn mirror_uses_ec_key_for_ec_source() {
 /// Build a self-signed Ed25519 CA, signed via the NULL-digest EdDSA path.
 fn build_ed25519_ca(common_name: &str) -> Result<(X509, PKey<Private>), BoxError> {
     let mut seed = [0_u8; 32];
-    crate::core::rand::rand_bytes(&mut seed).context("ed25519 ca key bytes")?;
+    crate::dep::boring::rand::rand_bytes(&mut seed).context("ed25519 ca key bytes")?;
     let privkey = PKey::from_ed25519_private_key(&seed).context("ed25519 ca pkey")?;
 
     let mut x509_name = X509NameBuilder::new().context("ca name builder")?;
@@ -801,7 +752,7 @@ fn build_ed25519_ca(common_name: &str) -> Result<(X509, PKey<Private>), BoxError
 #[test]
 fn signing_digest_is_null_for_eddsa_and_sha256_otherwise() {
     let mut seed = [0_u8; 32];
-    crate::core::rand::rand_bytes(&mut seed).expect("seed");
+    crate::dep::boring::rand::rand_bytes(&mut seed).expect("seed");
     let ed = PKey::from_ed25519_private_key(&seed).expect("ed25519 key");
     assert!(
         signing_digest_for(&ed).as_ptr().is_null(),
@@ -963,7 +914,7 @@ fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
     // Source cert whose SUBJECT key is X25519 — a key-agreement-only key that
     // cannot serve as a TLS leaf signing key. Signed by a separate RSA issuer.
     let mut seed = [0_u8; 32];
-    crate::core::rand::rand_bytes(&mut seed).expect("seed");
+    crate::dep::boring::rand::rand_bytes(&mut seed).expect("seed");
     let x25519 = PKey::from_x25519_private_key(&seed).expect("x25519 key");
     let (issuer_cert, issuer_key) =
         self_signed_server_auth_gen_ca(&sample_data("issuer.rama.test")).expect("issuer");
@@ -989,4 +940,158 @@ fn mirror_falls_back_to_rsa_for_non_signing_source_key() {
         mirrored.verify(&ca_key).expect("verify mirrored"),
         "fallback mirrored leaf must verify against the CA"
     );
+}
+
+#[test]
+fn self_signed_server_auth_produces_leaf_and_ca_der() {
+    let data = SelfSignedData {
+        common_name: Some(Domain::from_static("leaf.rama.test")),
+        organisation_name: Some("Rama Test".to_owned()),
+        ..Default::default()
+    };
+    let (chain, key) = self_signed_server_auth(data).expect("generate self-signed");
+    assert_eq!(chain.len(), 2, "expected [leaf, ca] chain");
+    assert!(!chain[0].as_ref().is_empty());
+    assert!(!chain[1].as_ref().is_empty());
+    // the returned key is the leaf key as PKCS#8 DER; re-parse to validate.
+    let parsed = PKey::private_key_from_pkcs8(match &key {
+        PrivateKeyDer::Pkcs8(k) => k.secret_pkcs8_der(),
+        _ => panic!("expected PKCS#8 key"),
+    })
+    .expect("re-parse leaf key");
+    assert_eq!(parsed.id(), Id::EC); // default key kind is EC P-256
+}
+
+#[test]
+fn leaf_san_includes_common_name_and_extra_sans() {
+    let data = SelfSignedData {
+        common_name: Some(Domain::from_static("primary.rama.test")),
+        subject_alternative_names: Some(vec![
+            Domain::from_static("alt-one.rama.test"),
+            Domain::from_static("alt-two.rama.test"),
+        ]),
+        ..Default::default()
+    };
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&data).expect("generate CA");
+    let (leaf, _) =
+        self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_key).expect("generate leaf");
+
+    let san = leaf.subject_alt_names().expect("leaf has a SAN extension");
+    let dns: Vec<String> = san
+        .iter()
+        .filter_map(|name| name.dnsname().map(str::to_owned))
+        .collect();
+
+    assert!(
+        dns.iter().any(|n| n == "primary.rama.test"),
+        "common name must be present as a SAN; got {dns:?}"
+    );
+    assert!(
+        dns.iter().any(|n| n == "alt-one.rama.test"),
+        "extra SAN alt-one.rama.test must be present; got {dns:?}"
+    );
+    assert!(
+        dns.iter().any(|n| n == "alt-two.rama.test"),
+        "extra SAN alt-two.rama.test must be present; got {dns:?}"
+    );
+}
+
+fn build_self_signed_source_with_validity(
+    pkey: &PKey<Private>,
+    common_name: &str,
+    not_before: &Asn1Time,
+    not_after: &Asn1Time,
+) -> Result<X509, BoxError> {
+    let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
+    x509_name
+        .append_entry_by_nid(Nid::COMMONNAME, common_name)
+        .context("append common name to x509 name builder")?;
+    let x509_name = x509_name.build();
+
+    let mut cert_builder = X509::builder().context("create x509 cert builder")?;
+    cert_builder
+        .set_version(2)
+        .context("set version on source cert")?;
+    let serial_number = {
+        let mut serial = BigNum::new().context("create source serial big num")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("randomise source serial")?;
+        serial
+            .to_asn1_integer()
+            .context("convert source serial to asn1 integer")?
+    };
+    cert_builder
+        .set_serial_number(&serial_number)
+        .context("set source serial number")?;
+    cert_builder
+        .set_subject_name(&x509_name)
+        .context("set source subject")?;
+    cert_builder
+        .set_issuer_name(&x509_name)
+        .context("set source issuer")?;
+    cert_builder
+        .set_pubkey(pkey)
+        .context("set source public key")?;
+    cert_builder
+        .set_not_before(not_before)
+        .context("set source not before")?;
+    cert_builder
+        .set_not_after(not_after)
+        .context("set source not after")?;
+
+    let san = SubjectAlternativeName::new()
+        .dns(common_name)
+        .build(&cert_builder.x509v3_context(None, None))
+        .context("build source san")?;
+    cert_builder
+        .append_extension(san.as_ref())
+        .context("append source san")?;
+
+    cert_builder
+        .sign(pkey, MessageDigest::sha256())
+        .context("sign source cert")?;
+
+    Ok(cert_builder.build())
+}
+
+#[test]
+fn mirror_clamps_validity_into_ca_window() {
+    let ca_data = sample_data("ca.rama.test");
+    let (ca_cert, ca_key) = self_signed_server_auth_gen_ca(&ca_data).expect("generate CA");
+
+    // A real upstream cert was issued before our fresh CA and may outlive it:
+    // notBefore 30 days ago, notAfter 30 years out (well past the CA's 20y).
+    let pkey = PKey::from_rsa(Rsa::generate(2048).expect("rsa")).expect("pkey");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("now")
+        .as_secs();
+    let past = Asn1Time::from_unix((now - 30 * 86_400).try_into().expect("time_t"))
+        .expect("past not-before");
+    let far = Asn1Time::days_from_now(365 * 30).expect("far not-after");
+    let source = build_self_signed_source_with_validity(&pkey, "source.rama.test", &past, &far)
+        .expect("source cert");
+    assert!(
+        source.not_before() < ca_cert.not_before() && source.not_after() > ca_cert.not_after(),
+        "source must straddle the CA window for this test to mean anything"
+    );
+
+    let (mirrored, _) =
+        self_signed_server_auth_mirror_cert(source.as_ref(), &ca_cert, &ca_key).expect("mirror");
+
+    // The leaf is fully nested in the CA: notBefore clamped up, notAfter down.
+    assert_eq!(
+        mirrored.not_before(),
+        ca_cert.not_before(),
+        "leaf notBefore clamped up to the CA"
+    );
+    assert_eq!(
+        mirrored.not_after(),
+        ca_cert.not_after(),
+        "leaf notAfter clamped down to the CA"
+    );
+    assert!(mirrored.not_before() >= ca_cert.not_before());
+    assert!(mirrored.not_after() <= ca_cert.not_after());
+    assert_eq!(ca_cert.issued(&mirrored), Ok(()));
 }

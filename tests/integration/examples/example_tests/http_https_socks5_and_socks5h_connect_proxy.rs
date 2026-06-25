@@ -4,7 +4,6 @@ use super::utils;
 
 use rama::{
     Layer, Service,
-    error::{BoxError, ErrorContext},
     extensions::ExtensionsRef,
     http::{
         Body, BodyExtractExt, Request, client::EasyHttpWebClient,
@@ -14,17 +13,16 @@ use rama::{
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        tls::{
-            ApplicationProtocol,
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{SelfSignedData, ServerAuth, ServerConfig},
-        },
         user::{Basic, ProxyCredential},
     },
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorService},
+    tls::boring::server::TlsAcceptorService,
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{SelfSignedData, TlsServerConfig},
+    },
     utils::str::non_empty_str,
 };
 
@@ -185,26 +183,16 @@ async fn spawn_https_server() -> SocketAddress {
     let http_server = HttpServer::auto(Executor::default())
         .service((ArcLayer::new(), ErrorHandlerLayer::new()).into_layer(app));
 
-    let data = try_new_tls_service_data().expect("create tls service data");
-    let https_server = TlsAcceptorService::new(data, http_server, false);
+    let config = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Socks5 Https Test Server".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto();
+    let https_server = TlsAcceptorService::new(config, http_server, false);
 
     tokio::spawn(tcp_service.serve(https_server));
 
     bind_addr
-}
-
-fn try_new_tls_service_data() -> Result<TlsAcceptorData, BoxError> {
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-            organisation_name: Some("Socks5 Https Test Server".to_owned()),
-            ..Default::default()
-        }))
-    };
-    tls_server_config
-        .try_into()
-        .context("create tls server config")
 }

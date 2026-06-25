@@ -13,7 +13,7 @@ use rama_core::{
 use rama_utils::octets::kib;
 use tokio::time::Instant;
 
-use crate::tls::client::{ClientHello, parse_client_hello_handshake};
+use crate::client::{ClientHello, parse_client_hello_handshake};
 
 use super::NoTlsRejectError;
 

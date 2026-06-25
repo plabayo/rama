@@ -40,7 +40,6 @@ use rama::{
             web::{Router, response::Html},
         },
     },
-    net::tls::server::SelfSignedData,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{
@@ -48,19 +47,20 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    tls::server::SelfSignedData,
 };
 
 #[cfg(feature = "boring")]
 use rama::{
-    net::tls::{
-        ApplicationProtocol,
-        server::{ServerAuth, ServerConfig},
-    },
     tls::boring::server::TlsAcceptorLayer,
+    tls::{KeyLogIntent, server::TlsServerConfig},
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama::{
+    tls::rustls::server::TlsAcceptorLayer,
+    tls::{KeyLogIntent, server::TlsServerConfig},
+};
 
 use std::{sync::Arc, time::Duration};
 
@@ -77,35 +77,15 @@ async fn main() {
 
     let shutdown = Shutdown::default();
 
-    #[cfg(feature = "boring")]
-    let tls_service_data = {
-        let tls_server_config = ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-                organisation_name: Some("Example Server Acceptor".to_owned()),
-                ..Default::default()
-            }))
-        };
-        tls_server_config
-            .try_into()
-            .expect("create tls server config")
-    };
-
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    let tls_service_data = {
-        TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
-        .expect("self signed acceptor data")
-        .with_alpn_protocols_http_auto()
-        .try_with_env_key_logger()
-        .expect("with env key logger")
-        .build()
-    };
+        .expect("self-signed")
+        .with_alpn_http_auto()
+        .with_keylog(KeyLogIntent::Environment);
 
     // create http service
     shutdown.spawn_task_fn(async |guard| {

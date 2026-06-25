@@ -16,15 +16,15 @@ use rama::{
     net::{
         AuthorityInputExt, Protocol, ProtocolInputExt,
         address::ip::geo::{IpGeoDb, IpGeoInfo},
-        fingerprint::{Ja3, Ja4, PeetPrint},
         forwarded::Forwarded,
         stream::SocketInfo,
-        tls::{
-            SecureTransport,
-            client::{ClientHello, ClientHelloExtension, ECHClientHello},
-        },
     },
     telemetry::tracing,
+    tls::fingerprint::{Ja3, Ja4, PeetPrint},
+    tls::{
+        SecureTransport,
+        client::{ClientHello, ClientHelloExtension, ECHClientHello},
+    },
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},

@@ -2,12 +2,12 @@ use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use std::{fmt, io};
 
-use crate::tls::{
+use crate::{
     CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SecureTransport, SupportedGroup,
     client::NegotiatedTlsParameters,
 };
 
-use crate::tls::client::ClientHello;
+use crate::client::ClientHello;
 
 #[derive(Debug, Clone)]
 /// Data which can be hashed using [`Self::hash`],
@@ -41,7 +41,7 @@ impl Ja3 {
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     pub fn compute_from_client_hello(
         client_hello: &ClientHello,
         negotiated_tls_version: Option<ProtocolVersion>,
@@ -76,15 +76,13 @@ impl Ja3 {
             extensions.get_or_insert_with(Vec::default).push(ext.id());
 
             match ext {
-                crate::tls::client::ClientHelloExtension::SupportedGroups(vec) => {
+                crate::client::ClientHelloExtension::SupportedGroups(vec) => {
                     let vec: Vec<_> = vec.iter().filter(|g| !g.is_grease()).copied().collect();
                     if !vec.is_empty() {
                         supported_groups = Some(vec)
                     }
                 }
-                crate::tls::client::ClientHelloExtension::ECPointFormats(vec)
-                    if !vec.is_empty() =>
-                {
+                crate::client::ClientHelloExtension::ECPointFormats(vec) if !vec.is_empty() => {
                     ec_point_formats = Some(vec.clone())
                 }
                 _ => (),
@@ -214,7 +212,7 @@ impl fmt::UpperHex for Ja3 {
 pub enum Ja3ComputeError {
     /// missing [`ClientHello`]
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,
@@ -237,7 +235,7 @@ impl std::error::Error for Ja3ComputeError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::tls::client::parse_client_hello;
+    use crate::client::parse_client_hello;
 
     use super::*;
 

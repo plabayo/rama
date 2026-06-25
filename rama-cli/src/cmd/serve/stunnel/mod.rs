@@ -27,16 +27,12 @@
 
 use rama::{
     Layer,
+    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     error::{BoxError, BoxErrorExt, ErrorContext as _},
     graceful::ShutdownGuard,
     net::{
         address::{HostWithPort, SocketAddress},
         proxy::IoForwardService,
-        tls::{
-            DataEncoding,
-            client::{ServerVerifyMode, TlsClientConfig},
-            server::{ServerAuth, ServerAuthData, ServerConfig},
-        },
     },
     rt::Executor,
     tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
@@ -44,9 +40,12 @@ use rama::{
     tls::boring::{
         client::{BoringClientConfigExt as _, TlsConnectorLayer},
         core::x509::{X509, store::X509StoreBuilder},
-        server::{TlsAcceptorData, TlsAcceptorLayer},
+        server::TlsAcceptorLayer,
     },
-    utils::str::NonEmptyStr,
+    tls::{
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{ServerAuthData, TlsServerConfig},
+    },
 };
 
 use clap::{Args, Subcommand};
@@ -139,7 +138,6 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
         cfg.key.as_ref(),
         Executor::graceful(graceful.clone()),
     )?;
-    let acceptor_data = TlsAcceptorData::try_from(server_config)?;
 
     let exec = Executor::graceful(graceful);
 
@@ -160,7 +158,7 @@ async fn run_exit_node(graceful: ShutdownGuard, cfg: ExitNodeArgs) -> Result<(),
             forward_addr
         );
 
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
+        let tcp_service = TlsAcceptorLayer::new(server_config).into_layer(
             IoToProxyBridgeIoLayer::new(exec.clone(), forward_addr)
                 .into_layer(IoForwardService::new(exec)),
         );
@@ -253,7 +251,7 @@ fn load_server_config(
     cert_path: Option<&PathBuf>,
     key_path: Option<&PathBuf>,
     exec: Executor,
-) -> Result<ServerConfig, BoxError> {
+) -> Result<TlsServerConfig, BoxError> {
     match (cert_path, key_path) {
         (Some(cert), Some(key)) => {
             tracing::info!(
@@ -262,26 +260,23 @@ fn load_server_config(
                 "Loading TLS certificate from files"
             );
 
-            let cert_data = read_pem_file(cert, "certificate")?;
-            let key_data = read_pem_file(key, "key")?;
+            let cert_chain = CertificateDer::pem_file_iter(cert)
+                .context("parse cert file")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("collect certificates")?;
 
-            Ok(ServerConfig::new(ServerAuth::Single(ServerAuthData {
-                cert_chain: DataEncoding::Pem(cert_data),
-                private_key: DataEncoding::Pem(key_data),
+            let private_key =
+                PrivateKeyDer::from_pem_file(key).context("parse private key file")?;
+
+            Ok(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
                 ocsp: None,
-            })))
+            }))
         }
         (None, None) => Ok(try_new_server_config(None, exec)?),
         _ => Err(BoxError::from_static_str(
             "Both certificate and key must be provided together, or neither",
         )),
     }
-}
-
-fn read_pem_file(path: &PathBuf, file_type: &str) -> Result<NonEmptyStr, BoxError> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {file_type} file: {e}"))?;
-
-    NonEmptyStr::try_from(content)
-        .map_err(|e| format!("Failed to parse {file_type} file: {e}").into())
 }

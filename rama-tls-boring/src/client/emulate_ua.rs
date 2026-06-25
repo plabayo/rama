@@ -5,7 +5,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::ProtocolInputExt;
-use rama_net::tls::client::TlsClientConfig;
+use rama_tls::client::TlsClientConfig;
 use rama_ua::profile::TlsProfile;
 use rama_utils::macros::generate_set_and_with;
 

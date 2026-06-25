@@ -57,7 +57,6 @@ use rama::{
             self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
         },
         jose::EcdsaKey,
-        pki_types::{CertificateDer, PrivateKeyDer},
     },
     graceful,
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
@@ -71,6 +70,11 @@ use rama::{
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
     tls::{
+        ApplicationProtocol, KeyLogIntent,
+        client::{ServerVerifyMode, TlsClientConfig},
+        server::{ServerAuthData, TlsServerConfig},
+    },
+    tls::{
         acme::{
             AcmeClient,
             proto::{
@@ -79,20 +83,12 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        rustls::{
-            dep::rustls::{
-                self,
-                crypto::aws_lc_rs::sign::any_ecdsa_type,
-                server::{ClientHello as RustlsClientHello, ResolvesServerCert},
-                sign::CertifiedKey,
-            },
-            server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-        },
+        rustls::server::TlsAcceptorLayer,
     },
+    utils::collections::smallvec::smallvec,
 };
-use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::time::sleep;
 
 // Default directory url of pebble
@@ -166,22 +162,13 @@ async fn main() {
         .create_tls_challenge_data(challenge, &auth.identifier)
         .expect("create tls challenge data");
 
-    let pk = PrivateKeyDer::Pkcs8(pk);
-
-    let cert_key = CertifiedKey::new(
-        vec![cert.der().clone()],
-        any_ecdsa_type(&pk).expect("create certified key"),
-    );
-
-    let cert_resolver = Arc::new(ResolvesServerCertAcme::new(cert_key));
-
-    let mut server_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(cert_resolver);
-
-    server_config.alpn_protocols = vec![rama::net::tls::ApplicationProtocol::ACME_TLS.into()];
-
-    let acceptor_data = TlsAcceptorData::from(server_config);
+    let acceptor_data = TlsServerConfig::new()
+        .with_single_cert(ServerAuthData {
+            private_key: pk.into(),
+            cert_chain: vec![cert.into()],
+            ocsp: None,
+        })
+        .with_alpn(smallvec![ApplicationProtocol::ACME_TLS]);
 
     let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let tcp_service =
@@ -212,20 +199,13 @@ async fn main() {
 
     order.finalize(csr.der()).await.expect("finalize order");
 
-    let cert = order
-        .download_certificate_as_pem_stack()
+    let cert_chain = order
+        .download_certificate_chain()
         .await
         .expect("download certificate");
 
-    tracing::info!(?cert, "received certificiate");
+    tracing::info!(?cert_chain, "received certificiate");
     challenge_server_handle.abort();
-
-    let cert_chain = cert
-        .into_iter()
-        .map(|pem| CertificateDer::from(pem.contents))
-        .collect();
-
-    let private_key = PrivateKeyDer::Pkcs8(key_pair.serialize_der().into());
 
     // create https server using the configured certificate
 
@@ -235,11 +215,13 @@ async fn main() {
             Ok::<_, Infallible>("hello".into_response())
         }));
 
-        let acceptor_data = TlsAcceptorDataBuilder::new(cert_chain, private_key)
-            .expect("tls acceptor with self signed data")
-            .try_with_env_key_logger()
-            .expect("with env key logger")
-            .build();
+        let acceptor_data = TlsServerConfig::new()
+            .with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key: key_pair.into(),
+                ocsp: None,
+            })
+            .with_keylog(KeyLogIntent::Environment);
 
         let tcp_service = (
             ConsumeErrLayer::default(),
@@ -258,23 +240,6 @@ async fn main() {
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
-}
-
-#[derive(Debug)]
-struct ResolvesServerCertAcme {
-    key: Arc<CertifiedKey>,
-}
-
-impl ResolvesServerCertAcme {
-    pub(crate) fn new(key: CertifiedKey) -> Self {
-        Self { key: Arc::new(key) }
-    }
-}
-
-impl ResolvesServerCert for ResolvesServerCertAcme {
-    fn resolve(&self, _client_hello: RustlsClientHello) -> Option<Arc<CertifiedKey>> {
-        Some(self.key.clone())
-    }
 }
 
 async fn internal_tcp_service_fn<S>(_stream: S) -> Result<(), Infallible> {

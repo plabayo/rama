@@ -25,7 +25,7 @@ use std::{marker::PhantomData, time::Duration};
 use crate::tls::boring::client as boring_client;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::net::tls::client::TlsClientConfig;
+use crate::tls::client::TlsClientConfig;
 #[cfg(feature = "rustls")]
 use crate::tls::rustls::client as rustls_client;
 
