@@ -3,7 +3,7 @@
 use rama_core::bytes::BytesMut;
 
 use super::parse_graceful;
-use crate::uri::{Uri, WireError};
+use crate::uri::{QueryRef, Uri, WireError};
 
 fn buf() -> BytesMut {
     BytesMut::new()
@@ -79,6 +79,17 @@ fn origin_form_asterisk_errors() {
     assert_eq!(write_origin(&uri), Err(WireError::AsteriskMismatch));
 }
 
+#[test]
+fn origin_form_encodes_owned_raw_query_component_text() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.set_query(QueryRef::from_raw_str("a=1\r\nInjected: yes #frag").into_owned());
+
+    assert_eq!(
+        write_origin(&uri).unwrap(),
+        "/p?a=1%0D%0AInjected:%20yes%20%23frag",
+    );
+}
+
 // ----------------------------------------------------------------------
 // write_http_absolute_form
 // ----------------------------------------------------------------------
@@ -115,6 +126,17 @@ fn absolute_form_origin_uri_errors_no_scheme() {
 fn absolute_form_asterisk_errors() {
     let uri: Uri = parse_graceful("*").unwrap();
     assert_eq!(write_absolute(&uri), Err(WireError::AsteriskMismatch));
+}
+
+#[test]
+fn absolute_form_encodes_owned_raw_query_component_text() {
+    let mut uri: Uri = parse_graceful("https://example.com/p").unwrap();
+    uri.set_query(QueryRef::from_raw_str("a=1\r\nInjected: yes #frag").into_owned());
+
+    assert_eq!(
+        write_absolute(&uri).unwrap(),
+        "https://example.com/p?a=1%0D%0AInjected:%20yes%20%23frag",
+    );
 }
 
 // ----------------------------------------------------------------------
@@ -197,6 +219,14 @@ fn h2_path_asterisk_writes_star() {
     // RFC 9113 §8.3.1: asterisk-form requests carry `*` in :path.
     let uri: Uri = parse_graceful("*").unwrap();
     assert_eq!(write_h2_path(&uri), "*");
+}
+
+#[test]
+fn h2_path_encodes_owned_raw_query_component_text() {
+    let mut uri: Uri = parse_graceful("/p").unwrap();
+    uri.set_query(QueryRef::from_raw_str("a=1\r\nInjected: yes #frag").into_owned());
+
+    assert_eq!(write_h2_path(&uri), "/p?a=1%0D%0AInjected:%20yes%20%23frag",);
 }
 
 // ----------------------------------------------------------------------

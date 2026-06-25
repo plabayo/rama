@@ -13,18 +13,17 @@ use std::hash::Hash;
 use percent_encoding::percent_decode;
 use rama_core::bytes::{Bytes, BytesMut};
 
-use super::encode::{encoded_pair_component, encoded_query};
+use super::encode::{encoded_pair_component, encoded_query, extend_encoded_query};
 
 /// Owned query component. Cheaply mutable in-place via the
 /// [`QueryMut`](super::QueryMut) RAII guard.
 ///
 /// `Default` produces an empty query (zero bytes — distinct from
 /// "no query"; the distinction is owned by [`super::Uri::query`] /
-/// [`super::Uri::set_query`]). `Display` writes the raw on-wire
-/// bytes (no leading `?`). `Hash` / `PartialOrd` / `Ord` are bytewise
-/// — queries are case-sensitive and pct-encoding-preserving per RFC
-/// 3986 (§3.4 leaves application-specific interpretation to the
-/// receiver).
+/// [`super::Uri::set_query`]). `Display` writes the explicitly encoded
+/// query view (no leading `?`). `Hash` / `PartialOrd` / `Ord` use that
+/// same encoded view, so raw component text and its pct-encoded spelling
+/// compare consistently.
 #[derive(Debug, Clone, Default)]
 pub struct Query {
     pub(crate) bytes: BytesMut,
@@ -175,6 +174,10 @@ impl<'a> QueryRef<'a> {
         encoded_query(self.bytes)
     }
 
+    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+        extend_encoded_query(buf, self.bytes);
+    }
+
     /// Percent-decoded query string. `Cow::Borrowed` when no `%XX`
     /// escapes are present; `Cow::Owned` otherwise. UTF-8 errors fall
     /// back to U+FFFD.
@@ -214,28 +217,26 @@ impl<'a> QueryRef<'a> {
     /// which keeps the bare-vs-empty distinction — use that iterator
     /// if you need it.
     ///
-    /// Fields can borrow from the query bytes: `&'a str` and
-    /// `Cow<'a, str>` skip the allocation when the source value has no
-    /// `+` / `%XX` to decode. When decoding *is* needed, `&'a str`
-    /// fails (the decoded bytes don't live in the input) while
-    /// `Cow<'a, str>` falls back to `Cow::Owned`. Prefer `Cow<'a, str>`
+    /// Fields can borrow from the query bytes when the component already has a
+    /// borrowed encoded view: `&'a str` and `Cow<'a, str>` skip the allocation
+    /// when the source value has no `+` / `%XX` to decode. When decoding *is*
+    /// needed, `&'a str` fails (the decoded bytes don't live in the input)
+    /// while `Cow<'a, str>` falls back to `Cow::Owned`. Prefer `Cow<'a, str>`
     /// or `String` for fields that may contain escapes.
     pub fn deserialize<T>(&self) -> Result<T, QueryDeserializeError>
     where
         T: serde::de::Deserialize<'a>,
     {
-        serde_html_form::from_str(self.encoded_str_unchecked()).map_err(QueryDeserializeError)
-    }
-
-    #[inline(always)]
-    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
-        self.bytes
-    }
-
-    #[inline(always)]
-    pub(super) fn encoded_str_unchecked(self) -> &'a str {
-        // Safety: parser and mutation APIs keep stored query bytes UTF-8.
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+        match self.as_encoded_str() {
+            Cow::Borrowed(encoded) => {
+                serde_html_form::from_str(encoded).map_err(QueryDeserializeError)
+            }
+            Cow::Owned(_) => Err(QueryDeserializeError(
+                <serde_html_form::de::Error as serde::de::Error>::custom(
+                    "query contains component text that needs encoding before deserialization",
+                ),
+            )),
+        }
     }
 }
 

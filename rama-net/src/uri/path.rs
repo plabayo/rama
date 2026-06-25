@@ -9,10 +9,11 @@ use std::{
 
 use itertools::Itertools;
 use percent_encoding::percent_decode;
+use rama_core::bytes::BytesMut;
 
 use crate::uri::{
     PathCaptures, PathPattern,
-    encode::{encoded_path, encoded_segment},
+    encode::{encoded_path, encoded_segment, extend_encoded_path},
 };
 
 use super::component_input::IntoUriComponent;
@@ -49,6 +50,10 @@ impl<'a> PathRef<'a> {
     #[inline(always)]
     pub fn as_encoded_str(self) -> Cow<'a, str> {
         encoded_path(self.bytes)
+    }
+
+    pub(super) fn write_encoded_to(self, buf: &mut BytesMut) {
+        extend_encoded_path(buf, self.bytes);
     }
 
     /// `true` when the path contains no bytes.
@@ -252,11 +257,6 @@ impl<'a> PathRef<'a> {
     #[inline(always)]
     fn has_leading_slash(self) -> bool {
         self.bytes.first().copied() == Some(b'/')
-    }
-
-    #[inline(always)]
-    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
-        self.bytes
     }
 }
 
@@ -540,11 +540,6 @@ impl<'a> PathSegment<'a> {
         let seg = maybe_decode(self.raw, opts.percent_decode);
         let pat = maybe_decode(&pat, opts.percent_decode);
         byte_ends_with(&seg, &pat, opts.ignore_ascii_case)
-    }
-
-    #[inline(always)]
-    pub(super) fn encoded_bytes_unchecked(self) -> &'a [u8] {
-        self.raw
     }
 }
 

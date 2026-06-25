@@ -102,6 +102,14 @@ fn ref_equality_hash_and_order_use_encoded_view() {
 }
 
 #[test]
+fn ref_into_owned_exports_only_explicit_encoded_or_decoded_views() {
+    let fragment = FragmentRef::from_raw_str("hello world/%2F/%zz/%").into_owned();
+
+    assert_eq!(fragment.as_encoded_str(), "hello%20world/%2F/%25zz/%25");
+    assert_eq!(fragment.as_decoded_str(), "hello world///%zz/%");
+}
+
+#[test]
 fn encoded_fragment_ref_preserves_valid_pct_and_escapes_invalid_bytes() {
     let fragment = FragmentRef::from_raw_str("hello world/%2F/%zz/%");
 

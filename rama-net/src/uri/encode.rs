@@ -216,6 +216,11 @@ fn push_pct_encoded(out: &mut String, b: u8) {
     out.push(HEX[(b & 0x0f) as usize] as char);
 }
 
+fn extend_pct_encoded(out: &mut BytesMut, b: u8) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    out.extend_from_slice(&[b'%', HEX[(b >> 4) as usize], HEX[(b & 0x0f) as usize]]);
+}
+
 fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -> Cow<'a, str> {
     let mut i = 0;
     let mut needs_encoding = std::str::from_utf8(input).is_err();
@@ -262,9 +267,60 @@ fn encode_preserving_pct<'a>(input: &'a [u8], is_allowed: impl Fn(u8) -> bool) -
     Cow::Owned(out)
 }
 
+fn extend_encoded_preserving_pct(
+    out: &mut BytesMut,
+    input: &[u8],
+    is_allowed: impl Fn(u8) -> bool,
+) {
+    let mut i = 0;
+    let mut needs_encoding = std::str::from_utf8(input).is_err();
+    while i < input.len() {
+        match input[i] {
+            b'%' if is_pct_triplet(input, i) => i += 3,
+            b'%' => {
+                needs_encoding = true;
+                break;
+            }
+            b if is_allowed(b) => i += 1,
+            _ => {
+                needs_encoding = true;
+                break;
+            }
+        }
+    }
+
+    if !needs_encoding {
+        out.extend_from_slice(input);
+        return;
+    }
+
+    let mut i = 0;
+    while i < input.len() {
+        let b = input[i];
+        if b == b'%' && is_pct_triplet(input, i) {
+            out.extend_from_slice(&input[i..i + 3]);
+            i += 3;
+        } else if b == b'%' {
+            extend_pct_encoded(out, b);
+            i += 1;
+        } else if is_allowed(b) {
+            out.extend_from_slice(&[b]);
+            i += 1;
+        } else {
+            extend_pct_encoded(out, b);
+            i += 1;
+        }
+    }
+}
+
 #[inline]
 pub(super) fn encoded_path(input: &[u8]) -> Cow<'_, str> {
     encode_preserving_pct(input, is_path_byte)
+}
+
+#[inline]
+pub(super) fn extend_encoded_path(out: &mut BytesMut, input: &[u8]) {
+    extend_encoded_preserving_pct(out, input, is_path_byte);
 }
 
 #[inline]
@@ -278,6 +334,11 @@ pub(super) fn encoded_query(input: &[u8]) -> Cow<'_, str> {
 }
 
 #[inline]
+pub(super) fn extend_encoded_query(out: &mut BytesMut, input: &[u8]) {
+    extend_encoded_preserving_pct(out, input, is_query_fragment_byte);
+}
+
+#[inline]
 pub(super) fn encoded_fragment(input: &[u8]) -> Cow<'_, str> {
     encode_preserving_pct(input, is_query_fragment_byte)
 }
@@ -285,4 +346,31 @@ pub(super) fn encoded_fragment(input: &[u8]) -> Cow<'_, str> {
 #[inline]
 pub(super) fn encoded_pair_component(input: &[u8]) -> Cow<'_, str> {
     encode_preserving_pct(input, is_pair_component_byte)
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::bytes::BytesMut;
+
+    use super::{encoded_path, encoded_query, extend_encoded_path, extend_encoded_query};
+
+    #[test]
+    fn direct_encoded_writers_match_string_views() {
+        let inputs: &[&[u8]] = &[
+            b"/simple/path",
+            b"/hello world/%2F/%zz/%",
+            b"a=1\r\nInjected: yes #frag",
+            &[b'a', 0xff, b'%', b'2', b'F'],
+        ];
+
+        for input in inputs {
+            let mut path = BytesMut::new();
+            extend_encoded_path(&mut path, input);
+            assert_eq!(&path[..], encoded_path(input).as_ref().as_bytes());
+
+            let mut query = BytesMut::new();
+            extend_encoded_query(&mut query, input);
+            assert_eq!(&query[..], encoded_query(input).as_ref().as_bytes());
+        }
+    }
 }

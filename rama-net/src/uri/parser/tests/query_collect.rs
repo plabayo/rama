@@ -78,6 +78,17 @@ fn ref_equality_hash_and_order_use_encoded_view() {
 }
 
 #[test]
+fn ref_into_owned_exports_only_explicit_encoded_or_decoded_views() {
+    let query = QueryRef::from_raw_str("msg=hello world&bad=%zz&tail=%").into_owned();
+
+    assert_eq!(
+        query.as_encoded_str(),
+        "msg=hello%20world&bad=%25zz&tail=%25",
+    );
+    assert_eq!(query.as_decoded_str(), "msg=hello world&bad=%zz&tail=%");
+}
+
+#[test]
 fn encoded_query_ref_preserves_valid_pct_and_escapes_invalid_bytes() {
     let query = QueryRef::from_raw_str("msg=hello world&good=%2F&bad=%zz&tail=%");
 

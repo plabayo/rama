@@ -27,6 +27,8 @@ use crate::byte_sets::is_pattern_name_byte;
 use super::component_input::IntoUriComponent;
 use super::path::{PathMatchOptions, PathRef, byte_starts_with, maybe_decode, strip_leading_slash};
 
+type EncodedSegment<'a> = Cow<'a, str>;
+
 /// A compiled path pattern.
 ///
 /// Construct via [`PathPattern::new`] / [`new_with_opts`](Self::new_with_opts)
@@ -598,9 +600,9 @@ impl<T> PathRouter<T> {
     /// Match `path` against the most specific registered prefix.
     #[must_use]
     pub fn match_prefix<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
-        let segments: SmallVec<[&'p [u8]; 8]> = path
+        let segments: SmallVec<[EncodedSegment<'p>; 8]> = path
             .segments()
-            .map(|segment| segment.encoded_bytes_unchecked())
+            .map(|segment| segment.as_encoded_str())
             .collect();
         let segments = prefix_content_segments(&segments);
         let matched = self.root.match_prefix(segments, 0)?;
@@ -620,9 +622,9 @@ impl<T> PathRouter<T> {
     /// route covers the complete path.
     #[must_use]
     pub fn match_exact<'a, 'p>(&'a self, path: PathRef<'p>) -> Option<PathRouteMatch<'a, 'p, T>> {
-        let segments: SmallVec<[&'p [u8]; 8]> = path
+        let segments: SmallVec<[EncodedSegment<'p>; 8]> = path
             .segments()
-            .map(|segment| segment.encoded_bytes_unchecked())
+            .map(|segment| segment.as_encoded_str())
             .collect();
         let segments = prefix_content_segments(&segments);
         let matched = self.root.match_prefix(segments, 0)?;
@@ -671,7 +673,7 @@ struct PathRouteCandidate<'a, T> {
 impl<T> PathRouteNode<T> {
     fn match_prefix<'a>(
         &'a self,
-        segments: &[&[u8]],
+        segments: &[EncodedSegment<'_>],
         index: usize,
     ) -> Option<PathRouteCandidate<'a, T>> {
         let mut best = self.routes.first().map(|route| PathRouteCandidate {
@@ -686,7 +688,13 @@ impl<T> PathRouteNode<T> {
                         continue;
                     };
                     let mut sink = Sink::Ignore;
-                    if !match_segment(elems, *ambiguity, segment, edge.opts, &mut sink) {
+                    if !match_segment(
+                        elems,
+                        *ambiguity,
+                        segment.as_ref().as_bytes(),
+                        edge.opts,
+                        &mut sink,
+                    ) {
                         continue;
                     }
                     if let Some(candidate) = edge.child.match_prefix(segments, index + 1) {
@@ -726,10 +734,10 @@ fn best_route<'a, T>(
     }
 }
 
-fn prefix_content_segments<'s, 'p>(segments: &'s [&'p [u8]]) -> &'s [&'p [u8]] {
+fn prefix_content_segments<'s, 'p>(segments: &'s [EncodedSegment<'p>]) -> &'s [EncodedSegment<'p>] {
     match segments {
-        [b""] => &segments[..0],
-        [head @ .., b""] => head,
+        [only] if only.is_empty() => &segments[..0],
+        [head @ .., last] if last.is_empty() => head,
         _ => segments,
     }
 }
@@ -1144,7 +1152,7 @@ impl PathPattern {
                     if !match_segment(
                         elems,
                         *ambiguity,
-                        seg.encoded_bytes_unchecked(),
+                        seg.as_encoded_str().as_ref().as_bytes(),
                         self.opts,
                         &mut ignore,
                     ) {
@@ -1192,14 +1200,12 @@ impl PathPattern {
     ) -> Option<PathCaptures<'_, 'p>> {
         // Inline the segment list: most paths have a handful of segments, so
         // this keeps the capturing path off the allocator in the common case.
-        let all: SmallVec<[&'p [u8]; 8]> = path
-            .segments()
-            .map(|s| s.encoded_bytes_unchecked())
-            .collect();
+        let all: SmallVec<[EncodedSegment<'p>; 8]> =
+            path.segments().map(|s| s.as_encoded_str()).collect();
         // A prefix match ignores trailing segments + trailing-slash policy, so
         // it matches against all segments; a full match trims the trailing-`/`
         // marker and enforces the policy.
-        let segs: &[&'p [u8]] = if prefix {
+        let segs: &[EncodedSegment<'p>] = if prefix {
             &all
         } else {
             self.check_trailing(&all)?
@@ -1232,7 +1238,10 @@ impl PathPattern {
     /// `/` (so `/a/` -> ["a", ""]); we consume that here rather than letting
     /// it leak into element matching. The bare root `/` is a lone empty
     /// segment that carries the root slash but no content.
-    fn check_trailing<'s, 'p>(&self, segs: &'s [&'p [u8]]) -> Option<&'s [&'p [u8]]> {
+    fn check_trailing<'s, 'p>(
+        &self,
+        segs: &'s [EncodedSegment<'p>],
+    ) -> Option<&'s [EncodedSegment<'p>]> {
         // Root `/` (lone empty segment) carries the slash but no content; a
         // final empty segment after real content is the trailing-`/` marker.
         let last_empty = segs.last().is_some_and(|s| s.is_empty());
@@ -1608,7 +1617,7 @@ impl SeqMemo {
 /// accepted (leading-run match) instead of requiring full consumption.
 fn match_sequence<'p>(
     pats: &[PatternSegment],
-    segs: &[&'p [u8]],
+    segs: &[EncodedSegment<'p>],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
     memo: &mut SeqMemo,
@@ -1641,7 +1650,7 @@ fn match_sequence<'p>(
         Some((PatternSegment::Normal { elems, ambiguity }, rest)) => {
             if let Some((seg, segs_rest)) = segs.split_first() {
                 let mark = sink.len();
-                if match_segment(elems, *ambiguity, seg, opts, sink)
+                if match_segment(elems, *ambiguity, seg.as_ref().as_bytes(), opts, sink)
                     && match_sequence(rest, segs_rest, opts, sink, memo, prefix)
                 {
                     true
@@ -1668,7 +1677,7 @@ fn match_sequence<'p>(
 fn match_catch_all<'p>(
     name: Option<(usize, usize)>,
     rest: &[PatternSegment],
-    segs: &[&'p [u8]],
+    segs: &[EncodedSegment<'p>],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
     memo: &mut SeqMemo,
@@ -1708,7 +1717,7 @@ fn match_catch_all<'p>(
 fn match_segment<'p>(
     elems: &[Element],
     ambiguity: usize,
-    raw_seg: &'p [u8],
+    raw_seg: &[u8],
     opts: PathMatchOptions,
     sink: &mut Sink<'_, 'p>,
 ) -> bool {
@@ -1826,7 +1835,7 @@ fn match_run<'p>(
 
 /// '/'-join decoded segment values into an owned string, in a single pass
 /// (no intermediate `Vec<String>`).
-fn join_decoded<'p>(segs: &[&'p [u8]], decode: bool) -> Cow<'p, str> {
+fn join_decoded<'p>(segs: &[EncodedSegment<'p>], decode: bool) -> Cow<'p, str> {
     // Decoded length ≤ raw length; pre-size for raw bytes plus separators.
     let cap = segs.iter().map(|s| s.len()).sum::<usize>() + segs.len();
     let mut out = String::with_capacity(cap);
@@ -1834,7 +1843,10 @@ fn join_decoded<'p>(segs: &[&'p [u8]], decode: bool) -> Cow<'p, str> {
         if i > 0 {
             out.push('/');
         }
-        out.push_str(&String::from_utf8_lossy(&maybe_decode(s, decode)));
+        out.push_str(&String::from_utf8_lossy(&maybe_decode(
+            s.as_ref().as_bytes(),
+            decode,
+        )));
     }
     Cow::Owned(out)
 }
