@@ -151,7 +151,7 @@ fn ensure_default_crypto_provider() {}
 pub mod types {
     //! common tls types
     #[doc(inline)]
-    pub use ::rama_net::tls::{
+    pub use ::rama_tls::{
         ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
         ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel, client,
     };

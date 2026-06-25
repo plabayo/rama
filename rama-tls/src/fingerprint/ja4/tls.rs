@@ -4,7 +4,7 @@ use std::fmt;
 
 use rama_core::extensions::Extensions;
 
-use crate::tls::{
+use crate::{
     ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
     SignatureScheme,
     client::{ClientHello, NegotiatedTlsParameters},
@@ -44,7 +44,7 @@ impl Ja4 {
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     pub fn compute_from_client_hello(
         client_hello: &ClientHello,
         negotiated_tls_version: Option<ProtocolVersion>,
@@ -96,12 +96,10 @@ impl Ja4 {
             extensions.get_or_insert_with(Vec::default).push(id);
 
             match ext {
-                crate::tls::client::ClientHelloExtension::ApplicationLayerProtocolNegotiation(
-                    alpns,
-                ) => {
+                crate::client::ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpns) => {
                     alpn = alpns.iter().next().cloned();
                 }
-                crate::tls::client::ClientHelloExtension::SignatureAlgorithms(vec) => {
+                crate::client::ClientHelloExtension::SignatureAlgorithms(vec) => {
                     // this one is the only one not sorted
                     let vec: Vec<_> = vec.iter().filter(|g| !g.is_grease()).copied().collect();
                     if !vec.is_empty() {
@@ -286,7 +284,7 @@ impl TryFrom<ProtocolVersion> for TlsVersion {
 pub enum Ja4ComputeError {
     /// missing [`ClientHello`]
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,
@@ -314,7 +312,7 @@ impl std::error::Error for Ja4ComputeError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::tls::client::parse_client_hello;
+    use crate::client::parse_client_hello;
 
     use super::*;
 

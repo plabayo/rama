@@ -10,8 +10,8 @@ use dial9_trace_format::{
 use rama_net::{
     address::Host,
     dial9::{io_error_kind_code, io_error_raw_os_code},
-    tls::{ApplicationProtocol, ProtocolVersion},
 };
+use rama_tls::{ApplicationProtocol, ProtocolVersion};
 use std::io::{self, Write};
 
 #[derive(Debug, Clone)]

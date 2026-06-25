@@ -1,9 +1,10 @@
 use rama_core::extensions::Extension;
-use rama_net::fingerprint::{PeetComputeError, PeetPrint};
-use rama_net::tls::ApplicationProtocol;
-use rama_net::{
+use rama_tls::ApplicationProtocol;
+use rama_tls::fingerprint::{PeetComputeError, PeetPrint};
+use rama_tls::{
+    ProtocolVersion,
+    client::ClientHello,
     fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
-    tls::{ProtocolVersion, client::ClientHello},
 };
 use serde::{Deserialize, Serialize};
 

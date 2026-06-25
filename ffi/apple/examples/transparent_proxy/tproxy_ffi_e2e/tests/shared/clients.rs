@@ -19,13 +19,15 @@ use rama::{
     net::{
         Protocol,
         address::{Domain, HostWithPort, ProxyAddress},
-        tls::client::{ServerVerifyMode, TlsClientConfig},
     },
     rt::Executor,
     service::BoxService,
     tcp::client::default_tcp_connect,
     telemetry::tracing,
-    tls::boring::client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
+    tls::{
+        boring::client::{BoringClientConfigExt as _, TlsConnectorData, tls_connect},
+        client::{ServerVerifyMode, TlsClientConfig},
+    },
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use tokio::{
@@ -77,10 +79,7 @@ pub(crate) fn build_http_client(
                 .with_server_verify(ServerVerifyMode::Auto)
                 .with_server_verify_cert_store(store);
             builder
-                .with_tls_support_using_boringssl_and_default_http_version(
-                    config,
-                    Version::HTTP_11,
-                )
+                .with_tls_support_using_boringssl_and_default_http_version(config, Version::HTTP_11)
                 .with_default_http_connector(Executor::default())
                 .build_client()
         }
@@ -418,8 +417,7 @@ pub(crate) async fn roundtrip_custom_protocol(
             let config = TlsClientConfig::new()
                 .with_server_verify(ServerVerifyMode::Disable)
                 .with_server_name(Domain::from_static("127.0.0.1").into());
-            let connector =
-                TlsConnectorData::try_from(&config).expect("build tls connector data");
+            let connector = TlsConnectorData::try_from(&config).expect("build tls connector data");
             let tls_stream = tls_connect(stream, Some(connector))
                 .await
                 .expect("tls connect over established tunnel");

@@ -14,6 +14,16 @@ mod acceptor_data;
 #[doc(inline)]
 pub use acceptor_data::TlsAcceptorData;
 
+mod config;
+#[doc(inline)]
+pub use config::{
+    BoringServerCertIssuer, BoringServerConfigExt, BoringTlsAcceptorConfig, BoringTlsAuth,
+};
+
+mod cert_issuer;
+#[doc(inline)]
+pub use cert_issuer::{CacheKind, DynamicIssuer, ServerCertIssuerData, ServerCertIssuerKind};
+
 pub mod utils;
 
 mod service;

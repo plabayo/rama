@@ -9,9 +9,9 @@ use rama::{net::address::SocketAddress, udp::bind_udp_with_address};
 #[cfg(feature = "boring")]
 use rama::{
     net::client::{ConnectorService, EstablishedClientConnection},
-    net::tls::client::{ServerVerifyMode, TlsClientConfig},
     tcp::client::service::TcpConnector,
     tls::boring::client::TlsConnector,
+    tls::client::{ServerVerifyMode, TlsClientConfig},
 };
 #[cfg(feature = "boring")]
 use rama_net::client::Request as TransportRequest;

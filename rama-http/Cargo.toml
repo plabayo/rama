@@ -41,9 +41,9 @@ multipart = ["dep:multer", "dep:mime_guess", "dep:rama-http-hyperium"]
 html = ["dep:rama-http-macros", "dep:memchr"]
 rss = ["dep:quick-xml"]
 # `rama-http-types/tls` is required so its `input_ext` protocol resolution sees the
-# real `rama_net::tls::SecureTransport` (not its tls-off dummy); otherwise an
+# real `rama_tls::SecureTransport` (not its tls-off dummy); otherwise an
 # origin-form request over a terminated TLS conn resolves to http instead of https.
-tls = ["rama-net/tls", "rama-http-types/tls"]
+tls = ["dep:rama-tls", "rama-tls/http", "rama-http-types/tls"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -73,6 +73,7 @@ rama-http-hyperium = { workspace = true, optional = true }
 rama-http-macros = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
+rama-tls = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 rawzip = { workspace = true, optional = true }

@@ -18,7 +18,7 @@ use rama::{
     stream::{codec::BytesCodec, io::StreamReader},
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument},
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::server::TlsAcceptorLayer,
     udp::{UdpFramed, bind_udp_with_address},
 };
 
@@ -82,10 +82,9 @@ impl fmt::Display for Mode {
 /// run the rama echo service
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), BoxError> {
     let exec = Executor::graceful(graceful);
-    let maybe_tls_cfg: Option<TlsAcceptorData> = if cfg.mode == Mode::Tls {
+    let maybe_tls_cfg = if cfg.mode == Mode::Tls {
         tracing::info!("create tls server config...");
-        let cfg = try_new_server_config(None, exec.clone())?;
-        Some(cfg.try_into()?)
+        Some(try_new_server_config(None, exec.clone())?)
     } else {
         None
     };

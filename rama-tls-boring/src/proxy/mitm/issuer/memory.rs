@@ -6,11 +6,13 @@ use rama_boring::{
     x509::X509,
 };
 use rama_core::{error::BoxError, telemetry::tracing};
-use rama_net::tls::server::SelfSignedData;
+use rama_tls::server::SelfSignedData;
 use rama_utils::collections::non_empty_vec;
 
 use crate::proxy::mitm::revocation::{BoringMitmRevocation, MitmRevocationCtx};
-use crate::server::utils::{MitmLeafOcspStatus, self_signed_server_auth_gen_ca};
+use rama_crypto::cert::boring::self_signed_server_auth_gen_ca;
+
+use crate::server::utils::MitmLeafOcspStatus;
 
 use super::{BoringMitmCertIssuer, MitmIssuedCert};
 
@@ -76,12 +78,13 @@ impl BoringMitmCertIssuer for InMemoryBoringMitmCertIssuer {
             None => Vec::new(),
         };
 
-        let (crt, key) = crate::server::utils::self_signed_server_auth_mirror_cert_with_extensions(
-            &original,
-            &self.ca_crt,
-            &self.ca_key,
-            &extra_extensions,
-        )?;
+        let (crt, key) =
+            rama_crypto::cert::boring::self_signed_server_auth_mirror_cert_with_extensions(
+                &original,
+                &self.ca_crt,
+                &self.ca_key,
+                &extra_extensions,
+            )?;
 
         // Staple a `good` only when the upstream advertised revocation info (the
         // mirror strips it, so a strict client would otherwise have nothing to
@@ -141,11 +144,8 @@ mod tests {
         ssl::{SslAcceptor, SslConnector, SslMethod, SslVerifyMode},
         x509::{X509, X509Builder, X509Extension, X509NameBuilder},
     };
-    use rama_net::{
-        address::Domain,
-        tls::server::{SelfSignedData, SelfSignedKeyKind},
-        uri::Uri,
-    };
+    use rama_net::{address::Domain, uri::Uri};
+    use rama_tls::server::{SelfSignedData, SelfSignedKeyKind};
     use tokio::io::duplex;
     use x509_cert::der::{Decode, Encode};
     use x509_ocsp::{BasicOcspResponse, CertStatus, OcspResponse, OcspResponseStatus};
@@ -509,7 +509,7 @@ mod tests {
         use crate::client::TlsConnectorData;
         use crate::proxy::mitm::TlsMitmRelay;
         use rama_core::{ServiceInput, io::BridgeIo};
-        use rama_net::tls::client::{ServerVerifyMode, TlsClientConfig};
+        use rama_tls::client::{ServerVerifyMode, TlsClientConfig};
 
         // Upstream TLS server presenting a cert that advertises OCSP.
         let (upstream_key, upstream_x509) = upstream_identity(Revocation::Ocsp);

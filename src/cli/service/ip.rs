@@ -41,33 +41,24 @@ use crate::{
     utils::octets::mib,
 };
 
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::http::headers::StrictTransportSecurity;
-
-#[cfg(feature = "boring")]
-use crate::{
-    net::tls::server::ServerConfig,
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-};
-
-#[cfg(feature = "boring")]
-type TlsConfig = ServerConfig;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-type TlsConfig = TlsAcceptorData;
-
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
+
+#[cfg(feature = "boring")]
+use crate::tls::boring::server::TlsAcceptorLayer;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::rustls::server::TlsAcceptorLayer;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::{http::headers::StrictTransportSecurity, tls::server::TlsServerConfig};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own ip [`Service`],
 /// echo'ing back the client IP over http or tcp.
 pub struct IpServiceBuilder<M> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_server_config: Option<TlsConfig>,
+    tls_server_config: Option<TlsServerConfig>,
     concurrent_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
@@ -159,7 +150,7 @@ impl<M> IpServiceBuilder<M> {
         #[cfg(any(feature = "rustls", feature = "boring"))]
         /// define a tls server cert config to be used for tls terminaton
         /// by the IP service.
-        pub fn tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
+        pub fn tls_server_config(mut self, cfg: Option<TlsServerConfig>) -> Self {
             self.tls_server_config = cfg;
             self
         }
@@ -174,18 +165,9 @@ impl IpServiceBuilder<mode::Http> {
         mut self,
         executor: Executor,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let tls_cfg = self.tls_server_config.take();
-
-        #[cfg(feature = "boring")]
-        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config.take() {
-            Some(cfg) => Some(cfg.try_into()?),
-            None => None,
-        };
-
         #[cfg(any(feature = "rustls", feature = "boring"))]
         {
-            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            let maybe_tls_acceptor_layer = self.tls_server_config.take().map(TlsAcceptorLayer::new);
             self.build_http(executor, maybe_tls_acceptor_layer)
         }
 
@@ -346,18 +328,9 @@ impl IpServiceBuilder<mode::Transport> {
     pub fn build(
         mut self,
     ) -> Result<impl Service<TcpStream, Output = (), Error = Infallible>, BoxError> {
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let tls_cfg = self.tls_server_config.take();
-
-        #[cfg(feature = "boring")]
-        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config.take() {
-            Some(cfg) => Some(cfg.try_into()?),
-            None => None,
-        };
-
         #[cfg(any(feature = "rustls", feature = "boring"))]
         {
-            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            let maybe_tls_acceptor_layer = self.tls_server_config.take().map(TlsAcceptorLayer::new);
             self.build_tcp(maybe_tls_acceptor_layer)
         }
 

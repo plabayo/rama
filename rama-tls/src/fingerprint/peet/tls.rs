@@ -9,8 +9,8 @@
 //! > Licensed under GPLv3.
 //! > See <https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme> for license details.
 
-use crate::tls::client::{ClientHello, ClientHelloExtension};
-use crate::tls::{
+use crate::client::{ClientHello, ClientHelloExtension};
+use crate::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
     ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
 };
@@ -48,7 +48,7 @@ impl PeetPrint {
     ///
     /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     pub fn compute_from_client_hello(client_hello: &ClientHello) -> Result<Self, PeetComputeError> {
         let cipher_suites = client_hello.cipher_suites().to_vec();
 
@@ -281,7 +281,7 @@ impl fmt::Debug for PeetPrint {
 pub enum PeetComputeError {
     /// missing [`ClientHello`]
     ///
-    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientHello`]: crate::client::ClientHello
     MissingClientHello,
     /// cipher suites was empty
     EmptyCipherSuites,
@@ -305,7 +305,7 @@ impl std::error::Error for PeetComputeError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::tls::client::parse_client_hello;
+    use crate::client::parse_client_hello;
 
     use super::*;
 

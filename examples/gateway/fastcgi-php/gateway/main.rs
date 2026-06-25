@@ -47,7 +47,6 @@ use rama::{
     net::{
         address::{HostWithPort, SocketAddress},
         client::EstablishedClientConnection,
-        tls::server::SelfSignedData,
     },
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
@@ -56,7 +55,8 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::server::TlsAcceptorLayer,
+    tls::server::{SelfSignedData, TlsServerConfig},
 };
 
 #[tokio::main]
@@ -95,13 +95,13 @@ async fn main() {
     let exec = Executor::graceful(guard);
 
     // ── TLS terminator (rustls + self-signed, HTTP/1.1 + HTTP/2) ─────────
-    let tls_data = TlsAcceptorDataBuilder::try_new_self_signed(SelfSignedData {
-        organisation_name: Some("rama-fastcgi-php example".to_owned()),
-        ..Default::default()
-    })
-    .expect("self-signed acceptor data")
-    .with_alpn_protocols_http_auto()
-    .build();
+    let tls_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("rama-fastcgi-php example".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_auto();
 
     // ── FastCGI client: HTTP → CGI env (+SCRIPT_FILENAME) → php-fpm ──────
     // `FastCgiTcpConnector::php_fpm` opens a TCP connection to the backend

@@ -26,13 +26,18 @@ targets = [
 
 [features]
 default = []
-http = ["rama-net/http"]
+http = ["rama-net/http", "rama-tls/http"]
 compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
 # Optional [dial9] runtime telemetry support.
 #
 # [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-net/dial9"]
+dial9 = [
+    "dep:dial9-tokio-telemetry",
+    "dep:dial9-trace-format",
+    "rama-net/dial9",
+    "rama-tls/dial9",
+]
 
 [dependencies]
 brotli = { workspace = true, optional = true }
@@ -46,8 +51,9 @@ pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
-rama-crypto = { workspace = true, features = ["native-certs"] }
-rama-net = { workspace = true, features = ["tls"] }
+rama-crypto = { workspace = true, features = ["native-certs", "boring"] }
+rama-net = { workspace = true }
+rama-tls = { workspace = true }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }

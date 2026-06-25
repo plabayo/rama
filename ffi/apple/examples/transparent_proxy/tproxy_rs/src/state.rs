@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use rama::bytes::Bytes;
-use rama::net::tls::keylog::KeyLogToggle;
+use rama::tls::keylog::KeyLogToggle;
 
 use crate::tls::DemoTlsMitmRelay;
 

@@ -60,21 +60,12 @@
 
 use rama::{
     Layer,
-    error::BoxError,
+    crypto::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
+    error::{BoxError, ErrorContext},
     graceful::Shutdown,
-    http::server::HttpServer,
-    http::service::web::response::IntoResponse,
-    http::{Request, Response},
+    http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
-    net::{
-        address::Domain,
-        tls::server::{ServerAuth, ServerConfig},
-        tls::{
-            DataEncoding,
-            client::ClientHello,
-            server::{CacheKind, DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
-        },
-    },
+    net::address::Domain,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -83,7 +74,13 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::server::{
+        BoringServerConfigExt as _, CacheKind, ServerCertIssuerData, TlsAcceptorLayer,
+    },
+    tls::{
+        client::ClientHello,
+        server::{DynamicCertIssuer, ServerAuthData, TlsServerConfig},
+    },
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -102,12 +99,10 @@ async fn main() {
 
     let issuer = DynamicIssuer::new();
 
-    let tls_server_config = ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
+    let tls_server_config = TlsServerConfig::new().with_cert_issuer(ServerCertIssuerData {
         kind: issuer.into(),
         cache_kind: CacheKind::Disabled,
-    }));
-
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+    });
 
     let shutdown = Shutdown::default();
 
@@ -118,7 +113,7 @@ async fn main() {
 
         let tcp_service = (
             ConsumeErrLayer::default(),
-            TlsAcceptorLayer::new(acceptor_data),
+            TlsAcceptorLayer::new(tls_server_config),
         )
             .into_layer(http_service);
 
@@ -171,35 +166,29 @@ impl DynamicCertIssuer for DynamicIssuer {
 }
 
 pub fn example_self_signed_auth() -> Result<ServerAuthData, BoxError> {
-    Ok(ServerAuthData {
-        private_key: DataEncoding::Pem(
-            std::str::from_utf8(include_bytes!("./assets/example.com.key"))
-                .expect("should decode")
-                .try_into()
-                .expect("should work"),
-        ),
-        cert_chain: DataEncoding::Pem(
-            std::str::from_utf8(include_bytes!("./assets/example.com.crt"))
-                .expect("should decode")
-                .try_into()
-                .expect("should work"),
-        ),
-        ocsp: None,
-    })
+    parse_auth_data(
+        include_bytes!("./assets/example.com.crt"),
+        include_bytes!("./assets/example.com.key"),
+    )
 }
 
 pub fn second_example_self_signed_auth() -> Result<ServerAuthData, BoxError> {
+    parse_auth_data(
+        include_bytes!("./assets/second_example.com.crt"),
+        include_bytes!("./assets/second_example.com.key"),
+    )
+}
+
+fn parse_auth_data(cert_chain: &[u8], private_key: &[u8]) -> Result<ServerAuthData, BoxError> {
+    let cert_chain = CertificateDer::pem_slice_iter(cert_chain)
+        .collect::<Result<Vec<_>, _>>()
+        .context("collect cert chain")?;
+
+    let private_key = PrivateKeyDer::from_pem_slice(private_key).context("load private key")?;
+
     Ok(ServerAuthData {
-        private_key: DataEncoding::Pem(
-            include_str!("./assets/second_example.com.key")
-                .try_into()
-                .expect("should work"),
-        ),
-        cert_chain: DataEncoding::Pem(
-            include_str!("./assets/second_example.com.crt")
-                .try_into()
-                .expect("should work"),
-        ),
+        cert_chain,
+        private_key,
         ocsp: None,
     })
 }

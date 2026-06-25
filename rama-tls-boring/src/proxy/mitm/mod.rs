@@ -13,11 +13,12 @@ use rama_core::{
     io::{BridgeIo, Io},
     telemetry::tracing,
 };
-use rama_net::{
-    address::{Domain, HostWithPort},
-    tls::{ApplicationProtocol, client::NegotiatedTlsParameters, server::SelfSignedData},
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::address::{Domain, HostWithPort};
+use rama_net::extensions::StreamTransformed;
+use rama_tls::{
+    ApplicationProtocol, KeyLogIntent, client::NegotiatedTlsParameters, server::SelfSignedData,
 };
-use rama_net::{extensions::StreamTransformed, tls::KeyLogIntent};
 use rama_utils::str::any_submatch_ignore_ascii_case;
 use std::{
     fmt,
@@ -26,7 +27,7 @@ use std::{
 
 use crate::core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef};
 use crate::{TlsStream, client};
-use rama_net::tls::keylog::{KeyLogSink, open_intent_sink};
+use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 
 // `alert` module retained (encode_plain_alert + write_plain_alert) so
 // the wire-format pin tests stay live and we can re-enable injection
@@ -584,7 +585,7 @@ where
                 source_cert: X509,
                 session_protocol_version: Option<rama_boring::ssl::SslVersion>,
                 alpn_proto: Option<ApplicationProtocol>,
-                peer_cert_chain: Option<rama_net::tls::DataEncoding>,
+                peer_cert_chain: Option<Vec<CertificateDer<'static>>>,
                 version_for_log: &'static str,
                 has_alpn: bool,
             }

@@ -21,11 +21,12 @@ pub use parser::{
 mod config;
 #[doc(inline)]
 pub use config::{
-    ClientAuth, ClientAuthData, ServerVerifyMode, TlsAlpn, TlsClientAuth, TlsClientConfig,
-    TlsKeyLog, TlsServerName, TlsServerVerify, TlsStoreServerCertChain, TlsSupportedVersions,
+    ClientAuth, ClientAuthData, ServerVerifyMode, TlsClientAuth, TlsClientConfig, TlsServerName,
+    TlsServerVerify, TlsStoreServerCertChain,
 };
+use rama_crypto::pki_types::CertificateDer;
 
-use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
+use super::{ApplicationProtocol, ProtocolVersion};
 use rama_core::extensions::Extension;
 
 #[derive(Debug, Clone, Extension)]
@@ -44,7 +45,7 @@ pub struct NegotiatedTlsParameters {
     /// e.g. [`ApplicationProtocol::HTTP_2`]
     pub application_layer_protocol: Option<ApplicationProtocol>,
     /// Certificate chain provided the peer (only stored if config requested this)
-    pub peer_certificate_chain: Option<DataEncoding>,
+    pub peer_certificate_chain: Option<Vec<CertificateDer<'static>>>,
 }
 
 /// Merge extension lists A and B, with
@@ -74,7 +75,7 @@ pub fn merge_client_hello_lists(
 
 #[cfg(test)]
 mod tests {
-    use crate::address::Domain;
+    use rama_net::address::Domain;
 
     use super::*;
 

@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use rama_core::{Layer, Service as _, ServiceInput, telemetry::tracing};
-use rama_net::{
-    stream::service::EchoService,
-    tls::{
-        SupportedGroup,
-        client::{ServerVerifyMode, TlsClientConfig},
-        server::{SelfSignedData, ServerAuth, ServerConfig},
-    },
+use rama_net::stream::service::EchoService;
+use rama_tls::{
+    SupportedGroup,
+    client::{ServerVerifyMode, TlsClientConfig},
+    server::{SelfSignedData, TlsServerConfig},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
@@ -20,13 +18,11 @@ use crate::{
 #[tracing_test::traced_test]
 async fn test_assumed_default_group_id_support() {
     let server = Arc::new(
-        TlsAcceptorLayer::new({
-            let tls_server_config =
-                ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-            tls_server_config
-                .try_into()
-                .expect("create tls server config")
-        })
+        TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .try_with_self_signed(SelfSignedData::default())
+                .expect("self-signed"),
+        )
         .into_layer(EchoService::new()),
     );
 

@@ -27,7 +27,7 @@ targets = [
 [features]
 default = []
 embed-profiles = ["dep:serde_json"]
-tls = ["rama-net/tls"]
+tls = ["dep:rama-tls", "rama-tls/http"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -35,6 +35,7 @@ itertools = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
+rama-tls = { workspace = true, optional = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }

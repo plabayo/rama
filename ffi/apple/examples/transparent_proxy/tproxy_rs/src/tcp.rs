@@ -1,10 +1,10 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-use rama::net::tls::KeyLogIntent;
-use rama::net::tls::keylog::{
+use rama::telemetry::tracing;
+use rama::tls::KeyLogIntent;
+use rama::tls::keylog::{
     KeyLogSink, NoopKeyLogSink, RotatingFileKeyLogSink, RotationPeriod, ToggleableKeyLogSink,
 };
-use rama::telemetry::tracing;
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -39,12 +39,11 @@ use rama::{
         },
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
-        tls::server::PeekTlsClientHelloService,
     },
     proxy::socks5::{proxy::mitm::Socks5MitmRelayService, server::Socks5PeekRouter},
     rt::Executor,
     service::MirrorService,
-    tls::boring::proxy::TlsMitmRelay,
+    tls::{boring::proxy::TlsMitmRelay, server::PeekTlsClientHelloService},
 };
 
 use crate::{

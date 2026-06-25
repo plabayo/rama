@@ -5,19 +5,14 @@ use rama::{
         Body, HeaderValue, Request, Response, Version, client::EasyHttpWebClient, header,
         header::HOST, server::HttpServer,
     },
-    net::tls::client::TlsClientConfig,
-    net::{
-        test_utils::client::MockConnectorService,
-        tls::{
-            ApplicationProtocol,
-            server::{SelfSignedData, ServerAuth, ServerConfig},
-        },
-    },
+    net::test_utils::client::MockConnectorService,
     rt::Executor,
     service::service_fn,
     tls::boring::server::TlsAcceptorLayer,
+    tls::client::TlsClientConfig,
+    tls::server::{SelfSignedData, TlsServerConfig},
 };
-use rama_net::tls::client::ServerVerifyMode;
+use rama_tls::client::ServerVerifyMode;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -33,18 +28,13 @@ async fn h2_with_connection_pooling() {
             Ok::<_, Infallible>(Response::new(Body::empty()))
         }));
 
-    let tls_service_data = {
-        let tls_server_config = ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![ApplicationProtocol::HTTP_2]),
-            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-                organisation_name: Some("Example Server Acceptor".to_owned()),
-                ..Default::default()
-            }))
-        };
-        tls_server_config
-            .try_into()
-            .expect("create tls server config")
-    };
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_2();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
     let direct_connection = MockConnectorService::new(move || server.clone());
 
@@ -81,23 +71,18 @@ async fn h1_with_connection_pooling_detects_closed_connections() {
             Ok::<_, Infallible>(resp)
         }));
 
-    let tls_service_data = {
-        let tls_server_config = ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![ApplicationProtocol::HTTP_11]),
-            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-                organisation_name: Some("Example Server Acceptor".to_owned()),
-                ..Default::default()
-            }))
-        };
-        tls_server_config
-            .try_into()
-            .expect("create tls server config")
-    };
+    let tls_service_data = TlsServerConfig::new()
+        .try_with_self_signed(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("self-signed")
+        .with_alpn_http_1();
     let server = TlsAcceptorLayer::new(tls_service_data).into_layer(http_server);
     let direct_connection = MockConnectorService::new(move || server.clone());
 
     let tls_config = TlsClientConfig::default_http()
-        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
+        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)
@@ -143,27 +128,24 @@ async fn connection_pooling_detects_closed_connections(version: Version, delay: 
         }));
 
         let tls_service_data = {
-            let tls_server_config = ServerConfig {
-                application_layer_protocol_negotiation: Some(match version {
-                    Version::HTTP_11 => vec![ApplicationProtocol::HTTP_11],
-                    Version::HTTP_2 => vec![ApplicationProtocol::HTTP_2],
-                    _ => panic!("not supported by this test"),
-                }),
-                ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+            let tls = TlsServerConfig::new()
+                .try_with_self_signed(SelfSignedData {
                     organisation_name: Some("Example Server Acceptor".to_owned()),
                     ..Default::default()
-                }))
-            };
-            tls_server_config
-                .try_into()
-                .expect("create tls server config")
+                })
+                .expect("self-signed");
+            match version {
+                Version::HTTP_11 => tls.with_alpn_http_1(),
+                Version::HTTP_2 => tls.with_alpn_http_2(),
+                _ => panic!("not supported by this test"),
+            }
         };
 
         TlsAcceptorLayer::new(tls_service_data).into_layer(http_server)
     });
 
     let tls_config = TlsClientConfig::default_http()
-        .with_server_verify(rama_net::tls::client::ServerVerifyMode::Disable);
+        .with_server_verify(rama_tls::client::ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(direct_connection)

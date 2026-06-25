@@ -5,10 +5,11 @@ use rama::{
     combinators::Either,
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
-    net::{address::SocketAddress, tls::ApplicationProtocol},
+    net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
+    tls::ApplicationProtocol,
 };
 
 use clap::Args;

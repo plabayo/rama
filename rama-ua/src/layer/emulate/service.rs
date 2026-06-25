@@ -1461,8 +1461,8 @@ mod tests {
             }),
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
-                client_hello: rama_net::tls::client::ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                client_hello: rama_tls::client::ClientHello::new(
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1539,8 +1539,8 @@ mod tests {
             }),
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
-                client_hello: rama_net::tls::client::ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                client_hello: rama_tls::client::ClientHello::new(
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1619,8 +1619,8 @@ mod tests {
             }),
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
-                client_hello: rama_net::tls::client::ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                client_hello: rama_tls::client::ClientHello::new(
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1699,8 +1699,8 @@ mod tests {
             }),
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
-                client_hello: rama_net::tls::client::ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                client_hello: rama_tls::client::ClientHello::new(
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -1818,8 +1818,8 @@ mod tests {
             }),
             #[cfg(feature = "tls")]
             tls: Arc::new(crate::profile::TlsProfile {
-                client_hello: rama_net::tls::client::ClientHello::new(
-                    rama_net::tls::ProtocolVersion::TLSv1_3,
+                client_hello: rama_tls::client::ClientHello::new(
+                    rama_tls::ProtocolVersion::TLSv1_3,
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
