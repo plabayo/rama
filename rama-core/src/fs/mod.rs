@@ -14,6 +14,9 @@
 //! - [`safe_open_in`] / [`OpenOptions::jail`] additionally confine the opened
 //!   file to a trusted root directory: absolute paths are rejected and symbolic
 //!   links are resolved so they cannot point outside the root.
+//! - [`safe_path_in`], [`safe_create_dir_all_in`], and [`safe_write_in`] provide
+//!   synchronous root-confined path resolution, directory creation, and writes
+//!   for non-async code.
 //!
 //! The underlying lexical check is exposed as [`sanitize_path`] for callers
 //! that want to validate a path without opening it.
@@ -42,10 +45,10 @@
 //! # }
 //! ```
 
-mod sanitize;
 #[doc(inline)]
-pub use sanitize::{
-    UnsafePathError, is_reserved_device_name, sanitize_path, sanitize_relative_path,
+pub use rama_utils::fs::{
+    UnsafePathError, is_reserved_device_name, safe_create_dir_all_in, safe_path_in, safe_write_in,
+    sanitize_path, sanitize_relative_path,
 };
 
 use std::io;

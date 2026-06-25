@@ -1,6 +1,6 @@
 use super::{DirEntry, File};
-use std::fs;
-use std::path::{Component, Path};
+use crate::fs::{safe_create_dir_all_in, safe_write_in};
+use std::path::Path;
 
 /// A directory.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,88 +80,25 @@ impl<'a> Dir<'a> {
     ///
     /// # Security
     ///
-    /// This method validates that all entry paths are relative and do not escape
-    /// the extraction directory through path traversal (e.g., `..` segments or
-    /// absolute paths). If any entry path is invalid, extraction fails with an error.
+    /// This method validates that all entry paths are relative, do not escape
+    /// the extraction directory through path traversal, and do not follow
+    /// symlinks outside the extraction directory.
     pub fn extract<S: AsRef<Path>>(&self, base_path: S) -> std::io::Result<()> {
         let base_path = base_path.as_ref();
+        std::fs::create_dir_all(base_path)?;
 
         for entry in self.entries() {
-            let entry_path = entry.path();
-
-            // Validate the entry path to prevent path traversal attacks
-            validate_extraction_path(entry_path)?;
-
-            let path = base_path.join(entry_path);
-
             match entry {
                 DirEntry::Dir(d) => {
-                    fs::create_dir_all(&path)?;
+                    safe_create_dir_all_in(base_path, d.path())?;
                     d.extract(base_path)?;
                 }
                 DirEntry::File(f) => {
-                    // Ensure parent directory exists before writing file
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::write(path, f.contents())?;
+                    safe_write_in(base_path, f.path(), f.contents())?;
                 }
             }
         }
 
         Ok(())
     }
-}
-
-/// Validates that a path is safe for extraction.
-///
-/// Returns an error if the path:
-/// - Is absolute
-/// - Contains `..` components that could escape the extraction directory
-/// - Contains other unsafe components
-fn validate_extraction_path(path: &Path) -> std::io::Result<()> {
-    // Reject absolute paths
-    if path.is_absolute() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Absolute paths are not allowed for extraction: {}",
-                path.display()
-            ),
-        ));
-    }
-
-    // Check each component to ensure no path traversal
-    for component in path.components() {
-        match component {
-            Component::Normal(_) => {
-                // Normal path components are allowed
-            }
-            Component::ParentDir => {
-                // Parent directory traversal is not allowed
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "Path traversal with '..' is not allowed for extraction: {}",
-                        path.display()
-                    ),
-                ));
-            }
-            Component::RootDir | Component::Prefix(_) => {
-                // Root directory and Windows prefixes indicate absolute paths
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "Absolute paths are not allowed for extraction: {}",
-                        path.display()
-                    ),
-                ));
-            }
-            Component::CurDir => {
-                // Current directory '.' is allowed but unnecessary
-            }
-        }
-    }
-
-    Ok(())
 }

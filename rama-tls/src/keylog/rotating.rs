@@ -152,6 +152,10 @@ impl RotatingFileKeyLogSink {
         std::fs::create_dir_all(&dir)
             .context("create dir for rotating keylog")
             .with_context_debug_field("dir", || dir.clone())?;
+        rama_core::fs::safe_path_in(&dir, format!("{prefix}.probe"))
+            .context("validate rotating keylog prefix")
+            .with_context_debug_field("dir", || dir.clone())
+            .context_str_field("prefix", prefix)?;
 
         let retention_buckets = retention.map(|d| {
             let secs = i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
@@ -250,7 +254,18 @@ fn writer_loop(
             // Drop previous file before opening the new one so any
             // OS-level buffered bytes flush via `File`'s Drop impl.
             current = None;
-            let new_path = make_path(dir, prefix, period, bucket);
+            let new_path = match make_path(dir, prefix, period, bucket) {
+                Ok(path) => path,
+                Err(err) => {
+                    tracing::error!(
+                        ?dir,
+                        %prefix,
+                        error = %err,
+                        "RotatingFileKeyLogSink[rx]: unsafe bucket path; dropping line",
+                    );
+                    continue;
+                }
+            };
             match OpenOptions::new().append(true).create(true).open(&new_path) {
                 Ok(file) => {
                     if let Some(retain) = retention_buckets {
@@ -282,8 +297,13 @@ fn writer_loop(
     }
 }
 
-fn make_path(dir: &Path, prefix: &str, period: RotationPeriod, bucket: i64) -> PathBuf {
-    dir.join(format!("{prefix}.{}", period.bucket_to_suffix(bucket)))
+fn make_path(
+    dir: &Path,
+    prefix: &str,
+    period: RotationPeriod,
+    bucket: i64,
+) -> std::io::Result<PathBuf> {
+    rama_core::fs::safe_path_in(dir, format!("{prefix}.{}", period.bucket_to_suffix(bucket)))
 }
 
 fn sweep_older_than(
@@ -400,7 +420,8 @@ mod tests {
         sink.write_line("CLIENT_RANDOM c d\n");
         drop(sink);
 
-        let expected_path = make_path(dir.path(), DEFAULT_PREFIX, period, period.current_bucket());
+        let expected_path = make_path(dir.path(), DEFAULT_PREFIX, period, period.current_bucket())
+            .expect("valid keylog path");
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
             if let Ok(content) = std::fs::read_to_string(&expected_path)
@@ -414,12 +435,28 @@ mod tests {
     }
 
     #[test]
+    fn rejects_prefix_that_escapes_log_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = RotatingFileKeyLogSink::try_open_with(
+            dir.path(),
+            "../sslkeylog",
+            RotationPeriod::HOURLY,
+            None,
+        )
+        .expect_err("prefix traversal should be rejected");
+        assert!(
+            err.to_string().contains("validate rotating keylog prefix"),
+            "unexpected error: {err:?}",
+        );
+    }
+
+    #[test]
     fn sweep_removes_files_older_than_window_keeps_recent() {
         let dir = tempfile::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
         let now = period.current_bucket();
         let touch = |bucket: i64| {
-            let path = make_path(dir.path(), DEFAULT_PREFIX, period, bucket);
+            let path = make_path(dir.path(), DEFAULT_PREFIX, period, bucket).expect("valid path");
             std::fs::write(&path, b"stub\n").unwrap();
             path
         };
@@ -433,7 +470,7 @@ mod tests {
         let foreign_suffix = dir.path().join(format!("{DEFAULT_PREFIX}.unparseable"));
         std::fs::write(&foreign_suffix, b"keep\n").unwrap();
 
-        let active = make_path(dir.path(), DEFAULT_PREFIX, period, now);
+        let active = make_path(dir.path(), DEFAULT_PREFIX, period, now).expect("valid path");
         sweep_older_than(
             dir.path(),
             DEFAULT_PREFIX,
@@ -459,7 +496,7 @@ mod tests {
         // the system clock jumps backward.
         let dir = tempfile::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
-        let active = make_path(dir.path(), DEFAULT_PREFIX, period, 0); // 1970-01-01-00
+        let active = make_path(dir.path(), DEFAULT_PREFIX, period, 0).expect("valid path"); // 1970-01-01-00
         std::fs::write(&active, b"active\n").unwrap();
         sweep_older_than(dir.path(), DEFAULT_PREFIX, period, i64::MAX, &active);
         assert!(active.exists());
@@ -471,7 +508,7 @@ mod tests {
         // leave it alone even after a write (which triggers rotation).
         let dir = tempfile::tempdir().expect("tempdir");
         let period = RotationPeriod::HOURLY;
-        let ancient = make_path(dir.path(), DEFAULT_PREFIX, period, 0);
+        let ancient = make_path(dir.path(), DEFAULT_PREFIX, period, 0).expect("valid path");
         std::fs::write(&ancient, b"ancient\n").unwrap();
 
         let sink = RotatingFileKeyLogSink::try_open_with(dir.path(), DEFAULT_PREFIX, period, None)
@@ -481,7 +518,8 @@ mod tests {
 
         // Give the writer thread a moment to land its line.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let active = make_path(dir.path(), DEFAULT_PREFIX, period, period.current_bucket());
+        let active = make_path(dir.path(), DEFAULT_PREFIX, period, period.current_bucket())
+            .expect("valid path");
         loop {
             if std::fs::read_to_string(&active)
                 .map(|s| s.contains("now"))

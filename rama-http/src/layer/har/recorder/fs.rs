@@ -136,17 +136,25 @@ impl FileRecorderTask {
                         sr
                     } else {
                         storage = Some(
-                            match Storage::try_new(self.dir.join(format!(
-                                "{}_{}_{}_{}.har",
-                                self.prefix,
-                                self.start_epoch,
-                                {
-                                    let i = counter;
-                                    counter += 1;
-                                    i
-                                },
-                                self.start.elapsed().as_secs()
-                            )))
+                            match async {
+                                let file_name = format!(
+                                    "{}_{}_{}_{}.har",
+                                    self.prefix,
+                                    self.start_epoch,
+                                    {
+                                        let i = counter;
+                                        counter += 1;
+                                        i
+                                    },
+                                    self.start.elapsed().as_secs()
+                                );
+                                create_har_parent_dir(&self.dir)
+                                    .await
+                                    .context("create HAR recording dir")?;
+                                let path = rama_core::fs::safe_path_in(&self.dir, file_name)
+                                    .context("validate HAR file path")?;
+                                Storage::try_new(path).await
+                            }
                             .await
                             {
                                 Err(err) => {

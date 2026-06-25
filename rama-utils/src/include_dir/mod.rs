@@ -89,71 +89,86 @@ mod tests {
 
     #[test]
     fn test_extract_rejects_absolute_paths() {
-        // Create a Dir with an absolute path entry
         let malicious_file = File::new("/etc/passwd", b"malicious content");
         let malicious_entry = DirEntry::File(malicious_file);
-        let malicious_dir = Dir::new("test", &[malicious_entry]);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
 
-        // Attempt to extract should fail
         let temp_dir = std::env::temp_dir().join("test_extract_absolute");
         let result = malicious_dir.extract(&temp_dir);
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("Absolute paths are not allowed"));
     }
 
     #[test]
     fn test_extract_rejects_parent_traversal() {
-        // Create a Dir with a path traversal entry
         let malicious_file = File::new("../../../etc/passwd", b"malicious content");
         let malicious_entry = DirEntry::File(malicious_file);
-        let malicious_dir = Dir::new("test", &[malicious_entry]);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
 
-        // Attempt to extract should fail
         let temp_dir = std::env::temp_dir().join("test_extract_traversal");
         let result = malicious_dir.extract(&temp_dir);
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("Path traversal with '..' is not allowed"));
     }
 
     #[test]
     fn test_extract_allows_safe_paths() {
-        // Create a Dir with safe relative paths
         let safe_file = File::new("subdir/safe.txt", b"safe content");
         let safe_entry = DirEntry::File(safe_file);
-        let safe_dir = Dir::new("test", &[safe_entry]);
+        let entries = [safe_entry];
+        let safe_dir = Dir::new("test", &entries);
 
-        // Extract should succeed
         let temp_dir = std::env::temp_dir().join("test_extract_safe");
         let result = safe_dir.extract(&temp_dir);
-        
-        // Clean up
+
         if temp_dir.exists() {
             let _ = std::fs::remove_dir_all(&temp_dir);
         }
-        
+
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_extract_rejects_mixed_traversal() {
-        // Create a Dir with a path that goes down then tries to escape
         let malicious_file = File::new("subdir/../../etc/passwd", b"malicious content");
         let malicious_entry = DirEntry::File(malicious_file);
-        let malicious_dir = Dir::new("test", &[malicious_entry]);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
 
-        // Attempt to extract should fail
         let temp_dir = std::env::temp_dir().join("test_extract_mixed");
         let result = malicious_dir.extract(&temp_dir);
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("Path traversal with '..' is not allowed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_extract_rejects_symlink_escape() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("root");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(outside.join("escaped.txt"), root.join("link.txt")).unwrap();
+
+        let malicious_file = File::new("link.txt", b"malicious content");
+        let malicious_entry = DirEntry::File(malicious_file);
+        let entries = [malicious_entry];
+        let malicious_dir = Dir::new("test", &entries);
+
+        let result = malicious_dir.extract(&root);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!outside.join("escaped.txt").exists());
     }
 }
