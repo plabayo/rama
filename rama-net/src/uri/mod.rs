@@ -786,8 +786,7 @@ impl Uri {
                 use std::fmt::Write as _;
 
                 let mut target = String::new();
-                write!(&mut target, "{}?{q}", self.path_ref_or_root())
-                    .expect("writing URI request target to String cannot fail");
+                _ = write!(&mut target, "{}?{q}", self.path_ref_or_root());
                 Cow::Owned(target)
             }
             None => self.path_or_root(),
